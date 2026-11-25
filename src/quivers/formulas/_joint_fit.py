@@ -425,10 +425,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         program = (
             Compiler(
                 module,
-                families=with_flat_catalog(
-                    family.custom.catalog if family.custom is not None else None,
-                    module,
-                ),
+                families=with_flat_catalog(lens.families(), module),
             )
             .compile()
             .morphism

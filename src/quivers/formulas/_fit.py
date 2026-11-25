@@ -72,9 +72,6 @@ from quivers.formulas._predictor_graph import (
 
 from quivers.formulas._prediction import FormulaPredictionPlan
 from quivers.formulas._grouping import resolve_group_covariances
-from quivers.formulas._latent_effects import (
-    formula_families,
-)
 from quivers.formulas._autocor import (
     AutocorMatrix,
     autocor_binding,
@@ -3284,18 +3281,7 @@ def _prepare_fit(
             "freeze its parameters before using NUTS or HMC"
         )
     module, complement = lens.forward(parsed)
-    compiler = (
-        Compiler(
-            module,
-            families=with_flat_catalog(
-                formula_families(family_obj.custom.catalog, parsed), module
-            ),
-        )
-        if family_obj.custom is not None
-        else Compiler(
-            module, families=with_flat_catalog(formula_families(None, parsed), module)
-        )
-    )
+    compiler = Compiler(module, families=with_flat_catalog(lens.families(), module))
     program_runtime = compiler.compile()
     morphism = program_runtime.morphism
     if not isinstance(morphism, MonadicProgram):

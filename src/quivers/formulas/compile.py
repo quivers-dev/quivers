@@ -108,6 +108,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names
+from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas.family import Domain, Family, Link, families, links
 from quivers.formulas._recorded_event_families import check_recorded_event_family
@@ -202,7 +203,7 @@ from quivers.formulas._population_coordinates import (
 from quivers.formulas._autocor import append_autocor_steps
 from quivers.formulas._gp import gp_block_steps
 from quivers.formulas._monotonic_emission import append_monotonic_terms
-from quivers.formulas._latent_effects import append_latent_terms, formula_families
+from quivers.formulas._latent_effects import append_latent_terms
 from quivers.formulas._predictor import (
     Predictor,
     PredictorOptions,
@@ -212,9 +213,11 @@ from quivers.formulas._predictor import (
 )
 from quivers.formulas._term import (
     OutputAxis,
+    Term,
     bind_inputs,
     declare_axes,
     declare_inputs,
+    join_catalogs,
 )
 from quivers.formulas.formula import (
     FixedColumn,
@@ -978,6 +981,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._drawn_sites: frozenset[str] = frozenset()
         self._group_plan: dict[tuple[str, str, str], GroupBlockLaw] = {}
         self._predictors: tuple[Predictor, ...] = ()
+        self._term_laws: FamilyCatalog | None = None
         conflicting = (
             self._distributional.keys() | expression_roots
         ) & self._named_prior_inputs.keys()
@@ -1138,6 +1142,54 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Laws in emission order.
         """
         return tuple(self._emitted_groups)
+
+    @property
+    def term_laws(self) -> FamilyCatalog | None:
+        """Return the laws the terms of the latest forward pass draw from.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            Compilation-local laws, or None when every law is built in.
+        """
+        return self._term_laws
+
+    def families(self, response: FamilyCatalog | None = None) -> FamilyCatalog | None:
+        """Return every compilation-local law of the latest forward pass.
+
+        Parameters
+        ----------
+        response : FamilyCatalog or None
+            Laws of the response on the rows in use; None for those of the
+            fitted family.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            The response laws joined with those of the terms.
+        """
+        if response is None and self._family.custom is not None:
+            response = self._family.custom.catalog
+        if response is None or self._term_laws is None:
+            return response if response is not None else self._term_laws
+        return response.with_catalog(self._term_laws)
+
+    def terms(self, formula: Formula) -> tuple[Term, ...]:
+        """List the terms of every linear predictor.
+
+        Parameters
+        ----------
+        formula : Formula
+            Location predictor and response.
+
+        Returns
+        -------
+        tuple[Term, ...]
+            Terms in predictor order.
+        """
+        return tuple(
+            term for predictor in self._plan(formula, {}) for term in predictor.terms
+        )
 
     def _observe_argument(
         self, argument: str | float, scale: Mapping[str, LetExprNode]
@@ -1688,15 +1740,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             lower_qvr_to_qiec(
                 module,
                 # Improper flat priors are compilation-local native laws.
-                families=with_flat_catalog(
-                    formula_families(
-                        self._family.custom.catalog
-                        if self._family.custom is not None
-                        else None,
-                        formula,
-                    ),
-                    module,
-                ),
+                families=with_flat_catalog(self.families(), module),
             )
         complement = FormulaData(
             formula=formula.formula,
@@ -2123,12 +2167,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             )
         obs.update(
-            bind_inputs(
-                item
-                for predictor in self._plan(formula, {})
-                for term in predictor.terms
-                for item in term.inputs()
-            )
+            bind_inputs(item for term in self.terms(formula) for item in term.inputs())
         )
         if self._predictor_graph is not None:
             from quivers.formulas._predictor_graph import graph_input_bindings
@@ -4691,6 +4730,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             emission = emit_mixture(self, formula, supplied_groups)
             self._mixture_targets = emission.prior_targets
             self._emitted_groups.extend(emission.group_laws)
+            self._term_laws = emission.families
             return emission.module
         formula = self._threshold_location_formula(formula)
         statements: list[Statement] = []
@@ -4729,9 +4769,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 for member in law.members
             },
         )
-        for axis in declare_axes(
+        terms = tuple(
             term for predictor in self._predictors for term in predictor.terms
-        ):
+        )
+        self._term_laws = join_catalogs(None, terms)
+        for axis in declare_axes(terms):
             self._append_finite_object(statements, axis.name, axis.size)
         # Grouped thresholds read one level per row, which a row with several
         # member levels does not have.

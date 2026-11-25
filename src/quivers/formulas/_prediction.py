@@ -33,7 +33,6 @@ from quivers.formulas.formula import (
     _qvr_name,
 )
 from quivers.formulas._gp import (
-    gp_conditional_catalog,
     gp_prediction,
 )
 from quivers.formulas._autocor import (
@@ -46,11 +45,10 @@ from quivers.formulas._grouping_emission import (
     membership_prediction_bindings,
 )
 from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
-from quivers.formulas._latent_effects import formula_families
 from quivers.formulas._autocor import latent_prediction
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
 from quivers.formulas._predictor import design_terms
-from quivers.formulas._term import bind_inputs
+from quivers.formulas._term import bind_inputs, join_catalogs
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
@@ -701,6 +699,13 @@ def prepare_prediction(
         if autocor_binding(fit.family) is not None
         else None
     )
+    response_families = (
+        autocor_families
+        if autocor_families is not None
+        else fit.family.custom.catalog
+        if fit.family.custom is not None
+        else None
+    )
     if new_data is None and re_formula is None and incl_autocor:
         if predictor_data is not None:
             raise ValueError("predictor_data requires new_data")
@@ -723,13 +728,8 @@ def prepare_prediction(
                 module,
                 # Improper flat priors are compilation-local native laws.
                 families=with_flat_catalog(
-                    formula_families(
-                        autocor_families
-                        if autocor_families is not None
-                        else fit.family.custom.catalog
-                        if fit.family.custom is not None
-                        else None,
-                        fit.formula,
+                    join_catalogs(
+                        response_families, fit._formula_lens().terms(fit.formula)
                     ),
                     module,
                 ),
@@ -870,12 +870,6 @@ def prepare_prediction(
         fit._predictor_items(), plan.designs, frame
     )
     observations.update(gp_values)
-    gp_catalog = gp_conditional_catalog(
-        (prefixes[name] + term.qvr_name, term.gp)
-        for name, formula in gp_formulas.items()
-        for term in formula.design_terms
-        if term.gp is not None
-    )
     if fit.family.trials_parameter is not None:
         retained_source = dict(fit.formula.modifiers.sources).get("trials")
         specification = (
@@ -927,6 +921,9 @@ def prepare_prediction(
         observations[fit.predictor_name] = neural
 
     module = plan.module
+    families = join_catalogs(
+        response_families, fit._formula_lens().terms(latent_formula)
+    )
     if groups or re_formula is not None or gp_fresh:
         specialized = {
             name: specialized_formula(gp_formulas[name], groups, frame)
@@ -945,7 +942,10 @@ def prepare_prediction(
                 and name in fit.predictor_graph.leaves
             },
         )
-        module, _ = specialized_lens.forward(specialized["mu"])
+        module, _ = specialized_lens.forward(
+            specialized["mu"].with_(latent_terms=latent_formula.latent_terms)
+        )
+        families = specialized_lens.families(response_families)
         # The level inputs of every block on the compact prediction levels.
         observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
         module = select_contributions(module, formulas, selected, prefixes=prefixes)
@@ -963,16 +963,6 @@ def prepare_prediction(
                 )
             )
         statements.append(statement)
-    families = formula_families(
-        autocor_families
-        if autocor_families is not None
-        else fit.family.custom.catalog
-        if fit.family.custom is not None
-        else None,
-        latent_formula,
-    )
-    if gp_catalog is not None:
-        families = gp_catalog if families is None else families.with_catalog(gp_catalog)
     # Improper flat priors are compilation-local native laws.
     families = with_flat_catalog(families, module)
     program = (

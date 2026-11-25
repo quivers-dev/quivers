@@ -37,6 +37,8 @@ import re
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 import didactic.api as dx
+from functools import reduce
+
 import numpy as np
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
@@ -76,6 +78,7 @@ from quivers.dsl.program_templates import (
     substitute_program_object,
 )
 from quivers.dsl.step_resolution import _step_value_names
+from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _add, _call, _factor, _index, _let, _var
 from quivers.formulas._group_law import (
     GroupBlockLaw,
@@ -579,6 +582,8 @@ class MixtureEmission(ValueModel):
         Every overrideable latent site with mixture parameter scopes.
     group_laws : tuple[GroupBlockLaw, ...]
         Group-block laws renamed into component namespaces.
+    families : FamilyCatalog or None
+        Laws the terms of the sub-emissions draw from.
     """
 
     module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -587,6 +592,9 @@ class MixtureEmission(ValueModel):
     )
     group_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    families: FamilyCatalog | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
 
@@ -725,6 +733,8 @@ class _SubEmission(ValueModel):
         Renamed group-block laws.
     correlation_ids : frozenset[str]
         Group-level correlation identifiers used by the sub-emission.
+    families : FamilyCatalog or None
+        Laws its terms draw from, under namespaced names.
     """
 
     objects: tuple[Statement, ...] = dx.field(
@@ -746,6 +756,9 @@ class _SubEmission(ValueModel):
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     correlation_ids: frozenset[str] = frozenset()
+    families: FamilyCatalog | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def _shared_names(formula: Formula, trials: int | str | None) -> frozenset[str]:
@@ -947,7 +960,17 @@ def _sub_emission(
     names = {value: namespace.name(value) for value in variables}
     for group in groups:
         names[f"{_qvr_name(group)}_idx"] = f"{_qvr_name(group)}_idx"
-    bindings = TemplateBindings(objects=objects, values={}, morphisms={})
+    # Two components may draw from one law over different coordinates.
+    families = sub.term_laws
+    morphisms = (
+        {}
+        if families is None
+        else {
+            record.name: namespace.prefix("") + record.name
+            for record in families.definitions
+        }
+    )
+    bindings = TemplateBindings(objects=objects, values={}, morphisms=morphisms)
     renamed_objects = tuple(
         item.with_(
             names=tuple(objects[value] for value in item.names),
@@ -1002,6 +1025,7 @@ def _sub_emission(
         prior_targets=targets,
         group_laws=laws,
         correlation_ids=correlation_ids,
+        families=families.renamed(morphisms) if families is not None else None,
     )
 
 
@@ -1514,6 +1538,7 @@ def emit_mixture(
     parameters: dict[str, QiecValueParameter] = {}
     targets: list[PriorTarget] = []
     laws: list[GroupBlockLaw] = []
+    families: list[FamilyCatalog] = []
     ordinal = spec.components[0].ordinal is not None
     # brms: an ordered ordinal mixture shares one threshold vector, ordered
     # when any component has ordered thresholds.
@@ -1543,6 +1568,8 @@ def emit_mixture(
             parameters.setdefault(parameter.name, parameter)
         targets.extend(emission.prior_targets)
         laws.extend(emission.group_laws)
+        if emission.families is not None:
+            families.append(emission.families)
 
     external = dict(supplied_groups or {})
     supplied = _shared_blocks(lens, formula, statements, steps, targets, laws, external)
@@ -1882,6 +1909,7 @@ def emit_mixture(
         module=Module(statements=tuple(statements)),
         prior_targets=tuple(targets),
         group_laws=tuple(laws),
+        families=reduce(FamilyCatalog.with_catalog, families) if families else None,
     )
 
 

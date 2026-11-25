@@ -103,6 +103,8 @@ class _ResponseEmission:
         Local binding names and their namespaced names.
     objects : Mapping[str, str]
         Local object names and their namespaced or shared names.
+    families : FamilyCatalog or None
+        Laws of the response and, under namespaced names, of its terms.
     """
 
     name: str
@@ -113,6 +115,7 @@ class _ResponseEmission:
     complement: FormulaData
     names: Mapping[str, str]
     objects: Mapping[str, str]
+    families: FamilyCatalog | None
 
 
 @dataclass(frozen=True)
@@ -486,7 +489,18 @@ def _namespace(
         raise ValueError(f"unknown supplied response inputs: {sorted(unknown)!r}")
     for value in supplied_inputs:
         names.setdefault(value, prefix + value)
-    bindings = TemplateBindings(objects=objects, values={}, morphisms={})
+    # Two responses may draw from one law over different coordinates.
+    laws = lens.term_laws
+    morphisms = (
+        {}
+        if laws is None
+        else {record.name: prefix + record.name for record in laws.definitions}
+    )
+    families = lens._family.custom.catalog if lens._family.custom is not None else None
+    if laws is not None:
+        laws = laws.renamed(morphisms)
+        families = laws if families is None else families.with_catalog(laws)
+    bindings = TemplateBindings(objects=objects, values={}, morphisms=morphisms)
     parameters = tuple(
         parameter.with_(
             name=names.get(parameter.name, parameter.name),
@@ -550,6 +564,7 @@ def _namespace(
         complement,
         names,
         objects,
+        families,
     )
 
 
@@ -1423,9 +1438,8 @@ def emit_joint(
     module = order_prior_dependencies(module)
     catalog = FamilyCatalog()
     for response in responses.values():
-        custom = response.lens._family.custom
-        if custom is not None:
-            catalog = catalog.with_catalog(custom.catalog)
+        if response.families is not None:
+            catalog = catalog.with_catalog(response.families)
     # Improper flat priors are compilation-local native laws.
     if improper_sites(module):
         catalog = catalog.with_catalog(FLAT_CATALOG)

@@ -1254,31 +1254,6 @@ def append_latent_terms(
     return eta
 
 
-def formula_families(
-    base: FamilyCatalog | None, formula: Formula
-) -> FamilyCatalog | None:
-    """Join a response catalog with the laws of every latent term.
-
-    Parameters
-    ----------
-    base : FamilyCatalog or None
-        Response catalog of a custom or residual family.
-    formula : Formula
-        Location formula.
-
-    Returns
-    -------
-    FamilyCatalog or None
-        The joined catalog, or ``base`` when there are no latent terms.
-    """
-    catalog = base
-    for term in formula.latent_terms:
-        catalog = (
-            term.catalog if catalog is None else catalog.with_catalog(term.catalog)
-        )
-    return catalog
-
-
 class FieldTerm(ValueModel):
     """A structured field indexed by a coordinate of each row.
 
