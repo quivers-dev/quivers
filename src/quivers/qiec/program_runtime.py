@@ -1149,7 +1149,7 @@ class DeductionRun(QiecModel):
         The inside weight of the goal in the deduction's semiring: a
         log weight, a Boolean, or a count.
     result
-        The machine's full result, with its trace.
+        The machine's full result, with its trace when one was recorded.
     """
 
     weight: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1164,6 +1164,8 @@ def run_deduction(
     axioms: Sequence[object] | None = None,
     axiom_weights: Sequence[object] | None = None,
     parameters: Mapping[str, object] | None = None,
+    observer: TraceObserver | None = None,
+    record_trace: bool = False,
     fuel: int | None = None,
 ) -> DeductionRun:
     """Run a deduction's entry on the reference machine.
@@ -1183,6 +1185,13 @@ def run_deduction(
         One weight per axiom in the semiring's carrier.
     parameters : Mapping[str, object] | None
         The learned weights by name; an absent weight reads as zero.
+    observer : TraceObserver | None
+        A callback receiving every trace event as the machine emits it.
+    record_trace : bool
+        Whether the result keeps every event. The search enumerates
+        derivations, so its events grow with the number of derivation
+        steps while its live state grows with the sentence; they are kept
+        only when asked for.
     fuel : int | None
         A step budget for the run.
 
@@ -1239,6 +1248,8 @@ def run_deduction(
                 RuntimeSelection(provider="core", options={"handlers": configured}),
             )
         ),
+        observer=observer,
+        record_trace=record_trace,
         fuel=fuel,
     )
     return DeductionRun(weight=result.value, result=result)
