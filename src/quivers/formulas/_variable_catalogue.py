@@ -4,15 +4,13 @@ brms reports every parameter as a scalar variable: a vector parameter is
 ``name[i]``, a matrix ``name[i,j]``, a correlation matrix one variable per
 pair, and a simplex of mixing proportions one variable per component. Each
 term of a formula model registers its overrideable sites as `PriorTarget`
-values and its design blocks as `GaussianDesignTerm` values. This module
-names those registrations, so a single-response fit and a joint fit list the
-same variables for the same term and no variable keeps an event axis:
+values. This module names those registrations, so a single-response fit and a
+joint fit list the same variables for the same term and no variable keeps an
+event axis:
 
 - `class_variables` names a hyperparameter target from its prior class
-  (``sds_sx_1``, ``sdgp_gpx``, ``simo_mox1[k]``, ``ar[1]``, ``theta1``,
-  ``cortime__a__b``, ``df_g``).
-- `design_term_variables` names the innovations of smooth and Gaussian
-  process blocks (``s_sx_1[k]``, ``zgp_gpx[k]``).
+  (``ar[1]``, ``theta1``, ``cortime__a__b``, ``df_g``). The terms of a
+  predictor name their own draws (`quivers.formulas._name_scope`).
 - `shrinkage_variables` names the auxiliary sites of horseshoe and R2D2
   priors (``hs_global``, ``hs_local[k]``, ``R2D2_R2``, ``R2D2_phi[k]``).
 - `native_variables` lists every remaining site under its QVR name, one
@@ -461,7 +459,6 @@ def class_variables(
     value: torch.Tensor,
     *,
     infix: str,
-    scales: Mapping[str, str] | None = None,
     labels: Sequence[str] = (),
 ) -> dict[str, torch.Tensor]:
     """Name the draws of one hyperparameter target from its prior class.
@@ -476,9 +473,6 @@ def class_variables(
     infix : str
         Parameter and response part of the name, such as ``""``,
         ``"sigma_"`` or ``"y_"``, ending in an underscore when nonempty.
-    scales : Mapping[str, str] or None
-        Names of the smoothing standard deviations of the target's
-        predictor (`SmoothNames.scales`), by full site name.
     labels : Sequence[str]
         Coordinate labels of a correlation class (time levels of ``unstr``).
 
@@ -492,8 +486,7 @@ def class_variables(
     Raises
     ------
     ValueError
-        If a correlation class has no coordinate labels, or a smoothing
-        standard deviation has no retained smooth block.
+        If a correlation class has no coordinate labels.
     """
     kind = target.class_
     # brms appends the response of a joint model to a class without a
