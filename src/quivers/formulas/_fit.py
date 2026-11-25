@@ -115,8 +115,7 @@ from quivers.formulas._threshold_groups import (
 from quivers.formulas._initial_values import report_initial_values
 
 # gr(by = ) and gr(dist = "student"): per-level structure of group coefficients.
-from quivers.formulas._group_layout import GroupLevelStructure
-from quivers.formulas._grouping_emission import group_level_structures
+from quivers.formulas._group_law import group_coefficients
 
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._response import (
@@ -2262,21 +2261,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             for column in predictor.fixed_columns
         }
 
-    def _group_structures(self) -> dict[str, GroupLevelStructure]:
-        """Return the per-level ``gr()`` structure of each grouping factor.
-
-        Returns
-        -------
-        dict[str, GroupLevelStructure]
-            Factors with a ``by`` variable or ``dist = "student"``; empty
-            without retained emission metadata.
-        """
-        if self.prediction_plan is None:
-            return {}
-        return group_level_structures(
-            self._predictor_items(), self.prediction_plan.group_layouts
-        )
-
     def _random_effects(
         self,
         draws: dict[str, torch.Tensor],
@@ -2307,22 +2291,18 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         ValueError
             If retained group-layout metadata is unavailable.
         """
-        from quivers.formulas._group_layout import _group_coefficients
-
         if self.prediction_plan is None:
             raise ValueError(
                 "group coefficient extraction requires retained emission metadata"
             )
-        coefficients = _group_coefficients(
+        coefficients = group_coefficients(
             draws,
             tuple(
-                layout
-                for layout in self.prediction_plan.group_layouts
-                if any(member.prefix == prefix for member in layout.members)
+                law
+                for law in self.prediction_plan.group_laws
+                if any(member.prefix == prefix for member in law.members)
             ),
             self.group_levels,
-            # gr(by = ) and gr(dist = "student") structure of each factor.
-            self._group_structures(),
         )
         result: dict[str, dict[str, torch.Tensor]] = {}
         for term in predictor.random_terms:
@@ -3751,7 +3731,8 @@ def _assemble_fit(
             module=prepared.module,
             preparation_data=prepared.preparation_data,
             designs=prepared.formula.designs,
-            group_layouts=prepared.complement.group_layouts,
+            group_laws=prepared.complement.group_laws,
+            level_sites=prepared.complement.level_sites,
             prior_targets=prepared.complement.prior_targets,
         ),
     )
@@ -4063,7 +4044,9 @@ def _prepare_formula(
         If a family, response role, predictor, or trial contract is invalid.
     """
     # brms gr(g, cov = M) reads a known level covariance from data2.
-    group_covariances = resolve_group_covariances(formula, data2, group_covariances)
+    group_covariances = resolve_group_covariances(
+        model_texts(formula, (distributional, nonlinear)), data2, group_covariances
+    )
     if isinstance(family, str):
         if family not in families:
             raise ValueError(

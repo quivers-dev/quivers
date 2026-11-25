@@ -1161,12 +1161,23 @@ class SinglePostprocess(_PostprocessCore):
             varying = fit._random_effects(draws, shape, predictor, prefix)
             for group, coefficients in varying.items():
                 for coef, value in coefficients.items():
-                    result.setdefault(group, []).append(
+                    label = labels.get((parameter, coef), brms_rename(coef))
+                    members = result.setdefault(group, [])
+                    if value.ndim == 3:
+                        members.append((infix + label, value))
+                        continue
+                    # One coefficient per response category is brms's
+                    # mu<category>_<coef>, and per transition <coef>[k].
+                    categories = fit.coefficient_labels
+                    named = parameter == "mu" and len(categories) == value.shape[-1]
+                    members.extend(
                         (
-                            f"{infix}"
-                            f"{labels.get((parameter, coef), brms_rename(coef))}",
-                            value,
+                            f"mu{brms_rename(str(categories[index]))}_{label}"
+                            if named
+                            else f"{infix}{label}[{index + 1}]",
+                            value[..., index],
                         )
+                        for index in range(value.shape[-1])
                     )
         return result
 

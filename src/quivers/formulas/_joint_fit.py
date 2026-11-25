@@ -74,7 +74,7 @@ from quivers.formulas._row_retention import (
     model_texts,
 )
 from quivers.formulas._group_covariance import GroupCovariance
-from quivers.formulas._group_layout import _group_coefficients
+from quivers.formulas._group_law import group_coefficients
 from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._joint_compile import _JointEmission, emit_joint
 from quivers.formulas._joint_options import JointFitOptions
@@ -161,6 +161,8 @@ from quivers.formulas._variable_catalogue import (
     SmoothNames,
     smooth_names,
     threshold_variables,
+    correlation_variables,
+    scale_variables,
 )
 from quivers.formulas._threshold_groups import LOCATION_SITE
 
@@ -417,7 +419,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         authored = self.specification.responses[name]
         part = self.prepared[name]
         lens = copy(response.lens)
-        lens._group_layouts = []
+        lens._emitted_groups = []
         module, complement = lens.forward(response.formula)
         family = part.family
         program = (
@@ -448,7 +450,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             fixed_prior=self.fixed_prior,
             random_scale_prior=self.random_scale_prior,
             correlation_prior=self.correlation_prior,
-            group_covariances=dict(self.group_covariances),
+            group_covariances=response.lens.group_covariances,
             distributional=dict(response.lens._distributional),
             predictor_graph=response.lens._predictor_graph,
             fixed_parameters=dict(authored.fixed_parameters or {}),
@@ -456,7 +458,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 module=module,
                 designs=part.designs,
                 preparation_data=self.preparation_data,
-                group_layouts=complement.group_layouts,
+                group_laws=complement.group_laws,
+                level_sites=complement.level_sites,
                 prior_targets=complement.prior_targets,
             ),
         )
@@ -742,10 +745,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     prefix + site: name
                     for site, name in smooths[(resp, parameter)].scales.items()
                 }
-        grouped = {
-            layout.correlation_site
-            for layout in self.emission.group_layouts
-            if layout.correlation_site is not None
+        block_laws = self.emission.group_laws
+        grouped = {site for law in block_laws for site in law.correlation.sites}
+        scale_members = {
+            member.scale.site: (law, member)
+            for law in block_laws
+            for member in law.members
         }
         for target in self.emission.prior_targets:
             if target.site not in draws:
@@ -814,7 +819,11 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             elif target.class_ == "sd" and resp is not None:
                 term = self._term(target, coefficient_label)
                 terms[target.site] = term
-                result |= scalar_coordinates(f"sd_{target.group}__{term}", value)
+                law, member = scale_members[target.site]
+                for level in scale_variables(
+                    law, member, f"sd_{target.group}__{term}", value
+                ):
+                    result |= level
             elif target.class_ == "cor" and target.site == "rescor":
                 result |= correlation_pairs("rescor", self.response_names, value)
             elif target.dpar == target.site and resp is None:
@@ -858,15 +867,11 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     if resp is not None
                     else tuple(str(label) for label in target.component_labels),
                 )
-        for layout in self.emission.group_layouts:
-            if layout.correlation_site is None or layout.correlation_site not in draws:
-                continue
-            labels = []
-            for member in layout.members:
-                term = terms.get(member.scale_site or "", member.slope)
-                labels.extend([term] * member.width)
-            result |= correlation_pairs(
-                f"cor_{layout.group}", labels, draws[layout.correlation_site]
+        for law in block_laws:
+            result |= correlation_variables(
+                law,
+                [terms.get(member.scale.site, member.slope) for member in law.members],
+                draws,
             )
         for label, spec in self.missing_specs.items():
             if spec.standard_error is not None and f"mi_{label}__truth" in draws:
@@ -917,15 +922,14 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 )
                 result |= named
                 consumed |= read
-        for layout in self.emission.group_layouts:
+        for law in block_laws:
+            consumed.update(law.correlation.sites)
             consumed.update(
                 site
-                for member in layout.members
-                for site in (member.raw_site, member.scale_site, member.mean_site)
+                for member in law.members
+                for site in (member.raw_site, member.scale.site, member.mean_site)
                 if site is not None
             )
-            if layout.correlation_site is not None:
-                consumed.add(layout.correlation_site)
         for label, spec in self.missing_specs.items():
             consumed.update((f"mi_{label}__truth", f"mi_{label}__missing"))
         # brms omits the latent values of me() terms unless
@@ -1127,12 +1131,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         dict[str, dict[str, torch.Tensor]]
             Group and coefficient label mapped to per-level draws.
         """
-        coefficients = _group_coefficients(
+        coefficients = group_coefficients(
             draws,
             tuple(
-                layout
-                for layout in self.emission.group_layouts
-                if any(member.prefix == prefix for member in layout.members)
+                law
+                for law in self.emission.group_laws
+                if any(member.prefix == prefix for member in law.members)
             ),
             self.group_levels,
         )
@@ -3088,7 +3092,11 @@ def fit_joint(
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
         correlation_prior=correlation_prior,
-        group_covariances=dict(group_covariances or {}),
+        group_covariances={
+            group: covariance
+            for part in prepared.values()
+            for group, covariance in part.lens.group_covariances.items()
+        },
         reparameterize=reparameterize,
         preparation_data=data,
         refit_recipe=refit_recipe,

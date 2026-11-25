@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from itertools import product
 from typing import TYPE_CHECKING
 
 from quivers.diagnostics.contrast import _contrast_hypothesis
-from quivers.formulas._group_layout import _group_coefficients
+from quivers.formulas._group_law import group_coefficients
 
 # Pathfinder draws report variational provenance.
 from quivers.inference.pathfinder import draw_provenance
@@ -153,8 +154,12 @@ def _formula_contrast_inputs(
             Complete nominal axis names and original coordinate labels.
         """
         axes = list(target.axes)
+        partition, components = target.partition_labels, component_labels(target)
         labels = [
-            component_labels(target) or tuple(range(size)) for size in target.shape
+            tuple(product(partition, components))
+            if partition and components
+            else partition or components or tuple(range(size))
+            for size in target.shape
         ]
         for i in range(len(axes), value.ndim - 2):
             axes.append(f"{target.site}_event_{i - len(target.axes)}")
@@ -171,16 +176,15 @@ def _formula_contrast_inputs(
             raise ValueError(
                 f"unknown grouping factor {group!r} for predictor {parameter!r}"
             )
-        coefficients = _group_coefficients(
+        coefficients = group_coefficients(
             draws,
             tuple(
-                layout
-                for layout in plan.group_layouts
-                if layout.group == group
-                and any(member.prefix == prefix for member in layout.members)
+                law
+                for law in plan.group_laws
+                if law.group == group
+                and any(member.prefix == prefix for member in law.members)
             ),
             fit.group_levels,
-            fit._group_structures(),
         )
         varying = {
             term.slope: coefficients[(prefix, group, term.slope)]
@@ -220,9 +224,9 @@ def _formula_contrast_inputs(
                 else:
                     member = next(
                         member
-                        for layout in plan.group_layouts
-                        if layout.group == group
-                        for member in layout.members
+                        for law in plan.group_laws
+                        if law.group == group
+                        for member in law.members
                         if member.prefix == prefix and member.slope == label
                     )
                     component_axis = member.axis
@@ -230,7 +234,7 @@ def _formula_contrast_inputs(
                         target = next(
                             target
                             for target in targets
-                            if target.site == member.scale_site
+                            if target.site == member.scale.site
                         )
                 if component_axis is None:
                     raise ValueError(
@@ -270,19 +274,16 @@ def _formula_contrast_inputs(
             continue
         value = draws[target.site]
         if class_ == "cor":
-            layout = next(
-                layout
-                for layout in plan.group_layouts
-                if layout.correlation_site == target.site
+            law = next(
+                law for law in plan.group_laws if target.site in law.correlation.sites
             )
             value = value @ value.transpose(-1, -2)
             parameters = {prefix: name for name, prefix, _ in fit._predictor_items()}
             by_site = {item.site: item for item in targets}
             coordinate_labels = []
-            for member in layout.members:
+            for member in law.members:
                 if member.axis is not None:
-                    assert member.scale_site is not None
-                    components = component_labels(by_site[member.scale_site])
+                    components = component_labels(by_site[member.scale.site])
                 else:
                     components = (None,)
                 coordinate_labels.extend(
@@ -290,8 +291,8 @@ def _formula_contrast_inputs(
                     for component in components
                 )
             labels = tuple(coordinate_labels)
-            axis = f"correlation:{layout.identity}"
-            first = layout.members[0]
+            axis = f"correlation:{law.identity}"
+            first = law.members[0]
             predictor = next(
                 predictor
                 for _, prefix, predictor in fit._predictor_items()
@@ -300,9 +301,12 @@ def _formula_contrast_inputs(
             authored = next(
                 term.correlation_id
                 for term in predictor.random_terms
-                if term.group == layout.group and term.slope == first.slope
+                if term.group == law.group and term.slope == first.slope
             )
             assert authored is not None
+            # One correlation per by level is named by its level.
+            if target.coef is not None:
+                authored, axis = f"{authored}:{target.coef}", f"{axis}:{target.coef}"
             add(authored, value, (axis + ":row", axis + ":column"), (labels, labels))
         else:
             axes, labels = target_axes(target, value)

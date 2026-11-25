@@ -14,7 +14,7 @@ new-level policies of the shared Gaussian group layout unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from formulae.terms.terms import Term
@@ -23,27 +23,13 @@ import pandas as pd
 import torch
 
 from quivers.dsl.ast_nodes import (
-    DrawArgName,
-    DrawArgNamed,
-    DrawArgScalar,
-    LetExprBinOp,
-    LetExprIndex,
-    LetExprLiteral,
-    ProgramStep,
-    SampleStep,
-    ScoreStep,
-    Statement,
-    TypeName,
-    LetExprNode,
     QiecIndexName,
     QiecShapeIndex,
     QiecTypeApplication,
     QiecTypeName,
     QiecValueParameter,
 )
-from quivers.formulas._ast import _add, _call, _factor, _index, _let, _mul, _sub, _var
-from quivers.formulas._category_formulas import component_valued_prefixes
-from quivers.formulas._group_layout import GroupBlockLayout, GroupLevelStructure
+from quivers.formulas._group_law import GroupBlockLaw, law_inputs
 from quivers.formulas._grouping import (
     GroupLevelOptions,
     Membership,
@@ -54,9 +40,57 @@ from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
 
 if TYPE_CHECKING:
     from quivers.formulas._group_prediction import GroupRemap
-    from quivers.formulas.compile import FormulaToQVRModule
 
 __all__: list[str] = []
+
+
+def joint_group_blocks(
+    predictors: Iterable[tuple[str, str, Formula]],
+    covariances: Collection[str],
+    supplied: Collection[tuple[str, str, str]] = (),
+) -> dict[tuple[str, str], list[tuple[str, RandomTerm]]]:
+    """Collect the group terms that share one joint coefficient distribution.
+
+    A term joins a block through a correlation identifier, or stands as a
+    block of its own when its grouping factor has a known level covariance.
+    Other terms are independent and belong to no block. Runs in time linear
+    in the number of group terms.
+
+    Parameters
+    ----------
+    predictors : Iterable[tuple[str, str, Formula]]
+        Predicted parameters as (name, coefficient prefix, design).
+    covariances : Collection[str]
+        Grouping factors with a known level covariance.
+    supplied : Collection[tuple[str, str, str]]
+        Members, as (prefix, group, slope), whose block is already emitted.
+
+    Returns
+    -------
+    dict[tuple[str, str], list[tuple[str, RandomTerm]]]
+        Members of each block as (prefix, term), keyed by grouping factor and
+        block identity, in first-appearance order.
+    """
+    blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
+    for _, prefix, predictor in predictors:
+        for term in predictor.random_terms:
+            if (prefix, term.group, term.slope) in supplied:
+                continue
+            if term.correlation_id is None:
+                if term.group not in covariances:
+                    continue
+                identity = (
+                    prefix
+                    + f"independent_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
+                )
+            else:
+                identity = (
+                    f"shared_{term.correlation_id}"
+                    if term.shared
+                    else prefix + term.correlation_id
+                )
+            blocks.setdefault((term.group, identity), []).append((prefix, term))
+    return blocks
 
 
 def member_index(group: str, member: int) -> str:
@@ -99,54 +133,6 @@ def member_input(prefix: str, group: str, slope: str, member: int) -> str:
     return f"{prefix}{_qvr_name(group)}_{_qvr_name(slope)}_member{member + 1}"
 
 
-def membership_value(
-    formula: Formula, term: RandomTerm, prefix: str, gathered: LetExprNode
-) -> LetExprNode | None:
-    """Replace a single-level gather by the weighted sum over members.
-
-    Parameters
-    ----------
-    formula : Formula
-        Predictor owning the coefficient.
-    term : RandomTerm
-        Group-level coefficient.
-    prefix : str
-        Predictor namespace.
-    gathered : LetExprNode
-        The ordinary gather ``r[J[n]]`` of the coefficient.
-
-    Returns
-    -------
-    LetExprNode or None
-        ``sum_k r[J_k[n]] * C_k[n]`` for a multi-membership factor, including
-        the covariate; None for an ordinary factor.
-
-    Raises
-    ------
-    ValueError
-        If the coefficient is not gathered by its group's row index.
-    """
-    membership = formula.grouping.membership(term.group)
-    if membership is None:
-        return None
-    index = _var(f"{_qvr_name(term.group)}_idx")
-    if not isinstance(gathered, LetExprIndex) or gathered.indices[-1:] != (index,):
-        raise ValueError(
-            f"multi-membership factor {term.group!r} requires a level-indexed coefficient"
-        )
-    return _add(
-        *(
-            _mul(
-                gathered.with_(
-                    indices=(*gathered.indices[:-1], _var(member_index(term.group, k)))
-                ),
-                _var(member_input(prefix, term.group, term.slope, k)),
-            )
-            for k in range(membership.size)
-        )
-    )
-
-
 def _tensor(element: str, *axes: str) -> QiecTypeApplication:
     """Declare a tensor over named finite axes.
 
@@ -169,42 +155,6 @@ def _tensor(element: str, *axes: str) -> QiecTypeApplication:
             QiecShapeIndex(dimensions=tuple(QiecIndexName(name=axis) for axis in axes)),
         ),
     )
-
-
-def membership_runtime_parameters(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> tuple[QiecValueParameter, ...]:
-    """Declare member codes and weighted covariates of every predictor.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        Integer row codes per member and Real row covariates per member and
-        coefficient.
-    """
-    parameters: dict[str, QiecValueParameter] = {}
-    for _, prefix, formula in predictors:
-        for term in formula.random_terms:
-            membership = formula.grouping.membership(term.group)
-            if membership is None:
-                continue
-            for k in range(membership.size):
-                name = member_index(term.group, k)
-                parameters.setdefault(
-                    name,
-                    QiecValueParameter(name=name, type_expr=_tensor("Int", "Resp")),
-                )
-                name = member_input(prefix, term.group, term.slope, k)
-                parameters.setdefault(
-                    name,
-                    QiecValueParameter(name=name, type_expr=_tensor("Real", "Resp")),
-                )
-    return tuple(parameters.values())
 
 
 def _covariate_inputs(
@@ -441,392 +391,163 @@ def student_sites(group: str) -> tuple[str, str, str]:
     return f"df_{name}", f"udf_{name}", f"dfm_{name}"
 
 
-def all_group_options(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> dict[str, GroupLevelOptions]:
-    """Merge the ``gr()`` options of every predictor by grouping factor.
+def merged_group_option(
+    options: Iterable[GroupLevelOptions],
+) -> GroupLevelOptions | None:
+    """Merge the ``gr()`` options the members of one block declare.
+
+    The coefficients of a block have one law, so an option any member
+    declares applies to the block, as in brms.
 
     Parameters
     ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
+    options : Iterable[GroupLevelOptions]
+        Options of one grouping factor, coded on the same levels.
 
     Returns
     -------
-    dict[str, GroupLevelOptions]
-        Options by grouping factor; a factor that is Student-t in one
-        predictor shares its degrees of freedom with every such predictor.
+    GroupLevelOptions or None
+        The merged options, or None when no member declares any.
 
     Raises
     ------
     ValueError
-        If predictors give one factor different ``by`` variables.
+        If members give one factor different ``by`` variables or prior
+        weights.
     """
-    merged: dict[str, GroupLevelOptions] = {}
-    for _, _, formula in predictors:
-        for option in formula.grouping.options:
-            existing = merged.get(option.group)
-            if existing is None:
-                merged[option.group] = option
-                continue
-            if (
-                option.by_levels
-                and existing.by_levels
-                and (option.by_levels, option.by_codes)
-                != (existing.by_levels, existing.by_codes)
-            ):
+    merged: GroupLevelOptions | None = None
+    for option in options:
+        if merged is None:
+            merged = option
+            continue
+        for label, first, second in (
+            (
+                "'by' variable",
+                (merged.by_levels, merged.by_codes),
+                (option.by_levels, option.by_codes),
+            ),
+            (
+                "vector of prior weights",
+                (merged.prior_weights,),
+                (option.prior_weights,),
+            ),
+        ):
+            if any(first) and any(second) and first != second:
                 raise ValueError(
-                    "Each grouping factor can only be associated with one 'by' "
-                    f"variable; {option.group!r} has several"
+                    "Each grouping factor can only be associated with one "
+                    f"{label}; {option.group!r} has several"
                 )
-            merged[option.group] = existing.with_(
-                options=existing.options.with_(
-                    student=existing.options.student or option.options.student
-                ),
-                by_levels=existing.by_levels or option.by_levels,
-                by_codes=existing.by_codes or option.by_codes,
-                prior_weights=existing.prior_weights or option.prior_weights,
-            )
+        merged = GroupLevelOptions(
+            options=merged.options.with_(
+                by=merged.options.by or option.options.by,
+                by_columns=merged.options.by_columns or option.options.by_columns,
+                student=merged.options.student or option.options.student,
+                prior_weight=merged.options.prior_weight or option.options.prior_weight,
+            ),
+            by_levels=merged.by_levels or option.by_levels,
+            by_codes=merged.by_codes or option.by_codes,
+            prior_weights=merged.prior_weights or option.prior_weights,
+        )
     return merged
 
 
-def append_group_options(
-    lens: FormulaToQVRModule,
-    predictors: Iterable[tuple[str, str, Formula]],
-    statements: list[Statement],
-    steps: list[ProgramStep],
-) -> None:
-    """Declare ``by`` axes and emit Student-t mixing scales once per factor.
-
-    For ``dist = "student"`` brms draws ``df ~ gamma(2, 0.1)`` restricted to
-    ``df > 1``, one ``udf_j ~ inv_chi_square(df)`` per level, and multiplies
-    every Gaussian group coefficient of level ``j`` by
-    ``dfm_j = sqrt(df * udf_j)``, a scale mixture whose marginal law is the
-    multivariate Student-t with ``df`` degrees of freedom.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-    statements : list[Statement]
-        Module declarations receiving the ``by`` axes.
-    steps : list[ProgramStep]
-        Program steps receiving the Student-t draws.
-    """
-    predictors = tuple(predictors)
-    check_group_options(lens, predictors)
-    for group, option in all_group_options(predictors).items():
-        if option.by_levels:
-            lens._append_finite_object(
-                statements, by_axis(group), len(option.by_levels)
-            )
-        if not option.options.student:
-            continue
-        df, udf, dfm = student_sites(group)
-        qgroup = _qvr_name(group)
-        steps.append(lens._prior_draw(df, "Gamma(2.0, 0.1)", lower=1.0))
-        steps.append(_let(df + "_half", _mul(_var(df), LetExprLiteral(value=0.5))))
-        steps.append(
-            SampleStep(
-                vars=(udf,),
-                morphism="InverseGamma",
-                args=(
-                    DrawArgNamed(
-                        parameter="concentration", value=DrawArgName(text=df + "_half")
-                    ),
-                    DrawArgNamed(parameter="rate", value=DrawArgScalar(value=0.5)),
-                ),
-                index=TypeName(name=qgroup),
-            )
-        )
-        steps.append(
-            _let(
-                dfm,
-                _factor(
-                    (("student_level", qgroup),),
-                    body=_call(
-                        "sqrt",
-                        _mul(_var(df), _index(udf, _var("student_level"))),
-                    ),
-                ),
-            )
-        )
-
-
-def scale_index(option: GroupLevelOptions | None) -> TypeName | None:
-    """Index a group-level standard deviation by the ``by`` levels.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-
-    Returns
-    -------
-    TypeName or None
-        The ``by`` axis, or None for one standard deviation.
-    """
-    if option is None or not option.by_levels:
-        return None
-    return TypeName(name=by_axis(option.group))
-
-
-def level_scale(
-    option: GroupLevelOptions | None, sigma: str, level: LetExprNode
-) -> LetExprNode:
-    """Read a coefficient's standard deviation at one grouping level.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-    sigma : str
-        Standard-deviation site.
-    level : LetExprNode
-        Grouping level.
-
-    Returns
-    -------
-    LetExprNode
-        ``sigma``, or ``sigma[by[level]]`` with ``by``.
-    """
-    if option is None or not option.by_levels:
-        return _var(sigma)
-    return LetExprIndex(
-        array=_var(sigma), indices=(_index(by_input(option.group), level),)
-    )
-
-
-def mixing(option: GroupLevelOptions | None, level: LetExprNode) -> LetExprNode | None:
-    """Read the Student-t multiplier ``dfm`` at one grouping level.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-    level : LetExprNode
-        Grouping level.
-
-    Returns
-    -------
-    LetExprNode or None
-        ``dfm[level]`` for Student-t effects, None otherwise.
-    """
-    if option is None or not option.options.student:
-        return None
-    return _index(student_sites(option.group)[2], level)
-
-
-def independent_coefficient(
-    option: GroupLevelOptions | None, sigma: str, innovation: str, group: str
-) -> LetExprNode:
-    """Build an independent coefficient vector from its innovations.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-    sigma, innovation : str
-        Standard-deviation and standard-normal sites.
-    group : str
-        Grouping-factor name.
-
-    Returns
-    -------
-    LetExprNode
-        ``sigma * z``, or per level ``dfm_j * sigma[by_j] * z_j``.
-    """
-    if option is None or (not option.by_levels and not option.options.student):
-        return _mul(_var(sigma), _var(innovation))
-    level = _var("group_level")
-    value = _mul(level_scale(option, sigma, level), _index(innovation, level))
-    multiplier = mixing(option, level)
-    if multiplier is not None:
-        value = _mul(multiplier, value)
-    return _factor((("group_level", _qvr_name(group)),), body=value)
-
-
-_LOG_ROOT_TWO_PI = 0.9189385332046727
-
-
-def prior_weight_score(
-    option: GroupLevelOptions | None, name: str, innovations: tuple[str, ...]
-) -> ScoreStep | None:
-    """Weight the standard-normal prior of each level's innovations, as brms ``pw``.
-
-    brms adds ``PW_j * std_normal_lpdf(z_j)`` per level. The innovations keep
-    their unit-weight standard-normal draws, so this factor adds
-    ``(PW_j - 1) * std_normal_lpdf(z_j)``.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The block's grouping options.
-    name : str
-        Binder of the score.
-    innovations : tuple[str, ...]
-        Standard-normal level-indexed sites of the block.
-
-    Returns
-    -------
-    ScoreStep or None
-        The log-density factor, or None without prior weights.
-    """
-    if option is None or not option.prior_weights or not innovations:
-        return None
-    level = _var("weighted_level")
-    density = _add(
-        *(
-            _sub(
-                _mul(
-                    LetExprLiteral(value=-0.5),
-                    _mul(_index(site, level), _index(site, level)),
-                ),
-                LetExprLiteral(value=_LOG_ROOT_TWO_PI),
-            )
-            for site in innovations
-        )
-    )
-    value = _call(
-        "sum",
-        _factor(
-            (("weighted_level", _qvr_name(option.group)),),
-            body=_mul(
-                _sub(
-                    _index(weight_input(option.group), level), LetExprLiteral(value=1.0)
-                ),
-                density,
-            ),
-        ),
-    )
-    return ScoreStep(name=name, value=value)
-
-
-def option_runtime_parameters(
-    predictors: Iterable[tuple[str, str, Formula]],
+def law_runtime_parameters(
+    laws: Iterable[GroupBlockLaw],
 ) -> tuple[QiecValueParameter, ...]:
-    """Declare per-level ``by`` codes and prior weights.
+    """Declare the runtime inputs that the blocks of a program read.
 
     Parameters
     ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
+    laws : Iterable[GroupBlockLaw]
+        Laws of the blocks.
 
     Returns
     -------
     tuple[QiecValueParameter, ...]
-        Integer ``by`` codes and Real weights over the grouping axis.
+        One checked tensor per input.
     """
-    parameters = []
-    for group, option in all_group_options(predictors).items():
-        if option.by_levels:
-            parameters.append(
-                QiecValueParameter(
-                    name=by_input(group), type_expr=_tensor("Int", _qvr_name(group))
-                )
-            )
-        if option.prior_weights:
-            parameters.append(
-                QiecValueParameter(
-                    name=weight_input(group),
-                    type_expr=_tensor("Real", _qvr_name(group)),
-                )
-            )
-    return tuple(parameters)
+    return tuple(
+        QiecValueParameter(name=item.name, type_expr=_tensor(item.element, *item.axes))
+        for item in law_inputs(laws)
+    )
 
 
-def option_observations(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> dict[str, torch.Tensor]:
-    """Bind training ``by`` codes and prior weights.
+def law_observations(laws: Iterable[GroupBlockLaw]) -> dict[str, torch.Tensor]:
+    """Bind the inputs whose values the laws of a program retain.
 
     Parameters
     ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
+    laws : Iterable[GroupBlockLaw]
+        Laws of the blocks.
 
     Returns
     -------
     dict[str, torch.Tensor]
-        Runtime bindings over the training levels.
+        ``by`` codes, prior weights, and matrices of known level covariances.
+        The row data of multi-membership factors is bound with the design.
     """
-    values: dict[str, torch.Tensor] = {}
-    for group, option in all_group_options(predictors).items():
-        if option.by_levels:
-            values[by_input(group)] = torch.tensor(option.by_codes, dtype=torch.long)
-        if option.prior_weights:
-            values[weight_input(group)] = torch.tensor(
-                option.prior_weights, dtype=torch.float64
-            )
-    return values
+    return {
+        item.name: item.value for item in law_inputs(laws) if item.value is not None
+    }
 
 
-def option_prediction_bindings(
-    predictors: Iterable[tuple[str, str, Formula]],
-    frame: pd.DataFrame,
-    groups: Mapping[str, GroupRemap],
-) -> dict[str, torch.Tensor]:
-    """Bind ``by`` codes and prior weights on the compact prediction levels.
+def compact_option(
+    option: GroupLevelOptions, frame: pd.DataFrame, remap: GroupRemap
+) -> GroupLevelOptions:
+    """Code one factor's ``gr()`` options on its compact prediction levels.
 
     A fitted level keeps its training ``by`` level. A new level takes the
     ``by`` level of the fresh rows that name it, which must be a fitted
-    ``by`` level. Prior weights only shape the fitted prior, so prediction
-    levels carry unit weights.
+    ``by`` level. Prior weights shape only the fitted prior, so prediction
+    levels declare none.
 
     Parameters
     ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
+    option : GroupLevelOptions
+        Options coded on the fitted levels.
     frame : pandas.DataFrame
         Fresh rows.
-    groups : Mapping[str, GroupRemap]
-        Compact prediction axes.
+    remap : GroupRemap
+        Compact prediction axis of the factor.
 
     Returns
     -------
-    dict[str, torch.Tensor]
-        Runtime bindings over the compact levels.
+    GroupLevelOptions
+        The options coded on the compact levels.
 
     Raises
     ------
     ValueError
         If a new level has no, several, or an unfitted ``by`` level.
     """
-    values: dict[str, torch.Tensor] = {}
-    for group, option in all_group_options(predictors).items():
-        remap = groups.get(group)
-        if remap is None:
-            continue
-        count = len(remap.fitted_indices)
-        if option.by_levels:
-            by = option.options.by
-            assert by is not None
-            position = {label: index for index, label in enumerate(option.by_levels)}
-            codes = []
-            rows = remap.row_indices.tolist()
-            for compact, fitted in enumerate(remap.fitted_indices):
-                if fitted >= 0:
-                    codes.append(option.by_codes[fitted])
-                    continue
-                if by not in frame.columns:
-                    raise ValueError(f"new_data is missing predictors {[by]}")
-                labels = {
-                    str(value)
-                    for value, row in zip(frame[by].tolist(), rows, strict=True)
-                    if row == compact
-                }
-                if len(labels) != 1 or not labels <= position.keys():
-                    raise ValueError(
-                        f"a new level of {group!r} needs one fitted level of {by!r}, "
-                        f"got {sorted(labels)}"
-                    )
-                codes.append(position[labels.pop()])
-            values[by_input(group)] = torch.tensor(codes, dtype=torch.long)
-        if option.prior_weights:
-            values[weight_input(group)] = torch.ones(count, dtype=torch.float64)
-    return values
+    group = option.group
+    codes: list[int] = []
+    if option.by_levels:
+        position = {label: index for index, label in enumerate(option.by_levels)}
+        rows = [
+            indices.tolist() for indices in remap.member_indices or (remap.row_indices,)
+        ]
+        columns = option.options.by_columns
+        for compact, fitted in enumerate(remap.fitted_indices):
+            if fitted >= 0:
+                codes.append(option.by_codes[fitted])
+                continue
+            missing = [column for column in columns if column not in frame.columns]
+            if missing:
+                raise ValueError(f"new_data is missing predictors {missing}")
+            labels = {
+                str(value)
+                for column, coded in zip(columns, rows, strict=True)
+                for value, row in zip(frame[column].tolist(), coded, strict=True)
+                if row == compact
+            }
+            if len(labels) != 1 or not labels <= position.keys():
+                raise ValueError(
+                    f"a new level of {group!r} needs one fitted level of "
+                    f"{option.options.by!r}, got {sorted(labels)}"
+                )
+            codes.append(position[labels.pop()])
+    return option.with_(by_codes=tuple(codes), prior_weights=())
 
 
 def by_correlation_sites(identity: str, option: GroupLevelOptions) -> tuple[str, ...]:
@@ -848,223 +569,3 @@ def by_correlation_sites(identity: str, option: GroupLevelOptions) -> tuple[str,
         f"cor_{_qvr_name(identity)}_by{index + 1}"
         for index in range(len(option.by_levels))
     )
-
-
-def by_correlations(
-    lens: FormulaToQVRModule,
-    option: GroupLevelOptions,
-    identity: str,
-    dimension: str,
-    innovations: str,
-    steps: list[ProgramStep],
-) -> LetExprNode:
-    """Correlate each level's innovations with the factor of its ``by`` level.
-
-    brms's ``scale_r_cor_by`` multiplies the innovations of level ``j`` by
-    ``L[by_j]``, one LKJ Cholesky factor per ``by`` level. Each factor has its
-    own site and the configured correlation prior; the product costs
-    O(levels times by levels times the block dimension squared).
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
-    option : GroupLevelOptions
-        The block's grouping options.
-    identity : str
-        Correlation-block identity.
-    dimension : str
-        Finite axis of the block's coordinates.
-    innovations : str
-        Binding of the coordinate-by-level standard-normal innovations.
-    steps : list[ProgramStep]
-        Program steps receiving the correlation draws.
-
-    Returns
-    -------
-    LetExprNode
-        The correlated innovations, coordinate by level.
-
-    Raises
-    ------
-    ValueError
-        If the correlation prior is not an LKJ Cholesky distribution.
-    """
-    qgroup = _qvr_name(option.group)
-    level, row, column = _var("random_group"), _var("group_coordinate"), _var("k")
-    terms = []
-    for index, site in enumerate(by_correlation_sites(identity, option)):
-        draw = lens._prior_draw(
-            site, lens._correlation_prior, index=TypeName(name=dimension)
-        )
-        if draw.morphism != "LKJCholesky":
-            raise ValueError("correlation priors must use LKJCholesky")
-        steps.append(draw)
-        product = _call(
-            "sum",
-            _factor(
-                (("k", dimension),),
-                body=_mul(
-                    _index(site, row, column), _index(innovations, column, level)
-                ),
-            ),
-        )
-        terms.append(
-            _call(
-                "select",
-                LetExprBinOp(
-                    op="==",
-                    left=_index(by_input(option.group), level),
-                    right=LetExprLiteral(value=index, integral=True),
-                ),
-                product,
-                LetExprLiteral(value=0.0),
-            )
-        )
-    return _factor(
-        (("group_coordinate", dimension), ("random_group", qgroup)), body=_add(*terms)
-    )
-
-
-def check_group_options(
-    lens: FormulaToQVRModule, predictors: Iterable[tuple[str, str, Formula]]
-) -> None:
-    """Refuse ``gr()`` options outside the parameterizations brms defines.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler and its configuration.
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Raises
-    ------
-    ValueError
-        For centered coordinates, a known level covariance, or a predictor
-        with one coefficient per response category together with ``by``,
-        ``dist = "student"``, or ``pw``.
-    """
-    predictors = tuple(predictors)
-    component_valued = component_valued_prefixes(lens._family, lens._distributional)
-    for group in all_group_options(predictors):
-        if lens._reparameterize == "centered":
-            raise ValueError(
-                f"gr({group}) options by, dist, and pw use brms's noncentered "
-                "innovations; use reparameterize='noncentered'"
-            )
-        if group in lens._group_covariances:
-            raise ValueError(
-                f"gr({group}) options by, dist, and pw are not supported together "
-                "with a known level covariance"
-            )
-        if any(
-            option.group == group
-            for _, prefix, formula in predictors
-            if prefix in component_valued
-            for option in formula.grouping.options
-        ):
-            raise ValueError(
-                f"gr({group}) options by, dist, and pw are supported for scalar "
-                f"group coefficients, not for {lens._family.name} predictors that "
-                "carry one coefficient per response category"
-            )
-
-
-def option_prior_sites(
-    predictors: Iterable[tuple[str, str, Formula]],
-    layouts: Iterable[GroupBlockLayout],
-) -> tuple[tuple[str, str, str, str | None, float | None], ...]:
-    """List the overrideable sites the ``gr()`` options add.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-    layouts : Iterable[GroupBlockLayout]
-        Emitted group blocks.
-
-    Returns
-    -------
-    tuple[tuple[str, str, str, str or None, float or None], ...]
-        Site, brms class (``df`` or ``cor``), group, coefficient label (the
-        ``by`` level of a correlation), and lower bound.
-    """
-    options = all_group_options(predictors)
-    sites: list[tuple[str, str, str, str | None, float | None]] = []
-    for group, option in options.items():
-        if option.options.student:
-            sites.append((student_sites(group)[0], "df", group, None, 1.0))
-    for layout in layouts:
-        option = options.get(layout.group)
-        if option is None or not option.by_levels or len(layout.members) < 2:
-            continue
-        for label, site in zip(
-            option.by_levels, by_correlation_sites(layout.identity, option), strict=True
-        ):
-            sites.append((site, "cor", layout.group, label, None))
-    return tuple(sites)
-
-
-def group_level_structures(
-    predictors: Iterable[tuple[str, str, Formula]],
-    layouts: Iterable[GroupBlockLayout],
-) -> dict[str, GroupLevelStructure]:
-    """Describe the per-level structure the ``gr()`` options give each factor.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-    layouts : Iterable[GroupBlockLayout]
-        Emitted group blocks.
-
-    Returns
-    -------
-    dict[str, GroupLevelStructure]
-        Grouping factors with a ``by`` variable or ``dist = "student"``
-        mapped to the sites and codes that `option_prior_sites`,
-        `append_group_options`, and the coefficient emission use.
-    """
-    options = all_group_options(predictors)
-    blocks = tuple(layouts)
-    result: dict[str, GroupLevelStructure] = {}
-    for group, option in options.items():
-        if not option.by_levels and not option.options.student:
-            continue
-        df, udf, _ = student_sites(group)
-        result[group] = GroupLevelStructure(
-            by=option.options.by if option.by_levels else None,
-            by_levels=option.by_levels,
-            by_codes=option.by_codes if option.by_levels else (),
-            by_correlation_sites={
-                layout.identity: by_correlation_sites(layout.identity, option)
-                for layout in blocks
-                if layout.group == group
-                and option.by_levels
-                and len(layout.members) >= 2
-            },
-            df_site=df if option.options.student else None,
-            mixing_site=udf if option.options.student else None,
-        )
-    return result
-
-
-def student_groups(predictors: Iterable[tuple[str, str, Formula]]) -> set[str]:
-    """List the grouping factors with Student-t group-level effects.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Returns
-    -------
-    set[str]
-        Grouping factors with ``dist = "student"``.
-    """
-    return {
-        group
-        for group, option in all_group_options(predictors).items()
-        if option.options.student
-    }

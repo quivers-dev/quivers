@@ -69,6 +69,7 @@ from quivers.formulas._gp import (
     gp_rows,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._latent_effects import LatentTerm
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._ordered_contrasts import apply_ordered_contrasts
@@ -881,8 +882,8 @@ class FormulaData(ValueModel):
         the linear-predictor scale. These columns receive no coefficients.
     group_indices : dict[str, tuple[int, ...]]
         Per-row integer codes for each group.
-    group_layouts : tuple[GroupBlockLayout, ...]
-        Immutable coordinate layouts from this forward pass, independent of
+    group_laws : tuple[GroupBlockLaw, ...]
+        Immutable group-block laws from this forward pass, independent of
         subsequent uses of the configured lens.
     prior_targets : tuple[PriorTarget, ...]
         Immutable parameter roles, authored labels, and nominal coefficient
@@ -923,7 +924,10 @@ class FormulaData(ValueModel):
     group_original_names: dict[str, str] = dx.field(default_factory=dict)
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
-    group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+    group_laws: tuple[GroupBlockLaw, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    level_sites: tuple[LevelSite, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
@@ -944,6 +948,17 @@ class FormulaData(ValueModel):
     grouping: GroupingPlan = dx.field(
         default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
     )
+
+    @property
+    def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
+        """Return the coordinate layout of each group block.
+
+        Returns
+        -------
+        tuple[GroupBlockLayout, ...]
+            Raw sites and coefficient slices derived from the block laws.
+        """
+        return tuple(law.layout for law in self.group_laws)
 
 
 def _qvr_name(raw: str) -> str:
@@ -1722,8 +1737,15 @@ def _formula_and_design(
             per_member = is_member_call(getattr(term.expr, "components", ()))
             if per_member and membership is None:
                 raise ValueError("mmc() requires an mm() grouping factor")
-            if slopes and membership is not None:
-                raise ValueError("mo() slopes cannot vary over an mm() grouping factor")
+            if membership is not None:
+                # A monotonic slope's value is a program binding every member
+                # shares, so its member covariate is the weight alone.
+                member_covariates.extend(
+                    member_covariate(
+                        group, membership, slope, "", np.ones(n_obs), per_member=False
+                    )
+                    for slope in slopes
+                )
             if per_member and membership is not None:
                 random_terms.append(
                     RandomTerm(
@@ -1904,7 +1926,11 @@ def _formula_and_design(
             memberships=tuple(memberships),
             covariates=tuple(member_covariates),
             options=fit_group_options(
-                regrouped.options, pandas_df, group_levels, group_indices
+                regrouped.options,
+                pandas_df,
+                group_levels,
+                group_indices,
+                memberships,
             ),
         ),
     ), dm

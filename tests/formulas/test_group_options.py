@@ -271,16 +271,11 @@ def test_invalid_options_are_refused():
         formula_from_data("y ~ (1 | gr(g, by = x))", frame)
     with pytest.raises(ValueError, match="same gr\\(\\) options"):
         formula_from_data("y ~ (1 | g) + (0 + x | gr(g, dist = 'student'))", frame)
-    with pytest.raises(ValueError, match="needs a matrix"):
-        formula_from_data("y ~ (1 | mm(g, f, by = f))", frame)
-    with pytest.raises(ValueError, match="noncentered"):
-        fit(
-            "y ~ (1 | gr(g, dist = 'student'))",
-            data=frame,
-            reparameterize="centered",
-            method="svi",
-            num_steps=1,
-        )
+    for by in ("f", "cbind(f)", "cbind(f, f, f)", "c(f, f)"):
+        with pytest.raises(ValueError, match="cbind|as many columns"):
+            formula_from_data(f"y ~ (1 | mm(g, f, by = {by}))", frame)
+    with pytest.raises(ValueError, match="unknown arguments"):
+        formula_from_data("y ~ (1 | mm(g, f, pw = n))", frame)
     with pytest.raises(ValueError, match="finite and nonnegative"):
         formula_from_data("y ~ (1 | gr(g, pw = n))", frame.assign(n=-1.0))
     fitted = fit("y ~ (1 | gr(g, by = f))", data=frame, method="svi", num_steps=1)

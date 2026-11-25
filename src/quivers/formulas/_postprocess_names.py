@@ -31,7 +31,6 @@ from quivers.formulas._variable_catalogue import (
     brms_rename,
     checked_variables,
     class_variables,
-    correlation_pairs,
     design_term_variables,
     native_variables,
     scalar_coordinates,
@@ -41,6 +40,8 @@ from quivers.formulas._variable_catalogue import (
     SmoothNames,
     smooth_names,
     threshold_variables,
+    correlation_variables,
+    scale_variables,
 )
 from quivers.inference._posterior import draw_count
 
@@ -442,16 +443,17 @@ def single_variables(
             if target.class_.startswith("cutpoint")
             or target.class_ in {"Intercept", LOCATION_SITE}
         )
-    structures = fit._group_structures()
+    scale_members = {
+        member.scale.site: (law, member)
+        for law in plan.group_laws
+        for member in law.members
+    }
     auxiliary: dict[str, torch.Tensor] = {}
     scales: dict[str, torch.Tensor] = {}
     terms: dict[str, str] = {}
-    by_scales: dict[str, list[list[str]]] = {}
-    by_correlations = {
-        site
-        for structure in structures.values()
-        for sites in structure.by_correlation_sites.values()
-        for site in sites
+    by_scales: dict[str, list[list[list[str]]]] = {}
+    block_correlations = {
+        site for law in plan.group_laws for site in law.correlation.sites
     }
     for target in targets:
         if target.site not in draws or target.site in consumed:
@@ -472,26 +474,18 @@ def single_variables(
                 f"{_infix(parameter)}{labels.get((parameter, coef), brms_rename(coef))}"
             )
             terms[target.site] = term
-            structure = structures.get(target.group)
-            if structure is not None and structure.by_levels and value.ndim == 3:
-                # brms: one standard deviation per level of the by variable.
-                by_names = [
-                    f"sd_{target.group}__{term}:"
-                    f"{brms_rename(str(structure.by) + str(level))}"
-                    for level in structure.by_levels
-                ]
-                for index, name in enumerate(by_names):
-                    scales[name] = value[..., index]
-                by_scales.setdefault(target.group, []).append(by_names)
-            else:
-                scales |= scalar_coordinates(f"sd_{target.group}__{term}", value)
-            consumed.add(target.site)
-        elif target.class_ == "cor" and (
-            target.site in by_correlations
-            or any(
-                layout.correlation_site == target.site for layout in plan.group_layouts
+            law, member = scale_members[target.site]
+            named_levels = scale_variables(
+                law, member, f"sd_{target.group}__{term}", value
             )
-        ):
+            for level_names in named_levels:
+                scales |= level_names
+            if member.scale.by_axis is not None:
+                by_scales.setdefault(target.group, []).append(
+                    [list(level_names) for level_names in named_levels]
+                )
+            consumed.add(target.site)
+        elif target.class_ == "cor" and target.site in block_correlations:
             continue
         elif (
             target.group is None
@@ -520,63 +514,45 @@ def single_variables(
     # brms lists the standard deviations of a by-group level by level.
     for coefficient_names in by_scales.values():
         by_level = iter(
-            [name for level in zip(*coefficient_names, strict=True) for name in level]
+            [
+                name
+                for level in zip(*coefficient_names, strict=True)
+                for names in level
+                for name in names
+            ]
         )
-        grouped = {name for names in coefficient_names for name in names}
+        grouped = {
+            name for levels in coefficient_names for names in levels for name in names
+        }
         reordered: dict[str, torch.Tensor] = {}
         for name in scales:
             key = next(by_level) if name in grouped else name
             reordered[key] = scales[key]
         scales = reordered
     correlations: dict[str, torch.Tensor] = {}
-    for layout in plan.group_layouts:
+    for law in plan.group_laws:
         consumed.update(
             site
-            for member in layout.members
-            for site in (member.raw_site, member.scale_site, member.mean_site)
+            for member in law.members
+            for site in (member.raw_site, member.scale.site, member.mean_site)
             if site is not None
         )
-        coordinates: list[str] = []
-        for member in layout.members:
+        consumed.update(law.correlation.sites)
+        member_terms = []
+        for member in law.members:
             parameter = (
                 member.prefix.removeprefix("dpar_").removeprefix("nlpar_").rstrip("_")
                 if member.prefix
                 else "mu"
             )
-            term = terms.get(
-                member.scale_site or "",
-                f"{_infix(parameter)}"
-                f"{labels.get((parameter, member.slope), brms_rename(member.slope))}",
-            )
-            coordinates.extend(
-                [term]
-                if member.width == 1
-                else [f"{term}[{index + 1}]" for index in range(member.width)]
-            )
-        structure = structures.get(layout.group)
-        by_sites = (
-            structure.by_correlation_sites.get(layout.identity, ())
-            if structure is not None
-            else ()
-        )
-        if structure is not None and by_sites:
-            # brms: one correlation matrix per level of the by variable.
-            for level, site in zip(structure.by_levels, by_sites, strict=True):
-                if site not in draws:
-                    continue
-                consumed.add(site)
-                suffix = ":" + brms_rename(str(structure.by) + str(level))
-                correlations |= correlation_pairs(
-                    f"cor_{layout.group}",
-                    [coordinate + suffix for coordinate in coordinates],
-                    draws[site],
+            member_terms.append(
+                terms.get(
+                    member.scale.site,
+                    f"{_infix(parameter)}"
+                    f"{labels.get((parameter, member.slope), brms_rename(member.slope))}",
                 )
-        if layout.correlation_site is None or layout.correlation_site not in draws:
-            continue
-        consumed.add(layout.correlation_site)
-        correlations |= correlation_pairs(
-            f"cor_{layout.group}", coordinates, draws[layout.correlation_site]
-        )
+            )
+        correlations |= correlation_variables(law, member_terms, draws)
     for parameter, prefix, predictor in items:
         named, read = design_term_variables(
             predictor,

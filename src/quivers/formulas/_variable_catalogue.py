@@ -33,6 +33,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import ValueModel
+from quivers.formulas._group_law import GroupBlockLaw, GroupMemberLaw
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import SmoothState
 from quivers.formulas.formula import Formula, ThresholdGroups
@@ -360,6 +361,99 @@ def correlation_pairs(
         for k in range(len(labels))
         for j in range(k)
     }
+
+
+def by_suffixes(law: GroupBlockLaw) -> tuple[str, ...]:
+    """Name the ``by`` levels of a block as brms's coefficient suffixes.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Block law.
+
+    Returns
+    -------
+    tuple[str, ...]
+        ``:<variable><level>`` per ``by`` level; one empty suffix for a block
+        without a partition.
+    """
+    by = law.level.by
+    if by is None:
+        return ("",)
+    return tuple(":" + brms_rename(by.variable + str(level)) for level in by.levels)
+
+
+def scale_variables(
+    law: GroupBlockLaw, member: GroupMemberLaw, stem: str, value: torch.Tensor
+) -> tuple[dict[str, torch.Tensor], ...]:
+    """Name the standard deviations of one group-level coefficient.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Block of the coefficient.
+    member : GroupMemberLaw
+        The coefficient.
+    stem : str
+        ``sd_<group>__<coefficient>``.
+    value : torch.Tensor
+        Draws of its scale on ``(chain, draw)`` axes and the scale's axis.
+
+    Returns
+    -------
+    tuple[dict[str, torch.Tensor], ...]
+        Named scalars of each ``by`` level, or of the one shared scale; a
+        coefficient over components adds its index.
+    """
+    if member.scale.by_axis is None:
+        return (scalar_coordinates(stem, value),)
+    suffixes = by_suffixes(law)
+    levels = value.reshape(*value.shape[:2], len(suffixes), member.width)
+    return tuple(
+        scalar_coordinates(
+            stem + suffix,
+            levels[:, :, index, 0] if member.axis is None else levels[:, :, index],
+        )
+        for index, suffix in enumerate(suffixes)
+    )
+
+
+def correlation_variables(
+    law: GroupBlockLaw, terms: Sequence[str], draws: Mapping[str, torch.Tensor]
+) -> dict[str, torch.Tensor]:
+    """Name the correlations between the coefficients of one block.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Block law.
+    terms : Sequence[str]
+        brms coefficient name of each member.
+    draws : Mapping[str, torch.Tensor]
+        Draws holding the block's Cholesky factors.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        One correlation per pair of coordinates and, with one correlation
+        per ``by`` level, per level; empty for independent coordinates.
+    """
+    coordinates = [
+        term if member.width == 1 else f"{term}[{index + 1}]"
+        for term, member in zip(terms, law.members, strict=True)
+        for index in range(member.width)
+    ]
+    sites = law.correlation.sites
+    suffixes = by_suffixes(law) if len(sites) > 1 else ("",) * len(sites)
+    result: dict[str, torch.Tensor] = {}
+    for site, suffix in zip(sites, suffixes, strict=True):
+        if site in draws:
+            result |= correlation_pairs(
+                f"cor_{law.group}",
+                [coordinate + suffix for coordinate in coordinates],
+                draws[site],
+            )
+    return result
 
 
 def class_variables(

@@ -300,8 +300,8 @@ assert special.posterior_epred(new_data=choices.head(4), num_samples=5).shape ==
 Measurement-error `me()` terms are not available in a per-category or other
 distributional formula, and `mi()` terms there compile through a
 [joint formula](formula-missing-data.md). The shared logistic-normal scale
-formula `sigma ~ ...` keeps one coefficient per category and refuses `mo()`,
-`mm()`, and the `gr()` options.
+formula `sigma ~ ...` keeps one coefficient per category, also for `mm()`
+factors and the `gr()` options, and refuses `mo()`.
 
 `Family.with_reference("C")` (brms `refcat`) selects the reference, and
 the free categories are then `muA` and `muB`. When every category has the

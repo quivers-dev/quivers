@@ -390,7 +390,7 @@ def append_category_predictors(
     for _, name in categories:
         predictor = lens._distributional[name]
         eta = lens._append_predictor(
-            predictor, steps, prefix=f"dpar_{name}_", correlated=correlated
+            predictor, statements, steps, prefix=f"dpar_{name}_", correlated=correlated
         )
         steps.append(_let(f"dpar_{name}_eta", eta))
         steps.append(_let(name, _var(f"dpar_{name}_eta")))
@@ -438,6 +438,7 @@ def append_category_predictors(
 def append_scale_predictors(
     lens: FormulaToQVRModule,
     formula: Formula,
+    statements: list[Statement],
     steps: list[ProgramStep],
     correlated: Mapping[tuple[str, str, str], LetExprNode],
     prior: str,
@@ -511,7 +512,7 @@ def append_scale_predictors(
             values.append(_add(_var("scale_row_zero"), _var(name)))
             continue
         eta = lens._append_predictor(
-            predictor, steps, prefix=f"dpar_{name}_", correlated=correlated
+            predictor, statements, steps, prefix=f"dpar_{name}_", correlated=correlated
         )
         steps.append(_let(f"dpar_{name}_eta", eta))
         link(steps, name, _var(f"dpar_{name}_eta"))

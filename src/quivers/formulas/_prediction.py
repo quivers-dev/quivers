@@ -44,12 +44,13 @@ from quivers.formulas._autocor import (
 )
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._grouping_emission import (
+    law_observations,
     membership_prediction_bindings,
-    option_prediction_bindings,
 )
 from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
 from quivers.formulas._latent_effects import formula_families
 from quivers.formulas._autocor import latent_prediction
+from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
@@ -84,8 +85,11 @@ class FormulaPredictionPlan(ValueModel):
         One frozen original-row snapshot for durable design reconstruction.
         Clone-owned recipes share this snapshot internally; reference-owned
         recipes retain a separate training snapshot before caller mutations.
-    group_layouts : tuple[GroupBlockLayout, ...]
-        Emitted raw group sites and coefficient-coordinate slices.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Laws of the emitted group blocks, with their raw sites and
+        coefficient-coordinate slices.
+    level_sites : tuple[LevelSite, ...]
+        Emitted sites holding values for every level of a grouping factor.
     prior_targets : tuple[PriorTarget, ...]
         Actual emitted parameter roles, authored labels, and nominal axes.
     version : str
@@ -100,13 +104,27 @@ class FormulaPredictionPlan(ValueModel):
     preparation_data: IntoDataFrame | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+    group_laws: tuple[GroupBlockLaw, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    level_sites: tuple[LevelSite, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     version: Literal["qvr-formula-prediction/v1"] = "qvr-formula-prediction/v1"
+
+    @property
+    def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
+        """Return the coordinate layout of each group block.
+
+        Returns
+        -------
+        tuple[GroupBlockLayout, ...]
+            Raw sites and coefficient slices derived from the block laws.
+        """
+        return tuple(law.layout for law in self.group_laws)
 
     def __reduce_ex__(self, protocol: SupportsIndex) -> Never:
         """Refuse to serialize mutable, environment-dependent evaluator state.
@@ -771,7 +789,7 @@ def prepare_prediction(
     original = LatentRegistry.from_model(
         fit.program, observed_names=set(fit.observations)
     )
-    groups = compact_groups(fit, frame, selected, allow_new_levels, original)
+    groups = compact_groups(fit, frame, selected, allow_new_levels)
     order_groups = {
         term.group
         for term in fit.formula.random_terms
@@ -811,10 +829,6 @@ def prepare_prediction(
         from quivers.formulas._predictor_graph import graph_input_bindings
 
         observations.update(graph_input_bindings(fit.predictor_graph, frame))
-    # brms gr(by =, pw =): per-level inputs on the compact prediction levels.
-    observations.update(
-        option_prediction_bindings(fit._predictor_items(), frame, groups)
-    )
 
     from quivers.formulas._fit import _binomial_trial_tensor, _predictor_output
 
@@ -907,7 +921,8 @@ def prepare_prediction(
     module = plan.module
     if groups or re_formula is not None or gp_fresh:
         specialized = {
-            name: specialized_formula(gp_formulas[name], groups) for name in formulas
+            name: specialized_formula(gp_formulas[name], groups, frame)
+            for name in formulas
         }
         specialized_lens = fit._formula_lens(
             distributional={
@@ -923,15 +938,8 @@ def prepare_prediction(
             },
         )
         module, _ = specialized_lens.forward(specialized["mu"])
-        observations.update(
-            {
-                name: value
-                for name, value in specialized_lens.fixed_column_observations(
-                    specialized["mu"]
-                ).items()
-                if name.startswith("__formula_level_")
-            }
-        )
+        # The level inputs of every block on the compact prediction levels.
+        observations.update(law_observations(specialized_lens.group_laws))
         module = select_contributions(module, formulas, selected, prefixes=prefixes)
     statements = []
     fresh_axes = {
@@ -975,9 +983,7 @@ def prepare_prediction(
         for name, width in group.sites.items()
     }
     covariance_sites = {
-        f"group_covariance_{_qvr_name(layout.identity)}"
-        for group in groups.values()
-        for layout in group.covariance_layouts
+        site for group in groups.values() for site in group.support_sites
     }
     # Fresh latent residuals are drawn for the new rows, not replayed.
     covariance_sites = covariance_sites | set(fresh_sites) | set(gp_fresh)
@@ -1005,13 +1011,19 @@ def prepare_prediction(
     prior_program = None
     if sample_new_levels.removeprefix("feasible_") == "gaussian" and any(
         -1 in group.fitted_indices
-        and group.covariance is None
         and not set(group.sites) <= group.standard_normal_sites
         for group in groups.values()
     ):
         from quivers.inference._prior_projection import project_prior_sites
 
-        prior_program = project_prior_sites(program, group_sites)
+        prior_program = project_prior_sites(
+            program,
+            {
+                site
+                for group in groups.values()
+                for site in (*group.sites, *group.support_sites)
+            },
+        )
     return PredictionContext(
         program=program,
         observations=observations,

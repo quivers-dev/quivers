@@ -4,6 +4,45 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.68.0] - 2026-11-25
+
+### Added
+
+- **Densities at many positions.** `PotentialFn.log_density_batch` and `value_and_grad_batch` evaluate the log density and each row's gradient at `(B, D)` unconstrained positions in one replay of the prepared joint. A row outside the support scores `-inf` and leaves the other rows unaffected. `MonadicProgram.log_joint` over `B` rows scores the runs together when every step declares that it can be evaluated at many positions, with the values of the separate runs.
+- **Batchability declarations.** `Let` and `Score` steps take `batched=True` for a callable written over a leading batch axis, `mappable` declares a callable that `torch.func.vmap` can map, and a `ContinuousMorphism` subclass sets `mappable = True`. Compiled steps and library distributions declare themselves. `UnbatchableProgramError` names every step that stands in the way, `batching_obstacles` lists them without raising, and `PositionLayoutError` reports a batched callable that drops the batch axis.
+- **Static discharge of authored handlers.** A program that calls a computation installing an authored handler compiles to a `MonadicProgram`, so SVI, HMC, and NUTS apply, and transpiles to Stan, BUGS, and JAGS. Every resumption grade is discharged by one rule, in or out of tail position, through nested handlers, several instances, callees, and conditionals. An undischarged call is refused naming the handler or clause and the reason: a foreign handler, a forwarded request that no outer handler answers, a handled request in a recursive call, a runtime `case` reached by several resumptions, or growth past the size bounds. The Python interface is `quivers.qiec.discharge_module`, `discharge_computation`, `DischargedModule`, and `DischargeObstacle`, with `quivers.transpile.project_for_target` and `IRQiecObstacle`.
+- **Handler parameters.** `handler h for E : A -> B with (s : S)` declares typed parameters, `handle i with h(v) in ...` gives their starting values, and `resume(v) with (e)` updates them. `resume(v)` keeps them, and the `return` clause may read them. Parameters are part of the serialized module, and every target that renders handlers renders them. `traverse(xs, x -> resume(x))` resumes a clause once per entry of a tensor of known extent.
+- **Product-valued calls in programs.** A program may call a computation that returns a product and read its components (`let p <- f(x)`, `p[0]`), in fitting and transpilation.
+- **Families declare their properties.** A response family declares its links and their ranges (`Family.location_links`, `AuxParam.links`, `Link.image`), its map to the native constructor (`observe_lets`, `observe_args`), its parameter ranges and response support, exposure, recorded events, known-error scale (`error_scale`), elliptical residual law (`elliptical`), shifts below the response, factor levels, mixture law, R-squared variance, and brms prior defaults. The compiler and the posterior methods read the declarations, so a family built with `Family`, `custom_family`, or `with_` takes part in `se()`, `cens()` and `trunc()`, autocorrelation terms, `set_rescor`, and mixtures by declaring the property. `Link.inverse_expr` and `Link.intermediates` are emitted directly, so a user-built `Link` compiles. `Family.admissible_links()` lists the links of a parameter.
+- **Composition of group-level options.** One law describes every block of group-level effects in single-response, joint, and mixture models. `gr()` options `by`, `dist`, and `pw` compose with each other, with known level covariances, with correlated and independent coefficients, with coefficients over response categories and transitions, and with both parameterizations. `mm()` accepts `by = cbind(...)`, coefficients over response components and transitions, and `mo()` slopes. Mixture components accept known level covariances, `mm()`, and `by`.
+
+### Changed
+
+- **Breaking: `Family(extra_observe_args=...)` is replaced by `observe_lets` and `observe_args`**, which lists every native constructor argument.
+- **Breaking: `with_links` refuses a link for a parameter that declares no admissible links.** The identity link of `frechet`'s `nu` is refused when the link is selected. The links of the `"mixture"` template are those of its component.
+- **Breaking: a Student-t grouping factor has one `df_<g>` and one mixing vector `udf_<g>` per model**, across predictors, mixture components, and responses, as in brms. They replace the sites `dpar_mu<k>_df_<g>` and `response_<r>__df_<g>`. A centered `by` block with a full-rank known covariance samples a flat `group_covariance_*` vector.
+- **Breaking: the checker rejects a handler clause that performs an effect its handler does not introduce.**
+- Every continuous scalar family checks its response against its support before inference, and errors for fixed parameters state the declared range.
+- `mi()` responses accept any continuous scalar law without point masses, including custom laws. Continuous families with a point mass are accepted as mixture components, and a mixture admits `cens()` and `trunc()` when every component does.
+- Members of a shared group identifier that declare different options are merged, as in brms. An option declared by one member applies to its block only.
+- `gr(cov = M)` is read from auxiliary and joint formulas. New levels of a Student-t factor draw their mixing with a known covariance, and empirical donors come from the same `by` level.
+- A known level covariance of deficient rank refuses prior weights and the centered parameterization with `by`, with the reason. Two group blocks that would own one site, axis, or input are refused, naming both.
+- The deterministic `alpha_<g>` and `beta_<g>_<slope>` bindings of component-valued coefficients are indexed by level and then component. `ranef()` lists component coefficients, and the posterior names of joint `by` scales and correlations follow brms.
+- Zed 0.5.2 parses handler parameters.
+- **Breaking: the minimum torch version is 2.11.** The first evaluation at many positions checks that the installed torch reports its validators' refusals position by position, and raises an error naming a torch version that does not.
+- **Breaking: `run_deduction` keeps no execution trace by default.** `run_deduction` and `run_named` take `record_trace`, and `run_deduction` takes `observer`, which receives every event either way. A run that records nothing holds only its live state, so the memory of a search does not grow with its number of derivation steps.
+- `TemperedPotential` scores a position whose incomplete Beta fraction does not converge, or whose COM-Poisson normalizer exceeds its budget, as `-inf`, as `PotentialFn` does.
+
+### Fixed
+
+- `with_links` keeps a custom family's native law, and the links chosen on the `"mixture"` template reach its components.
+- `se(..., sigma = TRUE)` compiles with a nonlinear `sigma`.
+- The default `sdgp` prior rounds its scale as R does, and the brms default intercept prior of the `tan_half` link follows the link for every family.
+- Correlated category-specific group scales under `gr(by = ...)` are indexed by the `by` level.
+- Mixture programs with `mm()` or `gr(by = ...)` declare every input they read.
+- `ranef()` reads a factor that mixes scalar and component coefficients.
+- Prior weights read the level of a component-valued site.
+
 ## [0.67.0] - 2026-11-17
 
 ### Added

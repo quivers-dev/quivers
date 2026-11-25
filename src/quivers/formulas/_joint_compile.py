@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
 from typing import TypeVar, cast
@@ -42,7 +42,19 @@ from quivers.dsl.program_templates import (
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
+from quivers.formulas._group_law import (
+    GroupBlockLaw,
+    IdentityCovariance,
+    LevelSite,
+    renamed_law,
+)
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._group_emission import draw_level, emit_group_block
+from quivers.formulas._group_plan import check_names, level_law, plan_joint_block
+from quivers.formulas._grouping_emission import (
+    law_observations,
+    law_runtime_parameters,
+)
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
@@ -115,8 +127,10 @@ class _JointEmission:
         The composed QVR module, exporting one program.
     responses : Mapping[str, _ResponseEmission]
         Namespaced response emissions, in authored order.
-    group_layouts : tuple[GroupBlockLayout, ...]
-        Shared and response-local group coefficient layouts.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Laws of the shared and response-local group blocks.
+    level_sites : tuple[LevelSite, ...]
+        Sites holding values for every level of a grouping factor.
     prior_targets : tuple[PriorTarget, ...]
         Every latent site eligible for prior rules.
     fixed_inputs : Mapping[str, torch.Tensor]
@@ -127,13 +141,84 @@ class _JointEmission:
 
     module: Module
     responses: Mapping[str, _ResponseEmission]
-    group_layouts: tuple[GroupBlockLayout, ...]
+    group_laws: tuple[GroupBlockLaw, ...]
+    level_sites: tuple[LevelSite, ...]
     prior_targets: tuple[PriorTarget, ...]
     fixed_inputs: Mapping[str, torch.Tensor]
     families: FamilyCatalog
 
+    @property
+    def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
+        """Return the coordinate layout of each group block.
 
-def _recode(formula: Formula, levels: Mapping[str, tuple[str, ...]]) -> Formula:
+        Returns
+        -------
+        tuple[GroupBlockLayout, ...]
+            Raw sites and coefficient slices derived from the block laws.
+        """
+        return tuple(law.layout for law in self.group_laws)
+
+
+_LevelFactors = tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+
+
+def _declared_level_factors(components: _Components) -> _LevelFactors:
+    """Collect the level factors every response declares for its levels.
+
+    A ``by`` partition and a prior weight are properties of a grouping
+    level, so responses that declare them must agree on every level they
+    share.
+
+    Parameters
+    ----------
+    components : Mapping[str, tuple[FormulaToQVRModule, Formula]]
+        Response labels and their prepared lens/formula pairs, each coded on
+        its own levels.
+
+    Returns
+    -------
+    tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+        The declared ``by`` level and the declared prior weight of each
+        labeled level, by grouping factor.
+
+    Raises
+    ------
+    ValueError
+        If two declarations give one level of a grouping factor different
+        ``by`` levels or different prior weights.
+    """
+    by: dict[str, dict[str, str]] = {}
+    weights: dict[str, dict[str, float]] = {}
+    for lens, formula in components.values():
+        for _, _, predictor in lens._predictor_items(formula):
+            for option in predictor.grouping.options:
+                group = option.group
+                labels = predictor.group_levels[group]
+                if option.by_levels:
+                    for label, code in zip(labels, option.by_codes, strict=True):
+                        value = option.by_levels[code]
+                        if by.setdefault(group, {}).setdefault(label, value) != value:
+                            raise ValueError(
+                                f"gr({group}, by = ...): a by partition assigns "
+                                f"each level of {group!r} one by level, and the "
+                                f"responses give level {label!r} both "
+                                f"{by[group][label]!r} and {value!r}"
+                            )
+                if option.prior_weights:
+                    for label, weight in zip(labels, option.prior_weights, strict=True):
+                        known = weights.setdefault(group, {}).setdefault(label, weight)
+                        if known != weight:
+                            raise ValueError(
+                                f"gr({group}, pw = ...): a prior weight belongs to "
+                                f"a level of {group!r}, and the responses give "
+                                f"level {label!r} both {known!r} and {weight!r}"
+                            )
+    return by, weights
+
+
+def _recode(
+    formula: Formula, levels: Mapping[str, tuple[str, ...]], factors: _LevelFactors
+) -> Formula:
     """Retain group identities while reconciling response-specific subsets.
 
     Parameters
@@ -142,11 +227,22 @@ def _recode(formula: Formula, levels: Mapping[str, tuple[str, ...]]) -> Formula:
         Response formula carrying its own group levels and codes.
     levels : Mapping[str, tuple[str, ...]]
         Joint levels for every group, a superset of each response's levels.
+    factors : tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+        The ``by`` level and the prior weight declared for each labeled
+        level, by grouping factor.
 
     Returns
     -------
     Formula
-        The formula with codes into the joint levels.
+        The formula with group codes and level-coded ``gr()`` options over
+        the joint levels.
+
+    Raises
+    ------
+    ValueError
+        If the formula declares a ``by`` partition or prior weights for a
+        grouping factor and a joint level of that factor has no declared
+        value.
     """
     indices = {}
     for group, original in formula.group_levels.items():
@@ -154,9 +250,42 @@ def _recode(formula: Formula, levels: Mapping[str, tuple[str, ...]]) -> Formula:
         indices[group] = tuple(
             positions[original[index]] for index in formula.group_indices[group]
         )
+    options = []
+    for option in formula.grouping.options:
+        group = option.group
+        joint = levels[group]
+        if option.by_levels:
+            declared = factors[0][group]
+            missing = [label for label in joint if label not in declared]
+            if missing:
+                raise ValueError(
+                    f"gr({group}, by = {option.options.by}): every level of "
+                    f"{group!r} has a coefficient with the scale of its by level, "
+                    f"and levels {missing!r} have no by level in the rows of a "
+                    "response that declares the partition"
+                )
+            by_levels = tuple(sorted(set(declared.values())))
+            position = {label: index for index, label in enumerate(by_levels)}
+            option = option.with_(
+                by_levels=by_levels,
+                by_codes=tuple(position[declared[label]] for label in joint),
+            )
+        if option.prior_weights:
+            known = factors[1][group]
+            missing = [label for label in joint if label not in known]
+            if missing:
+                raise ValueError(
+                    f"gr({group}, pw = {option.options.prior_weight}): every "
+                    f"level of {group!r} has innovations with a weighted prior, "
+                    f"and levels {missing!r} have no weight in the rows of a "
+                    "response that declares the weights"
+                )
+            option = option.with_(prior_weights=tuple(known[label] for label in joint))
+        options.append(option)
     return formula.with_(
         group_levels={group: levels[group] for group in formula.group_levels},
         group_indices=indices,
+        grouping=formula.grouping.with_(options=tuple(options)),
     )
 
 
@@ -179,7 +308,9 @@ def _normalized_components(
     Raises
     ------
     ValueError
-        If two grouping factors share a QVR name.
+        If two grouping factors share a QVR name, a known covariance names no
+        grouping factor, or the responses declare inconsistent or incomplete
+        ``by`` partitions or prior weights.
     """
     levels: dict[str, tuple[str, ...]] = {}
     tokens: dict[str, str] = {}
@@ -196,22 +327,41 @@ def _normalized_components(
                     *current,
                     *(name for name in names if name not in current),
                 )
+    unknown = {
+        group for lens, _ in components.values() for group in lens._group_covariances
+    } - levels.keys()
+    if unknown:
+        raise ValueError(
+            f"group_covariances names unknown grouping factors {sorted(unknown)!r}"
+        )
+    factors = _declared_level_factors(components)
     result: dict[str, tuple[FormulaToQVRModule, Formula]] = {}
     for name, (original, formula) in components.items():
         lens = copy(original)
         lens._distributional = {
-            key: _recode(value, levels)
+            key: _recode(value, levels, factors)
             for key, value in original._distributional.items()
         }
         if original._predictor_graph is not None:
             lens._predictor_graph = original._predictor_graph.with_(
                 leaves={
-                    key: _recode(value, levels)
+                    key: _recode(value, levels, factors)
                     for key, value in original._predictor_graph.leaves.items()
                 }
             )
-        lens._group_layouts = []
-        result[name] = (lens, _recode(formula, levels))
+        lens._emitted_groups = []
+        recoded = _recode(formula, levels, factors)
+        used = {
+            group
+            for _, _, predictor in lens._predictor_items(recoded)
+            for group in predictor.group_levels
+        }
+        lens._group_covariances = {
+            group: covariance
+            for group, covariance in original._group_covariances.items()
+            if group in used
+        }
+        result[name] = (lens, recoded)
     return result, levels
 
 
@@ -252,6 +402,7 @@ def _namespace(
     shared_objects: Mapping[str, str],
     global_names: set[str],
     supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
+    supplied_sites: Collection[str] = (),
     supplied_inputs: Mapping[str, LetExprNode] | None = None,
     local_module: Callable[[str, Module], Module] | None = None,
 ) -> _ResponseEmission:
@@ -268,9 +419,13 @@ def _namespace(
     shared_objects : Mapping[str, str]
         Object names kept shared across responses, with their joint names.
     global_names : set[str]
-        Bindings owned by the joint program, which are not renamed.
+        Bindings and inputs owned by the joint program, which are neither
+        renamed nor declared again by the response.
     supplied_groups : Mapping or None
         Shared group coefficients replacing the response's own group blocks.
+    supplied_sites : Collection[str]
+        Level hyperparameters of grouping factors, which the response reads
+        from the joint program.
     supplied_inputs : Mapping[str, LetExprNode] or None
         Explicit expressions for response inputs over joint bindings.
     local_module : Callable[[str, Module], Module] or None
@@ -291,7 +446,10 @@ def _namespace(
         If a formula object lacks its finite declaration.
     """
     module, complement = lens._forward(
-        formula, supplied_groups=supplied_groups, check=False
+        formula,
+        supplied_groups=supplied_groups,
+        supplied_sites=supplied_sites,
+        check=False,
     )
     if local_module is not None:
         module = local_module(name, module)
@@ -308,6 +466,9 @@ def _namespace(
     }
     variables.update(
         value for step in program.draws for value in _step_value_names(step)
+    )
+    variables.update(
+        law.support_site for law in lens.group_laws if law.support_site is not None
     )
     names = {value: prefix + value for value in variables - global_names}
     explicit_inputs = supplied_inputs or {}
@@ -334,7 +495,7 @@ def _namespace(
             type_expr=_indices(parameter.type_expr, objects),
         )
         for parameter in program.value_parameters
-        if parameter.name not in supplied_inputs
+        if parameter.name not in supplied_inputs and parameter.name not in global_names
     )
     statements = []
     for item in module.statements:
@@ -412,18 +573,18 @@ def _renamed(names: Mapping[str, str], value: str | None) -> str | None:
     return None if value is None else names.get(value, value)
 
 
-def _layout(
-    layout: GroupBlockLayout,
+def _law(
+    law: GroupBlockLaw,
     names: Mapping[str, str],
     objects: Mapping[str, str],
     prefix: str,
-) -> GroupBlockLayout:
-    """Preserve actual coefficient coordinates under the same source namespace.
+) -> GroupBlockLaw:
+    """Carry a response-local group block into the joint namespace.
 
     Parameters
     ----------
-    layout : GroupBlockLayout
-        Response-local group block layout.
+    law : GroupBlockLaw
+        Response-local group block law.
     names : Mapping[str, str]
         Local binding names and their namespaced names.
     objects : Mapping[str, str]
@@ -433,24 +594,11 @@ def _layout(
 
     Returns
     -------
-    GroupBlockLayout
-        The layout with every identity, axis, and site renamed.
+    GroupBlockLaw
+        The law with every identity, axis, and site renamed.
     """
-    return layout.with_(
-        identity=prefix + layout.identity,
-        coordinate_axis=_renamed(objects, layout.coordinate_axis),
-        correlation_site=_renamed(names, layout.correlation_site),
-        members=tuple(
-            member.with_(
-                prefix=prefix + member.prefix,
-                axis=_renamed(objects, member.axis),
-                coefficient=names.get(member.coefficient, member.coefficient),
-                raw_site=_renamed(names, member.raw_site),
-                scale_site=_renamed(names, member.scale_site),
-                mean_site=_renamed(names, member.mean_site),
-            )
-            for member in layout.members
-        ),
+    return renamed_law(
+        law, names, objects, lambda local: prefix + local, prefix + law.identity
     )
 
 
@@ -459,14 +607,14 @@ def _response_parts(
     initial_objects: Sequence[Statement],
     global_steps: Sequence[ProgramStep],
     global_parameters: Sequence[QiecValueParameter],
-    global_layouts: Sequence[GroupBlockLayout],
+    global_laws: Sequence[GroupBlockLaw],
 ) -> tuple[
     list[Statement],
     list[ProgramStep],
     list[QiecValueParameter],
     list[str],
     list[PriorTarget],
-    list[GroupBlockLayout],
+    list[GroupBlockLaw],
 ]:
     """Collect namespaced responses without changing their conditional prior laws.
 
@@ -480,25 +628,26 @@ def _response_parts(
         Joint program steps preceding the response steps.
     global_parameters : Sequence[QiecValueParameter]
         Joint runtime parameters preceding the response parameters.
-    global_layouts : Sequence[GroupBlockLayout]
-        Shared group layouts preceding the response layouts.
+    global_laws : Sequence[GroupBlockLaw]
+        Shared group-block laws preceding the response laws.
 
     Returns
     -------
     tuple
         Object declarations, program steps, runtime parameters, returned
-        names, prior targets, and group layouts of the joint program.
+        names, prior targets, and group-block laws of the joint program.
 
     Raises
     ------
     ValueError
-        If two responses declare one nominal group axis differently.
+        If two responses declare one nominal group axis differently, or two
+        group blocks would own the same name.
     """
     statements = list(initial_objects)
     steps, parameters = list(global_steps), list(global_parameters)
     returned: list[str] = []
     targets: list[PriorTarget] = []
-    layouts = list(global_layouts)
+    laws = list(global_laws)
     for name, response in responses.items():
         for statement in response.module.statements:
             if isinstance(statement, ObjectDecl):
@@ -529,11 +678,12 @@ def _response_parts(
             )
             for target in response.lens.prior_targets
         )
-        layouts.extend(
-            _layout(layout, response.names, response.objects, response.prefix)
-            for layout in response.lens.group_layouts
+        laws.extend(
+            _law(law, response.names, response.objects, response.prefix)
+            for law in response.lens.group_laws
         )
-    return statements, steps, parameters, returned, targets, layouts
+    check_names(laws)
+    return statements, steps, parameters, returned, targets, laws
 
 
 def _member_axis(
@@ -907,7 +1057,13 @@ def _shared_groups(
                     )
     first_lens, first_formula = next(iter(components.values()))
     emitter = copy(first_lens)
-    emitter._group_layouts = []
+    emitter._emitted_groups = []
+    emitter._drawn_sites = frozenset()
+    emitter._group_covariances = {
+        group: covariance
+        for lens, _ in components.values()
+        for group, covariance in lens._group_covariances.items()
+    }
     emitter._set_prior_configuration(None)
     counts = len(first_formula.response_values)
     grouping = first_formula.with_(
@@ -947,28 +1103,53 @@ def _shared_groups(
                     for index in lens._family.response.coordinate_indices(names)
                 )
             predictors.append((parameter, actual_prefix, predictor))
-        values = emitter._append_indexed_correlations(
-            grouping,
+        law = plan_joint_block(
             group,
             "joint_shared_" + identity,
-            actual,
-            statements,
-            steps,
-            coordinate_count=1,
-            member_axes=tuple(axes),
+            [
+                (actual_prefix, term, predictor)
+                for (actual_prefix, term), (_, _, _, predictor, _) in zip(
+                    actual, members, strict=True
+                )
+            ],
+            axes,
+            basis=emitter._level_basis(group, grouping.group_levels)
+            if group in emitter._group_covariances
+            else None,
+            correlate=True,
+            parameterization=emitter._reparameterize,
         )
+        values = emit_group_block(emitter, law, statements, steps)
         for name, _parameter, prefix, _predictor, term in members:
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
             supplied[name][(prefix, group, term.slope)] = values[
                 (actual_prefix, group, term.slope)
             ]
+    # A grouping factor has one Student-t mixing law in the joint program, read
+    # by the blocks each response emits for its unshared coefficients.
+    for lens, formula in components.values():
+        for _, _, predictor in lens._predictor_items(formula):
+            for term in predictor.random_terms:
+                option = predictor.grouping.option(term.group)
+                if option is not None and option.options.student:
+                    draw_level(
+                        emitter,
+                        level_law(
+                            term.group,
+                            len(levels[term.group]),
+                            option.with_(by_levels=(), by_codes=(), prior_weights=()),
+                            IdentityCovariance(),
+                        ),
+                        statements,
+                        steps,
+                    )
+    # The responses bind the row data of multi-membership factors.
+    inputs = law_observations(emitter.group_laws)
     parameters = tuple(
         parameter
-        for parameter in emitter._runtime_parameters(grouping)
-        if parameter.name.startswith("__formula_level_basis_")
+        for parameter in law_runtime_parameters(emitter.group_laws)
+        if parameter.name in inputs
     )
-    fixed = emitter.fixed_column_observations(grouping)
-    inputs = {parameter.name: fixed[parameter.name] for parameter in parameters}
     return (
         emitter,
         grouping,
@@ -1072,6 +1253,7 @@ def emit_joint(
             shared_objects=shared_objects,
             global_names=global_names,
             supplied_groups=supplied[name],
+            supplied_sites=emitter._drawn_sites,
             supplied_inputs=supplied_inputs.get(name),
             local_module=local_module,
         )
@@ -1087,7 +1269,7 @@ def emit_joint(
         initial_objects,
         global_steps,
         global_parameters,
-        emitter.group_layouts,
+        emitter.group_laws,
     )
     global_module = Module(
         statements=(
@@ -1107,7 +1289,7 @@ def emit_joint(
         grouping,
         emitter._family,
         predictors,
-        emitter.group_layouts,
+        layouts,
         draw=emitter._parse_prior,
         predictor_scopes=scopes,
         predictor_component_labels=labels,
@@ -1167,6 +1349,7 @@ def emit_joint(
                     shared_objects=shared_objects,
                     global_names=global_names,
                     supplied_groups=supplied[name],
+                    supplied_sites=emitter._drawn_sites,
                     supplied_inputs=supplied_inputs.get(name),
                     local_module=local_module,
                 )
@@ -1175,7 +1358,7 @@ def emit_joint(
             initial_objects,
             global_steps,
             global_parameters,
-            emitter.group_layouts,
+            emitter.group_laws,
         )
         program = program.with_(
             draws=tuple(steps),
@@ -1248,8 +1431,19 @@ def emit_joint(
     # Improper flat priors are compilation-local native laws.
     if improper_sites(module):
         catalog = catalog.with_catalog(FLAT_CATALOG)
+    level_sites = {site.site: site for law in layouts for site in law.level_sites}
+    for response in responses.values():
+        for site in response.lens.level_sites:
+            name = response.names.get(site.site, site.site)
+            level_sites.setdefault(name, site.with_(site=name))
     return _JointEmission(
-        module, responses, tuple(layouts), tuple(targets), fixed_inputs, catalog
+        module,
+        responses,
+        tuple(layouts),
+        tuple(level_sites.values()),
+        tuple(targets),
+        fixed_inputs,
+        catalog,
     )
 
 

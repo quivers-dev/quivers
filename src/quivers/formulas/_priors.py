@@ -321,6 +321,9 @@ class PriorTarget(ValueModel):
         Native distribution event rank, separate from independent axes.
     component_labels : tuple[str, ...]
         Free response-component labels in the retained coefficient order.
+    partition_labels : tuple[str, ...]
+        Levels of the ``by`` variable of a group-level scale, whose
+        components vary fastest along its axis.
     """
 
     site: str
@@ -336,6 +339,7 @@ class PriorTarget(ValueModel):
     upper: float | None = None
     event_rank: int = 0
     component_labels: tuple[str, ...] = ()
+    partition_labels: tuple[str, ...] = ()
 
     @dx.model_validator()
     def _validate(self) -> None:

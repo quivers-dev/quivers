@@ -249,7 +249,7 @@ def test_mixed_scalar_component_shared_block_matches_every_native_binding(coordi
                     )
                     value = recorded.sites[member.coefficient].value
                     expected.append(
-                        value.reshape(member.width, 2).T
+                        value.reshape(2, member.width)
                         if member.axis is not None
                         else value.reshape(2)
                     )
