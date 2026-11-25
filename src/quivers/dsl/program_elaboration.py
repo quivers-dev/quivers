@@ -2071,6 +2071,10 @@ def _scan_initial_state(
     )
 
 
+#: Shape builtins whose result keeps the extent of the last axis.
+_KEPT_EXTENTS: frozenset[str] = frozenset({"layer_norm", "rms_norm"})
+
+
 def _unify_free_shapes(
     expr: LetExprNode,
     free: frozenset[str],
@@ -2170,9 +2174,13 @@ def _unify_free_shapes(
                 (node.left, node.right) if isinstance(node, LetExprBinOp) else node.args
             )
             ranks = [rank(child) for child in children]
-            if any(item is None for item in ranks):
+            known = [item for item in ranks if item is not None]
+            if len(known) < len(ranks):
                 return None
-            widest = max((item for item in ranks if item is not None), default=0)
+            if isinstance(node, LetExprCall) and node.func == "matmul":
+                # One axis of each operand is summed over.
+                return max(0, sum(known) - 2)
+            widest = max(known, default=0)
             if (
                 isinstance(node, LetExprCall)
                 and node.func in _REDUCTIONS
@@ -2233,10 +2241,16 @@ def _unify_free_shapes(
             if node.func in SHAPE_BUILTINS:
                 # The plates lead every operand and are kept; the last
                 # axis is rebuilt, so no free operand takes a shape here.
-                tensors = shapes if node.func == "concat" else shapes[:1]
-                if any(item is None for item in tensors) or len(set(tensors)) != 1:
+                operands = node.args if node.func == "concat" else node.args[:1]
+                kept = {leading(operand) for operand in operands}
+                if len(kept) != 1:
                     return None
-                return tensors[0]
+                plates = next(iter(kept))
+                if plates is None or node.func in _KEPT_EXTENTS:
+                    return shapes[0]
+                if node.func != "matmul" or len(node.args) != 2:
+                    return plates
+                return contracted(node.args[0], plates, node.args[1])
             if node.func in PURE_BUILTINS:
                 known = [item for item in shapes if item is not None]
                 if len(known) < len(shapes):
@@ -2246,6 +2260,57 @@ def _unify_free_shapes(
         for child in let_expr_children(node):
             batch(child)
         return ()
+
+    def leading(node: LetExprNode) -> _Shape | None:
+        """The plate extents of a value's axes before its last.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The value.
+
+        Returns
+        -------
+        _Shape | None
+            Its plate extents without its last axis, which is a plate's
+            when the value has no event axis after its plates, or
+            ``None`` when it reads a free name nothing has fixed.
+        """
+        plates = batch(node)
+        if plates and rank(node) == len(plates):
+            return plates[:-1]
+        return plates
+
+    def contracted(
+        left: LetExprNode, plates: _Shape, right: LetExprNode
+    ) -> _Shape | None:
+        """The plate extents of a matrix product.
+
+        The product has the leading axes of its first operand followed by
+        the second axis of its second operand.
+
+        Parameters
+        ----------
+        left : LetExprNode
+            The first operand.
+        plates : _Shape
+            The plate extents of its leading axes.
+        right : LetExprNode
+            The second operand.
+
+        Returns
+        -------
+        _Shape | None
+            The product's plate extents, or ``None`` when the second operand
+            reads a free name nothing has fixed.
+        """
+        columns = batch(right)
+        if columns is None:
+            return None
+        width = rank(left)
+        if width == len(plates) + 1 and rank(right) == len(columns) == 2:
+            return (*plates, columns[-1])
+        return plates
 
     def meet(unknown: LetExprNode, known: _Shape) -> None:
         """Fix the free names of an operand to a plated partner's extents.
