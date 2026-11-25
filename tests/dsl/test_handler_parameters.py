@@ -10,7 +10,11 @@ from __future__ import annotations
 import pytest
 
 from quivers.dsl import Compiler, module_to_source, parse
-from quivers.dsl.ast_nodes import QiecHandlerDecl
+from quivers.dsl.ast_nodes import (
+    QiecHandlerDecl,
+    QiecHandlerOperationClause,
+    QiecHandlerReturnClause,
+)
 from quivers.dsl.program_theory import extract_program_schema
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import qiec_local_bindings
@@ -479,7 +483,13 @@ def test_a_parameter_is_in_scope_in_every_clause() -> None:
     )
     assert binding.scope is not None
     first, last = binding.scope
-    assert all(first <= clause.line <= last for clause in declaration.clauses)
+    lines = [
+        clause.line
+        for clause in declaration.clauses
+        if isinstance(clause, QiecHandlerOperationClause | QiecHandlerReturnClause)
+    ]
+    assert len(lines) == 3
+    assert first <= min(lines) and max(lines) <= last
     assert declaration.line < first
 
 

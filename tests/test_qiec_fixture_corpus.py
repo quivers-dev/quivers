@@ -24,6 +24,7 @@ from typing import cast
 import pytest
 import torch
 
+from quivers.continuous import MonadicProgram
 from quivers.dsl import loads, parse
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
@@ -764,16 +765,13 @@ def _g_joint(point: Mapping[str, Host]) -> float:
 @pytest.mark.parametrize("point", range(len(_G_POINTS)))
 def test_g_reference_compiled_and_oracle_agree(point: int) -> None:
     program = loads(_source("G"))
-    sites = _G_POINTS[point]
-    expected = _g_joint(sites)
-    run = program.run(
-        "judgments",
-        data={"y": tuple(_G_DATA["y"])},
-        sites=dict(sites),
-        seed=0,
-    )
-    assert float(run.log_joint) == pytest.approx(expected, rel=1e-9)
-    joint = program.morphism.log_joint(
+    sites = {name: cast(float, _G_POINTS[point][name]) for name in ("a", "b")}
+    expected = _g_joint(_G_POINTS[point])
+    run = program.run("judgments", data={"y": tuple(_G_DATA["y"])}, sites=sites, seed=0)
+    assert run.log_joint == pytest.approx(expected, rel=1e-9)
+    compiled = program.morphism
+    assert isinstance(compiled, MonadicProgram)
+    joint = compiled.log_joint(
         torch.zeros(1, 1),
         {
             **{

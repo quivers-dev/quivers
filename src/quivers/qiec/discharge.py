@@ -404,6 +404,21 @@ class _Fork(QiecModel):
     duplicable: bool
 
 
+class _Difference(QiecModel):
+    """A part of a value or parameter that the branches of a conditional differ in.
+
+    Parameters
+    ----------
+    local
+        The local standing for the conditional's result.
+    values
+        The part's value in each branch.
+    """
+
+    local: Local = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    values: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+
 class _Meeting(QiecModel):
     """The point at which a conditional's branches meet.
 
@@ -1671,7 +1686,7 @@ class _Discharger:
             )
         ):
             return None
-        differing: list[tuple[TypeExpr, str, tuple[Value, ...], Local]] = []
+        differing: list[_Difference] = []
         value = self.reconciled(
             tuple(item.value for item in arrivals),
             self.accepts(first.stack),
@@ -1725,7 +1740,7 @@ class _Discharger:
         values: tuple[Value, ...],
         type_: TypeExpr,
         hint: str,
-        differing: list[tuple[TypeExpr, str, tuple[Value, ...], Local]],
+        differing: list[_Difference],
     ) -> Value:
         """The value a conditional gives from the value of each branch.
 
@@ -1737,7 +1752,7 @@ class _Discharger:
             Their type.
         hint : str
             The preferred name of the conditional's result.
-        differing : list[tuple[TypeExpr, str, tuple[Value, ...], Local]]
+        differing : list[_Difference]
             What the branches differ in, extended with the parts of the
             values that do.
 
@@ -1781,14 +1796,14 @@ class _Discharger:
                 )
             )
         local = Local(name=self.fresh(hint), type=type_)
-        differing.append((type_, hint, values, local))
+        differing.append(_Difference(local=local, values=values))
         return Var(local=local)
 
     def stated(
         self,
         rebuild: Callable[[tuple[Computation, ...], TypeExpr], Computation],
         arrivals: list[_Arrival],
-        differing: list[tuple[TypeExpr, str, tuple[Value, ...], Local]],
+        differing: list[_Difference],
         *,
         duplicable: bool,
     ) -> _Statements:
@@ -1804,8 +1819,8 @@ class _Discharger:
             The conditional over its rewritten branches and their type.
         arrivals : list[_Arrival]
             The branches.
-        differing : list[tuple[TypeExpr, str, tuple[Value, ...], Local]]
-            The parts: their type, hint, value in each branch, and local.
+        differing : list[_Difference]
+            The parts.
         duplicable : bool
             Whether the conditional may be stated more than once.
 
@@ -1815,7 +1830,7 @@ class _Discharger:
             The statements.
         """
         pure = all(
-            _pure(first) for item in arrivals for _binder, first in item.statements
+            _pure(statement[1]) for item in arrivals for statement in item.statements
         )
         if not differing:
             if not any(_live(item.statements, frozenset()) for item in arrivals):
@@ -1829,25 +1844,25 @@ class _Discharger:
         if len(differing) == 1 or (pure and duplicable):
             return tuple(
                 (
-                    local,
+                    part.local,
                     rebuild(
                         tuple(
-                            _sequence(item.statements, Return(value=part))
-                            for item, part in zip(arrivals, values, strict=True)
+                            _sequence(item.statements, Return(value=value))
+                            for item, value in zip(arrivals, part.values, strict=True)
                         ),
-                        type_,
+                        part.local.type,
                     ),
                 )
-                for type_, _hint, values, local in differing
+                for part in differing
             )
-        joint = product_type(*(type_ for type_, _hint, _values, _local in differing))
+        joint = product_type(*(part.local.type for part in differing))
         binder = Local(name=self.fresh("chosen"), type=joint)
         branches = tuple(
             _sequence(
                 item.statements,
                 Return(
                     value=TupleValue(
-                        items=tuple(part[2][row] for part in differing),
+                        items=tuple(part.values[row] for part in differing),
                         result_type=joint,
                     )
                 ),
@@ -2226,7 +2241,7 @@ def _same(left: tuple[_Frame, ...], right: tuple[_Frame, ...]) -> bool:
 
 def _read_chosen(
     value: Value,
-    differing: list[tuple[TypeExpr, str, tuple[Value, ...], Local]],
+    differing: list[_Difference],
     stated: _Statements,
 ) -> Value:
     """A reconciled value reading the statements that bind its parts.
@@ -2235,8 +2250,8 @@ def _read_chosen(
     ----------
     value : Value
         The value, whose differing parts are locals.
-    differing : list[tuple[TypeExpr, str, tuple[Value, ...], Local]]
-        The parts and their locals.
+    differing : list[_Difference]
+        The parts.
     stated : tuple[tuple[Local, Computation], ...]
         The statements made for them: one per part, or one tuple of them.
 
@@ -2249,8 +2264,10 @@ def _read_chosen(
         return value
     joint = Var(local=stated[0][0])
     reads = {
-        local.name: Projection(value=joint, position=position, result_type=type_)
-        for position, (type_, _hint, _values, local) in enumerate(differing)
+        part.local.name: Projection(
+            value=joint, position=position, result_type=part.local.type
+        )
+        for position, part in enumerate(differing)
     }
 
     def rewrite(term: Value) -> Value:

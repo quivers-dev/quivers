@@ -98,7 +98,9 @@ def _reference(
     source: str, entry: str, sites: dict[str, float], data: dict[str, HostValue]
 ) -> float:
     """The reference machine's log joint at the same sites."""
-    return float(loads(source).run(entry, data=data, sites=sites, seed=0).log_joint)
+    joint = loads(source).run(entry, data=data, sites=sites, seed=0).log_joint
+    assert joint is not None
+    return joint
 
 
 def _check(
@@ -109,7 +111,7 @@ def _check(
     data: dict[str, HostValue] | None = None,
 ) -> None:
     """Both encodings and the reference machine agree on value and gradient."""
-    host = {"y": _Y4} if data is None else data
+    host: dict[str, HostValue] = {"y": _Y4} if data is None else data
     tensors = {name: torch.as_tensor(value, dtype=_F64) for name, value in host.items()}
     kept, direct = _program(source), _program(by_hand)
     for point in points:
@@ -365,7 +367,7 @@ export mixed
         )
     )
     assert float(joint.detach()) == pytest.approx(float(oracle.detach()), rel=1e-9)
-    assert float(
+    reference = (
         loads(source)
         .run(
             "mixed",
@@ -374,7 +376,9 @@ export mixed
             seed=0,
         )
         .log_joint
-    ) == pytest.approx(float(oracle.detach()), rel=1e-9)
+    )
+    assert reference is not None
+    assert reference == pytest.approx(float(oracle.detach()), rel=1e-9)
     for left, right in zip(
         torch.autograd.grad(joint, (logits, mean)),
         torch.autograd.grad(oracle, (logits, mean)),

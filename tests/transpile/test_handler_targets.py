@@ -189,11 +189,12 @@ def test_a_target_with_handlers_reads_the_module_as_it_is_checked() -> None:
 @pytest.mark.parametrize("base", [0.4, 1.7])
 def test_a_python_target_scores_the_reference_joint(target: str, base: float) -> None:
     emitted = transpile(parse(STORE), target=target)
-    reference = float(
+    reference = (
         loads(STORE)
         .run("uses_handler", data={"y": tuple(_Y4)}, sites={"base": base}, seed=0)
         .log_joint
     )
+    assert reference is not None
     score = pyro_log_density if target == "pyro" else pymc_log_density
     assert score(emitted, {"y": _Y4}, {"base": base}) == pytest.approx(
         reference, rel=1e-6
