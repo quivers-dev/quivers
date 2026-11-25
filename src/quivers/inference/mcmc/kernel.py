@@ -32,17 +32,15 @@ import torch
 from torch.distributions import Distribution
 from torch.distributions import constraints as _constraints
 
+from quivers._positions import map_positions, reject_unless
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.program_steps import Draw, Observe
-from quivers.continuous._com_poisson import COMPoisson
-from quivers.qiec._beta_tails import beta_fraction
-from quivers.continuous._observation_events import (
-    require_finite_parameters,
-    require_truncation_mass,
-)
-from quivers.continuous.param_transforms import _validate_parameter, positive_parameter
 from quivers.continuous.programs import MonadicProgram
-from quivers.effects.joint_plan import JointPlans
+from quivers.effects.joint_plan import (
+    JointPlans,
+    require_batchable,
+    require_own_joint,
+)
 from quivers.effects.subsample import refuse_subsampling
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
@@ -52,23 +50,19 @@ _DISTRIBUTION_VALIDATION_CODE = frozenset(
     {
         Distribution.__init__.__code__,
         Distribution._validate_sample.__code__,
-        positive_parameter.__code__,
-        _validate_parameter.__code__,
-        require_truncation_mass.__code__,
-        require_finite_parameters.__code__,
-        COMPoisson._parameters.__code__,
-        COMPoisson._statistics.__code__,
-        beta_fraction.__code__,
+        reject_unless.__code__,
     }
 )
 """Raising frames for distribution parameter and value constraints.
 
-Includes Torch's constructor and observation validators, the inline
-parameter validators, the truncation-mass and finite-parameter checks of
-recorded events, the COM-Poisson modal-capacity and normalizer-budget
-refusals, which brms's Stan code also rejects (``nu is too close to zero``,
-``cannot handle y > 10000``), and the incomplete
-Beta continued fraction exhausting its budget at extreme count shapes.
+Includes Torch's constructor and observation validators and
+`quivers._positions.reject_unless`, through which the library's own checks
+of a position raise: the inline parameter validators, the truncation-mass
+and finite-parameter checks of recorded events, the COM-Poisson
+modal-capacity and normalizer-budget refusals, which brms's Stan code also
+rejects (``nu is too close to zero``, ``cannot handle y > 10000``), and the
+incomplete Beta continued fraction exhausting its budget at extreme count
+shapes.
 """
 
 
@@ -598,6 +592,9 @@ class PotentialFn:
         # shared with every conditioned copy: conditioning changes the
         # values, not their layout.
         self._plans = JointPlans(model, x)
+        # The sets of given names under which every step has been found
+        # to declare that it can be evaluated at many positions.
+        self._batchable: set[frozenset[str]] = set()
 
     @property
     def num_evaluations(self) -> int:
@@ -719,19 +716,116 @@ class PotentialFn:
             Any error ``log_joint`` raises that does not mark the
             position as outside the support.
         """
-        refuse_subsampling("PotentialFn")
+        refuse_subsampling(type(self).__name__)
         self._counts[0] += 1
-        trace_side, log_det_total = self._trace_side(z)
         try:
-            log_p = self._plans.log_joint({**trace_side, **self._observations})
-        except (ValueError, RuntimeError, torch.linalg.LinAlgError) as error:
+            result = self._joint_density(z)
+        except (ValueError, RuntimeError) as error:
             if not _rejects_position(error):
                 raise
             return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
-        result = log_p.sum() + log_det_total
         if not torch.isfinite(result):
             return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
         return result
+
+    def log_density_batch(self, positions: torch.Tensor) -> torch.Tensor:
+        """The log-density of `log_density` at many positions in one pass.
+
+        The program is scored once, with the positions mapped along a
+        position axis of their own (`torch.func.vmap`): the bijectors and
+        their log-Jacobians, every step, and every site's density are
+        computed for all rows together, and a value that depends on no
+        latent (a datum, or a step that reads data alone) is computed
+        once and shared by the rows. Each row's value is the
+        `log_density` of that row up to rounding, and a row outside the
+        model's support scores ``-inf`` without affecting the others.
+
+        Every step has to declare that it can be evaluated this way. A
+        step whose value is a Python callable the program cannot inspect
+        declares it with ``batched=True``
+        ([`Let`][quivers.continuous.program_steps.Let],
+        [`Score`][quivers.continuous.program_steps.Score]): the callable
+        is then called with the position axis leading every value that
+        depends on the position, and returns its result the same way. The
+        steps the DSL compiles and the distributions of the library carry
+        their own declaration.
+
+        Parameters
+        ----------
+        positions : torch.Tensor
+            Flat unconstrained positions, shape ``(B, D)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The Jacobian-corrected log-density of each row, shape
+            ``(B,)``, and ``-inf`` at rows outside the model's support.
+
+        Raises
+        ------
+        ValueError
+            If ``positions`` does not have shape ``(B, D)``, or a plate is
+            subsampled.
+        UnbatchableProgramError
+            If a step of the program does not declare that it can be
+            evaluated at many positions, or the program is not scored by
+            its own steps (its ``log_joint`` is overridden, handlers are
+            on the stack, or another evaluator is installed). The error
+            names each step and the reason.
+        PositionLayoutError
+            If a callable declared ``batched`` returns a value that does
+            not lead with the position axis.
+        Exception
+            Any error `log_density` raises at a row, other than one
+            marking the row as outside the support.
+        """
+        dimension = self._registry.total_unconstrained_dim
+        if positions.dim() != 2 or int(positions.shape[1]) != dimension:
+            raise ValueError(
+                f"{type(self).__name__}.log_density_batch: expected positions of "
+                f"shape (B, {dimension}), got {tuple(positions.shape)}"
+            )
+        refuse_subsampling(type(self).__name__)
+        given = frozenset(self._observations)
+        if given in self._batchable:
+            require_own_joint(self._model)
+        else:
+            require_batchable(self._model, self._registry.names, given)
+            self._batchable.add(given)
+        self._counts[0] += 1
+        outside = positions.new_full((int(positions.shape[0]),), float("-inf"))
+        if positions.shape[0] == 0:
+            return outside
+        try:
+            mapped = map_positions(self._joint_density, positions)
+        except (ValueError, RuntimeError) as error:
+            if not _rejects_position(error):
+                raise
+            return outside
+        inside = mapped.accepted & torch.isfinite(mapped.values)
+        return torch.where(inside, mapped.values, outside)
+
+    def _joint_density(self, z: torch.Tensor) -> torch.Tensor:
+        """The Jacobian-corrected log joint at a position, unchecked.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Flat unconstrained position, shape ``(D,)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The scalar, which is not finite at a position of no density.
+
+        Raises
+        ------
+        Exception
+            Any error the program raises at the position.
+        """
+        trace_side, log_det_total = self._trace_side(z)
+        log_p = self._plans.log_joint({**trace_side, **self._observations})
+        return log_p.sum() + log_det_total
 
     def _trace_side(
         self, z: torch.Tensor
@@ -856,6 +950,54 @@ class PotentialFn:
         if grad is None or not torch.isfinite(grad).all():
             return ld.detach(), torch.zeros_like(z)
         return ld.detach(), grad.detach()
+
+    def value_and_grad_batch(
+        self, positions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """The value and gradient of `value_and_grad` at many positions.
+
+        One call runs one `log_density_batch` and one backward pass. Each
+        row's gradient is that of its own log-density with respect to its
+        own position, and, as in `value_and_grad`, is zero at a row whose
+        log-density or gradient is not finite.
+
+        Parameters
+        ----------
+        positions : torch.Tensor
+            Flat unconstrained positions, shape ``(B, D)``.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The detached log-densities, shape ``(B,)``, and the detached
+            gradients, shape ``(B, D)``.
+
+        Raises
+        ------
+        ValueError
+            If ``positions`` does not have shape ``(B, D)``, or a plate is
+            subsampled.
+        UnbatchableProgramError
+            As `log_density_batch` raises it.
+        Exception
+            Any error `log_density_batch` raises.
+        """
+        self._counts[1] += 1
+        if positions.numel() == 0:
+            with torch.no_grad():
+                values = self.log_density_batch(positions)
+            return values.detach(), torch.zeros_like(positions)
+        leaf = positions.detach().clone().requires_grad_(True)
+        with torch.enable_grad():
+            values = self.log_density_batch(leaf)
+            inside = torch.isfinite(values)
+            if not bool(inside.any()):
+                return values.detach(), torch.zeros_like(positions)
+            grad = torch.autograd.grad(values[inside].sum(), leaf)[0]
+        usable = inside & torch.isfinite(grad).all(dim=-1)
+        return values.detach(), torch.where(
+            usable.unsqueeze(-1), grad, torch.zeros_like(grad)
+        ).detach()
 
 
 class MCMCKernel(ABC):

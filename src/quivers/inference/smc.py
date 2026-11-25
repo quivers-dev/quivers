@@ -300,14 +300,40 @@ class TemperedPotential(PotentialFn):
         _require_partitionable_joint(self._model)
         refuse_subsampling("TemperedPotential")
         self._counts[0] += 1
-        trace_side, log_det_total = self._trace_side(z)
         minus_inf = torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
         try:
-            densities, _ = self._densities({**trace_side, **self._observations})
-        except (ValueError, torch.linalg.LinAlgError) as error:
+            log_prior, log_likelihood = self._parts(z)
+        except (ValueError, RuntimeError) as error:
             if not _rejects_position(error):
                 raise
             return minus_inf, minus_inf
+        if not torch.isfinite(log_prior):
+            return minus_inf, minus_inf
+        if torch.isnan(log_likelihood):
+            return log_prior, minus_inf
+        return log_prior, log_likelihood
+
+    def _parts(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The two parts of the log joint at a position, unchecked.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Flat unconstrained position, shape ``(D,)``.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            :math:`\\log p(z)` with the log-Jacobian and
+            :math:`\\log L(z)`, scalars.
+
+        Raises
+        ------
+        Exception
+            Any error the program raises at the position.
+        """
+        trace_side, log_det_total = self._trace_side(z)
+        densities, _ = self._densities({**trace_side, **self._observations})
         latent = set(self._registry.names) | set(self._conditioned)
         log_prior = log_det_total
         log_likelihood = torch.zeros((), device=z.device, dtype=z.dtype)
@@ -326,10 +352,6 @@ class TemperedPotential(PotentialFn):
                 log_prior = log_prior + density.sum()
             else:
                 log_likelihood = log_likelihood + density.sum()
-        if not torch.isfinite(log_prior):
-            return minus_inf, minus_inf
-        if torch.isnan(log_likelihood):
-            return log_prior, minus_inf
         return log_prior, log_likelihood
 
     def _densities(
@@ -358,7 +380,7 @@ class TemperedPotential(PotentialFn):
         densities = {label: site.log_prob for label, site in recorded.sites.items()}
         return densities, recorded.log_joint
 
-    def log_density(self, z: torch.Tensor) -> torch.Tensor:
+    def _joint_density(self, z: torch.Tensor) -> torch.Tensor:
         """The tempered log-density :math:`\\log p(z) + \\beta \\log L(z)`.
 
         Parameters
@@ -369,15 +391,20 @@ class TemperedPotential(PotentialFn):
         Returns
         -------
         torch.Tensor
-            The scalar log-density, ``-inf`` outside the support.
+            The scalar, which is not finite at a position of no density.
+
+        Raises
+        ------
+        ValueError
+            If an opaque joint override prevents role decomposition.
+        Exception
+            Any error the program raises at the position.
         """
-        log_prior, log_likelihood = self.log_prior_and_likelihood(z)
+        _require_partitionable_joint(self._model)
+        log_prior, log_likelihood = self._parts(z)
         if self._temperature == 0.0:
             return log_prior
-        result = log_prior + self._temperature * log_likelihood
-        if not torch.isfinite(result):
-            return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
-        return result
+        return log_prior + self._temperature * log_likelihood
 
 
 def _check_temperature(temperature: float) -> float:
