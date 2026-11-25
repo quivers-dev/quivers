@@ -415,7 +415,7 @@ def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
     RuntimeHandler
         The implementation under the declaration.
     """
-    rekeyed = built.with_(definition=definition)
+    changes: dict[str, HeldValue] = {"definition": definition}
     if built.context_factory is not None:
         prototype_factory = built.context_factory
 
@@ -429,7 +429,7 @@ def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
             """
             return _rekey(prototype_factory(), definition)
 
-        rekeyed = rekeyed.with_(context_factory=context_factory)
+        changes["context_factory"] = context_factory
     if built.fork_context is not None:
         prototype_fork = built.fork_context
 
@@ -448,8 +448,8 @@ def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
             """
             return _rekey(prototype_fork(handler), definition)
 
-        rekeyed = rekeyed.with_(fork_context=fork_context)
-    return rekeyed
+        changes["fork_context"] = fork_context
+    return built.with_(**changes)
 
 
 def _collect_combine(
@@ -1668,7 +1668,8 @@ class ExecutionResult(QiecModel):
     runtime
         The label of the runtime configuration used.
     trace
-        Every event the invocation emitted, in order.
+        Every event the invocation emitted, in order; empty for a run that
+        does not record them.
     """
 
     computation: str
@@ -1706,6 +1707,7 @@ def run_named(
     static_arguments: tuple[StaticArgument, ...] = (),
     runtime: RuntimeConfiguration | None = None,
     observer: TraceObserver | None = None,
+    record_trace: bool = True,
     fuel: int | None = None,
 ) -> ExecutionResult:
     """Validate and execute one named computation from ``module``.
@@ -1730,6 +1732,12 @@ def run_named(
         The providers to attach; defaults to the core provider alone.
     observer
         A callback receiving every trace event as it is emitted.
+    record_trace
+        Whether the result keeps every event. A run emits events in
+        proportion to its machine steps, so a run of unknown length that
+        records them has no bound on the memory it holds; one that does not
+        holds only its live state. An observer receives the events either
+        way, and with neither the machine builds none.
     fuel
         The number of machine steps the run may take, or ``None`` for no
         bound. General recursion may diverge, and a bound is the only way
@@ -1739,7 +1747,7 @@ def run_named(
     -------
     ExecutionResult
         The validated result value, its specialized type, the runtime label,
-        and the full trace.
+        and the full trace, empty when the run does not record it.
 
     Raises
     ------
@@ -1773,6 +1781,7 @@ def run_named(
     assert selected is not None
     config = runtime or RuntimeConfiguration()
     recorder = ExecutionTraceRecorder()
+    traced = record_trace or observer is not None
     sequence = 0
 
     def emit(event: str, detail: Mapping[str, object] | None = None) -> None:
@@ -1786,6 +1795,8 @@ def run_named(
             JSON-compatible event data; ``None`` records an empty mapping.
         """
         nonlocal sequence
+        if not traced:
+            return
         trace_event = ExecutionTraceEvent(
             sequence=sequence,
             event=event,
@@ -1793,7 +1804,8 @@ def run_named(
             detail=detail or {},
         )
         sequence += 1
-        recorder(trace_event)
+        if record_trace:
+            recorder(trace_event)
         if observer is not None:
             observer(trace_event)
 
@@ -1890,7 +1902,7 @@ def run_named(
 
     evaluator = Evaluator(
         attachments,
-        trace_hook=evaluator_trace,
+        trace_hook=evaluator_trace if traced else None,
         module=module,
         fuel=fuel,
         type_validator=lambda type_: _validator_for(type_, providers),

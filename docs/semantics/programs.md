@@ -2034,6 +2034,42 @@ absolute deviation of those draws, with quantile intervals. Nothing is
 averaged over the data: an empirical average over reference rows is the
 separate `prediction_grid` contract.
 
+### 6.5 Log joints at many positions {#log-joints-at-many-positions}
+
+Fix a program, its input, and its data, and write $\ell : Z \to [-\infty, \infty)$ for its
+Jacobian-corrected log joint on the unconstrained vectors $Z = \mathbb R^D$. The batched log joint at
+$B$ positions is the product map
+
+$$
+\ell^B : Z^B \to [-\infty, \infty)^B, \qquad \ell^B(z_1, \dots, z_B)_b = \ell(z_b).
+$$
+
+Each step of the program denotes a map of the values bound before it, and $\ell$ is their
+composition. The product map is thus the composition of the steps' product maps, and it can be
+evaluated with each step run once when every step's product map can be. The evaluation gives every
+value that depends on the position an axis of length $B$ of its own. It is an axis of the evaluation
+and not of the value: a step reads the shape the value has in one run, and an axis of the program
+whose extent happens to be $B$ is a different axis. A value that does not depend on the position has
+no such axis and is computed once.
+
+A step can be run this way under one of two declarations. A *mappable* step computes its value by
+tensor operations that branch on no value, and its product map is its image under
+[`torch.func.vmap`](https://docs.pytorch.org/docs/stable/generated/torch.func.vmap.html). A *batched*
+step is given as a function $f$ that is already a product map: at values whose leading axis is the
+position axis, $f(u_1, \dots, u_B)_b = f(u_b)$. The compiled steps and the distributions of the
+library are mappable. A step that declares neither has no known product map, and a program with one
+is refused before anything is evaluated.
+
+A position outside the support has $\ell(z_b) = -\infty$. A check that raises for one position marks
+the positions that fail it, whose value is $-\infty$, and the other components of $\ell^B$ do not
+depend on them. A check whose failure is an error of the program rather than of the position raises
+when a position that has passed every earlier check fails it.
+
+The product map of a step exists for every step, but it has an array of values only when the value
+of the step has one shape at every position. A step whose number of terms depends on a latent has no
+such shape. An observation weighted by a latent is the case in point, since a weight of zero removes
+its row from the sum.
+
 ## 7. Wrappers that place priors on parameters {#7-bayesian-lifts}
 
 A model whose learnable parameters have no prior still denotes a kernel, with the parameters held

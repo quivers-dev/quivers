@@ -567,6 +567,136 @@ print(result.ess, result.acceptance)
 print(result.samples["mu"].shape)   # (200,): equally weighted particles
 ```
 
+## Densities at many positions
+
+A quadrature grid, a set of importance weights, a profile likelihood, or a check that
+integrates a model's own conditional needs the log density at thousands of positions at
+once.
+[`PotentialFn.log_density_batch`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn)
+takes positions of shape `(B, D)` on the registry's unconstrained vector and returns the
+`(B,)` log densities in one pass over the program, and `value_and_grad_batch` returns each
+row's gradient with it. The bijectors, their log-Jacobians, and every step run once for all
+rows, and a value computed from the data alone is computed once and shared.
+
+<!-- python: run -->
+```python
+import torch
+
+from quivers.continuous import Draw, Euclidean, MonadicProgram, Score
+from quivers.continuous import make_fixed_logit_beta, make_fixed_normal, reading
+from quivers.core import Unit
+from quivers.inference import LatentRegistry
+from quivers.inference.mcmc import PotentialFn
+
+counts = torch.tensor([3.0, 0.0, 5.0, 1.0])
+
+
+def likelihood(env):
+    # One run holds a and b at (4,), and a batch of positions at (B, 4).
+    fit = (counts * torch.nn.functional.logsigmoid(env["a"])).sum(-1)
+    return fit - env["b"].square().sum(-1)
+
+
+model = MonadicProgram(
+    Unit,
+    Euclidean(name="out", dim=1),
+    steps=[
+        Draw(
+            names=("a",),
+            morphism=make_fixed_logit_beta(1.0, 2.0, Euclidean(name="A", dim=4)),
+        ),
+        Draw(
+            names=("b",),
+            morphism=make_fixed_normal(0.0, 1.0, Euclidean(name="B", dim=4)),
+        ),
+        Score(
+            name="lik",
+            score=reading(likelihood, ("a", "b")),
+            batched=True,
+        ),
+    ],
+    return_vars=("a", "b"),
+)
+registry = LatentRegistry.from_model(model, set())
+potential = PotentialFn(model, registry, torch.zeros(1, 1), {})
+
+positions = torch.randn(2000, registry.total_unconstrained_dim)
+values = potential.log_density_batch(positions)                  # (2000,)
+values, gradients = potential.value_and_grad_batch(positions)    # (2000,), (2000, 8)
+```
+
+Each row equals [`PotentialFn`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn)'s
+`log_density` at that row up to rounding. A row outside the model's support, where a scale
+is negative or a covariance is not positive definite for instance, scores `-inf` with a zero
+gradient and leaves the other rows as they are. A defect of the program raises, as it does at
+one position.
+
+### Which programs can be evaluated this way
+
+Every step has to declare that it can. The steps the DSL compiler builds, the formula
+interface's included, and the library's distributions declare it themselves. A
+[`Let`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) or
+[`Score`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) step
+written in Python holds a callable the program cannot inspect, and declares it in one of two
+ways.
+
+1. `batched=True` on the step says that the callable accepts a leading batch axis. Over `B`
+   positions it is called once. A value that depends on the position leads with an axis of
+   length `B` ahead of the axes it has in one run, so a scalar site arrives at `(B,)` and a
+   vector site at `(B, K)`. A value that every position shares arrives at its one-run shape.
+   The result leads with `B` too, and a result that does not raises
+   [`PositionLayoutError`](../api/effects/batching.md). The callable is also called for a
+   single position, with no batch axis, so it is written against trailing axes.
+2. [`mappable`](../api/continuous/program_steps.md#quivers.continuous.program_steps.mappable)
+   around the callable says that it is a tensor computation that branches on no value. It is
+   then mapped over the positions by `torch.func.vmap`, and sees the shapes of one run.
+
+A distribution defined as a
+[`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism)
+subclass declares the second on its class, with `mappable = True`. A program with a step that
+declares neither is refused with an
+[`UnbatchableProgramError`](../api/effects/batching.md) that names each such step, and nothing
+is evaluated to find out.
+
+<!-- python: run -->
+```python
+from quivers.effects import UnbatchableProgramError
+
+undeclared = MonadicProgram(
+    Unit,
+    Euclidean(name="out", dim=1),
+    steps=[
+        Draw(
+            names=("a",),
+            morphism=make_fixed_normal(0.0, 1.0, Euclidean(name="A", dim=1)),
+        ),
+        Score(name="opaque", score=lambda env: -env["a"].square()),
+    ],
+    return_vars=("a",),
+)
+opaque = PotentialFn(
+    undeclared, LatentRegistry.from_model(undeclared, set()), torch.zeros(1, 1), {}
+)
+try:
+    opaque.log_density_batch(torch.zeros(3, 1))
+except UnbatchableProgramError as refusal:
+    print(refusal.obstacles[0].step)    # score step 'opaque'
+```
+
+A few programs are refused whatever they declare, because the number of terms in their joint
+would differ between positions. These are an observation whose weights depend on a latent,
+since a zero weight removes its row, and a `filter` over values that depend on one. A program
+whose `log_joint` is overridden, and any evaluation made while effect handlers are on the
+stack, is refused as well, since its density is not its steps' alone.
+
+[`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint)
+over an input of `B` rows scores its independent runs together under the same declarations,
+and one by one when a step declares neither, draws at random, or reads a host datum given per
+run.
+
+The whole batch is held in memory at once, at `B` times the memory of one evaluation. A grid
+of millions of positions is split into calls of a size that fits.
+
 ## Hybrid samplers
 
 Hybrid samplers use a variational fit to build a proposal distribution or to choose

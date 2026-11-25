@@ -17,6 +17,7 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers._positions import demand
 from quivers.continuous._ordinal import _log1mexp
 
 from quivers.continuous._zip_hurdle import _OpenUnitInterval
@@ -424,17 +425,15 @@ class Wiener(Distribution):
             *(torch.as_tensor(v, dtype=torch.float64, device=device) for v in values)
         )
         self.boundary, self.ndt, self.bias, self.drift = tensors
-        if not all(bool(torch.isfinite(v).all()) for v in tensors):
-            raise ValueError("Wiener parameters must be finite")
-        if not bool(
-            (
-                (self.boundary > 0)
-                & (self.ndt >= 0)
-                & (self.bias > 0)
-                & (self.bias < 1)
-            ).all()
-        ):
-            raise ValueError("Wiener requires boundary>0, ndt>=0, and 0<bias<1")
+        for tensor in tensors:
+            demand(
+                torch.isfinite(tensor),
+                lambda: ValueError("Wiener parameters must be finite"),
+            )
+        demand(
+            (self.boundary > 0) & (self.ndt >= 0) & (self.bias > 0) & (self.bias < 1),
+            lambda: ValueError("Wiener requires boundary>0, ndt>=0, and 0<bias<1"),
+        )
         budgets = (max_proposals, max_terms, max_precision)
         if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in budgets):
             raise ValueError("Wiener numerical budgets must be positive integers")
@@ -484,8 +483,12 @@ class Wiener(Distribution):
         valid = self.support.check(point)
         decision = torch.where(valid, point.abs() - self.ndt, self.boundary.square())
         time = decision / self.boundary / self.boundary
-        if not bool((torch.isfinite(time) & (time > 0)).all()):
-            raise ValueError("Wiener normalized time exceeds floating-point capacity")
+        demand(
+            torch.isfinite(time) & (time > 0),
+            lambda: ValueError(
+                "Wiener normalized time exceeds floating-point capacity"
+            ),
+        )
         upper = point > 0
         w = torch.where(upper, 1 - self.bias, self.bias)
         c = torch.where(upper, self.bias, 1 - self.bias)
@@ -517,8 +520,10 @@ class Wiener(Distribution):
             If drift times boundary exceeds floating-point capacity.
         """
         scaled = self.boundary * self.drift
-        if not bool(torch.isfinite(scaled).all()):
-            raise ValueError("Wiener scaled drift exceeds floating-point capacity")
+        demand(
+            torch.isfinite(scaled),
+            lambda: ValueError("Wiener scaled drift exceeds floating-point capacity"),
+        )
         lower, upper = _choice_probabilities(scaled, self.bias)
         lower_mean, lower_var = _conditional_moments(
             self.boundary, scaled, 1 - self.bias, self.bias

@@ -45,6 +45,7 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from torch.distributions.utils import lazy_property
 
+from quivers._positions import demand
 from quivers._count_capacity import _MAX_EXACT_COUNT, _check_scalar_count_capacity
 from quivers.continuous._count_cdf import _CountCDF
 
@@ -87,13 +88,17 @@ class _ValidatedCategorical(_CountCDF, D.Categorical):
             probs = torch.as_tensor(probs)
             if probs.ndim < 1 or probs.shape[-1] == 0:
                 raise ValueError("Categorical probs require a nonempty category axis")
-            if not bool((torch.isfinite(probs) & (probs >= 0)).all()):
-                raise ValueError("Categorical probs must be finite and nonnegative")
+            demand(
+                torch.isfinite(probs) & (probs >= 0),
+                lambda: ValueError("Categorical probs must be finite and nonnegative"),
+            )
             largest = probs.amax(-1, keepdim=True)
-            if not bool((largest > 0).all()):
-                raise ValueError(
+            demand(
+                largest > 0,
+                lambda: ValueError(
                     "Categorical probs must have a positive total in every row"
-                )
+                ),
+            )
             # Rescaling also keeps sums of valid finite weights from overflowing.
             probs = probs / largest
         super().__init__(probs=probs, logits=logits, validate_args=validate_args)
@@ -200,10 +205,12 @@ class _CountSourceCapacity(torch.autograd.Function):
                     outside = outside & torch.isfinite(value)
             elif value.is_floating_point():
                 outside = outside | torch.isposinf(value)
-            if bool(outside.any()):
-                raise ValueError(
+            demand(
+                ~outside,
+                lambda: ValueError(
                     f"{label} exceed the exact float64 integer capacity 2**53"
-                )
+                ),
+            )
         return value
 
     @staticmethod
@@ -369,12 +376,12 @@ def _require_sample_capacity(value: torch.Tensor) -> torch.Tensor:
         If a value is negative, nonfinite, or exceeds 2**53. This is an
         operational failure, not truncation or conditioning of the law.
     """
-    if not bool(
-        (torch.isfinite(value) & (value >= 0) & (value <= _MAX_EXACT_COUNT)).all()
-    ):
-        raise RuntimeError(
+    demand(
+        torch.isfinite(value) & (value >= 0) & (value <= _MAX_EXACT_COUNT),
+        lambda: RuntimeError(
             "count sampling exceeds the exact float64 integer capacity 2**53"
-        )
+        ),
+    )
     return value
 
 
@@ -722,10 +729,12 @@ def _require_counts(value: torch.Tensor) -> None:
     ValueError
         If a value is negative or not an integer.
     """
-    if not bool(_constraints.nonnegative_integer.check(value).all()):
-        raise ValueError(
-            f"a binomial count must be a nonnegative integer, got {value.tolist()}"
-        )
+    demand(
+        _constraints.nonnegative_integer.check(value),
+        lambda: ValueError(
+            f"a binomial count must be a nonnegative integer, got {value}"
+        ),
+    )
 
 
 class ClosedBernoulli(_CountCDF, D.Bernoulli):
@@ -887,10 +896,12 @@ class ClosedBinomial(_CountCDF, D.Binomial):
             value = _require_sample_capacity(
                 torch.binomial(n, self.probs.expand(shape))
             )
-            if not bool(((value <= n) & (value == value.floor())).all()):
-                raise RuntimeError(
+            demand(
+                (value <= n) & (value == value.floor()),
+                lambda: RuntimeError(
                     "binomial sampler returned a noninteger count or a count above remaining trials"
-                )
+                ),
+            )
             return value
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
@@ -1142,16 +1153,20 @@ class ClosedGeometric(_CountCDF, D.Geometric):
             raise ValueError("Geometric requires exactly one of probs and logits")
         if probs is not None:
             probs = torch.as_tensor(probs).double()
-            if not bool(((probs > 0) & (probs <= 1) & torch.isfinite(probs)).all()):
-                raise ValueError(
+            demand(
+                (probs > 0) & (probs <= 1) & torch.isfinite(probs),
+                lambda: ValueError(
                     "Geometric requires proper success probabilities in (0,1]"
-                )
+                ),
+            )
         else:
             logits = torch.as_tensor(logits).double()
-            if bool((torch.isnan(logits) | torch.isneginf(logits)).any()):
-                raise ValueError(
+            demand(
+                ~(torch.isnan(logits) | torch.isneginf(logits)),
+                lambda: ValueError(
                     "Geometric logits cannot denote zero success probability"
-                )
+                ),
+            )
         super().__init__(probs=probs, logits=logits, validate_args=False)
         self._closed_probs = self.probs if probs is not None else None
         self._validate_args = bool(validate_args)

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import torch
 
+from quivers._positions import demand
 from quivers.stochastic.semiring import (
     BooleanSemiring,
     ChartSemiring,
@@ -152,17 +153,21 @@ def _log_star(matrix: torch.Tensor) -> torch.Tensor:
         If the matrix contains NaN or positive infinity.
     """
     n = _check_square(matrix)
-    if bool((torch.isnan(matrix) | torch.isposinf(matrix)).any()):
-        raise ValueError("log closure requires finite weights or negative infinity")
+    demand(
+        ~(torch.isnan(matrix) | torch.isposinf(matrix)),
+        lambda: ValueError("log closure requires finite weights or negative infinity"),
+    )
     star = matrix
     indices = torch.arange(n, device=matrix.device)
     for k in range(n):
         loop = star[k, k]
-        if not bool(loop < 0):
-            raise DivergentClosureError(
+        demand(
+            loop < 0,
+            lambda: DivergentClosureError(
                 "the unary rules' closure diverges: an effective return weight "
                 "is at least one"
-            )
+            ),
+        )
         repeat = -torch.log(-torch.expm1(loop))
         through = star[:, k, None] + repeat + star[None, k, :]
         empty = torch.isneginf(star) & torch.isneginf(through)

@@ -1891,7 +1891,7 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'formulas'", specifier = ">=1.6" },
     { name = "scipy", marker = "extra == 'targets'", specifier = ">=1.14" },
     { name = "textual", marker = "extra == 'repl'", specifier = ">=0.83" },
-    { name = "torch", specifier = ">=2.1" },
+    { name = "torch", specifier = ">=2.11" },
     { name = "tree-sitter", specifier = ">=0.21" },
     { name = "xarray", marker = "extra == 'diagnostics'", specifier = ">=2025.1" },
     { name = "xarray", marker = "extra == 'formulas'", specifier = ">=2025.1" },

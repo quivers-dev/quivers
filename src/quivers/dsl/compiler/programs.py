@@ -9,10 +9,18 @@ from __future__ import annotations
 import inspect
 from abc import abstractmethod
 import math
-from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Hashable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from itertools import product as _cartesian_product
 from numbers import Integral, Real as RealNumber
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
+from quivers._positions import branch
 from quivers._observation import EVENT_OPTIONS, ObservationEvent
 import didactic.api as dx
 import torch
@@ -53,6 +61,8 @@ from quivers.continuous.program_steps import (
     Score,
     Step,
     StepArgument,
+    mappable,
+    mapping_of,
     reading,
     reads_of,
 )
@@ -958,7 +968,7 @@ def _concatenation(names: tuple[str, ...]) -> Callable[[dict], torch.Tensor]:
         """
         return torch.cat([env[name] for name in names], dim=-1)
 
-    return reading(concatenate, names)
+    return _compiled_step(concatenate, names)
 
 
 def _input_name(decl: ProgramDecl) -> str:
@@ -1319,6 +1329,83 @@ def _classwise_let(
         return torch.stack(values).reshape(*sizes, *values[0].shape)
 
     return evaluate
+
+
+CompiledFunction = TypeVar("CompiledFunction", bound=Callable[..., object])
+
+
+def _first_obstacle(
+    *parts: Callable[[dict[str, LetValue]], LetValue] | ContinuousMorphism,
+) -> str | None:
+    """Why a step built of parts cannot be mapped over many positions.
+
+    Parameters
+    ----------
+    *parts : Callable or ContinuousMorphism
+        The compiled functions and morphisms the step evaluates.
+
+    Returns
+    -------
+    str | None
+        The first part's obstacle, or ``None`` when every part can be
+        mapped.
+    """
+    for part in parts:
+        obstacle = (
+            part.mapping_obstacle()
+            if isinstance(part, ContinuousMorphism)
+            else mapping_of(part).obstacle
+        )
+        if obstacle is not None:
+            return obstacle
+    return None
+
+
+def _shared_reads(
+    functions: Iterable[Callable[[dict[str, LetValue]], LetValue]],
+) -> set[str]:
+    """The names compiled functions need the same at every position.
+
+    Parameters
+    ----------
+    functions : Iterable[Callable]
+        The functions.
+
+    Returns
+    -------
+    set[str]
+        The names any of them declares shared.
+    """
+    return {name for function in functions for name in mapping_of(function).shared}
+
+
+def _compiled_step(
+    function: CompiledFunction,
+    reads: Iterable[str],
+    obstacle: str | None = None,
+    shared: Iterable[str] = (),
+) -> CompiledFunction:
+    """Declare what a compiled step function reads and whether it maps.
+
+    Parameters
+    ----------
+    function : CompiledFunction
+        The function.
+    reads : Iterable[str]
+        The names it reads.
+    obstacle : str | None
+        Why it cannot be evaluated at many positions in one pass, or
+        ``None`` when it can.
+    shared : Iterable[str]
+        The names among them whose values must be the same at every
+        position.
+
+    Returns
+    -------
+    CompiledFunction
+        The same function, carrying both declarations.
+    """
+    return mappable(reading(function, reads), obstacle, shared)
 
 
 def _checked_layout(
@@ -4573,7 +4660,10 @@ class _ProgramsMixin:
                     )
                 bound_vars[step.latent_name] = None
                 steps.append(
-                    Let(name=step.latent_name, value=reading(_grouped_latent_init, ()))
+                    Let(
+                        name=step.latent_name,
+                        value=_compiled_step(_grouped_latent_init, ()),
+                    )
                 )
                 continue
             if isinstance(step, GroupedBodyObserveStep):
@@ -4957,7 +5047,7 @@ class _ProgramsMixin:
                 steps.append(
                     Let(
                         name=ll_slot,
-                        value=reading(
+                        value=_compiled_step(
                             _captured_observe,
                             (
                                 resp_var,
@@ -4976,6 +5066,8 @@ class _ProgramsMixin:
                                     else ()
                                 ),
                             ),
+                            family.mapping_obstacle(),
+                            (step.weights,) if isinstance(step.weights, str) else (),
                         ),
                     )
                 )
@@ -5470,14 +5562,14 @@ class _ProgramsMixin:
                             Score(
                                 name=marg_name,
                                 role="likelihood",
-                                score=reading(
+                                score=_compiled_step(
                                     _marginalize_grouped_callable, marginal_reads
                                 ),
                             )
                             if not is_nested_inner
                             else Let(
                                 name=marg_name,
-                                value=reading(
+                                value=_compiled_step(
                                     _marginalize_grouped_callable, marginal_reads
                                 ),
                             )
@@ -5570,7 +5662,7 @@ class _ProgramsMixin:
                         step.col,
                     )
                     reads = self._let_reads(step.value)
-                    compiled_fn = reading(
+                    compiled_fn = self._compiled_let(
                         _checked_layout(
                             self._locate_let_failure(
                                 self._compile_let_expr(
@@ -5589,6 +5681,7 @@ class _ProgramsMixin:
                             step.name,
                         ),
                         reads,
+                        step.value,
                     )
                     if step.name in classwise_bindings:
                         classes = tuple(
@@ -5596,7 +5689,7 @@ class _ProgramsMixin:
                             for name in class_sizes
                             if name in grouped_dependencies[step.name]
                         )
-                        compiled_fn = reading(
+                        compiled_fn = self._compiled_let(
                             _classwise_let(
                                 compiled_fn,
                                 classes,
@@ -5612,6 +5705,7 @@ class _ProgramsMixin:
                                 },
                             ),
                             reads,
+                            step.value,
                         )
                     bound_vars[step.name] = None
                     let_space = _let_space(
@@ -5651,7 +5745,7 @@ class _ProgramsMixin:
                     step.col,
                 )
                 reads = self._let_reads(step.value)
-                compiled_fn = reading(
+                compiled_fn = self._compiled_let(
                     _checked_layout(
                         self._locate_let_failure(
                             self._compile_let_expr(
@@ -5670,6 +5764,7 @@ class _ProgramsMixin:
                         step.name,
                     ),
                     reads,
+                    step.value,
                 )
                 bound_vars[step.name] = None
                 steps.append(Score(name=step.name, score=compiled_fn))
@@ -6263,7 +6358,7 @@ class _ProgramsMixin:
                 compiled.append(
                     (
                         let.name,
-                        reading(
+                        self._compiled_let(
                             _checked_layout(
                                 self._compile_let_expr(let.value, globals_=globals_),
                                 reads,
@@ -6271,6 +6366,7 @@ class _ProgramsMixin:
                                 let.name,
                             ),
                             reads,
+                            let.value,
                         ),
                     )
                 )
@@ -6464,7 +6560,15 @@ class _ProgramsMixin:
         return Score(
             name=step.name,
             role="likelihood",
-            score=reading(_chain_marginal, chain_reads),
+            score=_compiled_step(
+                _chain_marginal,
+                chain_reads,
+                _first_obstacle(
+                    *(fn for _, fn in (*prefix, *body_lets)),
+                    *(family for family, *_ in emissions),
+                ),
+                _shared_reads(fn for _, fn in (*prefix, *body_lets)),
+            ),
         )
 
     def _compile_call(
@@ -6632,7 +6736,7 @@ class _ProgramsMixin:
                     bstep.col,
                 )
                 body_reads = self._let_reads(bstep.value)
-                fn = reading(
+                fn = self._compiled_let(
                     _checked_layout(
                         self._compile_let_expr(
                             bstep.value, globals_=deductions_globals
@@ -6646,6 +6750,7 @@ class _ProgramsMixin:
                         bstep.name,
                     ),
                     body_reads,
+                    bstep.value,
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
@@ -6912,7 +7017,9 @@ class _ProgramsMixin:
         steps.append(
             Let(
                 name=latent_name,
-                value=reading(_latent_prior_sample, _arg_names((prior_arg,))),
+                value=mappable(
+                    reading(_latent_prior_sample, _arg_names((prior_arg,))), draws=True
+                ),
             )
         )
         marginal_reads: set[str] = {*_arg_names((prior_arg,)), "_x_input"}
@@ -6945,7 +7052,20 @@ class _ProgramsMixin:
             Score(
                 name=marg_name,
                 role="likelihood",
-                score=reading(_ungrouped_marginal, marginal_reads),
+                score=_compiled_step(
+                    _ungrouped_marginal,
+                    marginal_reads,
+                    _first_obstacle(
+                        *(fn for _, fn in body_lets),
+                        *(() if obs_family is None else (obs_family,)),
+                    ),
+                    _shared_reads(fn for _, fn in body_lets)
+                    | (
+                        {observation_weights}
+                        if isinstance(observation_weights, str)
+                        else set()
+                    ),
+                ),
             )
         )
 
@@ -8263,6 +8383,64 @@ class _ProgramsMixin:
                 reads |= set(function.latent_sites.values())
         return frozenset(reads)
 
+    def _compiled_let(
+        self,
+        function: CompiledFunction,
+        reads: frozenset[str],
+        expr: LetExprNode,
+    ) -> CompiledFunction:
+        """Declare a compiled let expression's reads and mapping.
+
+        Parameters
+        ----------
+        function : CompiledFunction
+            The compiled expression.
+        reads : frozenset[str]
+            The names it reads.
+        expr : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        CompiledFunction
+            The same function. A ``filter`` keeps as many entries as its
+            predicate accepts, so what an expression with one reads must
+            be the same at every position.
+        """
+        return _compiled_step(
+            function,
+            reads,
+            self._let_obstacle(expr),
+            reads if "filter" in free_let_callees(expr) else (),
+        )
+
+    def _let_obstacle(self, expr: LetExprNode) -> str | None:
+        """Why a let expression cannot be mapped over many positions.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        str | None
+            The reason: a learned function or deduction that does not
+            declare its computation mappable. ``None`` when every
+            operation of the expression maps.
+        """
+        for callee in free_let_callees(expr):
+            function = self._morphisms.get(callee)
+            if isinstance(function, LearnedFunction):
+                obstacle = function.mapping_obstacle()
+                if obstacle is not None:
+                    return obstacle
+        for name in free_let_names(expr):
+            deduction = getattr(self, "_deductions", {}).get(name)
+            if deduction is not None and not deduction.mappable:
+                return f"deduction {name!r} does not declare its chart mappable"
+        return None
+
     def _function_widths(self) -> dict[str, int]:
         """The codomain width of every learned function, by name.
 
@@ -8675,7 +8853,7 @@ class _ProgramsMixin:
                             raise ValueError(
                                 "a lazy conditional requires a scalar Boolean; use factor for rowwise branches"
                             )
-                        condition = bool(condition)
+                        return branch(condition, arg_fns[1], arg_fns[2], env)
                     if type(condition) is not bool:
                         raise ValueError("a lazy conditional requires a scalar Boolean")
                     return arg_fns[1 if condition else 2](env)
@@ -8860,6 +9038,7 @@ class _ProgramsMixin:
                         return d1_axioms + d2_axioms
 
                     composed = second.with_(
+                        mappable=first.mappable and second.mappable,
                         axiom_injector=_composed_injector,
                         modules={**first.modules, **second.modules},
                     )

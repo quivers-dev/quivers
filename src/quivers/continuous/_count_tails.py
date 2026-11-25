@@ -9,55 +9,13 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from quivers.continuous._beta_tails import _log_front
+from quivers._positions import demand, elementwise
+from quivers.continuous._beta_tails import _log_front, tensor_beta_fraction
 from quivers.continuous._closed_probability import (
     _log_gamma_increment,
     _beta_binomial_log_mass,
 )
 from quivers.continuous._ordered import _log1mexp
-from quivers.qiec._beta_tails import beta_fraction
-
-
-def _fraction(a: Tensor, b: Tensor, x: Tensor) -> Tensor:
-    """Evaluate the shared bounded incomplete-Beta recurrence.
-
-    Parameters
-    ----------
-    a, b, x : Tensor
-        Valid recurrence arguments; b may be zero for an explicit NB limit.
-
-    Returns
-    -------
-    Tensor
-        Continued-fraction factor.
-    """
-
-    def nonzero(value):
-        """Keep recurrence denominators nonzero without changing their sign.
-
-        Parameters
-        ----------
-        value : Tensor
-            Continued-fraction denominator.
-
-        Returns
-        -------
-        Tensor
-            Sign-preserving denominator bounded away from zero.
-        """
-        return torch.where(
-            value.abs() < 1e-300, torch.where(value < 0, -1e-300, 1e-300), value
-        )
-
-    return beta_fraction(
-        a,
-        b,
-        x,
-        nonzero=nonzero,
-        converged=lambda change: bool(
-            ((change - 1).abs() <= 8 * torch.finfo(torch.float64).eps).all()
-        ),
-    )
 
 
 def _beta_log_pair(a, b, log_x, log_q):
@@ -94,7 +52,7 @@ def _beta_log_pair(a, b, log_x, log_q):
         + b * (lq + math.log(2))
     )
     front = torch.where(representable, front, extreme)
-    lower = (front + _fraction(a, b, x).log() - a.log()).clamp_max(0)
+    lower = (front + tensor_beta_fraction(a, b, x).log() - a.log()).clamp_max(0)
     safe_lower = torch.where(lower < 0, lower, -1.0)
     upper = torch.where(lower < 0, _log1mexp(safe_lower), -torch.inf)
     cdf, sf = torch.where(swap, upper, lower), torch.where(swap, lower, upper)
@@ -164,8 +122,7 @@ def binomial_log_tails(
     total, value, parameter = torch.broadcast_tensors(
         total.double(), value.double(), parameter.double()
     )
-    if bool(value.isnan().any()):
-        raise ValueError("count CDF query must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("count CDF query must not be NaN"))
     p, q, lp, lq = _coordinates(parameter, logits=logits)
     k = value.floor()
     active = (k >= 0) & (k < total)
@@ -217,8 +174,7 @@ def negative_binomial_log_tails(
     total, value, parameter = torch.broadcast_tensors(
         total.double(), value.double(), parameter.double()
     )
-    if bool(value.isnan().any()):
-        raise ValueError("count CDF query must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("count CDF query must not be NaN"))
     p, q, lp, lq = _coordinates(parameter, logits=logits)
     k = value.floor()
     active = (k >= 0) & torch.isfinite(k)
@@ -238,7 +194,7 @@ def negative_binomial_log_tails(
         + _log_gamma_increment(a, r)
         - torch.lgamma(1 + r)
         - a.log()
-        + _fraction(a, r, x).log()
+        + tensor_beta_fraction(a, r, x).log()
     )
     tail = r * log_factor.exp()
     cdf_small = torch.log1p(-tail)
@@ -253,7 +209,9 @@ def negative_binomial_log_tails(
         + a_reflected * torch.where(reflected, lp, -math.log(2))
         + _log_gamma_increment(a_reflected, r_reflected)
         - torch.lgamma(1 + r_reflected)
-        + _fraction(r_reflected, a_reflected, torch.where(reflected, q, 0.5)).log()
+        + tensor_beta_fraction(
+            r_reflected, a_reflected, torch.where(reflected, q, 0.5)
+        ).log()
     ).clamp_max(0.0)
     cdf_small = torch.where(reflected, log_reflected, cdf_small)
     sf_small = torch.where(
@@ -412,6 +370,7 @@ def _beta_binomial_tail_sum(n, a, b, counts, upper, max_terms):
     return torch.cat(pieces)[torch.cat(positions).argsort()]
 
 
+@elementwise
 def beta_binomial_log_tails(
     total, value, concentration1, concentration0, *, max_terms=262144
 ):
@@ -442,8 +401,7 @@ def beta_binomial_log_tails(
     total, value, a, b = torch.broadcast_tensors(
         total.double(), value.double(), concentration1.double(), concentration0.double()
     )
-    if bool(value.isnan().any()):
-        raise ValueError("count CDF query must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("count CDF query must not be NaN"))
     shape = total.shape
     n, k, a, b = (v.flatten() for v in (total, value.floor(), a, b))
     active = (k >= 0) & (k < n)
@@ -502,8 +460,7 @@ def bernoulli_log_tails(parameter, value, *, logits=False):
     parameter, value = torch.broadcast_tensors(
         parameter.double(), torch.as_tensor(value, device=parameter.device).double()
     )
-    if bool(value.isnan().any()):
-        raise ValueError("count CDF query must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("count CDF query must not be NaN"))
     _, _, lp, lq = _coordinates(parameter, logits=logits)
     return (
         torch.where(value < 0, -torch.inf, torch.where(value < 1, lq, 0.0)),
@@ -534,8 +491,7 @@ def categorical_log_tails(probs, value, *, logits=False):
         If a query contains NaN.
     """
     value = torch.as_tensor(value, device=probs.device).double()
-    if bool(value.isnan().any()):
-        raise ValueError("count CDF query must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("count CDF query must not be NaN"))
     shape = torch.broadcast_shapes(probs.shape[:-1], value.shape)
     probs = probs.double().expand(shape + (probs.shape[-1],))
     k = value.expand(shape).floor()
@@ -727,8 +683,7 @@ def poisson_log_tails(rate, value):
         If a query contains NaN.
     """
     value = torch.as_tensor(value, device=rate.device).double()
-    if bool(value.isnan().any()):
-        raise ValueError("count CDF query must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("count CDF query must not be NaN"))
     rate, value = torch.broadcast_tensors(rate.double(), value)
     count = value.floor()
     active = (count >= 0) & torch.isfinite(count)
@@ -818,8 +773,7 @@ def geometric_log_tails(parameter, value, *, logits=False):
     parameter, value = torch.broadcast_tensors(
         parameter.double(), torch.as_tensor(value, device=parameter.device).double()
     )
-    if bool(value.isnan().any()):
-        raise ValueError("count CDF query must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("count CDF query must not be NaN"))
     from quivers.continuous._zero_truncated_poisson import positive_poisson_log_mean
 
     p, q, success, failure = _coordinates(parameter, logits=logits)
@@ -893,15 +847,15 @@ def distribution_count_log_tails(distribution, value):
             )
         logits = "logits" in stored
         parameter = stored["logits" if logits else "probs"]
-        if bool(
-            (
+        demand(
+            ~(
                 torch.isnan(parameter)
                 | (torch.isneginf(parameter) if logits else (parameter <= 0))
-            ).any()
-        ):
-            raise ValueError(
+            ),
+            lambda: ValueError(
                 "Geometric requires a proper success probability in (0, 1]"
-            )
+            ),
+        )
         return geometric_log_tails(parameter, value, logits=logits)
     if isinstance(
         distribution, (D.Bernoulli, D.Binomial, D.NegativeBinomial, D.Categorical)

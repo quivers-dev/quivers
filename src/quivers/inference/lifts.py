@@ -45,11 +45,13 @@ from quivers.continuous.program_steps import (
     Scan,
     Score,
     Step,
+    mappable,
     reading,
 )
 from quivers.continuous.programs import step_key
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import Euclidean
+from quivers.effects.joint_plan import joint_obstacle
 from quivers.core.objects import Unit
 from quivers.inference.registry import _require_one_run
 
@@ -161,6 +163,7 @@ def _make_normal_prior_morphism(scale: float, dim: int = 1) -> "FixedDistributio
         make_dist=_make,
         discrete=False,
         support=_constraints.real,
+        mappable=True,
     )
 
 
@@ -353,7 +356,13 @@ def bayesian_lift_parameters(
         return ll - placeholder_log_prior
 
     steps.append(
-        Score(name="log_lik", score=reading(_score_fn, [*param_sites, *latent_sites]))
+        Score(
+            name="log_lik",
+            score=mappable(
+                reading(_score_fn, [*param_sites, *latent_sites]),
+                joint_obstacle(inner_model),
+            ),
+        )
     )
     lifted = MonadicProgram(
         domain=Unit,

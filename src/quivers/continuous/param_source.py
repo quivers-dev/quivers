@@ -95,6 +95,8 @@ class LinearSource(ParamSource):
     its transpiled counterpart.
     """
 
+    mappable: bool = True
+
     def __init__(self, domain_dim: int, param_dim: int, bias: bool = True) -> None:
         super().__init__()
         self._domain_dim = int(domain_dim)
@@ -118,6 +120,8 @@ class MLPSource(ParamSource):
     wider, deeper, or differently-activated network drops in the
     same constructor.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -155,6 +159,8 @@ class LookupSource(ParamSource):
     per-index parameter vector.
     """
 
+    mappable: bool = True
+
     def __init__(self, n_entries: int, param_dim: int) -> None:
         super().__init__()
         self._n_entries = int(n_entries)
@@ -176,6 +182,8 @@ class EmbeddingSource(ParamSource):
     through an `nn.Embedding` and the resulting dense vector feeds a
     user-supplied head (linear, MLP, or attention).
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -228,6 +236,8 @@ class AttentionSource(ParamSource):
     bias : bool
         Whether the attention projections and the head carry biases.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -325,6 +335,8 @@ class SelfAttentionSource(ParamSource):
         If a width or the head count is not positive, or the head count
         does not divide the model width.
     """
+
+    mappable: bool = True
 
     def __init__(
         self, domain_dim: int, model_dim: int, heads: int, causal: bool
@@ -445,6 +457,8 @@ class PositionSource(ParamSource):
         If a size is not positive.
     """
 
+    mappable: bool = True
+
     def __init__(self, dim: int, max_length: int) -> None:
         super().__init__()
         if dim < 1 or max_length < 1:
@@ -519,6 +533,8 @@ class IdentitySource(ParamSource):
     be declared at construction.
     """
 
+    mappable: bool = True
+
     def __init__(self, param_dim: int) -> None:
         super().__init__()
         self._param_dim = int(param_dim)
@@ -535,12 +551,29 @@ class IdentitySource(ParamSource):
 
 class FunctionSource(ParamSource):
     """Wraps an arbitrary `nn.Module` or callable as a `ParamSource`.
-    The user supplies the module and declares its output dim; the
+    The caller gives the module and declares its output dim; the
     machinery around conditional families sees a uniform interface.
+
+    Parameters
+    ----------
+    fn : Callable[[Tensor], Tensor]
+        The module or callable.
+    param_dim : int
+        The width of its output.
+    mappable : bool
+        Whether ``fn`` can be evaluated at many positions in one pass: it
+        is a tensor computation that branches on no value.
     """
 
-    def __init__(self, fn: Callable[[Tensor], Tensor], param_dim: int) -> None:
+    def __init__(
+        self,
+        fn: Callable[[Tensor], Tensor],
+        param_dim: int,
+        *,
+        mappable: bool = False,
+    ) -> None:
         super().__init__()
+        self.mappable = mappable
         self._param_dim = int(param_dim)
         if isinstance(fn, nn.Module):
             self._module: nn.Module | None = fn
@@ -566,6 +599,8 @@ class ComposeSource(ParamSource):
     building sequential architectures from primitives (e.g.
     `Compose(MLPSource(...), LinearSource(...))`).
     """
+
+    mappable: bool = True
 
     def __init__(self, outer: ParamSource, inner: ParamSource) -> None:
         super().__init__()

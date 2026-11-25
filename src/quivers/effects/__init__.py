@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from quivers.effects import (
     base as _base,
+    batching as _batching,
     block as _block,
     checked_program as _checked_program,
     clamp as _clamp,
@@ -57,6 +58,7 @@ from quivers.effects import (
     trace_types as _trace_types,
 )
 from quivers.effects.base import *  # noqa: F403
+from quivers.effects.batching import *  # noqa: F403
 from quivers.effects.block import *  # noqa: F403
 from quivers.effects.checked_program import *  # noqa: F403
 from quivers.effects.clamp import *  # noqa: F403
@@ -96,6 +98,7 @@ __all__: list[str] = [
     "reparam",
 ]
 __all__ += _base.__all__
+__all__ += _batching.__all__
 __all__ += _block.__all__
 __all__ += _checked_program.__all__
 __all__ += _clamp.__all__

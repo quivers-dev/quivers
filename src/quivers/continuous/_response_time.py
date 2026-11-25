@@ -9,6 +9,7 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers._positions import demand
 from quivers.continuous._gaussian_tails import (
     exgaussian_log_component,
     log_erfcx_positive,
@@ -82,8 +83,10 @@ class ExGaussian(Distribution):
         )
 
     def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
-        if bool(torch.isnan(value).any()):
-            raise ValueError("ExGaussian tails require non-NaN evaluation points")
+        demand(
+            ~torch.isnan(value),
+            lambda: ValueError("ExGaussian tails require non-NaN evaluation points"),
+        )
         finite = torch.isfinite(value)
         loc, scale, rate = self.loc.double(), self.scale.double(), self.rate.double()
         point = torch.where(finite, value.double(), loc)
@@ -275,8 +278,12 @@ class InverseGaussian(Distribution):
         return torch.where(inside, result, torch.full_like(result, -math.inf))
 
     def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
-        if bool(torch.isnan(value).any()):
-            raise ValueError("InverseGaussian tails require non-NaN evaluation points")
+        demand(
+            ~torch.isnan(value),
+            lambda: ValueError(
+                "InverseGaussian tails require non-NaN evaluation points"
+            ),
+        )
         inside = (value > 0) & torch.isfinite(value)
         mu, shape = self.mu.double(), self.shape.double()
         point = torch.where(inside, value.double(), mu)

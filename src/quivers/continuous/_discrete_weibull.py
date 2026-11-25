@@ -3,6 +3,7 @@
 import math
 
 import torch
+from quivers._positions import demand
 from quivers.continuous._closed_probability import _check_count_observation_source
 from torch import Tensor
 from torch.distributions import Distribution, constraints
@@ -254,8 +255,14 @@ class DiscreteWeibull(Distribution):
             dtype=torch.float64,
             device=self.probs.device,
         )
-        if bool(torch.isnan(lower).any()) or bool(torch.isnan(upper).any()):
-            raise ValueError("interval endpoints must not be NaN")
+        demand(
+            ~torch.isnan(lower),
+            lambda: ValueError("interval endpoints must not be NaN"),
+        )
+        demand(
+            ~torch.isnan(upper),
+            lambda: ValueError("interval endpoints must not be NaN"),
+        )
         first = torch.where(
             torch.as_tensor(lower_closed, device=lower.device),
             lower.ceil(),

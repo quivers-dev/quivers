@@ -9,6 +9,7 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers._positions import demand
 from quivers.continuous._ordinal import _log1mexp
 
 
@@ -155,8 +156,10 @@ def _check_probability(value: Tensor) -> None:
     ValueError
         If a value is outside the closed unit interval.
     """
-    if not bool(constraints.unit_interval.check(value).all()):
-        raise ValueError("icdf probabilities must be in [0,1]")
+    demand(
+        constraints.unit_interval.check(value),
+        lambda: ValueError("icdf probabilities must be in [0,1]"),
+    )
 
 
 class ShiftedLogNormal(Distribution):

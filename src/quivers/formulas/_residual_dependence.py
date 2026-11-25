@@ -49,6 +49,7 @@ from torch.distributions import (
     constraints,
 )
 
+from quivers._positions import anywhere, demand
 from quivers._values import ValueModel, opaque_by_value
 from quivers.continuous._observation_events import event_log_prob
 from quivers.continuous.measure import Normalize, Restrict
@@ -82,8 +83,12 @@ def _vector(value: torch.Tensor, name: str) -> None:
     """
     if not isinstance(value, torch.Tensor) or value.ndim < 1 or not value.shape[-1]:
         raise ValueError(f"{name} requires a nonempty vector")
-    if not value.is_floating_point() or not bool(torch.isfinite(value).all()):
+    if not value.is_floating_point():
         raise ValueError(f"{name} requires finite floating values")
+    demand(
+        torch.isfinite(value),
+        lambda: ValueError(f"{name} requires finite floating values"),
+    )
 
 
 def _matrix_tuple(
@@ -161,15 +166,14 @@ def arma_factor(
         finite, or the stationary covariance is requested outside its domain.
     """
     _vector(scale, "residual scale")
-    if not bool((scale > 0).all()):
-        raise ValueError("residual scales must be positive")
+    demand(scale > 0, lambda: ValueError("residual scales must be positive"))
     for name, value in (("ar", ar), ("ma", ma)):
-        if (
-            value.ndim < 1
-            or not value.is_floating_point()
-            or not bool(torch.isfinite(value).all())
-        ):
+        if value.ndim < 1 or not value.is_floating_point():
             raise ValueError(f"{name} requires a finite coefficient vector")
+        demand(
+            torch.isfinite(value),
+            lambda: ValueError(f"{name} requires a finite coefficient vector"),
+        )
     count = scale.shape[-1]
     batch = torch.broadcast_shapes(scale.shape[:-1], ar.shape[:-1], ma.shape[:-1])
     if stationary:
@@ -225,8 +229,7 @@ def stationary_arma_covariance(
     ValueError
         If ``abs(phi) >= 1``, where no stationary process exists.
     """
-    if not bool((phi.abs() < 1).all()):
-        raise ValueError("stationary ARMA requires abs(ar) < 1")
+    demand(phi.abs() < 1, lambda: ValueError("stationary ARMA requires abs(ar) < 1"))
     positions = torch.arange(count, device=phi.device)
     lag = (positions[:, None] - positions[None, :]).abs()
     variance = (1 + theta.square() + 2 * phi * theta) / (1 - phi.square())
@@ -263,11 +266,19 @@ def compound_symmetry_factor(scale: torch.Tensor, rho: torch.Tensor) -> torch.Te
     """
     _vector(scale, "residual scale")
     count = scale.shape[-1]
-    if not bool(torch.isfinite(rho).all()) or not bool((scale > 0).all()):
-        raise ValueError("residual scales and correlation must be finite and valid")
-    if count > 1 and not bool(((rho > -1 / (count - 1)) & (rho < 1)).all()):
-        raise ValueError(
-            "compound symmetry correlation is outside its positive-definite domain"
+    for valid in (torch.isfinite(rho), scale > 0):
+        demand(
+            valid,
+            lambda: ValueError(
+                "residual scales and correlation must be finite and valid"
+            ),
+        )
+    if count > 1:
+        demand(
+            (rho > -1 / (count - 1)) & (rho < 1),
+            lambda: ValueError(
+                "compound symmetry correlation is outside its positive-definite domain"
+            ),
         )
     identity = torch.eye(count, dtype=scale.dtype, device=scale.device)
     covariance = identity + rho[..., None, None] * (1 - identity)
@@ -1039,7 +1050,7 @@ class ResidualResponse(Distribution):
                 mean = mean + ar[..., lag - 1, None] * errors[position - lag]
             current = history[..., position]
             missing = torch.isnan(current) & mask[:, position]
-            if bool(missing.any()):
+            if anywhere(missing):
                 if not fill:
                     raise ValueError("conditional ARMA scoring requires every response")
                 if self.layout.mean_order:
@@ -1966,10 +1977,16 @@ class ResidualKernel(ValueModel):
         loc, scale = parameters["loc"], parameters["scale"]
         _vector(loc, "residual location")
         _vector(scale, "residual scale")
-        if loc.shape[-1] != scale.shape[-1] or not bool((scale > 0).all()):
+        if loc.shape[-1] != scale.shape[-1]:
             raise ValueError(
                 "residual location and positive scales must share their row axis"
             )
+        demand(
+            scale > 0,
+            lambda: ValueError(
+                "residual location and positive scales must share their row axis"
+            ),
+        )
         nu = parameters["nu"] if self.student else None
         if self.kind == "arma" and not self.stationary:
             return _ARMAInnovations(loc, scale, parameters["ar"], parameters["ma"], nu)

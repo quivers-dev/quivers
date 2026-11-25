@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 from torch.distributions import Distribution
 
+from quivers._positions import anywhere, demand, everywhere, reject_unless
 from quivers.continuous._censored import _interior_point
 from quivers.continuous._interval import _reference, log_interval_mass
 
@@ -31,10 +32,12 @@ def require_truncation_mass(log_mass: Tensor) -> None:
     ValueError
         If any row's mass is zero or not finite.
     """
-    if not bool(torch.isfinite(log_mass).all()):
-        raise ValueError(
+    reject_unless(
+        torch.isfinite(log_mass),
+        lambda: ValueError(
             "truncation interval must have positive finite mass in every row"
-        )
+        ),
+    )
 
 
 def require_finite_parameters(base: Distribution) -> None:
@@ -61,14 +64,13 @@ def require_finite_parameters(base: Distribution) -> None:
         for value in vars(current).values():
             if isinstance(value, Distribution):
                 pending.append(value)
-            elif (
-                isinstance(value, Tensor)
-                and value.is_floating_point()
-                and bool((value.isnan() | value.isposinf()).any())
-            ):
-                raise ValueError(
-                    f"{type(current).__name__} parameters must not be NaN or "
-                    "positive infinity to score a recorded event"
+            if isinstance(value, Tensor) and value.is_floating_point():
+                reject_unless(
+                    ~(value.isnan() | value.isposinf()),
+                    lambda: ValueError(
+                        f"{type(current).__name__} parameters must not be NaN or "
+                        "positive infinity to score a recorded event"
+                    ),
                 )
 
 
@@ -141,13 +143,12 @@ def event_log_prob(
         if status is None
         else torch.as_tensor(status, device=value.device)
     )
-    if (
-        code.dtype == torch.bool
-        or code.is_floating_point()
-        or code.is_complex()
-        or not bool(((code >= -1) & (code <= 2)).all())
-    ):
+    if code.dtype == torch.bool or code.is_floating_point() or code.is_complex():
         raise ValueError("censoring status requires integer codes -1, 0, 1, or 2")
+    demand(
+        (code >= -1) & (code <= 2),
+        lambda: ValueError("censoring status requires integer codes -1, 0, 1, or 2"),
+    )
     code = code.long()
     shape = torch.broadcast_shapes(base.batch_shape, value.shape, code.shape)
     value, code = value.expand(shape), code.expand(shape)
@@ -161,8 +162,10 @@ def event_log_prob(
         device=reference.device,
         dtype=None if isinstance(trunc_upper, Tensor) else torch.float64,
     )
-    if bool(left.isnan().any() | right.isnan().any()) or bool((left > right).any()):
-        raise ValueError("truncation bounds must be ordered and not NaN")
+    demand(
+        left <= right,
+        lambda: ValueError("truncation bounds must be ordered and not NaN"),
+    )
     if torch.broadcast_shapes(shape, left.shape, right.shape) != shape:
         raise ValueError("truncation bounds introduce undeclared response batch axes")
     left, right = left.expand(shape), right.expand(shape)
@@ -176,19 +179,19 @@ def event_log_prob(
         require_truncation_mass(denominator)
     exact = code == 0
     result = reference.new_full(shape, -torch.inf)
-    if bool(exact.any()):
+    if anywhere(exact):
         supported = support.check(value)
         accepted = exact & supported & (value >= left) & (value <= right)
         point = value
-        if not bool(accepted.all()):
+        if not everywhere(accepted):
             interior = _interior_point(base, reference)
             point = torch.where(accepted, value, interior.to(value.dtype))
         density = base.log_prob(point)
         result = torch.where(accepted, density - denominator, result)
     censored = ~exact
-    if bool(censored.any()):
+    if anywhere(censored):
         intervals = code == 2
-        if bool(intervals.any()) and interval_upper is None:
+        if interval_upper is None and anywhere(intervals):
             raise ValueError("interval censoring requires an upper endpoint")
         upper = (
             value
@@ -204,12 +207,12 @@ def event_log_prob(
                 "interval endpoints introduce undeclared response batch axes"
             )
         upper = upper.expand(shape)
-        if bool(
-            (intervals & (~upper.isfinite() | value.isnan() | (upper <= value))).any()
-        ):
-            raise ValueError(
+        demand(
+            ~(intervals & (~upper.isfinite() | value.isnan() | (upper <= value))),
+            lambda: ValueError(
                 "interval censoring requires an upper endpoint greater than its lower endpoint"
-            )
+            ),
+        )
         lower_event = torch.where((code == 1) | intervals, value, -torch.inf)
         upper_event = torch.where(
             code == -1, value, torch.where(intervals, upper, torch.inf)

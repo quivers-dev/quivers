@@ -12,6 +12,7 @@ from torch.distributions import (
     constraints,
 )
 
+from quivers._positions import demand
 from quivers.continuous._interval import _log_tails, _log_tails_left, _reference
 
 
@@ -107,8 +108,10 @@ class Censored(Distribution):
         )
         self.base = base.expand(shape)
         self.low, self.high = self.low.expand(shape), self.high.expand(shape)
-        if not bool((self.low < self.high).all()):
-            raise ValueError("censoring bounds must be ordered and non-NaN")
+        demand(
+            self.low < self.high,
+            lambda: ValueError("censoring bounds must be ordered and non-NaN"),
+        )
         self.has_rsample = base.has_rsample
         super().__init__(
             batch_shape=shape, event_shape=torch.Size(), validate_args=False
@@ -268,8 +271,10 @@ class Censored(Distribution):
         ValueError
             If a response is NaN."""
         value = torch.as_tensor(value, dtype=self.low.dtype, device=self.low.device)
-        if bool(value.isnan().any()):
-            raise ValueError("censored response values must not be NaN")
+        demand(
+            ~value.isnan(),
+            lambda: ValueError("censored response values must not be NaN"),
+        )
         safe = _interior_point(self.base, self.low)
         interior = (value > self.low) & (value < self.high)
         density = self.base.log_prob(torch.where(interior, value, safe))
@@ -310,8 +315,10 @@ class Censored(Distribution):
         ValueError
             If an evaluation point is NaN."""
         value = torch.as_tensor(value, dtype=self.low.dtype, device=self.low.device)
-        if bool(value.isnan().any()):
-            raise ValueError("censored response values must not be NaN")
+        demand(
+            ~value.isnan(),
+            lambda: ValueError("censored response values must not be NaN"),
+        )
         interior = (
             ((value > self.low) & (value <= self.high))
             if left

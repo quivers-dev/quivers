@@ -10,6 +10,7 @@ by ``SampledComposition.log_prob``.
 from __future__ import annotations
 
 import collections.abc
+import inspect
 import math
 from abc import ABC, abstractmethod
 from typing import cast
@@ -235,6 +236,58 @@ def chain_marginal_quadrature(
     return nodes, log_weights
 
 
+def module_mapping_obstacle(module: nn.Module, scoring: str) -> str | None:
+    """Why a module's computation cannot be mapped over many positions.
+
+    A computation is mappable when it branches on no value it is given
+    except through the checks and array routines of `quivers._positions`,
+    so that `torch.func.vmap` can run it at many positions in one pass. A
+    class declares it by setting ``mappable``, for the computation it
+    defines: a subclass that defines another one declares it anew. The
+    modules of `torch.nn` are tensor operations throughout.
+
+    Parameters
+    ----------
+    module : nn.Module
+        The module.
+    scoring : str
+        The method that defines its computation.
+
+    Returns
+    -------
+    str | None
+        The first undeclared computation, or ``None`` when the module's
+        and every submodule's is declared.
+    """
+    kind = type(module)
+    declaring = next((c for c in kind.__mro__ if "mappable" in vars(c)), None)
+    defining = next((c for c in kind.__mro__ if scoring in vars(c)), nn.Module)
+    declared = vars(module).get("mappable") or (
+        declaring is not None
+        and vars(declaring)["mappable"]
+        and scoring not in vars(module)
+        and not any(
+            inspect.isfunction(value) and not name.startswith("__")
+            for derived in kind.__mro__[: kind.__mro__.index(declaring)]
+            for name, value in vars(derived).items()
+        )
+    )
+    # A container of parameters defines no computation, and the modules of
+    # torch are tensor operations throughout.
+    library = defining.__module__.partition(".")[0] == "torch"
+    if not library and not declared:
+        return f"{kind.__name__} does not declare its {scoring} mappable"
+    for child in module.children():
+        obstacle = (
+            child.mapping_obstacle()
+            if isinstance(child, ContinuousMorphism)
+            else module_mapping_obstacle(child, "forward")
+        )
+        if obstacle is not None:
+            return obstacle
+    return None
+
+
 class ContinuousMorphism(nn.Module, ABC):
     """Abstract base for morphisms involving continuous spaces.
 
@@ -255,10 +308,25 @@ class ContinuousMorphism(nn.Module, ABC):
         Target space.
     """
 
+    mappable: bool = False
+    """Whether ``log_prob`` can be evaluated at many positions in one pass,
+    as `module_mapping_obstacle` defines it."""
+
     def __init__(self, domain: AnySpace, codomain: AnySpace) -> None:
         super().__init__()
         self._domain = domain
         self._codomain = codomain
+
+    def mapping_obstacle(self) -> str | None:
+        """Why the density cannot be evaluated at many positions in one pass.
+
+        Returns
+        -------
+        str | None
+            The reason, or ``None`` when the class declares it can, as
+            does every morphism and parameter source it holds.
+        """
+        return module_mapping_obstacle(self, "log_prob")
 
     @property
     def domain(self) -> AnySpace:
@@ -726,6 +794,8 @@ class MarginalizedFactor(ContinuousMorphism):
         The underlying family whose sampling behaviour is preserved.
     """
 
+    mappable: bool = True
+
     def __init__(self, base: ContinuousMorphism) -> None:
         super().__init__(base.domain, base.codomain)
         self.base = base
@@ -828,6 +898,8 @@ class SampledComposition(ContinuousMorphism):
         ask: it scores the canonical path and integrates nothing, so
         this count does not reach `log_prob`.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -1089,6 +1161,8 @@ class ProductContinuousMorphism(ContinuousMorphism):
         Right factor morphism.
     """
 
+    mappable: bool = True
+
     def __init__(self, left: ContinuousMorphism, right: ContinuousMorphism) -> None:
         dom = _combine_spaces(left.domain, right.domain)
         cod = _combine_spaces(left.codomain, right.codomain)
@@ -1193,6 +1267,8 @@ class FanOutMorphism(ContinuousMorphism):
     components : list[ContinuousMorphism]
         The morphisms to fan out to. All must share the same domain.
     """
+
+    mappable: bool = True
 
     def __init__(self, components: list) -> None:
 
@@ -1357,6 +1433,8 @@ class DiscreteAsContinuous(ContinuousMorphism):
     inner : Morphism
         The discrete morphism to wrap.
     """
+
+    mappable: bool = True
 
     def __init__(self, inner: object) -> None:
 

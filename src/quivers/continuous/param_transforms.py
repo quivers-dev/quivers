@@ -13,6 +13,7 @@ import torch
 from torch import Tensor
 from torch.distributions import constraints
 
+from quivers._positions import reject_unless
 from quivers.continuous.bijectors import (
     AffineBijector,
     Bijector,
@@ -59,8 +60,10 @@ def positive_parameter(value: Tensor) -> Tensor:
     ValueError
         If any entry is nonpositive or NaN.
     """
-    if not bool((value > 0).all()):
-        raise ValueError("an inline positive parameter must be greater than zero")
+    reject_unless(
+        value > 0,
+        lambda: ValueError("an inline positive parameter must be greater than zero"),
+    )
     return value
 
 
@@ -89,8 +92,12 @@ def _validate_parameter(
     ValueError
         If any entry violates the constraint.
     """
-    if not bool(constraint.check(value).all()):
-        raise ValueError(description or f"inline parameter must satisfy {constraint}")
+    reject_unless(
+        constraint.check(value),
+        lambda: ValueError(
+            description or f"inline parameter must satisfy {constraint}"
+        ),
+    )
     return value
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from quivers._positions import demand
 import torch
 from torch import Tensor
 from torch.distributions import Distribution, MultivariateNormal, constraints
@@ -59,17 +60,19 @@ class AdditiveLogRatioNormal(Distribution):
         selected = torch.as_tensor(
             width if reference is None else reference, device=device
         )
-        if selected.dtype == torch.bool or not bool(
-            (
-                torch.isfinite(selected)
-                & (selected >= 0)
-                & (selected <= width)
-                & (selected == selected.floor())
-            ).all()
-        ):
+        if selected.dtype == torch.bool:
             raise ValueError(
                 "AdditiveLogRatioNormal reference must be an integer component index"
             )
+        demand(
+            torch.isfinite(selected)
+            & (selected >= 0)
+            & (selected <= width)
+            & (selected == selected.floor()),
+            lambda: ValueError(
+                "AdditiveLogRatioNormal reference must be an integer component index"
+            ),
+        )
         batch = torch.broadcast_shapes(self._normal.batch_shape, selected.shape)
         self._normal = self._normal.expand(batch)
         self.reference = selected.to(torch.long).expand(batch)

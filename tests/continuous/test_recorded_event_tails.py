@@ -36,7 +36,7 @@ from quivers.continuous._recorded_event_tails import (
 )
 from quivers.continuous._zip_hurdle import MixtureNormal, ZeroOneInflatedBeta
 from quivers.continuous.measure import Normalize, Restrict
-from quivers.inference.mcmc.kernel import _rejects_position
+from quivers._positions import rejects_position
 
 mp.mp.dps = 50
 VALUE_RTOL = 1e-12
@@ -538,7 +538,7 @@ def test_zero_truncation_mass_is_a_rejected_sampler_position():
             trunc_lower=-3.0,
             trunc_upper=-1.0,
         )
-    assert _rejects_position(caught.value)
+    assert rejects_position(caught.value)
 
 
 @pytest.mark.parametrize("kappa", [2e4, 1e8])
@@ -586,13 +586,13 @@ def test_divergent_parameters_are_rejected_sampler_positions():
         event_log_prob(
             Exponential(torch.tensor([math.inf])), torch.tensor([0.5]), status=1
         )
-    assert _rejects_position(caught.value)
+    assert rejects_position(caught.value)
     with pytest.raises(NotImplementedError, match="capacity") as capacity:
         log_com_poisson_tails(
             COMPoisson(torch.tensor(5.0), cast(float, torch.tensor(1e-14))),
             torch.tensor(1.0),
         )
-    assert _rejects_position(capacity.value)
+    assert rejects_position(capacity.value)
 
 
 def test_truncated_count_laws_sample_the_conditional_mass_by_inversion():

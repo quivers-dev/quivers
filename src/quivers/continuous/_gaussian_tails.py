@@ -4,6 +4,7 @@ import math
 import torch
 from torch import Tensor
 
+from quivers._positions import demand, elementwise
 from quivers._gaussian_series import erfcx_derivative_polynomial, erfcx_denominator
 from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8, _NODES_32, _WEIGHTS_32
 from quivers.continuous._ordered import _log1mexp
@@ -131,6 +132,7 @@ def _local_difference(x: Tensor, delta: Tensor, nodes, weights) -> Tensor:
     return delta.log() + torch.logsumexp(values + (weight / 2).log(), -1)
 
 
+@elementwise
 def log_scaled_erfcx_difference(x: Tensor, delta: Tensor) -> Tensor:
     """Evaluate exp(-x²)(erfcx(x)-erfcx(x+delta)) in log space.
 
@@ -158,14 +160,18 @@ def log_scaled_erfcx_difference(x: Tensor, delta: Tensor) -> Tensor:
         If quadrature fails to agree or log-tail capacity is exceeded.
     """
     x, delta = torch.broadcast_tensors(x.double(), delta.double())
-    if not bool((torch.isfinite(x) & torch.isfinite(delta) & (delta > 0)).all()):
-        raise ValueError(
+    demand(
+        torch.isfinite(x) & torch.isfinite(delta) & (delta > 0),
+        lambda: ValueError(
             "Gaussian divided differences require finite arguments and positive separation"
-        )
-    if bool(((x.abs() > 1e150) | (delta > 1e150)).any()):
-        raise RuntimeError(
+        ),
+    )
+    demand(
+        ~((x.abs() > 1e150) | (delta > 1e150)),
+        lambda: RuntimeError(
             "Gaussian divided difference exceeds Float64 log-tail capacity"
-        )
+        ),
+    )
     variation = torch.where(x >= 0, delta / (1 + x.abs()), delta * (1 + x.abs()))
     local = variation < 1e-3
     xx, dd = torch.where(local, 0.0, x), torch.where(local, 1.0, delta)
@@ -189,12 +195,8 @@ def log_scaled_erfcx_difference(x: Tensor, delta: Tensor) -> Tensor:
         a, d = x[local], delta[local]
         coarse = _local_difference(a, d, _NODES_8, _WEIGHTS_8)
         fine = _local_difference(a, d, _NODES_32, _WEIGHTS_32)
-        if not bool(
-            (
-                torch.isfinite(fine)
-                & ((coarse - fine).abs() <= 5e-13 * (1 + fine.abs()))
-            ).all()
-        ):
+        agreed = (coarse - fine).abs() <= 5e-13 * (1 + fine.abs())
+        if not bool((torch.isfinite(fine) & agreed).all()):
             raise RuntimeError(
                 "Gaussian divided difference quadrature failed to converge"
             )

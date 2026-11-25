@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 
+from quivers._positions import demand, everywhere
 from quivers.continuous._shape_families import _log1mexp_neg_exp
 
 
@@ -118,10 +119,13 @@ class BernsteinHazard(Distribution):
             raise ValueError("Bernstein hazard rate must be real, not Boolean")
         raw = raw.to(torch.float64)
         if rate is not None:
-            if validate_args is not False and not bool(
-                torch.all(torch.isfinite(raw) & (raw > 0))
-            ):
-                raise ValueError("Bernstein hazard rate must be finite and positive")
+            if validate_args is not False:
+                demand(
+                    torch.isfinite(raw) & (raw > 0),
+                    lambda: ValueError(
+                        "Bernstein hazard rate must be finite and positive"
+                    ),
+                )
             raw = raw.log()
         batch = torch.broadcast_shapes(
             self.breaks.shape[:-1], self.controls.shape[:-2], raw.shape
@@ -132,29 +136,28 @@ class BernsteinHazard(Distribution):
         intervals = self.breaks[..., 1:] - self.breaks[..., :-1]
         area = intervals * (self.controls / width).sum(-1)
         if validate_args is not False:
-            if not bool(
-                torch.isfinite(self.breaks).all()
-                & (self.breaks[..., 0] == 0).all()
-                & (intervals > 0).all()
-                & torch.isfinite(intervals).all()
-            ):
-                raise ValueError(
+            demand(
+                torch.isfinite(self.breaks).all(-1)
+                & (self.breaks[..., 0] == 0)
+                & ((intervals > 0) & torch.isfinite(intervals)).all(-1),
+                lambda: ValueError(
                     "Bernstein boundaries must start zero and increase finitely"
-                )
-            if not bool(
-                torch.isfinite(self.controls).all() & (self.controls > 0).all()
-            ):
-                raise ValueError(
+                ),
+            )
+            demand(
+                torch.isfinite(self.controls) & (self.controls > 0),
+                lambda: ValueError(
                     "Bernstein controls must be finite and strictly positive"
-                )
-            if not bool(torch.isfinite(self.log_rate).all()):
-                raise ValueError("Bernstein log rate must be finite")
-            if not bool(
-                torch.isclose(
-                    area.sum(-1), area.new_tensor(1.0), rtol=1e-6, atol=1e-8
-                ).all()
-            ):
-                raise ValueError("Bernstein baseline integral must equal one")
+                ),
+            )
+            demand(
+                torch.isfinite(self.log_rate),
+                lambda: ValueError("Bernstein log rate must be finite"),
+            )
+            demand(
+                torch.isclose(area.sum(-1), area.new_tensor(1.0), rtol=1e-6, atol=1e-8),
+                lambda: ValueError("Bernstein baseline integral must equal one"),
+            )
         local = (self.controls / width) * intervals[..., None]
         prefix = torch.cat(
             (torch.zeros_like(area[..., :1]), area.cumsum(-1)[..., :-1]), -1
@@ -268,8 +271,10 @@ class BernsteinHazard(Distribution):
         value = torch.as_tensor(
             value, dtype=self.controls.dtype, device=self.controls.device
         )
-        if bool(torch.isnan(value).any()):
-            raise ValueError("Bernstein hazard observation must not be NaN")
+        demand(
+            ~torch.isnan(value),
+            lambda: ValueError("Bernstein hazard observation must not be NaN"),
+        )
         return value
 
     def _log_cumulative(self, value):
@@ -422,10 +427,12 @@ class BernsteinHazard(Distribution):
         tail_hazard, tail_integral = self._baseline(upper)
         is_tail = log_target >= tail_integral.log()
         safe_target = torch.where(is_tail, (tail_integral / 2).log(), log_target).exp()
-        if bool((safe_target <= 0).any()):
-            raise FloatingPointError(
+        demand(
+            ~(safe_target <= 0),
+            lambda: FloatingPointError(
                 "Bernstein hazard positive integrated quantile is below floating-point capacity"
-            )
+            ),
+        )
         with torch.no_grad():
             primal_target = safe_target.detach()
             low, high = (
@@ -445,7 +452,7 @@ class BernsteinHazard(Distribution):
                     )
                     | (torch.nextafter(low, high) >= high)
                 )
-                if bool(done.all()):
+                if everywhere(done):
                     break
                 high = torch.where((residual > 0) & ~done, root, high)
                 low = torch.where((residual <= 0) & ~done, root, low)
@@ -486,10 +493,12 @@ class BernsteinHazard(Distribution):
         )
         tail = upper + torch.where(small, direct, log_large.exp())
         result = torch.where(is_tail, tail, root)
-        if not bool(torch.isfinite(result).all()):
-            raise FloatingPointError(
+        demand(
+            torch.isfinite(result),
+            lambda: FloatingPointError(
                 "Bernstein hazard quantile exceeds finite floating-point time capacity"
-            )
+            ),
+        )
         return result
 
     def icdf(self, value):
@@ -517,8 +526,12 @@ class BernsteinHazard(Distribution):
         value = torch.as_tensor(
             value, dtype=self.controls.dtype, device=self.controls.device
         )
-        if bool(((value < 0) | (value > 1) | torch.isnan(value)).any()):
-            raise ValueError("Bernstein hazard quantile probability must lie in [0, 1]")
+        demand(
+            ~((value < 0) | (value > 1) | torch.isnan(value)),
+            lambda: ValueError(
+                "Bernstein hazard quantile probability must lie in [0, 1]"
+            ),
+        )
         interior = (value > 0) & (value < 1)
         safe = torch.where(interior, value, value.new_tensor(0.5))
         log_target = (-torch.log1p(-safe)).log() - self.log_rate

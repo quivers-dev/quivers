@@ -19,6 +19,7 @@ from typing import Literal
 import didactic.api as dx
 import torch
 
+from quivers._positions import anywhere, demand, depends_on_position
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes.let_expressions import LetBinaryOperator
@@ -83,7 +84,7 @@ def _tensor_cholesky(value: torch.Tensor) -> torch.Tensor:
     """
     factor, info = torch.linalg.cholesky_ex(value)
     failed = info != 0
-    if bool(failed.any()):
+    if anywhere(failed):
         factor = torch.where(
             failed[..., None, None], torch.full_like(factor, torch.nan), factor
         )
@@ -108,16 +109,14 @@ def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | flo
     ValueError
         If a weight is nonfinite or negative, or the tensor dtype is not real.
     """
+    error = ValueError("observation weights must be finite and nonnegative real values")
     if isinstance(value, torch.Tensor):
-        valid = value.is_floating_point() and bool(
-            (torch.isfinite(value) & (value >= 0)).all()
-        )
-    else:
-        valid = not isinstance(value, bool) and math.isfinite(value) and value >= 0
-    if not valid:
-        raise ValueError(
-            "observation weights must be finite and nonnegative real values"
-        )
+        if not value.is_floating_point():
+            raise error
+        demand(torch.isfinite(value) & (value >= 0), lambda: error)
+        return value
+    if isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise error
     return value
 
 
@@ -143,13 +142,10 @@ def _eager_observation_status(value: torch.Tensor | int) -> torch.Tensor | int:
         from quivers.qiec.primitives import _observation_status
 
         return _observation_status(value)
-    if (
-        value.dtype == torch.bool
-        or value.is_floating_point()
-        or value.is_complex()
-        or not bool(((value >= -1) & (value <= 2)).all())
-    ):
-        raise ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    error = ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    if value.dtype == torch.bool or value.is_floating_point() or value.is_complex():
+        raise error
+    demand((value >= -1) & (value <= 2), lambda: error)
     return value
 
 
@@ -193,10 +189,12 @@ def _eager_interval_upper(
     ):
         raise ValueError("interval_upper requires real endpoints")
     low, high = endpoints
-    if not bool((~low.isnan() & high.isfinite() & (high > low)).all()):
-        raise ValueError(
+    demand(
+        ~low.isnan() & high.isfinite() & (high > low),
+        lambda: ValueError(
             "interval_upper requires a finite upper endpoint greater than its lower endpoint"
-        )
+        ),
+    )
     shape = torch.broadcast_shapes(low.shape, high.shape)
     return high if high.shape == shape else high.expand(shape)
 
@@ -223,19 +221,27 @@ def _eager_positive_parameter(value: torch.Tensor | float) -> torch.Tensor | flo
         from quivers.qiec.primitives import _positive_parameter
 
         return _positive_parameter(value)
-    if not value.is_floating_point() or not bool(
-        (torch.isfinite(value) & (value > 0)).all()
-    ):
-        invalid = (
-            ~(torch.isfinite(value) & (value > 0))
-            if value.is_floating_point()
-            else torch.ones_like(value, dtype=torch.bool)
-        )
-        positions = invalid.nonzero(as_tuple=False)[:16].detach().cpu().tolist()
-        raise ValueError(
-            "positive_parameter requires finite strictly positive real values; "
-            f"invalid tensor positions {positions}"
-        )
+    valid = (
+        torch.isfinite(value) & (value > 0)
+        if value.is_floating_point()
+        else torch.zeros_like(value, dtype=torch.bool)
+    )
+
+    def refusal() -> ValueError:
+        """The error, naming the invalid entries a run of one position has.
+
+        Returns
+        -------
+        ValueError
+            The error.
+        """
+        message = "positive_parameter requires finite strictly positive real values"
+        if depends_on_position(valid):
+            return ValueError(message)
+        found = (~valid).nonzero(as_tuple=False)[:16].detach().cpu().tolist()
+        return ValueError(f"{message}; invalid tensor positions {found}")
+
+    demand(valid, refusal)
     return value
 
 
@@ -262,10 +268,10 @@ def _eager_log_probability(value: torch.Tensor | float) -> torch.Tensor | float:
         from quivers.qiec.primitives import _log_probability
 
         return _log_probability(value)
-    if not value.is_floating_point() or not bool(
-        (torch.isfinite(value) & (value >= 0) & (value <= 1)).all()
-    ):
-        raise ValueError("log_probability requires finite real values in [0, 1]")
+    error = ValueError("log_probability requires finite real values in [0, 1]")
+    if not value.is_floating_point():
+        raise error
+    demand(torch.isfinite(value) & (value >= 0) & (value <= 1), lambda: error)
     positive = value > 0
     safe = torch.where(positive, value, torch.ones_like(value))
     return torch.where(positive, safe.log(), -torch.inf)
@@ -294,10 +300,10 @@ def _eager_log1mexp(value: torch.Tensor | float) -> torch.Tensor | float:
         from quivers.qiec.primitives import _log1mexp
 
         return _log1mexp(value)
-    if not value.is_floating_point() or not bool(
-        (~torch.isnan(value) & (value <= 0)).all()
-    ):
-        raise ValueError("log1mexp requires nonpositive real values")
+    error = ValueError("log1mexp requires nonpositive real values")
+    if not value.is_floating_point():
+        raise error
+    demand(~torch.isnan(value) & (value <= 0), lambda: error)
     interior = torch.isfinite(value) & (value < 0)
     safe = torch.where(interior, value, -torch.ones_like(value))
     near = safe > -math.log(2)
@@ -333,8 +339,10 @@ def _eager_log_ndtr(value: torch.Tensor | float) -> torch.Tensor | float:
         from quivers.qiec.primitives import _log_ndtr
 
         return _log_ndtr(value)
-    if not value.is_floating_point() or bool(torch.isnan(value).any()):
-        raise ValueError("log_ndtr requires real values other than NaN")
+    error = ValueError("log_ndtr requires real values other than NaN")
+    if not value.is_floating_point():
+        raise error
+    demand(~torch.isnan(value), lambda: error)
     safe = torch.where(torch.isfinite(value), value, torch.zeros_like(value))
     result = torch.special.log_ndtr(safe)
     return torch.where(

@@ -22,6 +22,10 @@ or intermediate latent sites, the
 function returns a 3-tuple `(MonadicProgram, torch.Tensor, dict[str, torch.Tensor])`,
 whose first element is the program to pass to the runner.
 
+[`PotentialFn`](#quivers.inference.mcmc.PotentialFn) is the log density the kernels walk. It is
+evaluated at one position or, through `log_density_batch` and `value_and_grad_batch`, at
+[many positions in one pass](../../guides/inference-mcmc.md#densities-at-many-positions).
+
 `quivers.inference` re-exports the kernels, the runner, and its result.
 `quivers.inference.mcmc` also exports the warmup adaptation primitives
 and the type aliases that parameterize the kernels and the runner.

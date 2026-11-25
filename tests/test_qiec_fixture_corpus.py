@@ -619,7 +619,9 @@ def test_d_dropping_the_observation_changes_the_reference_joint() -> None:
 
 def test_e_the_deduction_sums_both_attachments_under_choose() -> None:
     module = _module("E")
-    run = run_deduction(module, "Ambiguous", tokens=list(_E_SENTENCE))
+    run = run_deduction(
+        module, "Ambiguous", tokens=list(_E_SENTENCE), record_trace=True
+    )
     assert run.weight == pytest.approx(math.log(2.0))
     shots = [
         event

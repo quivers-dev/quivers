@@ -15,6 +15,8 @@ from torch.distributions import (
     constraints,
 )
 
+from quivers._positions import demand
+
 
 def _family_metadata(distribution):
     """Find the registered native and semantic records for an exact class.
@@ -115,8 +117,10 @@ def _point(distribution, value, *, reject_nan=True):
     )
     if not point.is_floating_point():
         point = point.to(torch.long if distribution.support.is_discrete else ref.dtype)
-    if reject_nan and bool(torch.isnan(point).any()):
-        raise ValueError("atom queries cannot contain NaN")
+    if reject_nan:
+        demand(
+            ~torch.isnan(point), lambda: ValueError("atom queries cannot contain NaN")
+        )
     return point.expand(
         torch.broadcast_shapes(
             point.shape, distribution.batch_shape + distribution.event_shape

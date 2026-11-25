@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 
+from quivers._positions import demand
 from quivers.continuous._ordered import _log1mexp
 
 
@@ -145,8 +146,10 @@ class TruncatedNormal(Distribution):
         self.loc, self.scale, self.low, self.high = torch.broadcast_tensors(
             loc, scale, low, high
         )
-        if not bool((self.low < self.high).all()):
-            raise ValueError("TruncatedNormal requires low < high")
+        demand(
+            self.low < self.high,
+            lambda: ValueError("TruncatedNormal requires low < high"),
+        )
         super().__init__(self.loc.shape, torch.Size(), validate_args=validate_args)
 
     @property
@@ -226,10 +229,12 @@ class TruncatedNormal(Distribution):
         Tensor
             Quantiles, including the bounds at probabilities zero and one.
         """
-        if not bool(((value >= 0) & (value <= 1)).all()):
-            raise ValueError(
+        demand(
+            (value >= 0) & (value <= 1),
+            lambda: ValueError(
                 "TruncatedNormal quantiles require probabilities in [0, 1]"
-            )
+            ),
+        )
         low, high = self._bounds()
         reflect = low > 0
         left = torch.where(reflect, -high, low)

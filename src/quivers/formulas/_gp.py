@@ -51,6 +51,7 @@ import torch
 from torch.distributions import Distribution, MultivariateNormal, constraints
 from torch.types import _size
 
+from quivers._positions import demand
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.dsl.ast_nodes import (
     DrawArgNamed,
@@ -1490,11 +1491,13 @@ def _covariance_factor(matrix: torch.Tensor, nugget: float) -> torch.Tensor:
         If a matrix is not numerically positive definite.
     """
     factor, info = torch.linalg.cholesky_ex(matrix)
-    if bool((info != 0).any()):
-        raise ValueError(
+    demand(
+        info == 0,
+        lambda: ValueError(
             "The Gaussian process covariance matrix is not positive definite. "
             f"This occurs for numerical reasons. A diagonal of {nugget:g} was added."
-        )
+        ),
+    )
     return factor
 
 

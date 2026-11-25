@@ -8,6 +8,7 @@ from collections.abc import Mapping
 import torch
 from torch import Tensor
 
+from quivers._positions import demand
 from quivers.continuous._count_cdf import _CountCDF
 from quivers.continuous._closed_probability import _check_count_observation_source
 from torch.distributions import Distribution, constraints
@@ -213,18 +214,16 @@ class BetaBinomial(_CountCDF, Distribution):
         self.total_count, self.concentration1, self.concentration0 = (
             _broadcast_count_parameters(total_count, concentration1, concentration0)
         )
-        if not bool(
-            (
-                torch.isfinite(self.concentration1)
-                & (self.concentration1 > 0)
-                & torch.isfinite(self.concentration0)
-                & (self.concentration0 > 0)
-                & torch.isfinite(self.concentration1 + self.concentration0)
-            ).all()
-        ):
-            raise ValueError(
+        demand(
+            torch.isfinite(self.concentration1)
+            & (self.concentration1 > 0)
+            & torch.isfinite(self.concentration0)
+            & (self.concentration0 > 0)
+            & torch.isfinite(self.concentration1 + self.concentration0),
+            lambda: ValueError(
                 "beta-binomial concentrations and their sum must be finite"
-            )
+            ),
+        )
         super().__init__(self.total_count.shape, validate_args=validate_args)
 
     @property

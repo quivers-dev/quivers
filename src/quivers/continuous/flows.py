@@ -51,6 +51,8 @@ class _ConditionedNet(nn.Module):
         Hidden layer width.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -136,6 +138,8 @@ class AffineCouplingLayer(nn.Module):
     hidden_dim : int
         Hidden layer width for the scale/shift network.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -274,6 +278,8 @@ class ConditionalFlow(ContinuousMorphism):
     >>> x = torch.tensor([0, 1, 2])
     >>> samples = flow.rsample(x)  # shape (3, 4)
     """
+
+    mappable: bool = True
 
     def __init__(
         self,

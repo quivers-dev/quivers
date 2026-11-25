@@ -9,6 +9,8 @@ import torch
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 
+from quivers._positions import demand
+
 OrdinalKind = Literal["cumulative", "acat", "sratio", "cratio"]
 OrdinalLink = Literal[
     "logit", "probit", "probit_approx", "cloglog", "cauchit", "softit"
@@ -288,27 +290,33 @@ class OrdinalDistribution(Distribution):
             values = [predictor, cutpoints, self.discrimination]
             if category_effects is not None:
                 values.append(category_effects)
-            if not all(bool(torch.isfinite(value).all()) for value in values):
-                raise ValueError("ordinal parameters must be finite")
-            if not bool((self.discrimination > 0).all()):
-                raise ValueError("ordinal discrimination must be strictly positive")
+            for value in values:
+                demand(
+                    torch.isfinite(value),
+                    lambda: ValueError("ordinal parameters must be finite"),
+                )
+            demand(
+                self.discrimination > 0,
+                lambda: ValueError("ordinal discrimination must be strictly positive"),
+            )
             if kind == "cumulative":
                 contrasts = cutpoints
                 if category_effects is not None:
                     contrasts = contrasts - category_effects
-                if not bool((contrasts[..., 1:] > contrasts[..., :-1]).all()):
-                    raise ValueError(
+                demand(
+                    contrasts[..., 1:] > contrasts[..., :-1],
+                    lambda: ValueError(
                         "cumulative cutpoints/contrasts must be strictly increasing"
-                    )
-            if self.hurdle_prob is not None and not bool(
-                (
+                    ),
+                )
+            if self.hurdle_prob is not None:
+                demand(
                     torch.isfinite(self.hurdle_prob)
                     & (self.hurdle_prob >= 0)
-                    & (self.hurdle_prob <= 1)
-                ).all()
-            ):
-                raise ValueError(
-                    "ordinal hurdle probability must be finite and in [0, 1]"
+                    & (self.hurdle_prob <= 1),
+                    lambda: ValueError(
+                        "ordinal hurdle probability must be finite and in [0, 1]"
+                    ),
                 )
 
     @property

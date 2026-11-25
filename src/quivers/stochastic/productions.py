@@ -28,6 +28,8 @@ from typing import Literal
 import didactic.api as dx
 import torch
 
+from quivers._positions import demand
+
 
 __all__ = [
     "Production",
@@ -215,11 +217,13 @@ class ProductionWeights:
                     f"{tuple(vector.shape)}, but {label!r} has {size} productions "
                     f"({', '.join(p.label for p in group.productions)})"
                 )
-            if bool((vector.detach() < 0).any()):
-                raise ValueError(
+            demand(
+                ~(vector.detach() < 0),
+                lambda: ValueError(
                     f"the probabilities of {label!r} have a negative entry: "
-                    f"{vector.detach().tolist()}"
-                )
+                    f"{vector.detach()}"
+                ),
+            )
 
     def table(
         self, probabilities: Mapping[str, torch.Tensor] | None = None

@@ -7,6 +7,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Gamma, LogNormal, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers._positions import demand
 from quivers.continuous._interval import log_interval_mass
 from quivers.continuous._recorded_event_tails import (
     _log_add,
@@ -188,8 +189,8 @@ class _PositiveHurdle(Distribution):
         upper = torch.as_tensor(
             torch.inf if high is None else high, device=device, dtype=torch.float64
         )
-        if bool(lower.isnan().any()) or bool(upper.isnan().any()):
-            raise ValueError("interval endpoints must not be NaN")
+        demand(~lower.isnan(), lambda: ValueError("interval endpoints must not be NaN"))
+        demand(~upper.isnan(), lambda: ValueError("interval endpoints must not be NaN"))
         lower_flag = torch.as_tensor(lower_closed, device=device)
         upper_flag = torch.as_tensor(upper_closed, device=device)
         holds_atom = ((lower < 0) | ((lower == 0) & lower_flag)) & (

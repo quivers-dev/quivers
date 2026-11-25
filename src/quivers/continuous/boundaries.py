@@ -56,6 +56,8 @@ class Discretize(ContinuousMorphism):
         Temperature for soft binning. Lower = sharper.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: Euclidean,
@@ -186,6 +188,8 @@ class Embed(ContinuousMorphism):
     codomain : Euclidean
         Target continuous space (should be bounded for initialization).
     """
+
+    mappable: bool = True
 
     def __init__(
         self,

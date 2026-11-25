@@ -143,7 +143,7 @@ The QVR front end.
 
 ### `effects/`
 
-Effect handlers over the reference machine's `Random`, `Score`, `Compute`, and `Param` interfaces: tracing (`trace_handler.py`), conditioning on observed values (`clamp.py`), intervention (`do.py`), masking, scaling, blocking, replay, subsampling, placing priors on learned parameters (`lift.py`), and integrating a conjugate parent out of the joint density (`collapse.py`). `interpreter.py` runs a program under the active handlers, `joint_plan.py` prepares a program's log joint once per data layout, and `reparam/` holds the loc-scale, transform, NeuTra, and conjugate reparameterizations.
+Effect handlers over the reference machine's `Random`, `Score`, `Compute`, and `Param` interfaces: tracing (`trace_handler.py`), conditioning on observed values (`clamp.py`), intervention (`do.py`), masking, scaling, blocking, replay, subsampling, placing priors on learned parameters (`lift.py`), and integrating a conjugate parent out of the joint density (`collapse.py`). `interpreter.py` runs a program under the active handlers, `joint_plan.py` prepares a program's log joint once per data layout, `batching.py` reads which steps declare that they can be evaluated at many positions at once (`_positions.py` at the package root gives the layout of such values), and `reparam/` holds the loc-scale, transform, NeuTra, and conjugate reparameterizations.
 
 ### `inference/`
 

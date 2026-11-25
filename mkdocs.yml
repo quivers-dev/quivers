@@ -465,6 +465,7 @@ nav:
       - Traces: api/effects/trace.md
       - Trace types: api/effects/trace_types.md
       - Observation scoring: api/effects/observation_scoring.md
+      - Batched evaluation: api/effects/batching.md
       - Handlers: api/effects/handlers.md
       - Collapse: api/effects/collapse.md
       - Conjugate marginals: api/effects/conjugate.md

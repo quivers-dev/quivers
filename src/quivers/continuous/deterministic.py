@@ -66,7 +66,19 @@ class DeterministicMorphism(ContinuousMorphism):
     we treat the sampling path as an identity reparameterization
     of the deterministic image.
 
-    Subclasses supply ``_apply(x) -> y``.
+    Parameters
+    ----------
+    domain : AnySpace
+        The input space.
+    codomain : AnySpace
+        The output space.
+    apply : Callable[[torch.Tensor], torch.Tensor]
+        The map ``x -> f(x)``.
+    name : str
+        The morphism's name.
+    mappable : bool
+        Whether ``apply`` can be evaluated at many positions in one pass:
+        it is a tensor computation that branches on no value.
     """
 
     def __init__(
@@ -75,8 +87,11 @@ class DeterministicMorphism(ContinuousMorphism):
         codomain: AnySpace,
         apply: Callable[[torch.Tensor], torch.Tensor],
         name: str,
+        *,
+        mappable: bool = False,
     ) -> None:
         super().__init__(domain, codomain)
+        self.mappable = mappable
         self._apply_fn = apply
         self._name = name
 
@@ -121,7 +136,7 @@ def cumsum_morphism(dim: int) -> DeterministicMorphism:
     """
     space = Euclidean(name="cumsum", dim=dim)
     return DeterministicMorphism(
-        space, space, lambda x: torch.cumsum(x, dim=-1), name="cumsum"
+        space, space, lambda x: torch.cumsum(x, dim=-1), name="cumsum", mappable=True
     )
 
 
@@ -136,7 +151,7 @@ def softmax_morphism(dim: int) -> DeterministicMorphism:
     src = Euclidean(name="softmax_in", dim=dim)
     tgt = Simplex(name="softmax_out", dim=dim)
     return DeterministicMorphism(
-        src, tgt, lambda x: torch.softmax(x, dim=-1), name="softmax"
+        src, tgt, lambda x: torch.softmax(x, dim=-1), name="softmax", mappable=True
     )
 
 
@@ -179,7 +194,9 @@ def cholesky_quad_form_morphism(dim: int) -> ContinuousMorphism:
         cov = D @ R @ D
         return cov.reshape(batch, dim * dim)
 
-    return DeterministicMorphism(source, target, _apply, name="cholesky_quad_form")
+    return DeterministicMorphism(
+        source, target, _apply, name="cholesky_quad_form", mappable=True
+    )
 
 
 def _event_width(space: AnySpace) -> int:
@@ -378,7 +395,9 @@ class LearnedFunction(DeterministicMorphism):
                 f"LearnedFunction: unknown output nonlinearity {output!r}; "
                 f"expected one of {sorted(_OUTPUTS)}"
             )
-        super().__init__(domain, codomain, self._point, name="LearnedFunction")
+        super().__init__(
+            domain, codomain, self._point, name="LearnedFunction", mappable=True
+        )
         self.source = source
         self._output: FunctionOutput = output
         self._factor_widths = widths
