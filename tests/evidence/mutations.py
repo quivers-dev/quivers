@@ -742,8 +742,8 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=(
-            "deduction/gradient/fifo/logprob/reach",
-            "deduction/gradient/fifo/counting/high_arity",
+            "deduction/gradient/fifo/logprob/three_equal_premises",
+            "deduction/gradient/lifo/counting/side_condition",
         ),
         min_effect=1.0,
     ),
