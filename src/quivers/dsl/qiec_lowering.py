@@ -378,6 +378,9 @@ def non_qiec_projection(module: surface.Module) -> surface.Module:
 
 
 #: The prelude's effect interfaces, resolvable from any module by name.
+RESUME = "resume"
+"""The name a traversal's lambda invokes a clause's continuation by."""
+
 _PRELUDE_EFFECTS: Mapping[str, EffectDef] = {
     effect.ref.name: effect for effect in BUILTIN_EFFECTS
 }
@@ -1983,6 +1986,14 @@ class _Elaborator(
                 )
             except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
+            handler_parameters = tuple(
+                Local(
+                    name=authored.name,
+                    type=self._lower_type(authored.type_expr, telescope),
+                )
+                for authored in declaration.parameters
+            )
+            scope_context = self._bound(declaration, CheckContext(), handler_parameters)
             clauses: list[HandlerClauseDef] = []
             return_clause: HandlerReturnClauseDef | None = None
             seen_clauses: set[str] = set()
@@ -2003,7 +2014,7 @@ class _Elaborator(
                         body=self._lower_computation(
                             clause.body,
                             telescope,
-                            CheckContext(locals=(binder,)),
+                            self._bound(clause, scope_context, (binder,)),
                             (*base, "body"),
                         ),
                     )
@@ -2079,9 +2090,12 @@ class _Elaborator(
                     else self._lower_computation(
                         clause.body,
                         clause_scope,
-                        CheckContext(locals=parameters).with_resumption(
+                        self._bound(clause, scope_context, parameters).with_resumption(
                             ResumptionType(
-                                result=resumed, answer=output_type, effects=introduced
+                                result=resumed,
+                                answer=output_type,
+                                effects=introduced,
+                                parameters=handler_parameters,
                             )
                         ),
                         (*base, "body"),
@@ -2112,10 +2126,46 @@ class _Elaborator(
                     telescope=telescope,
                     return_clause=return_clause,
                     implementation=declaration.implementation,
+                    parameters=handler_parameters,
                 )
             except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
             self.handlers[declaration.name] = handler
+
+    def _bound(
+        self,
+        authored: surface.QiecHandlerDecl | surface.QiecHandlerClause,
+        context: CheckContext,
+        binders: tuple[Local, ...],
+    ) -> CheckContext:
+        """A context extended by a handler's parameters or a clause's binders.
+
+        Parameters
+        ----------
+        authored : surface.QiecHandlerDecl | surface.QiecHandlerClause
+            The declaration binding them, for the diagnostic.
+        context : CheckContext
+            The context extended.
+        binders : tuple[Local, ...]
+            The binders.
+
+        Returns
+        -------
+        CheckContext
+            The extended context.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a binder reuses a name in scope, so that the name would
+            denote two values in a body.
+        """
+        for binder in binders:
+            try:
+                context = context.extend(binder)
+            except KernelError as error:
+                self._fail_kernel(authored, error, fallback="qiec-handler")
+        return context
 
     def _build_registry(self) -> None:
         """Register the families, constructors, and effects with the kernel.
@@ -6131,11 +6181,23 @@ class _Elaborator(
                     authored.handler.static_arguments, handler.telescope, strict=True
                 )
             )
-            outer_expectation = self._expected_result
-            self._expected_result = substitute_type(
-                handler.input_type,
-                instantiate_telescope(handler.telescope, static_arguments),
+            statics = instantiate_telescope(handler.telescope, static_arguments)
+            arguments = self._lower_handler_arguments(
+                authored.handler,
+                authored.handler.values,
+                tuple(
+                    substitute_type(parameter.type, statics)
+                    for parameter in handler.parameters
+                ),
+                scope,
+                context,
+                (*path, "arguments"),
+                static_bindings,
+                subject=f"handler {handler.name!r}",
+                code="qiec-handler",
             )
+            outer_expectation = self._expected_result
+            self._expected_result = substitute_type(handler.input_type, statics)
             handled = self._lower_computation(
                 authored.body,
                 scope,
@@ -6149,6 +6211,7 @@ class _Elaborator(
                 handler=handler.id,
                 computation=handled,
                 static_arguments=static_arguments,
+                arguments=arguments,
             )
         if isinstance(authored, surface.QiecCaseComputation):
             return self._lower_case(authored, scope, context, path, static_bindings)
@@ -6254,6 +6317,14 @@ class _Elaborator(
                 ),
             )
         if isinstance(authored, surface.QiecResumeComputation):
+            available = context.resumption
+            if available is None:
+                self._fail(
+                    authored,
+                    "resume outside a handler clause body: there is no "
+                    "continuation to invoke here",
+                    code="qiec-resumption",
+                )
             return Resume(
                 value=(
                     LiteralValue(value=None, type=UNIT)
@@ -6267,6 +6338,21 @@ class _Elaborator(
                     )
                 ),
                 origin=self._origin(authored, path, "resume"),
+                arguments=(
+                    tuple(Var(local=local) for local in available.parameters)
+                    if not authored.parameters
+                    else self._lower_handler_arguments(
+                        authored,
+                        authored.parameters,
+                        tuple(local.type for local in available.parameters),
+                        scope,
+                        context,
+                        (*path, "parameters"),
+                        static_bindings,
+                        subject="the enclosing handler",
+                        code="qiec-resumption",
+                    )
+                ),
             )
         if isinstance(authored, surface.QiecInstanceComputation):
             return self._lower_local_instance(
@@ -6275,6 +6361,76 @@ class _Elaborator(
         if isinstance(authored, surface.QiecCallComputation):
             return self._lower_call(authored, scope, context, path, static_bindings)
         self._fail(authored, "unknown QIEC computation")
+
+    def _lower_handler_arguments(
+        self,
+        authored: surface.QiecHandlerApplication | surface.QiecResumeComputation,
+        values: tuple[surface.QiecValue, ...],
+        types: tuple[TypeExpr, ...],
+        scope: Telescope,
+        context: CheckContext,
+        path: tuple[str | int, ...],
+        static_bindings: Mapping[str, StaticArgument] | None,
+        *,
+        subject: str,
+        code: str,
+    ) -> tuple[Value, ...]:
+        """Lower the values a handler's parameters are given.
+
+        Parameters
+        ----------
+        authored : QiecHandlerApplication | QiecResumeComputation
+            The installation or resumption giving them, for the diagnostic.
+        values : tuple[QiecValue, ...]
+            The authored values, in order.
+        types : tuple[TypeExpr, ...]
+            The parameters' types.
+        scope : Telescope
+            Static binders in scope.
+        context : CheckContext
+            Value bindings in scope.
+        path : tuple[str | int, ...]
+            Structural path of the values.
+        static_bindings : Mapping[str, StaticArgument] or None
+            Bindings from an enclosing case refinement.
+        subject : str
+            The handler, as the diagnostic names it.
+        code : str
+            The diagnostic code of a mismatch.
+
+        Returns
+        -------
+        tuple[Value, ...]
+            One value per parameter.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the number of values is not the number of parameters, or a
+            value has another type than its parameter.
+        """
+        if len(values) != len(types):
+            self._fail(
+                authored,
+                f"{subject} declares {len(types)} parameter(s), got {len(values)} "
+                f"value(s)",
+                code=code,
+            )
+        lowered: list[Value] = []
+        for position, (value, type_) in enumerate(zip(values, types, strict=True)):
+            argument = self._lower_value(
+                value, scope, context, static_bindings, (*path, position), type_
+            )
+            actual = self._value_type(argument, context, value)
+            if actual != type_:
+                self._fail(
+                    authored,
+                    f"parameter {position} of {subject} has type "
+                    f"{self._render(type_)}, got {self._render(actual)}",
+                    code=code,
+                )
+            lowered.append(argument)
+        return tuple(lowered)
 
     def _lower_local_instance(
         self,
@@ -6453,7 +6609,9 @@ class _Elaborator(
         QIEC calls and binds, so effect rows, site provenance, interpreters,
         and every transpiler continue to consume the existing checked core.
         A source other than a variable or literal is bound once ahead of
-        the calls, and each call reads its item from that binding.
+        the calls, and each call reads its item from that binding. In a
+        handler clause ``traverse(xs, x -> resume(x))`` resumes the
+        clause's continuation once per item.
 
         Parameters
         ----------
@@ -6532,7 +6690,7 @@ class _Elaborator(
         if not isinstance(function.body, surface.LetExprCall):
             self._fail(
                 function.body,
-                "traverse's lambda body must call a named computation",
+                "traverse's lambda body must call a named computation or resume",
                 code="qiec-primitive",
             )
 
@@ -6561,13 +6719,25 @@ class _Elaborator(
             )
             applied = substitute_let_expr(function.body, {function.param: item})
             assert isinstance(applied, surface.LetExprCall)
-            call_surface = surface.QiecCallComputation(
-                callee=applied.func,
-                arguments=applied.args,
-                line=applied.line,
-                col=applied.col,
-            )
-            call = self._lower_call(
+            call_surface: surface.QiecComputation
+            if applied.func == RESUME:
+                if len(applied.args) != 1:
+                    self._fail(
+                        applied,
+                        f"resume takes 1 argument here, got {len(applied.args)}",
+                        code="qiec-resumption",
+                    )
+                call_surface = surface.QiecResumeComputation(
+                    value=applied.args[0], line=applied.line, col=applied.col
+                )
+            else:
+                call_surface = surface.QiecCallComputation(
+                    callee=applied.func,
+                    arguments=applied.args,
+                    line=applied.line,
+                    col=applied.col,
+                )
+            call = self._lower_computation(
                 call_surface,
                 scope,
                 context,

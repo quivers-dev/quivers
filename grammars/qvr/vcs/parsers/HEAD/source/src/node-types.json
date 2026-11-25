@@ -3580,6 +3580,16 @@
             "named": true
           }
         ]
+      },
+      "parameters": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "qiec_value_parameter",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -8020,6 +8030,76 @@
             "named": true
           }
         ]
+      },
+      "values": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "let_binop",
+            "named": true
+          },
+          {
+            "type": "let_bool",
+            "named": true
+          },
+          {
+            "type": "let_call",
+            "named": true
+          },
+          {
+            "type": "let_factor",
+            "named": true
+          },
+          {
+            "type": "let_index",
+            "named": true
+          },
+          {
+            "type": "let_lambda",
+            "named": true
+          },
+          {
+            "type": "let_list",
+            "named": true
+          },
+          {
+            "type": "let_literal",
+            "named": true
+          },
+          {
+            "type": "let_method_call",
+            "named": true
+          },
+          {
+            "type": "let_paren",
+            "named": true
+          },
+          {
+            "type": "let_string",
+            "named": true
+          },
+          {
+            "type": "let_tuple",
+            "named": true
+          },
+          {
+            "type": "let_unary",
+            "named": true
+          },
+          {
+            "type": "let_unit",
+            "named": true
+          },
+          {
+            "type": "let_var",
+            "named": true
+          },
+          {
+            "type": "qiec_constructor_value",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -9103,6 +9183,76 @@
     "type": "qiec_resume_computation",
     "named": true,
     "fields": {
+      "parameters": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "let_binop",
+            "named": true
+          },
+          {
+            "type": "let_bool",
+            "named": true
+          },
+          {
+            "type": "let_call",
+            "named": true
+          },
+          {
+            "type": "let_factor",
+            "named": true
+          },
+          {
+            "type": "let_index",
+            "named": true
+          },
+          {
+            "type": "let_lambda",
+            "named": true
+          },
+          {
+            "type": "let_list",
+            "named": true
+          },
+          {
+            "type": "let_literal",
+            "named": true
+          },
+          {
+            "type": "let_method_call",
+            "named": true
+          },
+          {
+            "type": "let_paren",
+            "named": true
+          },
+          {
+            "type": "let_string",
+            "named": true
+          },
+          {
+            "type": "let_tuple",
+            "named": true
+          },
+          {
+            "type": "let_unary",
+            "named": true
+          },
+          {
+            "type": "let_unit",
+            "named": true
+          },
+          {
+            "type": "let_var",
+            "named": true
+          },
+          {
+            "type": "qiec_constructor_value",
+            "named": true
+          }
+        ]
+      },
       "value": {
         "multiple": false,
         "required": false,

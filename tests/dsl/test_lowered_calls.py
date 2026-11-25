@@ -680,6 +680,20 @@ define branchy(x : Real) : Real !{random} =
         return z
     else
         return x
+
+instance ambient : Echo
+
+define relay(n : Int, value : Real) : Real !{ambient} =
+    if n <= 0 then
+        return value
+    else
+        let next <- perform ambient.echo(value)
+        relay(n - 1, next)
+
+define relayed(value : Real) : Real !{} =
+    handle ambient with identity_echo in
+        let result <- relay(2, value)
+        return result
 """
 
 
@@ -705,9 +719,11 @@ _REASONS = {
         "write the repetition without recursion",
         "`scan` over a sequence",
     ),
-    "echoed(a)": (
-        "handles the effect `Echo` inside `echoed`",
-        "not a handler and its resumptions",
+    "relayed(a)": (
+        "calls `relayed`, which reaches a recursive call of `relay` that requests "
+        "from the handler `identity_echo`",
+        "so how often its clauses resume depends on the values the call is given",
+        "so its handlers cannot be discharged",
     ),
     "branchy(a)": (
         "runs an `if` in `branchy` (line 30) whose branches draw or score",
@@ -740,7 +756,7 @@ def test_the_compiled_runtime_refuses_at_the_call_saying_why(call: str) -> None:
 
 @pytest.mark.parametrize(
     ("call", "a", "k"),
-    [("triangle(3)", 0.3, 6.0), ("echoed(a)", 0.3, 0.3), ("branchy(a)", -0.4, -0.4)],
+    [("triangle(3)", 0.3, 6.0), ("relayed(a)", 0.3, 0.3), ("branchy(a)", -0.4, -0.4)],
 )
 def test_the_reference_machine_still_runs_a_refused_program(
     call: str, a: float, k: float
@@ -754,6 +770,19 @@ def test_the_reference_machine_still_runs_a_refused_program(
         torch.zeros(4, dtype=_F64), torch.tensor(a + k, dtype=_F64), 1.0
     )
     assert float(run.log_joint) == pytest.approx(float(expected), rel=1e-9)
+
+
+def test_a_callee_whose_handler_is_discharged_is_fit() -> None:
+    program = loads(_refused("echoed(a)")).morphism
+    assert isinstance(program, MonadicProgram)
+    joint = program.log_joint(
+        torch.zeros(1, 1), {"a": torch.tensor([0.3]), "y": torch.zeros(4)}
+    )
+    zero = torch.tensor(0.0, dtype=_F64)
+    expected = _normal(torch.tensor(0.3, dtype=_F64), zero, 1.0) + _normal(
+        torch.zeros(4, dtype=_F64), torch.tensor(0.6, dtype=_F64), 1.0
+    )
+    assert float(joint.sum()) == pytest.approx(float(expected), rel=1e-6)
 
 
 RECURSIVE_TEMPLATE = """

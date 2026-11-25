@@ -36,8 +36,9 @@ Top-level declarations:
 
 Kernel declarations (mirrors [`quivers.qiec.module`][quivers.qiec.module]):
     ``effect_decl`` ``operation`` ``instance_decl`` ``handler_decl``
-    ``handler_clause`` ``computation_decl`` ``computation_parameter``
-    ``program_entry`` ``program_parameter`` ``program_site``
+    ``handler_clause`` ``handler_parameter`` ``computation_decl``
+    ``computation_parameter`` ``program_entry`` ``program_parameter``
+    ``program_site``
 
 Edge kinds
 ----------
@@ -65,6 +66,7 @@ Edge kinds
 ``clause``
     ``handler_decl -> handler_clause``.
 ``parameter``
+    ``handler_decl -> handler_parameter``;
     ``computation_decl -> computation_parameter``;
     ``program_entry -> program_parameter``.
 ``row``
@@ -155,6 +157,7 @@ _KERNEL_KINDS = [
     *_KERNEL_DECL_KINDS,
     "operation",
     "handler_clause",
+    "handler_parameter",
     "computation_parameter",
     "program_entry",
     "program_parameter",
@@ -281,8 +284,12 @@ _EDGE_RULES = [
     },
     {
         "edge_kind": "parameter",
-        "src_kinds": ["computation_decl", "program_entry"],
-        "tgt_kinds": ["computation_parameter", "program_parameter"],
+        "src_kinds": ["handler_decl", "computation_decl", "program_entry"],
+        "tgt_kinds": [
+            "handler_parameter",
+            "computation_parameter",
+            "program_parameter",
+        ],
     },
     {
         "edge_kind": "row",
@@ -736,7 +743,7 @@ class _KernelWriter:
             self._write_entry(entry)
 
     def _write_clauses(self, handler: HandlerDef) -> None:
-        """Write a handler's clauses and their bodies' edges.
+        """Write a handler's parameters, its clauses, and their bodies' edges.
 
         Parameters
         ----------
@@ -744,6 +751,12 @@ class _KernelWriter:
             The handler.
         """
         vid = self._handlers[handler.id.digest]
+        for parameter in handler.parameters:
+            pvid = f"{vid}/parameter::{parameter.name}"
+            self._builder.vertex(pvid, "handler_parameter")
+            self._builder.constraint(pvid, "name", parameter.name)
+            self._builder.constraint(pvid, "type", render_static(parameter.type))
+            self._builder.edge(vid, pvid, "parameter")
         for clause in handler.clauses:
             operation_vid = self._operations.get(clause.operation.digest)
             name = (

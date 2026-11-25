@@ -109,7 +109,7 @@ var _qvr_qiec_instance = function(thunk) {
   var serial = _qvr_qiec_next("_qvr_qiec_instance_serial");
   return _qvr_qiec_call(thunk, [["instance", serial]], false);
 };
-var _qvr_qiec_resume = function(resume, value) { return _qvr_qiec_as_computation(apply(resume, [value])); };
+var _qvr_qiec_resume = function(resume, value, parameters) { return _qvr_qiec_as_computation(apply(resume, [value, parameters])); };
 var _qvr_qiec_if = function(condition0, then, otherwise) {
   var condition = _qvr_qiec_value(condition0);
   if (typeof condition !== "boolean") { error("QIEC if condition is not a Boolean"); }
@@ -679,7 +679,16 @@ var _qvr_qiec_finalize = function(comp, lifecycle) {
   };
 };
 var _qvr_qiec_invoke = function(entry, args) { return apply(entry.invoke || entry, args); };
-var _qvr_qiec_handle = function(comp, instance, rawManifest, staticArguments0, computationStaticEnvironment, handlers, attachments0, operations0) {
+var _qvr_qiec_validate_parameters = function(manifest, parameters) {
+  if (parameters.length !== (manifest.parameters || []).length) { error("QIEC handler parameter values disagree with checked IR"); }
+  return parameters;
+};
+var _qvr_qiec_parameter_captures = function(manifest, parameters) {
+  return mapIndexed(function(index, local) {
+    return { kind: "parameter", label: local.name, binding: parameters[index] };
+  }, manifest.parameters || []);
+};
+var _qvr_qiec_handle = function(comp, instance, rawManifest, staticArguments0, computationStaticEnvironment, handlers, attachments0, operations0, parameters0) {
   var staticArguments = _qvr_qiec_specialize(staticArguments0, computationStaticEnvironment);
   var handlerStaticEnvironment = _qvr_qiec_static_environment(rawManifest.telescope, staticArguments);
   var manifest = Object.assign({}, _qvr_qiec_specialize(rawManifest, handlerStaticEnvironment), { telescope: [] });
@@ -703,12 +712,13 @@ var _qvr_qiec_handle = function(comp, instance, rawManifest, staticArguments0, c
     handlers: handlers,
     operations: operations0 || {}
   };
-  var walk = function(current0) {
+  var walk = function(current0, parameters) {
     var current = _qvr_qiec_force(current0);
+    var clauseContext = Object.assign({}, context, { parameters: parameters });
     if (current.tag === "pure") {
       var returning = _qvr_qiec_controller_handler(controller);
       var value = _qvr_qiec_validate(returning.input_validator, current.value, "handler input type");
-      var returned = returning["return"] ? _qvr_qiec_invoke(returning["return"], [value, context]) : value;
+      var returned = returning["return"] ? _qvr_qiec_invoke(returning["return"], [value, clauseContext]) : value;
       return _qvr_qiec_finalize(_qvr_qiec_validate_computation(returned, returning.output_validator, "handler output type"), _qvr_qiec_controller_lifecycle(controller));
     }
     var request = current.request;
@@ -721,6 +731,7 @@ var _qvr_qiec_handle = function(comp, instance, rawManifest, staticArguments0, c
       var forwardedState = _qvr_qiec_controller_capture(controller);
       var handlerCaptures = _qvr_qiec_unique((request.handler_captures || []).concat([controller]));
       var forwarded = Object.assign({}, request, {
+        captures: (request.captures || []).concat(_qvr_qiec_parameter_captures(manifest, parameters)),
         handler_captures: handlerCaptures,
         handler_states: map(_qvr_qiec_controller_capture, handlerCaptures),
         lifecycles: (request.lifecycles || []).concat([forwardedState[1]])
@@ -730,7 +741,7 @@ var _qvr_qiec_handle = function(comp, instance, rawManifest, staticArguments0, c
         request: forwarded,
         continuation: function(value) {
           _qvr_qiec_controller_restore(controller, forwardedState);
-          return _qvr_qiec_with_ambient(controller, function() { return walk(apply(current.continuation, [value])); });
+          return _qvr_qiec_with_ambient(controller, function() { return walk(apply(current.continuation, [value]), parameters); });
         }
       };
     };
@@ -742,20 +753,23 @@ var _qvr_qiec_handle = function(comp, instance, rawManifest, staticArguments0, c
       error("missing QIEC handler clause " + request.operation);
     }
     var grade = grades[request.operation];
-    var seeded = grade === "omega" ? _qvr_qiec_validate_capture(request, controller) : request;
+    var seeded = grade === "omega" ? _qvr_qiec_validate_capture(Object.assign({}, request, {
+      captures: (request.captures || []).concat(_qvr_qiec_parameter_captures(manifest, parameters))
+    }), controller) : request;
     var uses = _qvr_qiec_cell(0);
-    var resume = function(value0) {
+    var resume = function(value0, resumedParameters) {
+      var carried = _qvr_qiec_validate_parameters(manifest, resumedParameters === undefined ? parameters : resumedParameters);
       var shot = _qvr_qiec_cell_get(uses);
       _qvr_qiec_cell_set(uses, shot + 1);
       if (grade === "0") { error("QIEC zero-grade clause resumed"); }
       if ((grade === "aff" || grade === "1") && shot > 0) { error("QIEC resumption exceeds grade " + grade); }
       if (grade === "omega") { _qvr_qiec_fork_capture(seeded, controller, shot); }
       var value = _qvr_qiec_validate(clause.result_validator, value0, "handler operation result type");
-      var resumed = _qvr_qiec_with_ambient(controller, function() { return walk(_qvr_qiec_readdress(apply(current.continuation, [value]), shot)); });
+      var resumed = _qvr_qiec_with_ambient(controller, function() { return walk(_qvr_qiec_readdress(apply(current.continuation, [value]), shot), carried); });
       return resumed.tag === "pure" ? resumed.value : resumed;
     };
     var clauseLifecycle = _qvr_qiec_controller_lifecycle(controller);
-    var result = _qvr_qiec_invoke(clause, [seeded, resume, context]);
+    var result = _qvr_qiec_invoke(clause, [seeded, resume, clauseContext]);
     var used = _qvr_qiec_cell_get(uses);
     if (grade === "1" && used !== 1) {
       _qvr_qiec_drop_request(seeded);
@@ -766,7 +780,7 @@ var _qvr_qiec_handle = function(comp, instance, rawManifest, staticArguments0, c
     return _qvr_qiec_finalize(_qvr_qiec_validate_computation(result, handler.output_validator, "handler output type"), clauseLifecycle);
   };
   var started = _qvr_qiec_with_ambient(controller, function() { return _qvr_qiec_force(apply(comp, [])); });
-  return walk(started);
+  return walk(started, _qvr_qiec_validate_parameters(manifest, parameters0 || []));
 };
 var _qvr_qiec_operation_entry = function(operations, request) {
   var flat = _qvr_qiec_member(operations, request.instance + "|" + request.operation, null);

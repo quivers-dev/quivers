@@ -59,6 +59,7 @@ from quivers.dsl.let_expr_traversal import let_expr_children
 from quivers.transpile._resolve import build_let_table, build_morphism_table
 from quivers.transpile._python_calls import PYTHON_TARGETS, python_call_renderable
 from quivers.qiec import QiecModule, validate_module
+from quivers.qiec.discharge import DischargedModule, discharge_module
 from quivers.qiec._models import QiecModel
 from quivers.qiec.effects import EffectRequest
 from quivers.qiec.module import NamedComputation
@@ -176,7 +177,7 @@ from quivers.transpile.qiec_ir import (
     IRQiecModule,
     IRQiecStatic,
     _convert,
-    lower_qiec_ir,
+    project_for_target,
 )
 from quivers.transpile._pure_calls import (
     _VALUE_TYPES,
@@ -184,6 +185,7 @@ from quivers.transpile._pure_calls import (
     _LetFloater,
     _expression,
     _local_names,
+    Callees,
     pure_call_bindings,
 )
 
@@ -195,9 +197,10 @@ _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kerne
 class _TargetPreparation:
     """Retain one checked source and its projection within a target request.
 
-    The projection is constructed here, never supplied by a caller. Both
-    capability analysis and planning thus read the same checked module, while
-    a separate request or revised source owns a separate preparation.
+    The projection and the discharged module are constructed here, never
+    given by a caller. Both capability analysis and planning thus read the same
+    checked module, while a separate request or revised source owns a separate
+    preparation.
 
     Parameters
     ----------
@@ -213,19 +216,23 @@ class _TargetPreparation:
         self.module = module
         self.source = source
         self.target = target
+        self.discharged: DischargedModule = discharge_module(module)
         self._projection: IRQiecModule | None = None
 
     @property
     def projection(self) -> IRQiecModule:
-        """The structural projection of this request's checked module.
+        """The target's structural projection of this request's module.
 
         Returns
         -------
         IRQiecModule
-            The module, projected at most once during this preparation.
+            The module as the target reads it, projected at most once
+            during this preparation.
         """
         if self._projection is None:
-            self._projection = lower_qiec_ir(self.module)
+            self._projection = project_for_target(
+                self.module, self.discharged, self.target
+            )
         return self._projection
 
     def checked_program_plan(self) -> IRProgram | None:
@@ -272,6 +279,7 @@ class _Planner:
         self.source = source
         self.target = preparation.target
         self.computations = {item.name: item for item in module.computations}
+        self.callees = Callees(preparation.discharged)
         self.entries = {entry.name: entry for entry in module.entries}
         shapes = object_shapes(source)
         self.cards = {
@@ -676,7 +684,7 @@ class _ProgramWalk:
         )
 
     def _resolved(self, value: Value) -> Value:
-        """A value with every projection of a held pair read back.
+        """A value with every tuple the plan holds read back.
 
         Parameters
         ----------
@@ -686,15 +694,21 @@ class _ProgramWalk:
         Returns
         -------
         Value
-            The value with ``t[i]`` replaced by the ``i``-th component
-            of every local ``t`` the plan holds as a tuple of bindings.
+            The value with every local the plan holds as a tuple of
+            bindings replaced by the tuple, and a projection of a tuple
+            by its component.
         """
         if isinstance(value, Projection):
             inner = self._resolved(value.value)
-            if isinstance(inner, Var) and inner.local.name in self.tuples:
-                return self.tuples[inner.local.name][value.position]
+            if isinstance(inner, TupleValue):
+                return inner.items[value.position]
             return value.with_(value=inner)
-        if isinstance(value, (Var, LiteralValue)):
+        if isinstance(value, Var):
+            items = self.tuples.get(value.local.name)
+            if items is None:
+                return value
+            return TupleValue(items=items, result_type=value.local.type)
+        if isinstance(value, LiteralValue):
             return value
         changes: dict[str, Value | tuple[Value, ...]] = {}
         for name in type(value).__field_specs__:
@@ -920,7 +934,7 @@ class _ProgramWalk:
             program's ``random`` and ``score``, or is not a computation
             of the module.
         """
-        callee = self.planner.computations.get(call.name)
+        callee = self.planner.callees.get(call.name)
         if callee is None:
             raise UnsupportedConstruct(
                 f"qvr-{self.planner.target}",
@@ -953,11 +967,15 @@ class _ProgramWalk:
                 nodes.extend(self._deterministic(binding.binder, binding.value))
             self.axes[binder.name] = axes
             self.bound_plates[binder.name] = plate
+            if isinstance(result, TupleValue):
+                self.tuples[binder.name] = result.items
+                yield from nodes
+                return
             self.ctx.bound_kinds[binder.name] = "deterministic"
             nodes.append(
                 IRDeterministic(
                     name=binder.name,
-                    expr=result,
+                    expr=self._expr(result),
                     constraint=scalar_carrier_constraint(binder.type),
                     plate=plate,
                 )
@@ -988,7 +1006,7 @@ class _ProgramWalk:
 
     def _inlined(
         self, callee: NamedComputation, call: Call, binder: Local
-    ) -> tuple[tuple[LetBinding, ...], LetExprNode] | None:
+    ) -> tuple[tuple[LetBinding, ...], Value] | None:
         """A pure computation's result at the call, as shared bindings.
 
         A pure computation whose body is a chain of pure bindings is
@@ -1011,31 +1029,36 @@ class _ProgramWalk:
 
         Returns
         -------
-        tuple[tuple[LetBinding, ...], LetExprNode] | None
-            The hoisted bindings and the result's expression, or
-            ``None`` when the computation performs an effect, takes
+        tuple[tuple[LetBinding, ...], Value] | None
+            The hoisted bindings and the result reading them, a product as
+            the tuple of its components, or ``None`` when the computation performs an effect, takes
             static arguments, calls anything, or binds a value the
             expression language has no form for; such a call is made
             through the target's host runtime.
         """
         found = pure_call_bindings(
             callee,
-            call.arguments,
+            tuple(self._resolved(argument) for argument in call.arguments),
             binder.type,
             self.floater,
-            self.planner.computations,
+            self.planner.callees,
         )
         if found is None:
             return None
         hoisted, result = found
         try:
-            expressions = [self._expr(binding.value) for binding in hoisted]
-            spelled = self._expr(result)
+            expressions = [
+                self._expr(item)
+                for item in (
+                    *(binding.value for binding in hoisted),
+                    *_leaves(result),
+                )
+            ]
         except UnsupportedConstruct:
             return None
-        if not all(self._renderable(item) for item in (*expressions, spelled)):
+        if not all(self._renderable(item) for item in expressions):
             return None
-        return hoisted, spelled
+        return hoisted, result
 
     def _renderable(self, expression: LetExprNode) -> bool:
         """Whether the target renders an inlined expression as a statement.
@@ -2922,6 +2945,25 @@ def _referenced(value: Value) -> Iterator[str]:
                     yield from _referenced(item)  # type: ignore[arg-type]
         elif isinstance(field, QiecModel):
             yield from _referenced(field)  # type: ignore[arg-type]
+
+
+def _leaves(value: Value) -> tuple[Value, ...]:
+    """The values a tuple holds, at any depth of nesting.
+
+    Parameters
+    ----------
+    value : Value
+        The value.
+
+    Returns
+    -------
+    tuple[Value, ...]
+        The components of a tuple and of the tuples in it, or the value
+        itself when it is no tuple.
+    """
+    if isinstance(value, TupleValue):
+        return tuple(leaf for item in value.items for leaf in _leaves(item))
+    return (value,)
 
 
 def _walk(body: tuple[IRNode, ...]) -> Iterator[IRNode]:

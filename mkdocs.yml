@@ -489,6 +489,7 @@ nav:
       - Terms: api/qiec/terms.md
       - Evidence: api/qiec/evidence.md
       - Substitution: api/qiec/substitution.md
+      - Discharge: api/qiec/discharge.md
       - Coverage: api/qiec/coverage.md
       - Checking: api/qiec/checking.md
       - Canonical types: api/qiec/canonical.md

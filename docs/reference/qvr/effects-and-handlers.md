@@ -86,8 +86,9 @@ introduces an instance name that the tail could otherwise contain.
 
 ## Handler declarations
 
-A handler declares the interface it handles, its input and answer types, its options, one return
-clause, and one clause per operation:
+A handler declares the interface it handles, its input and answer types, its
+[parameters](#handler-parameters) if it has any, its options, one return clause, and one clause per
+operation:
 
 <!-- compile: qiec -->
 ```qvr
@@ -117,6 +118,73 @@ QVR handlers are *deep*: the handler is reinstalled around the computation it re
 requests in that computation reach the same handler [@plotkin2009handlers; @kammar2013handlers].
 Effects that a clause body performs itself go only to outer handlers.
 
+### Handler parameters
+
+A handler may carry values from one request to the next in *parameters*, typed binders that every
+clause reads [@leijen2017type; @bauer2015programming]. They follow the answer type, `handle` gives
+their first values, and `resume(v) with (e)` gives the values they have while the continuation runs:
+
+<!-- compile: qiec -->
+```qvr
+effect State[S : Type]
+    get : Unit -> S
+    put : S -> Unit
+
+handler cell[S : Type, A : Type] for State[S] : A -> A with (s : S) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    get resumes 1 =>
+        resume(s)
+    put(v : S) resumes 1 =>
+        resume() with (v)
+
+define counted(seed : Int) : Int !{} =
+    with instance c : State[Int] in
+        handle c with cell[Int, Int](seed) in
+            let before <- perform c.get()
+            perform c.put(before + 1)
+            let after <- perform c.get()
+            return after
+```
+
+`counted(3)` installs `cell` with `s` at `3`. The clause for `put` continues the computation with
+`s` at `4`, so the second `get` reads `4`, and `counted(3)` returns `4`.
+
+- A `resume` without `with` keeps the parameters, as the clause for `get` does. With it, `resume`
+  gives one value per parameter, in order.
+- The return clause reads the parameters, so a handler of type `A -> A * S` can answer with the
+  final state, `return (x, s)`.
+- A clause of grade `omega` gives each resumption the parameters it names. The parameters belong to
+  the resumed continuation, so two resumptions never share an update.
+- The parameters are part of the handler's signature in the serialized module. A foreign handler
+  declares none, since its state belongs to its provider.
+
+A handler that never updates its parameter is a
+[reader](https://en.wikipedia.org/wiki/Monad_(functional_programming)#Environment_monad), and one
+whose return clause answers an accumulated parameter is a
+[writer](https://en.wikipedia.org/wiki/Monad_(functional_programming)#Writer_monad):
+
+<!-- compile: qiec -->
+```qvr
+effect Reader[R : Type]
+    ask : Unit -> R
+
+effect Writer
+    tell : Real -> Unit
+
+handler reading[R : Type, A : Type] for Reader[R] : A -> A with (r : R) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    ask resumes 1 =>
+        resume(r)
+
+handler writing[A : Type] for Writer : A -> A * Real with (written : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return (x, written)
+    tell(v : Real) resumes 1 =>
+        resume() with (written + v)
+```
+
 ### Handler options
 
 | Option | Values | Meaning |
@@ -124,7 +192,7 @@ Effects that a clause body performs itself go only to outer handlers.
 | `coverage` | `total`, `partial` | whether every operation of the interface has a clause |
 | `forwards` | `none`, `unknown` | whether a partial handler passes requests without a clause to an outer handler |
 | `implementation` | `authored`, `foreign` | whether the clauses have QVR bodies or are given by a runtime provider |
-| `introduces` | instance names | the effects the handler's own clauses perform, which the row of the handled computation gains |
+| `introduces` | instance names | the effects the handler's own clauses perform, which the row of the handled computation gains. A clause that performs any other effect is rejected |
 
 A total handler removes the instance it handles from the row of its body, and a partial handler
 leaves it there. Forwarding and coverage are separate options: a request for an operation that a
@@ -144,6 +212,9 @@ quantitative type theory [@atkey2018syntax]:
 | `aff` | resumes at most once | a clause that may stop the computation |
 | `1` | resumes exactly once | a state read or update |
 | `omega` | resumes any number of times | a search clause that explores each alternative |
+
+In a clause of grade `omega`, `traverse(xs, x -> resume(x))` resumes once per entry of a tensor of
+statically known extent and binds the tensor of the answers.
 
 The checker records each clause's grade, and the
 [reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for
@@ -179,12 +250,44 @@ define local_read() : Int !{} =
 ```
 
 `fixed_reply` answers every `get` with `7` and ignores the value given to `put`, so `local_read()`
-returns `7` after `put(3)`. A handler that implements a mutable cell would instead pass the value of
-`put` to the resumed computation for later `get` requests.
+returns `7` after `put(3)`. The [parameterized handler](#handler-parameters) `cell` carries the value
+of `put` to later `get` requests instead.
 
 A total handler must remove the scoped instance before control leaves the block, or the checker
 reports `qiec-instance-escape`. Two nested `with instance cell ...` blocks create two instances,
 though the inner name shadows the outer.
+
+## Discharged handlers
+
+A handler whose clauses are written in QVR can be *discharged*: a computation that installs it is
+rewritten to an equal one with no handler, in which the answer of its clause stands in place of each
+request. `counted` above discharges to `return seed + 1`. The compiled runtime, which computes
+gradients, and the transpile targets that render no handler read the rewritten computation, so a
+program that calls `counted` is [fit](probabilistic-programs.md#which-calls-are-fit) and exported to
+Stan, BUGS, and JAGS. The checked module keeps the handler, the reference machine runs it, and the
+targets that render handlers render it.
+
+Every grade is discharged by one rule, which puts the continuation in place of each `resume`. A
+grade `0` clause under an `if` becomes a choice between the clause's answer and the rest of the
+computation, and a clause that resumes once per entry of a tensor becomes the tensor of the answers.
+Where the branches of an `if` change a handler's parameters, the changed values become conditional
+values.
+
+A computation keeps its handlers, and the diagnostic names the handler and the clause, when
+
+- it installs a foreign handler;
+- it makes a request that every handler of the instance forwards and no outer handler of the
+  computation answers;
+- it makes a handled request in a recursive call, so that how often a clause resumes depends on the
+  values of the run;
+- it analyzes a family value known only at run time with `case`, and the branches do not continue
+  alike;
+- the rewritten computation would have more than 2048 statements. A clause that resumes $m$ times
+  copies the rest of the computation $m$ times, so $n$ such requests in sequence make $m^n$ copies,
+  and a conditional whose branches differ in $k$ values is stated $k$ times.
+
+The [semantics](../../semantics/effects.md#82-static-discharge) states the rewriting and why it keeps
+the value of the computation.
 
 ## Foreign handlers and providers
 

@@ -34,15 +34,18 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprLiteral,
     LetExprNode,
     LetExprString,
+    LetExprTuple,
     LetExprUnaryOp,
     LetExprVar,
     LetFactorBinder,
 )
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
 from quivers.qiec.canonical import sampled_element, tensor_shape, tensor_type
+from quivers.qiec.discharge import DischargedModule
 from quivers.qiec.identifiers import SourceOrigin
 from quivers.qiec.module import NamedComputation
 from quivers.qiec.primitives import primitive
+from quivers.qiec.effects import EffectRequest
 from quivers.qiec.terms import (
     Bind,
     Call,
@@ -71,6 +74,7 @@ from quivers.qiec.terms import (
     Rowwise,
     CholeskyFactor,
     TensorValue,
+    TupleValue,
     Value,
     Var,
     WeightSum,
@@ -78,11 +82,16 @@ from quivers.qiec.terms import (
 from quivers.qiec.types import (
     INT,
     REAL,
+    UNIT,
+    FunctionType,
     IndexLiteral,
     IndexSum,
     IndexTerm,
     IndexVariable,
+    TypeApplication,
     TypeExpr,
+    TypeVariable,
+    product_type,
     render_static,
 )
 from quivers.transpile._api import UnsupportedConstruct
@@ -351,10 +360,10 @@ class _LetFloater:
             for binding in value.bindings:
                 inner, bound = self.value(binding.value, scope)
                 hoisted.extend(inner)
-                if sampled_element(binding.binder.type) is not None:
-                    # Distribution construction is pure syntax; keep it at
-                    # its consumers instead of transporting a host object
-                    # through tensor-valued deterministic program sites.
+                if not _held(binding.binder.type):
+                    # A distribution, a product, and a unit are not values a
+                    # deterministic program site holds, so they are kept at
+                    # their consumers, which read a product's components.
                     scope[binding.binder] = bound
                     continue
                 local = Local(
@@ -364,6 +373,9 @@ class _LetFloater:
                 scope[binding.binder] = Var(local=local)
             inner, body = self.value(value.body, scope)
             return (*hoisted, *inner), body
+        if isinstance(value, Projection):
+            inner, source = self.value(value.value, renamed)
+            return inner, _component(source, value.position, value.result_type)
         if isinstance(value, ConditionalValue):
             condition_bindings, condition = self.value(value.condition, renamed)
             branches = {}
@@ -465,6 +477,127 @@ class _LetFloater:
             )
         _, body = self.value(body, stacked)
         return tuple(lifted), value.with_(body=body)
+
+
+def _held(type_: TypeExpr) -> bool:
+    """Whether a deterministic program site holds a value of a type.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The type.
+
+    Returns
+    -------
+    bool
+        False for a sampleable, a product, and a unit, which no let step or
+        target statement names.
+    """
+    if sampled_element(type_) is not None or type_ == UNIT:
+        return False
+    if not isinstance(type_, TypeApplication):
+        return True
+    return _components_of(type_) is None
+
+
+def _components_of(type_: TypeExpr) -> tuple[TypeExpr, ...] | None:
+    """The components of a product type.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The type.
+
+    Returns
+    -------
+    tuple[TypeExpr, ...] | None
+        The components, or ``None`` when the type is no product.
+    """
+    if not isinstance(type_, TypeApplication) or not type_.arguments:
+        return None
+    components = tuple(
+        item
+        for item in type_.arguments
+        if isinstance(item, TypeApplication | TypeVariable | FunctionType)
+    )
+    if (
+        len(components) != len(type_.arguments)
+        or type_.constructor.id != product_type(*components).constructor.id
+    ):
+        return None
+    return components
+
+
+def expanded(value: Value, type_: TypeExpr) -> Value:
+    """A value with the components of a product stated one by one.
+
+    Parameters
+    ----------
+    value : Value
+        The value.
+    type_ : TypeExpr
+        Its type.
+
+    Returns
+    -------
+    Value
+        A tuple of the components, each expanded in turn, when the type is a
+        product, and otherwise the value itself.
+    """
+    components = _components_of(type_)
+    if components is None:
+        return value
+    return TupleValue(
+        items=tuple(
+            expanded(_component(value, position, component), component)
+            for position, component in enumerate(components)
+        ),
+        result_type=type_,
+    )
+
+
+def _component(value: Value, position: int, type_: TypeExpr) -> Value:
+    """A component of a product value.
+
+    Parameters
+    ----------
+    value : Value
+        The product.
+    position : int
+        The component's position.
+    type_ : TypeExpr
+        The component's type.
+
+    Returns
+    -------
+    Value
+        The component itself where the product is built in place, under the
+        conditionals and bindings around it, and otherwise the projection.
+    """
+    if isinstance(value, TupleValue):
+        return value.items[position]
+    if isinstance(value, ConditionalValue):
+        return _select(
+            value.condition,
+            _component(value.then, position, type_),
+            _component(value.otherwise, position, type_),
+            type_,
+            _COMPONENT_ORIGIN,
+        )
+    if isinstance(value, LetValue):
+        return value.with_(
+            body=_component(value.body, position, type_), result_type=type_
+        )
+    return Projection(value=value, position=position, result_type=type_)
+
+
+#: The origin of a choice between the components of two products.
+_COMPONENT_ORIGIN = SourceOrigin(
+    module="component",
+    structural_path=("component",),
+    role="primitive",
+    source_protocol="qiec-lowering",
+)
 
 
 def _local_names(term: Computation) -> set[str]:
@@ -747,6 +880,13 @@ def _expression(
                 for item in value.items
             )
         )
+    if isinstance(value, TupleValue) and target == RUNTIME_TARGET:
+        return LetExprTuple(
+            items=tuple(
+                _expression(item, cards, target, program, families=families)
+                for item in value.items
+            )
+        )
     if isinstance(value, Reduction):
         return LetExprCall(
             func=value.operator,
@@ -868,9 +1008,9 @@ def _expression(
             f"qvr-{target}",
             [f"qiec:expression:log_density:{program}"],
         )
-    if isinstance(value, ConstructorValue):
-        # A constructor value reaches a callee through the target's QIEC
-        # runtime; its fields are values of the model body.
+    if isinstance(value, ConstructorValue | TupleValue):
+        # A constructor value and a tuple reach a callee through the target's
+        # QIEC runtime; their fields are values of the model body.
         return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
     if isinstance(value, Projection):
         # A component of a product, as the source subscripts a tuple.
@@ -901,6 +1041,76 @@ class CallNotLowered(Exception):
         super().__init__(reason)
         self.reason = reason
         self.effects = effects
+
+
+class Callees:
+    """The computations a program's calls are lowered from.
+
+    Their handlers are discharged, so a call of a computation that handles
+    the effects it requests is lowered as a call of any other.
+
+    Parameters
+    ----------
+    discharged : DischargedModule
+        The module holding the computations.
+    """
+
+    def __init__(self, discharged: DischargedModule) -> None:
+        self.discharged = discharged
+        self._computations = {
+            item.name: item for item in discharged.module.computations
+        }
+
+    def __contains__(self, name: str) -> bool:
+        """Whether the module has a computation of a name.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+
+        Returns
+        -------
+        bool
+            True when it does.
+        """
+        return name in self._computations
+
+    def get(self, name: str) -> NamedComputation | None:
+        """The computation of a name.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+
+        Returns
+        -------
+        NamedComputation or None
+            The computation, its handlers discharged, or ``None`` when the
+            module has none of the name.
+        """
+        return self._computations.get(name)
+
+    def performer(self, request: EffectRequest, owner: NamedComputation) -> str:
+        """Where a request a call reaches is written.
+
+        Parameters
+        ----------
+        request : EffectRequest
+            The request.
+        owner : NamedComputation
+            The computation that makes it.
+
+        Returns
+        -------
+        str
+            The computation, and the handler clause when one makes it.
+        """
+        clause = self.discharged.requester(request)
+        if clause is None:
+            return f"`{owner.name}`"
+        return f"`{owner.name}`, from {clause}"
 
 
 def origin_line(term: object) -> str:
@@ -1039,8 +1249,7 @@ def _select(
     then: Value,
     otherwise: Value,
     result_type: TypeExpr,
-    owner: str,
-    term: If,
+    origin: SourceOrigin,
 ) -> Value:
     """Retain scalar control flow when both computation branches are pure.
 
@@ -1054,10 +1263,8 @@ def _select(
         The value where it does not.
     result_type : TypeExpr
         The type both branches return.
-    owner : str
-        The computation holding the conditional, for the diagnostic.
-    term : If
-        The conditional, for the diagnostic's line.
+    origin : SourceOrigin
+        The conditional's source location.
 
     Returns
     -------
@@ -1072,13 +1279,7 @@ def _select(
             name=signature.name,
             arguments=(condition, then, otherwise),
             result_type=result_type,
-            origin=_first_origin(term)
-            or SourceOrigin(
-                module=owner,
-                structural_path=("if",),
-                role="primitive",
-                source_protocol="qiec-lowering",
-            ),
+            origin=origin,
         )
     return ConditionalValue(
         condition=condition, then=then, otherwise=otherwise, result_type=result_type
@@ -1089,7 +1290,7 @@ def inline_call(
     callee: NamedComputation,
     arguments: tuple[Value, ...],
     result_type: TypeExpr,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
     active: tuple[str, ...] = (),
 ) -> Value:
     """A pure computation's call as one value, its calls inlined in turn.
@@ -1108,8 +1309,8 @@ def inline_call(
         The call's arguments, one per parameter.
     result_type : TypeExpr
         The type of the call's result.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
     active : tuple[str, ...]
         The computations whose bodies enclose this call, outermost
         first, which the call may not reenter.
@@ -1125,9 +1326,9 @@ def inline_call(
     ------
     CallNotLowered
         If the callee takes static arguments, is reentered, makes a
-        request (``effects`` set), handles an effect, branches with
-        ``case``, or chooses with ``if`` between values ``select``
-        cannot.
+        request (``effects`` set), installs a handler that is not
+        discharged, branches with ``case``, or chooses with ``if`` between
+        values ``select`` cannot.
     """
     if callee.name in active:
         raise CallNotLowered(recursion_reason((*active, callee.name)))
@@ -1168,7 +1369,7 @@ def computation_value(
     replaced: Mapping[Local, Value],
     result_type: TypeExpr,
     owner: NamedComputation,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
     active: tuple[str, ...],
 ) -> Value:
     """A pure computation term as one value.
@@ -1184,8 +1385,8 @@ def computation_value(
         The type of the term's result.
     owner : NamedComputation
         The computation whose body holds the term, for diagnostics.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
     active : tuple[str, ...]
         The computations whose bodies enclose the term, the owner last.
 
@@ -1199,8 +1400,9 @@ def computation_value(
     ------
     CallNotLowered
         If the term makes a request (``effects`` set), reenters a
-        computation, handles an effect, branches with ``case``, or
-        chooses between computations with unsupported effects.
+        computation, installs a handler that is not discharged, branches
+        with ``case``, or chooses between computations with unsupported
+        effects.
     """
     bindings: list[LetBinding] = []
     node = term
@@ -1235,7 +1437,7 @@ def _step_value(
     replaced: Mapping[Local, Value],
     result_type: TypeExpr,
     owner: NamedComputation,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
     active: tuple[str, ...],
 ) -> Value:
     """One pure step of a body as a value.
@@ -1250,8 +1452,8 @@ def _step_value(
         The type of the step's result.
     owner : NamedComputation
         The computation whose body holds the step.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
     active : tuple[str, ...]
         The computations whose bodies enclose the step, the owner last.
 
@@ -1289,11 +1491,17 @@ def _step_value(
         otherwise = computation_value(
             term.otherwise, replaced, result_type, owner, computations, active
         )
-        return _select(condition, then, otherwise, result_type, owner.name, term)
+        origin = _first_origin(term) or SourceOrigin(
+            module=owner.name,
+            structural_path=("if",),
+            role="primitive",
+            source_protocol="qiec-lowering",
+        )
+        return _select(condition, then, otherwise, result_type, origin)
     if isinstance(term, Perform):
         raise CallNotLowered(
-            f"makes a `{term.request.effect.name}` request in `{owner.name}`"
-            f"{origin_line(term)}",
+            f"makes a `{term.request.effect.name}` request in "
+            f"{computations.performer(term.request, owner)}{origin_line(term)}",
             effects=True,
         )
     if isinstance(term, Case):
@@ -1303,7 +1511,7 @@ def _step_value(
             f"whose branches are pure, as `select`"
         )
     if isinstance(term, Handle | NewInstance | Resume):
-        raise CallNotLowered(handled_reason(owner, term))
+        raise CallNotLowered(handled_reason(owner, computations))
     raise CallNotLowered(
         f"runs a {type(term).__name__} in `{owner.name}`, which the compiled "
         f"runtime has no step for"
@@ -1334,30 +1542,28 @@ def recursion_reason(chain: tuple[str, ...]) -> str:
     )
 
 
-def handled_reason(owner: NamedComputation, term: Computation) -> str:
-    """Why a callee that handles an effect is refused.
+def handled_reason(owner: NamedComputation, computations: Callees) -> str:
+    """Why a callee whose handlers are not discharged is refused.
 
     Parameters
     ----------
     owner : NamedComputation
         The callee.
-    term : Computation
-        The handling, instance, or resumption term.
+    computations : Callees
+        The module's computations.
 
     Returns
     -------
     str
-        The reason clause.
+        The reason clause, naming the handler and the clause.
     """
-    effect = (
-        f"the effect `{term.effect.name}`"
-        if isinstance(term, NewInstance)
-        else "an effect"
-    )
+    obstacle = computations.discharged.obstacle(owner.name)
+    assert obstacle is not None
+    line = obstacle.origin.line if obstacle.origin is not None else None
     return (
-        f"handles {effect} inside `{owner.name}`{origin_line(term)}, and the "
-        f"compiled runtime runs only the program's own `Random` and `Score` "
-        f"requests, not a handler and its resumptions"
+        f"calls `{owner.name}`, which {obstacle.reason}"
+        f"{f' (line {line})' if line else ''}, so its handlers cannot be "
+        f"discharged and the compiled runtime has no steps for it"
     )
 
 
@@ -1366,7 +1572,7 @@ def pure_call_bindings(
     arguments: tuple[Value, ...],
     result_type: TypeExpr,
     floater: _LetFloater,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
 ) -> tuple[tuple[LetBinding, ...], Value] | None:
     """A pure computation's call as hoisted bindings and a result.
 
@@ -1386,8 +1592,8 @@ def pure_call_bindings(
         The type of the call's result.
     floater : _LetFloater
         The floater that names the hoisted bindings.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
 
     Returns
     -------
@@ -1399,7 +1605,8 @@ def pure_call_bindings(
         shared = inline_call(callee, arguments, result_type, computations)
     except CallNotLowered:
         return None
-    return floater.value(shared, {})
+    bindings, result = floater.value(shared, {})
+    return bindings, expanded(result, result_type)
 
 
 __all__: list[str] = []

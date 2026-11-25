@@ -112,6 +112,14 @@ from quivers.qiec.declarations import (
     FamilyDecl,
     FieldDef,
 )
+from quivers.qiec.discharge import (
+    DISCHARGE_STATEMENTS,
+    DISCHARGE_STEPS,
+    DischargeObstacle,
+    DischargedModule,
+    discharge_computation,
+    discharge_module,
+)
 from quivers.qiec.distributions import (
     DistributionBackend,
     ReferenceBackend,
@@ -471,7 +479,11 @@ __all__ = [
     "CoreRuntimeProvider",
     "CoverageResult",
     "CoverageStatus",
+    "DISCHARGE_STATEMENTS",
+    "DISCHARGE_STEPS",
     "DeductionRun",
+    "DischargeObstacle",
+    "DischargedModule",
     "DistributionBackend",
     "DistributionError",
     "DistributionFamily",
@@ -513,6 +525,8 @@ __all__ = [
     "FamilyId",
     "FamilyParameter",
     "FamilyShapeSignature",
+    "discharge_computation",
+    "discharge_module",
     "family_shape_equations",
     "instantiate_family_shapes",
     "legacy_family_shape_signature",

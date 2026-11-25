@@ -10,7 +10,7 @@ repository = "https://github.com/quivers-dev/quivers"
 repository = "https://github.com/quivers-dev/quivers"
 # Immutable commit containing the current QVR grammar. Update this pin whenever
 # grammar.js or its generated parser/query assets change.
-rev = "ca89125cd976d677f01ab79af6e3f7843cc1bceb"
+rev = "7329b68a3dfe1b2a11b4bc379019e05fb95fe0d2"
 path = "grammars/qvr"
 
 [language_servers.qvr-lsp]

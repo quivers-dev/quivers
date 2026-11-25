@@ -10,11 +10,13 @@ from quivers.cli.repl_session import ReplSession
 from quivers.dsl import parse
 from quivers.dsl.qiec_tooling import analyze_module, target_diagnostics
 from quivers.lsp.document import DocumentState
+from quivers.qiec.discharge import discharge_module
 from quivers.transpile.plan import Lower, _Planner, checked_program_plan
 from quivers.transpile.qiec_ir import (
     IRQiecModule,
     analyze_qiec_capabilities,
     lower_qiec_ir,
+    project_for_target,
 )
 
 
@@ -72,10 +74,19 @@ def test_target_preflight_reuses_checked_evidence_and_skips_blocked_plan(
             autospec=True,
             side_effect=_Planner.plan,
         ) as plan,
-        patch("quivers.transpile.plan.lower_qiec_ir", wraps=lower_qiec_ir) as project,
         patch(
-            "quivers.transpile.qiec_ir.lower_qiec_ir", wraps=lower_qiec_ir
+            "quivers.transpile.plan.project_for_target", wraps=project_for_target
+        ) as project,
+        patch(
+            "quivers.transpile.qiec_ir.project_for_target", wraps=project_for_target
         ) as reproject,
+        patch("quivers.transpile.qiec_ir.lower_qiec_ir", wraps=lower_qiec_ir) as lower,
+        patch(
+            "quivers.transpile.plan.discharge_module", wraps=discharge_module
+        ) as discharge,
+        patch(
+            "quivers.transpile.qiec_ir.discharge_module", wraps=discharge_module
+        ) as redischarge,
         patch(
             "quivers.dsl.compiler.core.Compiler.__init__",
             side_effect=AssertionError("target preflight must reuse checked evidence"),
@@ -85,8 +96,13 @@ def test_target_preflight_reuses_checked_evidence_and_skips_blocked_plan(
     assert capabilities.call_count == 1
     projection, selected_target = capabilities.call_args.args
     assert isinstance(projection, IRQiecModule) and selected_target == target
-    project.assert_called_once_with(checked)
+    discharge.assert_called_once_with(checked)
+    redischarge.assert_not_called()
+    project.assert_called_once()
     reproject.assert_not_called()
+    assert project.call_args.args[0] is checked
+    assert project.call_args.args[2] == target
+    assert lower.call_count == 1
     assert bool(diagnostics) is has_diagnostics
     if has_capabilities:
         plan.assert_not_called()
@@ -111,7 +127,9 @@ def test_target_projection_is_owned_by_each_request_and_revised_source():
     changed_checked = analyze_module(changed_source, module_name="target").qiec_module
     assert checked is not None and changed_checked is not None
     with (
-        patch("quivers.transpile.plan.lower_qiec_ir", wraps=lower_qiec_ir) as project,
+        patch(
+            "quivers.transpile.plan.project_for_target", wraps=project_for_target
+        ) as project,
         patch(
             "quivers.transpile.qiec_ir.analyze_qiec_capabilities",
             wraps=analyze_qiec_capabilities,
@@ -136,7 +154,9 @@ def test_target_projection_is_owned_by_each_request_and_revised_source():
     "source", [ADMITTED, RECURSIVE], ids=["program", "computation"]
 )
 def test_lower_projects_its_checked_module_once(optimize, source):
-    with patch("quivers.transpile.plan.lower_qiec_ir", wraps=lower_qiec_ir) as project:
+    with patch(
+        "quivers.transpile.plan.project_for_target", wraps=project_for_target
+    ) as project:
         result = Lower().forward(parse(source), target="pyro", optimize=optimize)
     assert project.call_count == 1
     assert isinstance(result.module, IRQiecModule)
@@ -146,9 +166,12 @@ def test_public_checked_program_plan_keeps_the_same_owned_projection_path():
     source = parse(ADMITTED)
     checked = analyze_module(source, module_name="target").qiec_module
     assert checked is not None
-    with patch("quivers.transpile.plan.lower_qiec_ir", wraps=lower_qiec_ir) as project:
+    with patch(
+        "quivers.transpile.plan.project_for_target", wraps=project_for_target
+    ) as project:
         result = checked_program_plan(checked, source, "pyro")
-    project.assert_called_once_with(checked)
+    project.assert_called_once()
+    assert project.call_args.args[0] is checked
     assert result is not None and result.name == "demo"
 
 

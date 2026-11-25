@@ -55,6 +55,7 @@ from quivers.qiec.canonical import (
     tensor_shape,
     tensor_type,
 )
+from quivers.qiec.discharge import discharge_module
 from quivers.qiec.kinds import NAT
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.terms import (
@@ -84,9 +85,12 @@ from quivers.qiec.types import INT, REAL, IndexLiteral, TypeExpr
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pure_calls import (
     CallNotLowered,
+    Callees,
     _expression,
     _LetFloater,
+    _held,
     computation_value,
+    expanded,
     free_local_names,
     handled_reason,
     inline_call,
@@ -175,8 +179,8 @@ class _Lowering:
 
     Parameters
     ----------
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations, their handlers discharged.
     cards : dict[str, int]
         The cardinality of every finite object, which names an axis.
     occupied : set[str]
@@ -191,7 +195,7 @@ class _Lowering:
 
     def __init__(
         self,
-        computations: Mapping[str, NamedComputation],
+        computations: Callees,
         cards: dict[str, int],
         occupied: set[str],
         program: str,
@@ -238,7 +242,7 @@ class _Lowering:
                 f"form for ({', '.join(error.kinds)})"
             ) from error
 
-    def let(self, name: str, value: Value) -> None:
+    def let(self, name: str, value: Value, type_: TypeExpr) -> None:
         """Bind a value's hoisted bindings and the value itself as let steps.
 
         Parameters
@@ -247,8 +251,12 @@ class _Lowering:
             The name the value binds, already reserved.
         value : Value
             The value, reading program names only.
+        type_ : TypeExpr
+            The value's type. A product is bound as the tuple of its
+            components.
         """
-        hoisted, result = self.floater.value(value, {})
+        hoisted, floated = self.floater.value(value, {})
+        result = expanded(floated, type_)
         for binding in hoisted:
             self.steps.append(self._let_step(binding.binder.name, binding.value))
         self.steps.append(self._let_step(name, result))
@@ -314,13 +322,13 @@ class _Lowering:
         Value
             The read of the bound value.
         """
-        if sampled_element(type_) is not None:
+        if not _held(type_):
             return value
         if isinstance(value, Var | LiteralValue) and not self.per_item(value):
             return value
         if self.plate is None or not self.per_item(value):
             name = self.floater.fresh(hint)
-            self.let(name, value)
+            self.let(name, value, type_)
             return Var(local=Local(name=name, type=type_))
         plate = self.plate
         lifted = plate.lifted_type(type_)
@@ -330,6 +338,7 @@ class _Lowering:
             Comprehension(
                 binder=plate.index, extent=plate.size, body=value, result_type=lifted
             ),
+            lifted,
         )
         return Gather(
             value=Var(local=Local(name=name, type=lifted)),
@@ -493,7 +502,7 @@ class _Lowering:
                 f"`if` whose branches are pure, as `select`"
             )
         if isinstance(term, Handle | NewInstance | Resume):
-            raise CallNotLowered(handled_reason(owner, term))
+            raise CallNotLowered(handled_reason(owner, self.computations))
         raise CallNotLowered(
             f"runs a {type(term).__name__} in `{owner.name}`, which the "
             f"compiled runtime has no step for"
@@ -542,8 +551,9 @@ class _Lowering:
             self.score(replace_locals(weight, env), prefix)
             return LiteralValue(value=None, type=binder.type)
         raise CallNotLowered(
-            f"performs `{effect}` in `{owner.name}`{origin_line(term)}, which "
-            f"the compiled runtime runs only through the program's own "
+            f"performs `{effect}` in "
+            f"{self.computations.performer(request, owner)}{origin_line(term)}, "
+            f"which the compiled runtime runs only through the program's own "
             f"`Random` and `Score`"
         )
 
@@ -701,10 +711,11 @@ class _Lowering:
                     body=value,
                     result_type=lifted,
                 ),
+                lifted,
             )
             return DrawArgName(text=name)
         name = self.floater.fresh(hint)
-        self.let(name, value)
+        self.let(name, value, _value_type(value))
         return DrawArgName(text=name)
 
     def score(self, weight: Value, prefix: str) -> None:
@@ -774,6 +785,7 @@ class _Lowering:
                 body=value,
                 result_type=lifted,
             ),
+            lifted,
         )
         return Var(local=Local(name=name, type=lifted))
 
@@ -910,7 +922,7 @@ class CallLowering:
         }
         self.cards = cards
         self.occupied = occupied
-        self.computations = {item.name: item for item in module.computations}
+        self.computations = Callees(discharge_module(module))
         self.entries = {item.name: item for item in module.entries}
         entry = self.entries.get(program)
         self.checked_body: Computation | None = next(
@@ -1071,7 +1083,7 @@ class CallLowering:
         result = lowering.call(
             callee, tuple(arguments), callee.type.result, step.name, ()
         )
-        lowering.let(step.name, result)
+        lowering.let(step.name, result, callee.type.result)
         return tuple(lowering.steps)
 
     def traverse(self, step: CallStep) -> tuple[ProgramStep, ...]:
@@ -1204,6 +1216,7 @@ class CallLowering:
             Comprehension(
                 binder=index, extent=plate.size, body=result, result_type=result_type
             ),
+            result_type,
         )
         return tuple(lowering.steps)
 

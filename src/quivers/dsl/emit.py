@@ -1343,6 +1343,12 @@ def _emit_qiec_handler_decl(decl: QiecHandlerDecl, indent: int) -> str:
     head += f" for {_emit_qiec_effect_ref(decl.effect)}"
     head += f" : {_emit_qiec_type(decl.input_type)}"
     head += f" -> {_emit_qiec_type(decl.output_type)}"
+    if decl.parameters:
+        parameters = ", ".join(
+            f"{parameter.name} : {_emit_qiec_type(parameter.type_expr)}"
+            for parameter in decl.parameters
+        )
+        head += f" with ({parameters})"
     head += " [" + ", ".join(options) + "]"
     lines = _doc_lines(decl.docs, indent)
     lines.append(f"{_pad(indent)}{head}")
@@ -1452,12 +1458,17 @@ def _emit_qiec_request(request: QiecEffectRequest) -> str:
 
 
 def _emit_qiec_handler_application(handler: QiecHandlerApplication) -> str:
-    if not handler.static_arguments:
-        return handler.name
-    arguments = ", ".join(
-        _emit_qiec_static_argument(argument) for argument in handler.static_arguments
-    )
-    return f"{handler.name}[{arguments}]"
+    head = handler.name
+    if handler.static_arguments:
+        arguments = ", ".join(
+            _emit_qiec_static_argument(argument)
+            for argument in handler.static_arguments
+        )
+        head += f"[{arguments}]"
+    if handler.values:
+        values = ", ".join(_emit_qiec_value(value) for value in handler.values)
+        head += f"({values})"
+    return head
 
 
 def _emit_qiec_computation(computation: QiecComputation, indent: int) -> list[str]:
@@ -1551,7 +1562,12 @@ def _emit_qiec_inline_computation(computation: QiecComputation) -> str:
         return f"{computation.callee}{static}({arguments})"
     if isinstance(computation, QiecResumeComputation):
         value = "" if computation.value is None else _emit_qiec_value(computation.value)
-        return f"resume({value})"
+        if not computation.parameters:
+            return f"resume({value})"
+        parameters = ", ".join(
+            _emit_qiec_value(parameter) for parameter in computation.parameters
+        )
+        return f"resume({value}) with ({parameters})"
     raise EmitError(
         f"emit: {type(computation).__name__!r} is a block computation and "
         f"cannot appear inline; only a request, a call, or a resumption can"

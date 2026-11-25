@@ -162,6 +162,10 @@ handler is reinstalled around the continuation it resumes, while effects that th
 itself performs go only to outer handlers. Dispatch checks the exact applied interface as well as the instance and the
 operation identifier.
 
+A handler's parameters are values of the machine's handler frame. A resumption pushes the captured
+frames with the handler's frame at the values the `resume` names, so no frame is ever updated in
+place and the shots of an unrestricted clause never share one.
+
 The machine enforces resumption grades when it runs a handler clause. A grade `0` clause cannot
 resume, an affine clause resumes at most once, and a linear clause resumes exactly once. An
 unrestricted clause may resume several times only when the captured context is declared
@@ -332,13 +336,46 @@ A program's calls of computations are lowered to compiled steps before compilati
 - `traverse` maps a pure callee as a comprehension and a drawing callee as one
   [plated](https://en.wikipedia.org/wiki/Plate_notation) draw per site.
 
-A program that keeps any other call (recursion, an `if` whose branches draw, a handled effect,
-`case`, static arguments) has no step table the compiler can build. It compiles to a
+The callees are those of the [discharged module](#discharging-handlers), so a callee that installs
+authored handlers is lowered as any other.
+
+A program that keeps any other call (recursion, an `if` whose branches draw, a handler that is not
+discharged, `case`, static arguments) has no step table the compiler can build. It compiles to a
 [`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], a morphism whose `rsample`
 and `log_joint` are `sample_program` and `run_program` on the module's own entry point. Its
 `steps`, which every fitting entry point reads, raise the located refusal that the lowering
 recorded. The machine scores Python numbers, so such a program keeps no gradient path to the
 tensors it is given.
+
+## Discharging handlers {#discharging-handlers}
+
+[`discharge_module`][quivers.qiec.discharge.discharge_module] rewrites every computation whose authored handlers can be
+evaluated statically to an equal one that installs none
+([the rules and their proof](../semantics/effects.md#82-static-discharge)). It is the reference
+machine with symbolic values: an explicit continuation of frames, a request that finds the innermost
+handler frame of its instance, a clause that runs with the frames in between captured, and a `resume`
+that puts them back with the parameters it names. A step that computes a value emits a binding, a
+request no frame answers is emitted, and a conditional on a value known only at run time is reduced
+branch by branch. Its branches carry a join frame. Branches that arrive at one join with the same
+frames, up to handler parameters, are brought together there, and any others are followed
+separately.
+
+The pass runs once per compilation or target request, and every reader takes its result:
+
+| Reader | What it reads |
+|---|---|
+| the compiled runtime (`quivers.dsl.compiler._call_lowering`) | the bodies of the computations a program calls |
+| the transpile planner (`quivers.transpile.plan`) | the bodies it inlines, on every target |
+| the projection of a target whose capabilities lack `handle` ([`project_for_target`][quivers.transpile.qiec_ir.project_for_target]) | the whole module, with the obstacles |
+| `qvr check --target` and [`analyze_qiec_capabilities`][quivers.transpile.qiec_ir.analyze_qiec_capabilities] | that projection |
+
+A computation that keeps its handlers is left as it is, and a
+[`DischargeObstacle`][quivers.qiec.discharge.DischargeObstacle] records the handler, the clause, and the reason. The
+compiled runtime's refusal and the target's capability diagnostic quote it. The reference machine,
+serialization, and the targets that render handlers read the checked module.
+
+A discharged computation keeps its declared type. Its body may request fewer instances than the
+declared row names, when a clause drops a continuation that made the requests.
 
 ## How source declarations elaborate {#qvr-surface}
 
@@ -365,8 +402,10 @@ runtime, so its depth is bounded by memory rather than by the host call stack.
 Two [instances](../reference/qvr/effects-and-handlers.md#scoped-instances) of one applied
 interface, such as `left` and `right` of `State[Int]`, have distinct identities, and a total
 handler of one removes only that instance from the row. A handler declaration records a stable
-signature and resumption grades. Its executable clauses are attachments keyed by the derived
-handler identifier.
+signature, its parameters, and its resumption grades. An authored handler carries its clause bodies in
+the module, and a foreign handler's executable clauses are attachments keyed by the derived handler
+identifier. A `resume` written without `with` elaborates to one that carries the clause's parameters,
+so the core has one form, and a handler without parameters is the case of none.
 
 Probabilistic operations are instances of the same effect calculus. A total `replay` handler of
 the `random` instance leaves the `score` instance in the residual row, and replay tables,
@@ -760,6 +799,7 @@ marginalization, deductions, and parameter maps against them, and
 | `authored_state_handler.qvr` | `State[S]`, an authored handler with `get`, `put`, and an explicit return clause, nested scoped instances, and a computation called from a clause |
 | `effectful_probabilistic_helper.qvr` | an index sort of observation status, a GADT of measurements, a helper that scores a `Present` value and draws an `Absent` one under a site name, and a hierarchical program that calls it with both constructors |
 | `grouped_marginalization.qvr` | a class for each item summed out of a Normal mixture whose rows are grouped by item through an index map, checked against an independent `logsumexp` reference |
+| `discharged_handlers.qvr` | a program that calls a computation under a state cell, an abort, and a choice, each an authored handler with a parameter, discharged for the compiled runtime and the static targets |
 | `ambiguous_deduction.qvr` | a grammar with prepositional attachment ambiguity, whose two derivations are summed under an unrestricted `Choose` handler and added to a program's score |
 | `network_decoder.qvr` | a morphism parameterized by a network, observed through the built-in effects, with gradients reaching the attached weights |
 
@@ -873,8 +913,9 @@ attachment's `operations` table is keyed by `qiec:operation:*`, and each clause 
 
 - The request holds the stable instance, effect, operation, static arguments, value arguments,
   result type, source origin, and dynamic address.
-- The context holds the specialized handler manifest, the static arguments, and the number of
-  times the clause has resumed so far.
+- The context holds the specialized handler manifest, the static arguments, the current values of
+  the handler's parameters, and the number of times the clause has resumed so far.
+- `resume(value)` keeps the parameters, and `resume(value, parameters)` gives them new values.
 - A return clause receives `(value, context)`.
 
 Result validators check the values passed to `resume`, and the handler's output validator checks
@@ -912,9 +953,10 @@ body or erase an unsupported effect to make the module fit.
 
 Recursive calls, scoped instances, and authored handler clauses are represented in the checked
 core and exercised by the examples above. Their presence in the core does not imply support on
-every target, since the capability checks apply to the reachable computation graph. Optimized
-handler implementations and larger subsets for static targets are possible extensions, and each
-would have to preserve the relevant execution and scoring behavior.
+every target, since the capability checks apply to the reachable computation graph, with its handlers
+[discharged](#discharging-handlers) for a target that renders none. Optimized handler implementations
+are a possible extension, and each would have to preserve the relevant execution and scoring
+behavior.
 
 Panproto validates objects persisted by earlier releases against the grammar they were written
 under. The migration gate reads the original QVR history without rewriting its content-addressed

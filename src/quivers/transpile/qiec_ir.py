@@ -15,6 +15,7 @@ from typing import Literal, cast
 import didactic.api as dx
 
 from quivers.qiec import QiecModule
+from quivers.qiec.discharge import DischargedModule, discharge_module
 from quivers.qiec._models import QiecModel
 from quivers.qiec import declarations as d
 from quivers.qiec import effects as e
@@ -1528,6 +1529,8 @@ class IRQiecHandle(IRQiecComputation):
         The handled computation.
     static_arguments
         The handler's telescope instantiation, in binder order.
+    arguments
+        The initial values of the handler's parameters.
     kind
         The discriminator; always ``"handle"``.
     """
@@ -1536,6 +1539,7 @@ class IRQiecHandle(IRQiecComputation):
     handler: IRQiecId
     computation: IRQiecComputation
     static_arguments: tuple[IRQiecStatic, ...] = ()
+    arguments: tuple[IRQiecValue, ...] = ()
     kind: Literal["handle"] = "handle"
 
 
@@ -1664,12 +1668,16 @@ class IRQiecResume(IRQiecComputation):
         The value returned to the suspended computation.
     origin
         The resumption's source location.
+    arguments
+        The values the handler's parameters have while the resumed
+        computation runs.
     kind
         The discriminator; always ``"resume"``.
     """
 
     value: IRQiecValue
     origin: IRQiecSourceOrigin
+    arguments: tuple[IRQiecValue, ...] = ()
     kind: Literal["resume"] = "resume"
 
 
@@ -1898,6 +1906,8 @@ class IRQiecHandlerDef(dx.Model):
     implementation
         ``"authored"`` when every clause carries a body, ``"foreign"`` when
         a runtime provider supplies the behavior.
+    parameters
+        The handler's parameters, in declaration order.
     """
 
     id: IRQiecId
@@ -1912,6 +1922,7 @@ class IRQiecHandlerDef(dx.Model):
     telescope: tuple[IRQiecBinder, ...]
     return_clause: IRQiecHandlerReturnClauseDef | None = None
     implementation: Literal["authored", "foreign"] = "foreign"
+    parameters: tuple[IRQiecLocal, ...] = ()
 
 
 class IRQiecNamedEffectInstance(dx.Model):
@@ -2050,8 +2061,28 @@ class IRQiecProgramEntry(dx.Model):
     telescope: tuple[IRQiecBinder, ...] = ()
 
 
+class IRQiecObstacle(dx.Model):
+    """Why a computation of a projection still installs handlers.
+
+    Parameters
+    ----------
+    computation
+        The computation's name.
+    reason
+        The obstacle, as a clause naming the handler and the clause, to
+        follow "the computation".
+    """
+
+    computation: str
+    reason: str
+
+
 class IRQiecModule(dx.Model):
-    """Lossless structural projection of one checked :class:`QiecModule`."""
+    """Lossless structural projection of one checked :class:`QiecModule`.
+
+    ``obstacles`` records, for a target that renders no handler, why each
+    computation that still installs one does.
+    """
 
     module: str
     source_protocol: str
@@ -2065,6 +2096,7 @@ class IRQiecModule(dx.Model):
     computations: tuple[IRQiecNamedComputation, ...] = ()
     entries: tuple[IRQiecProgramEntry, ...] = ()
     programs: tuple[IRQiecId, ...] = ()
+    obstacles: tuple[IRQiecObstacle, ...] = ()
     gap: str = ""
     abi: str
 
@@ -2525,6 +2557,7 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             static_arguments=cast(
                 tuple[IRQiecStatic, ...], _convert(value.static_arguments)
             ),
+            arguments=cast(tuple[IRQiecValue, ...], _convert(value.arguments)),
         )
     if isinstance(value, tm.CaseMotive):
         return IRQiecCaseMotive(
@@ -2569,6 +2602,7 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
         return IRQiecResume(
             value=cast(IRQiecValue, _convert(value.value)),
             origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
+            arguments=cast(tuple[IRQiecValue, ...], _convert(value.arguments)),
         )
     if isinstance(value, tm.NewInstance):
         return IRQiecNewInstance(
@@ -2656,6 +2690,46 @@ def lower_qiec_ir(module: QiecModule) -> IRQiecModule:
         )
     )
     return IRQiecModule(**values)
+
+
+def project_for_target(
+    module: QiecModule,
+    discharged: DischargedModule,
+    target: str,
+    *,
+    capabilities: QiecTargetCapabilities | None = None,
+) -> IRQiecModule:
+    """Project a checked module as a target reads it.
+
+    A target that renders handlers gets the module as it is checked. A
+    target that renders none gets the module with its handlers discharged
+    and the obstacles of the computations that keep theirs.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked module.
+    discharged : DischargedModule
+        The module with its handlers discharged.
+    target : str
+        The target name.
+    capabilities : QiecTargetCapabilities or None
+        The target's feature set, else its registered one.
+
+    Returns
+    -------
+    IRQiecModule
+        The projection.
+    """
+    supported = capabilities or capabilities_for_target(target)
+    if supported.supports("handle"):
+        return lower_qiec_ir(module)
+    return lower_qiec_ir(discharged.module).with_(
+        obstacles=tuple(
+            IRQiecObstacle(computation=item.computation, reason=item.reason)
+            for item in discharged.obstacles
+        )
+    )
 
 
 def _is_deduction_origin(origin: SourceOrigin | IRQiecSourceOrigin) -> bool:
@@ -2789,6 +2863,10 @@ class QiecCapabilityDiagnostic(dx.Model):
     detail
         Why the target cannot preserve the feature, phrased to follow the
         target's name, as in ``"has no semantics-preserving lowering"``.
+    obstacle
+        For a computation whose handlers the target would need discharged,
+        why they are not, as a clause to follow "the computation"; empty
+        otherwise.
     """
 
     code: Literal["qiec-capability"] = "qiec-capability"
@@ -2797,12 +2875,18 @@ class QiecCapabilityDiagnostic(dx.Model):
     computation: str | None = None
     origin: IRQiecSourceOrigin | None = None
     detail: str
+    obstacle: str = ""
 
     @property
     def kind(self) -> str:
-        """The ``qiec:capability:<feature>:<subject>`` refusal identifier."""
+        """The refusal identifier.
+
+        ``qiec:capability:<feature>:<subject>``, with the obstacle after a
+        colon and a space when there is one.
+        """
         subject = self.computation or "module"
-        return f"qiec:capability:{self.feature}:{subject}"
+        kind = f"qiec:capability:{self.feature}:{subject}"
+        return f"{kind}: {subject} {self.obstacle}" if self.obstacle else kind
 
     @property
     def message(self) -> str:
@@ -2812,7 +2896,12 @@ class QiecCapabilityDiagnostic(dx.Model):
             if self.computation is not None
             else "the QIEC module"
         )
-        return f"{subject} requires `{self.feature}`, but {self.target} {self.detail}"
+        message = (
+            f"{subject} requires `{self.feature}`, but {self.target} {self.detail}"
+        )
+        if not self.obstacle:
+            return message
+        return f"{message}; its handlers cannot be discharged: it {self.obstacle}"
 
 
 _DECLARATION_ONLY = QiecTargetCapabilities()
@@ -3108,6 +3197,8 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
                 value(argument)
         elif isinstance(item, IRQiecHandle):
             required.add("handle")
+            for argument in item.arguments:
+                value(argument)
             visit(item.computation)
         elif isinstance(item, IRQiecCase):
             required.add("case")
@@ -3126,6 +3217,8 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
         elif isinstance(item, IRQiecResume):
             required.add("resume")
             value(item.value)
+            for argument in item.arguments:
+                value(argument)
         elif isinstance(item, IRQiecNewInstance):
             required.add("local-instance")
             visit(item.body)
@@ -3299,8 +3392,14 @@ def analyze_qiec_capabilities(
     module = (
         module_or_ir
         if isinstance(module_or_ir, IRQiecModule)
-        else lower_qiec_ir(module_or_ir)
+        else project_for_target(
+            module_or_ir,
+            discharge_module(module_or_ir),
+            target,
+            capabilities=capabilities,
+        )
     )
+    obstacles = {item.computation: item.reason for item in module.obstacles}
     supported = capabilities or capabilities_for_target(target)
     diagnostics: list[QiecCapabilityDiagnostic] = list(
         host_runtime_capability_diagnostics(
@@ -3370,6 +3469,11 @@ def analyze_qiec_capabilities(
                     computation=computation.name,
                     origin=computation.origin,
                     detail="has no semantics-preserving lowering for that feature",
+                    obstacle=(
+                        obstacles.get(computation.name, "")
+                        if feature == "handle"
+                        else ""
+                    ),
                 )
             )
     return tuple(diagnostics)
@@ -3699,6 +3803,7 @@ __all__ = [
     "IRQiecProgramSite",
     "IRQiecProgramEntry",
     "IRQiecModule",
+    "IRQiecObstacle",
     "QiecFeature",
     "QiecTargetCapabilities",
     "QiecCapabilityDiagnostic",
@@ -3706,4 +3811,5 @@ __all__ = [
     "capabilities_for_target",
     "host_runtime_capability_diagnostics",
     "lower_qiec_ir",
+    "project_for_target",
 ]

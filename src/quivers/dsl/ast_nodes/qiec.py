@@ -633,7 +633,7 @@ class QiecEffectRequest(dx.Model):
 
 
 class QiecHandlerApplication(dx.Model):
-    """A handler applied to the static arguments its telescope takes.
+    """A handler at its static arguments and its parameters' first values.
 
     Parameters
     ----------
@@ -641,6 +641,8 @@ class QiecHandlerApplication(dx.Model):
         The handler's name.
     static_arguments
         The static arguments, in order.
+    values
+        The values the handler's parameters start from, in order.
     line
         The 1-based source line, or 0 when unknown.
     col
@@ -649,6 +651,7 @@ class QiecHandlerApplication(dx.Model):
 
     name: str
     static_arguments: tuple[QiecStaticArgument, ...] = ()
+    values: tuple[QiecValue, ...] = ()
     line: int = 0
     col: int = 0
 
@@ -931,10 +934,13 @@ class QiecResumeComputation(QiecComputation):
     """Invocation of the enclosing handler clause's continuation.
 
     The resumption is not a named local, so there is exactly one way to
-    invoke it. A `value` of None resumes with unit.
+    invoke it. A `value` of None resumes with unit. The `parameters` are
+    the values the handler's parameters have while the continuation runs;
+    an empty tuple keeps the clause's own.
     """
 
     value: QiecValue | None = None
+    parameters: tuple[QiecValue, ...] = ()
     line: int = 0
     col: int = 0
     kind: Literal["qiec_resume_computation"] = "qiec_resume_computation"
@@ -1118,7 +1124,7 @@ the target runtime supplies.
 
 
 class QiecHandlerDecl(Statement):
-    """``handler NAME[binders] for EFFECT : IN => OUT`` with its clauses.
+    """``handler NAME[binders] for EFFECT : IN -> OUT with (params)``, with its clauses.
 
     Parameters
     ----------
@@ -1140,6 +1146,8 @@ class QiecHandlerDecl(Statement):
         Whether requests of operations without a clause are forwarded outward.
     implementation
         Whether the clause bodies are authored here or supplied by a runtime provider.
+    parameters
+        The handler's typed parameters, in order.
     clauses
         The return and operation clauses.
     duplicate_options
@@ -1163,6 +1171,7 @@ class QiecHandlerDecl(Statement):
     coverage: Literal["total", "partial"] = "total"
     forwards_unknown: bool = False
     implementation: QiecHandlerImplementation = "authored"
+    parameters: tuple[QiecValueParameter, ...] = ()
     clauses: tuple[QiecHandlerClause, ...] = ()
     duplicate_options: tuple[str, ...] = ()
     docs: tuple[str, ...] = ()

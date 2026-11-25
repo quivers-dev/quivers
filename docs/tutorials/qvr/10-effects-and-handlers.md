@@ -104,6 +104,100 @@ An *authored* handler has its clause bodies written in QVR, so it can be inspect
 
 A process that loads the serialized module must install a provider for each foreign handler. The runtime configuration selects the provider by name, and the Python callables themselves are never serialized ([foreign handlers and providers](../../reference/qvr/effects-and-handlers.md#foreign-handlers-and-providers)).
 
+## 6. Carry state in the handler
+
+A handler's *parameters* carry values from one request to the next [@leijen2017type]. They are typed binders written after the answer type. `handle` gives their first values, every clause reads them, and `resume(v) with (e)` gives the values they have while the continuation runs. The module below is a small model of discourse reference in the style of effect-driven semantics. A sentence may introduce a referent (`introduce`), a definite description reads the latest one (`latest`), and a description whose referent is not positive has no value (`undefined`):
+
+```python
+from quivers.dsl import loads
+
+DISCOURSE = """
+effect Store
+    latest : Unit -> Real
+    introduce : Real -> Unit
+
+effect Failure
+    undefined : Unit -> Real
+
+instance referents : Store
+instance presupposition : Failure
+
+handler remembering for Store : Real -> Real with (r : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    latest resumes 1 =>
+        resume(r)
+    introduce(v : Real) resumes 1 =>
+        resume() with (v)
+
+handler floored for Failure : Real -> Real with (floor : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    undefined resumes 0 =>
+        return floor
+
+define definite() : Real !{presupposition, referents} =
+    let x <- perform referents.latest()
+    let checked <- positive(x)
+    return checked
+
+define positive(x : Real) : Real !{presupposition} =
+    if x > 0.0 then
+        return x
+    else
+        let y <- perform presupposition.undefined()
+        return y
+
+define discourse(a : Real) : Real !{presupposition, referents} =
+    perform referents.introduce(2.0 * a)
+    let d <- definite()
+    return d + a
+
+define judged(a : Real) : Real !{} =
+    handle presupposition with floored(0.0 - 1.0) in
+        handle referents with remembering(0.0) in
+            let m <- discourse(a)
+            return m
+
+object Trial : FinSet 4
+
+program judgments : Trial -> Trial
+    sample a <- Normal(loc=0.0, scale=1.0)
+    let m <- judged(a)
+    observe y : Trial <- Normal(loc=m, scale=1.0)
+    return y
+
+export judgments
+"""
+model = loads(DISCOURSE)
+assert model.run("judged", 0.5).value == 1.5
+assert model.run("judged", -0.5).value == -1.0
+```
+
+`remembering` starts with the referent `0.0`, and its clause for `introduce` resumes with the new one in its place. `floored` discards the rest of the computation when a description has no value and answers its parameter `floor` in place of it. So `judged(0.5)` introduces `1.0`, reads it back, and returns `1.5`, while `judged(-0.5)` returns the floor.
+
+## 7. Fit a program whose meaning is stated with effects
+
+The program `judgments` calls `judged`, which installs handlers, and the compiled runtime and Stan run none. Both read `judged` with its handlers [*discharged*](../../reference/qvr/effects-and-handlers.md#discharged-handlers): each request is replaced by the answer of its clause, and the request under the `if` by a choice between the rest of the computation and the floor. The program thus has gradients, and it transpiles to Stan with no handler in it:
+
+```python
+import torch
+from quivers.dsl.parser import parse
+from quivers.inference import MCMC, NUTSKernel
+from quivers.transpile import transpile
+
+y = torch.tensor([1.4, 0.9, 1.8, 1.1])
+fit = MCMC(NUTSKernel(max_tree_depth=4), num_warmup=50, num_samples=50, seed=0).run(
+    model.morphism, torch.zeros(1, 1), {"y": y}
+)
+assert fit.samples["a"].isfinite().all()
+
+stan = transpile(parse(DISCOURSE), target="stan").decode()
+assert "?" in stan and "handle" not in stan
+```
+
+The order of the handlers is part of the analysis, since each request is answered by the innermost handler of its instance and a clause runs outside its own handler. [Which calls are fit](../../reference/qvr/probabilistic-programs.md#which-calls-are-fit) lists the calls that are discharged and the ones that are refused.
+
 ## Next
 
 [Chapter 11](11-parsing-and-search.md) uses multi-shot handlers to search over parses. The [effect reference](../../reference/qvr/effects-and-handlers.md) lists the built-in effects, rows, options, and failure modes.

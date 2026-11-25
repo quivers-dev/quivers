@@ -815,6 +815,10 @@ def substitute_computation(
                 substitute_static(argument, substitution)
                 for argument in computation.static_arguments
             ),
+            arguments=tuple(
+                substitute_value(argument, substitution)
+                for argument in computation.arguments
+            ),
         )
     if isinstance(computation, Case):
         return Case(
@@ -871,6 +875,10 @@ def substitute_computation(
         return Resume(
             value=substitute_value(computation.value, substitution),
             origin=computation.origin,
+            arguments=tuple(
+                substitute_value(argument, substitution)
+                for argument in computation.arguments
+            ),
         )
     if isinstance(computation, NewInstance):
         return NewInstance(

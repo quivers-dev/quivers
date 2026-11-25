@@ -801,9 +801,15 @@ class TailResume(QiecModel):
     ----------
     value
         What the resumed operation supplies.
+    arguments
+        The values the handler's parameters have while the continuation
+        runs, or ``None`` to keep the installation's current ones.
     """
 
     value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    arguments: tuple[HeldValue, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 class ContinuationFrame(QiecModel):
@@ -899,6 +905,10 @@ class _HandlerFrame(ContinuationFrame):
         The checked declaration installed.
     environment
         The bindings in scope where the handler was installed.
+    arguments
+        The current values of the handler's parameters. A resumption that
+        names new ones installs a frame carrying them, so a frame's own
+        values never change.
     """
 
     instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -907,6 +917,43 @@ class _HandlerFrame(ContinuationFrame):
     environment: Mapping[Local, HeldValue] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    arguments: tuple[HeldValue, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    def bindings(self) -> dict[Local, HeldValue]:
+        """The environment an authored clause body of this frame starts from.
+
+        Returns
+        -------
+        dict[Local, HeldValue]
+            The bindings at the installation, extended by the handler's
+            parameters at their current values.
+        """
+        environment = dict(self.environment)
+        environment.update(zip(self.definition.parameters, self.arguments, strict=True))
+        return environment
+
+    def carrying(self, arguments: tuple[HeldValue, ...]) -> _HandlerFrame:
+        """This installation with its parameters at other values.
+
+        Parameters
+        ----------
+        arguments : tuple[HeldValue, ...]
+            One value per parameter.
+
+        Returns
+        -------
+        _HandlerFrame
+            A frame sharing this one's lifecycle.
+        """
+        return _HandlerFrame(
+            instance=self.instance,
+            lifecycle=self.lifecycle,
+            definition=self.definition,
+            environment=self.environment,
+            arguments=arguments,
+        )
 
     @property
     def handler(self) -> RuntimeHandler:
@@ -1171,9 +1218,12 @@ class ClauseContext:
         The ordinal of each resumption taken to reach the clause.
     request
         The request the clause answers, or ``None`` in a return clause.
+    arguments
+        The current values of the handler's parameters.
     """
 
     __slots__ = (
+        "_arguments",
         "_environment",
         "_evaluator",
         "_outer_stack",
@@ -1188,8 +1238,10 @@ class ClauseContext:
         outer_stack: tuple[ContinuationFrame, ...],
         resumption_path: tuple[int, ...],
         request: RuntimeRequest | None,
+        arguments: tuple[object, ...],
     ) -> None:
         self._evaluator = evaluator
+        self._arguments = arguments
         self._environment = environment
         self._outer_stack = _frames(outer_stack)
         self._resumption_path = resumption_path
@@ -1206,6 +1258,17 @@ class ClauseContext:
             completed computation rather than an operation.
         """
         return self._request
+
+    @property
+    def arguments(self) -> tuple[object, ...]:
+        """The current values of the handler's parameters.
+
+        Returns
+        -------
+        tuple[object, ...]
+            One value per declared parameter, in declaration order.
+        """
+        return self._arguments
 
     @property
     def attachments(self) -> RuntimeAttachments:
@@ -1401,7 +1464,9 @@ class Resumption:
         """
         return self._calls
 
-    def __call__(self, value: object) -> object:
+    def __call__(
+        self, value: object, arguments: tuple[HeldValue, ...] | None = None
+    ) -> object:
         """Resume the suspended computation with a value.
 
         The static analysis already rejects a clause that can exceed its
@@ -1414,6 +1479,9 @@ class Resumption:
         ----------
         value : object
             What the resumed operation supplies.
+        arguments : tuple[HeldValue, ...] or None
+            The values the handler's parameters have while the
+            continuation runs, or ``None`` to keep the current ones.
 
         Returns
         -------
@@ -1431,7 +1499,7 @@ class Resumption:
         RuntimeValidationError
             If the value does not inhabit the operation's result type.
         """
-        captured, path = self._begin_shot(value)
+        captured, path = self._begin_shot(value, arguments)
         # Outer handlers remain visible to effects performed by the resumed
         # continuation, but the delimiter prevents normal completion from
         # consuming the continuation outside the handled expression.
@@ -1462,13 +1530,19 @@ class Resumption:
                 protected,
             )
 
-    def _begin_shot(self, value: object) -> tuple[list[_Frame], tuple[int, ...]]:
+    def _begin_shot(
+        self, value: object, arguments: tuple[HeldValue, ...] | None
+    ) -> tuple[list[_Frame], tuple[int, ...]]:
         """Check the grade and value, then produce the frames for one shot.
 
         Parameters
         ----------
         value : object
             What the resumed operation supplies.
+        arguments : tuple[HeldValue, ...] or None
+            The values the handler's parameters have while the shot runs,
+            or ``None`` to keep the ones captured with it. They are held by
+            the shot's own handler frame, so two shots never share them.
 
         Returns
         -------
@@ -1487,7 +1561,11 @@ class Resumption:
             If an unrestricted resumption would have to copy a captured
             value that is not duplicable.
         RuntimeTypeMismatch
-            If the value does not inhabit the operation's result type.
+            If the value does not inhabit the operation's result type, or a
+            parameter value its parameter's type.
+        InvalidHandlerError
+            If the parameter values given do not match the parameters in
+            number.
         """
         next_call = self._calls + 1
         if self._grade is ResumptionGrade.ZERO:
@@ -1520,6 +1598,11 @@ class Resumption:
             if self._grade is ResumptionGrade.UNRESTRICTED
             else list(self._captured_stack)
         )
+        if arguments is not None:
+            handler = captured[0]
+            assert isinstance(handler, _HandlerFrame)
+            self._evaluator._validate_parameters(handler.definition, arguments)
+            captured[0] = handler.carrying(arguments)
         return captured, (*self._path, next_call - 1)
 
     def _check_completed(self) -> None:
@@ -2721,7 +2804,7 @@ class Evaluator:
                         and authored is not None
                     ):
                         stack.append(_AnswerFrame(handler=frame))
-                        env = dict(frame.environment)
+                        env = frame.bindings()
                         env[authored.binder] = value
                         current = authored.body
                         continue
@@ -2732,6 +2815,7 @@ class Evaluator:
                             tuple(stack),
                             resumption_path,
                             None,
+                            frame.arguments,
                         )
                         answer = handler.return_clause(value, context)
                         answer = self._resolve_clause_answer(answer, context)
@@ -2788,6 +2872,10 @@ class Evaluator:
                 )
                 if definition.implementation == "authored":
                     handler = self._authored_runtime(handler, definition)
+                arguments = tuple(
+                    self._value(argument, env) for argument in current.arguments
+                )
+                self._validate_parameters(definition, arguments)
                 lifecycle = self._install_handler(handler)
                 self._emit_trace(
                     "handler.entered",
@@ -2803,6 +2891,7 @@ class Evaluator:
                         lifecycle=lifecycle,
                         definition=definition,
                         environment=dict(env),
+                        arguments=arguments,
                     )
                 )
                 current = current.computation
@@ -2934,7 +3023,10 @@ class Evaluator:
                         "resume was reached outside an authored handler clause"
                     )
                 value = self._value(current.value, env)
-                shot_frames, shot_path = clause.resumption._begin_shot(value)
+                shot_frames, shot_path = clause.resumption._begin_shot(
+                    value,
+                    tuple(self._value(argument, env) for argument in current.arguments),
+                )
                 stack.append(_PathFrame(resumption_path=resumption_path))
                 stack.extend(shot_frames)
                 env = dict(clause.resumption._captured_environment)
@@ -2967,6 +3059,39 @@ class Evaluator:
                     continue
                 return outcome
             raise TypeError(f"unsupported QIEC computation {type(current).__name__}")
+
+    def _validate_parameters(
+        self, definition: HandlerDef, arguments: tuple[HeldValue, ...]
+    ) -> None:
+        """Check the values a handler's parameters are given.
+
+        Parameters
+        ----------
+        definition : HandlerDef
+            The instantiated handler.
+        arguments : tuple[HeldValue, ...]
+            The values, in declaration order.
+
+        Raises
+        ------
+        InvalidHandlerError
+            If there is not exactly one value per parameter.
+        RuntimeTypeMismatch
+            If a value does not inhabit its parameter's type.
+        """
+        if len(arguments) != len(definition.parameters):
+            raise InvalidHandlerError(
+                f"handler {definition.name!r} declares "
+                f"{len(definition.parameters)} parameter(s); "
+                f"{len(arguments)} value(s) were given"
+            )
+        for parameter, argument in zip(definition.parameters, arguments, strict=True):
+            _validate(
+                argument,
+                self._validator_at(parameter.type),
+                parameter.type,
+                f"parameter {parameter.name!r} of handler {definition.name!r}",
+            )
 
     def _finish_handler(self, frame: _HandlerFrame, answer: object) -> None:
         """Validate a handler's answer and finalize its installation.
@@ -3210,7 +3335,7 @@ class Evaluator:
                         "grade": structural_clause.grade.value,
                     },
                 )
-                clause_environment = dict(frame.environment)
+                clause_environment = frame.bindings()
                 clause_environment.update(
                     zip(structural_clause.parameters, request.arguments, strict=True)
                 )
@@ -3235,6 +3360,7 @@ class Evaluator:
                 outer_stack,
                 request.resumption_path,
                 request,
+                frame.arguments,
             )
             try:
                 answer = runtime_clause.invoke(request, resumption, context)
@@ -3248,7 +3374,9 @@ class Evaluator:
                         "a clause cannot both invoke its resumption and resume in "
                         "tail position"
                     )
-                shot_frames, shot_path = resumption._begin_shot(answer.value)
+                shot_frames, shot_path = resumption._begin_shot(
+                    answer.value, answer.arguments
+                )
                 del stack[index:]
                 stack.append(_PathFrame(resumption_path=request.resumption_path))
                 stack.extend(shot_frames)
@@ -3414,7 +3542,8 @@ class Evaluator:
         Raises
         ------
         NonDuplicableContinuationError
-            If a captured attachment is not marked duplicable. Copying it would give two
+            If a captured local, handler, or handler parameter is not marked
+            duplicable. Copying it would give two
             shots a shared mutable value, which is a data race rather than two
             independent continuations.
         """
@@ -3432,6 +3561,16 @@ class Evaluator:
                     "unrestricted resumption captures nonduplicable handler "
                     f"{frame.handler.definition.name!r}"
                 )
+            if isinstance(frame, _HandlerFrame):
+                for local, value in zip(
+                    frame.definition.parameters, frame.arguments, strict=True
+                ):
+                    if not self._duplicable_value(value):
+                        raise NonDuplicableContinuationError(
+                            f"unrestricted resumption captures nonduplicable "
+                            f"parameter {local.name!r} of handler "
+                            f"{frame.definition.name!r}"
+                        )
 
     def _duplicable_value(self, value: object) -> bool:
         """Whether one captured value may be copied for another shot.
@@ -3521,6 +3660,7 @@ class Evaluator:
                         lifecycle=clone_lifecycle,
                         definition=frame.definition,
                         environment=frame.environment,
+                        arguments=frame.arguments,
                     )
                 )
         except BaseException:
@@ -3604,7 +3744,7 @@ class Evaluator:
         -------
         HandlerDef
             The handler with its interface, input, output, introduced
-            row, clause parameters and bodies, and return clause
+            row, parameters, clause parameters and bodies, and return clause
             substituted, so the bodies run at the types this installation
             uses.
 
@@ -3647,6 +3787,13 @@ class Evaluator:
             input_type=substitute_type(definition.input_type, substitution),
             output_type=substitute_type(definition.output_type, substitution),
             introduced=substitute_row(definition.introduced, substitution),
+            parameters=tuple(
+                Local(
+                    name=local.name,
+                    type=substitute_type(local.type, substitution),
+                )
+                for local in definition.parameters
+            ),
             telescope=(),
             return_clause=(
                 None

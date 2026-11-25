@@ -413,6 +413,9 @@ machine's:
 | a pure callee: no effect, no static arguments, pure bindings ending in a return | `let` steps, the callee's bindings under fresh names |
 | a pure callee that calls other pure computations | the same, with each nested call inlined in turn |
 | a pure callee whose body branches with `if c then e1 else e2` between pure branches | `select(c, e1, e2)`, which evaluates both branches, so a branch undefined where it is not selected (a `log` of a negative number) gives a NaN gradient |
+| a callee that installs authored handlers, with or without [parameters](effects-and-handlers.md#handler-parameters), that can be [discharged](effects-and-handlers.md#discharged-handlers) | the callee's steps with each request replaced by its clause's answer |
+| the same with a grade `0` clause reached under an `if` between pure branches | `select` between the clause's answer and the rest of the computation |
+| the same with a grade `omega` clause that resumes once per entry of a tensor of statically known extent | the tensor of the answers, whose `logsumexp` is the marginal over the entries |
 | a callee whose only requests are the program's `Random.sample` and `Score.add` | the callee's steps in place, as a draw from a program runs: the site `label` it draws becomes `y$label` under the binder `y`, and each score becomes a score step |
 | `let ys <- traverse(xs, x -> f(x, ...))` with a pure `f` | a comprehension over the items of `xs` |
 | the same with an `f` that draws | one draw over a plate per site of `f`, named `ys$label`, over the object that `xs` runs along |
@@ -421,8 +424,11 @@ Each run of a traversed callee reads only its own item and names bound before th
 the runs are independent and the draw over the plate is exact. A recurrence, in which a step reads the
 previous one, is written with [`scan`](#scans).
 
-The transpile planner shares this analysis of pure calls, so every target inlines nested pure calls
-and states a conditional between pure branches in its own form of `select`. A callee that draws is
+A callee that returns a product, `let p <- f(x)`, is read by component, as `p[0]` and `p[1]`.
+
+The transpile planner shares this analysis of pure calls, so every target inlines nested pure calls,
+reads the discharged callee, and states a conditional between pure branches in its own form of
+`select`. A callee that draws is
 still called through each dynamic target's runtime, where its site keeps its label as on the
 reference machine: a site `noise` reached once is `noise`, and reached repeatedly, by a `traverse`
 or by two calls, is `noise@0`, `noise@1`, and so on in run order.
@@ -437,14 +443,15 @@ such a call is refused with the same error when it is instantiated:
 | --- | --- | --- |
 | a call that reaches a recursive call | its number of steps depends on its arguments | a reduction (`sum`, `fold`) or `map` over a tensor of fixed length, or `scan` over a sequence |
 | an `if` whose branches draw or score | its set of sites depends on the branch taken | draw outside the conditional and choose between values with `select` |
-| a callee that handles an effect in its body (`with instance`, `handle`) | the compiled runtime does not run handlers or resumptions | a callee with no handler |
+| a callee whose handlers are not [discharged](effects-and-handlers.md#discharged-handlers) | the compiled runtime does not run handlers or resumptions | authored, nonforwarding handlers over computations without recursion |
 | a `case` on a family value | the compiled runtime does not run case analysis | a callee with no `case` |
 | a `define`-computation call with static arguments, as `identity[Int](4)` | the compiled runtime does not specialize computation calls | a computation with no static binders |
 | a program called as a computation, `let y <- sub(...)` | a program is drawn from, not called | `sample y <- sub(...)` |
 
-Dynamic transpile targets emit every reachable call, Stan accepts a callee that is a closed,
-monomorphic scalar computation with no effects as a user-defined function, and BUGS and JAGS refuse
-calls from a program to a computation ([transpilation](execution-and-tooling.md#transpilation)).
+Dynamic transpile targets emit every reachable call. The static targets state an inlined call as
+deterministic statements, Stan also accepts a callee that is a closed, monomorphic scalar
+computation with no effects as a user-defined function, and BUGS and JAGS refuse a call they cannot
+inline ([transpilation](execution-and-tooling.md#transpilation)).
 
 ## Exact marginalization
 

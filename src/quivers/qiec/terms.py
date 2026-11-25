@@ -862,6 +862,10 @@ class Handle(QiecModel):
         The handled computation.
     static_arguments
         The handler's telescope instantiation, in binder order.
+    arguments
+        The initial values of the handler's parameters, one per
+        parameter, in declaration order; empty for a handler without
+        parameters.
     tag
         The serialization discriminator; always ``"handle"``.
     """
@@ -870,6 +874,9 @@ class Handle(QiecModel):
     handler: HandlerId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     computation: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     static_arguments: tuple[StaticArgument, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    arguments: tuple[Value, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     tag: Literal["handle"] = "handle"
@@ -994,12 +1001,20 @@ class Resume(QiecModel):
         result.
     origin
         The resumption's source location.
+    arguments
+        The values the handler's parameters have while the resumed
+        computation runs, one per parameter, in declaration order. A
+        source ``resume`` that names none carries the clause's own
+        parameters.
     tag
         The serialization discriminator; always ``"resume"``.
     """
 
     value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arguments: tuple[Value, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["resume"] = "resume"
 
 

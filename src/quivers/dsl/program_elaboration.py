@@ -115,7 +115,9 @@ from quivers.qiec.effects import (
     ResumptionGrade,
     RowEntry,
     instantiate_effect,
+    render_instance,
 )
+from quivers.qiec.discharge import clause_requests
 from quivers.qiec.families import FAMILIES, DistributionFamily, FamilyParameter
 from quivers.qiec.family_shapes import (
     family_shape_equations,
@@ -5317,6 +5319,46 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return tensor_type(entry_type, (extent,))
         return tensor_type(entry_shape[0], (extent, *entry_shape[1]))
 
+    def _unhandled_reason(self: _Elaborator, entry: RowEntry) -> str:
+        """Why a callee's row names an instance, where a handler is the reason.
+
+        Parameters
+        ----------
+        entry : RowEntry
+            The instance and its interface.
+
+        Returns
+        -------
+        str
+            The handler clauses that request from the instance and the
+            handlers of its interface that forward an operation, as a
+            parenthetical; empty when there are none.
+        """
+        names = {
+            operation.id: operation.name
+            for definition in self.effects.values()
+            for operation in definition.operations
+        }
+        reasons = [
+            f"{clause} requests it"
+            for handler in self.handlers.values()
+            for clause, request in clause_requests(handler, names)
+            if request.instance == entry.instance
+        ]
+        definition = self.effects[entry.effect.name]
+        for handler in self.handlers.values():
+            uncovered = [
+                f"`{operation.name}`"
+                for operation in definition.operations
+                if handler.clause(operation.id) is None
+            ]
+            if handler.effect.id == entry.effect.id and uncovered:
+                reasons.append(
+                    f"handler `{handler.name}` has no clause "
+                    f"{' or '.join(uncovered)} and leaves it to an outer handler"
+                )
+        return f" ({'; '.join(dict.fromkeys(reasons))})" if reasons else ""
+
     def _elaborate_call(
         self: _Elaborator, step: CallStep, scope: _Scope, state: _ProgramState
     ) -> None:
@@ -5383,7 +5425,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 self._fail(
                     step,
                     f"call to {step.call.callee!r} performs on instance "
-                    f"{entry.instance!r}, which the program's row cannot carry",
+                    f"`{render_instance(entry.instance, self.registry.instance_names)}"
+                    f" : {render_static(entry.effect)}`, which the program's row "
+                    f"cannot carry{self._unhandled_reason(entry)}",
                     code="qiec-program",
                 )
         self._bind_step(scope, step.name, call_type.result, call, step)

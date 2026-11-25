@@ -1483,6 +1483,8 @@ def _free_runtime_capture(
             for argument in item.request.arguments:
                 value(argument, locally_bound)
         elif isinstance(item, IRQiecHandle):
+            for argument in item.arguments:
+                value(argument, locally_bound)
             computation(item.computation, locally_bound)
         elif isinstance(item, IRQiecCase):
             value(item.scrutinee, locally_bound)
@@ -1500,6 +1502,8 @@ def _free_runtime_capture(
                 value(argument, locally_bound)
         elif isinstance(item, IRQiecResume):
             value(item.value, locally_bound)
+            for argument in item.arguments:
+                value(argument, locally_bound)
         elif isinstance(item, IRQiecNewInstance):
             computation(item.body, locally_bound)
 
@@ -1590,6 +1594,8 @@ def qiec_families_used(ir: IRProgram) -> frozenset[str]:
             for argument in item.request.arguments:
                 value(argument)
         elif isinstance(item, IRQiecHandle):
+            for argument in item.arguments:
+                value(argument)
             computation(item.computation)
         elif isinstance(item, IRQiecCase):
             value(item.scrutinee)
@@ -1604,6 +1610,8 @@ def qiec_families_used(ir: IRProgram) -> frozenset[str]:
                 value(argument)
         elif isinstance(item, IRQiecResume):
             value(item.value)
+            for argument in item.arguments:
+                value(argument)
         elif isinstance(item, IRQiecNewInstance):
             computation(item.body)
 
@@ -1861,6 +1869,10 @@ def _python_authored_handler(
     """
     lines: list[str] = []
     operations: list[str] = []
+    carried = "".join(
+        f"    {_local_name(local.name)} = qiec_context['parameters'][{index}]\n"
+        for index, local in enumerate(handler.parameters)
+    )
     for clause in handler.clauses:
         name = _clause_name(handler, _operation_name(module, clause.operation.text))
         if clause.body is None:
@@ -1873,7 +1885,7 @@ def _python_authored_handler(
             "    qiec_attachments = qiec_context['attachments']\n"
             "    qiec_handlers = qiec_context['handlers']\n"
             "    qiec_operations = qiec_context['operations']\n"
-            f"{unpack}"
+            f"{carried}{unpack}"
             f"    return {_python_computation(target, clause.body, module)}\n"
         )
         operations.append(f"{clause.operation.text!r}: {{'invoke': {name}}}")
@@ -1887,6 +1899,7 @@ def _python_authored_handler(
             "    qiec_attachments = qiec_context['attachments']\n"
             "    qiec_handlers = qiec_context['handlers']\n"
             "    qiec_operations = qiec_context['operations']\n"
+            f"{carried}"
             f"    return {_python_computation(target, handler.return_clause.body, module)}\n"
         )
         return_entry = name
@@ -1940,7 +1953,8 @@ def _python_computation(
             f"_qvr_qiec_handle(lambda: {_python_computation(target, node.computation, module)}, "
             f"{node.instance.text!r}, {_ir_data(handler)!r}, "
             f"{_ir_data(node.static_arguments)!r}, qiec_static, qiec_handlers, "
-            "qiec_attachments, qiec_operations)"
+            f"qiec_attachments, qiec_operations, "
+            f"{_python_sequence(target, node.arguments)})"
         )
     if isinstance(node, IRQiecCall):
         callee = _computation_by_id(module, node.callee.text)
@@ -1961,7 +1975,10 @@ def _python_computation(
             f"lambda: {_python_computation(target, node.otherwise, module, tail=tail)})"
         )
     if isinstance(node, IRQiecResume):
-        return f"_qvr_qiec_resume(qiec_resume, {_python_value(target, node.value)})"
+        return (
+            f"_qvr_qiec_resume(qiec_resume, {_python_value(target, node.value)}, "
+            f"{_python_sequence(target, node.arguments)})"
+        )
     if isinstance(node, IRQiecNewInstance):
         return f"_qvr_qiec_instance(lambda: {_python_computation(target, node.body, module)})"
     if isinstance(node, IRQiecCase):
@@ -1980,6 +1997,25 @@ def _python_computation(
             f"{{{', '.join(branches)}}}, {_case_metadata(node)!r}, qiec_static)"
         )
     raise TypeError(f"unknown QIEC computation {node!r}")
+
+
+def _python_sequence(target: str, values: tuple[IRQiecValue, ...]) -> str:
+    """The values of a handler's parameters as a Python tuple.
+
+    Parameters
+    ----------
+    target : str
+        The transpile target.
+    values : tuple[IRQiecValue, ...]
+        One value per parameter.
+
+    Returns
+    -------
+    str
+        The tuple's source.
+    """
+    items = "".join(f"{_python_value(target, value)}, " for value in values)
+    return f"({items})"
 
 
 def _python_value(target: str, node: IRQiecValue) -> str:
@@ -2130,6 +2166,10 @@ def _julia_authored_handler(
     """
     lines: list[str] = []
     operations: list[str] = []
+    carried = "".join(
+        f'    {_local_name(local.name)} = qiec_context["parameters"][{index + 1}]\n'
+        for index, local in enumerate(handler.parameters)
+    )
     for clause in handler.clauses:
         if clause.body is None:
             continue
@@ -2145,7 +2185,7 @@ def _julia_authored_handler(
             '    qiec_attachments = qiec_context["attachments"]\n'
             '    qiec_handlers = qiec_context["handlers"]\n'
             '    qiec_operations = qiec_context["operations"]\n'
-            f"{unpack}"
+            f"{carried}{unpack}"
             f"    return {_julia_computation(target, clause.body, module)}\n"
             "end\n"
         )
@@ -2162,6 +2202,7 @@ def _julia_authored_handler(
             '    qiec_attachments = qiec_context["attachments"]\n'
             '    qiec_handlers = qiec_context["handlers"]\n'
             '    qiec_operations = qiec_context["operations"]\n'
+            f"{carried}"
             f"    return {_julia_computation(target, handler.return_clause.body, module)}\n"
             "end\n"
         )
@@ -2210,7 +2251,7 @@ def _julia_computation(
         return f"_qvr_qiec_effect({rendered}, qiec_static)"
     if isinstance(node, IRQiecHandle):
         handler = _handler(module, node.handler.text)
-        return f"_qvr_qiec_handle(() -> {_julia_computation(target, node.computation, module)}, {_julia_string(node.instance.text)}, {_julia_data(_ir_data(handler))}, {_julia_data(_ir_data(node.static_arguments))}, qiec_static, qiec_handlers, qiec_attachments, qiec_operations)"
+        return f"_qvr_qiec_handle(() -> {_julia_computation(target, node.computation, module)}, {_julia_string(node.instance.text)}, {_julia_data(_ir_data(handler))}, {_julia_data(_ir_data(node.static_arguments))}, qiec_static, qiec_handlers, qiec_attachments, qiec_operations, Any[{', '.join(_julia_value(target, value) for value in node.arguments)}])"
     if isinstance(node, IRQiecCall):
         callee = _computation_by_id(module, node.callee.text)
         arguments = "".join(
@@ -2226,7 +2267,7 @@ def _julia_computation(
     if isinstance(node, IRQiecIf):
         return f"_qvr_qiec_if({_julia_value(target, node.condition)}, () -> {_julia_computation(target, node.then, module, tail=tail)}, () -> {_julia_computation(target, node.otherwise, module, tail=tail)})"
     if isinstance(node, IRQiecResume):
-        return f"_qvr_qiec_resume(qiec_resume, {_julia_value(target, node.value)})"
+        return f"_qvr_qiec_resume(qiec_resume, {_julia_value(target, node.value)}, Any[{', '.join(_julia_value(target, value) for value in node.arguments)}])"
     if isinstance(node, IRQiecNewInstance):
         return (
             f"_qvr_qiec_instance(() -> {_julia_computation(target, node.body, module)})"
@@ -2467,6 +2508,10 @@ def _javascript_authored_handler(
     """
     lines: list[str] = []
     operations: list[str] = []
+    carried = "".join(
+        f"  var {_local_name(local.name)} = qiec_context.parameters[{index}];\n"
+        for index, local in enumerate(handler.parameters)
+    )
     for clause in handler.clauses:
         if clause.body is None:
             continue
@@ -2484,7 +2529,7 @@ def _javascript_authored_handler(
             "  var qiec_attachments = qiec_context.attachments;\n"
             "  var qiec_handlers = qiec_context.handlers;\n"
             "  var qiec_operations = qiec_context.operations;\n"
-            f"{unpack}"
+            f"{carried}{unpack}"
             f"  return {_javascript_computation(target, clause.body, module)};\n"
             "};\n"
         )
@@ -2499,6 +2544,7 @@ def _javascript_authored_handler(
             "  var qiec_attachments = qiec_context.attachments;\n"
             "  var qiec_handlers = qiec_context.handlers;\n"
             "  var qiec_operations = qiec_context.operations;\n"
+            f"{carried}"
             f"  return {_javascript_computation(target, handler.return_clause.body, module)};\n"
             "};\n"
         )
@@ -2546,7 +2592,7 @@ def _javascript_computation(
         return f"_qvr_qiec_effect({rendered}, qiec_static)"
     if isinstance(node, IRQiecHandle):
         handler = _handler(module, node.handler.text)
-        return f"_qvr_qiec_handle(function() {{ return {_javascript_computation(target, node.computation, module)}; }}, {json.dumps(node.instance.text)}, {json.dumps(_ir_data(handler), ensure_ascii=False)}, {json.dumps(_ir_data(node.static_arguments), ensure_ascii=False)}, qiec_static, qiec_handlers, qiec_attachments, qiec_operations)"
+        return f"_qvr_qiec_handle(function() {{ return {_javascript_computation(target, node.computation, module)}; }}, {json.dumps(node.instance.text)}, {json.dumps(_ir_data(handler), ensure_ascii=False)}, {json.dumps(_ir_data(node.static_arguments), ensure_ascii=False)}, qiec_static, qiec_handlers, qiec_attachments, qiec_operations, [{', '.join(_javascript_value(target, value) for value in node.arguments)}])"
     if isinstance(node, IRQiecCall):
         callee = _computation_by_id(module, node.callee.text)
         arguments = "".join(
@@ -2562,7 +2608,7 @@ def _javascript_computation(
     if isinstance(node, IRQiecIf):
         return f"_qvr_qiec_if({_javascript_value(target, node.condition)}, function() {{ return {_javascript_computation(target, node.then, module, tail=tail)}; }}, function() {{ return {_javascript_computation(target, node.otherwise, module, tail=tail)}; }})"
     if isinstance(node, IRQiecResume):
-        return f"_qvr_qiec_resume(qiec_resume, {_javascript_value(target, node.value)})"
+        return f"_qvr_qiec_resume(qiec_resume, {_javascript_value(target, node.value)}, [{', '.join(_javascript_value(target, value) for value in node.arguments)}])"
     if isinstance(node, IRQiecNewInstance):
         return f"_qvr_qiec_instance(function() {{ return {_javascript_computation(target, node.body, module)}; }})"
     if isinstance(node, IRQiecCase):
@@ -2716,13 +2762,18 @@ def _scheme_authored_handler(
     """
     lines: list[str] = []
     operations: list[str] = []
+    carried = "".join(
+        f" ({_local_name(local.name)} "
+        f'(list-ref (_qvr-qiec-member qiec-context "parameters") {index}))'
+        for index, local in enumerate(handler.parameters)
+    )
     for clause in handler.clauses:
         if clause.body is None:
             continue
         name = _clause_name(handler, _operation_name(module, clause.operation.text))
         params = [_local_name(local.name) for local in clause.parameters]
-        bindings = " ".join(
-            f'({param} (list-ref (_qvr-qiec-member qiec-request "arguments") {index}))'
+        bindings = "".join(
+            f' ({param} (list-ref (_qvr-qiec-member qiec-request "arguments") {index}))'
             for index, param in enumerate(params)
         )
         lines.append(
@@ -2731,7 +2782,7 @@ def _scheme_authored_handler(
             f'         (qiec-attachments (_qvr-qiec-member qiec-context "attachments"))\n'
             f'         (qiec-handlers (_qvr-qiec-member qiec-context "handlers"))\n'
             f'         (qiec-operations (_qvr-qiec-member qiec-context "operations"))'
-            f"{(' ' + bindings) if bindings else ''})\n"
+            f"{carried}{bindings})\n"
             f"    {_scheme_computation(target, clause.body, module)}))\n"
         )
         operations.append(
@@ -2746,7 +2797,8 @@ def _scheme_authored_handler(
             f'  (let* ((qiec-static (_qvr-qiec-member qiec-context "static"))\n'
             f'         (qiec-attachments (_qvr-qiec-member qiec-context "attachments"))\n'
             f'         (qiec-handlers (_qvr-qiec-member qiec-context "handlers"))\n'
-            f'         (qiec-operations (_qvr-qiec-member qiec-context "operations")))\n'
+            f'         (qiec-operations (_qvr-qiec-member qiec-context "operations"))'
+            f"{carried})\n"
             f"    {_scheme_computation(target, handler.return_clause.body, module)}))\n"
         )
         return_entry = name
@@ -2794,7 +2846,7 @@ def _scheme_computation(
         return f"(_qvr-qiec-effect {rendered} qiec-static)"
     if isinstance(node, IRQiecHandle):
         handler = _handler(module, node.handler.text)
-        return f"(_qvr-qiec-handle (lambda () {_scheme_computation(target, node.computation, module)}) {_scheme_string(node.instance.text)} {_scheme_data(_ir_data(handler))} {_scheme_data(_ir_data(node.static_arguments))} qiec-static qiec-handlers qiec-attachments qiec-operations)"
+        return f"(_qvr-qiec-handle (lambda () {_scheme_computation(target, node.computation, module)}) {_scheme_string(node.instance.text)} {_scheme_data(_ir_data(handler))} {_scheme_data(_ir_data(node.static_arguments))} qiec-static qiec-handlers qiec-attachments qiec-operations (list {' '.join(_scheme_value(target, value) for value in node.arguments)}))"
     if isinstance(node, IRQiecCall):
         callee = _computation_by_id(module, node.callee.text)
         arguments = "".join(
@@ -2810,7 +2862,7 @@ def _scheme_computation(
     if isinstance(node, IRQiecIf):
         return f"(_qvr-qiec-if {_scheme_value(target, node.condition)} (lambda () {_scheme_computation(target, node.then, module, tail=tail)}) (lambda () {_scheme_computation(target, node.otherwise, module, tail=tail)}))"
     if isinstance(node, IRQiecResume):
-        return f"(_qvr-qiec-resume qiec-resume {_scheme_value(target, node.value)})"
+        return f"(_qvr-qiec-resume qiec-resume {_scheme_value(target, node.value)} (list {' '.join(_scheme_value(target, value) for value in node.arguments)}))"
     if isinstance(node, IRQiecNewInstance):
         return f"(_qvr-qiec-instance (lambda () {_scheme_computation(target, node.body, module)}))"
     if isinstance(node, IRQiecCase):
