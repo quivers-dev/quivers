@@ -736,6 +736,14 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             }
             planned = {predictor.prefix: predictor for predictor in plan.predictors}
             outputs |= {(resp, key): item.output for key, item in planned.items()}
+            if resp in thresholds:
+                # brms reports the thresholds in place of the intercept and
+                # the native threshold coordinates.
+                result |= threshold_variables(
+                    thresholds[resp],
+                    infix=tag(resp),
+                    groups=self._response_fit(resp).formula.modifiers.threshold_groups,
+                )
             for parameter, prefix, predictor in response.lens._predictor_items(
                 response.formula
             ):
@@ -777,9 +785,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 continue
             value = draws[target.site]
             resp = target.response
-            if target.site in consumed and not (
-                resp is not None and resp in thresholds and target.class_ == "Intercept"
-            ):
+            if target.site in consumed:
                 continue
             consumed.add(target.site)
             if target.class_ == "cor" and target.site in grouped:
@@ -797,13 +803,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     )
                 )
             ):
-                # brms reports the thresholds in place of the intercept and
-                # the native threshold coordinates.
-                result |= threshold_variables(
-                    thresholds[resp],
-                    infix=tag(resp),
-                    groups=self._response_fit(resp).formula.modifiers.threshold_groups,
-                )
                 continue
             if target.class_ in {"b", "Intercept"} and resp is not None:
                 # The reported coefficients of transformed coordinates.

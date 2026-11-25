@@ -92,13 +92,10 @@ class NameScope(ValueModel):
         SmoothNames
             Names of the unpenalized columns, the scales and the coefficients.
         """
-        present = {term.term for term in self.formula.design_terms} | {
-            column.term for column in self.formula.fixed_columns
-        }
+        # A location whose categories have formulas of their own has no terms.
+        stated = self.formula.fixed_columns or self.formula.design_terms
         return smooth_names(
-            self.formula,
-            {term: state for term, state in self.states.items() if term in present},
-            infix=self.infix,
+            self.formula, self.states if stated else {}, infix=self.infix
         )
 
     def label(self, column: str) -> str:
