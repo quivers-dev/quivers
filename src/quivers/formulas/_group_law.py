@@ -35,9 +35,10 @@ from typing import Literal
 import didactic.api as dx
 import torch
 
-from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.formulas._group_covariance import GroupCovarianceBasis
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
+from quivers.formulas._term import InputDecl
 
 __all__: list[str] = []
 
@@ -762,30 +763,7 @@ def renamed_law(
     )
 
 
-class LawInput(ValueModel):
-    """One runtime input the blocks of a program read.
-
-    Parameters
-    ----------
-    name : str
-        Input name.
-    element : {"Int", "Real"}
-        Element carrier.
-    axes : tuple[str, ...]
-        Finite axes of the input.
-    value : torch.Tensor or None
-        Training value the law retains; None for row data the design holds.
-    """
-
-    name: str
-    element: Literal["Int", "Real"]
-    axes: tuple[str, ...]
-    value: torch.Tensor | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-
-
-def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[LawInput, ...]:
+def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[InputDecl, ...]:
     """List the runtime inputs that the blocks of a program read.
 
     Parameters
@@ -795,13 +773,13 @@ def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[LawInput, ...]:
 
     Returns
     -------
-    tuple[LawInput, ...]
+    tuple[InputDecl, ...]
         Each input once: the member indices and weighted covariates of
         multi-membership rows, then per grouping factor the ``by`` codes, the
         prior weights, and the matrices of a known level covariance.
     """
     laws = tuple(laws)
-    inputs: dict[str, LawInput] = {}
+    inputs: dict[str, InputDecl] = {}
 
     def add(
         name: str,
@@ -810,7 +788,15 @@ def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[LawInput, ...]:
         value: torch.Tensor | None = None,
     ) -> None:
         inputs.setdefault(
-            name, LawInput(name=name, element=element, axes=axes, value=value)
+            name,
+            InputDecl(
+                name=name,
+                element=element,
+                axes=axes,
+                section="level",
+                declared=True,
+                values=value,
+            ),
         )
 
     for law in laws:

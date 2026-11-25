@@ -38,7 +38,9 @@ from quivers.formulas._autocor import autocor_matrix_targets, autocor_prior_targ
 from quivers.formulas._category_formulas import scale_parameter
 from quivers.formulas._gp import gp_prior_sites
 from quivers.formulas._group_law import LKJCorrelation, option_prior_sites
+from quivers.formulas._latent_effects import field_terms
 from quivers.formulas._monotonic_emission import monotonic_prior_sites
+from quivers.formulas._term import catalogue_sites
 from quivers.formulas._priors import PriorTarget, PriorSpec, RegularizedHorseshoe, R2D2
 
 # brms prior surface: flat and constant rules, main = TRUE, sampled coordinates.
@@ -632,9 +634,8 @@ def build_prior_targets(
             add(name, name, lower=0.0, dpar=name)
     for site, role in autocor_matrix_targets(family):
         add(site, role)
-    for latent in formula.latent_terms:
-        for site, role, lower, upper in latent.prior_sites():
-            add(site, role, lower=lower, upper=upper)
+    for site in catalogue_sites(field_terms(formula)):
+        add(site.name, site.class_, lower=site.lower, upper=site.upper)
     return tuple(targets.values())
 
 

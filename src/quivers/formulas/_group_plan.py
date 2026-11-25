@@ -12,6 +12,12 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Literal
 
+import didactic.api as dx
+import torch
+
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceBasis
 from quivers.formulas._group_law import (
     ByLevels,
@@ -33,19 +39,27 @@ from quivers.formulas._group_law import (
     SingleLevelRows,
     StudentMixing,
 )
-from quivers.formulas._grouping import GroupLevelOptions
+from quivers.formulas._grouping import GroupLevelOptions, MemberCovariate, Membership
 from quivers.formulas._grouping_emission import (
     by_axis,
     by_correlation_sites,
     by_input,
     joint_group_blocks,
+    member_covariates,
     member_index,
     member_input,
     merged_group_option,
     student_sites,
     weight_input,
 )
-from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
+from quivers.formulas._term import (
+    AxisDecl,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    column_inputs,
+)
+from quivers.formulas.formula import FixedColumn, Formula, RandomTerm, _qvr_name
 
 __all__: list[str] = []
 
@@ -844,3 +858,194 @@ def plan_threshold_block(
         coordinate_axis=axis,
         support_site=support_site,
     )
+
+
+class GroupTerm(ValueModel):
+    """One group-level coefficient carried to the rows by its row map.
+
+    Parameters
+    ----------
+    prefix : str
+        Predictor namespace.
+    group, slope : str
+        Authored grouping factor and coefficient label.
+    rows : RowMap
+        Map from the coefficient's levels to the rows.
+    column : FixedColumn or SymbolicColumn or None
+        Evaluated slope.
+    membership : Membership or None
+        Member codes and weights of a multi-membership factor.
+    covariate : MemberCovariate or None
+        Member covariate of a multi-membership coefficient.
+    law : GroupBlockLaw or None
+        Law of the block holding the coefficient; None when another program
+        emits the block.
+    rank : int
+        Position of the coefficient in the formula.
+    output : OutputAxis or None
+        Axis of the coefficient vectors.
+    """
+
+    prefix: str
+    group: str
+    slope: str
+    rows: RowMap = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    column: FixedColumn | SymbolicColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    membership: Membership | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    covariate: MemberCovariate | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    law: GroupBlockLaw | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    rank: int = 0
+    output: OutputAxis | None = None
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        """Return the identity of the coefficient in its model.
+
+        Returns
+        -------
+        tuple[str, str, str]
+            Predictor namespace, grouping factor, and coefficient label.
+        """
+        return self.prefix, self.group, self.slope
+
+    @property
+    def label(self) -> str:
+        """Return the authored term.
+
+        Returns
+        -------
+        str
+            The coefficient given its grouping factor.
+        """
+        return f"{self.slope} | {self.group}"
+
+    @property
+    def rowwise(self) -> bool:
+        """Report whether the contribution varies over the rows.
+
+        Returns
+        -------
+        bool
+            True.
+        """
+        return True
+
+    @property
+    def deferred(self) -> bool:
+        """Report whether the term is drawn after the auxiliary parameters.
+
+        Returns
+        -------
+        bool
+            False.
+        """
+        return False
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            Empty: the block law declares the axes its coefficients share.
+        """
+        return ()
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The row slope, and the member codes and weighted covariates of a
+            multi-membership factor.
+        """
+        inputs: tuple[InputDecl, ...] = ()
+        if self.column is not None:
+            inputs = column_inputs(
+                ((f"{self.prefix}random_{self.column.qvr_name}", self.column),)
+            )
+        membership, covariate = self.membership, self.covariate
+        if membership is None or covariate is None:
+            return inputs
+        products = member_covariates(
+            self.prefix,
+            self.group,
+            self.slope,
+            membership,
+            membership.weights,
+            covariate.values,
+        )
+        codes = {
+            member_index(self.group, member): torch.tensor(values, dtype=torch.long)
+            for member, values in enumerate(membership.codes)
+        }
+        return (
+            *inputs,
+            *(
+                InputDecl(
+                    name=name,
+                    element="Int" if name in codes else "Real",
+                    axes=("Resp",),
+                    section="level",
+                    declared=self.law is not None,
+                    values=value,
+                )
+                for name, value in {**codes, **products}.items()
+            ),
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The standard deviation of the coefficient. The block law owns the
+            innovations, the correlations, and the level hyperparameters its
+            coefficients share.
+        """
+        law = self.law
+        if law is None:
+            return ()
+        member = next(
+            member
+            for member in law.members
+            if member.prefix == self.prefix and member.slope == self.slope
+        )
+        by = law.level.by if member.scale.by_axis is not None else None
+        axes = (
+            member.scale.by_axis if member.scale.cell_axis is None else None,
+            member.scale.component_axis,
+        )
+        return (
+            SiteDecl(
+                name=member.scale.site,
+                class_="sd",
+                section="level",
+                coef=self.slope,
+                group=self.group,
+                axes=tuple(axis for axis in axes if axis is not None),
+                lower=0.0,
+                partition_labels=by.levels if by is not None else (),
+                rank=self.rank,
+            ),
+        )
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None

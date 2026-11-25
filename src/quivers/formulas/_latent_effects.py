@@ -37,11 +37,6 @@ from quivers.dsl.ast_nodes import (
     LetExprLiteral,
     LetExprNode,
     ProgramStep,
-    QiecIndexName,
-    QiecShapeIndex,
-    QiecTypeApplication,
-    QiecTypeName,
-    QiecValueParameter,
     SampleStep,
     Statement,
     TypeName,
@@ -50,6 +45,12 @@ from quivers.dsl.ast_nodes import (
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._residual_dependence import ResidualLayout, ResidualResponse
 from quivers.formulas._ast import _add, _call, _let, _mul, _sub, _var
+from quivers.formulas._term import (
+    AxisDecl,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+)
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 
@@ -856,31 +857,94 @@ class LatentTerm(ValueModel):
             self.layout, tuple(site for site, *_ in self.coefficients)
         )
 
-    def prior_sites(self) -> tuple[tuple[str, str, float | None, float | None], ...]:
-        """List ``(site, class, lower, upper)`` of the term's hyperparameters.
+    def sites(self, scale_prior: str, correlation_prior: str) -> tuple[SiteDecl, ...]:
+        """Declare the field's hyperparameters and coordinates.
+
+        Parameters
+        ----------
+        scale_prior : str
+            Default prior of the scale.
+        correlation_prior : str
+            Default prior of an unstructured correlation.
 
         Returns
         -------
-        tuple
-            brms classes ``sdcar``, ``car``, and ``rhocar``, or ``sderr`` and
-            the structural coefficients of latent residuals.
+        tuple[SiteDecl, ...]
+            brms classes ``sdcar``, ``car``, and ``rhocar``, or ``sderr``, the
+            structural coefficients and the correlation factor of latent
+            residuals, each followed by the coordinates they govern.
         """
-        if self.kind == "residual":
-            assert self.layout is not None
-            matrix = (
-                (("Lcortime", "Lcortime", None, None),)
-                if self.layout.kind == "unstr"
-                else ()
+
+        def hyper(
+            name: str,
+            class_: str,
+            default: str,
+            lower: float | None = None,
+            upper: float | None = None,
+            event_axis: str | None = None,
+        ) -> SiteDecl:
+            return SiteDecl(
+                name=name,
+                class_=class_,
+                section="field",
+                default=default,
+                lower=lower,
+                upper=upper,
+                event_axis=event_axis,
+                scoped=False,
             )
-            return (("sderr", "sderr", 0.0, None), *self.coefficients, *matrix)
-        sites: list[tuple[str, str, float | None, float | None]] = [
-            ("sdcar", "sdcar", 0.0, None)
-        ]
+
+        def coordinates(name: str, *, event: bool = True) -> SiteDecl:
+            return SiteDecl(
+                name=name,
+                class_="field",
+                section="field",
+                axes=() if event else (self.axis,),
+                event_axis=self.axis if event else None,
+                overridable=False,
+                scoped=False,
+            )
+
+        name = self.name
+        scale = hyper(f"sd{name}", f"sd{name}", scale_prior, 0.0)
+        if self.layout is not None:
+            unstructured = self.layout.kind == "unstr" and self.layout.times > 1
+            return (
+                scale,
+                *(
+                    hyper(site, class_, f"Uniform({lower!r}, {upper!r})", lower, upper)
+                    for site, class_, lower, upper in self.coefficients
+                ),
+                *(
+                    (
+                        hyper(
+                            "Lcortime",
+                            "Lcortime",
+                            correlation_prior,
+                            event_axis="FormulaAutocorTime",
+                        ),
+                    )
+                    if unstructured
+                    else ()
+                ),
+                coordinates(name),
+            )
         if self.car_type == "escar":
-            sites.append(("car", "car", 0.0, 1.0))
-        if self.car_type == "bym2":
-            sites.append(("rhocar", "rhocar", 0.0, 1.0))
-        return tuple(sites)
+            return (
+                scale,
+                hyper(name, name, "Uniform(0.0, 1.0)", 0.0, 1.0),
+                coordinates(f"r{name}"),
+            )
+        if self.car_type == "esicar":
+            return (scale, coordinates(f"r{name}"))
+        if self.car_type == "icar":
+            return (scale, coordinates(f"z{name}"))
+        return (
+            scale,
+            coordinates(f"z{name}"),
+            hyper(f"rho{name}", f"rho{name}", "Beta(1.0, 1.0)", 0.0, 1.0),
+            coordinates(f"nsz{name}", event=False),
+        )
 
     def observations(
         self, codes: tuple[int, ...], *, include: bool = True
@@ -1190,99 +1254,6 @@ def append_latent_terms(
     return eta
 
 
-def latent_runtime_parameters(formula: Formula) -> tuple[QiecValueParameter, ...]:
-    """Declare the data inputs of every latent term.
-
-    Parameters
-    ----------
-    formula : Formula
-        Location formula.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        Row index into the coordinates, the zero anchor fixing the event
-        extent, and for BYM2 the per-location inverse scaling factor.
-    """
-
-    def tensor(element: str, axis: str) -> QiecTypeApplication:
-        return QiecTypeApplication(
-            constructor="Tensor",
-            static_arguments=(QiecTypeName(name=element),),
-            indices=(QiecShapeIndex(dimensions=(QiecIndexName(name=axis),)),),
-        )
-
-    parameters: list[QiecValueParameter] = []
-    for term in formula.latent_terms:
-        parameters.append(
-            QiecValueParameter(name=f"{term.name}_idx", type_expr=tensor("Int", "Resp"))
-        )
-        parameters.append(
-            QiecValueParameter(
-                name=f"{term.name}_anchor", type_expr=tensor("Real", term.axis)
-            )
-        )
-        parameters.append(
-            QiecValueParameter(
-                name=f"{term.name}_include", type_expr=QiecTypeName(name="Real")
-            )
-        )
-        if term.car_type == "bym2":
-            parameters.append(
-                QiecValueParameter(
-                    name=f"{term.name}_inverse_scale",
-                    type_expr=tensor("Real", term.axis),
-                )
-            )
-    return tuple(parameters)
-
-
-def latent_observations(
-    formula: Formula, *, include: bool = True
-) -> dict[str, torch.Tensor]:
-    """Bind every latent term's training inputs.
-
-    Parameters
-    ----------
-    formula : Formula
-        Location formula.
-    include : bool
-        Add the terms to the predictor (brms ``incl_autocor``).
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime inputs by name.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for term in formula.latent_terms:
-        values.update(term.observations(term.codes, include=include))
-    return values
-
-
-def latent_prediction_observations(
-    formula: Formula, frame: pd.DataFrame
-) -> dict[str, torch.Tensor]:
-    """Bind latent inputs for prediction rows at fitted locations.
-
-    Parameters
-    ----------
-    formula : Formula
-        Fitted location formula.
-    frame : pandas.DataFrame
-        Prediction rows.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime inputs by name.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for term in formula.latent_terms:
-        values.update(term.observations(latent_prediction_codes(term, frame)))
-    return values
-
-
 def formula_families(
     base: FamilyCatalog | None, formula: Formula
 ) -> FamilyCatalog | None:
@@ -1306,3 +1277,165 @@ def formula_families(
             term.catalog if catalog is None else catalog.with_catalog(term.catalog)
         )
     return catalog
+
+
+class FieldTerm(ValueModel):
+    """A structured field indexed by a coordinate of each row.
+
+    Parameters
+    ----------
+    term : LatentTerm
+        Retained term.
+    scale_prior : str
+        Default prior of the field's scale.
+    correlation_prior : str
+        Default prior of an unstructured correlation.
+    include : bool
+        Add the field to the predictor; False is brms's
+        ``incl_autocor = FALSE``.
+    output : OutputAxis or None
+        None; a field has one scalar value per coordinate.
+    """
+
+    term: LatentTerm = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    scale_prior: str
+    correlation_prior: str
+    include: bool = True
+    output: OutputAxis | None = None
+
+    @property
+    def label(self) -> str:
+        """Return the authored term.
+
+        Returns
+        -------
+        str
+            Label of the term in the formula.
+        """
+        return self.term.label
+
+    @property
+    def rowwise(self) -> bool:
+        """Report whether the contribution varies over the rows.
+
+        Returns
+        -------
+        bool
+            True.
+        """
+        return True
+
+    @property
+    def deferred(self) -> bool:
+        """Report whether the term is drawn after the auxiliary parameters.
+
+        Returns
+        -------
+        bool
+            True.
+        """
+        return True
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The coordinate axis and, for unstructured residuals, the time
+            axis of their correlation.
+        """
+        term = self.term
+        axes = [AxisDecl(name=term.axis, size=term.size, section="inline")]
+        if term.layout is not None and term.layout.kind == "unstr":
+            axes.append(
+                AxisDecl(
+                    name="FormulaAutocorTime",
+                    size=term.layout.times,
+                    section="inline",
+                )
+            )
+        return tuple(axes)
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The row index into the coordinates, the zero anchor fixing the
+            event extent, the inclusion flag, and for BYM2 the per-location
+            inverse scaling factor.
+        """
+        term = self.term
+        axes: dict[str, tuple[Literal["Real", "Int"], tuple[str, ...]]] = {
+            f"{term.name}_idx": ("Int", ("Resp",)),
+            f"{term.name}_include": ("Real", ()),
+        }
+        return tuple(
+            InputDecl(
+                name=name,
+                element=axes.get(name, ("Real", ()))[0],
+                axes=axes.get(name, ("Real", (term.axis,)))[1],
+                section="field",
+                declared=True,
+                values=value,
+            )
+            for name, value in term.observations(
+                term.codes, include=self.include
+            ).items()
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The scale, the structural parameters, and the coordinates.
+        """
+        return self.term.sites(self.scale_prior, self.correlation_prior)
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            The laws of the field's coordinates.
+        """
+        return self.term.catalog
+
+
+def field_terms(
+    formula: Formula,
+    *,
+    scale_prior: str = "",
+    correlation_prior: str = "",
+    include: bool = True,
+) -> tuple[FieldTerm, ...]:
+    """Build the structured fields of one predictor.
+
+    Parameters
+    ----------
+    formula : Formula
+        Evaluated predictor.
+    scale_prior, correlation_prior : str
+        Default priors; empty when only the inputs of the terms are read.
+    include : bool
+        Add the fields to the predictor.
+
+    Returns
+    -------
+    tuple[FieldTerm, ...]
+        One term per field.
+    """
+    return tuple(
+        FieldTerm(
+            term=term,
+            scale_prior=scale_prior,
+            correlation_prior=correlation_prior,
+            include=include,
+        )
+        for term in formula.latent_terms
+    )

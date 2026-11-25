@@ -55,11 +55,6 @@ from quivers._positions import demand
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.dsl.ast_nodes import (
     DrawArgNamed,
-    QiecIndexName,
-    QiecShapeIndex,
-    QiecTypeApplication,
-    QiecTypeName,
-    QiecValueParameter,
     LetExprLiteral,
     LetExprNode,
     ProgramStep,
@@ -76,6 +71,13 @@ from quivers.formulas._ast import (
     _mul,
     _sub,
     _var,
+)
+from quivers.formulas._term import (
+    AxisDecl,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    design_declarations,
 )
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
@@ -1010,125 +1012,6 @@ def gp_block_steps(
     return steps
 
 
-def gp_runtime_parameters(
-    name: str, block: GaussianProcessBlock | None
-) -> tuple[QiecValueParameter, ...]:
-    """Declare a block's data inputs.
-
-    Parameters
-    ----------
-    name : str
-        Prefixed design identifier.
-    block : GaussianProcessBlock or None
-        Retained block, or None for a block that is not a GP.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        ``name_frequency_sq_d`` vectors over the block's coordinate axis, or
-        for an exact GP its distance and jitter matrices over the training
-        inputs and, for prediction, the anchor over the fresh inputs.
-    """
-    if block is None:
-        return ()
-    if block.exact:
-        axis = _input_axis(name, block)
-        parameters = [
-            QiecValueParameter(name=matrix, type_expr=_real_tensor(axis, axis))
-            for matrix in (*_distance_names(name, block), name + "_jitter")
-        ]
-        if block.prediction_inputs is not None:
-            parameters.append(
-                QiecValueParameter(
-                    name=name + "_anchor",
-                    type_expr=_real_tensor(name + "_Coordinate"),
-                )
-            )
-        return tuple(parameters)
-    return tuple(
-        QiecValueParameter(
-            name=f"{name}_frequency_sq_{d + 1}",
-            type_expr=QiecTypeApplication(
-                constructor="Tensor",
-                static_arguments=(QiecTypeName(name="Real"),),
-                indices=(
-                    QiecShapeIndex(
-                        dimensions=(QiecIndexName(name=name + "_Coordinate"),)
-                    ),
-                ),
-            ),
-        )
-        for d in range(block.dimension)
-    )
-
-
-def gp_observations(
-    name: str, block: GaussianProcessBlock | None
-) -> dict[str, torch.Tensor]:
-    """Bind a block's retained data inputs in double precision.
-
-    The approximation binds its squared frequencies, and the exact GP the
-    pairwise distances of its training inputs and brms's ``1e-12`` jitter.
-    Both are retained training structure, so fresh rows bind the same values.
-
-    Parameters
-    ----------
-    name : str
-        Prefixed design identifier.
-    block : GaussianProcessBlock or None
-        Retained block, or None for a block that is not a GP.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Inputs by name.
-    """
-    if block is None:
-        return {}
-    if block.exact:
-        assert block.inputs is not None
-        values = {
-            matrix: torch.as_tensor(distance, dtype=torch.float64)
-            for matrix, distance in zip(
-                _distance_names(name, block),
-                _distances(block, block.inputs, block.inputs),
-                strict=True,
-            )
-        }
-        values[name + "_jitter"] = EXACT_JITTER * torch.eye(
-            len(block.inputs), dtype=torch.float64
-        )
-        return values
-    return {
-        f"{name}_frequency_sq_{d + 1}": torch.as_tensor(
-            block.frequencies[:, d] ** 2, dtype=torch.float64
-        )
-        for d in range(block.dimension)
-    }
-
-
-def _real_tensor(*axes: str) -> QiecTypeApplication:
-    """Spell a real tensor type over named finite axes.
-
-    Parameters
-    ----------
-    *axes : str
-        Axis names, outermost first.
-
-    Returns
-    -------
-    QiecTypeApplication
-        ``Tensor[Real]([axes])``.
-    """
-    return QiecTypeApplication(
-        constructor="Tensor",
-        static_arguments=(QiecTypeName(name="Real"),),
-        indices=(
-            QiecShapeIndex(dimensions=tuple(QiecIndexName(name=a) for a in axes)),
-        ),
-    )
-
-
 def _input_axis(name: str, block: GaussianProcessBlock) -> str:
     """Name the axis of an exact GP's training inputs.
 
@@ -1330,30 +1213,6 @@ def _exact_steps(
         )
     )
     return steps
-
-
-def gp_axes(
-    name: str, block: GaussianProcessBlock | None
-) -> tuple[tuple[str, int], ...]:
-    """List the finite axes a block declares beside its design coordinates.
-
-    Parameters
-    ----------
-    name : str
-        Prefixed design identifier.
-    block : GaussianProcessBlock or None
-        Retained block, or None for a block that is not a GP.
-
-    Returns
-    -------
-    tuple[tuple[str, int], ...]
-        The training-input axis of an exact block specialized to prediction
-        rows, and nothing otherwise.
-    """
-    if block is None or block.prediction_inputs is None:
-        return ()
-    assert block.inputs is not None
-    return ((name + "_Input", len(block.inputs)),)
 
 
 def gp_rows(
@@ -2028,6 +1887,363 @@ def gp_block_coefficients(
     )
     spd = spectral_density(block, draws[sdgp].double(), lengths)
     return spd.sqrt() * draws[name + "_z"].double()
+
+
+class _ProcessTerm(ValueModel):
+    """The hyperparameters and design of one Gaussian process block.
+
+    Parameters
+    ----------
+    label : str
+        Authored term.
+    name : str
+        Prefixed design identifier.
+    prefix : str
+        Owning predictor namespace.
+    block : GaussianProcessBlock
+        Retained block.
+    matrix : np.ndarray
+        Rows by coordinates; read-only.
+    scale_prior : str
+        Default ``sdgp`` prior.
+    output : OutputAxis or None
+        Axis of the coefficient vectors.
+    """
+
+    label: str
+    name: str
+    prefix: str
+    block: GaussianProcessBlock = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    matrix: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    scale_prior: str
+    output: OutputAxis | None = None
+
+    @property
+    def rowwise(self) -> bool:
+        """Report whether the contribution varies over the rows.
+
+        Returns
+        -------
+        bool
+            True.
+        """
+        return True
+
+    @property
+    def deferred(self) -> bool:
+        """Report whether the term is drawn after the auxiliary parameters.
+
+        Returns
+        -------
+        bool
+            False.
+        """
+        return False
+
+    def hyperparameters(self) -> tuple[SiteDecl, ...]:
+        """Declare the ``sdgp`` and ``lscale`` sites.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The marginal standard deviation, then each length scale.
+        """
+        sdgp, lscales = self.block.sites(self.prefix)
+        return (
+            SiteDecl(
+                name=sdgp,
+                class_="sdgp",
+                section="design",
+                default=self.scale_prior,
+                coef=self.block.label,
+                lower=0.0,
+            ),
+            *(
+                SiteDecl(
+                    name=site,
+                    class_="lscale",
+                    section="design",
+                    default=default,
+                    coef=label,
+                    lower=0.0,
+                )
+                for site, default, label in zip(
+                    lscales,
+                    self.block.lscale_priors,
+                    self.block.lscale_labels,
+                    strict=True,
+                )
+            ),
+        )
+
+    def _site(self, suffix: str, axis: str) -> SiteDecl:
+        """Declare one coordinate site whose law the term fixes.
+
+        Parameters
+        ----------
+        suffix : str
+            Suffix of the site name.
+        axis : str
+            Suffix of its axis name.
+
+        Returns
+        -------
+        SiteDecl
+            The site.
+        """
+        return SiteDecl(
+            name=self.name + suffix,
+            class_="zgp",
+            section="design",
+            axes=(self.name + axis,),
+            overridable=False,
+        )
+
+
+class SpectralTerm(_ProcessTerm):
+    """An approximate Gaussian process on brms's spectral basis.
+
+    The coefficients are ``sqrt(spd(frequencies; sdgp, lscale)) * z``.
+    """
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The coordinate axis.
+        """
+        return (design_declarations(self.name, self.matrix)[0],)
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The squared frequencies of each covariate and the basis matrix.
+        """
+        return (
+            *(
+                InputDecl(
+                    name=f"{self.name}_frequency_sq_{d + 1}",
+                    element="Real",
+                    axes=(self.name + "_Coordinate",),
+                    section="design",
+                    declared=True,
+                    values=torch.as_tensor(
+                        self.block.frequencies[:, d] ** 2, dtype=torch.float64
+                    ),
+                )
+                for d in range(self.block.dimension)
+            ),
+            design_declarations(self.name, self.matrix)[1],
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The hyperparameters and the innovations.
+        """
+        return (*self.hyperparameters(), self._site("_z", "_Coordinate"))
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None
+
+
+class ExactProcessTerm(_ProcessTerm):
+    """An exact Gaussian process at its distinct inputs.
+
+    The coefficients are the latent function at the inputs. A block
+    specialized to prediction rows draws them at the fresh inputs from
+    `GaussianProcessConditional`, given the function at the training inputs.
+    """
+
+    def _training_axis(self) -> AxisDecl:
+        """Declare the axis of the training inputs.
+
+        Returns
+        -------
+        AxisDecl
+            The design coordinates while fitting, and an axis of its own for
+            a block specialized to prediction rows.
+        """
+        assert self.block.inputs is not None
+        return AxisDecl(
+            name=_input_axis(self.name, self.block),
+            size=len(self.block.inputs),
+            section="design",
+        )
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The coordinate axis and, for a specialized block, the axis of the
+            training inputs.
+        """
+        coordinates, _ = design_declarations(self.name, self.matrix)
+        if self.block.prediction_inputs is None:
+            return (coordinates,)
+        return (coordinates, self._training_axis())
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The distances between the training inputs, brms's ``1e-12``
+            jitter, the anchor over the fresh inputs of a specialized block,
+            and the row design.
+        """
+        block = self.block
+        assert block.inputs is not None
+        axis = self._training_axis().name
+        matrices = [
+            *zip(
+                _distance_names(self.name, block),
+                _distances(block, block.inputs, block.inputs),
+                strict=True,
+            ),
+            (self.name + "_jitter", EXACT_JITTER * np.eye(len(block.inputs))),
+        ]
+        anchor = (
+            (
+                InputDecl(
+                    name=self.name + "_anchor",
+                    element="Real",
+                    axes=(self.name + "_Coordinate",),
+                    section="design",
+                    declared=True,
+                    values=torch.zeros(
+                        len(block.prediction_inputs), dtype=torch.float64
+                    ),
+                ),
+            )
+            if block.prediction_inputs is not None
+            else ()
+        )
+        return (
+            *(
+                InputDecl(
+                    name=name,
+                    element="Real",
+                    axes=(axis, axis),
+                    section="design",
+                    declared=True,
+                    values=torch.as_tensor(values, dtype=torch.float64),
+                )
+                for name, values in matrices
+            ),
+            *anchor,
+            design_declarations(self.name, self.matrix)[1],
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The hyperparameters, the innovations at the training inputs, and
+            the function at the fresh inputs of a specialized block.
+        """
+        sites = (
+            *self.hyperparameters(),
+            self._site("_z", self._training_axis().name.removeprefix(self.name)),
+        )
+        if self.block.prediction_inputs is None:
+            return sites
+        return (
+            *sites,
+            SiteDecl(
+                name=self.name + "_coefficients",
+                class_="zgp",
+                section="design",
+                event_axis=self.name + "_Coordinate",
+                overridable=False,
+            ),
+        )
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            The conditional law of the function at the fresh inputs of a
+            specialized block, or None.
+        """
+        return gp_conditional_catalog(((self.name, self.block),))
+
+
+def process_term(
+    *,
+    label: str,
+    name: str,
+    prefix: str,
+    block: GaussianProcessBlock,
+    matrix: np.ndarray,
+    scale_prior: str,
+    output: OutputAxis | None,
+) -> SpectralTerm | ExactProcessTerm:
+    """Build the term of one Gaussian process block.
+
+    Parameters
+    ----------
+    label : str
+        Authored term.
+    name : str
+        Prefixed design identifier.
+    prefix : str
+        Owning predictor namespace.
+    block : GaussianProcessBlock
+        Retained block.
+    matrix : np.ndarray
+        Rows by coordinates; read-only.
+    scale_prior : str
+        Default ``sdgp`` prior.
+    output : OutputAxis or None
+        Axis of the predictor.
+
+    Returns
+    -------
+    SpectralTerm or ExactProcessTerm
+        The approximate or the exact process.
+
+    Raises
+    ------
+    ValueError
+        If the predictor has an output axis.
+    """
+    if output is not None:
+        raise ValueError(
+            f"{label}: gp() terms are not supported in predictors with one "
+            "coefficient per response category"
+        )
+    variant = ExactProcessTerm if block.exact else SpectralTerm
+    return variant(
+        label=label,
+        name=name,
+        prefix=prefix,
+        block=block,
+        matrix=matrix,
+        scale_prior=scale_prior,
+    )
 
 
 __all__: list[str] = []

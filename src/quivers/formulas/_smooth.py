@@ -22,6 +22,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.family_catalog import FamilyCatalog
 import didactic.api as dx
 
 from quivers.formulas._data_options import (
@@ -51,6 +52,13 @@ from quivers.formulas._mgcv_smooth import (
     sphere_spline,
     tensor_t2,
     thin_plate,
+)
+from quivers.formulas._term import (
+    AxisDecl,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    design_declarations,
 )
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
@@ -1456,6 +1464,145 @@ def smooth_namespace() -> Mapping[str, type]:
         "te": UnsupportedTensor,
         "ti": UnsupportedTensor,
     }
+
+
+class BasisTerm(ValueModel):
+    """One penalized basis block with independent Gaussian coordinates.
+
+    The coefficients are ``scale * z`` for standard-normal ``z``, with one
+    scale per coordinate of the output axis. Blocks sharing an mgcv ``id``
+    share one scale.
+
+    Parameters
+    ----------
+    label : str
+        Authored term.
+    name : str
+        Prefixed design identifier.
+    matrix : np.ndarray
+        Rows by coordinates; read-only.
+    scale : str
+        Scale site.
+    owns_scale : bool
+        Whether this block draws the scale.
+    prior : str
+        Default prior of the scale.
+    output : OutputAxis or None
+        Axis of the coefficient vectors.
+    """
+
+    label: str
+    name: str
+    matrix: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    scale: str
+    owns_scale: bool
+    prior: str
+    output: OutputAxis | None = None
+
+    @property
+    def rowwise(self) -> bool:
+        """Report whether the contribution varies over the rows.
+
+        Returns
+        -------
+        bool
+            True.
+        """
+        return True
+
+    @property
+    def deferred(self) -> bool:
+        """Report whether the term is drawn after the auxiliary parameters.
+
+        Returns
+        -------
+        bool
+            False.
+        """
+        return False
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The coordinate axis and, for coefficient vectors, the flat axis
+            of the innovations.
+        """
+        axis, _ = design_declarations(self.name, self.matrix)
+        if self.output is None:
+            return (axis,)
+        return (axis, self._innovations(self.output))
+
+    def _innovations(self, output: OutputAxis) -> AxisDecl:
+        """Declare the flat axis of the innovations of coefficient vectors.
+
+        Parameters
+        ----------
+        output : OutputAxis
+            Axis of the coefficient vectors.
+
+        Returns
+        -------
+        AxisDecl
+            One element per coordinate of the basis and of the output axis.
+        """
+        return AxisDecl(
+            name=self.name + "_InnovationCoordinate",
+            size=self.matrix.shape[1] * output.size,
+            section="inline",
+        )
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The basis matrix.
+        """
+        return (design_declarations(self.name, self.matrix)[1],)
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The scale, when this block draws it, and the innovations.
+        """
+        scale = SiteDecl(
+            name=self.scale,
+            class_="sds",
+            section="design",
+            default=self.prior,
+            coef=self.label,
+            axes=(self.output.name,) if self.output is not None else (),
+            lower=0.0,
+        )
+        innovations = SiteDecl(
+            name=self.name + "_z",
+            class_="z",
+            section="design",
+            axes=(
+                self.name + "_Coordinate"
+                if self.output is None
+                else self._innovations(self.output).name,
+            ),
+            overridable=False,
+        )
+        return (scale, innovations) if self.owns_scale else (innovations,)
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None
 
 
 __all__: list[str] = []

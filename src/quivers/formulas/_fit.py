@@ -74,7 +74,6 @@ from quivers.formulas._prediction import FormulaPredictionPlan
 from quivers.formulas._grouping import resolve_group_covariances
 from quivers.formulas._latent_effects import (
     formula_families,
-    latent_observations,
 )
 from quivers.formulas._autocor import (
     AutocorMatrix,
@@ -3381,7 +3380,6 @@ def _formula_observations(
     observations.update(lens.fixed_column_observations(parsed))
 
     observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
-    observations.update(latent_observations(parsed))
     for _, _, predictor_formula in lens._predictor_items(parsed):
         for group, codes in predictor_formula.group_indices.items():
             observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(

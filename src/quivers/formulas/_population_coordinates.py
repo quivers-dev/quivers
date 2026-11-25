@@ -36,7 +36,16 @@ from quivers.dsl.ast_nodes import (
     SampleStep,
 )
 from quivers.formulas._ast import _add, _let, _mul, _sub, _var
+from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
+from quivers.formulas._term import (
+    AxisDecl,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    column_inputs,
+    column_rms,
+)
 from quivers.formulas.formula import FixedColumn, Formula
 
 CENTERED_SUFFIX = "_centered"
@@ -281,6 +290,160 @@ def coordinate_bindings(plan: PopulationCoordinates) -> list[LetStep]:
             )
         )
     return steps
+
+
+class PopulationTerm(ValueModel):
+    """The population-level columns of one predictor over one output axis.
+
+    Parameters
+    ----------
+    prefix : str
+        Predictor namespace.
+    prior : str
+        Default prior of a coefficient.
+    columns : tuple[FixedColumn or SymbolicColumn, ...]
+        Design columns, in authored order.
+    ranks : tuple[int, ...]
+        Position of each column in the formula.
+    coordinates : PopulationCoordinates or None
+        Centered and QR coordinates of the block; None samples the
+        coefficients themselves.
+    output : OutputAxis or None
+        Axis of the coefficient vectors.
+    """
+
+    prefix: str
+    prior: str
+    columns: tuple[FixedColumn | SymbolicColumn, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    ranks: tuple[int, ...]
+    coordinates: PopulationCoordinates | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    output: OutputAxis | None = None
+
+    @property
+    def label(self) -> str:
+        """Return the authored terms of the columns.
+
+        Returns
+        -------
+        str
+            Their labels, joined by plus signs.
+        """
+        return " + ".join(dict.fromkeys(column.term for column in self.columns))
+
+    @property
+    def rowwise(self) -> bool:
+        """Report whether the contribution varies over the rows.
+
+        Returns
+        -------
+        bool
+            True when the block has a column besides the intercept.
+        """
+        return any(not column.is_intercept for column in self.columns)
+
+    @property
+    def deferred(self) -> bool:
+        """Report whether the term is drawn after the auxiliary parameters.
+
+        Returns
+        -------
+        bool
+            False.
+        """
+        return False
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            Empty: the coefficients use the predictor's own axis.
+        """
+        return ()
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the design columns.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            One inferred row vector per evaluated column, and one declared
+            row vector, bound elsewhere, per symbolic column.
+        """
+        return column_inputs(
+            (self.prefix + column.qvr_name, column) for column in self.columns
+        )
+
+    def site(self, column: FixedColumn | SymbolicColumn, rank: int) -> SiteDecl:
+        """Declare the sampled coordinate of one column.
+
+        Parameters
+        ----------
+        column : FixedColumn or SymbolicColumn
+            Column of the block.
+        rank : int
+            Its position in the formula.
+
+        Returns
+        -------
+        SiteDecl
+            The coefficient, the centered intercept, or the QR coordinate.
+        """
+        plan = self.coordinates
+        name = "intercept" if column.is_intercept else column.qvr_name
+        site = coefficient_site(self.prefix, name)
+        divisor = multiplier = None
+        if plan is not None and column.is_intercept and plan.centered:
+            site += CENTERED_SUFFIX
+        elif plan is not None and plan.q_columns is not None and name in plan.columns:
+            # A default prior scales with the XQ column its coordinate multiplies.
+            site += QR_SUFFIX
+            divisor = column_rms(
+                np.asarray(plan.q_columns[plan.columns.index(name)], dtype=np.float64)
+            )
+        elif isinstance(column, SymbolicColumn):
+            multiplier = column.prior_multiplier
+        elif not column.is_intercept:
+            divisor = column_rms(column.data)
+        return SiteDecl(
+            name=site,
+            class_="Intercept" if column.is_intercept else "b",
+            section="column",
+            default=self.prior,
+            coef=column.name,
+            axes=(self.output.name,) if self.output is not None else (),
+            divisor=divisor,
+            multiplier=multiplier,
+            rank=rank,
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the sampled coordinates.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            One site per column, in authored order.
+        """
+        return tuple(
+            self.site(column, rank)
+            for column, rank in zip(self.columns, self.ranks, strict=True)
+        )
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None
 
 
 def sampled_site(site: str, samples: Collection[str]) -> str:

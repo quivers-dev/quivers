@@ -77,10 +77,15 @@ from quivers.dsl.program_templates import (
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._ast import _add, _call, _factor, _index, _let, _var
-from quivers.formulas._group_law import GroupBlockLaw, level_names, renamed_law
+from quivers.formulas._group_law import (
+    GroupBlockLaw,
+    law_inputs,
+    level_names,
+    renamed_law,
+)
 from quivers.formulas._group_plan import check_names
-from quivers.formulas._grouping_emission import law_runtime_parameters
 from quivers.formulas._prior_emission import build_prior_targets
+from quivers.formulas._term import declare_inputs
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.formulas._threshold_groups import (
@@ -1285,7 +1290,9 @@ def _shared_blocks(
         random_terms=(),
     )
     block_steps: list[ProgramStep] = []
-    supplied = helper._append_correlations(bare, statements, block_steps)
+    supplied = helper._append_correlations(
+        helper._plan_groups(bare, ()), statements, block_steps, {}
+    )
     steps.extend(block_steps)
     laws.extend(helper.group_laws)
     module = Module(
@@ -1856,7 +1863,7 @@ def emit_mixture(
         )
     )
     check_names(laws)
-    for parameter in law_runtime_parameters(laws):
+    for parameter in declare_inputs(law_inputs(laws)):
         parameters.setdefault(parameter.name, parameter)
     statements.append(
         ProgramDecl(

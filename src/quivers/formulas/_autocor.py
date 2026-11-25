@@ -42,11 +42,12 @@ from quivers.dsl.ast_nodes import ProgramStep, Statement
 from quivers.formulas._latent_effects import (
     LatentTerm,
     latent_car_term,
-    latent_observations,
+    field_terms,
     latent_prediction_codes,
 )
 from quivers.formulas._predictor_graph import NonlinearExpression
 from quivers.formulas._response_roles import bind_roles
+from quivers.formulas._term import bind_inputs
 from quivers.formulas.family import AuxParam, Family, links
 from quivers.formulas.formula import _qvr_name
 from quivers.inference._posterior import collect_site_draws
@@ -1320,7 +1321,15 @@ def latent_prediction(
     if not formula.latent_terms:
         return formula, {}, ()
     if frame is None:
-        return formula, latent_observations(formula, include=include), ()
+        return (
+            formula,
+            bind_inputs(
+                item
+                for term in field_terms(formula, include=include)
+                for item in term.inputs()
+            ),
+            (),
+        )
     terms = []
     values: dict[str, torch.Tensor] = {}
     fresh: list[str] = []

@@ -46,15 +46,13 @@ from quivers.formulas._group_law import (
     GroupBlockLaw,
     IdentityCovariance,
     LevelSite,
+    law_inputs,
     renamed_law,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_emission import draw_level, emit_group_block
 from quivers.formulas._group_plan import check_names, level_law, plan_joint_block
-from quivers.formulas._grouping_emission import (
-    law_observations,
-    law_runtime_parameters,
-)
+from quivers.formulas._term import bind_inputs, declare_inputs
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
@@ -1144,10 +1142,10 @@ def _shared_groups(
                         steps,
                     )
     # The responses bind the row data of multi-membership factors.
-    inputs = law_observations(emitter.group_laws)
+    inputs = bind_inputs(law_inputs(emitter.group_laws))
     parameters = tuple(
         parameter
-        for parameter in law_runtime_parameters(emitter.group_laws)
+        for parameter in declare_inputs(law_inputs(emitter.group_laws))
         if parameter.name in inputs
     )
     return (

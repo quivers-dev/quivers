@@ -27,9 +27,7 @@ from quivers.dsl.ast_nodes import (
     QiecShapeIndex,
     QiecTypeApplication,
     QiecTypeName,
-    QiecValueParameter,
 )
-from quivers.formulas._group_law import GroupBlockLaw, law_inputs
 from quivers.formulas._grouping import (
     GroupLevelOptions,
     Membership,
@@ -157,9 +155,10 @@ def _tensor(element: str, *axes: str) -> QiecTypeApplication:
     )
 
 
-def _covariate_inputs(
+def member_covariates(
     prefix: str,
-    term: RandomTerm,
+    group: str,
+    slope: str,
     membership: Membership,
     weights: np.ndarray,
     values: np.ndarray,
@@ -170,10 +169,12 @@ def _covariate_inputs(
     ----------
     prefix : str
         Predictor namespace.
-    term : RandomTerm
-        Group-level coefficient.
+    group : str
+        Grouping-factor name.
+    slope : str
+        Coefficient label.
     membership : Membership
-        Its factor.
+        The factor.
     weights, values : numpy.ndarray
         Weights and covariates, shape ``(rows, members)``.
 
@@ -186,51 +187,9 @@ def _covariate_inputs(
         values, dtype=np.float64
     )
     return {
-        member_input(prefix, term.group, term.slope, k): torch.as_tensor(
-            product[:, k].copy()
-        )
+        member_input(prefix, group, slope, k): torch.as_tensor(product[:, k].copy())
         for k in range(membership.size)
     }
-
-
-def membership_observations(formula: Formula, prefix: str) -> dict[str, torch.Tensor]:
-    """Bind training member codes and weighted covariates.
-
-    Parameters
-    ----------
-    formula : Formula
-        One predictor's evaluated terms.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime bindings.
-
-    Raises
-    ------
-    ValueError
-        If a multi-membership coefficient has no retained covariate.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for term in formula.random_terms:
-        membership = formula.grouping.membership(term.group)
-        if membership is None:
-            continue
-        covariate = formula.grouping.covariate(term.group, term.slope)
-        if covariate is None:
-            raise ValueError(
-                f"multi-membership coefficient {term.slope!r} has no member covariate"
-            )
-        for k, codes in enumerate(membership.codes):
-            values[member_index(term.group, k)] = torch.tensor(codes, dtype=torch.long)
-        values.update(
-            _covariate_inputs(
-                prefix, term, membership, membership.weights, covariate.values
-            )
-        )
-    return values
 
 
 def membership_prediction_bindings(
@@ -319,8 +278,13 @@ def membership_prediction_bindings(
                     f"new_data must give finite member covariates for {covariate.term!r}"
                 )
         values.update(
-            _covariate_inputs(
-                prefix, term, membership, member_weights(frame, spec), columns
+            member_covariates(
+                prefix,
+                term.group,
+                term.slope,
+                membership,
+                member_weights(frame, spec),
+                columns,
             )
         )
     return values
@@ -449,46 +413,6 @@ def merged_group_option(
             prior_weights=merged.prior_weights or option.prior_weights,
         )
     return merged
-
-
-def law_runtime_parameters(
-    laws: Iterable[GroupBlockLaw],
-) -> tuple[QiecValueParameter, ...]:
-    """Declare the runtime inputs that the blocks of a program read.
-
-    Parameters
-    ----------
-    laws : Iterable[GroupBlockLaw]
-        Laws of the blocks.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        One checked tensor per input.
-    """
-    return tuple(
-        QiecValueParameter(name=item.name, type_expr=_tensor(item.element, *item.axes))
-        for item in law_inputs(laws)
-    )
-
-
-def law_observations(laws: Iterable[GroupBlockLaw]) -> dict[str, torch.Tensor]:
-    """Bind the inputs whose values the laws of a program retain.
-
-    Parameters
-    ----------
-    laws : Iterable[GroupBlockLaw]
-        Laws of the blocks.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        ``by`` codes, prior weights, and matrices of known level covariances.
-        The row data of multi-membership factors is bound with the design.
-    """
-    return {
-        item.name: item.value for item in law_inputs(laws) if item.value is not None
-    }
 
 
 def compact_option(

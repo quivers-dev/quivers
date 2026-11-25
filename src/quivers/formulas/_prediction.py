@@ -34,7 +34,6 @@ from quivers.formulas.formula import (
 )
 from quivers.formulas._gp import (
     gp_conditional_catalog,
-    gp_observations,
     gp_prediction,
 )
 from quivers.formulas._autocor import (
@@ -44,13 +43,14 @@ from quivers.formulas._autocor import (
 )
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._grouping_emission import (
-    law_observations,
     membership_prediction_bindings,
 )
 from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
 from quivers.formulas._latent_effects import formula_families
 from quivers.formulas._autocor import latent_prediction
-from quivers.formulas._group_law import GroupBlockLaw, LevelSite
+from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
+from quivers.formulas._predictor import design_terms
+from quivers.formulas._term import bind_inputs
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
@@ -418,7 +418,15 @@ def _predictor_bindings(
         result[prefix + term.qvr_name] = torch.as_tensor(
             values.copy(), dtype=torch.float64
         )
-        result.update(gp_observations(prefix + term.qvr_name, term.gp))
+    # Inputs with no row axis keep their training values.
+    result.update(
+        bind_inputs(
+            item
+            for term in design_terms(formula, prefix)
+            for item in term.inputs()
+            if "Resp" not in item.axes
+        )
+    )
     structured_widths = {
         term.term: max(term.column_indices) + 1 for term in formula.design_terms
     }
@@ -939,7 +947,7 @@ def prepare_prediction(
         )
         module, _ = specialized_lens.forward(specialized["mu"])
         # The level inputs of every block on the compact prediction levels.
-        observations.update(law_observations(specialized_lens.group_laws))
+        observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
         module = select_contributions(module, formulas, selected, prefixes=prefixes)
     statements = []
     fresh_axes = {
