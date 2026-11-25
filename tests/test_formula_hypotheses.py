@@ -38,7 +38,7 @@ def test_population_hypothesis_uses_one_draw_stream_and_exact_authored_labels(fr
     expected = hypothesis_summary(torch.exp(fixed[label]) - fixed["x"])
     state = torch.random.get_rng_state()
     with patch(
-        "quivers.formulas._posterior.posterior_draws", wraps=posterior_draws
+        "quivers.formulas._fit.posterior_draws", wraps=posterior_draws
     ) as collect:
         actual = result.hypothesis(expression, num_samples=8, seed=14)
     assert collect.call_count == 1
@@ -182,7 +182,7 @@ def test_hierarchical_prior_contrasts_preserve_joint_dependence_and_bounds(
         prior=prior["beta_x"] - prior["beta_z"],
     )
     with patch(
-        "quivers.formulas._posterior.posterior_draws", wraps=posterior_draws
+        "quivers.formulas._fit.posterior_draws", wraps=posterior_draws
     ) as collect:
         actual = result.hypothesis("x-z", num_samples=6, seed=8, prior=True)
     assert collect.call_count == 2

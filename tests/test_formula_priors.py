@@ -115,7 +115,7 @@ def test_mixture_prior_inspection_has_all_component_hyperpriors(data):
 def test_categorical_inspection_preserves_reference_coefficient_prior_names(data):
     data = data.assign(y=[0, 1, 2, 0])
     priors = get_prior("y ~ x + (1 | g)", data=data, family="categorical")
-    assert {"intercept", "beta_x", "sigma_g_Intercept", "cor_g"} == priors.keys()
+    assert {"intercept", "beta_x", "sigma_g_Intercept"} == priors.keys()
     assert "Normal(loc=0.0, scale=5.0)" == priors["intercept"]
 
 

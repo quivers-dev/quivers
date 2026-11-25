@@ -296,7 +296,7 @@ def test_categorical_group_major_cells_preserve_logits_and_joint_category_donors
     policy,
 ):
     result = fit(
-        "y ~ 1 + (1 | g)",
+        "y ~ 1 + (1 | p | g)",
         data=pd.DataFrame({"y": [0, 1, 2, 0], "g": ["a", "a", "b", "b"]}),
         family="categorical",
         method="svi",
@@ -312,7 +312,7 @@ def test_categorical_group_major_cells_preserve_logits_and_joint_category_donors
         {
             "intercept": intercept,
             "sigma_g_Intercept": scale,
-            "cor_g": factor,
+            "cor_shared_p": factor,
             "z_g_Intercept": z.reshape(-1),
         },
         count=12,

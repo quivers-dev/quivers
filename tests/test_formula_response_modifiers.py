@@ -125,7 +125,7 @@ def test_wiener_requires_decisions_and_uses_visible_compiler_owned_input_aliases
     )
     module, complement = lens.forward(formula)
     assert lens.backward(module, complement) == formula
-    assert complement.modifiers == formula.modifiers
+    assert complement.source.modifiers == formula.modifiers
     from quivers.dsl import module_to_source, loads
 
     source = module_to_source(module)

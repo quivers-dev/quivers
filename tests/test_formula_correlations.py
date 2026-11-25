@@ -201,11 +201,11 @@ def test_categorical_group_covariance_couples_slopes_and_reference_logits():
             "g": ["a", "a", "b", "b", "c", "c"],
         }
     )
-    formula = formula_from_data("y ~ 1 + (1 + x | g)", data)
+    formula = formula_from_data("y ~ 1 + (1 + x | p | g)", data)
     lens = FormulaToQVRModule(families["categorical"])
     module, complement = lens.forward(formula)
     assert lens.backward(module, complement) == formula
-    assert "FormulaCorrelation_g : FinSet 4" in module_to_source(module)
+    assert "FormulaCorrelation_shared_p : FinSet 4" in module_to_source(module)
     program = Compiler(module).compile().morphism
     raw_correlation = torch.linspace(-0.5, 0.5, 6, requires_grad=True)
     factor = torch.distributions.transforms.CorrCholeskyTransform()(raw_correlation)
@@ -217,7 +217,7 @@ def test_categorical_group_covariance_couples_slopes_and_reference_logits():
     groups = torch.tensor([0, 0, 1, 1, 2, 2])
     inputs = lens.fixed_column_observations(formula)
     values = {
-        "cor_g": factor.unsqueeze(0),
+        "cor_shared_p": factor.unsqueeze(0),
         "sigma_g_Intercept": scales[:2],
         "sigma_g_x": scales[2:],
         "z_g_Intercept": z[:, :2].reshape(-1),
@@ -254,14 +254,14 @@ def test_correlated_categorical_models_fit_with_all_frontend_samplers(method):
         else {"num_warmup": 2, "num_samples": 3, "num_chains": 1}
     )
     result = fit(
-        "y ~ 1 + (1 | g)",
+        "y ~ 1 + (1 | p | g)",
         data=data,
         family="categorical",
         method=method,
         seed=7,
         **counts,
     )
-    assert "FormulaCorrelation_g : FinSet 2" in result.qvr_source
+    assert "FormulaCorrelation_shared_p : FinSet 2" in result.qvr_source
 
 
 @pytest.mark.parametrize("parameterization", ["centered", "noncentered"])
@@ -382,17 +382,18 @@ def test_shared_id_cannot_alias_different_grouping_factors(data):
 def test_correlation_prior_requires_lkj_and_accepts_named_override(data, family):
     if family == "categorical":
         data = data.assign(y=[0, 1, 2, 0])
+    site = "cor_g" if family == "gaussian" else "cor_g_component1"
     with pytest.raises(ValueError, match="correlation priors must use LKJCholesky"):
         formula_to_qvr(
             "y ~ 1 + (1 + x | g)",
             data=data,
             family=family,
-            priors={"cor_g": "Normal(0.0, 1.0)"},
+            priors={site: "Normal(0.0, 1.0)"},
         )
     source = formula_to_qvr(
         "y ~ 1 + (1 + x | g)",
         data=data,
         family=family,
-        priors={"cor_g": "LKJCholesky(2.0)"},
+        priors={site: "LKJCholesky(2.0)"},
     )
     assert "LKJCholesky(concentration=2.0)" in source
