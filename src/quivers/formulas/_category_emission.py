@@ -15,14 +15,14 @@ from quivers.dsl.ast_nodes import (
     ProgramStep,
     Statement,
 )
-from quivers.formulas._ast import _add, _let, _var, row_zero, stack_rows
+from quivers.formulas._ast import _add, _factor, _let, _var, row_zero, stack_rows
 from quivers.formulas._category_formulas import (
     check_scale_formulas,
     free_categories,
     free_scales,
-    is_category_parameter,
     is_scale_parameter,
 )
+from quivers.formulas._predictor_graph import ComponentExpression
 from quivers.formulas._term_emission import ProgramEmission, emit_predictor
 from quivers.formulas.formula import Formula
 
@@ -48,7 +48,7 @@ def append_category_predictors(
     Parameters
     ----------
     lens : FormulaToQVRModule
-        Lens with the completed per-category formulas.
+        Lens with the per-category formulas and expressions.
     formula : Formula
         Main formula with the response.
     statements : list[Statement]
@@ -67,13 +67,13 @@ def append_category_predictors(
     Raises
     ------
     ValueError
-        If the family has an explicit all-category parameterization or a
-        nonlinear location.
+        If the family has an explicit all-category parameterization, or a
+        category has no predictor.
     """
     family = lens._family
-    if family.response is None or not any(
-        is_category_parameter(family, name) for name in lens._distributional
-    ):
+    roots = {} if lens._predictor_graph is None else lens._predictor_graph.roots
+    main = roots.get("mu")
+    if family.response is None or not (lens._category_parameters or main is not None):
         return False
     labels = lens._component_labels(formula)
     reference = family.response.reference_index(labels)
@@ -81,22 +81,44 @@ def append_category_predictors(
         raise ValueError(
             "category-specific formulas require a reference category (refcat)"
         )
-    if lens._predictor_graph is not None and lens._predictor_graph.roots:
-        raise ValueError("category-specific formulas require linear predictors")
     values = []
     categories = free_categories(family, labels)
-    missing = [name for _, name in categories if name not in lens._distributional]
+    missing = [
+        name
+        for _, name in categories
+        if name not in lens._category_parameters and main is None
+    ]
     if missing:
         raise ValueError(
             f"category-specific formulas require every free category: missing {missing}"
         )
-    for _, name in categories:
-        eta = emit_predictor(
-            lens._predictor(f"dpar_{name}_"),
-            ProgramEmission(lens, statements, correlated),
-            steps,
-        )
-        steps.append(_let(f"dpar_{name}_eta", eta))
+    for index, name in categories:
+        if name in lens._distributional:
+            eta = emit_predictor(
+                lens._predictor(f"dpar_{name}_"),
+                ProgramEmission(lens, statements, correlated),
+                steps,
+            )
+            steps.append(_let(f"dpar_{name}_eta", eta))
+        else:
+            # A category without a formula has the main nonlinear expression.
+            expression = roots.get(name, main)
+            component = None
+            if isinstance(expression, ComponentExpression):
+                component = str(labels[index])
+                expression = expression.at(component)
+            assert expression is not None
+            steps.append(
+                _let(
+                    f"dpar_{name}_eta",
+                    _factor(
+                        (("graph_row", "Resp"),),
+                        body=lens._graph_expression_at(
+                            expression, _var("graph_row"), component
+                        ),
+                    ),
+                )
+            )
         steps.append(_let(name, _var(f"dpar_{name}_eta")))
         values.append(_var(f"dpar_{name}_eta"))
     steps.append(row_zero("category_row_zero"))

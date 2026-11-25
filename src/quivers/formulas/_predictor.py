@@ -21,7 +21,7 @@ from quivers.dsl.ast_nodes import ProgramStep
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _index, _let, _var
 from quivers.formulas._brms_priors import DefaultPriorPolicy, sdgp_prior
-from quivers.formulas._category_formulas import is_scale_parameter
+from quivers.formulas._category_formulas import category_parameter, is_scale_parameter
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._gp import process_term
 from quivers.formulas._group_law import GroupBlockLaw
@@ -41,7 +41,6 @@ from quivers.formulas._population_coordinates import (
 from quivers.formulas._predictor_graph import PredictorGraph
 from quivers.formulas._row_source import PredictorRows, RowSource, fresh_columns
 from quivers.formulas._smooth import BasisTerm
-from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
@@ -657,7 +656,7 @@ def response_axis(family: Family, labels: tuple[str, ...]) -> OutputAxis | None:
         name="FormulaCategoryLogit",
         size=len(free),
         labels=tuple(str(labels[index]) for index in free),
-        parameters=tuple("mu" + brms_rename(str(labels[index])) for index in free),
+        parameters=tuple(category_parameter(str(labels[index])) for index in free),
     )
 
 

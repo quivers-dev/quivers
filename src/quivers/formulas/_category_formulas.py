@@ -217,6 +217,8 @@ def category_distributional(
     labels: tuple[str, ...],
     authored: str,
     distributional: Mapping[str, _Value] | None,
+    *,
+    nonlinear: bool,
 ) -> dict[str, _Value | str] | None:
     """Copy the main formula to every free category without a formula.
 
@@ -230,6 +232,9 @@ def category_distributional(
         Authored main formula.
     distributional : Mapping or None
         Authored distributional formulas.
+    nonlinear : bool
+        Whether the main formula is a nonlinear expression, which a category
+        without a predictor of its own reads as it is.
 
     Returns
     -------
@@ -256,6 +261,8 @@ def category_distributional(
             f"unknown category parameters {sorted(unknown)}; the free categories "
             f"are {sorted(names)} (the reference category has no predictor)"
         )
+    if nonlinear:
+        return result
     rhs = authored.split("~", 1)[1]
     for _, name in free_categories(family, labels):
         result.setdefault(name, f"{name} ~ {rhs}")

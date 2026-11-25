@@ -753,9 +753,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if predictor_graph is not None
             else set()
         )
-        if expression_roots - auxiliary_names:
+        unknown_roots = {
+            name
+            for name in expression_roots - auxiliary_names
+            if not is_category_parameter(family, name)
+        }
+        if unknown_roots:
             raise ValueError(
-                f"unknown distributional graph roots {sorted(expression_roots - auxiliary_names)}"
+                f"unknown distributional graph roots {sorted(unknown_roots)}"
             )
         if expression_roots & (
             self._distributional.keys() | self._fixed_parameters.keys()
@@ -974,6 +979,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             parameters. Empty for a mixture, whose components have their own.
         """
         return self._predictors
+
+    @property
+    def _category_parameters(self) -> frozenset[str]:
+        """Return the response categories with a predictor of their own.
+
+        Returns
+        -------
+        frozenset[str]
+            Names ``mu<c>`` with a formula or a nonlinear expression.
+        """
+        roots = () if self._predictor_graph is None else self._predictor_graph.roots
+        return frozenset(
+            name
+            for name in (*self._distributional, *roots)
+            if is_category_parameter(self._family, name)
+        )
 
     @property
     def group_laws(self) -> tuple[GroupBlockLaw, ...]:
@@ -3265,9 +3286,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if axis is None:
             return {}
         axes: dict[str, OutputAxis] = {}
-        if not any(
-            is_category_parameter(self._family, name) for name in self._distributional
-        ):
+        if not self._category_parameters:
             axes[""] = axis
         scale = self._family.component_scale
         if scale is not None and scale.name in self._distributional:
@@ -3367,9 +3386,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Laws of the joint and the independent blocks.
         """
         # brms mu<c>: per-category formulas replace the main predictor terms.
-        if any(
-            is_category_parameter(self._family, name) for name in self._distributional
-        ):
+        if self._category_parameters:
             formula = main_without_terms(formula)
         transitions = self._transition_axis(formula)
         laws = plan_group_blocks(
@@ -4254,9 +4271,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             self._append_graph_parameters(
                 formula, statements, program_steps, correlated
             )
+            root = (
+                self._predictor_graph.roots.get("mu")
+                if self._predictor_graph is not None
+                else None
+            )
             if (
-                self._predictor_graph is not None
-                and "mu" in self._predictor_graph.roots
+                isinstance(root, ComponentExpression)
+                and not self._category_parameters
             ):
                 labels = self._component_labels(formula)
                 response = self._family.response
@@ -4265,7 +4287,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 expected = tuple(labels[index] for index in coordinates)
                 self._append_graph_value(
                     "eta_nonbaseline",
-                    self._predictor_graph.roots["mu"],
+                    root,
                     statements,
                     program_steps,
                     axis="FormulaCategoryLogit",

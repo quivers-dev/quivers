@@ -61,6 +61,30 @@ class ComponentExpression(ValueModel):
     components: tuple[str, ...]
     values: tuple[LetExprNode, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
+    def at(self, component: str) -> LetExprNode:
+        """Return the expression of one coordinate.
+
+        Parameters
+        ----------
+        component : str
+            Coordinate label.
+
+        Returns
+        -------
+        LetExprNode
+            Scalar expression of the coordinate.
+
+        Raises
+        ------
+        ValueError
+            If the value has no such coordinate.
+        """
+        if component not in self.components:
+            raise ValueError(
+                f"the nonlinear vector {self.components} has no component {component!r}"
+            )
+        return self.values[self.components.index(component)]
+
 
 class PredictorGraph(ValueModel):
     """Retain additive parameter designs and a checked deterministic dependency DAG.

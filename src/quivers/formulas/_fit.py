@@ -181,7 +181,7 @@ from quivers.formulas._posterior import (
     response_rng,
     row_binding,
 )
-from quivers.formulas._predictor import Predictor
+from quivers.formulas._predictor import Predictor, response_axis
 from quivers.inference._posterior import draw_count
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
@@ -2195,16 +2195,28 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             requested.
         """
         coordinate = self._vector_coordinate(parameter)
-        if coordinate is not None:
+        if coordinate is not None and coordinate[0].prefix:
             predictor, index = coordinate
             assert predictor.output is not None
-            linear = not transform or not predictor.prefix
             return LinpredBinding(
-                site=f"{predictor.prefix}eta_nonbaseline"
-                if linear
-                else predictor.parameter,
+                site=predictor.parameter
+                if transform
+                else f"{predictor.prefix}eta_nonbaseline",
                 width=predictor.output.size,
                 coordinate=index,
+            )
+        axis = (
+            response_axis(
+                self.family, tuple(str(label) for label in self.category_labels)
+            )
+            if self.family.response is not None
+            else None
+        )
+        if axis is not None and parameter in axis.parameters:
+            return LinpredBinding(
+                site="eta_nonbaseline",
+                width=axis.size,
+                coordinate=axis.parameters.index(parameter),
             )
         graph = self.predictor_graph
         graph_parameter = graph is not None and parameter in (
@@ -4218,6 +4230,7 @@ def _prepare_formula(
             FormulaToQVRModule._component_labels(parsed),
             authored,
             distributional,
+            nonlinear=nonlinear is not None,
         )
         # brms sigma<c>: per-category logistic-normal scale formulas.
         check_scale_formulas(
@@ -4245,7 +4258,15 @@ def _prepare_formula(
             data,
             parsed.response_name,
             family_parameters=frozenset(
-                {"mu", *(aux.name for aux in family_obj.aux_params)}
+                {
+                    "mu",
+                    *(aux.name for aux in family_obj.aux_params),
+                    *(
+                        name
+                        for name in distributional or {}
+                        if is_category_parameter(family_obj, name)
+                    ),
+                }
             ),
             evaluate=evaluate,
             designs=parameter_designs,
