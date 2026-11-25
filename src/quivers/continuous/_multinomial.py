@@ -10,6 +10,7 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import lazy_property
 
+from quivers._positions import demand
 from quivers.continuous._simplex_sampling import _dirichlet_weights
 from quivers.continuous._closed_probability import (
     ClosedBinomial,
@@ -87,10 +88,12 @@ def _count_parameters(total_count, vector):
     shape = torch.broadcast_shapes(raw_n.shape, raw_vector.shape[:-1])
     n = raw_n.expand(shape)
     values = raw_vector.expand(*shape, raw_vector.shape[-1])
-    if not bool((torch.isfinite(n) & (n >= 0) & (n == n.floor()) & (n <= 2**53)).all()):
-        raise ValueError(
+    demand(
+        torch.isfinite(n) & (n >= 0) & (n == n.floor()) & (n <= 2**53),
+        lambda: ValueError(
             "vector count trials must be finite nonnegative integers <= 2**53"
-        )
+        ),
+    )
     return n, values
 
 
@@ -261,10 +264,12 @@ class Multinomial(Distribution):
                 _ValidatedCategorical(probs=parameter)
             else:
                 valid = torch.isfinite(parameter) | (parameter == -torch.inf)
-                if not bool(valid.all() and torch.isfinite(parameter).any(-1).all()):
-                    raise ValueError(
+                demand(
+                    valid.all(-1) & torch.isfinite(parameter).any(-1),
+                    lambda: ValueError(
                         "Multinomial logits require a finite category and no NaN or positive infinity"
-                    )
+                    ),
+                )
                 _ValidatedCategorical(logits=parameter)
         super().__init__(
             self.total_count.shape,
@@ -475,16 +480,18 @@ class DirichletMultinomial(Distribution):
         self.total_count, self.concentration = _count_parameters(
             total_count, concentration
         )
-        if not bool(
-            (torch.isfinite(self.concentration) & (self.concentration > 0)).all()
-        ):
-            raise ValueError(
+        demand(
+            torch.isfinite(self.concentration) & (self.concentration > 0),
+            lambda: ValueError(
                 "DirichletMultinomial concentrations must be finite and positive"
-            )
-        if not bool(torch.isfinite(self.concentration.sum(-1)).all()):
-            raise ValueError(
+            ),
+        )
+        demand(
+            torch.isfinite(self.concentration.sum(-1)),
+            lambda: ValueError(
                 "DirichletMultinomial concentration totals exceed Float64 capacity"
-            )
+            ),
+        )
         super().__init__(
             self.total_count.shape,
             torch.Size((self.concentration.shape[-1],)),

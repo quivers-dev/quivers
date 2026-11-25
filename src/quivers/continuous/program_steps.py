@@ -127,6 +127,92 @@ def reads_of(function: collections.abc.Callable[..., object]) -> frozenset[str] 
     return names
 
 
+MAPPING = "mapping"
+"""The attribute a step function declares its mapping under."""
+
+
+class StepMapping(dx.Model):
+    """Whether a step function can be mapped over many positions.
+
+    Attributes
+    ----------
+    obstacle : str | None
+        Why it cannot be mapped, or ``None`` when it can.
+    shared : frozenset[str]
+        The names it reads whose values must be the same at every
+        position, because what it computes is laid out by them.
+    draws : bool
+        Whether it draws at random, so that each position takes a draw of
+        its own.
+    """
+
+    obstacle: str | None = None
+    shared: frozenset[str] = frozenset()
+    draws: bool = False
+
+
+def mappable(
+    function: StepCallable,
+    obstacle: str | None = None,
+    shared: collections.abc.Iterable[str] = (),
+    draws: bool = False,
+) -> StepCallable:
+    """Declare whether a step callable can be mapped over many positions.
+
+    A mappable callable computes its value with tensor operations alone:
+    it branches on no value, and reads the shapes of one run. It is then
+    evaluated at many positions by [`torch.func.vmap`][torch.func.vmap],
+    with no batch axis for it to handle. The DSL compiler declares it of
+    the functions it builds. A callable written for an explicit batch
+    axis declares ``batched=True`` on its step instead.
+
+    Parameters
+    ----------
+    function : StepCallable
+        The callable, a let or score step's value.
+    obstacle : str | None
+        Why it cannot be mapped, or ``None`` when it can.
+    shared : Iterable[str]
+        The names it reads whose values must be the same at every
+        position: the number of entries it computes depends on them.
+    draws : bool
+        Whether it draws at random.
+
+    Returns
+    -------
+    StepCallable
+        The same callable, carrying the declaration.
+    """
+    setattr(
+        function,
+        MAPPING,
+        StepMapping(obstacle=obstacle, shared=frozenset(shared), draws=draws),
+    )
+    return function
+
+
+def mapping_of(function: collections.abc.Callable[..., object]) -> StepMapping:
+    """The mapping a step callable declares.
+
+    Parameters
+    ----------
+    function : Callable
+        A let or score step's value.
+
+    Returns
+    -------
+    StepMapping
+        The declaration; for a callable that makes none, an obstacle.
+    """
+    declared = getattr(function, MAPPING, None)
+    if declared is None:
+        return StepMapping(
+            obstacle="its callable is opaque and the step does not declare batched=True"
+        )
+    assert isinstance(declared, StepMapping)
+    return declared
+
+
 class Step(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """One step of a [`MonadicProgram`][quivers.continuous.MonadicProgram].
 
@@ -237,6 +323,15 @@ class Let(Step):
         binding, which the step aliases; or a function of the
         environment, which may declare what it reads through
         [`reading`][quivers.continuous.program_steps.reading].
+    batched : bool
+        Whether a function ``value`` accepts a leading batch axis. Over
+        many positions it is then called once, with a batch axis of
+        length ``B`` leading every value it reads that depends on the
+        position, ahead of the axes the value has in one run, and a value
+        every position shares at its own shape; its result leads with
+        that axis too. A function that declares neither this nor
+        [`mappable`][quivers.continuous.program_steps.mappable] makes the
+        program unbatchable.
     kind : Literal["let"]
         The variant tag.
     """
@@ -245,6 +340,7 @@ class Let(Step):
     value: int | float | str | StepFunction = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    batched: bool = False
     kind: Literal["let"] = "let"
 
 
@@ -266,6 +362,12 @@ class Score(Step):
         Explicit potentials are retained under prior-only inference. A
         compiler-generated marginalized response likelihood is classified
         separately so the common observation policy can omit it.
+    batched : bool
+        Whether ``score`` accepts a leading batch axis, as
+        [`Let.batched`][quivers.continuous.program_steps.Let] declares it
+        of a let step's function. Over ``B`` positions the contribution
+        then has shape ``(B, ...)``, and each row's trailing entries are
+        summed as one run's are.
     kind : Literal["score"]
         The variant tag.
     """
@@ -273,6 +375,7 @@ class Score(Step):
     name: str
     score: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     role: Literal["potential", "likelihood"] = "potential"
+    batched: bool = False
     kind: Literal["score"] = "score"
 
 
@@ -373,6 +476,7 @@ class Scan(Step):
 
 
 __all__ = [
+    "MAPPING",
     "READS",
     "Call",
     "Draw",
@@ -385,6 +489,9 @@ __all__ = [
     "Step",
     "StepArgument",
     "StepFunction",
+    "StepMapping",
+    "mappable",
+    "mapping_of",
     "reading",
     "reads_of",
 ]

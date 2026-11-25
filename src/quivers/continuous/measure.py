@@ -21,6 +21,7 @@ from torch import Tensor
 from torch.distributions import constraints as _constraints, biject_to, transform_to
 from torch.distributions.distribution import Distribution
 from torch.distributions.transforms import Transform, SigmoidTransform
+from quivers._positions import anywhere, demand, depends_on_position
 from quivers._independent import independent_ndims
 
 from quivers.continuous.bijectors import Bijector
@@ -396,8 +397,10 @@ class PointMass(Measure):
             torch.as_tensor(low, device=self.value.device, dtype=torch.float64),
             torch.as_tensor(high, device=self.value.device, dtype=torch.float64),
         )
-        if bool((low.isnan() | high.isnan()).any()):
-            raise ValueError("point-mass interval endpoints must not be NaN")
+        demand(
+            ~(low.isnan() | high.isnan()),
+            lambda: ValueError("point-mass interval endpoints must not be NaN"),
+        )
         lower_closed = torch.as_tensor(
             _closed_flag(lower_closed, "lower_closed"), device=self.value.device
         )
@@ -1115,15 +1118,17 @@ class Restrict(Measure):
         """
         ok = torch.ones_like(draws, dtype=torch.bool)
         if self.low is not None:
-            ok &= (draws > self.low) | (
+            above = (draws > self.low) | (
                 (draws == self.low)
                 & torch.as_tensor(self.lower_closed, device=draws.device)
             )
+            ok = ok & above
         if self.high is not None:
-            ok &= (draws < self.high) | (
+            below = (draws < self.high) | (
                 (draws == self.high)
                 & torch.as_tensor(self.upper_closed, device=draws.device)
             )
+            ok = ok & below
         return ok
 
     def _sample_by_inversion(
@@ -1573,12 +1578,16 @@ class Mixture(Measure):
     ) -> None:
         if not components:
             raise ValueError("Mixture: components list must be non-empty")
-        if not weights.ndim or not bool(
-            (torch.isfinite(weights) & (weights >= 0)).all()
-        ):
+        if not weights.ndim:
             raise ValueError(
                 "Mixture weights must be finite nonnegative values with a component axis"
             )
+        demand(
+            torch.isfinite(weights) & (weights >= 0),
+            lambda: ValueError(
+                "Mixture weights must be finite nonnegative values with a component axis"
+            ),
+        )
         if any(
             component.event_shape != components[0].event_shape
             for component in components[1:]
@@ -2049,8 +2058,12 @@ class Mixture(Measure):
         ]
         raw = Mixture(self.weights, components)
         mass = raw.log_normalizer()
-        if not bool(torch.isfinite(mass).all()):
-            raise ValueError("Mixture restriction requires finite positive event mass")
+        demand(
+            torch.isfinite(mass),
+            lambda: ValueError(
+                "Mixture restriction requires finite positive event mass"
+            ),
+        )
         return Mixture(torch.exp(self._log_weights() - mass.unsqueeze(-1)), components)
 
     def lift_point_masses(self) -> Mixture:
@@ -2364,8 +2377,10 @@ class Normalize(Measure):
         self._base_log_normalizer = _native_log_mass(
             base, batch_axes=len(base.batch_shape)
         )
-        if not bool(torch.isfinite(self._base_log_normalizer).all()):
-            raise ValueError("Normalize requires a finite positive measure mass")
+        demand(
+            torch.isfinite(self._base_log_normalizer),
+            lambda: ValueError("Normalize requires a finite positive measure mass"),
+        )
         super().__init__(
             batch_shape=base.batch_shape,
             event_shape=base.event_shape,
@@ -2641,7 +2656,7 @@ def _symmetric_fold_log_normalizer(
     loc = getattr(base, "loc", None)
     if not isinstance(loc, Tensor):
         return None
-    if loc.requires_grad:
+    if loc.requires_grad or depends_on_position(loc):
         # A fixed cut that happens to equal a learnable center has a
         # nonzero location derivative. A constant half-mass would erase it.
         return None
@@ -2674,7 +2689,7 @@ def normalize_at_boundary(d: Distribution) -> Distribution:
     if isinstance(d, Measure):
         norm = d.log_normalizer()
         if isinstance(norm, Tensor):
-            if torch.any(norm.abs() > 1e-10):
+            if anywhere(norm.abs() > 1e-10):
                 return Normalize(d)
         else:
             if abs(float(norm)) > 1e-10:

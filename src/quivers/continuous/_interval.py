@@ -21,6 +21,7 @@ from torch.distributions import (
     Weibull,
 )
 
+from quivers._positions import anywhere, demand, everywhere
 from quivers.continuous._ordered import _log1mexp
 from quivers.continuous._recorded_event_tails import (
     log_exponential_tails,
@@ -117,7 +118,7 @@ def _wide_parameter(value: Tensor | float, like: Tensor) -> Tensor:
 
 def _monotone_pullback(
     transforms: list[Transform], value: Tensor
-) -> tuple[Tensor, Tensor, Tensor, bool] | None:
+) -> tuple[Tensor, Tensor, Tensor, Tensor] | None:
     """Pull query points back through a chain of strictly monotone maps.
 
     A response ``Y = g(X)`` with ``g`` strictly increasing has
@@ -138,52 +139,46 @@ def _monotone_pullback(
 
     Returns
     -------
-    tuple[Tensor, Tensor, Tensor, bool] or None
+    tuple[Tensor, Tensor, Tensor, Tensor] or None
         Float64 base-scale points, a mask of queries below the image of the
         chain, a mask of queries above it, and whether the chain is
-        decreasing. None when a transform is not one of the monotone maps.
+        decreasing, a scalar. None when a transform is not one of the monotone maps.
     """
     query = value.double()
     # Infinite queries are settled here, so the base law and its derivative
     # are evaluated at finite points only.
     below, above = query == -torch.inf, query == torch.inf
     point = torch.where(below | above, 0.0, query)
-    decreasing = False
+    decreasing = torch.zeros((), dtype=torch.bool, device=query.device)
     for transform in reversed(transforms):
         if isinstance(transform, AffineTransform):
             # A Python number is read in float64 directly, not through the
             # default single precision.
             scale = _wide_parameter(transform.scale, point)
             loc = _wide_parameter(transform.loc, point)
-            if bool((scale > 0).all()):
-                flips = False
-            elif bool((scale < 0).all()):
-                flips = True
-            else:
+            flips = (scale < 0).all()
+            if not everywhere(flips | (scale > 0).all()):
                 return None
             point = (point - loc) / scale
         elif isinstance(transform, ExpTransform | PowerTransform):
             outside = (point <= 0) & ~below & ~above
             # A nonpositive query lies under the positive image of the map;
             # a decreasing outer chain sends it above the response image.
-            below = below | (outside & (not decreasing))
+            below = below | (outside & ~decreasing)
             above = above | (outside & decreasing)
             safe = torch.where(point > 0, point, 1.0)
             if isinstance(transform, ExpTransform):
-                flips = False
+                flips = torch.zeros_like(decreasing)
                 point = safe.log()
             else:
                 exponent = _wide_parameter(transform.exponent, point)
-                if bool((exponent > 0).all()):
-                    flips = False
-                elif bool((exponent < 0).all()):
-                    flips = True
-                else:
+                flips = (exponent < 0).all()
+                if not everywhere(flips | (exponent > 0).all()):
                     return None
                 point = torch.exp(safe.log() / exponent)
         else:
             return None
-        decreasing = decreasing != flips
+        decreasing = decreasing ^ flips
     return point, below, above, decreasing
 
 
@@ -239,8 +234,10 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
         ):
             point, below, above, reversed_order = pulled
             log_cdf, log_sf = _log_tails(base.base_dist, point)
-            if reversed_order:
-                log_cdf, log_sf = log_sf, log_cdf
+            log_cdf, log_sf = (
+                torch.where(reversed_order, log_sf, log_cdf),
+                torch.where(reversed_order, log_cdf, log_sf),
+            )
             return (
                 torch.where(below, -torch.inf, torch.where(above, 0.0, log_cdf)),
                 torch.where(below, 0.0, torch.where(above, -torch.inf, log_sf)),
@@ -427,7 +424,7 @@ def _narrow_interval(
         narrow = (lower > 0) & (upper < 1) & (width > 0) & (variation < 1e-4)
     else:
         return None
-    if not bool(narrow.any()):
+    if not anywhere(narrow):
         return None
     midpoint = torch.where(narrow, lower + width / 2, 0.5)
     half_width = torch.where(narrow, width / 2, 0.1)
@@ -534,13 +531,12 @@ def log_interval_mass(
         if high is None
         else torch.as_tensor(high, device=reference.device, dtype=torch.float64)
     )
-    if (
-        lower is not None
-        and bool(lower.isnan().any())
-        or upper is not None
-        and bool(upper.isnan().any())
-    ):
-        raise ValueError("interval endpoints must not be NaN")
+    for endpoint in (lower, upper):
+        if endpoint is not None:
+            demand(
+                ~endpoint.isnan(),
+                lambda: ValueError("interval endpoints must not be NaN"),
+            )
     if isinstance(base, Normal):
         lower = reference.new_tensor(-torch.inf) if lower is None else lower
         upper = reference.new_tensor(torch.inf) if upper is None else upper

@@ -51,6 +51,7 @@ from typing import Protocol, cast
 import torch
 from torch import nn
 
+from quivers._positions import demand, largest
 from quivers.continuous._closed_probability import _check_trial_count_source
 from quivers.continuous.morphisms import (
     AnySpace,
@@ -750,16 +751,15 @@ class MonadicProgram(ContinuousMorphism):
                 f"indices of shape (B,) or (B, 1); got an input of shape "
                 f"{tuple(x.shape)}"
             )
-        if (
-            x.numel()
-            and not x.is_floating_point()
-            and (int(x.min()) < 0 or int(x.max()) >= domain.cardinality)
-        ):
-            raise ValueError(
-                f"the step binding {names!r} reads the program's input as one "
-                f"element of a finite set of {domain.cardinality} elements "
-                f"indexed from 0, and the input holds indices from "
-                f"{int(x.min())} to {int(x.max())}"
+        if x.numel() and not x.is_floating_point():
+            demand(
+                (x >= 0) & (x < domain.cardinality),
+                lambda: ValueError(
+                    f"the step binding {names!r} reads the program's input as one "
+                    f"element of a finite set of {domain.cardinality} elements "
+                    f"indexed from 0, and the input holds indices from "
+                    f"{-int(largest(-x, 0.0))} to {int(largest(x, 0.0))}"
+                ),
             )
 
     def _resolve_input(
@@ -1248,6 +1248,12 @@ class MonadicProgram(ContinuousMorphism):
         observes come from its data and its plates, not from the input,
         so a program whose observations live in a plate is scored on a
         one-row input.
+
+        The runs are scored together, each equal to its own score up to
+        rounding, when every step declares that it can be evaluated at
+        many positions, none draws at random, no host datum is given per
+        run, and no handler is on the stack. Otherwise they are scored
+        one by one.
 
         Parameters
         ----------

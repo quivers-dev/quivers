@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 from torch.distributions import constraints
+from quivers._positions import demand
 from quivers._splines import MSplineBasis
 from quivers.continuous._bernstein_hazard import BernsteinHazard, _bernstein
 
@@ -74,14 +75,16 @@ class CoxPH(BernsteinHazard):
         weights = torch.as_tensor(weights, dtype=torch.float64, device=device)
         if weights.ndim < 1 or weights.shape[-1] != basis.size:
             raise ValueError(f"Cox weights need {basis.size} spline components")
-        if validate_args is not False and not bool(
-            torch.isfinite(weights).all()
-            & (weights > 0).all()
-            & torch.isclose(
-                weights.sum(-1), weights.new_tensor(1.0), rtol=1e-6, atol=1e-8
-            ).all()
-        ):
-            raise ValueError("Cox spline weights must be a strictly positive simplex")
+        if validate_args is not False:
+            demand(
+                (torch.isfinite(weights) & (weights > 0)).all(-1)
+                & torch.isclose(
+                    weights.sum(-1), weights.new_tensor(1.0), rtol=1e-6, atol=1e-8
+                ),
+                lambda: ValueError(
+                    "Cox spline weights must be a strictly positive simplex"
+                ),
+            )
         self.weights = weights
         controls = torch.einsum(
             "...j,ijk->...ik", weights, weights.new_tensor(basis.m_coefficients)

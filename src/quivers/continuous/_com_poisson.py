@@ -3,6 +3,7 @@
 import math
 
 import torch
+from quivers._positions import demand, entry_count, everywhere, reject_unless
 from quivers.continuous._closed_probability import _check_count_observation_source
 from torch import Tensor
 from torch.distributions import Distribution, constraints
@@ -124,18 +125,24 @@ class COMPoisson(Distribution):
         else:
             self.rate = first
             self._boundary_rate = first
-            if not bool((torch.isfinite(first) & (first >= 0)).all()):
-                raise ValueError("COMPoisson rate must be finite and nonnegative")
+            demand(
+                torch.isfinite(first) & (first >= 0),
+                lambda: ValueError("COMPoisson rate must be finite and nonnegative"),
+            )
             positive = first > 0
             self.log_rate = torch.where(
                 positive, torch.where(positive, first, 1.0).log(), -torch.inf
             )
-        if not bool((torch.isfinite(self.dispersion) & (self.dispersion > 0)).all()):
-            raise ValueError("COMPoisson dispersion must be finite and positive")
-        if not bool(
-            (torch.isfinite(self.log_rate) | (self.log_rate == -torch.inf)).all()
-        ):
-            raise ValueError("COMPoisson log_rate must be finite or negative infinity")
+        demand(
+            torch.isfinite(self.dispersion) & (self.dispersion > 0),
+            lambda: ValueError("COMPoisson dispersion must be finite and positive"),
+        )
+        demand(
+            torch.isfinite(self.log_rate) | (self.log_rate == -torch.inf),
+            lambda: ValueError(
+                "COMPoisson log_rate must be finite or negative infinity"
+            ),
+        )
         self.normalization_rtol = normalization_rtol
         self.max_terms = max_terms
         self.max_proposals = max_proposals
@@ -184,10 +191,15 @@ class COMPoisson(Distribution):
         """
         log_rate = torch.where(self.log_rate == -torch.inf, -1000.0, self.log_rate)
         log_rho = log_rate / self.dispersion
-        if bool((log_rho > math.log(2**53)).any()):
-            raise NotImplementedError(
+        beyond = log_rho > math.log(2**53)
+        reject_unless(
+            ~beyond,
+            lambda: NotImplementedError(
                 "COMPoisson modal count exceeds exact Float64 capacity 2**53"
-            )
+            ),
+        )
+        log_rate = torch.where(beyond, 0.0, log_rate)
+        log_rho = torch.where(beyond, 0.0, log_rho)
         return log_rate, self.dispersion, log_rho.exp().floor().detach()
 
     def _statistics(self):
@@ -211,9 +223,10 @@ class COMPoisson(Distribution):
         centered_fourth = torch.zeros_like(mode)
         offset = 0
         # Bounded tiles avoid a batch-by-entire-support allocation.
-        width = max(1, min(64, 131072 // max(1, mode.numel())))
+        width = max(1, min(64, 131072 // max(1, entry_count(mode))))
         radius_budget = (self.max_terms + 1) // 2
-        while offset < radius_budget:
+        done = torch.zeros_like(mode, dtype=torch.bool)
+        while offset < radius_budget and not everywhere(done):
             end = min(offset + width, radius_budget)
             j = torch.arange(offset, end, device=mode.device, dtype=mode.dtype)
             signed = torch.cat((j, -j[j > 0]))
@@ -270,20 +283,22 @@ class COMPoisson(Distribution):
                         <= self.normalization_rtol * (1 + centered_fourth)
                     )
                 )
-            if bool(done.all()):
-                center = first / total
-                mean = mode + center
-                variance = (second / total - center.square()).clamp_min(0)
-                zero = self.log_rate == -torch.inf
-                return (
-                    mode,
-                    torch.where(zero, 0.0, total.log()),
-                    torch.where(zero, self._boundary_rate, mean),
-                    torch.where(zero, self._boundary_rate, variance),
-                )
             offset = end
-        raise NotImplementedError(
-            "COMPoisson centered sum could not certify tails within max_terms"
+        reject_unless(
+            done,
+            lambda: NotImplementedError(
+                "COMPoisson centered sum could not certify tails within max_terms"
+            ),
+        )
+        center = first / total
+        mean = mode + center
+        variance = (second / total - center.square()).clamp_min(0)
+        zero = self.log_rate == -torch.inf
+        return (
+            mode,
+            torch.where(zero, 0.0, total.log()),
+            torch.where(zero, self._boundary_rate, mean),
+            torch.where(zero, self._boundary_rate, variance),
         )
 
     def log_prob(self, value):

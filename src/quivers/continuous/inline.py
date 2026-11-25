@@ -40,6 +40,7 @@ from collections.abc import Callable, Mapping
 import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
+from quivers._positions import demand
 from quivers.core.objects import ProductSet, Unit
 from quivers.continuous._closed_probability import _check_trial_count_source
 from quivers.continuous._zero_inflated_count import BetaBinomial as _BetaBinomial
@@ -252,7 +253,14 @@ class FixedDistribution(ContinuousMorphism):
         The support of the underlying distribution. Used by variational
         guides to apply the right bijector for unconstrained→constrained
         sampling. Defaults to ``constraints.real``; the factory
-        functions for each family supply the correct constraint.
+        functions for each family give the correct constraint.
+    domain : AnySpace
+        Input space whose values select no family parameters.
+    mappable : bool
+        Whether the distribution's density can be evaluated at many
+        positions in one pass: it is a tensor computation that branches
+        on no value except through a validator, and changes no tensor in
+        place.
     """
 
     def __init__(
@@ -263,8 +271,10 @@ class FixedDistribution(ContinuousMorphism):
         support: _constraints.Constraint | None = None,
         *,
         domain: AnySpace = Unit,
+        mappable: bool = False,
     ) -> None:
         super().__init__(domain, codomain)
+        self.mappable = mappable
         self._make_dist_fn = make_dist
         self._discrete = discrete
         self._support = support if support is not None else D.constraints.real
@@ -288,6 +298,7 @@ class FixedDistribution(ContinuousMorphism):
             discrete=self._discrete,
             support=self._support,
             domain=domain,
+            mappable=self.mappable,
         )
 
     @property
@@ -515,6 +526,8 @@ class MixedInlineDistribution(ContinuousMorphism):
         separate from the conditioning input's leading run axis.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -674,22 +687,19 @@ class MixedInlineDistribution(ContinuousMorphism):
                     "signed integer parameter exceeds exact packed capacity 2**53"
                 )
             tensor = torch.as_tensor(value)
-            if (
-                tensor.dtype == torch.bool
-                or tensor.is_complex()
-                or not bool(
-                    (
-                        torch.isfinite(tensor)
-                        & (tensor >= -(2**53))
-                        & (tensor <= 2**53)
-                    ).all()
-                )
-                or tensor.is_floating_point()
-                and not bool((tensor == tensor.floor()).all())
-            ):
+            if tensor.dtype == torch.bool or tensor.is_complex():
                 raise ValueError(
                     "signed integer parameter requires integral values within exact packed capacity 2**53"
                 )
+            demand(
+                torch.isfinite(tensor)
+                & (tensor >= -(2**53))
+                & (tensor <= 2**53)
+                & (tensor == tensor.floor()),
+                lambda: ValueError(
+                    "signed integer parameter requires integral values within exact packed capacity 2**53"
+                ),
+            )
 
     def _resolve_params(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Reconstruct full parameter list from input + stored literals.
@@ -1063,7 +1073,9 @@ def make_fixed_logitnormal(
         base = D.Normal(mu_t, sigma_t)
         return D.TransformedDistribution(base, [D.SigmoidTransform()])
 
-    return FixedDistribution(codomain, builder, support=_constraints.unit_interval)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.unit_interval, mappable=True
+    )
 
 
 def make_fixed_uniform(
@@ -1093,7 +1105,7 @@ def make_fixed_uniform(
         return D.Uniform(low_t, high_t)
 
     return FixedDistribution(
-        codomain, builder, support=_constraints.interval(low, high)
+        codomain, builder, support=_constraints.interval(low, high), mappable=True
     )
 
 
@@ -1123,7 +1135,7 @@ def make_fixed_normal(
         scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.Normal(loc_t, scale_t)
 
-    return FixedDistribution(codomain, builder)
+    return FixedDistribution(codomain, builder, mappable=True)
 
 
 def make_fixed_bernoulli(prob: float, codomain: AnySpace) -> FixedDistribution:
@@ -1147,7 +1159,7 @@ def make_fixed_bernoulli(prob: float, codomain: AnySpace) -> FixedDistribution:
         return ClosedBernoulli(probs=probs_t)
 
     return FixedDistribution(
-        codomain, builder, discrete=True, support=_constraints.boolean
+        codomain, builder, discrete=True, support=_constraints.boolean, mappable=True
     )
 
 
@@ -1177,7 +1189,9 @@ def make_fixed_beta(
         b = torch.full((batch, *coordinate_shape), concentration0, device=device)
         return D.Beta(a, b)
 
-    return FixedDistribution(codomain, builder, support=_constraints.unit_interval)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.unit_interval, mappable=True
+    )
 
 
 def make_fixed_logit_beta(
@@ -1219,7 +1233,9 @@ def make_fixed_logit_beta(
         b = torch.full((batch, *coordinate_shape), concentration0, device=device)
         return LogitBeta(a, b)
 
-    return FixedDistribution(codomain, builder, support=_constraints.real)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.real, mappable=True
+    )
 
 
 def make_fixed_log_gamma(
@@ -1261,7 +1277,9 @@ def make_fixed_log_gamma(
         rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return LogGamma(conc_t, rate_t)
 
-    return FixedDistribution(codomain, builder, support=_constraints.real)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.real, mappable=True
+    )
 
 
 def _require_positive(family: str, **parameter: float) -> None:
@@ -1305,7 +1323,9 @@ def make_fixed_exponential(rate: float, codomain: AnySpace) -> FixedDistribution
         rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return D.Exponential(rate_t)
 
-    return FixedDistribution(codomain, builder, support=_constraints.positive)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.positive, mappable=True
+    )
 
 
 def make_fixed_halfcauchy(scale: float, codomain: AnySpace) -> FixedDistribution:
@@ -1329,7 +1349,9 @@ def make_fixed_halfcauchy(scale: float, codomain: AnySpace) -> FixedDistribution
         scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.HalfCauchy(scale_t)
 
-    return FixedDistribution(codomain, builder, support=_constraints.positive)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.positive, mappable=True
+    )
 
 
 def make_fixed_halfnormal(scale: float, codomain: AnySpace) -> FixedDistribution:
@@ -1353,7 +1375,9 @@ def make_fixed_halfnormal(scale: float, codomain: AnySpace) -> FixedDistribution
         scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.HalfNormal(scale_t)
 
-    return FixedDistribution(codomain, builder, support=_constraints.positive)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.positive, mappable=True
+    )
 
 
 def make_fixed_lognormal(
@@ -1382,7 +1406,9 @@ def make_fixed_lognormal(
         scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.LogNormal(loc_t, scale_t)
 
-    return FixedDistribution(codomain, builder, support=_constraints.positive)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.positive, mappable=True
+    )
 
 
 def make_fixed_gamma(
@@ -1411,7 +1437,9 @@ def make_fixed_gamma(
         rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return D.Gamma(conc_t, rate_t)
 
-    return FixedDistribution(codomain, builder, support=_constraints.positive)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.positive, mappable=True
+    )
 
 
 def make_fixed_dirichlet(
@@ -1465,7 +1493,9 @@ def make_fixed_dirichlet(
         conc_t = torch.tensor(conc_tuple, device=device).expand(batch, d)
         return D.Dirichlet(conc_t)
 
-    return FixedDistribution(codomain, builder, support=_constraints.simplex)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.simplex, mappable=True
+    )
 
 
 def make_fixed_truncated_normal(
@@ -1486,9 +1516,7 @@ def make_fixed_truncated_normal(
         return _truncated_normal_builder(params)
 
     return FixedDistribution(
-        codomain,
-        builder,
-        support=_constraints.interval(low, high),
+        codomain, builder, support=_constraints.interval(low, high), mappable=True
     )
 
 
@@ -1544,6 +1572,7 @@ def make_fixed_categorical(
         builder,
         discrete=True,
         support=_constraints.integer_interval(0, cardinality - 1),
+        mappable=True,
     )
 
 
@@ -1584,7 +1613,9 @@ def make_fixed_lkj_cholesky(
         shape = torch.full((batch,), float(concentration), device=device)
         return OnionLKJCholesky(dim, shape)
 
-    return FixedDistribution(codomain, builder, support=_constraints.corr_cholesky)
+    return FixedDistribution(
+        codomain, builder, support=_constraints.corr_cholesky, mappable=True
+    )
 
 
 # Families whose all-literal factory takes a single vector
@@ -3694,10 +3725,7 @@ def _make_fixed_selected_parameters(
         return spec.dist_class(**values)
 
     return FixedDistribution(
-        codomain,
-        builder,
-        discrete=spec.discrete,
-        support=spec.support,
+        codomain, builder, discrete=spec.discrete, support=spec.support, mappable=True
     )
 
 
@@ -3906,6 +3934,7 @@ def _build_generic_fixed_factory(spec: FamilySpec) -> Callable:
             builder,
             discrete=spec.discrete,
             support=spec.support,
+            mappable=True,
         )
 
     return factory

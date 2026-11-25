@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from quivers._positions import anywhere, demand, everywhere
 from quivers.continuous._ordered import _log1mexp
 
 
@@ -49,17 +50,19 @@ def log_gamma_tails(shape: Tensor, point: Tensor) -> tuple[Tensor, Tensor]:
     Constant exponential/Erlang-two shapes have direct survival formulas.
     """
     a, x = torch.broadcast_tensors(shape.double(), point.double().clamp_min(0))
-    if not bool((torch.isfinite(a) & (a > 0) & ~torch.isnan(x)).all()):
-        raise ValueError(
+    demand(
+        torch.isfinite(a) & (a > 0) & ~torch.isnan(x),
+        lambda: ValueError(
             "gamma log tails require finite positive shape and a nonnegative point"
-        )
-    if not a.requires_grad and bool((a == 1).all()):
+        ),
+    )
+    if not a.requires_grad and everywhere(a == 1):
         log_q = -x
         return _complement(log_q), log_q
     if (
         not a.requires_grad
-        and bool((a == 2).all())
-        and bool(((x >= 1e-4) | (x == 0)).all())
+        and everywhere(a == 2)
+        and everywhere((x >= 1e-4) | (x == 0))
     ):
         safe_x = torch.where(torch.isfinite(x), x, 1.0)
         log_q = torch.where(
@@ -75,7 +78,7 @@ def log_gamma_tails(shape: Tensor, point: Tensor) -> tuple[Tensor, Tensor]:
     iterations = 512
 
     near_log_p = torch.full_like(x, -1.0)
-    if bool(near_one.any()):
+    if anywhere(near_one):
         near_a = torch.where(near_one, a, 0.5)
         near_x = torch.where(near_one, x, 0.5)
         factor = torch.ones_like(x)
@@ -88,7 +91,7 @@ def log_gamma_tails(shape: Tensor, point: Tensor) -> tuple[Tensor, Tensor]:
             updated = total + corrected
             compensation = (updated - total) - corrected
             total = updated
-            if bool((term.abs() <= tolerance * total.abs()).all()):
+            if everywhere(term.abs() <= tolerance * total.abs()):
                 break
         else:
             raise NotImplementedError(
@@ -107,7 +110,7 @@ def log_gamma_tails(shape: Tensor, point: Tensor) -> tuple[Tensor, Tensor]:
     for n in range(1, iterations + 1):
         term = term * series_x / (series_a + n)
         total = total + term
-        if bool((term.abs() <= tolerance * total.abs()).all()):
+        if everywhere(term.abs() <= tolerance * total.abs()):
             break
     else:
         raise NotImplementedError(
@@ -141,8 +144,8 @@ def log_gamma_tails(shape: Tensor, point: Tensor) -> tuple[Tensor, Tensor]:
         # At an integer shape the fraction can terminate exactly while
         # its shape derivatives still depend on subsequent coefficients.
         # Retain those terms when differentiating a learned shape.
-        if (not a.requires_grad or n >= 64) and bool(
-            ((update - 1).abs() <= tolerance).all()
+        if (not a.requires_grad or n >= 64) and everywhere(
+            (update - 1).abs() <= tolerance
         ):
             break
     else:

@@ -32,13 +32,13 @@ import torch
 from torch import Tensor
 from torch.distributions import Distribution, StudentT, VonMises
 
+from quivers._positions import anywhere, demand, entry_count, largest
 from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8
-from quivers.continuous._beta_tails import log_beta_tails
+from quivers.continuous._beta_tails import log_beta_tails, tensor_beta_fraction
 from quivers.continuous._closed_probability import _log_gamma_increment
 from quivers.continuous._com_poisson import COMPoisson, _relative_weight
 from quivers.continuous._gamma_tails import log_gamma_tails
 from quivers.continuous._ordered import _log1mexp
-from quivers.qiec._beta_tails import beta_fraction
 
 _EPS = torch.finfo(torch.float64).eps
 _LOG_HALF = -math.log(2.0)
@@ -173,36 +173,6 @@ def log_exponential_tails(rate: Tensor, value: Tensor) -> tuple[Tensor, Tensor]:
     )
 
 
-def _beta_fraction(a: Tensor, b: Tensor, x: Tensor) -> Tensor:
-    """Evaluate the incomplete Beta continued fraction to double precision.
-
-    Parameters
-    ----------
-    a, b : Tensor
-        Positive concentrations.
-    x : Tensor
-        Points below ``(a + 1) / (a + b + 2)``, where the fraction converges.
-
-    Returns
-    -------
-    Tensor
-        The continued fraction of ``I_x(a, b)``.
-    """
-
-    def nonzero(value: Tensor) -> Tensor:
-        return torch.where(
-            value.abs() < 1e-300, torch.where(value < 0, -1e-300, 1e-300), value
-        )
-
-    return beta_fraction(
-        a,
-        b,
-        x,
-        nonzero=nonzero,
-        converged=lambda change: bool(((change - 1).abs() <= 8 * _EPS).all()),
-    )
-
-
 def log_student_t_tails(
     df: Tensor, loc: Tensor, scale: Tensor, value: Tensor
 ) -> tuple[Tensor, Tensor]:
@@ -245,20 +215,18 @@ def log_student_t_tails(
     nu, mu, sigma, point = torch.broadcast_tensors(
         df.double(), loc.double(), scale.double(), value.double()
     )
-    if not bool(
-        (
-            torch.isfinite(nu)
-            & (nu > 0)
-            & torch.isfinite(mu)
-            & torch.isfinite(sigma)
-            & (sigma > 0)
-            & ~point.isnan()
-        ).all()
-    ):
-        raise ValueError(
+    demand(
+        torch.isfinite(nu)
+        & (nu > 0)
+        & torch.isfinite(mu)
+        & torch.isfinite(sigma)
+        & (sigma > 0)
+        & ~point.isnan(),
+        lambda: ValueError(
             "Student-t tails require positive finite df and scale, a finite "
             "location, and a non-NaN point"
-        )
+        ),
+    )
     finite = torch.isfinite(point)
     t = torch.where(finite, (torch.where(finite, point, 0.0) - mu) / sigma, 1.0)
     square = t.square()
@@ -270,7 +238,9 @@ def log_student_t_tails(
     central_nu = torch.where(central, nu, 2.0)
     central_t = torch.where(central, t, 0.0)
     central_z = torch.where(central, z, 0.0)
-    fraction = _beta_fraction(torch.full_like(central_a, 0.5), central_a, central_z)
+    fraction = tensor_beta_fraction(
+        torch.full_like(central_a, 0.5), central_a, central_z
+    )
     log_beta = _LOG_SQRT_PI - _log_gamma_increment(
         central_a, torch.full_like(central_a, 0.5)
     )
@@ -325,9 +295,9 @@ def _bessel_ratio_terms(concentration: Tensor) -> tuple[Tensor, int]:
     ValueError
         If the truncation bound exceeds `VON_MISES_SERIES_TOLERANCE`.
     """
-    largest = float(concentration.detach().max()) if concentration.numel() else 1.0
-    terms = int(math.ceil(12.0 * math.sqrt(largest))) + 40
-    start = terms + int(math.ceil(largest + 12.0 * math.sqrt(largest))) + 40
+    peak = largest(concentration, 1.0)
+    terms = int(math.ceil(12.0 * math.sqrt(peak))) + 40
+    start = terms + int(math.ceil(peak + 12.0 * math.sqrt(peak))) + 40
     with torch.no_grad():
         ratio = concentration / (2.0 * start)
         for j in range(start - 1, terms, -1):
@@ -349,11 +319,13 @@ def _bessel_ratio_terms(concentration: Tensor) -> tuple[Tensor, int]:
             * boundary
             / ((terms + 1) * (1.0 - boundary))
         )
-    if bool((bound > VON_MISES_SERIES_TOLERANCE).any()):
-        raise ValueError(
+    demand(
+        ~(bound > VON_MISES_SERIES_TOLERANCE),
+        lambda: ValueError(
             "von Mises CDF series could not certify its truncation bound "
-            f"{VON_MISES_SERIES_TOLERANCE:g} for concentration {largest:g}"
-        )
+            f"{VON_MISES_SERIES_TOLERANCE:g} for concentration {peak:g}"
+        ),
+    )
     return products, terms
 
 
@@ -383,10 +355,8 @@ def _von_mises_log_integral(
     slope = concentration * length * ((near - loc).sin().abs() + length) + 1.0
     first = (1e-3 / slope).clamp_max(1.0)
     growth = 1.05
-    panels = (
-        int(math.ceil(math.log(1.0 / float(first.detach().min())) / math.log(growth)))
-        + 1
-    )
+    shortest = -largest(-first, -1.0)
+    panels = int(math.ceil(math.log(1.0 / shortest) / math.log(growth))) + 1
     steps = torch.arange(panels + 1, dtype=torch.float64, device=near.device)
     edges = torch.cat(
         (
@@ -505,15 +475,13 @@ def log_von_mises_tails(
     mu, kappa, point = torch.broadcast_tensors(
         loc.double(), concentration.double(), value.double()
     )
-    if not bool(
-        (
-            torch.isfinite(mu) & torch.isfinite(kappa) & (kappa > 0) & ~point.isnan()
-        ).all()
-    ):
-        raise ValueError(
+    demand(
+        torch.isfinite(mu) & torch.isfinite(kappa) & (kappa > 0) & ~point.isnan(),
+        lambda: ValueError(
             "von Mises tails require a finite location, a positive finite "
             "concentration, and a non-NaN point"
-        )
+        ),
+    )
     inside = (point > -math.pi) & (point < math.pi)
     y = torch.where(inside, point, 0.0)
     large = kappa > VON_MISES_SERIES_MAX_CONCENTRATION
@@ -530,7 +498,7 @@ def log_von_mises_tails(
     upper_direct = inside & (large | (sf < VON_MISES_SERIES_FLOOR))
     log_cdf = torch.where(cdf > 0, torch.where(cdf > 0, cdf, 1.0).log(), -torch.inf)
     log_sf = torch.where(sf > 0, torch.where(sf > 0, sf, 1.0).log(), -torch.inf)
-    if bool((lower_direct | upper_direct).any()):
+    if anywhere(lower_direct | upper_direct):
         left = torch.full_like(y, -math.pi)
         right = torch.full_like(y, math.pi)
         direct_cdf = _von_mises_log_mass(mu, kappa, left, y)
@@ -592,8 +560,10 @@ def log_com_poisson_tails(law: COMPoisson, value: Tensor) -> tuple[Tensor, Tenso
         If a point is NaN or a tail cannot be certified within ``max_terms``.
     """
     point = torch.as_tensor(value, dtype=torch.float64, device=law.dispersion.device)
-    if bool(point.isnan().any()):
-        raise ValueError("COM-Poisson tails require non-NaN query points")
+    demand(
+        ~point.isnan(),
+        lambda: ValueError("COM-Poisson tails require non-NaN query points"),
+    )
     mode, log_sum, _, _ = law._statistics()
     log_rate, nu, _ = law._parameters()
     shape = torch.broadcast_shapes(point.shape, mode.shape)
@@ -611,15 +581,10 @@ def log_com_poisson_tails(law: COMPoisson, value: Tensor) -> tuple[Tensor, Tenso
     begin = torch.where(downward, count, count + 1)
     accumulated = torch.full_like(count, -torch.inf)
     pending = active.clone()
-    width = max(1, min(64, 131072 // max(1, count.numel())))
+    width = max(1, min(64, 131072 // max(1, entry_count(count))))
     offset = 0
     log_tolerance = math.log(COM_POISSON_TAIL_RTOL)
-    while bool(pending.any()):
-        if offset >= law.max_terms:
-            raise ValueError(
-                "COM-Poisson tail sum could not certify its truncation within "
-                f"max_terms={law.max_terms}"
-            )
+    while offset < law.max_terms and anywhere(pending):
         steps = torch.arange(
             offset, offset + width, dtype=torch.float64, device=count.device
         )
@@ -648,6 +613,13 @@ def log_com_poisson_tails(law: COMPoisson, value: Tensor) -> tuple[Tensor, Tenso
             certified = contracting & (log_bound <= log_tolerance + accumulated)
             pending = pending & ~(reached_zero | certified)
         offset += width
+    demand(
+        ~pending,
+        lambda: ValueError(
+            "COM-Poisson tail sum could not certify its truncation within "
+            f"max_terms={law.max_terms}"
+        ),
+    )
     log_tail = (accumulated - log_sum).clamp_max(0.0)
     log_cdf = torch.where(downward, log_tail, _log_complement(log_tail))
     log_sf = torch.where(downward, _log_complement(log_tail), log_tail)

@@ -104,6 +104,7 @@ from typing import cast
 import torch
 
 
+from quivers._positions import demand
 from quivers.core.objects import EnumSet, FinSet
 from quivers.continuous.morphisms import ContinuousMorphism, AnySpace
 from quivers.continuous.param_source import LookupSource
@@ -286,6 +287,8 @@ class PlateDraw(ContinuousMorphism):
     ValueError
         If ``index_shape`` does not multiply out to ``index_size``.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -715,6 +718,8 @@ class VectorisedObserve(ContinuousMorphism):
         Retain these coordinates in pointwise scores when the checked
         distribution declares them batch axes rather than event coordinates.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -1371,11 +1376,13 @@ def _flatten_product_indices(
     for j in range(len(group_indices) - 1, -1, -1):
         size = int(group_sizes[j])
         idx_j = group_indices[j].to(torch.long)
-        if (idx_j < 0).any() or (idx_j >= size).any():
-            raise ValueError(
+        demand(
+            (idx_j >= 0) & (idx_j < size),
+            lambda: ValueError(
                 f"_flatten_product_indices: index map {j} has entries "
                 f"outside [0, {size})"
-            )
+            ),
+        )
         flat = flat + idx_j * running
         running *= size
     return flat, total
@@ -1640,11 +1647,13 @@ def marginalize_grouped(
             )
         if num_groups <= 0:
             raise ValueError(f"num_groups must be positive; got {num_groups}")
-        if (group_index < 0).any() or (group_index >= num_groups).any():
-            raise ValueError(
+        demand(
+            (group_index >= 0) & (group_index < num_groups),
+            lambda: ValueError(
                 f"group_index entries must lie in [0, {num_groups}); "
                 "out-of-range index detected"
-            )
+            ),
+        )
         flat_index = group_index.to(torch.long)
         total_groups = int(num_groups)
         log_prior_flat = log_prior_per_group_per_class
@@ -1851,12 +1860,14 @@ def _marginalize_grouped_multi(
                     f"leading axis; axis {m} got "
                     f"{tuple(idx.shape)} vs N_m={n_rows_m}"
                 )
-            if (idx < 0).any() or (idx >= total_groups).any():
-                raise ValueError(
+            demand(
+                (idx >= 0) & (idx < total_groups),
+                lambda: ValueError(
                     "marginalize_grouped: group_index entries must "
                     f"lie in [0, {total_groups}); axis {m} has an "
                     "out-of-range index"
-                )
+                ),
+            )
             flat_idx = idx.to(torch.long)
         grouped = grouped.index_add(0, flat_idx, ll)
 

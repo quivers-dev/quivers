@@ -26,6 +26,7 @@ implemented as standalone classes.
 
 from __future__ import annotations
 
+from quivers._positions import demand, largest
 from quivers._quadrature_constants import _NODES_16, _WEIGHTS_16
 
 import math
@@ -151,6 +152,32 @@ def _resolve_discrete(dist_class: type, override: bool | None) -> bool:
 # ============================================================================
 
 
+def _positive_tril(entries: torch.Tensor, size: int) -> torch.Tensor:
+    """Fill lower-triangular matrices and make their diagonals positive.
+
+    Parameters
+    ----------
+    entries : torch.Tensor
+        The lower triangles' entries, row by row, along the trailing axis.
+    size : int
+        The number of rows of each matrix.
+
+    Returns
+    -------
+    torch.Tensor
+        Lower-triangular matrices whose diagonal is the softplus of the
+        entries on it, shape ``(..., size, size)``.
+    """
+    rows, columns = torch.tril_indices(size, size, device=entries.device)
+    flat = torch.zeros(
+        *entries.shape[:-1], size * size, device=entries.device, dtype=entries.dtype
+    )
+    lower = flat.index_add(-1, rows * size + columns, entries)
+    lower = lower.reshape(*entries.shape[:-1], size, size)
+    diagonal = F.softplus(lower.diagonal(dim1=-2, dim2=-1)) + EPS
+    return lower.tril(-1) + torch.diag_embed(diagonal)
+
+
 class _IndependentConditional(ContinuousMorphism):
     """Generic conditional morphism for per-dimension-independent distributions.
 
@@ -173,6 +200,8 @@ class _IndependentConditional(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for neural parameter source.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -276,6 +305,8 @@ class ConditionalBernsteinHazard(_IndependentConditional):
     never invented by unconstrained neural heads. Source programs can instead
     pass explicitly computed, differentiable controls to BernsteinHazard.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -502,6 +533,8 @@ class ConditionalNormal(ContinuousMorphism):
     >>> samples = f.rsample(x)  # shape (3, 3)
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -604,6 +637,8 @@ class ConditionalLogitNormal(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -690,6 +725,8 @@ class ConditionalBeta(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -757,6 +794,8 @@ class ConditionalTruncatedNormal(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for neural parameter source.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -830,6 +869,8 @@ class ConditionalDirichlet(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -874,6 +915,8 @@ class ConditionalDirichlet(ContinuousMorphism):
 
 class _ConditionalCountVector(ContinuousMorphism):
     """Shared fixed-trial vector kernel with learned category parameters."""
+
+    mappable: bool = True
 
     _distribution_class = Multinomial
 
@@ -1521,6 +1564,8 @@ class _ConditionalInflatedTrialCount(_IndependentConditional):
         Parameter-source strategy.
     """
 
+    mappable: bool = True
+
     _count_distribution: type[D.Distribution]
     _count_heads: tuple[tuple[str, str], ...]
 
@@ -1609,6 +1654,8 @@ class ConditionalZeroInflatedBinomial(_ConditionalInflatedTrialCount):
         Optional source strategy.
     """
 
+    mappable: bool = True
+
     _count_distribution = ZeroInflatedBinomial
     _count_heads = (("zero_prob", "sigmoid"), ("probs", "sigmoid"))
     arg_constraints = ZeroInflatedBinomial.arg_constraints
@@ -1632,6 +1679,8 @@ class ConditionalZeroInflatedBetaBinomial(_ConditionalInflatedTrialCount):
     param_source_option : str or None
         Optional source strategy.
     """
+
+    mappable: bool = True
 
     _count_distribution = ZeroInflatedBetaBinomial
     _count_heads = (
@@ -1748,6 +1797,8 @@ class ConditionalUniform(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -1826,6 +1877,8 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    mappable: bool = True
+
     _event_offset = 0
     _extra_raw_parameters = 0
     _distribution_class = D.MultivariateNormal
@@ -1858,25 +1911,9 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         loc = raw[..., : self._d]
         tril_raw = raw[..., self._d : self._d + self._n_tril]
 
-        # build lower-triangular matrix
-        batch_shape = tril_raw.shape[:-1]
-        L = torch.zeros(
-            *batch_shape,
-            self._d,
-            self._d,
-            device=tril_raw.device,
-            dtype=tril_raw.dtype,
+        return self._distribution_from_raw(
+            loc, _positive_tril(tril_raw, int(self._d)), raw
         )
-
-        # fill lower triangle
-        idx = torch.tril_indices(self._d, self._d)
-        L[..., idx[0], idx[1]] = tril_raw
-
-        # ensure positive diagonal (for positive definiteness)
-        diag_idx = torch.arange(self._d)
-        L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
-
-        return self._distribution_from_raw(loc, L, raw)
 
     def _distribution_from_raw(
         self, loc: torch.Tensor, factor: torch.Tensor, raw: torch.Tensor
@@ -1922,6 +1959,8 @@ class ConditionalMultivariateStudentT(ConditionalMultivariateNormal):
     param_source_option : str or None
         Existing parameter-source strategy.
     """
+
+    mappable: bool = True
 
     _extra_raw_parameters = 1
 
@@ -1985,6 +2024,8 @@ class ConditionalLowRankMVN(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for neural parameter source.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -2061,6 +2102,8 @@ class ConditionalRelaxedBernoulli(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -2121,6 +2164,8 @@ class ConditionalRelaxedOneHotCategorical(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for neural parameter source.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -2189,6 +2234,8 @@ class ConditionalWishart(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -2222,21 +2269,7 @@ class ConditionalWishart(ContinuousMorphism):
         # df must be > d - 1
         df = F.softplus(raw[..., 0]) + d
 
-        tril_raw = raw[..., 1:]
-        batch_shape = tril_raw.shape[:-1]
-        L = torch.zeros(
-            *batch_shape,
-            d,
-            d,
-            device=tril_raw.device,
-            dtype=tril_raw.dtype,
-        )
-        idx = torch.tril_indices(d, d)
-        L[..., idx[0], idx[1]] = tril_raw
-        diag_idx = torch.arange(d)
-        L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
-
-        return D.Wishart(df=df, scale_tril=L)
+        return D.Wishart(df=df, scale_tril=_positive_tril(raw[..., 1:], int(d)))
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
@@ -2299,6 +2332,8 @@ class ConditionalMatrixNormal(ContinuousMorphism):
         Hidden layer width for the parameter network.
     """
 
+    mappable: bool = True
+
     event_rank: int = 2
 
     def __init__(
@@ -2328,15 +2363,6 @@ class ConditionalMatrixNormal(ContinuousMorphism):
             param_source_option=param_source_option,
         )
 
-    def _build_tril(self, raw: torch.Tensor, d: int, n_tril: int) -> torch.Tensor:
-        batch_shape = raw.shape[:-1]
-        L = torch.zeros(*batch_shape, d, d, device=raw.device, dtype=raw.dtype)
-        idx = torch.tril_indices(d, d)
-        L[..., idx[0], idx[1]] = raw[..., :n_tril]
-        diag_idx = torch.arange(d)
-        L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
-        return L
-
     def _get_dist(self, x: torch.Tensor) -> MatrixNormal:
         """The matrix normal the parameter source gives at an input.
 
@@ -2359,8 +2385,8 @@ class ConditionalMatrixNormal(ContinuousMorphism):
         row_raw = raw[..., offset : offset + self._n_row_tril]
         offset += self._n_row_tril
         col_raw = raw[..., offset : offset + self._n_col_tril]
-        U_chol = self._build_tril(row_raw, n, self._n_row_tril)
-        V_chol = self._build_tril(col_raw, p, self._n_col_tril)
+        U_chol = _positive_tril(row_raw, n)
+        V_chol = _positive_tril(col_raw, p)
         return MatrixNormal(
             loc_flat.reshape(*loc_flat.shape[:-1], n, p),
             row_scale_tril=U_chol,
@@ -2434,6 +2460,8 @@ class ConditionalInverseWishart(ContinuousMorphism):
         Hidden layer width for the parameter network.
     """
 
+    mappable: bool = True
+
     event_rank: int = 2
 
     def __init__(
@@ -2478,17 +2506,8 @@ class ConditionalInverseWishart(ContinuousMorphism):
         d = self._d
         # df must exceed d - 1.
         df = F.softplus(raw[..., 0]) + d
-        tril_raw = raw[..., 1:]
-        batch_shape = tril_raw.shape[:-1]
-        L = torch.zeros(
-            *batch_shape, d, d, device=tril_raw.device, dtype=tril_raw.dtype
-        )
-        idx = torch.tril_indices(d, d)
-        L[..., idx[0], idx[1]] = tril_raw
-        diag_idx = torch.arange(d)
-        L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
         # The draw is the inverse of a Wishart draw with scale factor L.
-        return InverseWishart(df, L)
+        return InverseWishart(df, _positive_tril(raw[..., 1:], int(d)))
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """The log density of a matrix at an input.
@@ -2572,6 +2591,8 @@ class ConditionalBernoulli(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for neural parameter source.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -2672,6 +2693,8 @@ class ConditionalCategorical(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for neural parameter source.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -2781,6 +2804,8 @@ class ConditionalBinomial(ContinuousMorphism):
         Hidden layer width for the parameter source.
     """
 
+    mappable: bool = True
+
     # Class-level transpile-time metadata. `support` is the broadest
     # interval `nonnegative_integer`; the per-instance upper bound
     # `total_count` lives on the instance and the variational guide
@@ -2857,6 +2882,8 @@ class ConditionalLogisticNormal(ContinuousMorphism):
         Hidden layer width for the parameter source.
     """
 
+    mappable: bool = True
+
     arg_constraints: dict[str, _constraints.Constraint] = dict(
         D.LogisticNormal.arg_constraints
     )
@@ -2913,6 +2940,8 @@ class ConditionalZeroInflatedPoisson(ContinuousMorphism):
     produce the Poisson rate. Outputs non-negative integer counts.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -2960,6 +2989,8 @@ class ConditionalHurdlePoisson(ContinuousMorphism):
     two-stage hurdle log-density: a Bernoulli for zero vs positive,
     then a zero-truncated Poisson for the strictly-positive branch.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -3009,6 +3040,8 @@ class ConditionalZeroOneInflatedBeta(ContinuousMorphism):
     for ``~ ZeroOneInflatedBeta`` declarations; formula frontend
     prefers the inline ``observe ... <- ZeroOneInflatedBeta(mu, phi, zoi, coi)``.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -3066,6 +3099,8 @@ class ConditionalMixtureNormal(ContinuousMorphism):
     extension would replace `Normal` with `Independent(Normal(...), 1)`
     and triple the per-component parameter count.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -3134,6 +3169,8 @@ class ConditionalOneHotCategorical(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for the parameter source.
     """
+
+    mappable: bool = True
 
     # torch's `OneHotCategorical.support` is `OneHot()`; the
     # variational guide treats it as a simplex bijector target.
@@ -3212,6 +3249,8 @@ class ConditionalMixture(ContinuousMorphism):
         Hidden width for both the mixture-logit MLP and each
         component's parameter source.
     """
+
+    mappable: bool = True
 
     # Class-level transpile-time metadata. The user-facing argument
     # is the per-component mixing probability vector; per-component
@@ -3306,6 +3345,8 @@ class ConditionalIndependent(ContinuousMorphism):
         axis to score a vector-valued observation.
     """
 
+    mappable: bool = True
+
     # Class-level transpile-time metadata. Argument-shape constraints
     # are empty: the wrapped morphism's parameters surface through
     # the base reference. `support` defaults to `real` at the class
@@ -3351,6 +3392,8 @@ class ConditionalTransformed(ContinuousMorphism):
         Bijectors applied in forward order. Each must implement
         ``__call__``, ``inv``, and ``log_abs_det_jacobian``.
     """
+
+    mappable: bool = True
 
     # Class-level transpile-time metadata. Argument-shape constraints
     # are empty: the wrapped morphism's parameters surface through
@@ -3430,6 +3473,8 @@ class ConditionalLKJCholesky(ContinuousMorphism):
     TypeError
         If ``codomain.dim`` is not an integer.
     """
+
+    mappable: bool = True
 
     arg_constraints: dict[str, _constraints.Constraint] = {
         "concentration": _constraints.positive
@@ -3587,6 +3632,8 @@ class ConditionalGaussianProcess(ContinuousMorphism):
         positive-definiteness of the Cholesky factorisation.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -3657,21 +3704,31 @@ class ConditionalGaussianProcess(ContinuousMorphism):
         n = K.shape[-1]
         eye = torch.eye(n, dtype=K.dtype, device=K.device)
         K_j = K + self._jitter * eye
-        try:
-            return torch.linalg.cholesky(K_j)
-        except RuntimeError as exc:
-            diag_min = K_j.diagonal(dim1=-2, dim2=-1).min().item()
-            diag_max = K_j.diagonal(dim1=-2, dim2=-1).max().item()
-            raise _GPCholeskyError(
+        factor, info = torch.linalg.cholesky_ex(K_j)
+
+        def refusal() -> _GPCholeskyError:
+            """The error of a kernel matrix with no factor.
+
+            Returns
+            -------
+            _GPCholeskyError
+                The error.
+            """
+            diagonal = K_j.diagonal(dim1=-2, dim2=-1)
+            return _GPCholeskyError(
                 "ConditionalGaussianProcess: Cholesky failed on the "
                 f"jittered kernel matrix (kernel={self._kernel!r}, "
-                f"length_scale={self.length_scale.item():.6g}, "
-                f"amplitude={self.amplitude.item():.6g}, "
+                f"length_scale={largest(self.length_scale, math.nan):.6g}, "
+                f"amplitude={largest(self.amplitude, math.nan):.6g}, "
                 f"jitter={self._jitter:.3g}, N={n}, "
-                f"diag(K_j) in [{diag_min:.3g}, {diag_max:.3g}]). "
+                f"diag(K_j) in [{-largest(-diagonal, math.nan):.3g}, "
+                f"{largest(diagonal, math.nan):.3g}]). "
                 "Check for duplicate input locations or an excessively "
                 "small length scale."
-            ) from exc
+            )
+
+        demand(info == 0, refusal)
+        return factor
 
     def _validate_input_shape(self, x: torch.Tensor) -> torch.Tensor:
         """Reshape ``x`` to ``(..., N, D)`` and validate dims."""
@@ -3762,6 +3819,8 @@ class ConditionalHorseshoe(ContinuousMorphism):
     scale : float
         Initial global shrinkage ``tau`` (positive; learnable).
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -3878,6 +3937,8 @@ class ConditionalLearnedOrderedLogistic(ContinuousMorphism):
         If the codomain is not a finite set of at least two categories.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -3952,6 +4013,8 @@ try:
             Select the parameter source directly, or by the DSL's
             ``[param_source=...]`` text.
         """
+
+        mappable: bool = True
 
         def __init__(
             self,
@@ -4411,6 +4474,8 @@ class ConditionalBetaBinomial(ContinuousMorphism):
         Hidden layer width for the neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -4509,6 +4574,8 @@ class ConditionalLogistic(ContinuousMorphism):
         Hidden layer width for the neural parameter source.
     """
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,
@@ -4586,6 +4653,8 @@ class ConditionalHalfStudentT(ContinuousMorphism):
     hidden_dim : int
         Hidden layer width for the neural parameter source.
     """
+
+    mappable: bool = True
 
     def __init__(
         self,
@@ -4684,6 +4753,8 @@ class LKJCorrelationFactor(ContinuousMorphism):
         consume per-observation conditioning, so the rsample path
         broadcasts the prior across the batch dimension.
     """
+
+    mappable: bool = True
 
     # Class-level transpile-time metadata. The constructor takes the
     # correlation-matrix dimension `dim` (a positive integer) and the
@@ -4807,6 +4878,8 @@ class Truncated(ContinuousMorphism):
     max_rejection_iterations : int
         Cap on rejection-sampling attempts before raising.
     """
+
+    mappable: bool = True
 
     # Class-level transpile-time metadata. The base wrapped morphism
     # carries its own argument constraints; the bounds are simple

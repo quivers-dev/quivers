@@ -35,6 +35,8 @@ from quivers.continuous.param_source import ParamSource, _make_source
 class _ConditionalOrdered(ContinuousMorphism):
     """Shared machinery for cutpoint-parameterised ordered families."""
 
+    mappable: bool = True
+
     def __init__(
         self,
         domain: AnySpace,

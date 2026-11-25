@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from quivers._positions import demand, everywhere, reject_unless
 from quivers.continuous._closed_probability import _log_gamma_increment, _stirling_error
 from quivers.continuous._ordered import _log1mexp
 from quivers.qiec._beta_tails import beta_fraction
@@ -55,6 +56,54 @@ def _log_front(a: Tensor, b: Tensor, x: Tensor) -> Tensor:
     return torch.where(large, stable, direct)
 
 
+def tensor_beta_fraction(a: Tensor, b: Tensor, x: Tensor) -> Tensor:
+    """Evaluate the incomplete-Beta continued fraction over tensors.
+
+    Parameters
+    ----------
+    a, b : Tensor
+        Concentrations; ``b`` may be zero for a negative-binomial limit.
+    x : Tensor
+        Points below ``(a + 1) / (a + b + 2)``, where the fraction converges.
+
+    Returns
+    -------
+    Tensor
+        The continued fraction.
+
+    Raises
+    ------
+    RuntimeError
+        If an entry exhausts the recurrence's convergence budget.
+    """
+
+    def settled(change: Tensor) -> Tensor:
+        """Whether the last update changed the fraction by rounding alone.
+
+        Parameters
+        ----------
+        change : Tensor
+            The multiplicative update.
+
+        Returns
+        -------
+        Tensor
+            Whether each entry has converged.
+        """
+        return (change - 1).abs() <= 8 * torch.finfo(torch.float64).eps
+
+    return beta_fraction(
+        a,
+        b,
+        x,
+        nonzero=lambda value: torch.where(
+            value.abs() < 1e-300, torch.where(value < 0, -1e-300, 1e-300), value
+        ),
+        converged=lambda change: everywhere(settled(change)),
+        unconverged=lambda change, error: reject_unless(settled(change), lambda: error),
+    )
+
+
 def log_beta_tails(a: Tensor, b: Tensor, point: Tensor) -> tuple[Tensor, Tensor]:
     """Evaluate Beta log CDF and survival with gradients in all arguments.
 
@@ -78,10 +127,12 @@ def log_beta_tails(a: Tensor, b: Tensor, point: Tensor) -> tuple[Tensor, Tensor]
         If the continued fraction exceeds its bounded convergence budget.
     """
     a, b, point = torch.broadcast_tensors(a.double(), b.double(), point.double())
-    if not bool(((a > 0) & (b > 0) & torch.isfinite(a + b) & ~point.isnan()).all()):
-        raise ValueError(
+    demand(
+        (a > 0) & (b > 0) & torch.isfinite(a + b) & ~point.isnan(),
+        lambda: ValueError(
             "Beta tails require finite positive concentrations and a non-NaN point"
-        )
+        ),
+    )
     interior = (point > 0) & (point < 1)
     a, b = torch.where(interior, a, 1.0), torch.where(interior, b, 1.0)
     x = torch.where(interior, point, 0.5)
@@ -89,20 +140,7 @@ def log_beta_tails(a: Tensor, b: Tensor, point: Tensor) -> tuple[Tensor, Tensor]
     aa, bb = torch.where(swapped, b, a), torch.where(swapped, a, b)
     xx = torch.where(swapped, 1 - x, x)
 
-    def nonzero(value: Tensor) -> Tensor:
-        return torch.where(
-            value.abs() < 1e-300, torch.where(value < 0, -1e-300, 1e-300), value
-        )
-
-    fraction = beta_fraction(
-        aa,
-        bb,
-        xx,
-        nonzero=nonzero,
-        converged=lambda change: bool(
-            ((change - 1).abs() <= 8 * torch.finfo(torch.float64).eps).all()
-        ),
-    )
+    fraction = tensor_beta_fraction(aa, bb, xx)
     lower = (_log_front(aa, bb, xx) + fraction.log() - aa.log()).clamp_max(0)
     negative = lower < 0
     upper = torch.where(

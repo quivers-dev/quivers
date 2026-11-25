@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
+from quivers._positions import demand
 from quivers.continuous._zip_hurdle import _OpenUnitInterval
 from quivers.continuous._shape_families import _log1mexp
 
@@ -228,10 +229,13 @@ class AsymmetricLaplace(Distribution):
         ValueError
             If probabilities are outside the closed unit interval.
         """
-        if self._validate_args and not bool(
-            constraints.unit_interval.check(value).all()
-        ):
-            raise ValueError("AsymmetricLaplace.icdf requires probabilities in [0, 1]")
+        if self._validate_args:
+            demand(
+                constraints.unit_interval.check(value),
+                lambda: ValueError(
+                    "AsymmetricLaplace.icdf requires probabilities in [0, 1]"
+                ),
+            )
         q = self.quantile
         interior = (value > 0) & (value < 1)
         probability = torch.where(interior, value, 0.5)

@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 from torch.distributions import constraints
 
+from quivers._positions import demand
 from quivers.continuous._affine_beta import _AffineBeta
 from quivers.continuous._beta_tails import log_beta_tails
 from quivers.continuous._bounded_moments import _positive_unit_moments
@@ -77,10 +78,12 @@ class ExtendedBeta(Censored):
             & (self.kappa >= 0)
             & torch.isfinite(self.mu + self.phi + self.kappa)
         )
-        if not bool(valid.all()):
-            raise ValueError(
+        demand(
+            valid,
+            lambda: ValueError(
                 "ExtendedBeta requires mu in(0,1), finite phi>0 and kappa>=0"
-            )
+            ),
+        )
         if (
             not isinstance(moment_max_panels, int)
             or isinstance(moment_max_panels, bool)
@@ -94,14 +97,20 @@ class ExtendedBeta(Censored):
         self.moment_atol, self.moment_rtol = moment_atol, moment_rtol
         self.moment_max_panels = moment_max_panels
         width = 1 + 2 * self.kappa
-        if not bool(torch.isfinite(width).all()):
-            raise RuntimeError("ExtendedBeta extension exceeds Float64 affine capacity")
+        demand(
+            torch.isfinite(width),
+            lambda: RuntimeError(
+                "ExtendedBeta extension exceeds Float64 affine capacity"
+            ),
+        )
         low = self.kappa / width
         high = 0.5 + 0.5 / width
-        if not bool(((low < 0.5) & (high > 0.5)).all()):
-            raise RuntimeError(
+        demand(
+            (low < 0.5) & (high > 0.5),
+            lambda: RuntimeError(
                 "ExtendedBeta censoring bounds exceed Float64 interval resolution"
-            )
+            ),
+        )
         beta = _AffineBeta(
             self.mu * self.phi, (1 - self.mu) * self.phi, self.kappa, self.kappa
         )

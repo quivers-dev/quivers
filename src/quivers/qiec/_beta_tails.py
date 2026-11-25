@@ -10,6 +10,25 @@ from quivers.qiec._count_mixtures import _log_gamma_increment, _stirling_error
 from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8
 
 
+def _raise(change: float, error: Exception) -> None:
+    """Raise the error of a fraction that did not converge.
+
+    Parameters
+    ----------
+    change : float
+        The last multiplicative update, unused.
+    error : Exception
+        The error.
+
+    Raises
+    ------
+    Exception
+        ``error``.
+    """
+    del change
+    raise error
+
+
 def beta_fraction(
     a: Any,
     b: Any,
@@ -17,6 +36,7 @@ def beta_fraction(
     *,
     nonzero: Callable[[Any], Any],
     converged: Callable[[Any], bool],
+    unconverged: Callable[[Any, Exception], None] = _raise,
     max_iterations: int = 4096,
 ) -> Any:
     """Evaluate the incomplete Beta fraction using scalar or tensor arithmetic.
@@ -33,6 +53,10 @@ def beta_fraction(
         Stabilizes a recurrence denominator without changing its sign.
     converged : Callable
         Checks convergence of the final multiplicative update.
+    unconverged : Callable
+        Called with the last update and the error once the budget is
+        exhausted; by default it raises the error. When it returns, the
+        fraction so far is returned.
     max_iterations : int
         Finite recurrence budget.
 
@@ -43,11 +67,12 @@ def beta_fraction(
 
     Raises
     ------
-    RuntimeError
-        If the recurrence exhausts its convergence budget.
+    Exception
+        What ``unconverged`` raises if the recurrence exhausts its
+        convergence budget, by default a ``RuntimeError``.
     """
     c = 1.0
-    d = 1.0 / nonzero(1.0 - (a + b) * x / (a + 1.0))
+    change = d = 1.0 / nonzero(1.0 - (a + b) * x / (a + 1.0))
     result = d
     for m in range(1, max_iterations + 1):
         twice = 2 * m
@@ -62,9 +87,14 @@ def beta_fraction(
         result = result * change
         if m >= 64 and converged(change):
             return result
-    raise RuntimeError(
-        f"incomplete Beta fraction did not converge within {max_iterations} iterations"
+    unconverged(
+        change,
+        RuntimeError(
+            "incomplete Beta fraction did not converge within "
+            f"{max_iterations} iterations"
+        ),
     )
+    return result
 
 
 def _central_polynomial(value: float) -> float:

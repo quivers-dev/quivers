@@ -38,6 +38,7 @@ import math
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from quivers._positions import demand
 import torch
 from torch import Tensor
 
@@ -63,8 +64,7 @@ def _extended_map(
     Tensor
         Mapped points, with the image limits beyond either domain boundary.
     """
-    if bool(value.isnan().any()):
-        raise ValueError("scalar interval bounds must not be NaN")
+    demand(~value.isnan(), lambda: ValueError("scalar interval bounds must not be NaN"))
     low, high = bounds
     inside = (value > low) & (value < high) & torch.isfinite(value)
     anchor = (
