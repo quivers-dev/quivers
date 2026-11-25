@@ -1,0 +1,1 @@
+OPERATIONS: dict[str, int] = {}
