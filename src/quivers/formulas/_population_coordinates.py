@@ -48,6 +48,9 @@ from quivers.formulas._term import (
 )
 from quivers.formulas.formula import FixedColumn, Formula
 
+INTERCEPT = "intercept"
+"""Reported intercept site, within the predictor namespace."""
+
 CENTERED_SUFFIX = "_centered"
 """Suffix of the sampled centered-intercept site."""
 
@@ -60,12 +63,13 @@ class PopulationCoordinates(ValueModel):
 
     Parameters
     ----------
-    prefix : str
-        Predictor namespace (``""`` for the location, ``dpar_<name>_``).
+    intercept : str
+        Reported intercept site.
     centered : bool
         Whether the intercept is sampled on the centered design.
-    columns : tuple[str, ...]
-        QVR names of the transformed design columns, in design order.
+    sites : tuple[str, ...]
+        Reported coefficient sites of the transformed design columns, in
+        design order.
     means : tuple[float, ...]
         Their training means (zeros when not centered).
     r_inverse : tuple[tuple[float, ...], ...] or None
@@ -74,9 +78,9 @@ class PopulationCoordinates(ValueModel):
         Columns of ``XQ``, used to scale default coordinate priors.
     """
 
-    prefix: str
+    intercept: str
     centered: bool
-    columns: tuple[str, ...] = ()
+    sites: tuple[str, ...] = ()
     means: tuple[float, ...] = ()
     r_inverse: tuple[tuple[float, ...], ...] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
@@ -218,34 +222,31 @@ def population_coordinates(
         r_inverse = tuple(tuple(float(v) for v in row) for row in np.linalg.inv(xr))
         q_columns = tuple(tuple(float(v) for v in column) for column in xq.T)
     return PopulationCoordinates(
-        prefix=prefix,
+        intercept=prefix + INTERCEPT,
         centered=centered,
-        columns=tuple(
-            "intercept" if column.is_intercept else column.qvr_name
-            for column in selected
-        ),
+        sites=tuple(coefficient_site(prefix, column) for column in selected),
         means=tuple(float(value) for value in means),
         r_inverse=r_inverse,
         q_columns=q_columns,
     )
 
 
-def coefficient_site(prefix: str, column: str) -> str:
+def coefficient_site(prefix: str, column: FixedColumn | SymbolicColumn) -> str:
     """Return the reported coefficient site of one design column.
 
     Parameters
     ----------
     prefix : str
         Predictor namespace.
-    column : str
-        QVR column name, or ``intercept``.
+    column : FixedColumn or SymbolicColumn
+        Design column.
 
     Returns
     -------
     str
         ``<prefix>intercept`` or ``<prefix>beta_<column>``.
     """
-    return prefix + ("intercept" if column == "intercept" else f"beta_{column}")
+    return prefix + (INTERCEPT if column.is_intercept else f"beta_{column.qvr_name}")
 
 
 def coordinate_bindings(plan: PopulationCoordinates) -> list[LetStep]:
@@ -264,28 +265,23 @@ def coordinate_bindings(plan: PopulationCoordinates) -> list[LetStep]:
     """
     steps: list[LetStep] = []
     if plan.r_inverse is not None:
-        for j, column in enumerate(plan.columns):
+        for site, row in zip(plan.sites, plan.r_inverse, strict=True):
             terms: list[LetExprNode] = [
-                _mul(
-                    LetExprLiteral(value=plan.r_inverse[j][k]),
-                    _var(coefficient_site(plan.prefix, other) + QR_SUFFIX),
-                )
-                for k, other in enumerate(plan.columns)
-                if plan.r_inverse[j][k] != 0.0
+                _mul(LetExprLiteral(value=weight), _var(other + QR_SUFFIX))
+                for other, weight in zip(plan.sites, row, strict=True)
+                if weight != 0.0
             ]
-            steps.append(_let(coefficient_site(plan.prefix, column), _add(*terms)))
+            steps.append(_let(site, _add(*terms)))
     if plan.centered:
         shift: list[LetExprNode] = [
-            _mul(
-                LetExprLiteral(value=mean), _var(coefficient_site(plan.prefix, column))
-            )
-            for column, mean in zip(plan.columns, plan.means, strict=True)
-            if column != "intercept" and mean != 0.0
+            _mul(LetExprLiteral(value=mean), _var(site))
+            for site, mean in zip(plan.sites, plan.means, strict=True)
+            if site != plan.intercept and mean != 0.0
         ]
-        intercept = _var(plan.prefix + "intercept" + CENTERED_SUFFIX)
+        intercept = _var(plan.intercept + CENTERED_SUFFIX)
         steps.append(
             _let(
-                plan.prefix + "intercept",
+                plan.intercept,
                 _sub(intercept, _add(*shift)) if shift else intercept,
             )
         )
@@ -395,17 +391,16 @@ class PopulationTerm(ValueModel):
             The coefficient, the centered intercept, or the QR coordinate.
         """
         plan = self.coordinates
-        name = "intercept" if column.is_intercept else column.qvr_name
-        site = coefficient_site(self.prefix, name)
+        site = coefficient_site(self.prefix, column)
         divisor = multiplier = None
         if plan is not None and column.is_intercept and plan.centered:
             site += CENTERED_SUFFIX
-        elif plan is not None and plan.q_columns is not None and name in plan.columns:
+        elif plan is not None and plan.q_columns is not None and site in plan.sites:
             # A default prior scales with the XQ column its coordinate multiplies.
-            site += QR_SUFFIX
             divisor = column_rms(
-                np.asarray(plan.q_columns[plan.columns.index(name)], dtype=np.float64)
+                np.asarray(plan.q_columns[plan.sites.index(site)], dtype=np.float64)
             )
+            site += QR_SUFFIX
         elif isinstance(column, SymbolicColumn):
             multiplier = column.prior_multiplier
         elif not column.is_intercept:
@@ -446,23 +441,6 @@ class PopulationTerm(ValueModel):
         """
         return None
 
-    def coefficient(self, column: FixedColumn | SymbolicColumn) -> str:
-        """Name the reported coefficient of one column.
-
-        Parameters
-        ----------
-        column : FixedColumn or SymbolicColumn
-            Column of the block.
-
-        Returns
-        -------
-        str
-            Sampled site, or binding of the sampled coordinates.
-        """
-        return coefficient_site(
-            self.prefix, "intercept" if column.is_intercept else column.qvr_name
-        )
-
     def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
         """Draw the term's sites and bind its contributions.
 
@@ -480,9 +458,10 @@ class PopulationTerm(ValueModel):
         steps: list[ProgramStep] = []
         bindings = tuple(
             _let(
-                self.coefficient(column) + "_per_row",
+                coefficient_site(self.prefix, column) + "_per_row",
                 _mul(
-                    _var(self.coefficient(column)), _var(self.prefix + column.qvr_name)
+                    _var(coefficient_site(self.prefix, column)),
+                    _var(self.prefix + column.qvr_name),
                 ),
             )
             if self.output is None and not column.is_intercept
@@ -510,7 +489,10 @@ class PopulationTerm(ValueModel):
             The intercept, and the bound contribution of each column.
         """
         return tuple(
-            _var(self.coefficient(column) + ("" if column.is_intercept else "_per_row"))
+            _var(
+                coefficient_site(self.prefix, column)
+                + ("" if column.is_intercept else "_per_row")
+            )
             for column in self.columns
         )
 
@@ -530,10 +512,10 @@ class PopulationTerm(ValueModel):
             Each coordinate's coefficient times its column.
         """
         return tuple(
-            _index(self.coefficient(column), component)
+            _index(coefficient_site(self.prefix, column), component)
             if column.is_intercept
             else _mul(
-                _index(self.coefficient(column), component),
+                _index(coefficient_site(self.prefix, column), component),
                 _index(self.prefix + column.qvr_name, row),
             )
             for column in self.columns
@@ -554,7 +536,7 @@ def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[
         Intercept and slope sites by prefix.
     """
     return [
-        prefix + ("intercept" if column.is_intercept else f"beta_{column.qvr_name}")
+        coefficient_site(prefix, column)
         for _, prefix, formula in formulas
         for column in formula.fixed_columns
     ]

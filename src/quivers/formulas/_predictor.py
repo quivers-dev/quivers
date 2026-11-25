@@ -28,6 +28,7 @@ from quivers.formulas._group_plan import GroupTerm, row_map
 from quivers.formulas._latent_effects import field_terms
 from quivers.formulas._monotonic_emission import monotonic_rows
 from quivers.formulas._population_coordinates import (
+    PopulationCoordinates,
     PopulationTerm,
     population_coordinates,
 )
@@ -511,7 +512,7 @@ def _coordinates(
     role: Literal["dpar", "nlpar"],
     columns: tuple[FixedColumn | SymbolicColumn, ...],
     options: PredictorOptions,
-):
+) -> PopulationCoordinates | None:
     """Decide the sampled coordinates of one predictor's population effects.
 
     Parameters
