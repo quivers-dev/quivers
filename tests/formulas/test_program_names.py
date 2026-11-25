@@ -259,8 +259,10 @@ def test_columns_with_one_identifier_are_distinct_coefficients():
     assert draws["beta_cs_x2"].shape == (1, 1)
     assert draws["beta_cs_x2_2"].shape == (1, 1, 3)
     eta = fitted.posterior_linpred(num_samples=1, seed=1)[0, 0]
-    expected = draws["intercept"][0, 0] + draws["beta_cs_x2"][0, 0] * torch.tensor(
-        EXTRA
+    expected = (
+        draws["intercept"][0, 0]
+        + draws["beta_cs_x2"][0, 0] * torch.tensor(EXTRA)[:, None]
+        + draws["beta_cs_x2_2"][0, 0] * torch.tensor(FRAME["x2"].to_numpy())[:, None]
     )
     torch.testing.assert_close(eta.double(), expected.double(), rtol=1e-5, atol=1e-5)
 
