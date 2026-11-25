@@ -30,7 +30,9 @@ labels name the levels of `g`, and it may include levels absent from the
 training rows. As in brms, the coefficients of level $j$ become
 $\sigma \, (L z)_j$ with $L$ the Cholesky factor of `M` and standard-normal
 $z$, the model a
-[`GroupCovariance`](../api/formulas/fit.md) for `g` defines. The fit retains
+[`GroupCovariance`](../api/formulas/fit.md) for `g` defines. The covariance
+belongs to the term that names it, while a `group_covariances` entry gives
+every term of the factor one covariance. The fit retains
 the covariance, so new levels covered by `M` are predicted from their
 conditional distribution given the fitted levels.
 
@@ -100,8 +102,8 @@ A level has one law in a model. The degrees of freedom and mixing variables
 of a Student-t factor are drawn once for every predictor, mixture component,
 and response that uses them, as in brms. The coefficients that share an
 identifier form one block, so an option that one of them declares applies to
-the block. Within one formula, every group-level term of one factor must use
-the same options, and a factor has one `by` variable in a model.
+the block, and two of them may not declare different `by` variables, prior
+weights, or level covariances.
 
 Two combinations have no density and are refused. Both concern a known level
 covariance of deficient rank, declared with `GroupCovariance(rank=...)`,
@@ -113,6 +115,13 @@ coordinates, and `reparameterize="noncentered"` fits the model.
 
 Under the `"uncertainty"` and `"old_levels"` policies a new level takes the
 coefficients of a fitted level of the same `by` level, as in brms.
+
+The options belong to the term that states them, so two terms of one factor
+may have different `by` variables, distributions, prior weights, and level
+covariances, as in `(1 | gr(g, cov = M)) + (0 + x | gr(g, by = f))`. Terms
+with one identifier form one block, which has the options any of them states.
+The terms of a factor with `dist = "student"` share one degrees-of-freedom
+parameter and one mixing scale per level.
 
 In a categorical or other per-category response model each free category takes
 its own group coefficients with these options (see

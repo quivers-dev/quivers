@@ -9,7 +9,7 @@ depend on the data and the category encoding as well as on the formula.
 
 `Formula.design_terms` retains coupled Gaussian bases as `GaussianDesignTerm`
 values. Their innovation coordinates and positive penalty scales are distinct
-from ordinary fixed columns; `FormulaData.design_terms` preserves the same
+from ordinary fixed columns; `FormulaData.source` preserves the same
 immutable records across source-lens round trips. The
 [structured predictor guide](../../guides/formula-special-predictors.md)
 describes the mgcv `s()` and `t2()` constructors and retained new-data
@@ -58,7 +58,7 @@ shows how these terms affect fitting and posterior predictors.
 `formula_from_data(..., weights="column")` retains a finite nonnegative
 numeric column as `Formula.modifiers.weights`. `Formula.modifiers.decision`
 retains a normalized binary decision column for a joint response model.
-Both belong to `ResponseModifiers`; `FormulaData.modifiers` preserves them
+Both belong to `ResponseModifiers`; `FormulaData.source` preserves them
 in the lens complement. The
 [likelihood-weight guide](../../guides/analysis-data-and-formulas.md#likelihood-weights)
 explains the objective, row alignment, and prediction contract.
@@ -75,10 +75,12 @@ inference begins. Censoring endpoints may lie outside the sampling interval;
 their recorded events are intersected with that interval when scored.
 
 `cs(expr)` marks a transition-specific fixed or group column through
-`FixedColumn.category_specific`. The formula lens retains those flags and
-the authored fixed-column order in `FormulaData.category_specific_columns`
-and `fixed_column_order`; serialization through the value IR does not
-silently turn a category-specific coefficient into an ordinary scalar.
+`FixedColumn.category_specific`. `FormulaData.source` retains those flags
+and the authored column order. A `cs()` call may hold a `s()`, `t2()`,
+`gp()`, or `mo()` call, which then has one set of coefficients per ordinal
+transition. The
+`FormulaData.witnesses` of a module list the binding that shows each element
+of the formula, so reading a module back finds exactly the terms it states.
 `cs(1)` uses an internally prepared ones column, with an explicit refusal
 if the caller already uses its reserved name. The
 [ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
@@ -88,7 +90,7 @@ states supported constructions and prediction shapes.
 `MonotonicTerm`: one `MonotonicFactor` per `mo()` factor, holding the training
 matrix of cumulative category indicators and the brms `simo` label, the
 covariate of the term's other components, and the brms coefficient label.
-`FormulaData.monotonic_terms` preserves them across source-lens round trips.
+`FormulaData.source` preserves them across source-lens round trips.
 The `mo()` formulae transform retains the training coding, so fresh rows are
 coded and validated the same way. The
 [structured predictor guide](../../guides/formula-special-predictors.md#monotonic-effects)

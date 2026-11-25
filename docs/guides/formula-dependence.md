@@ -249,7 +249,12 @@ $(I-\rho W)x=b$ by sparse LU.
 ## Conditional autoregressive effects
 
 `car(M, gr = loc, type = ...)` adds `rcar[loc]` to the linear predictor
-[@morris2019spatial]. `M` is an adjacency matrix over locations, passed as a
+[@morris2019spatial]. The predictor may be a location, a distributional or
+nonlinear parameter, or the location of a mixture component, and each
+predictor has a field of its own, named after its parameter as in brms
+(`sdcar_sigma`, `rcar_sigma[1]`). The location of a categorical or other
+per-category response has one independent field per free category
+(`sdcar_muB`, `sdcar_muC`). `M` is an adjacency matrix over locations, passed as a
 pandas DataFrame whose index and columns are the location labels, which must
 cover the levels of `gr`. Without `gr`, every row is a location and `M` is
 indexed by row. Every nonzero entry marks two neighbors. `M` must be square,
