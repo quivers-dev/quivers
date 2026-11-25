@@ -46,7 +46,6 @@ from quivers.formulas._category_formulas import (
     check_scale_formulas,
     is_category_parameter,
     main_without_terms,
-    requires_category_predictors,
 )
 from quivers.formulas.formula import (
     Formula,
@@ -4139,7 +4138,6 @@ def _prepare_formula(
             FormulaToQVRModule._component_labels(parsed),
             formula,
             distributional,
-            every_category=requires_category_predictors(parsed),
         )
         # brms sigma<c>: per-category logistic-normal scale formulas.
         check_scale_formulas(

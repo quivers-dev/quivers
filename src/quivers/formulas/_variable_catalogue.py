@@ -23,7 +23,7 @@ Cost is one pass over the retained draws; no model replay occurs.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 import itertools
 import re
 
@@ -31,7 +31,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import ValueModel
-from quivers.formulas._group_law import GroupBlockLaw, GroupMemberLaw
+from quivers.formulas._group_law import GroupBlockLaw, GroupMemberLaw, LKJCorrelation
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import SmoothState
 from quivers.formulas.formula import Formula, ThresholdGroups
@@ -324,18 +324,18 @@ def scalar_coordinates(stem: str, value: torch.Tensor) -> dict[str, torch.Tensor
 
 
 def correlation_pairs(
-    prefix: str, labels: Sequence[str], factor: torch.Tensor
+    prefix: str, labels: Sequence[str], matrix: torch.Tensor
 ) -> dict[str, torch.Tensor]:
-    """Name the correlations of a Cholesky factor as brms names pairs.
+    """Name the correlations of a matrix as brms names pairs.
 
     Parameters
     ----------
     prefix : str
         Class and grouping part of the name, such as ``cor_g`` or ``rescor``.
     labels : Sequence[str]
-        Coordinate labels in factor order.
-    factor : torch.Tensor
-        Lower Cholesky factors on ``(chain, draw, K, K)`` axes.
+        Coordinate labels in matrix order.
+    matrix : torch.Tensor
+        Correlation matrices on ``(chain, draw, K, K)`` axes.
 
     Returns
     -------
@@ -346,14 +346,13 @@ def correlation_pairs(
     Raises
     ------
     ValueError
-        If the labels do not match the factor's dimension.
+        If the labels do not match the matrix's dimension.
     """
-    if factor.ndim != 4 or factor.shape[-1] != len(labels):
+    if matrix.ndim != 4 or matrix.shape[-1] != len(labels):
         raise ValueError(
-            f"correlation factor of shape {tuple(factor.shape)} does not match "
+            f"correlation matrix of shape {tuple(matrix.shape)} does not match "
             f"the {len(labels)} coordinates of {prefix!r}"
         )
-    matrix = factor @ factor.transpose(-1, -2)
     return {
         f"{prefix}__{labels[j]}__{labels[k]}": matrix[..., j, k]
         for k in range(len(labels))
@@ -381,77 +380,114 @@ def by_suffixes(law: GroupBlockLaw) -> tuple[str, ...]:
     return tuple(":" + brms_rename(by.variable + str(level)) for level in by.levels)
 
 
-def scale_variables(
-    law: GroupBlockLaw, member: GroupMemberLaw, stem: str, value: torch.Tensor
-) -> tuple[dict[str, torch.Tensor], ...]:
-    """Name the standard deviations of one group-level coefficient.
+class CoefficientName(ValueModel):
+    """The brms name of one component of a group-level coefficient.
 
     Parameters
     ----------
-    law : GroupBlockLaw
-        Block of the coefficient.
-    member : GroupMemberLaw
-        The coefficient.
-    stem : str
-        ``sd_<group>__<coefficient>``.
-    value : torch.Tensor
-        Draws of its scale on ``(chain, draw)`` axes and the scale's axis.
-
-    Returns
-    -------
-    tuple[dict[str, torch.Tensor], ...]
-        Named scalars of each ``by`` level, or of the one shared scale; a
-        coefficient over components adds its index.
+    infix : str
+        Parameter and response part of the name, ending in an underscore when
+        nonempty.
+    label : str
+        Coefficient label.
+    parameter : int
+        Position of the component's parameter among those of its predictor.
     """
-    if member.scale.by_axis is None:
-        return (scalar_coordinates(stem, value),)
-    suffixes = by_suffixes(law)
-    levels = value.reshape(*value.shape[:2], len(suffixes), member.width)
-    return tuple(
-        scalar_coordinates(
-            stem + suffix,
-            levels[:, :, index, 0] if member.axis is None else levels[:, :, index],
-        )
-        for index, suffix in enumerate(suffixes)
-    )
+
+    infix: str
+    label: str
+    parameter: int = 0
+
+    @property
+    def name(self) -> str:
+        """Return the name brms's ``sd`` and ``cor`` variables hold.
+
+        Returns
+        -------
+        str
+            The parameter, the response, and the coefficient.
+        """
+        return self.infix + self.label
 
 
-def correlation_variables(
-    law: GroupBlockLaw, terms: Sequence[str], draws: Mapping[str, torch.Tensor]
-) -> dict[str, torch.Tensor]:
-    """Name the correlations between the coefficients of one block.
+type MemberNames = Callable[[GroupMemberLaw], tuple[CoefficientName, ...]]
+"""Names of the components of one group-level coefficient."""
+
+
+def group_variables(
+    laws: Sequence[GroupBlockLaw], names: MemberNames, draws: Mapping[str, torch.Tensor]
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    """Name the standard deviations and correlations of group-level coefficients.
+
+    brms lists the coefficients of a block parameter by parameter, and the
+    standard deviations of a ``by`` partition level by level.
 
     Parameters
     ----------
-    law : GroupBlockLaw
-        Block law.
-    terms : Sequence[str]
-        brms coefficient name of each member.
+    laws : Sequence[GroupBlockLaw]
+        Laws of the blocks, in the order of their variables.
+    names : MemberNames
+        Names of a coefficient's components.
     draws : Mapping[str, torch.Tensor]
-        Draws holding the block's Cholesky factors.
+        Draws holding the blocks' scales and Cholesky factors.
 
     Returns
     -------
-    dict[str, torch.Tensor]
-        One correlation per pair of coordinates and, with one correlation
-        per ``by`` level, per level; empty for independent coordinates.
+    tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]
+        Standard deviations, then one correlation per pair of correlated
+        coordinates of each factor.
     """
-    coordinates = [
-        term if member.width == 1 else f"{term}[{index + 1}]"
-        for term, member in zip(terms, law.members, strict=True)
-        for index in range(member.width)
-    ]
-    sites = law.correlation.sites
-    suffixes = by_suffixes(law) if len(sites) > 1 else ("",) * len(sites)
-    result: dict[str, torch.Tensor] = {}
-    for site, suffix in zip(sites, suffixes, strict=True):
-        if site in draws:
-            result |= correlation_pairs(
-                f"cor_{law.group}",
-                [coordinate + suffix for coordinate in coordinates],
-                draws[site],
+    blocks: dict[str, list[tuple[tuple[int, int, int], str, torch.Tensor]]] = {}
+    correlations: dict[str, torch.Tensor] = {}
+    for law in laws:
+        prefixes = list(dict.fromkeys(member.prefix for member in law.members))
+        suffixes = by_suffixes(law)
+        coordinates: list[tuple[tuple[int, int], str]] = []
+        for member in law.members:
+            components = names(member)
+            key = f"{law.group}|{member.prefix if len(prefixes) == 1 else law.identity}"
+            rank = prefixes.index(member.prefix)
+            coordinates.extend(
+                ((rank, component.parameter), component.name)
+                for component in components
             )
-    return result
+            if member.scale.site not in draws:
+                continue
+            value = draws[member.scale.site]
+            levels = value.reshape(*value.shape[:2], -1, member.width)
+            blocks.setdefault(key, []).extend(
+                (
+                    (level, rank, component.parameter),
+                    f"sd_{law.group}__{component.name}{suffix}",
+                    levels[:, :, level, index],
+                )
+                for level, suffix in enumerate(suffixes[: levels.shape[2]])
+                for index, component in enumerate(components)
+            )
+        correlation = law.correlation
+        if not isinstance(correlation, LKJCorrelation):
+            continue
+        for index, site in enumerate(correlation.factors):
+            if site not in draws:
+                continue
+            level, part = divmod(index, correlation.components)
+            block = coordinates[part :: correlation.components]
+            order = sorted(range(len(block)), key=lambda at: block[at][0])
+            factor = draws[site]
+            matrix = (factor @ factor.transpose(-1, -2))[..., order, :][..., order]
+            correlations |= correlation_pairs(
+                f"cor_{law.group}",
+                [block[at][1] + suffixes[level] for at in order],
+                matrix,
+            )
+    return (
+        {
+            name: value
+            for entries in blocks.values()
+            for _, name, value in sorted(entries, key=lambda entry: entry[0])
+        },
+        correlations,
+    )
 
 
 def class_variables(
@@ -497,7 +533,9 @@ def class_variables(
             raise ValueError(
                 f"correlation site {target.site!r} retains no coordinate labels"
             )
-        return correlation_pairs(CHOLESKY_CLASSES[kind] + owner, labels, value)
+        return correlation_pairs(
+            CHOLESKY_CLASSES[kind] + owner, labels, value @ value.transpose(-1, -2)
+        )
     if kind == "df" and target.group is not None:
         stem = f"df_{target.group}"
     elif kind in _LAGGED_CLASSES and re.fullmatch(rf"(.*_)?{kind}_[0-9]+", target.site):

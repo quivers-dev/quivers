@@ -69,12 +69,15 @@ from quivers.formulas._ast import (
     _call,
     _div,
     _draw,
+    _factor,
+    _index,
     _let,
     _mul,
     _sub,
     _var,
 )
 from quivers.formulas._term import (
+    COORDINATE,
     AxisDecl,
     EffectSource,
     FormulaPart,
@@ -88,7 +91,10 @@ from quivers.formulas._term import (
     InputDecl,
     OutputAxis,
     SiteDecl,
+    at_coordinate,
     design_declarations,
+    flat_index,
+    over_output,
     read_only,
 )
 from quivers.qiec.families import DistributionFamily, FamilyParameter
@@ -408,7 +414,9 @@ def _numeric(value: ColumnInput) -> npt.NDArray[np.float64]:
     return result
 
 
-def _factor(value: ColumnInput) -> tuple[npt.NDArray[np.str_], tuple[str, ...]] | None:
+def _by_factor(
+    value: ColumnInput,
+) -> tuple[npt.NDArray[np.str_], tuple[str, ...]] | None:
     """Read a factor ``by`` variable, or None for a numeric one.
 
     Parameters
@@ -703,7 +711,7 @@ class GaussianProcess:
         else:
             by_name = _label(by, 0)
             label += brms_rename(by_name)
-            factor = _factor(by)
+            factor = _by_factor(by)
             if factor is None:
                 by_kind = "numeric"
                 contrasts.append(("", None, np.ones(rows)))
@@ -818,12 +826,12 @@ class GaussianProcess:
         labels = None
         if state.by_kind == "numeric":
             assert by is not None
-            if _factor(by) is not None:
+            if _by_factor(by) is not None:
                 raise ValueError("gp() numeric by variable became a factor")
             multiplier = _numeric(by)
         elif state.by_kind == "factor":
             assert by is not None
-            factor = _factor(by)
+            factor = _by_factor(by)
             if factor is None:
                 raise ValueError("gp() factor by variable became numeric")
             labels = factor[0]
@@ -1557,36 +1565,6 @@ def spectral_density(
     return log_spd.exp()
 
 
-def gp_block_coefficients(
-    draws: dict[str, torch.Tensor], block: GaussianProcessBlock, name: str, prefix: str
-) -> torch.Tensor:
-    """Assemble ``sqrt(spd) * z`` for posterior draws of one block.
-
-    Parameters
-    ----------
-    draws : dict[str, torch.Tensor]
-        Constrained draws with chain and draw axes.
-    block : GaussianProcessBlock
-        Retained block.
-    name : str
-        Prefixed design identifier.
-    prefix : str
-        Owning predictor namespace.
-
-    Returns
-    -------
-    torch.Tensor
-        Coefficients with shape ``(chain, draw, m)``.
-    """
-    sdgp, lscales = block.sites(prefix)
-    lengths = tuple(
-        draws[lscales[0] if block.isotropic else lscales[d]].double()
-        for d in range(block.dimension)
-    )
-    spd = spectral_density(block, draws[sdgp].double(), lengths)
-    return spd.sqrt() * draws[name + "_z"].double()
-
-
 class _ProcessTerm(ValueModel):
     """The hyperparameters and design of one Gaussian process block.
 
@@ -1669,6 +1647,7 @@ class _ProcessTerm(ValueModel):
                     site=self.name + "_z",
                     kind="special",
                     index=index,
+                    flat=self.output.size if self.output is not None else None,
                 ),
             )
         )
@@ -1733,15 +1712,21 @@ class _ProcessTerm(ValueModel):
         Returns
         -------
         tuple[SiteDecl, ...]
-            The marginal standard deviation, then each length scale.
+            The marginal standard deviation, then each length scale, per
+            coordinate of the output axis.
         """
         sdgp, lscales = self.block.sites(self.prefix)
+        output = self.output
+        axes = (output.name,) if output is not None else ()
+        labels = output.labels if output is not None else ()
         return (
             SiteDecl(
                 name=sdgp,
                 class_="sdgp",
                 default=self.scale_prior,
                 coef=self.block.label,
+                axes=axes,
+                component_labels=labels,
                 lower=0.0,
             ),
             *(
@@ -1750,6 +1735,8 @@ class _ProcessTerm(ValueModel):
                     class_="lscale",
                     default=default,
                     coef=label,
+                    axes=axes,
+                    component_labels=labels,
                     lower=0.0,
                 )
                 for site, default, label in zip(
@@ -1761,15 +1748,34 @@ class _ProcessTerm(ValueModel):
             ),
         )
 
-    def _site(self, suffix: str, axis: str) -> SiteDecl:
-        """Declare one coordinate site whose law the term fixes.
+    def _innovation_axis(self, elements: AxisDecl) -> AxisDecl:
+        """Declare the axis of the innovations.
 
         Parameters
         ----------
-        suffix : str
-            Suffix of the site name.
-        axis : str
-            Suffix of its axis name.
+        elements : AxisDecl
+            Axis of the elements with one innovation per output coordinate.
+
+        Returns
+        -------
+        AxisDecl
+            The axis itself for a scalar process; otherwise a flat axis that
+            holds the coordinates of each element consecutively.
+        """
+        if self.output is None:
+            return elements
+        return AxisDecl(
+            name=self.name + "_InnovationCoordinate",
+            size=elements.size * self.output.size,
+        )
+
+    def _innovation_site(self, elements: AxisDecl) -> SiteDecl:
+        """Declare the innovations, whose law the term fixes.
+
+        Parameters
+        ----------
+        elements : AxisDecl
+            Axis of the elements with one innovation per output coordinate.
 
         Returns
         -------
@@ -1777,10 +1783,75 @@ class _ProcessTerm(ValueModel):
             The site.
         """
         return SiteDecl(
-            name=self.name + suffix,
+            name=self.name + "_z",
             class_="zgp",
-            axes=(self.name + axis,),
+            axes=(self._innovation_axis(elements).name,),
             overridable=False,
+        )
+
+    def _innovations(self, elements: AxisDecl) -> tuple[ProgramStep, ...]:
+        """Draw the standard-normal innovations.
+
+        Parameters
+        ----------
+        elements : AxisDecl
+            Axis of the elements with one innovation per output coordinate.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The draw and, for a vector of processes, the binding of its
+            innovations by coordinate and element.
+        """
+        raw, output = self.name + "_z", self.output
+        draw = _draw(
+            raw,
+            "Normal",
+            (0.0, 1.0),
+            index=TypeName(name=self._innovation_axis(elements).name),
+        )
+        if output is None:
+            return (draw,)
+        element = "process_element"
+        return (
+            draw,
+            _let(
+                raw + "_by_coordinate",
+                over_output(
+                    output,
+                    _index(raw, flat_index(output, _var(element))),
+                    (element, elements.name),
+                ),
+            ),
+        )
+
+    def _innovation(self) -> LetExprNode:
+        """Read the innovations at the bound output coordinate.
+
+        Returns
+        -------
+        LetExprNode
+            Vector over the elements.
+        """
+        raw = self.name + "_z"
+        if self.output is None:
+            return _var(raw)
+        return at_coordinate(raw + "_by_coordinate", self.output)
+
+    def _lengths(self) -> tuple[LetExprNode, ...]:
+        """Read the length scales at the bound output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            One per covariate; the shared one of an isotropic process.
+        """
+        _, lscales = self.block.sites(self.prefix)
+        return tuple(
+            at_coordinate(
+                lscales[0] if self.block.isotropic else lscales[d], self.output
+            )
+            for d in range(self.block.dimension)
         )
 
     def _drawn(
@@ -1805,24 +1876,62 @@ class _ProcessTerm(ValueModel):
             *coefficients,
             _let(
                 self.name + "_per_row",
-                _call("matmul", _var(self.name), _var(self.name + "_coefficients")),
+                over_output(
+                    self.output,
+                    _call(
+                        "matmul",
+                        _var(self.name),
+                        at_coordinate(self.name + "_coefficients", self.output),
+                    ),
+                ),
             ),
         )
 
-    def _innovations(self, axis: str) -> ProgramStep:
-        """Draw the standard-normal innovations.
+    def _parameters(
+        self, draws: Mapping[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
+        """Read the hyperparameters and innovations in one batch shape.
 
         Parameters
         ----------
-        axis : str
-            Axis of the innovations.
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
 
         Returns
         -------
-        ProgramStep
-            The draw.
+        tuple[torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]
+            Marginal standard deviation, length scale of each covariate (one
+            for an isotropic process), and innovations. The batch shape is
+            the draws, then the output axis; the innovations add the
+            elements.
         """
-        return _draw(self.name + "_z", "Normal", (0.0, 1.0), index=TypeName(name=axis))
+        sdgp, lscales = self.block.sites(self.prefix)
+        raw = draws[self.name + "_z"].double()
+        if self.output is not None:
+            raw = raw.unflatten(-1, (-1, self.output.size)).transpose(-1, -2)
+        return (
+            draws[sdgp].double(),
+            tuple(
+                draws[site].double()
+                for site in (lscales[:1] if self.block.isotropic else lscales)
+            ),
+            raw,
+        )
+
+    def _by_element(self, values: torch.Tensor) -> torch.Tensor:
+        """Put the output axis of a batch of values last.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            Values with the batch shape of `_parameters`, then the elements.
+
+        Returns
+        -------
+        torch.Tensor
+            Values by draw and element, then output coordinate.
+        """
+        return values if self.output is None else values.transpose(-1, -2)
 
 
 class SpectralTerm(_ProcessTerm):
@@ -1859,9 +1968,13 @@ class SpectralTerm(_ProcessTerm):
         Returns
         -------
         torch.Tensor
-            Coefficients by spectral basis function.
+            Coefficients by spectral basis function, then output coordinate.
         """
-        return gp_block_coefficients(dict(draws), self.block, self.name, self.prefix)
+        sdgp, lscales, innovations = self._parameters(draws)
+        spd = spectral_density(
+            self.block, sdgp, lscales * (self.block.dimension // len(lscales))
+        )
+        return self._by_element(spd.sqrt() * innovations)
 
     def effect(
         self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
@@ -1878,10 +1991,11 @@ class SpectralTerm(_ProcessTerm):
         Returns
         -------
         torch.Tensor
-            Contributions with shape ``(chain, draw, rows)``.
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
         """
         design = torch.tensor(self.matrix)
-        return self.coefficients(draws) @ design.T
+        return torch.einsum("cdj...,nj->cdn...", self.coefficients(draws), design)
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -1889,9 +2003,11 @@ class SpectralTerm(_ProcessTerm):
         Returns
         -------
         tuple[AxisDecl, ...]
-            The coordinate axis.
+            The coordinate axis and, for a vector of processes, the flat axis
+            of the innovations.
         """
-        return (design_declarations(self.name, self.matrix)[0],)
+        axis = design_declarations(self.name, self.matrix)[0]
+        return tuple(dict.fromkeys((axis, self._innovation_axis(axis))))
 
     def inputs(self) -> tuple[InputDecl, ...]:
         """List the data inputs the term reads.
@@ -1925,7 +2041,8 @@ class SpectralTerm(_ProcessTerm):
         tuple[SiteDecl, ...]
             The hyperparameters and the innovations.
         """
-        return (*self.hyperparameters(), self._site("_z", "_Coordinate"))
+        axis = design_declarations(self.name, self.matrix)[0]
+        return (*self.hyperparameters(), self._innovation_site(axis))
 
     def catalog(self) -> FamilyCatalog | None:
         """Return the laws only the term's compilation knows.
@@ -1954,30 +2071,33 @@ class SpectralTerm(_ProcessTerm):
         tuple[ProgramStep, ...]
             Hyperparameters, innovations, coefficients, and contribution.
         """
-        block, name = self.block, self.name
-        sdgp, lscales = block.sites(self.prefix)
+        block, name, output = self.block, self.name, self.output
+        sdgp, _ = block.sites(self.prefix)
         log_spd = _log_spectral_density(
             block,
-            _call("log", _var(sdgp)),
-            tuple(
-                _var(lscales[0] if block.isotropic else lscales[d])
-                for d in range(block.dimension)
-            ),
+            _call("log", at_coordinate(sdgp, output)),
+            self._lengths(),
             tuple(_var(f"{name}_frequency_sq_{d + 1}") for d in range(block.dimension)),
         )
         return self._drawn(
             emission,
             (
-                self._innovations(name + "_Coordinate"),
-                _let(name + "_log_spd", log_spd),
+                *self._innovations(design_declarations(name, self.matrix)[0]),
+                _let(name + "_log_spd", over_output(output, log_spd)),
                 _let(
                     name + "_coefficients",
-                    _mul(
-                        _call(
-                            "exp",
-                            _mul(LetExprLiteral(value=0.5), _var(name + "_log_spd")),
+                    over_output(
+                        output,
+                        _mul(
+                            _call(
+                                "exp",
+                                _mul(
+                                    LetExprLiteral(value=0.5),
+                                    at_coordinate(name + "_log_spd", output),
+                                ),
+                            ),
+                            self._innovation(),
                         ),
-                        _var(name + "_z"),
                     ),
                 ),
             ),
@@ -2043,17 +2163,11 @@ class ExactProcessTerm(_ProcessTerm):
         Returns
         -------
         torch.Tensor
-            Values of the function at the training inputs.
+            Values of the function at the training inputs, then output
+            coordinates.
         """
-        block = self.block
-        sdgp, lscales = block.sites(self.prefix)
-        lengths = tuple(
-            draws[site].double()
-            for site in (lscales[:1] if block.isotropic else lscales)
-        )
-        return exact_values(
-            block, draws[sdgp].double(), lengths, draws[self.name + "_z"]
-        )
+        sdgp, lscales, innovations = self._parameters(draws)
+        return self._by_element(exact_values(self.block, sdgp, lscales, innovations))
 
     def effect(
         self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
@@ -2070,26 +2184,28 @@ class ExactProcessTerm(_ProcessTerm):
         Returns
         -------
         torch.Tensor
-            Contributions with shape ``(chain, draw, rows)``.
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
         """
         block = self.block
         values = self.coefficients(draws)
         design = torch.tensor(self.matrix)
-        if block.prediction_inputs is None:
-            return values @ design.T
-        if not design.any():
-            return values.new_zeros((*values.shape[:-1], len(design)))
-        sdgp, lscales = block.sites(self.prefix)
-        lengths = tuple(
-            draws[site].double()
-            for site in (lscales[:1] if block.isotropic else lscales)
-        )
-        mean, factor = conditional_moments(
-            block, values, draws[sdgp].double(), lengths, block.prediction_inputs
-        )
-        noise = torch.randn(mean.shape, generator=generator, dtype=torch.float64)
-        latent = mean + (factor @ noise[..., None])[..., 0]
-        return latent @ design.T
+        if block.prediction_inputs is not None:
+            if not design.any():
+                return values.new_zeros(
+                    (*values.shape[:2], len(design), *values.shape[3:])
+                )
+            sdgp, lscales, innovations = self._parameters(draws)
+            mean, factor = conditional_moments(
+                block,
+                exact_values(block, sdgp, lscales, innovations),
+                sdgp,
+                lscales,
+                block.prediction_inputs,
+            )
+            noise = torch.randn(mean.shape, generator=generator, dtype=torch.float64)
+            values = self._by_element(mean + (factor @ noise[..., None])[..., 0])
+        return torch.einsum("cdj...,nj->cdn...", values, design)
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -2097,13 +2213,42 @@ class ExactProcessTerm(_ProcessTerm):
         Returns
         -------
         tuple[AxisDecl, ...]
-            The coordinate axis and, for a specialized block, the axis of the
-            training inputs.
+            The coordinate axis, the axis of the training inputs of a
+            specialized block, and the flat axis of the innovations of a
+            vector of processes.
         """
         coordinates, _ = design_declarations(self.name, self.matrix)
+        training = self._training_axis()
+        return tuple(
+            dict.fromkeys((coordinates, training, self._innovation_axis(training)))
+        )
+
+    def _fresh_sites(self) -> tuple[SiteDecl, ...]:
+        """Declare the function at the fresh inputs of a specialized block.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            One vector per coordinate of the output axis; empty for a block
+            over its training inputs.
+        """
         if self.block.prediction_inputs is None:
-            return (coordinates,)
-        return (coordinates, self._training_axis())
+            return ()
+        name = self.name + "_coefficients"
+        return tuple(
+            SiteDecl(
+                name=site,
+                class_="zgp",
+                event_axis=self.name + "_Coordinate",
+                overridable=False,
+                fresh=True,
+            )
+            for site in (
+                (name,)
+                if self.output is None
+                else tuple(f"{name}_{index}" for index in range(self.output.size))
+            )
+        )
 
     def inputs(self) -> tuple[InputDecl, ...]:
         """List the data inputs the term reads.
@@ -2165,21 +2310,10 @@ class ExactProcessTerm(_ProcessTerm):
             The hyperparameters, the innovations at the training inputs, and
             the function at the fresh inputs of a specialized block.
         """
-        sites = (
-            *self.hyperparameters(),
-            self._site("_z", self._training_axis().name.removeprefix(self.name)),
-        )
-        if self.block.prediction_inputs is None:
-            return sites
         return (
-            *sites,
-            SiteDecl(
-                name=self.name + "_coefficients",
-                class_="zgp",
-                event_axis=self.name + "_Coordinate",
-                overridable=False,
-                fresh=True,
-            ),
+            *self.hyperparameters(),
+            self._innovation_site(self._training_axis()),
+            *self._fresh_sites(),
         )
 
     def catalog(self) -> FamilyCatalog | None:
@@ -2214,47 +2348,80 @@ class ExactProcessTerm(_ProcessTerm):
             Hyperparameters, innovations, kernel, factor, coefficients, and
             contribution.
         """
-        block, name = self.block, self.name
+        block, name, output = self.block, self.name, self.output
         sdgp, lscales = block.sites(self.prefix)
-        lengths = lscales[:1] if block.isotropic else lscales
+        scale = at_coordinate(sdgp, output)
         correlation = reduce(
             _mul,
             (
-                _correlation_expression(block.kernel, _var(distance), _var(lscale))
+                _correlation_expression(block.kernel, _var(distance), lscale)
                 for distance, lscale in zip(
-                    _distance_names(name, block), lengths, strict=True
+                    _distance_names(name, block),
+                    self._lengths()[:1] if block.isotropic else self._lengths(),
+                    strict=True,
                 )
             ),
         )
-        kernel = _add(
-            _mul(_mul(_var(sdgp), _var(sdgp)), correlation), _var(name + "_jitter")
+        kernel = _add(_mul(_mul(scale, scale), correlation), _var(name + "_jitter"))
+        values = _call(
+            "matmul", at_coordinate(name + "_factor", output), self._innovation()
         )
-        values = _call("matmul", _var(name + "_factor"), _var(name + "_z"))
         steps: list[ProgramStep] = [
-            self._innovations(_input_axis(name, block)),
-            _let(name + "_kernel", kernel),
-            _let(name + "_factor", _call("cholesky", _var(name + "_kernel"))),
+            *self._innovations(self._training_axis()),
+            _let(name + "_kernel", over_output(output, kernel)),
+            _let(
+                name + "_factor",
+                over_output(
+                    output, _call("cholesky", at_coordinate(name + "_kernel", output))
+                ),
+            ),
         ]
-        if block.prediction_inputs is None:
-            steps.append(_let(name + "_coefficients", values))
+        fresh = self._fresh_sites()
+        if not fresh:
+            steps.append(_let(name + "_coefficients", over_output(output, values)))
             return self._drawn(emission, tuple(steps))
+        steps.append(_let(name + "_values", over_output(output, values)))
         arguments = {
             "values": name + "_values",
             "scale": sdgp,
-            **{f"lscale_{d + 1}": site for d, site in enumerate(lengths)},
-            "anchor": name + "_anchor",
+            **{
+                f"lscale_{d + 1}": site
+                for d, site in enumerate(lscales[:1] if block.isotropic else lscales)
+            },
         }
-        steps.append(_let(name + "_values", values))
-        steps.append(
-            SampleStep(
-                vars=(name + "_coefficients",),
-                morphism=conditional_family_name(name),
-                args=tuple(
-                    DrawArgNamed(parameter=key, value=atom_to_draw_arg(value))
-                    for key, value in arguments.items()
-                ),
+        for index, site in enumerate(fresh):
+            bound = {}
+            for key, value in arguments.items():
+                bound[key] = value if output is None else f"{value}_{index}"
+                if output is not None:
+                    steps.append(
+                        _let(
+                            bound[key],
+                            _index(value, LetExprLiteral(value=index, integral=True)),
+                        )
+                    )
+            steps.append(
+                SampleStep(
+                    vars=(site.name,),
+                    morphism=conditional_family_name(name),
+                    args=tuple(
+                        DrawArgNamed(parameter=key, value=atom_to_draw_arg(value))
+                        for key, value in (bound | {"anchor": name + "_anchor"}).items()
+                    ),
+                )
             )
-        )
+        if output is not None:
+            steps.append(
+                _let(
+                    name + "_coefficients",
+                    _factor(
+                        ((COORDINATE, output.name),),
+                        cases=tuple(
+                            (index, _var(site.name)) for index, site in enumerate(fresh)
+                        ),
+                    ),
+                )
+            )
         return self._drawn(emission, tuple(steps))
 
 
@@ -2294,17 +2461,7 @@ def process_term(
     -------
     SpectralTerm or ExactProcessTerm
         The approximate or the exact process.
-
-    Raises
-    ------
-    ValueError
-        If the predictor has an output axis.
     """
-    if output is not None:
-        raise ValueError(
-            f"{label}: gp() terms are not supported in predictors with one "
-            "coefficient per response category"
-        )
     variant = ExactProcessTerm if block.exact else SpectralTerm
     return variant(
         label=label,
@@ -2314,6 +2471,7 @@ def process_term(
         matrix=matrix,
         columns=columns,
         scale_prior=scale_prior,
+        output=output,
     )
 
 

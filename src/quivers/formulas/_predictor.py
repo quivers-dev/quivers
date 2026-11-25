@@ -875,7 +875,7 @@ def group_term(
         ),
         group=term.group,
         slope=term.slope,
-        rows=row_map(formula, term, prefix),
+        rows=row_map(formula, term, prefix, vector=output is not None),
         column=term.column,
         membership=membership,
         covariate=covariate if membership is not None else None,

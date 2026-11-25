@@ -178,7 +178,7 @@ class SiteDecl(ValueModel):
 
     @property
     def index(self) -> str | None:
-        """Return the one axis the draw is plated over or takes its event from.
+        """Return the axis the draw is plated over, or takes its event from.
 
         Returns
         -------
@@ -188,12 +188,24 @@ class SiteDecl(ValueModel):
         Raises
         ------
         ValueError
-            If the site declares several axes.
+            If the site declares several plate axes.
         """
-        axes = (*self.axes, *((self.event_axis,) if self.event_axis else ()))
-        if len(axes) > 1:
-            raise ValueError(f"site {self.name!r} is drawn over several axes {axes}")
-        return axes[0] if axes else None
+        if len(self.axes) > 1:
+            raise ValueError(
+                f"site {self.name!r} is drawn over several axes {self.axes}"
+            )
+        return self.axes[0] if self.axes else self.event_axis
+
+    @property
+    def over(self) -> str | None:
+        """Return the event axis of a draw with a plate axis of its own.
+
+        Returns
+        -------
+        str or None
+            Axis name, or None when the index is the only axis.
+        """
+        return self.event_axis if self.axes else None
 
 
 class VariableDecl(ValueModel):
@@ -209,10 +221,16 @@ class VariableDecl(ValueModel):
     kind : {"intercept", "population", "special"}
         Part of brms's variable order.
     index : tuple[int, ...]
-        Trailing coordinates of the draws.
+        Coordinates of the draws, before the variable's own axes.
     derived : bool
         Whether the variable reads the term's coefficients, which the site
         determines, in place of the site.
+    event_rank : int
+        Number of axes of the variable after the indexed ones.
+    flat : int or None
+        Number of coordinates that each element of a flat site holds
+        consecutively, which the last index selects from; None for a site
+        with an axis per index.
     """
 
     name: str
@@ -220,6 +238,8 @@ class VariableDecl(ValueModel):
     kind: Literal["intercept", "population", "special"]
     index: tuple[int, ...] = ()
     derived: bool = False
+    event_rank: int = 0
+    flat: int | None = None
 
 
 class EffectSource(ValueModel):

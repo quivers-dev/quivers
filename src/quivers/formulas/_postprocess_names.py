@@ -26,7 +26,9 @@ from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import smooth_states
 from quivers.formulas._threshold_groups import LOCATION_SITE
 from quivers.formulas.formula import Formula
+from quivers.formulas._group_law import GroupMemberLaw
 from quivers.formulas._name_scope import (
+    coefficient_names,
     NameScope,
     level_coefficients,
     predictor_variables,
@@ -42,8 +44,8 @@ from quivers.formulas._variable_catalogue import (
     shrinkage_scale_site,
     shrinkage_variables,
     threshold_variables,
-    correlation_variables,
-    scale_variables,
+    CoefficientName,
+    group_variables,
 )
 from quivers.inference._posterior import draw_count
 
@@ -459,15 +461,17 @@ def single_variables(
             if target.class_.startswith("cutpoint")
             or target.class_ in {"Intercept", LOCATION_SITE}
         )
-    scale_members = {
-        member.scale.site: (law, member)
-        for law in plan.group_laws
-        for member in law.members
-    }
+
+    def member_names(member: GroupMemberLaw) -> tuple[CoefficientName, ...]:
+        """Name the components of one group-level coefficient."""
+        return coefficient_names(
+            scopes[member.prefix],
+            planned[member.prefix].output,
+            member.slope,
+            member.width if member.axis is not None else None,
+        )
+
     auxiliary: dict[str, torch.Tensor] = {}
-    scales: dict[str, torch.Tensor] = {}
-    terms: dict[str, str] = {}
-    by_scales: dict[str, list[list[list[str]]]] = {}
     block_correlations = {
         site for law in plan.group_laws for site in law.correlation.sites
     }
@@ -480,21 +484,6 @@ def single_variables(
             # The reported coefficients of transformed coordinates.
             consumed.add(target.site)
         elif target.class_ == "sd" and target.group is not None:
-            coef = target.coef or "Intercept"
-            term = (
-                f"{_infix(parameter)}{labels.get((parameter, coef), brms_rename(coef))}"
-            )
-            terms[target.site] = term
-            law, member = scale_members[target.site]
-            named_levels = scale_variables(
-                law, member, f"sd_{target.group}__{term}", value
-            )
-            for level_names in named_levels:
-                scales |= level_names
-            if member.scale.by_axis is not None:
-                by_scales.setdefault(target.group, []).append(
-                    [list(level_names) for level_names in named_levels]
-                )
             consumed.add(target.site)
         elif target.class_ == "cor" and target.site in block_correlations:
             continue
@@ -521,25 +510,17 @@ def single_variables(
                 labels=coordinate_labels(fit, target),
             )
             consumed.add(target.site)
-    # brms lists the standard deviations of a by-group level by level.
-    for coefficient_names in by_scales.values():
-        by_level = iter(
-            [
-                name
-                for level in zip(*coefficient_names, strict=True)
-                for names in level
-                for name in names
-            ]
-        )
-        grouped = {
-            name for levels in coefficient_names for names in levels for name in names
-        }
-        reordered: dict[str, torch.Tensor] = {}
-        for name in scales:
-            key = next(by_level) if name in grouped else name
-            reordered[key] = scales[key]
-        scales = reordered
-    correlations: dict[str, torch.Tensor] = {}
+    order = {target.site: index for index, target in enumerate(targets)}
+    scales, correlations = group_variables(
+        sorted(
+            plan.group_laws,
+            key=lambda law: min(
+                order.get(member.scale.site, len(order)) for member in law.members
+            ),
+        ),
+        member_names,
+        draws,
+    )
     for law in plan.group_laws:
         consumed.update(
             site
@@ -548,21 +529,6 @@ def single_variables(
             if site is not None
         )
         consumed.update(law.correlation.sites)
-        member_terms = []
-        for member in law.members:
-            parameter = (
-                member.prefix.removeprefix("dpar_").removeprefix("nlpar_").rstrip("_")
-                if member.prefix
-                else "mu"
-            )
-            member_terms.append(
-                terms.get(
-                    member.scale.site,
-                    f"{_infix(parameter)}"
-                    f"{labels.get((parameter, member.slope), brms_rename(member.slope))}",
-                )
-            )
-        correlations |= correlation_variables(law, member_terms, draws)
     named, read = shrinkage_variables(
         draws, consumed, shrinkage_scales(plan.module, draws, shrunk)
     )

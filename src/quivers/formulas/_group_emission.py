@@ -65,7 +65,6 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas.formula import _qvr_name
 from quivers.formulas._group_law import (
-    ByLKJCorrelation,
     GroupBlockLaw,
     GroupLevelLaw,
     GroupMemberLaw,
@@ -491,28 +490,121 @@ def _by_coordinate(
     )
 
 
-def _by_factors(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
-    """Bind the Cholesky factors of a block as one array over ``by`` levels.
+def _quotient(value: LetExprNode, count: int) -> LetExprNode:
+    """Divide a coordinate by a component count.
+
+    Parameters
+    ----------
+    value : LetExprNode
+        Coordinate.
+    count : int
+        Number of components.
+
+    Returns
+    -------
+    LetExprNode
+        Integer quotient, evaluated for a literal coordinate.
+    """
+    if count == 1:
+        return value
+    if isinstance(value, LetExprLiteral):
+        return _integer(int(value.value) // count)
+    return _div(value, _integer(count))
+
+
+def _remainder(value: LetExprNode, count: int) -> LetExprNode | None:
+    """Read the component of a coordinate.
+
+    Parameters
+    ----------
+    value : LetExprNode
+        Coordinate.
+    count : int
+        Number of components.
+
+    Returns
+    -------
+    LetExprNode or None
+        Integer remainder, evaluated for a literal coordinate; None for a
+        single component.
+    """
+    if count == 1:
+        return None
+    if isinstance(value, LetExprLiteral):
+        return _integer(int(value.value) % count)
+    return LetExprBinOp(op="%", left=value, right=_integer(count))
+
+
+def _cell(
+    law: GroupBlockLaw, at: LetExprNode, component: LetExprNode | None
+) -> LetExprNode | None:
+    """Locate the correlation factor of one level and component.
 
     Parameters
     ----------
     law : GroupBlockLaw
-        Block whose raw sites carry one correlation per ``by`` level.
-    steps : list[ProgramStep]
-        Program steps receiving the array.
+        Block with correlated coordinates.
+    at : LetExprNode
+        Grouping level.
+    component : LetExprNode or None
+        Component of the coordinate; None for a single component.
+
+    Returns
+    -------
+    LetExprNode or None
+        Position on the axis of the factors; None for one factor.
     """
-    correlation, by = law.correlation, law.level.by
-    if isinstance(correlation, ByLKJCorrelation) and by is not None:
+    by, correlation = law.level.by, law.correlation
+    assert isinstance(correlation, LKJCorrelation)
+    if by is None:
+        return component
+    return _flat(_index(by.input, at), correlation.components, component)
+
+
+def _by_cell(
+    law: GroupBlockLaw, value: Callable[[int, str], LetExprNode]
+) -> LetExprNode:
+    """Build an array over a block's correlation factors.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Block with several correlation factors.
+    value : Callable
+        Value of each factor, from its position and site.
+
+    Returns
+    -------
+    LetExprNode
+        One case per factor.
+    """
+    correlation = law.correlation
+    assert isinstance(correlation, LKJCorrelation)
+    assert correlation.cell_axis is not None
+    return _factor(
+        (("by", correlation.cell_axis),),
+        cases=tuple(
+            (index, value(index, site))
+            for index, site in enumerate(correlation.factors)
+        ),
+    )
+
+
+def _bind_factors(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
+    """Bind the Cholesky factors of a block as one array.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Block whose raw sites carry its correlation.
+    steps : list[ProgramStep]
+        Program steps receiving the array of several factors.
+    """
+    if len(law.correlation.sites) > 1:
         steps.append(
             _let(
                 _stem(law) + "_by_factors",
-                _factor(
-                    (("by", by.axis),),
-                    cases=tuple(
-                        (index, _var(site))
-                        for index, site in enumerate(correlation.by_sites)
-                    ),
-                ),
+                _by_cell(law, lambda index, site: _var(site)),
             )
         )
 
@@ -525,7 +617,7 @@ def _correlation_entry(
     Parameters
     ----------
     law : GroupBlockLaw
-        Block whose per-``by``-level factors, if any, are bound.
+        Block whose factors, if several, are bound.
     at : LetExprNode
         Grouping level.
     row, column : LetExprNode
@@ -534,14 +626,28 @@ def _correlation_entry(
     Returns
     -------
     LetExprNode or None
-        The entry, or None for independent coordinates.
+        The entry, zero between components, or None for independent
+        coordinates.
     """
-    correlation, by = law.correlation, law.level.by
-    if isinstance(correlation, LKJCorrelation):
-        return _index(correlation.site, row, column)
-    if isinstance(correlation, ByLKJCorrelation) and by is not None:
-        return _index(_stem(law) + "_by_factors", _index(by.input, at), row, column)
-    return None
+    correlation = law.correlation
+    if not isinstance(correlation, LKJCorrelation):
+        return None
+    count = correlation.components
+    of_row, of_column = _remainder(row, count), _remainder(column, count)
+    first, second = _quotient(row, count), _quotient(column, count)
+    cell = _cell(law, at, of_row)
+    if cell is None:
+        (site,) = correlation.factors
+        return _index(site, first, second)
+    entry = _index(_stem(law) + "_by_factors", cell, first, second)
+    if of_row is None or of_column is None:
+        return entry
+    return _call(
+        "select",
+        LetExprBinOp(op="==", left=of_row, right=of_column),
+        entry,
+        LetExprLiteral(value=0.0),
+    )
 
 
 def _identity_entry(row: LetExprNode, column: LetExprNode) -> LetExprNode:
@@ -594,8 +700,15 @@ def draw_group_block(
     draw_level(lens, level, statements, steps)
     if _owns_coordinate_axis(law):
         lens._append_finite_object(statements, _dimension(law), law.width)
-    for site in law.correlation.sites:
-        steps.append(_correlation_draw(lens, site, _dimension(law)))
+    correlation = law.correlation
+    if isinstance(correlation, LKJCorrelation):
+        lens._append_finite_object(statements, correlation.axis, correlation.size)
+        if correlation.cell_axis is not None:
+            lens._append_finite_object(
+                statements, correlation.cell_axis, len(correlation.factors)
+            )
+        for site in correlation.factors:
+            steps.append(_correlation_draw(lens, site, correlation.axis))
     lens._emitted_groups.append(law)
     for member in law.members:
         if member.mean is not None:
@@ -714,7 +827,7 @@ def _draw_levels(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
     scales, factor, zero = stem + "_scales", stem + "_factor", stem + "_zero"
     at, row, column = _var(LEVEL), _var("group_row"), _var("group_column")
     varies = level.by is not None or level.mixing is not None
-    _by_factors(law, steps)
+    _bind_factors(law, steps)
     entry = _correlation_entry(law, at, row, column)
     assert entry is not None
     square = (("group_row", dimension), ("group_column", dimension))
@@ -821,7 +934,7 @@ def _draw_support(
     at, scales = _var(LEVEL), stem + "_scales"
     carried, varies = "scale" in law.carried, law.level_column_factors
     if carried:
-        _by_factors(law, steps)
+        _bind_factors(law, steps)
         steps.append(
             _let(
                 scales,
@@ -1037,6 +1150,7 @@ def _bind_correlation(
         Reader of the correlated coordinates.
     """
     level, dimension, correlation = law.level, _dimension(law), law.correlation
+    assert isinstance(correlation, LKJCorrelation)
     stem, at, coordinate = _stem(law), _var(LEVEL), _var(COORDINATE)
     innovations, transformed = stem + "_innovations", stem + "_transformed"
     steps.append(
@@ -1050,27 +1164,45 @@ def _bind_correlation(
             ),
         )
     )
-    if isinstance(correlation, ByLKJCorrelation) and level.by is not None:
+    count = correlation.components
+    blocks = (innovations,)
+    if count > 1:
+        blocks = tuple(f"{innovations}_{part}" for part in range(count))
+        steps.extend(
+            _let(
+                block,
+                _factor(
+                    (("group_row", correlation.axis), (LEVEL, level.axis)),
+                    body=_index(
+                        innovations,
+                        _flat(_var("group_row"), count, _integer(part)),
+                        at,
+                    ),
+                ),
+            )
+            for part, block in enumerate(blocks)
+        )
+    cell = _cell(law, at, _remainder(coordinate, count))
+    if cell is None:
+        (site,) = correlation.factors
+        product: LetExprNode = _call("matmul", _var(site), _var(innovations))
+    else:
         products = stem + "_by_products"
         steps.append(
             _let(
                 products,
-                _factor(
-                    (("by", level.by.axis),),
-                    cases=tuple(
-                        (index, _call("matmul", _var(site), _var(innovations)))
-                        for index, site in enumerate(correlation.by_sites)
+                _by_cell(
+                    law,
+                    lambda index, site: _call(
+                        "matmul", _var(site), _var(blocks[index % count])
                     ),
                 ),
             )
         )
-        product: LetExprNode = _factor(
+        product = _factor(
             ((COORDINATE, dimension), (LEVEL, level.axis)),
-            body=_index(products, _index(level.by.input, at), coordinate, at),
+            body=_index(products, cell, _quotient(coordinate, count), at),
         )
-    else:
-        (site,) = correlation.sites
-        product = _call("matmul", _var(site), _var(innovations))
     steps.append(_let(transformed, product))
     return lambda member, component, position: _index(
         transformed, _position(member, component), position
@@ -1342,7 +1474,12 @@ def row_contribution(rows: RowMap, gathered: LetExprNode) -> LetExprNode:
         raise ValueError(f"unknown row map {type(rows).__name__}")
     if rows.covariate is None:
         return gathered
-    return _mul(gathered, _var(rows.covariate))
+    return _mul(
+        gathered,
+        _index(rows.covariate, _var(COMPONENT))
+        if rows.by_component
+        else _var(rows.covariate),
+    )
 
 
 def bind_rows(

@@ -56,7 +56,9 @@ from quivers.formulas._term import (
     InputDecl,
     OutputAxis,
     SiteDecl,
+    at_coordinate,
     column_rms,
+    over_output,
 )
 from quivers.formulas.formula import Formula, _qvr_name
 
@@ -317,7 +319,7 @@ class MonotonicRow(ValueModel):
     owned : tuple[Simplex, ...]
         Simplexes drawn with this column.
     output : OutputAxis or None
-        None; a column has one scalar coefficient.
+        Axis of the coefficient and the simplexes.
     """
 
     prefix: str
@@ -407,6 +409,7 @@ class MonotonicRow(ValueModel):
                         site=simplex.site,
                         kind="special",
                         index=index,
+                        event_rank=1,
                     )
                     for simplex in self.owned
                 ),
@@ -424,7 +427,7 @@ class MonotonicRow(ValueModel):
         Returns
         -------
         torch.Tensor
-            The coefficient.
+            The coefficient, by output coordinate.
         """
         return draws[coefficient_site(self.prefix, self.term)]
 
@@ -534,6 +537,9 @@ class MonotonicRow(ValueModel):
         tuple[SiteDecl, ...]
             The simplexes drawn with the column, then its coefficient.
         """
+        output = self.output
+        axes = (output.name,) if output is not None else ()
+        labels = output.labels if output is not None else ()
         return (
             *(
                 SiteDecl(
@@ -541,7 +547,9 @@ class MonotonicRow(ValueModel):
                     class_="simo",
                     default="Dirichlet([" + ", ".join(["1.0"] * simplex.width) + "])",
                     coef=simplex.label,
+                    axes=axes,
                     event_axis=simplex.axis,
+                    component_labels=labels,
                 )
                 for simplex in self.owned
             ),
@@ -550,6 +558,8 @@ class MonotonicRow(ValueModel):
                 class_="b",
                 default=self.prior,
                 coef=self.term.name,
+                axes=axes,
+                component_labels=labels,
                 divisor=self.scale,
             ),
         )
@@ -587,7 +597,7 @@ class MonotonicRow(ValueModel):
                 _call(
                     "matmul",
                     _var(_design_input(self.prefix, self.term, position)),
-                    _var(simplex.site),
+                    at_coordinate(simplex.site, self.output),
                 ),
             )
             for position, simplex in enumerate(self.simplexes)
@@ -599,9 +609,18 @@ class MonotonicRow(ValueModel):
                 _recycled_simplex(emission.draw(declared[simplex.site]), simplex)
                 for simplex in self.owned
             ),
-            _let(value, reduce(_mul, factors)),
+            _let(value, over_output(self.output, reduce(_mul, factors))),
             emission.draw(declared[coefficient]),
-            _let(coefficient + "_per_row", _mul(_var(coefficient), _var(value))),
+            _let(
+                coefficient + "_per_row",
+                over_output(
+                    self.output,
+                    _mul(
+                        at_coordinate(coefficient, self.output),
+                        at_coordinate(value, self.output),
+                    ),
+                ),
+            ),
         )
 
 
@@ -628,19 +647,9 @@ def monotonic_rows(
     -------
     tuple[MonotonicRow, ...]
         One term per column, in authored order.
-
-    Raises
-    ------
-    ValueError
-        If the predictor has an output axis.
     """
     if not formula.monotonic_terms:
         return ()
-    if output is not None:
-        raise ValueError(
-            "mo() terms are not supported in predictors that carry one "
-            "coefficient per response category"
-        )
     sites = simplex_sites(formula, prefix)
     rows = []
     drawn: set[str] = set()
@@ -658,6 +667,7 @@ def monotonic_rows(
                     if name not in drawn
                     and name in {factor.simplex for factor in term.factors}
                 ),
+                output=output,
             )
         )
         drawn.update(factor.simplex for factor in term.factors)

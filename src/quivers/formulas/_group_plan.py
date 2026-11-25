@@ -25,7 +25,6 @@ from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceB
 from quivers.formulas._group_emission import bind_rows
 from quivers.formulas._group_law import (
     ByLevels,
-    ByLKJCorrelation,
     CoefficientCorrelation,
     GroupBlockLaw,
     group_coefficients,
@@ -190,7 +189,7 @@ def cell_axis(prefix: str, group: str, slope: str) -> str:
     return f"{prefix}FormulaRandomCell_{_qvr_name(group)}_{_qvr_name(slope)}"
 
 
-def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
+def row_map(formula: Formula, term: RandomTerm, prefix: str, *, vector: bool) -> RowMap:
     """Build the map from one coefficient's levels to the response rows.
 
     Parameters
@@ -201,6 +200,9 @@ def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
         Group-level coefficient.
     prefix : str
         Predictor namespace.
+    vector : bool
+        Whether the predictor has an output axis, so that a covariate the
+        program computes has one value per coordinate.
 
     Returns
     -------
@@ -228,6 +230,7 @@ def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
                 for member in range(membership.size)
             ),
             covariate=prefix + _qvr_name(term.slope) if bound else None,
+            by_component=bound and vector,
         )
     if term.slope == "Intercept":
         return SingleLevelRows(index=index)
@@ -239,6 +242,7 @@ def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
             if term.column is not None
             else _qvr_name(term.slope)
         ),
+        by_component=term.column is None and vector,
     )
 
 
@@ -371,6 +375,7 @@ def _member_law(
     offset: int,
     raw_site: str | None,
     owns_site: bool,
+    vector: bool,
 ) -> GroupMemberLaw:
     """Build the law of one coefficient of a block.
 
@@ -392,6 +397,8 @@ def _member_law(
         Site carrying the member's coordinates.
     owns_site : bool
         Whether the site carries this member alone.
+    vector : bool
+        Whether the predictor has an output axis.
 
     Returns
     -------
@@ -416,7 +423,7 @@ def _member_law(
             if by is not None and component is not None
             else None,
         ),
-        rows=row_map(formula, term, prefix),
+        rows=row_map(formula, term, prefix, vector=vector),
         cell_axis=cell_axis(prefix, group, slope)
         if component is not None and owns_site
         else None,
@@ -429,8 +436,10 @@ def plan_joint_block(
     members: Sequence[tuple[str, RandomTerm, Formula]],
     axes: Sequence[tuple[str, int] | None],
     *,
+    vectors: Collection[str],
     basis: GroupCovarianceBasis | None,
     correlate: bool,
+    components: int,
     parameterization: Literal["centered", "noncentered"],
 ) -> GroupBlockLaw:
     """Build the law of one block emitted ahead of the predictors.
@@ -447,10 +456,15 @@ def plan_joint_block(
         its members' predictors declare.
     axes : Sequence[tuple[str, int] or None]
         Component axis and width of each member.
+    vectors : Collection[str]
+        Namespaces of the predictors with an output axis.
     basis : GroupCovarianceBasis or None
         Support basis of a known level covariance.
     correlate : bool
         Whether the members share a correlation identifier.
+    components : int
+        Number of components of every member that are independent of each
+        other; one when every coordinate of the block is correlated.
     parameterization : {"centered", "noncentered"}
         Coordinates of the raw sites.
 
@@ -479,11 +493,31 @@ def plan_joint_block(
     )
     level = level_law(group, len(members[0][2].group_levels[group]), option, covariance)
     correlation: CoefficientCorrelation = IndependentCoordinates()
-    if basis is None or (correlate and width > 1):
-        correlation = (
-            ByLKJCorrelation(by_sites=by_correlation_sites(identity, option))
+    size = width // components
+    if basis is None or (correlate and size > 1):
+        partitions = (
+            by_correlation_sites(identity, option)
             if option is not None and level.by is not None
-            else LKJCorrelation(site=f"cor_{token}")
+            else (f"cor_{token}",)
+        )
+        factors = tuple(
+            site if components == 1 else f"{site}_component{component + 1}"
+            for site in partitions
+            for component in range(components)
+        )
+        cells: str | None = None
+        if components > 1:
+            cells = f"FormulaCorrelationCell_{token}"
+        elif level.by is not None:
+            cells = level.by.axis
+        correlation = LKJCorrelation(
+            factors=factors,
+            axis=f"FormulaCorrelation_{token}"
+            if components == 1
+            else f"FormulaCoefficient_{token}",
+            size=size,
+            cell_axis=cells,
+            components=components,
         )
     centered = parameterization == "centered"
     support_site = f"group_covariance_{token}" if basis is not None else None
@@ -505,6 +539,7 @@ def plan_joint_block(
                 if owns_site
                 else shared_raw,
                 owns_site=owns_site,
+                vector=prefix in vectors,
             )
         )
         offset += laws[-1].width
@@ -528,6 +563,7 @@ def plan_inline_block(
     formula: Formula,
     axis: tuple[str, int] | None,
     *,
+    vector: bool,
     parameterization: Literal["centered", "noncentered"],
 ) -> GroupBlockLaw:
     """Build the law of one independent coefficient emitted with its predictor.
@@ -542,6 +578,8 @@ def plan_inline_block(
         Predictor owning the coefficient.
     axis : tuple[str, int] or None
         Component axis and width; None for a scalar coefficient.
+    vector : bool
+        Whether the predictor has an output axis.
     parameterization : {"centered", "noncentered"}
         Coordinates of the raw site.
 
@@ -582,6 +620,7 @@ def plan_inline_block(
                 offset=0,
                 raw_site=raw,
                 owns_site=True,
+                vector=vector,
             ),
         ),
         correlation=IndependentCoordinates(),
@@ -669,7 +708,12 @@ def check_names(laws: Iterable[GroupBlockLaw]) -> None:
             if law.coordinate_axis in {member.axis for member in law.members}
             else law.coordinate_axis
         )
-        own((*law.correlation.sites, shared), block)
+        correlation = law.correlation
+        own((*correlation.sites, shared), block)
+        if isinstance(correlation, LKJCorrelation):
+            own((correlation.axis,), block)
+            if correlation.components > 1:
+                own((correlation.cell_axis,), block)
         level = law.level
         factor = f"the grouping factor {law.group!r}"
         own((level.axis,), factor)
@@ -783,7 +827,16 @@ def plan_group_blocks(
             for prefix, term in members
         ]
         width = sum(axis[1] if axis is not None else 1 for axis in axes)
-        if width < 2 and group not in covariances:
+        # The parameters of a vector-valued predictor are independent unless
+        # a term correlates them by an identifier.
+        components = (
+            component_axes[members[0][0]][1]
+            if all(
+                prefix in component_axes and not term.shared for prefix, term in members
+            )
+            else 1
+        )
+        if width // components < 2 and group not in covariances:
             continue
         if group in covariances and group not in bases:
             bases[group] = covariances[group].basis(levels[group])
@@ -796,8 +849,10 @@ def plan_group_blocks(
                     for prefix, term in members
                 ],
                 axes,
+                vectors=component_axes,
                 basis=bases.get(group),
                 correlate=any(term.correlation_id is not None for _, term in members),
+                components=components,
                 parameterization=parameterization,
             )
         )
@@ -812,6 +867,7 @@ def plan_group_blocks(
                     term,
                     formula,
                     member_axis(prefix, term, component_axes, transition_axis),
+                    vector=prefix in component_axes,
                     parameterization=parameterization,
                 )
             )

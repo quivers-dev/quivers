@@ -140,7 +140,6 @@ from quivers.formulas._postprocess_methods import JointPostprocess
 # brms coefficient renaming shared with single fits.
 from quivers.formulas._postprocess_names import (
     _ordinal_thresholds,
-    brms_rename,
     coefficient_labels,
     name_scope,
     coordinate_labels,
@@ -150,8 +149,10 @@ from quivers.formulas._postprocess_names import (
 
 # One catalogue of brms variable names shared with single-response fits.
 from quivers.formulas._term import OutputAxis
+from quivers.formulas._group_law import GroupMemberLaw
 from quivers.formulas._name_scope import (
     NameScope,
+    coefficient_names,
     level_coefficients,
     predictor_variables,
 )
@@ -164,8 +165,8 @@ from quivers.formulas._variable_catalogue import (
     scalar_coordinates,
     shrinkage_variables,
     threshold_variables,
-    correlation_variables,
-    scale_variables,
+    CoefficientName,
+    group_variables,
 )
 from quivers.formulas._threshold_groups import LOCATION_SITE
 
@@ -656,7 +657,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             brms-named draws.
         """
         result: dict[str, torch.Tensor] = {}
-        terms: dict[str, str] = {}
         # brms omits the response from names of a one-response model.
         joint = len(self.response_names) > 1
         # Coefficient labels as single fits name them:
@@ -667,28 +667,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         }
 
         special: dict[tuple[str, str, str], str] = {}
-
-        def coefficient_label(resp: str, parameter: str, coef: str) -> str:
-            """Return brms's label of one coefficient of a response.
-
-            Parameters
-            ----------
-            resp : str
-                Response label.
-            parameter : str
-                ``mu``, a distributional, or a nonlinear parameter.
-            coef : str
-                Design column or varying coefficient name.
-
-            Returns
-            -------
-            str
-                The renamed R column label; an ``mi()`` or ``me()`` column,
-                also as a varying slope, takes brms's special-term spelling.
-            """
-            if (resp, parameter, coef) in special:
-                return special[(resp, parameter, coef)]
-            return renamed[resp].get((parameter, coef), brms_rename(coef))
 
         def tag(resp: str) -> str:
             """Return the response part of a brms name.
@@ -724,8 +702,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
         consumed: set[str] = set()
         shrunk: dict[str, str] = {}
-        scopes: dict[tuple[str, str], NameScope] = {}
-        outputs: dict[tuple[str, str], OutputAxis | None] = {}
+        scopes: dict[str, NameScope] = {}
+        outputs: dict[str, OutputAxis | None] = {}
         for resp, response in self.emission.responses.items():
             plan = self._response_fit(resp).prediction_plan
             assert plan is not None
@@ -735,7 +713,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 if site.startswith(response.prefix)
             }
             planned = {predictor.prefix: predictor for predictor in plan.predictors}
-            outputs |= {(resp, key): item.output for key, item in planned.items()}
+            outputs |= {
+                response.prefix + key: item.output for key, item in planned.items()
+            }
             if resp in thresholds:
                 # brms reports the thresholds in place of the intercept and
                 # the native threshold coordinates.
@@ -760,7 +740,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                         if (owner, name) == (resp, parameter)
                     },
                 )
-                scopes[(resp, prefix)] = scope
+                scopes[response.prefix + prefix] = scope
                 named = predictor_variables(
                     planned[prefix].terms,
                     scope.with_(
@@ -773,13 +753,33 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     response.prefix + site: name for site, name in named.sites.items()
                 }
                 consumed |= {response.prefix + site for site in named.read}
+
+        def member_names(member: GroupMemberLaw) -> tuple[CoefficientName, ...]:
+            """Name the components of one group-level coefficient."""
+            return coefficient_names(
+                scopes[member.prefix],
+                outputs[member.prefix],
+                member.slope,
+                member.width if member.axis is not None else None,
+            )
+
         block_laws = self.emission.group_laws
         grouped = {site for law in block_laws for site in law.correlation.sites}
-        scale_members = {
-            member.scale.site: (law, member)
-            for law in block_laws
-            for member in law.members
+        order = {
+            target.site: index
+            for index, target in enumerate(self.emission.prior_targets)
         }
+        scales, correlations = group_variables(
+            sorted(
+                block_laws,
+                key=lambda law: min(
+                    order.get(member.scale.site, len(order)) for member in law.members
+                ),
+            ),
+            member_names,
+            draws,
+        )
+        result |= scales | correlations
         for target in self.emission.prior_targets:
             if target.site not in draws:
                 continue
@@ -808,15 +808,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 # The reported coefficients of transformed coordinates.
                 continue
             elif target.class_ == "sd" and resp is not None:
-                term = self._term(target, coefficient_label)
-                terms[target.site] = term
-                law, member = scale_members[target.site]
-                for level in scale_variables(
-                    law, member, f"sd_{target.group}__{term}", value
-                ):
-                    result |= level
+                # The standard deviations of the group blocks.
+                continue
             elif target.class_ == "cor" and target.site == "rescor":
-                result |= correlation_pairs("rescor", self.response_names, value)
+                result |= correlation_pairs(
+                    "rescor", self.response_names, value @ value.transpose(-1, -2)
+                )
             elif target.dpar == target.site and resp is None:
                 # The degrees of freedom that correlated responses share.
                 result[target.site] = value
@@ -824,7 +821,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 result |= correlation_pairs(
                     f"corme_{resp}" if joint else "corme",
                     target.component_labels,
-                    value,
+                    value @ value.transpose(-1, -2),
                 )
             elif target.class_ in {"meanme", "sdme"} and resp is not None:
                 if target.coef is not None:
@@ -857,12 +854,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     if resp is not None
                     else tuple(str(label) for label in target.component_labels),
                 )
-        for law in block_laws:
-            result |= correlation_variables(
-                law,
-                [terms.get(member.scale.site, member.slope) for member in law.members],
-                draws,
-            )
         for label, spec in self.missing_specs.items():
             if spec.standard_error is not None and f"mi_{label}__truth" in draws:
                 values = draws[f"mi_{label}__truth"]
@@ -882,8 +873,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     continue
                 for item in level_coefficients(
                     self._random(draws, predictor, response.prefix + prefix),
-                    scopes[(resp, prefix)],
-                    outputs[(resp, prefix)],
+                    scopes[response.prefix + prefix],
+                    outputs[response.prefix + prefix],
                 ):
                     for index, level in enumerate(levels[item.group]):
                         result[item.variable(level)] = item.values[:, :, index]
@@ -964,35 +955,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         if target.dpar not in (None, "mu"):
             return f"dpar_{target.dpar}_"
         return ""
-
-    def _term(self, target: PriorTarget, label: Callable[[str, str, str], str]) -> str:
-        """Name a varying coefficient as brms does inside sd and cor names.
-
-        Parameters
-        ----------
-        target : PriorTarget
-            A group standard-deviation target.
-        label : Callable[[str, str, str], str]
-            brms's coefficient label of ``(response, parameter, coefficient)``.
-
-        Returns
-        -------
-        str
-            ``<resp>_<coef>``, ``<dpar>_<resp>_<coef>``, or
-            ``<resp>_<nlpar>_<coef>``.
-        """
-        assert target.response is not None
-        coef = label(
-            target.response,
-            target.nlpar or target.dpar or "mu",
-            target.coef or "Intercept",
-        )
-        resp = f"{target.response}_" if len(self.response_names) > 1 else ""
-        if target.nlpar is not None:
-            return f"{resp}{target.nlpar}_{coef}"
-        if target.dpar not in (None, "mu"):
-            return f"{target.dpar}_{resp}{coef}"
-        return f"{resp}{coef}"
 
     def _predictor(self, resp: str, parameter: str) -> tuple[Formula, str]:
         """Locate one response predictor and its namespaced coefficient prefix.

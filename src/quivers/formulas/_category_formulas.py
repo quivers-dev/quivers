@@ -217,8 +217,6 @@ def category_distributional(
     labels: tuple[str, ...],
     authored: str,
     distributional: Mapping[str, _Value] | None,
-    *,
-    every_category: bool = False,
 ) -> dict[str, _Value | str] | None:
     """Copy the main formula to every free category without a formula.
 
@@ -232,17 +230,12 @@ def category_distributional(
         Authored main formula.
     distributional : Mapping or None
         Authored distributional formulas.
-    every_category : bool
-        Whether the main formula holds terms with scalar coefficients only
-        (see :func:`requires_category_predictors`), so that every free
-        category takes its own copy even without an authored ``mu<c>``.
 
     Returns
     -------
     dict or None
         The distributional formulas, completed with every ``mu<c>`` when any
-        per-category formula was given or ``every_category`` holds; otherwise
-        unchanged.
+        per-category formula was given; otherwise unchanged.
 
     Raises
     ------
@@ -250,11 +243,11 @@ def category_distributional(
         If a ``mu<c>`` names no free category (the reference category has no
         predictor).
     """
-    if distributional is None and not every_category:
+    if distributional is None:
         return None
-    result: dict[str, _Value | str] = dict(distributional or {})
+    result: dict[str, _Value | str] = dict(distributional)
     requested = {name for name in result if is_category_parameter(family, name)}
-    if not requested and not every_category:
+    if not requested:
         return result
     names = {name for _, name in free_categories(family, labels)}
     unknown = requested - names
@@ -267,64 +260,6 @@ def category_distributional(
     for _, name in free_categories(family, labels):
         result.setdefault(name, f"{name} ~ {rhs}")
     return result
-
-
-def requires_category_predictors(formula: Formula) -> bool:
-    """Decide whether a predictor has terms with scalar coefficients only.
-
-    brms gives each category its own monotonic simplexes, Gaussian process
-    hyperparameters, multi-membership coefficients and ``gr()`` options, so a
-    predictor holding one of these is emitted once per free category through
-    the ordinary scalar predictor rather than with one coefficient vector over
-    the categories.
-
-    Parameters
-    ----------
-    formula : Formula
-        Evaluated predictor.
-
-    Returns
-    -------
-    bool
-        True when the predictor has an ``mo()``, ``gp()`` or ``mm()`` term or a
-        ``gr()`` option ``by``, ``dist`` or ``pw``.
-    """
-    return bool(
-        formula.monotonic_terms
-        or any(term.gp is not None for term in formula.design_terms)
-        or formula.grouping.memberships
-        or formula.grouping.options
-    )
-
-
-def component_valued_prefixes(
-    family: Family, distributional: Mapping[str, _Value]
-) -> frozenset[str]:
-    """Name the predictors emitted with one coefficient per response category.
-
-    Parameters
-    ----------
-    family : Family
-        Response family.
-    distributional : Mapping
-        Distributional predictors by parameter name.
-
-    Returns
-    -------
-    frozenset[str]
-        Coefficient prefixes of the component-valued predictors: the location
-        when no category has its own formula, and the logistic-normal scale
-        predictor. Empty for a scalar response.
-    """
-    if family.response is None:
-        return frozenset()
-    prefixes = set()
-    if not any(is_category_parameter(family, name) for name in distributional):
-        prefixes.add("")
-    scale = family.component_scale
-    if scale is not None and scale.name in distributional:
-        prefixes.add(f"dpar_{scale.name}_")
-    return frozenset(prefixes)
 
 
 def main_without_terms(formula: Formula) -> Formula:
@@ -353,12 +288,10 @@ __all__ = [
     "check_scale_formulas",
     "category_distributional",
     "category_parameter",
-    "component_valued_prefixes",
     "free_categories",
     "free_scales",
     "is_category_parameter",
     "is_scale_parameter",
     "main_without_terms",
-    "requires_category_predictors",
     "scale_parameter",
 ]

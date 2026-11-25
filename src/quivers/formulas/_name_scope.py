@@ -19,6 +19,7 @@ from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.formulas._smooth import SmoothState
 from quivers.formulas._term import OutputAxis, Term, VariableDecl
 from quivers.formulas._variable_catalogue import (
+    CoefficientName,
     SmoothNames,
     brms_rename,
     scalar_coordinates,
@@ -158,8 +159,11 @@ def named_variables(
         value = (
             term.coefficients(draws) if declaration.derived else draws[declaration.site]
         )
+        if declaration.flat is not None:
+            value = value.unflatten(-1, (-1, declaration.flat))
         if declaration.index:
-            value = value[(..., *declaration.index)]
+            event = (slice(None),) * declaration.event_rank
+            value = value[(..., *declaration.index, *event)]
         result.append((declaration, scalar_coordinates(declaration.name, value)))
     return tuple(result)
 
@@ -216,17 +220,26 @@ def predictor_variables(
     intercepts: set[str] = set()
     sites: dict[str, str] = {}
     read: set[str] = set()
-    for term in terms:
-        for declaration, values in named_variables(term, scope, draws):
-            read.add(declaration.site)
-            if declaration.kind == "special":
-                special |= values
-                continue
-            population |= values
-            if declaration.kind == "intercept":
-                intercepts |= values.keys()
-            if not declaration.index and declaration.name:
-                sites[declaration.site] = declaration.name.partition("_")[2]
+    named = [
+        (
+            declaration.index[-1] if term.output and term.output.parameters else 0,
+            declaration,
+            values,
+        )
+        for term in terms
+        for declaration, values in named_variables(term, scope, draws)
+    ]
+    # brms lists the variables of a vector of parameters parameter by parameter.
+    for _, declaration, values in sorted(named, key=lambda item: item[0]):
+        read.add(declaration.site)
+        if declaration.kind == "special":
+            special |= values
+            continue
+        population |= values
+        if declaration.kind == "intercept":
+            intercepts |= values.keys()
+        if not declaration.index and declaration.name:
+            sites[declaration.site] = declaration.name.partition("_")[2]
     return TermVariables(
         population=population,
         special=special,
@@ -243,18 +256,14 @@ class LevelCoefficient(ValueModel):
     ----------
     group : str
         Grouping factor.
-    infix : str
-        Parameter and response part of the name.
-    label : str
-        Coefficient label; a coefficient indexed by position ends in its
-        index.
+    coefficient : CoefficientName
+        Its name; a coefficient indexed by position ends in its index.
     values : torch.Tensor
         Draws with chain, draw, and level axes.
     """
 
     group: str
-    infix: str
-    label: str
+    coefficient: CoefficientName
     values: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     @property
@@ -266,7 +275,7 @@ class LevelCoefficient(ValueModel):
         str
             The parameter, the response, and the coefficient.
         """
-        return self.infix + self.label
+        return self.coefficient.name
 
     def variable(self, level: str) -> str:
         """Return brms's variable of one level.
@@ -281,8 +290,54 @@ class LevelCoefficient(ValueModel):
         str
             ``r_<group>__<parameter>[<level>,<coefficient>]``.
         """
-        owner = f"__{self.infix.rstrip('_')}" if self.infix else ""
-        return f"r_{self.group}{owner}[{level},{self.label}]"
+        infix = self.coefficient.infix.rstrip("_")
+        owner = f"__{infix}" if infix else ""
+        return f"r_{self.group}{owner}[{level},{self.coefficient.label}]"
+
+
+def coefficient_names(
+    scope: NameScope, output: OutputAxis | None, coefficient: str, width: int | None
+) -> tuple[CoefficientName, ...]:
+    """Name the components of one group-level coefficient.
+
+    Parameters
+    ----------
+    scope : NameScope
+        Names of the coefficient's predictor.
+    output : OutputAxis or None
+        Axis of the predictor.
+    coefficient : str
+        Design label of the coefficient.
+    width : int or None
+        Number of components; None for a scalar coefficient.
+
+    Returns
+    -------
+    tuple[CoefficientName, ...]
+        One name per component. The
+        components of a vector of parameters have the labels of the scalar
+        coefficient in each parameter, and others their position.
+    """
+    label = scope.special.get(coefficient)
+    if label is None:
+        label = (
+            scope.label(coefficient)
+            if coefficient in scope.labels
+            else brms_rename(coefficient)
+        )
+    if width is None:
+        return (CoefficientName(infix=scope.infix, label=label),)
+    if output is not None and len(output.parameters) == width:
+        return tuple(
+            CoefficientName(
+                infix=scope.coordinate(name).infix, label=label, parameter=index
+            )
+            for index, name in enumerate(output.parameters)
+        )
+    return tuple(
+        CoefficientName(infix=scope.infix, label=f"{label}[{index + 1}]")
+        for index in range(width)
+    )
 
 
 def level_coefficients(
@@ -310,28 +365,20 @@ def level_coefficients(
     result: list[LevelCoefficient] = []
     for group, coefficients in varying.items():
         for coefficient, values in coefficients.items():
-            label = scope.special.get(coefficient, scope.label(coefficient))
-            if coefficient not in scope.labels and coefficient not in scope.special:
-                label = brms_rename(coefficient)
-            if values.ndim == 3:
-                result.append(
-                    LevelCoefficient(
-                        group=group, infix=scope.infix, label=label, values=values
-                    )
-                )
-                continue
-            parts = (
-                [(scope.coordinate(name).infix, label) for name in output.parameters]
-                if output is not None and len(output.parameters) == values.shape[-1]
-                else [
-                    (scope.infix, f"{label}[{index + 1}]")
-                    for index in range(values.shape[-1])
-                ]
+            scalar = values.ndim == 3
+            names = coefficient_names(
+                scope, output, coefficient, None if scalar else values.shape[-1]
             )
+            parts = (values,) if scalar else values.unbind(-1)
             result.extend(
-                LevelCoefficient(
-                    group=group, infix=infix, label=name, values=values[..., index]
-                )
-                for index, (infix, name) in enumerate(parts)
+                LevelCoefficient(group=group, coefficient=name, values=part)
+                for name, part in zip(names, parts, strict=True)
             )
-    return tuple(result)
+    # brms lists the coefficients of a factor parameter by parameter.
+    groups = list(varying)
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (groups.index(item.group), item.coefficient.parameter),
+        )
+    )

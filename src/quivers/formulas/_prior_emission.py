@@ -503,14 +503,12 @@ def build_prior_targets(
         add(site, role, group=group, coef=coef, lower=lower)
     for law in laws:
         correlation = law.correlation
-        if (
-            not isinstance(correlation, LKJCorrelation)
-            or correlation.site not in samples
-        ):
+        if not isinstance(correlation, LKJCorrelation) or law.level.by is not None:
             continue
         common = {tuple(scopes[member.prefix].items()) for member in law.members}
         scope = dict(next(iter(common))) if len(common) == 1 else {}
-        add(correlation.site, "cor", group=law.group, **scope)
+        for site in correlation.factors:
+            add(site, "cor", group=law.group, **scope)
     for auxiliary in family.aux_params:
         default = draw(auxiliary.name, auxiliary.prior)
         support = semantic_family(default.morphism).support

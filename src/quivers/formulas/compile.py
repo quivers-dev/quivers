@@ -66,6 +66,7 @@ import numpy as np
 import torch
 
 from quivers.dsl.ast_nodes import (
+    AxisSpec,
     ExportDecl,
     ExprIdent,
     LetExprBinOp,
@@ -114,7 +115,6 @@ from quivers.formulas._category_emission import (
     append_scale_predictors,
 )
 from quivers.formulas._category_formulas import (
-    component_valued_prefixes,
     is_category_parameter,
     is_scale_parameter,
     main_without_terms,
@@ -3090,6 +3090,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         index = TypeName(name=site.index) if site.index is not None else None
         result = self._prior_draw(site.name, site.default, index=index)
+        if site.over is not None:
+            result = result.with_(
+                axes=AxisSpec(over=(site.over,)),
+                options=(OptionEntry(key="over", value=OptionName(value=site.over)),),
+            )
         if site.name in self._prior_steps or site.name in self._user_priors:
             return result
         if site.multiplier is not None:
@@ -3257,24 +3262,29 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         dict[str, OutputAxis]
             Axes by predictor namespace; empty for a scalar response.
         """
-        prefixes = component_valued_prefixes(self._family, self._distributional)
-        if not prefixes:
+        axis = (
+            response_axis(self._family, self._component_labels(formula))
+            if self._family.response is not None
+            else None
+        )
+        if axis is None:
             return {}
-        axis = response_axis(self._family, self._component_labels(formula))
-        assert axis is not None
+        axes: dict[str, OutputAxis] = {}
+        if not any(
+            is_category_parameter(self._family, name) for name in self._distributional
+        ):
+            axes[""] = axis
         scale = self._family.component_scale
-        return {
-            prefix: axis.with_(
+        if scale is not None and scale.name in self._distributional:
+            prefix = f"dpar_{scale.name}_"
+            axes[prefix] = axis.with_(
                 name=prefix + axis.name,
-                parameters=axis.parameters
-                if not prefix or scale is None
-                else tuple(
+                parameters=tuple(
                     scale.name + parameter.removeprefix("mu")
                     for parameter in axis.parameters
                 ),
             )
-            for prefix in prefixes
-        }
+        return axes
 
     def _transition_axis(self, formula: Formula) -> OutputAxis | None:
         """Read the axis of category-specific coefficients.
