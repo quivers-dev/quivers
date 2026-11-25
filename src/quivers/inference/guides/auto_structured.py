@@ -166,8 +166,12 @@ class AutoStructured(Guide):
         the string `"linear"` (build a `_LinearDependency` from the
         parent's unconstrained flat draw to a shift on the child's
         unconstrained flat location) or a user-supplied callable
-        with the same signature. Every dependency must reference a
-        site strictly upstream in declaration order.
+        with the same signature, mapping one draw of shape
+        ``(parent_flat,)`` to one shift of shape ``(child_flat,)``.
+        The guide applies every dependency to one run's draw at a time
+        through `torch.func.vmap`, so a callable must be built from
+        torch operations that `vmap` supports. Every dependency must
+        reference a site strictly upstream in declaration order.
     init_scale : float
         Initial scale of every `"normal"` and `"mvn"` marginal.
         Default ``0.1``.
@@ -342,8 +346,78 @@ class AutoStructured(Guide):
             result[n] = joint[off : off + length]
         return result
 
+    def _shift(
+        self,
+        site: LatentSite,
+        z_flat_by_site: dict[str, torch.Tensor],
+        runs: int,
+    ) -> torch.Tensor:
+        """The location shift of a site from its parents' draws, per run.
+
+        Each dependency maps one parent draw, shape ``(parent_flat,)``,
+        to one shift, shape ``(child_flat,)``. It is applied to every
+        run's parent draw separately through `torch.func.vmap`, so run
+        ``b``'s shift depends on run ``b``'s parents alone.
+
+        Parameters
+        ----------
+        site : LatentSite
+            The child site.
+        z_flat_by_site : dict[str, torch.Tensor]
+            The flat unconstrained draws of the sites upstream of
+            ``site``, each of shape ``(runs, flat_length)``.
+        runs : int
+            The number of runs.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(runs, child_flat)``; zero for a site without
+            dependencies.
+
+        Raises
+        ------
+        ValueError
+            If a dependency does not map a parent draw to one shift of
+            the child's flat length.
+        """
+        loc = self._loc(site.name)
+        shift = loc.new_zeros(runs, _site_flat_length(site))
+        if site.name not in self.deps:
+            return shift
+        for parent, dep_mod in self.deps[site.name].items():
+            parent_draws = z_flat_by_site[parent]
+            contribution = torch.func.vmap(dep_mod)(parent_draws)
+            if tuple(contribution.shape) != tuple(shift.shape):
+                raise ValueError(
+                    f"AutoStructured: the dependency {parent!r} -> {site.name!r} "
+                    f"maps a draw of shape {tuple(parent_draws.shape[1:])} to a "
+                    f"shift of shape {tuple(contribution.shape[1:])}; the child "
+                    f"takes ({_site_flat_length(site)},)"
+                )
+            shift = shift + contribution
+        return shift
+
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Ancestral reparameterized draw."""
+        """Ancestral reparameterized draw, one shared by every run.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Per-site constrained values: ``(B, *constrained_shape)`` for
+            a site that is not plated, the same draw in every run, and
+            `LatentSite.constrained_shape` for a plate site.
+
+        Raises
+        ------
+        RuntimeError
+            If a site has a conditional kind outside the allowed ones.
+        """
         batch = x.shape[0]
         # First sample the shared MVN block (if any) in flat form.
         if self._mvn_names:
@@ -352,106 +426,102 @@ class AutoStructured(Guide):
             mvn_flat = {}
         # Then walk sites in declaration order, sampling each per its
         # marginal family, offsetting the location by every incoming
-        # dependency's contribution.
+        # dependency's contribution. The draw is one run's, held behind
+        # a run axis of one so the dependencies see it as `log_prob`
+        # does.
         result: dict[str, torch.Tensor] = {}
         z_flat_by_site: dict[str, torch.Tensor] = {}
         for site in self._registry.sites.values():
             name = site.name
             kind = self._conditionals[name]
-            loc = self._loc(name)
-            # Dependency shift, if any.
-            shift_flat = torch.zeros(_site_flat_length(site), device=loc.device)
-            if name in self.deps:
-                for parent, dep_mod in self.deps[name].items():
-                    parent_flat = z_flat_by_site[parent]
-                    shift_flat = shift_flat + dep_mod(parent_flat)
-            shift = shift_flat.reshape(site.unconstrained_shape)
-            shifted_loc = loc + shift
+            shift = self._shift(site, z_flat_by_site, 1)
+            shifted_loc = self._loc(name).reshape(1, -1) + shift
             if kind == "delta":
-                z_flat = shifted_loc.reshape(-1)
+                z_flat = shifted_loc
             elif kind == "normal":
-                scale = self._normal_scale(name)
-                z_shaped = D.Normal(shifted_loc, scale).rsample()
-                z_flat = z_shaped.reshape(-1)
+                scale = self._normal_scale(name).reshape(1, -1)
+                z_flat = D.Normal(shifted_loc, scale).rsample()
             elif kind == "mvn":
-                z_flat = mvn_flat[name] + shift_flat
+                z_flat = mvn_flat[name].unsqueeze(0) + shift
             else:
                 raise RuntimeError(
                     f"AutoStructured.rsample: unhandled conditional kind {kind!r}"
                 )
             z_flat_by_site[name] = z_flat
-            v = _push_through_bijector(site, z_flat, batch)
-            result[name] = v
+            result[name] = _push_through_bijector(site, z_flat[0], batch)
         return result
 
     # ------------------------------------------------------------------
     # Log-density
     # ------------------------------------------------------------------
 
-    def _v_to_unconstrained(
-        self, site: LatentSite, v: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Invert the bijector and return `(z_shaped, log|det J^{-1}|)`
-        at the natural site shape."""
-        if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
-            v = v[0]
-        return site.unconstrain(v)
-
     def log_prob(
         self,
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Pushforward log-density at the supplied constrained sites."""
-        batch = x.shape[0]
-        z_flat_by_site: dict[str, torch.Tensor] = {}
-        total_scalar = torch.zeros((), device=x.device)
-        # First invert every bijector and accumulate the Jacobian terms.
-        for site in self._registry.sites.values():
-            name = site.name
-            if name not in sites:
-                raise KeyError(f"AutoStructured.log_prob: missing site {name!r}")
-            z_shaped, log_det = self._v_to_unconstrained(site, sites[name])
-            z_flat_by_site[name] = z_shaped.reshape(-1)
-            total_scalar = total_scalar + log_det.reshape(-1).sum()
-        # Next add each site's marginal log-density.
+        """Pushforward log-density of each run's constrained values.
+
+        For run ``b``, every site's value is inverted through its
+        bijector (`LatentRegistry.unconstrain_runs`), each ``"normal"``
+        site is scored under its Normal at its location shifted by run
+        ``b``'s parent draws, the ``"mvn"`` sites are scored jointly, and
+        every site's inverse-bijector term at run ``b``'s value is
+        added. A ``"delta"`` site contributes its bijector term only.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+        sites : dict[str, torch.Tensor]
+            Constrained values of every latent site, each one per run or
+            one the runs share (`Guide.log_prob`).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(B,)``, one log density per run.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
+        """
+        runs = int(x.shape[0])
+        coordinates = self._registry.unconstrain_runs(sites, runs)
+        z_flat_by_site = {
+            site.name: coordinates.unconstrained[site.name].reshape(
+                runs, _site_flat_length(site)
+            )
+            for site in self._registry.sites.values()
+        }
+        total = coordinates.total_log_abs_det()
+        joint_loc_parts: list[torch.Tensor] = []
+        joint_z_parts: list[torch.Tensor] = []
         for site in self._registry.sites.values():
             name = site.name
             kind = self._conditionals[name]
             if kind == "delta":
                 continue
-            loc = self._loc(name)
-            shift_flat = torch.zeros(_site_flat_length(site), device=x.device)
-            if name in self.deps:
-                for parent, dep_mod in self.deps[name].items():
-                    shift_flat = shift_flat + dep_mod(z_flat_by_site[parent])
-            shift = shift_flat.reshape(site.unconstrained_shape)
-            shifted_loc = loc + shift
+            shifted_loc = self._loc(name).reshape(1, -1) + self._shift(
+                site, z_flat_by_site, runs
+            )
             if kind == "normal":
-                scale = self._normal_scale(name)
-                z_shaped = z_flat_by_site[name].reshape(site.unconstrained_shape)
-                log_q = D.Normal(shifted_loc, scale).log_prob(z_shaped)
-                total_scalar = total_scalar + log_q.reshape(-1).sum()
-            # "mvn" sites are scored jointly below.
-        # Finally, the joint MVN block, if any.
-        if self._mvn_names:
-            joint_loc_parts: list[torch.Tensor] = []
-            joint_z_parts: list[torch.Tensor] = []
-            for n in self._mvn_names:
-                site = self._registry.sites[n]
-                loc = self._loc(n)
-                shift_flat = torch.zeros(_site_flat_length(site), device=x.device)
-                if n in self.deps:
-                    for parent, dep_mod in self.deps[n].items():
-                        shift_flat = shift_flat + dep_mod(z_flat_by_site[parent])
-                shifted_loc_flat = loc.reshape(-1) + shift_flat
-                joint_loc_parts.append(shifted_loc_flat)
-                joint_z_parts.append(z_flat_by_site[n])
-            joint_loc = torch.cat(joint_loc_parts, dim=0)
-            joint_z = torch.cat(joint_z_parts, dim=0)
-            dist = D.MultivariateNormal(joint_loc, scale_tril=self._mvn_scale_tril())
-            total_scalar = total_scalar + dist.log_prob(joint_z)
-        return total_scalar.expand(batch)
+                scale = self._normal_scale(name).reshape(-1)
+                log_q = D.Normal(shifted_loc, scale).log_prob(z_flat_by_site[name])
+                total = total + log_q.sum(-1)
+            else:
+                # "mvn" sites are scored jointly below.
+                joint_loc_parts.append(shifted_loc)
+                joint_z_parts.append(z_flat_by_site[name])
+        if joint_loc_parts:
+            dist = D.MultivariateNormal(
+                torch.cat(joint_loc_parts, dim=-1), scale_tril=self._mvn_scale_tril()
+            )
+            total = total + dist.log_prob(torch.cat(joint_z_parts, dim=-1))
+        return total
 
 
 __all__ = [

@@ -165,29 +165,43 @@ class AutoNormalizingFlow(Guide):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Log-density at the supplied constrained sites."""
-        batch = x.shape[0]
-        unconstrained_per_site: dict[str, torch.Tensor] = {}
-        bijector_log_det = torch.zeros((), device=x.device)
-        for site in self._registry.sites.values():
-            if site.name not in sites:
-                raise KeyError(
-                    f"{type(self).__name__}.log_prob: missing site {site.name!r}"
-                )
-            v = sites[site.name]
-            if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
-                v = v[0]
-            z_site, log_det = site.unconstrain(v)
-            unconstrained_per_site[site.name] = z_site
-            bijector_log_det = bijector_log_det + log_det.sum()
+        """Log-density of each run's constrained values.
 
-        z_K = self._registry.flatten_unconstrained(unconstrained_per_site)
+        For run ``b`` the flat unconstrained point :math:`z_{K,b}` of its
+        values, read by `LatentRegistry.unconstrain_runs`, is pulled back
+        through the flow, and
+        :math:`\\log q(v_b) = \\log p_0(z_{0,b}) - \\sum_k \\log|\\det J_{T_k}|
+        + \\sum_i \\log|\\det J_{T_i^{-1}}(v_{b,i})|`, the last sum over
+        the per-site bijectors. The flow acts on each row of the
+        ``(B, D)`` matrix of points separately, as every transform in
+        [`quivers.inference.transforms`][quivers.inference.transforms]
+        does outside a `BatchNormTransform` in training mode.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+        sites : dict[str, torch.Tensor]
+            Constrained values of every latent site, each one per run or
+            one the runs share (`Guide.log_prob`).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(B,)``, one log density per run.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
+        """
+        coordinates = self._registry.unconstrain_runs(sites, int(x.shape[0]))
+        z_K = self._registry.flatten_unconstrained(coordinates.unconstrained)
         z_0, flow_log_det = self._inverse(z_K)
-        log_p_base = self._base_dist().log_prob(z_0)
-        # log q(z_K) = log p_0(z_0) - log|det dT/dz_0|
-        #            = log p_0(z_0) - flow_log_det
-        log_q_z = log_p_base - flow_log_det
-        return (log_q_z + bijector_log_det).expand(batch)
+        log_q_z = self._base_dist().log_prob(z_0) - flow_log_det
+        return log_q_z + coordinates.total_log_abs_det()
 
     @property
     def latent_names(self) -> list[str]:

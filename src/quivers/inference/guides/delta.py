@@ -100,10 +100,39 @@ class AutoDeltaGuide(Guide):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Delta log-density: zero everywhere (the delta term and
-        its Jacobian cancel in the ELBO under the standard
-        score-function trick)."""
-        return torch.zeros(x.shape[0], device=x.device)
+        """Delta log-density of each run: zero (the delta term and its
+        Jacobian cancel in the ELBO under the standard score-function
+        trick).
+
+        The values are still checked against the run-wise contract of
+        `Guide.log_prob`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+        sites : dict[str, torch.Tensor]
+            Constrained values of every latent site, each one per run or
+            one the runs share.
+
+        Returns
+        -------
+        torch.Tensor
+            Zeros of shape ``(B,)``.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
+        """
+        runs = int(x.shape[0])
+        for site in self._registry.sites.values():
+            if site.name not in sites:
+                raise KeyError(f"AutoDeltaGuide.log_prob: missing site {site.name!r}")
+            site.align_runs(sites[site.name], runs)
+        return torch.zeros(runs, device=x.device)
 
     @property
     def latent_names(self) -> list[str]:

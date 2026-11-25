@@ -403,6 +403,150 @@ class LatentSite(ValueModel):
         log_det = self.bijector.inv.log_abs_det_jacobian(structured, result)
         return result.reshape((*leading, *self.unconstrained_shape)), log_det
 
+    def align_runs(self, value: torch.Tensor, runs: int) -> torch.Tensor:
+        """Give a trace-side value of this site one entry per run.
+
+        The values a program's log joint, a trace, and a guide exchange
+        for an input of ``runs`` rows take one of two shapes. A value of
+        shape ``(runs, *constrained_shape)`` holds one value per run,
+        run ``b`` at index ``b``. A value of shape `constrained_shape`
+        has no run axis and is one value every run shares, as a plate
+        latent drawn once is. No other shape is a value of the site:
+        in particular a run axis of size one does not stand for
+        ``runs`` runs.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The site's value, shared by every run or given per run.
+        runs : int
+            The number of runs, the rows of the program input.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(runs, *constrained_shape)``; a shared value is
+            expanded along the new run axis without a copy.
+
+        Raises
+        ------
+        ValueError
+            If ``runs`` is less than one, or ``value`` has neither
+            shape.
+        """
+        if runs < 1:
+            raise ValueError(
+                f"LatentSite.align_runs: runs must be >= 1, got {runs} for site "
+                f"{self.name!r}"
+            )
+        shape = self.constrained_shape
+        if tuple(value.shape) == shape:
+            return value.unsqueeze(0).expand(runs, *shape)
+        if value.dim() == len(shape) + 1 and tuple(value.shape[1:]) == shape:
+            if value.shape[0] == runs:
+                return value
+            raise ValueError(
+                f"site {self.name!r} has a run axis of {value.shape[0]} values for "
+                f"an input of {runs} runs; give one value per run, "
+                f"({runs}, *{shape}), or one value the runs share, {shape}"
+            )
+        raise ValueError(
+            f"site {self.name!r} has shape {tuple(value.shape)}; a value of it is "
+            f"one per run, ({runs}, *{shape}), or one the runs share, {shape}"
+        )
+
+    def unconstrain_runs(
+        self, value: torch.Tensor, runs: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Map a trace-side value to unconstrained coordinates, run by run.
+
+        The value is aligned to the run axis (`align_runs`) and passed
+        through the inverse bijector. The inverse Jacobian term is
+        summed over each element's event axes and kept apart for every
+        run and, for a plate site, every plate element, so a guide can
+        score each run alone and each plate row alone.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The site's value, shared by every run or given per run.
+        runs : int
+            The number of runs.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The coordinates, shape ``(runs, *unconstrained_shape)``, and
+            :math:`\\log |\\det J_{T^{-1}}|` of each run's value, shape
+            ``(runs,)``, or ``(runs, plate_index_size)`` for a plate site
+            with the plate's elements in row-major order.
+
+        Raises
+        ------
+        ValueError
+            If the value is not a value of the site, or the bijector's
+            Jacobian term does not keep the run axis and the plate's
+            elements apart.
+        """
+        z, log_det = self.unconstrain(self.align_runs(value, runs))
+        elements = self.plate_index_size if self.is_plate else 1
+        if (
+            log_det.dim() == 0
+            or log_det.shape[0] != runs
+            or log_det.numel() % (runs * elements)
+        ):
+            raise ValueError(
+                f"site {self.name!r}: the bijector's Jacobian term has shape "
+                f"{tuple(log_det.shape)}, which does not hold one term per run "
+                f"and per plate element for {runs} runs of {elements} elements"
+            )
+        per_element = log_det.reshape(runs, elements, -1).sum(-1)
+        if not self.is_plate:
+            per_element = per_element.reshape(runs)
+        return z, per_element
+
+
+class RunCoordinates(ValueModel):
+    """The latent values of several runs in unconstrained coordinates.
+
+    Built by `LatentRegistry.unconstrain_runs`, which applies
+    `LatentSite.unconstrain_runs` to every site.
+
+    Parameters
+    ----------
+    runs : int
+        The number of runs.
+    unconstrained : dict[str, torch.Tensor]
+        Each site's coordinates, shape ``(runs, *unconstrained_shape)``,
+        in registry order.
+    log_abs_det : dict[str, torch.Tensor]
+        Each site's inverse-bijector term
+        :math:`\\log |\\det J_{T^{-1}}|` per run, shape ``(runs,)``, or
+        ``(runs, plate_index_size)`` for a plate site.
+    """
+
+    runs: int
+    unconstrained: dict[str, torch.Tensor] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    log_abs_det: dict[str, torch.Tensor] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    def total_log_abs_det(self) -> torch.Tensor:
+        """The inverse-bijector term of each run, summed over its sites.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(runs,)``: entry ``b`` is
+            :math:`\\sum_i \\log |\\det J_{T_i^{-1}}(v_{b,i})|`.
+        """
+        total = torch.zeros(self.runs)
+        for terms in self.log_abs_det.values():
+            total = total.to(terms) + terms.reshape(self.runs, -1).sum(-1)
+        return total
+
 
 def _constrained_shape(
     support: _constraints.Constraint,
@@ -996,6 +1140,55 @@ class LatentRegistry:
             return torch.zeros((0,), device=device)
         return torch.cat(parts, dim=-1)
 
+    def unconstrain_runs(
+        self, sites: dict[str, torch.Tensor], runs: int
+    ) -> RunCoordinates:
+        """Map the trace-side values of ``runs`` runs to unconstrained coordinates.
+
+        This is the one place a guide reads site values per run. Each
+        site's value is aligned to the run axis and inverted through
+        its bijector (`LatentSite.unconstrain_runs`), so run ``b`` of
+        the result depends only on run ``b`` of every value, or on a
+        value the runs share. Every guide whose density is over the
+        registry's coordinates scores ``sites`` from this result, and
+        `LatentRegistry.flatten_unconstrained` of its coordinates is
+        the ``(runs, total_unconstrained_dim)`` matrix whose row ``b``
+        is run ``b``'s flat point.
+
+        Parameters
+        ----------
+        sites : dict[str, torch.Tensor]
+            Trace-side values of every latent site; keys that name no
+            latent site are ignored.
+        runs : int
+            The number of runs, the rows of the program input.
+
+        Returns
+        -------
+        RunCoordinates
+            Each site's coordinates and inverse-bijector terms, per run.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
+        """
+        unconstrained: dict[str, torch.Tensor] = {}
+        log_abs_det: dict[str, torch.Tensor] = {}
+        for site in self._sites.values():
+            if site.name not in sites:
+                raise KeyError(
+                    f"LatentRegistry.unconstrain_runs: missing site {site.name!r}"
+                )
+            unconstrained[site.name], log_abs_det[site.name] = site.unconstrain_runs(
+                sites[site.name], runs
+            )
+        return RunCoordinates(
+            runs=runs, unconstrained=unconstrained, log_abs_det=log_abs_det
+        )
+
     # ------------------------------------------------------------------
     # Bijector application with Jacobian accumulation
     # ------------------------------------------------------------------
@@ -1269,4 +1462,4 @@ class LatentRegistry:
         return out
 
 
-__all__ = ["LatentRegistry", "LatentSite"]
+__all__ = ["LatentRegistry", "LatentSite", "RunCoordinates"]
