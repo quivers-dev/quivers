@@ -605,4 +605,9 @@ def test_invalid_specifications_are_rejected(formula, message):
 def test_categorical_predictors_give_each_category_an_exact_gp():
     frame = FRAME.assign(cat=np.array(["p", "q", "r"])[np.arange(len(FRAME)) % 3])
     priors = get_prior("cat ~ gp(x)", data=frame, family="categorical")
-    assert {"dpar_muq_lscale_gpx", "dpar_mur_lscale_gpx"} <= set(priors)
+    assert {"lscale_gpx", "sdgp_gpx"} <= set(priors)
+    fitted = fit(
+        "cat ~ gp(x)", data=frame, family="categorical", method="svi", num_steps=0
+    )
+    draws = fitted.draws(num_samples=1)
+    assert draws["lscale_gpx"].shape[-1] == draws["sdgp_gpx"].shape[-1] == 2

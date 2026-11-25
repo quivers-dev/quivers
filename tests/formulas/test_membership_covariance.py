@@ -133,7 +133,7 @@ def _brms_mu(case: dict, draw: int, rows: slice) -> torch.Tensor:
 @pytest.mark.parametrize("case", ORACLE["cases"], ids=lambda case: case["formula"])
 def test_level_factor_is_brms_lcov_and_statements_are_pinned(case):
     _, lens, _, observed = _compiled(case["formula"], _frame())
-    factor = observed["__formula_level_basis_mmg1g2_factor"].double()
+    factor = observed[lens.group_laws[0].level.basis_input("factor")].double()
     lcov = torch.tensor(case["Lcov"], dtype=torch.float64)
     # The factor is stored in single precision.
     torch.testing.assert_close(factor, lcov, rtol=0, atol=1e-6)
@@ -303,7 +303,7 @@ def test_joint_density_and_derivatives_equal_the_brms_model(case):
     beta_scale = float(text.split("scale=")[1].rstrip(")"))
     density, correlated = _reference(case, lens, observed, beta_scale)
     # The level factor in double precision, so both sides use brms's Lcov.
-    observed["__formula_level_basis_mmg1g2_factor"] = torch.tensor(
+    observed[lens.group_laws[0].level.basis_input("factor")] = torch.tensor(
         case["Lcov"], dtype=torch.float64
     )
     layouts = lens.group_layouts
@@ -356,7 +356,9 @@ def test_joint_density_and_derivatives_equal_the_brms_model(case):
         atol=ATOL,
     )
     # The identity in place of Lcov is a different density.
-    observed["__formula_level_basis_mmg1g2_factor"] = torch.eye(5, dtype=torch.float64)
+    observed[lens.group_laws[0].level.basis_input("factor")] = torch.eye(
+        5, dtype=torch.float64
+    )
     assert abs(float((actual(point) - density(point)).detach())) > 1e-3
     assert correlated == ("(1 + x1 |" in case["formula"])
 

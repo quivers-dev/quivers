@@ -7,12 +7,15 @@ the fitted rows and on new rows. The nonlinear references are NumPy.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
 from quivers.formulas import BayesianFit, NonlinearExpression, fit, mixture
+from quivers.inference.mcmc import PotentialFn
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.registry import LatentRegistry
 
@@ -296,3 +299,77 @@ def test_categories_read_their_own_or_the_main_nonlinear_expression():
             np.exp(logits) / np.exp(logits).sum(1, keepdims=True),
             rtol=1e-5,
         )
+
+
+def _density(fitted: BayesianFit, values: dict[str, torch.Tensor]) -> float:
+    """Evaluate the log joint density at unconstrained values."""
+    registry = _registry(fitted)
+    potential = PotentialFn(
+        fitted.program,
+        registry,
+        torch.zeros(1, 1),
+        {
+            name: value.double() if value.is_floating_point() else value
+            for name, value in fitted.observations.items()
+        },
+    )
+    return float(potential.log_density(registry.flatten_unconstrained(values)))
+
+
+@pytest.mark.parametrize(
+    "term, options",
+    [(term, {}) for term in TERMS]
+    + [(term, {"reparameterize": "centered"}) for term in CENTERED]
+    + [("x + w", {"default_priors": "brms"})],
+)
+def test_the_vector_program_has_the_density_of_one_program_per_category(term, options):
+    """Coefficients over the categories are those of per-category formulas."""
+    vector = fit(f"c ~ {term}", family="categorical", **OPTIONS, **options)
+    separate = fit(
+        "c ~ 1",
+        family="categorical",
+        distributional={"muB": f"~ {term}", "muC": f"~ {term}"},
+        **OPTIONS,
+        **options,
+    )
+    assert isinstance(vector, BayesianFit) and isinstance(separate, BayesianFit)
+    generator = torch.Generator().manual_seed(3)
+    registry = _registry(vector)
+    whole = {
+        name: 0.4 * torch.randn(value.shape, generator=generator, dtype=torch.float64)
+        for name, value in registry.unflatten_unconstrained(
+            torch.zeros(registry.total_unconstrained_dim, dtype=torch.float64)
+        ).items()
+    }
+    parts = _registry(separate).unflatten_unconstrained(
+        torch.zeros(_registry(separate).total_unconstrained_dim, dtype=torch.float64)
+    )
+    values = {}
+    for name, template in parts.items():
+        coordinate = 0 if "dpar_muB_" in name else 1
+        local = name.replace("dpar_muB_", "").replace("dpar_muC_", "")
+        source = next(
+            candidate
+            for candidate in (
+                local,
+                f"{local}_{coordinate}",
+                f"{local}_component{coordinate + 1}",
+                re.sub(
+                    r"^(cor_.*?)(_by[0-9]+)?$",
+                    rf"\1\2_component{coordinate + 1}",
+                    local,
+                ),
+            )
+            if candidate in whole
+        )
+        value = whole[source]
+        if local == name or value.numel() == template.numel():
+            values[name] = value.reshape(template.shape)
+        elif value.shape[0] == 2 and template.ndim and value.ndim == template.ndim + 1:
+            values[name] = value[coordinate].reshape(template.shape)
+        else:
+            # A flat site holds the coordinates of each element consecutively.
+            values[name] = value.reshape(-1, 2)[:, coordinate].reshape(template.shape)
+    np.testing.assert_allclose(
+        _density(vector, whole), _density(separate, values), rtol=0, atol=2e-4
+    )
