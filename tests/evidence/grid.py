@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import traceback
 from collections.abc import Callable, Mapping
 from fractions import Fraction
 from pathlib import Path
@@ -494,14 +495,24 @@ def refusal(row: str, column: str) -> str | None:
     Returns
     -------
     str or None
-        The exception's class and message on one line, without memory
-        addresses; ``None`` when the question is answered.
+        The exception's class and the place it was raised, and the message
+        of an exception raised by a ``raise`` statement, on one line
+        without memory addresses; ``None`` when the question is answered.
+        An exception that a compiled function raised while called from a
+        line is named by that line, because the wording of such messages
+        is not part of any interface.
     """
     try:
         ask(row, column)
     except Exception as failure:
-        text = " ".join(f"{type(failure).__name__}: {failure}".split())
-        return re.sub(r"0x[0-9a-f]+", "0x", text)[:110]
+        last = traceback.extract_tb(failure.__traceback__)[-1]
+        place = f"{Path(last.filename).name}:{last.name}"
+        line = (last.line or "").strip()
+        if line.startswith("raise"):
+            text = f"{type(failure).__name__} at {place}: {failure}"
+        else:
+            text = f"{type(failure).__name__} at {place} in `{line}`"
+        return re.sub(r"0x[0-9a-f]+", "0x", " ".join(text.split()))[:160]
     return None
 
 
