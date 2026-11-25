@@ -180,11 +180,14 @@ class TorchSampleable(ValueModel):
         Raises
         ------
         TypeError
-            If the site belongs to a marginalized factor and requires a
-            marginal-likelihood observer.
+            If the site is the response of a marginalized block, whose
+            density the units of the block's score hold.
         """
         if isinstance(self.declared, MarginalizedFactor):
-            raise TypeError("this observation requires a marginal-likelihood observer")
+            raise TypeError(
+                "this observation has no density of its own: the score of the "
+                "block that sums its latent out holds it, by unit"
+            )
         pointwise = getattr(self.raw_morphism, "log_prob_pointwise", None)
         if callable(pointwise):
             result = pointwise(self.input, value)

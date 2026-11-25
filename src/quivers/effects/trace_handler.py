@@ -19,6 +19,7 @@ from quivers.effects.base import EffectHandler, Installation, RunContext
 from quivers.effects.program_module import HostStep
 from quivers.effects.sites import TorchSampleable
 from quivers.effects.trace_types import SampleSite, Trace
+from quivers.effects.units import SiteUnits
 from quivers.qiec.builtins import (
     COMPUTE_APPLY,
     RANDOM,
@@ -208,6 +209,7 @@ class TraceHandler(EffectHandler):
                 sampleable=first.sampleable,
                 address=first.address,
                 metadata=dict(first.metadata),
+                units=tuple(item for site in per_run for item in site.units),
             )
 
     def _record_site(
@@ -272,12 +274,14 @@ class TraceHandler(EffectHandler):
         step = self._steps[event.instance]
         assert isinstance(step.spec, Let | Score)
         name = step.spec.name
+        suffix = ""
         if step.scanned:
             # A binding a scan's step makes once per position is
             # recorded per occurrence, as its sites are.
             occurrence = self._occurrences.get(event.instance, 0)
             self._occurrences[event.instance] = occurrence + 1
-            name = f"{name}@{occurrence}"
+            suffix = f"@{occurrence}"
+            name = f"{name}{suffix}"
         value = event.result
         if step.kind != "score" and isinstance(value, tuple):
             # A let binding a tuple holds a product of values rather
@@ -298,6 +302,49 @@ class TraceHandler(EffectHandler):
             log_prob=log_prob,
             is_deterministic=True,
             address=event.address,
+            units=self._step_units(run, step, event, suffix),
+        )
+
+    @staticmethod
+    def _step_units(
+        run: RunContext, step: HostStep, event: TraceEvent, occurrence: str
+    ) -> tuple[SiteUnits, ...]:
+        """The units of a score step, at the values the step read.
+
+        Parameters
+        ----------
+        run : RunContext
+            The run.
+        step : HostStep
+            The step's host part.
+        event : TraceEvent
+            The host part's recorded request, whose argument is the
+            environment the step read.
+        occurrence : str
+            The suffix of the step's occurrence under a scan.
+
+        Returns
+        -------
+        tuple[SiteUnits, ...]
+            The units, or nothing for a step that declares none.
+        """
+        spec = step.spec
+        if not isinstance(spec, Score) or spec.units is None:
+            return ()
+        (argument,) = event.arguments
+        assert isinstance(argument, tuple)
+        environment: dict[str, torch.Tensor] = {}
+        for name, value in zip(step.environment, argument, strict=True):
+            assert isinstance(value, torch.Tensor)
+            environment[name] = (
+                value[0] if run.carries_run_axis(step.program, name) else value
+            )
+        return (
+            SiteUnits(
+                factorization=spec.units,
+                environment=environment,
+                occurrence=occurrence,
+            ),
         )
 
     def _step_contribution(

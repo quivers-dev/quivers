@@ -185,6 +185,9 @@ def _project(model, selected, *, keep_return):
                     dependencies.update(_argument_names((step.weights,)))
                     if step.event is not None:
                         dependencies.update(step.event.names())
+                    if step.law is not None:
+                        declared = step.law.reads
+                        dependencies.update(preceding if declared is None else declared)
                     # An observed value may be a preceding lexical binding.
                     dependencies.update(names & preceding)
         elif isinstance(step, Let | Score):

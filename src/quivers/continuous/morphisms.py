@@ -24,6 +24,10 @@ from quivers.core.morphisms import Morphism
 from quivers.core.morphisms import Morphism as _CatMorphism
 from quivers.core.objects import SetObject
 
+type BoundEvent = dict[str, torch.Tensor | float | int | None]
+"""The recording and truncation roles of an observation at one run's
+values, by role name."""
+
 type AnySpace = SetObject | ContinuousSpace
 """A space a morphism maps between: a finite set or a continuous space."""
 
@@ -334,7 +338,7 @@ class ContinuousMorphism(nn.Module, ABC):
         return self._domain
 
     def sampling_distribution(
-        self, x: torch.Tensor, event: dict[str, object] | None = None
+        self, x: torch.Tensor, event: BoundEvent | None = None
     ) -> torch.distributions.Distribution:
         """Construct the sampling law, including optional response truncation.
 
@@ -342,7 +346,7 @@ class ContinuousMorphism(nn.Module, ABC):
         ----------
         x : torch.Tensor
             Resolved family parameters.
-        event : dict[str, object] or None
+        event : BoundEvent or None
             Bound observation roles; censoring describes recording rather than sampling.
 
         Returns
@@ -360,20 +364,12 @@ class ContinuousMorphism(nn.Module, ABC):
             raise NotImplementedError(
                 f"{type(self).__name__} does not expose a native response distribution"
             )
-        base = builder(x)
-        event = {} if event is None else event
-        lower, upper = event.get("trunc_lower"), event.get("trunc_upper")
-        if lower is None and upper is None:
-            return base
-        truncated = getattr(base, "componentwise_truncation", None)
-        if callable(truncated):
-            return truncated(lower, upper)
-        from quivers.continuous.measure import Normalize, Restrict
+        from quivers.continuous.measure import truncated_law
 
-        return Normalize(Restrict(base, lower, upper))
+        return truncated_law(builder(x), event)
 
     def log_prob_event(
-        self, x: torch.Tensor, y: torch.Tensor, event: dict[str, object]
+        self, x: torch.Tensor, y: torch.Tensor, event: BoundEvent
     ) -> torch.Tensor:
         """Score a recorded response event before any plate or weight reduction.
 
@@ -383,7 +379,7 @@ class ContinuousMorphism(nn.Module, ABC):
             Resolved family parameters.
         y : torch.Tensor
             Exact responses or recorded censoring endpoints.
-        event : dict[str, object]
+        event : BoundEvent
             Status, interval endpoint, and truncation tensors.
 
         Returns
@@ -399,7 +395,7 @@ class ContinuousMorphism(nn.Module, ABC):
         self,
         x: torch.Tensor,
         sample_shape: torch.Size,
-        event: dict[str, object] | None,
+        event: BoundEvent | None,
     ) -> torch.Tensor:
         """Draw the underlying response, respecting truncation and recording no censoring.
 
@@ -409,7 +405,7 @@ class ContinuousMorphism(nn.Module, ABC):
             Resolved family parameters.
         sample_shape : torch.Size
             Leading sample dimensions.
-        event : dict[str, object] or None
+        event : BoundEvent or None
             Bound observation roles.
 
         Returns
@@ -776,29 +772,31 @@ class ContinuousMorphism(nn.Module, ABC):
 
 
 class MarginalizedFactor(ContinuousMorphism):
-    """Score-suppressed wrapper for a marginalized block's live sites.
+    """An observation whose density a score step holds.
 
-    An ungrouped ``marginalize`` block keeps its latent draw and its
-    terminal observe as live sites so a forward trace still produces
-    the sampled coordinate and response (ancestral sampling and
-    synthetic-data generation both read those sites). Their densities,
-    however, are carried once by the block's integrated score step, so
-    adding them to the joint again would double-count the very factors
-    the marginal already integrates. This wrapper delegates sampling to
-    the base morphism yet reports a zero log-density, keeping the joint
-    free of the raw per-draw factor while preserving forward behaviour.
+    A ``marginalize`` block scores its responses with the latent summed
+    out, so a response of the block adds no density of its own to the
+    joint. It is still a site of the run: its value is data when it is
+    given, and drawn from the block's response law when it is not. The
+    wrapper keeps the family's support and sampling and reports a zero log
+    density.
 
     Parameters
     ----------
     base : ContinuousMorphism
-        The underlying family whose sampling behaviour is preserved.
+        The response family.
+    value_rank : int or None
+        The number of axes of one run's value, which tells a value given
+        once per run from one every run shares; ``None`` when a value with
+        more than one axis leads with the runs.
     """
 
     mappable: bool = True
 
-    def __init__(self, base: ContinuousMorphism) -> None:
+    def __init__(self, base: ContinuousMorphism, value_rank: int | None = None) -> None:
         super().__init__(base.domain, base.codomain)
         self.base = base
+        self.value_rank = value_rank
 
     @property
     def support(self) -> _constraints.Constraint:
@@ -818,7 +816,7 @@ class MarginalizedFactor(ContinuousMorphism):
         ----------
         x : Tensor
             Resolved parameters at the current ancestral latent draw.
-        event : dict[str, object] or None
+        event : BoundEvent or None
             Bound recording and truncation roles.
 
         Returns
@@ -837,7 +835,7 @@ class MarginalizedFactor(ContinuousMorphism):
             Resolved response parameters.
         sample_shape : torch.Size
             Leading sampling dimensions.
-        event : dict[str, object] or None
+        event : BoundEvent or None
             Bound recording and truncation roles.
 
         Returns
@@ -856,7 +854,7 @@ class MarginalizedFactor(ContinuousMorphism):
             Resolved response parameters.
         y : Tensor
             Recorded outcomes.
-        event : dict[str, object]
+        event : BoundEvent
             Bound recording roles, already scored inside the finite marginal.
 
         Returns

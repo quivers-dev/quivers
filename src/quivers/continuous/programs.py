@@ -788,6 +788,9 @@ class MonadicProgram(ContinuousMorphism):
         torch.Tensor
             Input tensor for the morphism.
         """
+        if isinstance(spec, Observe) and spec.law is not None:
+            # The law reads the environment itself.
+            return x
         if spec.args is None:
             self._check_domain_element(spec, x)
             return x

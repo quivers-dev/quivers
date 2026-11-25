@@ -37,6 +37,7 @@ from typing import Literal, TypeVar
 
 import didactic.api as dx
 import torch
+from torch.distributions import Distribution
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers._observation import ObservationEvent
@@ -213,6 +214,137 @@ def mapping_of(function: collections.abc.Callable[..., object]) -> StepMapping:
     return declared
 
 
+class UnitRows(ValueModel):
+    """Which unit of a factored score each row of a response belongs to.
+
+    Parameters
+    ----------
+    response : str
+        The observed name whose rows the map sends to units.
+    units : StepFunction
+        The row map: from the environment to a long tensor of shape
+        ``(rows,)`` holding each row's unit, counted row-major over the
+        unit axes. It declares what it reads through
+        [`reading`][quivers.continuous.program_steps.reading].
+    one_row_per_unit : str
+        The change to the program that would put each row in a unit of its
+        own, as a sentence for a refusal to state. The changed program is
+        another model.
+    """
+
+    response: str
+    units: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    one_row_per_unit: str
+
+
+class UnitFactorization(ValueModel):
+    """How a score is a sum of one log weight per unit.
+
+    A score ``S`` factors over a set of units ``U`` when
+    ``S = sum_u w(u)``, with ``w(u)`` reading the rows that the row maps
+    send to ``u`` and no other row. The units of a grouped ``marginalize``
+    block are the positions of its grouping plate; a block with one latent
+    for all its rows has one unit, and its ``axes`` are empty.
+
+    A row of a response has a log weight of its own exactly when its unit
+    holds that row and no other row of any response. The weights of the
+    units exist in every case.
+
+    Parameters
+    ----------
+    latent : str
+        The name the score sums out.
+    axes : tuple[str, ...]
+        The objects whose product indexes the units, outermost first.
+    sizes : tuple[int, ...]
+        The extent of each axis.
+    weights : StepFunction
+        From the environment to the log weight of each unit, of shape
+        ``(prod(sizes),)``, row-major over the axes. Their sum is the
+        score's contribution.
+    raw_weights : StepFunction
+        The same weights with every likelihood power of the score's
+        observations left out; ``weights`` itself when there is none.
+    rows : tuple[UnitRows, ...]
+        The row map of each response the score reads.
+    density_obstacle : str | None
+        Why the weight of a unit is not the log density of its rows, or
+        ``None`` when it is.
+    """
+
+    latent: str
+    axes: tuple[str, ...]
+    sizes: tuple[int, ...]
+    weights: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    raw_weights: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    rows: tuple[UnitRows, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    density_obstacle: str | None = None
+
+    @property
+    def reads(self) -> frozenset[str] | None:
+        """The names the factorization reads.
+
+        Returns
+        -------
+        frozenset[str] | None
+            The names the weights and the row maps read, or ``None`` when
+            one of them declares none and may read any bound value.
+        """
+        names: set[str] = set()
+        for function in (
+            self.weights,
+            self.raw_weights,
+            *(item.units for item in self.rows),
+        ):
+            declared = reads_of(function)
+            if declared is None:
+                return None
+            names |= declared
+        return frozenset(names)
+
+
+class ResponseLaw(ValueModel):
+    """The law of a response whose density a score step carries.
+
+    The response of a ``marginalize`` block has no density of its own in
+    the joint: the block's score holds it. The response still has a law
+    given the values the block does not sum out, and a run that is given
+    no value for it draws from that law.
+
+    Parameters
+    ----------
+    marginal : Callable[[Environment], Distribution]
+        From the environment to the law of each row of the response with
+        the block's latents summed out.
+    draw : StepFunction
+        From the environment to one joint draw of all the rows. Rows that
+        share a latent share its drawn value, and a response that follows
+        another of the same block is drawn given that one's value.
+    """
+
+    marginal: collections.abc.Callable[[Environment], Distribution] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    draw: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    @property
+    def reads(self) -> frozenset[str] | None:
+        """The names the law reads.
+
+        Returns
+        -------
+        frozenset[str] | None
+            The names its two functions read, or ``None`` when one of them
+            declares none and may read any bound value.
+        """
+        marginal, draw = reads_of(self.marginal), reads_of(self.draw)
+        if marginal is None or draw is None:
+            return None
+        return marginal | draw
+
+
 class Step(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """One step of a [`MonadicProgram`][quivers.continuous.MonadicProgram].
 
@@ -291,6 +423,10 @@ class Observe(Step):
         and the underlying response density unchanged.
     event : ObservationEvent or None
         Recording and truncation roles, resolved from the same environment as arguments.
+    law : ResponseLaw or None
+        The law a run draws the response from when a score step carries
+        its density; ``None`` for an observation that draws from its
+        morphism at its arguments.
     kind : Literal["observe"]
         The variant tag.
     """
@@ -306,6 +442,9 @@ class Observe(Step):
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     event: ObservationEvent | None = None
+    law: ResponseLaw | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     kind: Literal["observe"] = "observe"
 
 
@@ -368,6 +507,9 @@ class Score(Step):
         of a let step's function. Over ``B`` positions the contribution
         then has shape ``(B, ...)``, and each row's trailing entries are
         summed as one run's are.
+    units : UnitFactorization or None
+        How the contribution is a sum of one log weight per unit, or
+        ``None`` for a score that declares no factorization.
     kind : Literal["score"]
         The variant tag.
     """
@@ -376,7 +518,26 @@ class Score(Step):
     score: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     role: Literal["potential", "likelihood"] = "potential"
     batched: bool = False
+    units: UnitFactorization | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     kind: Literal["score"] = "score"
+
+    @property
+    def reads(self) -> frozenset[str] | None:
+        """The names the step reads.
+
+        Returns
+        -------
+        frozenset[str] | None
+            The names its function and its factorization read, or ``None``
+            when one of them declares none and may read any bound value.
+        """
+        declared = reads_of(self.score)
+        if self.units is None or declared is None:
+            return declared
+        factored = self.units.reads
+        return None if factored is None else declared | factored
 
 
 class Call(Step):
@@ -484,12 +645,15 @@ __all__ = [
     "Indexed",
     "Let",
     "Observe",
+    "ResponseLaw",
     "Scan",
     "Score",
     "Step",
     "StepArgument",
     "StepFunction",
     "StepMapping",
+    "UnitFactorization",
+    "UnitRows",
     "mappable",
     "mapping_of",
     "reading",

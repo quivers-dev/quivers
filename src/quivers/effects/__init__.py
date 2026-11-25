@@ -49,6 +49,7 @@ from quivers.effects import (
     lift as _lift,
     mask as _mask,
     observation_scoring as _observation_scoring,
+    units as _units,
     program_module as _program_module,
     replay as _replay,
     scale as _scale,
@@ -73,6 +74,7 @@ from quivers.effects.program_module import *  # noqa: F403
 from quivers.effects.replay import *  # noqa: F403
 from quivers.effects.scale import *  # noqa: F403
 from quivers.effects.sites import *  # noqa: F403
+from quivers.effects.units import *  # noqa: F403
 from quivers.effects.subsample import *  # noqa: F403
 from quivers.effects.trace_handler import *  # noqa: F403
 from quivers.effects.trace_types import *  # noqa: F403
@@ -109,6 +111,7 @@ __all__ += _interpreter.__all__
 __all__ += _lift.__all__
 __all__ += _mask.__all__
 __all__ += _observation_scoring.__all__
+__all__ += _units.__all__
 __all__ += _program_module.__all__
 __all__ += _replay.__all__
 __all__ += _scale.__all__

@@ -46,6 +46,7 @@ from quivers.continuous import (
     family_spec,
     flows,
     log_space,
+    marginal,
     measure,
     morphisms,
     ordered,
@@ -69,6 +70,7 @@ from quivers.continuous.families import *  # noqa: F403
 from quivers.continuous.family_spec import *  # noqa: F403
 from quivers.continuous.flows import *  # noqa: F403
 from quivers.continuous.log_space import *  # noqa: F403
+from quivers.continuous.marginal import *  # noqa: F403
 from quivers.continuous.measure import *  # noqa: F403
 from quivers.continuous.morphisms import *  # noqa: F403
 from quivers.continuous.ordered import *  # noqa: F403
@@ -185,6 +187,7 @@ __all__ += ordered.__all__
 __all__ += _ordered.__all__
 __all__ += _zip_hurdle.__all__
 __all__ += log_space.__all__
+__all__ += marginal.__all__
 __all__ += boundaries.__all__
 __all__ += _asymmetric_laplace.__all__
 __all__ += _response_time.__all__

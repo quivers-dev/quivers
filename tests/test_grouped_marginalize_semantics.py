@@ -274,6 +274,7 @@ def test_body_with_multiple_lets_using_latent() -> None:
     obs = {
         "probs": torch.tensor([1.0, 1.0, 1.0]) / 3,
         "idx": torch.tensor([0, 0, 1, 1]),
+        "r": torch.ones(4),
         "_grouped_ll_cls_0": torch.zeros(4, 3),
     }
     out = model.log_joint(torch.zeros(1, 1), obs)

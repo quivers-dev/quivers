@@ -87,6 +87,7 @@ def test_grouped_marginalize_log_joint_returns_finite_scalar() -> None:
         # marginalize block's first-observe slot.  Bypasses body
         # evaluation for this synthetic shape-check test; the
         # other tests in this file drive the body end-to-end.
+        "r": torch.zeros(8),
         "_grouped_ll_cls_0": torch.zeros(8, 2),
     }
     out = model.log_joint(torch.zeros(1, 1), obs)
@@ -114,6 +115,7 @@ def test_grouped_categorical_logits_use_log_softmax() -> None:
     observations = {
         "logits": logits,
         "idx": torch.tensor([0, 0, 1, 1]),
+        "r": torch.zeros(4),
         "_grouped_ll_cls_0": torch.zeros(4, 2),
     }
     actual = model.log_joint(torch.zeros(1, 1), observations)
@@ -133,6 +135,7 @@ def test_missing_via_index_raises_clear_error() -> None:
     obs = {
         "probs": torch.tensor([0.6, 0.4]),
         "mu_shift": torch.tensor([0.5]),
+        "r": torch.zeros(8),
         "_grouped_ll_cls_0": torch.zeros(8, 2),
         # ``idx`` intentionally omitted.
     }
@@ -151,10 +154,13 @@ def test_svi_runs_on_grouped_marginalize_model() -> None:
     variational parameters."""
     src = _two_class_mixture_model()
     model = loads(textwrap.dedent(src)).morphism
-    guide = AutoNormalGuide(model, observed_names={"probs", "idx", "_grouped_ll_cls_0"})
+    guide = AutoNormalGuide(
+        model, observed_names={"probs", "idx", "r", "_grouped_ll_cls_0"}
+    )
     obs = {
         "probs": torch.tensor([0.6, 0.4]),
         "idx": torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]),
+        "r": torch.zeros(8),
         "_grouped_ll_cls_0": torch.zeros(8, 2),
     }
     optim = torch.optim.Adam(
@@ -174,10 +180,13 @@ def test_svi_gradients_flow_into_continuous_latent_guide_params() -> None:
     showing that the marginalize block preserves the autograd chain."""
     src = _two_class_mixture_model()
     model = loads(textwrap.dedent(src)).morphism
-    guide = AutoNormalGuide(model, observed_names={"probs", "idx", "_grouped_ll_cls_0"})
+    guide = AutoNormalGuide(
+        model, observed_names={"probs", "idx", "r", "_grouped_ll_cls_0"}
+    )
     obs = {
         "probs": torch.tensor([0.6, 0.4]),
         "idx": torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]),
+        "r": torch.zeros(8),
         "_grouped_ll_cls_0": torch.zeros(8, 2),
     }
     loss = ELBO()(model, guide, torch.zeros(1, 1), obs)
@@ -238,9 +247,12 @@ def test_grouped_marginalize_recovers_mixture_proportions() -> None:
     obs = {
         "probs": true_probs,
         "idx": torch.zeros(N, dtype=torch.long),  # single group
+        "r": torch.zeros(N),
         "_grouped_ll_cls_0": ll,
     }
-    guide = AutoNormalGuide(model, observed_names={"probs", "idx", "_grouped_ll_cls_0"})
+    guide = AutoNormalGuide(
+        model, observed_names={"probs", "idx", "r", "_grouped_ll_cls_0"}
+    )
     optim = torch.optim.Adam(
         list(model.parameters()) + list(guide.parameters()), lr=5e-2
     )
@@ -310,6 +322,8 @@ def test_two_task_mixture_log_joint_returns_finite_scalar() -> None:
         # captured-observe body produces (N_m, K)-shaped tensors;
         # we supply them directly here to keep the test focused
         # on the scatter-sum pathway.
+        "r_a": torch.ones(8),
+        "r_b": torch.ones(6),
         "_grouped_ll_cls_0": torch.zeros(8, 2),
         "_grouped_ll_cls_1": torch.zeros(6, 2),
     }
@@ -330,6 +344,8 @@ def test_log_joint_depends_on_grouped_ll_input() -> None:
         "probs": torch.tensor([0.6, 0.4]),
         "idx_a": torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]),
         "idx_b": torch.tensor([0, 1, 2, 3, 0, 1]),
+        "r_a": torch.ones(8),
+        "r_b": torch.ones(6),
         "_grouped_ll_cls_0": torch.zeros(8, 2),
         "_grouped_ll_cls_1": torch.zeros(6, 2),
     }
@@ -369,6 +385,8 @@ def test_two_task_mixture_recovers_joint_proportions() -> None:
     obs = {
         "idx_a": torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]),
         "idx_b": torch.tensor([0, 1, 2, 3, 0, 1]),
+        "r_a": torch.ones(n_a),
+        "r_b": torch.ones(n_b),
         "_grouped_ll_cls_0": ll_a,
         "_grouped_ll_cls_1": ll_b,
     }
@@ -381,6 +399,8 @@ def test_two_task_mixture_recovers_joint_proportions() -> None:
         observed_names={
             "idx_a",
             "idx_b",
+            "r_a",
+            "r_b",
             "_grouped_ll_cls_0",
             "_grouped_ll_cls_1",
         },

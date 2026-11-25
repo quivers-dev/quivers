@@ -32,6 +32,7 @@ from typing import TypeIs
 import torch
 
 from quivers._positions import evaluating, lift, map_positions
+from quivers.continuous.marginal import MarginalizedResponse
 from quivers.continuous.morphisms import ContinuousMorphism, MarginalizedFactor
 from quivers.core.morphisms import extract_morphism
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
@@ -1427,7 +1428,11 @@ class _HostSteps:
         drawing: ContinuousMorphism = (
             _ParameterizedMorphism(morphism, values) if values else morphism
         )
-        if isinstance(spec, Observe) and spec.event is not None:
+        if isinstance(spec, Observe) and spec.law is not None:
+            assert isinstance(morphism, MarginalizedFactor)
+            stripped, _ = self._one_run(step, env)
+            drawing = MarginalizedResponse(morphism, spec.law, stripped)
+        elif isinstance(spec, Observe) and spec.event is not None:
             from quivers.effects._observation_events import (
                 RecordedObservation,
                 resolve_event,
@@ -2435,7 +2440,8 @@ def _given_per_run(
         # The rows a marginalized block observes, which the block's
         # integrated score reads: one set per run along a leading axis
         # of length ``runs``, or one set every run shares.
-        return leading and value.dim() >= 2
+        rank = 1 if morphism.value_rank is None else morphism.value_rank
+        return leading and value.dim() > rank
     if isinstance(morphism, PlateDraw | VectorisedObserve):
         single = _plated_numel(morphism)
         if leading and value.numel() == runs * single:
