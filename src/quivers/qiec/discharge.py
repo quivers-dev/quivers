@@ -2390,8 +2390,6 @@ __all__ = [
     "DISCHARGE_STEPS",
     "DischargeObstacle",
     "DischargedModule",
-    "clause_requests",
     "discharge_computation",
     "discharge_module",
-    "installs_handler",
 ]

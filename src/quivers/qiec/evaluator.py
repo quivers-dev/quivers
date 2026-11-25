@@ -1238,7 +1238,7 @@ class ClauseContext:
         outer_stack: tuple[ContinuationFrame, ...],
         resumption_path: tuple[int, ...],
         request: RuntimeRequest | None,
-        arguments: tuple[HeldValue, ...],
+        arguments: tuple[object, ...],
     ) -> None:
         self._evaluator = evaluator
         self._arguments = arguments
@@ -1260,12 +1260,12 @@ class ClauseContext:
         return self._request
 
     @property
-    def arguments(self) -> tuple[HeldValue, ...]:
+    def arguments(self) -> tuple[object, ...]:
         """The current values of the handler's parameters.
 
         Returns
         -------
-        tuple[HeldValue, ...]
+        tuple[object, ...]
             One value per declared parameter, in declaration order.
         """
         return self._arguments
