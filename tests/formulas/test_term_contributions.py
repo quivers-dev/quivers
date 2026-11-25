@@ -112,6 +112,14 @@ SCALAR: dict[
             + _smooth(draw, data)
         ),
     ),
+    "offset(w) + mo(z)": (
+        "offset_monotonic",
+        lambda draw, data: W + _monotonic(draw, data),
+    ),
+    "offset(w) + gp(x)": (
+        "offset_exact",
+        lambda draw, data: W + _exact(draw, data),
+    ),
     "gp(x, k = 5, c = 1.25)": ("spectral", _spectral),
     "gp(x)": ("exact", _exact),
     "mo(z)": ("monotonic", _monotonic),

@@ -14,8 +14,10 @@ import torch
 
 import quivers.formulas
 from quivers.dsl.ast_nodes import (
+    LetExprNode,
     Module,
     ProgramDecl,
+    ProgramStep,
     SampleStep,
     TypeName,
 )
@@ -29,6 +31,7 @@ from quivers.formulas._group_law import law_inputs
 from quivers.formulas._predictor import Predictor, response_axis, transition_axis
 from quivers.formulas._term import (
     AxisDecl,
+    Emission,
     InputDecl,
     OutputAxis,
     Section,
@@ -333,10 +336,21 @@ def test_declarations_are_listed_by_section_and_deduplicated():
     """Sections order axes, inputs and targets; a repeated input appears once."""
 
     class Fake:
-        label = "fake"
-        output = None
-        rowwise = True
-        deferred = False
+        label: str = "fake"
+        output: OutputAxis | None = None
+        rowwise: bool = True
+        deferred: bool = False
+
+        def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+            return ()
+
+        def summands(self) -> tuple[LetExprNode, ...]:
+            return ()
+
+        def cells(
+            self, row: LetExprNode, component: LetExprNode
+        ) -> tuple[LetExprNode, ...]:
+            return ()
 
         def axes(self):
             return (
@@ -383,6 +397,30 @@ def test_declarations_are_listed_by_section_and_deduplicated():
         "late",
         "simplex",
     ]
+
+
+def _input(**changes) -> InputDecl:
+    return InputDecl(
+        name="v",
+        element="Real",
+        axes=("Resp",),
+        section="column",
+        declared=True,
+        values=torch.tensor([1.0, float("nan")]),
+    ).with_(**changes)
+
+
+def test_a_repeated_input_must_agree():
+    """Two terms may share an input only with one type and one value."""
+    assert list(bind_inputs([_input(), _input()])) == ["v"]
+    for other in (
+        torch.tensor([1.0, 2.0]),
+        torch.tensor([1.0, float("nan")], dtype=torch.float64),
+    ):
+        with pytest.raises(ValueError, match="to two values"):
+            bind_inputs([_input(), _input(values=other)])
+    with pytest.raises(ValueError, match="two types"):
+        declare_inputs([_input(), _input(element="Int")])
 
 
 def test_column_scale_is_its_root_mean_square():
@@ -459,7 +497,14 @@ def test_no_module_tests_the_class_of_a_term():
 
 
 #: Modules that plan and emit predictors.
-PLANNED = ("_term.py", "_predictor.py", "_prior_emission.py")
+PLANNED = (
+    "_term.py",
+    "_predictor.py",
+    "_prior_emission.py",
+    "_term_emission.py",
+    "_category_emission.py",
+    "compile.py",
+)
 
 
 def test_parsed_kinds_are_read_only_by_the_plan():

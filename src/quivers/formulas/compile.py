@@ -1245,13 +1245,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         else:
             row = _var("response")
             se = _index("formula_standard_error", row)
-            sigma = (
-                _index(residual, row)
-                if residual in self._distributional
-                or self._predictor_graph is not None
-                and residual in self._predictor_graph.roots
-                else _var(residual)
-            )
+            sigma = self._row_value(residual, residual, row)
             program_steps.append(
                 _let(
                     "formula_error_reference",
@@ -2862,40 +2856,28 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         )
 
-    @staticmethod
-    def _row_predictor(
-        formula: Formula, name: str, row: LetExprNode, *, neural: bool = False
-    ) -> LetExprNode:
-        """Index predictors whose declared design includes a row axis.
+    def _row_value(self, parameter: str, name: str, row: LetExprNode) -> LetExprNode:
+        """Read the value of one parameter of the response law at a row.
 
         Parameters
         ----------
-        formula : Formula
-            Proportional predictor metadata.
+        parameter : str
+            Parameter of the response law.
         name : str
-            Predictor binding.
+            Binding of its value.
         row : LetExprNode
             Row index.
-        neural : bool
-            Whether an external predictor supplies a row axis.
 
         Returns
         -------
         LetExprNode
-            Row-indexed predictor or its shared scalar binding.
+            The binding at the row when its predictor varies over the rows,
+            otherwise the scalar binding.
         """
-        rowwise = (
-            neural
-            or bool(formula.design_terms)
-            or bool(formula.offsets)
-            or any(
-                term.column is None or not term.column.category_specific
-                for term in formula.random_terms
-            )
-            or any(
-                not column.is_intercept and not column.category_specific
-                for column in formula.fixed_columns
-            )
+        rowwise = any(
+            predictor.rowwise
+            for predictor in self._predictors
+            if predictor.role == "dpar" and predictor.parameter == parameter
         )
         return _index(name, row) if rowwise else _var(name)
 
@@ -2915,26 +2897,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             row-order validation.
         """
         row, transition = _var("ordinal_row"), _var("ordinal_transition")
-        eta = self._row_predictor(
-            formula, "mu", row, neural=self._predictor_name is not None
-        )
-        category_specific = any(
-            column.category_specific for column in formula.fixed_columns
-        ) or any(
-            term.column is not None and term.column.category_specific
-            for term in formula.random_terms
-        )
-        if category_specific:
+        eta = self._row_value("mu", "mu", row)
+        location = self._predictor("")
+        specific = any(output != location.output for output, _ in location.parts())
+        if specific:
             eta = _add(eta, _index("eta_nonbaseline", row, transition))
-        disc_formula = self._distributional.get("disc")
         program_steps.append(
             _let("ordinal_disc", _call("positive_parameter", _var("disc")))
         )
-        disc = (
-            self._row_predictor(disc_formula, "ordinal_disc", row)
-            if disc_formula is not None
-            else _var("ordinal_disc")
-        )
+        disc = self._row_value("disc", "ordinal_disc", row)
         cuts = (
             _index(cutpoints, row, transition)
             if self._thresholds_by is not None
@@ -2955,7 +2926,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         spec = self._family.ordinal
         if (
-            category_specific
+            specific
             and spec is not None
             and spec.kind in {"cumulative", "hurdle_cumulative"}
             and self._category_count(formula, family=self._family.name)
@@ -3265,12 +3236,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
 
         hu: LetExprNode | None = None
         if hurdle:
-            hu_formula = self._distributional.get("hu")
-            hu = (
-                self._row_predictor(hu_formula, "hu", row)
-                if hu_formula is not None
-                else _var("hu")
-            )
+            hu = self._row_value("hu", "hu", row)
         cases: list[tuple[int, LetExprNode]] = []
         for category in range(categories):
             if hurdle:
@@ -3933,13 +3899,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if kind == "multinomial":
             args = ("formula_trials", "eta")
         elif kind in {"dirichlet", "dirichlet_multinomial"}:
-            phi = (
-                _index("phi", _var("response"))
-                if "phi" in self._distributional
-                or self._predictor_graph is not None
-                and "phi" in self._predictor_graph.roots
-                else _var("phi")
-            )
+            phi = self._row_value("phi", "phi", _var("response"))
             concentration = _factor(
                 (("response", "Resp"), ("component", "FormulaCategory")),
                 body=_mul(_index("mu", _var("response"), _var("component")), phi),
@@ -4231,9 +4191,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         graph = self._predictor_graph
         if graph is None:
             return
-        for name, leaf in graph.leaves.items():
+        for name in graph.leaves:
+            planned = self._predictor(f"nlpar_{name}_")
             value = emit_predictor(
-                self._predictor(f"nlpar_{name}_"),
+                planned,
                 ProgramEmission(self, statements, correlated),
                 steps,
             )
@@ -4244,7 +4205,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     f"nlpar_{name}",
                     _factor(
                         (("graph_row", "Resp"),),
-                        body=self._row_predictor(leaf, raw, _var("graph_row")),
+                        body=_index(raw, _var("graph_row"))
+                        if planned.rowwise
+                        else _var(raw),
                     ),
                 )
             )

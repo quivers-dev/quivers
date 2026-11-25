@@ -31,7 +31,7 @@ from quivers.formulas._population_coordinates import (
     PopulationTerm,
     population_coordinates,
 )
-from quivers.formulas._predictor_graph import PredictorGraph, predictor_items
+from quivers.formulas._predictor_graph import PredictorGraph
 from quivers.formulas._smooth import BasisTerm
 from quivers.formulas._term import (
     AxisDecl,
@@ -914,10 +914,19 @@ def plan_predictors(
         and the parameters only a nonlinear expression gives.
     """
     roots = {} if graph is None else graph.roots
-    leaves = frozenset() if graph is None else frozenset(graph.leaves)
+    entries: list[tuple[str, Literal["dpar", "nlpar"], str, Formula]] = [
+        ("mu", "dpar", "", formula),
+        *(
+            (name, "dpar", f"dpar_{name}_", value)
+            for name, value in distributional.items()
+        ),
+        *(
+            (name, "nlpar", f"nlpar_{name}_", value)
+            for name, value in ({} if graph is None else graph.leaves).items()
+        ),
+    ]
     predictors: list[Predictor] = []
-    for name, prefix, value in predictor_items(formula, distributional, graph):
-        role: Literal["dpar", "nlpar"] = "nlpar" if name in leaves else "dpar"
+    for name, role, prefix, value in entries:
         output = outputs.get(prefix)
         predictors.append(
             Predictor(
@@ -939,7 +948,7 @@ def plan_predictors(
                 nonlinear=role == "dpar" and name in roots,
             )
         )
-    planned = {predictor.parameter for predictor in predictors}
+    planned = {item.parameter for item in predictors if item.role == "dpar"}
     predictors.extend(
         Predictor(
             parameter=name,

@@ -7,6 +7,7 @@ import torch
 
 from quivers.dsl.compiler import Compiler
 from quivers.dsl.parser import parse
+from quivers.continuous.programs import MonadicProgram
 from quivers.inference.trace import trace
 
 DESIGN = torch.tensor(
@@ -56,11 +57,12 @@ CASES = {
 def test_a_datum_meets_a_matrix_product(name):
     """The joint density is the one of the written linear predictor."""
     inputs, body, mean = CASES[name]
-    program = (
-        Compiler(parse(HEAD.format(inputs=inputs, body=body))).compile().morphism
-    )
+    program = Compiler(parse(HEAD.format(inputs=inputs, body=body))).compile().morphism
+    assert isinstance(program, MonadicProgram)
     data = {"d": DESIGN, "o": OFFSET, "y": RESPONSE, "m": MIXING}
-    values = {key: value for key, value in data.items() if key != "m" or "m :" in inputs}
+    values = {
+        key: value for key, value in data.items() if key != "m" or "m :" in inputs
+    }
     value = trace(program, torch.zeros(1, 1), values | {"b": COEFFICIENTS}).log_joint
     assert value is not None
     normal = torch.distributions.Normal

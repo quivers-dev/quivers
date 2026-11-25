@@ -564,18 +564,23 @@ def declare_inputs(inputs: Iterable[InputDecl]) -> tuple[QiecValueParameter, ...
     tuple[QiecValueParameter, ...]
         One parameter per declared input, by section, then in order of first
         appearance.
+
+    Raises
+    ------
+    ValueError
+        If two terms declare one input with different types.
     """
     declared = tuple(item for item in inputs if item.declared)
     parameters: dict[str, QiecValueParameter] = {}
     for section in INPUT_SECTIONS:
         for item in declared:
-            if item.section == section:
-                parameters.setdefault(
-                    item.name,
-                    QiecValueParameter(
-                        name=item.name, type_expr=tensor_type(item.element, *item.axes)
-                    ),
-                )
+            if item.section != section:
+                continue
+            parameter = QiecValueParameter(
+                name=item.name, type_expr=tensor_type(item.element, *item.axes)
+            )
+            if parameters.setdefault(item.name, parameter) != parameter:
+                raise ValueError(f"terms declare input {item.name!r} with two types")
     return tuple(parameters.values())
 
 
@@ -591,8 +596,22 @@ def bind_inputs(inputs: Iterable[InputDecl]) -> dict[str, torch.Tensor]:
     -------
     dict[str, torch.Tensor]
         Values by input name.
+
+    Raises
+    ------
+    ValueError
+        If two terms bind one input to different values.
     """
-    return {item.name: item.values for item in inputs if item.values is not None}
+    bound: dict[str, torch.Tensor] = {}
+    for item in inputs:
+        if item.values is None:
+            continue
+        values = bound.setdefault(item.name, item.values)
+        if values.dtype != item.values.dtype or not torch.allclose(
+            values, item.values, rtol=0.0, atol=0.0, equal_nan=True
+        ):
+            raise ValueError(f"terms bind input {item.name!r} to two values")
+    return bound
 
 
 def catalogue_sites(terms: Iterable[Term]) -> tuple[SiteDecl, ...]:

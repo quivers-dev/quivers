@@ -318,16 +318,16 @@ class FamilyCatalog(Mapping[str, DistributionFamily]):
         result = FamilyCatalog()
         for name, semantic in self._definitions.items():
             implementation = self._implementations[name]
-            if isinstance(implementation, FamilySpec) and name in names:
-                raise ValueError(
-                    f"native family record {name!r} cannot take another name"
+            target = names.get(name, name)
+            if isinstance(implementation, FamilySpec):
+                result = result.with_family(
+                    semantic.with_(name=target), implementation.with_(name=target)
                 )
+                continue
             result = result.with_family(
-                semantic.with_(name=names.get(name, name)),
+                semantic.with_(name=target),
                 implementation,
-                support=None
-                if isinstance(implementation, FamilySpec)
-                else self._supports[name],
+                support=self._supports[name],
             )
         return result
 

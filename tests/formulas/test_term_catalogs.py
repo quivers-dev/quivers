@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 import torch
 
+from quivers.continuous.family_spec import FAMILY_REGISTRY
 from quivers.dsl.ast_nodes import ProgramDecl, SampleStep
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas import (
@@ -29,6 +30,7 @@ from quivers.formulas._latent_effects import (
 from quivers.formulas._predictor import OffsetTerm
 from quivers.formulas._term import join_catalogs
 from quivers.inference.trace import trace
+from quivers.qiec.families import FAMILIES
 
 ROWS = 24
 FRAME = pd.DataFrame(
@@ -253,3 +255,21 @@ def test_joined_catalogs_hold_every_law_once():
         "SparseCAR",
         "SparseICAR",
     }
+
+
+def test_renamed_catalogs_rename_native_records():
+    """A native record keeps its law under another name."""
+    gamma = FAMILY_REGISTRY["Gamma"].with_(name="Mine")
+    catalog = FamilyCatalog().with_family(
+        FAMILIES["Gamma"].with_(name="Mine", targets={}), gamma
+    )
+    renamed = catalog.renamed({"Mine": "Yours"})
+    arguments = {
+        name: torch.tensor(value)
+        for name, value in zip(gamma.param_names, (2.0, 3.0), strict=True)
+    }
+    value = torch.tensor([0.4, 1.2])
+    torch.testing.assert_close(
+        renamed.build("Yours", arguments).log_prob(value),
+        torch.distributions.Gamma(2.0, 3.0).log_prob(value),
+    )
