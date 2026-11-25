@@ -7,6 +7,7 @@ from typing import Protocol, cast
 
 import torch
 
+from quivers._positions import demand
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.plate import VectorisedObserve
 
@@ -32,8 +33,10 @@ def checked_weights(
     weights = torch.as_tensor(value, device=input.device)
     if not weights.is_floating_point() or weights.is_complex():
         raise TypeError("observation weights require real-valued floating data")
-    if not bool((torch.isfinite(weights) & (weights >= 0)).all()):
-        raise ValueError("observation weights must be finite and nonnegative")
+    demand(
+        torch.isfinite(weights) & (weights >= 0),
+        lambda: ValueError("observation weights must be finite and nonnegative"),
+    )
     if weights.numel() == 1:
         return weights.reshape(())
     if rows is None or tuple(weights.shape) != (rows,):

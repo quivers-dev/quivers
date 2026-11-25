@@ -31,6 +31,7 @@ from typing import TypeIs
 
 import torch
 
+from quivers._positions import evaluating, lift, map_positions
 from quivers.continuous.morphisms import ContinuousMorphism, MarginalizedFactor
 from quivers.core.morphisms import extract_morphism
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
@@ -47,6 +48,7 @@ from quivers.effects.base import (
     RunContext,
     _handler_stack,
 )
+from quivers.effects.batching import batching_obstacles, draws_at_random
 from quivers.effects.checked_program import CheckedProgram
 from quivers.effects.program_module import (
     INPUT_NAME,
@@ -1606,7 +1608,11 @@ class _HostSteps:
             return env[spec.value]
         if callable(spec.value):
             stripped, carried = self._one_run(step, env)
-            value = spec.value(stripped)
+            value = (
+                lift(spec.value, f"let step {spec.name!r}", stripped)
+                if spec.batched
+                else spec.value(stripped)
+            )
             if isinstance(value, ChartView | CorpusChart):
                 # The checked program binds a deduction's answer, the
                 # inside weight of its goal.
@@ -1641,7 +1647,11 @@ class _HostSteps:
             self.axis.record(step.program, spec.name, True)
             return torch.zeros(self.x.shape[0], device=self.x.device)
         stripped, carried = self._one_run(step, _environment(step, argument))
-        value = spec.score(stripped)
+        value = (
+            lift(spec.score, f"score step {spec.name!r}", stripped)
+            if spec.batched
+            else spec.score(stripped)
+        )
         if carried:
             value = _with_run_axis(value)
         self.axis.record(step.program, spec.name, carried)
@@ -2389,16 +2399,14 @@ def run_program(
     return _stack_runs(program, outputs, axis)
 
 
-def _run_slice(
-    kernel: ProgramKernel, label: str, value: torch.Tensor, runs: int, index: int
-) -> torch.Tensor:
-    """One run's value of a site given for every run of a call.
+def _given_per_run(
+    kernel: ProgramKernel, label: str, value: torch.Tensor, runs: int
+) -> bool:
+    """Whether a site's value is given once per run of a call.
 
     A site's value for a call of ``runs`` runs is laid out either one
     value per run, along a leading axis of length ``runs`` ahead of the
-    value one run takes, or as one value every run shares. A plated
-    site's one-run value holds its plate's rows; any other site's leads
-    with a run axis of length one.
+    value one run takes, or as one value every run shares.
 
     Parameters
     ----------
@@ -2410,13 +2418,11 @@ def _run_slice(
         The value given.
     runs : int
         The number of runs.
-    index : int
-        The run.
 
     Returns
     -------
-    torch.Tensor
-        The run's value.
+    bool
+        ``True`` for one value per run.
 
     Raises
     ------
@@ -2424,47 +2430,25 @@ def _run_slice(
         If the value is laid out neither way.
     """
     morphism = _site_morphism(kernel, label)
+    leading = runs > 1 and value.dim() >= 1 and int(value.shape[0]) == runs
     if isinstance(morphism, MarginalizedFactor):
         # The rows a marginalized block observes, which the block's
         # integrated score reads: one set per run along a leading axis
         # of length ``runs``, or one set every run shares.
-        if runs > 1 and value.dim() >= 2 and int(value.shape[0]) == runs:
-            return value[index]
-        return value
+        return leading and value.dim() >= 2
     if isinstance(morphism, PlateDraw | VectorisedObserve):
         single = _plated_numel(morphism)
-        if (
-            runs > 1
-            and value.dim() >= 1
-            and int(value.shape[0]) == runs
-            and value.numel() == runs * single
-        ):
-            return _plated_value(morphism, value[index])
-        if value.numel() == single:
-            return _plated_value(morphism, value)
-        if runs == 1:
-            return value
+        if leading and value.numel() == runs * single:
+            return True
+        if value.numel() == single or runs == 1:
+            return False
         layout = f"{single} elements, or {runs} runs of {single}"
     else:
         single = _event_numel(morphism)
-        if single is not None and value.numel() == single:
-            # One value every run shares, at one run's layout: led by
-            # the run axis of length one.
-            if (
-                not _declared_event(morphism, value)
-                and value.dim() >= 1
-                and int(value.shape[0]) == 1
-            ):
-                return value
-            return value.unsqueeze(0)
-        if runs == 1:
-            return value
-        if (
-            value.dim() >= 1
-            and int(value.shape[0]) == runs
-            and (single is None or value.numel() == runs * single)
-        ):
-            return value[index : index + 1]
+        if single is not None and value.numel() == single or runs == 1:
+            return False
+        if leading and (single is None or value.numel() == runs * single):
+            return True
         layout = (
             f"{runs} runs of one value"
             if single is None
@@ -2475,6 +2459,83 @@ def _run_slice(
         f"of {runs} rows runs the program {runs} times, so its value has "
         f"{layout}"
     )
+
+
+def _run_value(
+    kernel: ProgramKernel, label: str, value: torch.Tensor, per_run: bool
+) -> torch.Tensor:
+    """One run's value of a site, at the layout the run takes it in.
+
+    A plated site's one-run value holds its plate's rows; any other
+    site's leads with a run axis of length one.
+
+    Parameters
+    ----------
+    kernel : ProgramKernel
+        The program's encoding, which names each site's morphism.
+    label : str
+        The site's label or occurrence address.
+    value : torch.Tensor
+        The run's entry of a value given per run, or the value every run
+        shares.
+    per_run : bool
+        Which of the two it is.
+
+    Returns
+    -------
+    torch.Tensor
+        The run's value.
+    """
+    morphism = _site_morphism(kernel, label)
+    if isinstance(morphism, MarginalizedFactor):
+        return value
+    if isinstance(morphism, PlateDraw | VectorisedObserve):
+        if per_run or value.numel() == _plated_numel(morphism):
+            return _plated_value(morphism, value)
+        return value
+    if per_run:
+        return value.unsqueeze(0)
+    single = _event_numel(morphism)
+    if single is None or value.numel() != single:
+        return value
+    # One value every run shares, at one run's layout: led by the run
+    # axis of length one.
+    led = value.dim() >= 1 and int(value.shape[0]) == 1
+    if led and not _declared_event(morphism, value):
+        return value
+    return value.unsqueeze(0)
+
+
+def _run_slice(
+    kernel: ProgramKernel, label: str, value: torch.Tensor, runs: int, index: int
+) -> torch.Tensor:
+    """One run's value of a site given for every run of a call.
+
+    Parameters
+    ----------
+    kernel : ProgramKernel
+        The program's encoding, which names each site's morphism.
+    label : str
+        The site's label or occurrence address.
+    value : torch.Tensor
+        The value given, in a layout `_given_per_run` describes.
+    runs : int
+        The number of runs.
+    index : int
+        The run.
+
+    Returns
+    -------
+    torch.Tensor
+        The run's value, at the layout `_run_value` gives it.
+
+    Raises
+    ------
+    ValueError
+        If the value is laid out neither way.
+    """
+    per_run = _given_per_run(kernel, label, value, runs)
+    return _run_value(kernel, label, value[index] if per_run else value, per_run)
 
 
 def _vectorized_sites(
@@ -3020,6 +3081,126 @@ def cast_dict(value: torch.Tensor | dict[str, torch.Tensor]) -> dict[str, torch.
     raise TypeError("the program returns a single tensor, not named values")
 
 
+def _mapped_joint(
+    program: MonadicProgram, x: torch.Tensor, values: Mapping[str, torch.Tensor]
+) -> torch.Tensor | None:
+    """The joint of every run of a call, scored in one run over them all.
+
+    The runs are scored together, each value given per run mapped along
+    the run axis, when every step declares that it can be evaluated at
+    many positions, none draws at random, and no host datum is given per
+    run. Each run's joint is then its own up to rounding, and a run that
+    raises raises its own error.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+    x : torch.Tensor
+        Program input, one row per run.
+    values : Mapping[str, torch.Tensor]
+        The values given, as `log_joint` takes them.
+
+    Returns
+    -------
+    torch.Tensor | None
+        The joint log density of each run, or ``None`` when the runs are
+        scored one by one, or by `_vectorized_sites`: also inside an
+        evaluation at many positions, which the runs are then part of.
+
+    Raises
+    ------
+    ValueError
+        If a value is refused as `run_program` refuses it.
+    Exception
+        The error the first run to fail raises.
+    """
+    runs = int(x.shape[0]) if x.dim() else 1
+    if runs <= 1 or _handler_stack() or evaluating():
+        return None
+    sites, supplied, data = _split_observations(program, values)
+    per_run_data = check_host_data(program, data, runs=runs)
+    if any(per_run_data.values()):
+        return None
+    kernel = _cached_kernel(program, tuple(sorted(data)))
+    _check_sequence_layouts(kernel, values)
+    if _vectorized_sites(program, kernel, sites, supplied, data, runs) is not None:
+        return None
+    per_run = {
+        label: _given_per_run(kernel, label, value, runs)
+        for label, value in sites.items()
+    } | {
+        name: value.dim() >= 1 and int(value.shape[0]) == runs
+        for name, value in supplied.items()
+    }
+    varying = {name for name, given in per_run.items() if given}
+    entry = {INPUT_NAME, *(program._params or ())}
+    if batching_obstacles(program, varying | entry, values) or draws_at_random(program):
+        return None
+
+    def run_values(
+        of: Callable[[str, torch.Tensor], torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        """One run's values.
+
+        Parameters
+        ----------
+        of : Callable[[str, torch.Tensor], torch.Tensor]
+            The run's entry of a value given per run.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            The values at one run's layout.
+        """
+        own = {
+            label: _run_value(
+                kernel,
+                label,
+                of(label, value) if per_run[label] else value,
+                per_run[label],
+            )
+            for label, value in sites.items()
+        }
+        lets = {
+            name: of(name, value).unsqueeze(0) if per_run[name] else value
+            for name, value in supplied.items()
+        }
+        return own | lets | dict(data)
+
+    def joint(run: tuple[torch.Tensor, dict[str, torch.Tensor]]) -> torch.Tensor:
+        """The joint of one run.
+
+        Parameters
+        ----------
+        run : tuple[torch.Tensor, dict[str, torch.Tensor]]
+            The run's input row and its entries of the values given per
+            run.
+
+        Returns
+        -------
+        torch.Tensor
+            The joint, a scalar.
+        """
+        row, own = run
+        one = run_values(lambda name, _value: own[name])
+        return log_joint(program, row.unsqueeze(0), one).squeeze(0)
+
+    given = {**sites, **supplied}
+    mapped = map_positions(joint, (x, {name: given[name] for name in varying}))
+    if not bool(mapped.accepted.all()):
+        index = int((~mapped.accepted).nonzero()[0])
+        log_joint(
+            program,
+            x[index : index + 1],
+            run_values(lambda _name, value: value[index]),
+        )
+        raise RuntimeError(
+            f"run {index} passes every check alone that it fails among {runs} runs"
+        )
+    return mapped.values
+
+
 def log_joint(
     program: MonadicProgram,
     x: torch.Tensor,
@@ -3062,6 +3243,9 @@ def log_joint(
         ):
             if label in values and name not in values:
                 values[name] = values[label]
+    mapped = _mapped_joint(program, x, values)
+    if mapped is not None:
+        return mapped
     with TraceHandler() as handler:
         run_program(program, x, values)
     for name, site in handler.trace.sites.items():

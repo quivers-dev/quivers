@@ -42,6 +42,7 @@ from typing import Any
 import didactic.api as dx
 import torch
 
+from quivers._positions import anywhere, depends_on_position
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
@@ -314,6 +315,34 @@ class Chart(ABC):
         """
         ...
 
+    def propagated(
+        self,
+        before: torch.Tensor,
+        item: Item,
+        weight: torch.Tensor,
+        semiring: ChartSemiring,
+    ) -> torch.Tensor:
+        """The increment of an update that its consequences take.
+
+        Parameters
+        ----------
+        before : torch.Tensor
+            The item's weight before the update.
+        item : Item
+            The item, whose stored weight the update changed.
+        weight : torch.Tensor
+            The increment.
+        semiring : ChartSemiring
+            The semiring.
+
+        Returns
+        -------
+        torch.Tensor
+            The increment itself.
+        """
+        del before, item, semiring
+        return weight
+
     @abstractmethod
     def get(self, item: Item) -> torch.Tensor | None:
         """Return the chart's weight at an item, or ``None`` if absent.
@@ -435,13 +464,59 @@ class HashChart(Chart):
         existing = self._store[item]
         stacked = torch.stack([existing, weight])
         merged = semiring.plus(stacked, dim=0)
-        if self._tolerance > 0.0:
-            delta = (merged.detach() - existing.detach()).abs().max()
-            changed = bool(float(delta) > self._tolerance)
-        else:
-            changed = not torch.equal(merged, existing)
         self._store[item] = merged
-        return changed
+        return anywhere(self._changed(existing, merged))
+
+    def _changed(self, before: torch.Tensor, after: torch.Tensor) -> torch.Tensor:
+        """Whether a stored weight changed by more than the tolerance.
+
+        Parameters
+        ----------
+        before : torch.Tensor
+            The weight before an update.
+        after : torch.Tensor
+            The weight after it.
+
+        Returns
+        -------
+        torch.Tensor
+            A scalar Boolean.
+        """
+        if self._tolerance > 0.0:
+            return (after.detach() - before.detach()).abs().amax() > self._tolerance
+        return (after != before).any()
+
+    def propagated(
+        self,
+        before: torch.Tensor,
+        item: Item,
+        weight: torch.Tensor,
+        semiring: ChartSemiring,
+    ) -> torch.Tensor:
+        """The increment of an update that its consequences take.
+
+        Parameters
+        ----------
+        before : torch.Tensor
+            The item's weight before the update.
+        item : Item
+            The item.
+        weight : torch.Tensor
+            The increment.
+        semiring : ChartSemiring
+            The semiring, whose zero is the increment of no change.
+
+        Returns
+        -------
+        torch.Tensor
+            The increment. Over many parameter values, it is zero at the
+            values where the stored weight did not change, whose agenda
+            would not have gone on from here.
+        """
+        changed = self._changed(before, self._store[item])
+        if not depends_on_position(changed):
+            return weight
+        return torch.where(changed, weight, float(semiring.zero))
 
     def get(self, item: Item) -> torch.Tensor | None:
         """Return the stored weight at an item.
@@ -1135,6 +1210,8 @@ def run_agenda(
         changed = chart.insert_or_aggregate(item, delta, semiring)
         if not changed:
             continue
+        if old is not None:
+            delta = chart.propagated(old, item, delta, semiring)
         update = _Update(item=item, delta=delta, old=old)
         # Fire every rule for which this item could be a premise.
         for rule_index, rule in enumerate(rules):
@@ -1558,6 +1635,11 @@ class DeductionSystem(QiecModel):
     losses : dict[str, LossRegistry]
         Shared loss registries keyed by deduction name. Compilation can attach
         a registry after another program has captured this system.
+    mappable : bool
+        Whether the chart can be filled at many parameter values in one
+        pass: the order of the agenda, the rules that fire, and the axioms
+        depend on the items alone, and the weights are computed by tensor
+        operations. The DSL compiler declares it of the systems it builds.
     """
 
     rules: tuple[InferenceRule, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -1574,6 +1656,7 @@ class DeductionSystem(QiecModel):
     )
     max_iterations: int = 100_000
     tolerance: float = 0.0
+    mappable: bool = False
     productions: ProductionWeights | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )

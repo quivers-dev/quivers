@@ -199,7 +199,7 @@ def _project(model, selected, *, keep_return):
                 if isinstance(step, Score) and step.role == "likelihood":
                     # A conditional prior may consume the score's value even
                     # though its likelihood contribution is disabled.
-                    step = Let(name=step.name, value=step.score)
+                    step = Let(name=step.name, value=step.score, batched=step.batched)
         elif isinstance(step, Call):
             if isinstance(step.program, MonadicProgram):
                 required |= bool(_labels(step.program) & selected) or _has_potential(

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import operator
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import cast
 
 import torch
@@ -47,6 +47,12 @@ from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import Draw, Let, Observe, Score
 from quivers.continuous.programs import MonadicProgram, _evaluator
 from quivers.effects.base import RunContext, _handler_stack
+from quivers.effects.batching import (
+    BatchingObstacle,
+    UnbatchableProgramError,
+    batching_obstacles,
+    inner_names,
+)
 from quivers.effects.interpreter import (
     REFERENCE_EVALUATOR,
     _canonical,
@@ -898,6 +904,79 @@ def _machine_obstacle(program: MonadicProgram) -> str | None:
     if _evaluator() is not REFERENCE_EVALUATOR:
         return "another evaluator is installed"
     return None
+
+
+def joint_obstacle(model: torch.nn.Module) -> str | None:
+    """Why a model's log joint cannot be evaluated at many parameter values.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The model, all of whose sites are given values.
+
+    Returns
+    -------
+    str | None
+        The reason, or ``None`` for a program whose every step declares
+        that it can.
+    """
+    if not isinstance(model, MonadicProgram):
+        return f"the model is a {type(model).__name__}, not a MonadicProgram"
+    reason = _machine_obstacle(model)
+    if reason is not None:
+        return reason
+    obstacles = batching_obstacles(model, inner_names(model), ())
+    if not obstacles:
+        return None
+    return "; ".join(f"{item.step}: {item.reason}" for item in obstacles)
+
+
+def require_own_joint(program: MonadicProgram) -> None:
+    """Refuse to score at many positions a joint that is not the steps' alone.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Raises
+    ------
+    UnbatchableProgramError
+        If the program's joint is not the one its steps define under the
+        reference evaluator with no handler.
+    """
+    reason = _machine_obstacle(program)
+    if reason is not None:
+        raise UnbatchableProgramError(
+            (BatchingObstacle(step="the program", reason=reason),)
+        )
+
+
+def require_batchable(
+    program: MonadicProgram, latents: Collection[str], given: Collection[str]
+) -> None:
+    """Refuse a program that cannot be scored at many positions.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+    latents : Collection[str]
+        The sites whose values the position gives.
+    given : Collection[str]
+        The sites and host data whose values every position shares.
+
+    Raises
+    ------
+    UnbatchableProgramError
+        If a step does not declare that it can be evaluated at many
+        positions, or the program's joint is not the one its steps
+        define under the reference evaluator with no handler.
+    """
+    require_own_joint(program)
+    obstacles = batching_obstacles(program, latents, given)
+    if obstacles:
+        raise UnbatchableProgramError(obstacles)
 
 
 def prepare_joint(

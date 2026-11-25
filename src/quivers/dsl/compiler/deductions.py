@@ -1456,6 +1456,7 @@ class _DeductionsMixin:
                 int(max_iters_opt) if max_iters_opt is not None else 100_000
             ),
             tolerance=tol,
+            mappable=True,
             productions=productions,
             production_refusal=(
                 analysis.refusals[0].message if analysis.refusals else None

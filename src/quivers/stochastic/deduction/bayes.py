@@ -39,7 +39,7 @@ from collections.abc import Callable, Sequence
 
 import torch
 
-from quivers.continuous.program_steps import Draw, Score, Step, reading
+from quivers.continuous.program_steps import Draw, Score, Step, mappable, reading
 from quivers.continuous.programs import MonadicProgram
 from quivers.core.objects import Unit
 from quivers.stochastic.deduction._internal import build_locator, materialise_parameters
@@ -130,7 +130,17 @@ def nuts_program_from_deduction(
                 log_z = log_z + _ded(sentence).goal_weight()
         return log_z.reshape(1)
 
-    steps.append(Score(name="log_Z", score=reading(_score_fn, site_names)))
+    obstacle = (
+        None
+        if ded.mappable
+        else f"deduction {ded.name!r} does not declare its chart mappable"
+    )
+    steps.append(
+        Score(
+            name="log_Z",
+            score=mappable(reading(_score_fn, site_names), obstacle),
+        )
+    )
     model = MonadicProgram(
         domain=Unit,
         codomain=Unit,
