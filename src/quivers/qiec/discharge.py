@@ -97,7 +97,8 @@ DISCHARGE_STATEMENTS = 2048
 """The most statements a discharged computation may have.
 
 A clause that resumes ``m`` times copies the rest of the computation ``m``
-times, so ``n`` such requests in sequence yield ``m ** n`` copies. A
+times, so ``n`` such requests in sequence yield ``m ** n`` copies, and a
+conditional whose branches differ in ``k`` values is stated ``k`` times. A
 computation past this bound is left as it is.
 """
 
@@ -632,6 +633,22 @@ def _pure(term: Computation) -> bool:
     )
 
 
+def _size(term: Computation) -> int:
+    """The number of statements of a computation.
+
+    Parameters
+    ----------
+    term : Computation
+        The computation.
+
+    Returns
+    -------
+    int
+        The number of its terms that are not sequences.
+    """
+    return sum(not isinstance(item, Bind) for item in _subterms(term))
+
+
 def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
     """The statements a rewritten term keeps.
 
@@ -816,7 +833,10 @@ class _Discharger:
             parameter.name: Var(local=parameter) for parameter in self.owner.parameters
         }
         path = self.reduce(self.owner.body, environment, ())
-        return self.close(path, self.owner.type.result)
+        body = self.close(path, self.owner.type.result)
+        self.statements = 0
+        self.count(_size(body))
+        return body
 
     # ------------------------------------------------------------------
     # names and bounds
@@ -872,7 +892,8 @@ class _Discharger:
                 "growth",
                 f"has more than {DISCHARGE_STATEMENTS} statements once its "
                 f"handlers are discharged, since each resumption after the first "
-                f"of a clause copies the rest of the handled computation",
+                f"of a clause copies the rest of the handled computation, and a "
+                f"conditional is stated for each value its branches differ in",
                 self.owner.origin,
             )
 
@@ -1716,7 +1737,11 @@ class _Discharger:
         stated = self.stated(
             fork.rebuild, arrivals, differing, duplicable=fork.duplicable
         )
-        self.count(len(stated))
+        # The branches' own statements are charged already, so the
+        # conditional is charged for itself and for the copies it makes.
+        copied = sum(_size(first) for _, first in stated)
+        charged = sum(_size(first) for item in arrivals for _, first in item.statements)
+        self.count(max(copied - charged, 0))
         return _Arrival(
             join=first.join,
             resumed=first.resumed,

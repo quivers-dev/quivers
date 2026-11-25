@@ -333,6 +333,7 @@ Discharge terminates. A callee is entered only when it is not being entered alre
 finite tree of returns, requests, and conditionals. A deep handler is the fold of §6 over that tree: it
 replaces each request by its clause, with the folded subtrees in place of the resumptions, and the fold of a
 finite tree by finite clauses is finite. The result grows by a factor of $m$ at each request whose clause
-resumes $m$ times, so when every clause resumes at most once, and the branches of each conditional return to
-one context, it is linear in the number of requests and the sizes of their clauses. A computation that passes 2048 statements, or 65536 steps of the rules, is left
+resumes $m$ times, and a conditional whose branches differ in $k$ values is stated $k$ times. When every
+clause resumes at most once, and the branches of each conditional return to one context and differ in one
+value, it is linear in the number of requests and the sizes of their clauses. A computation that passes 2048 statements, or 65536 steps of the rules, is left
 as it is.

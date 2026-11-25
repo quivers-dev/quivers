@@ -89,6 +89,10 @@ def _discharged(module: QiecModule, name: str) -> NamedComputation:
     assert actual.result == computation.type.result
     declared = {entry.instance for entry in computation.type.effects.entries}
     assert {entry.instance for entry in actual.effects.entries} <= declared
+    statements = [
+        term for term in _terms(computation.body) if not isinstance(term, Bind)
+    ]
+    assert len(statements) <= DISCHARGE_STATEMENTS
     return computation
 
 
@@ -628,6 +632,18 @@ define subject(a : Real, b : Real) : Real !{} =
     a, b = 0.3137, -0.7171
     value = _agree(module, "subject", (a, b))
     assert value == pytest.approx(b - 2.0 * a + a + 0.5 * b)
+
+
+def test_the_bound_holds_of_the_body_and_not_of_the_steps_taken() -> None:
+    """Copies of a conditional's branches count against the bound.
+
+    Seed 23 reduces in few steps to a body whose conditionals, nested and
+    each stated once per value their branches differ in, pass the bound.
+    """
+    module = _module(HANDLERS + random_body(23))
+    obstacle = discharge_module(module).obstacle("handled")
+    assert obstacle is not None
+    assert obstacle.kind == "growth"
 
 
 def test_a_module_without_handlers_is_returned_as_it_is() -> None:

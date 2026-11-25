@@ -283,7 +283,8 @@ A computation keeps its handlers, and the diagnostic names the handler and the c
 - it analyzes a family value known only at run time with `case`, and the branches do not continue
   alike;
 - the rewritten computation would have more than 2048 statements. A clause that resumes $m$ times
-  copies the rest of the computation $m$ times, so $n$ such requests in sequence make $m^n$ copies.
+  copies the rest of the computation $m$ times, so $n$ such requests in sequence make $m^n$ copies,
+  and a conditional whose branches differ in $k$ values is stated $k$ times.
 
 The [semantics](../../semantics/effects.md#82-static-discharge) states the rewriting and why it keeps
 the value of the computation.
