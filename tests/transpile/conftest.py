@@ -59,6 +59,28 @@ _DOCKER_IMAGE_TAGS = (
 )
 
 
+def _needed_image_tags() -> tuple[str, ...]:
+    """The tags of the images this run prepares.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The tags the run names, or every tag when it names none.
+
+    Raises
+    ------
+    RuntimeError
+        If the run names an image there is none of.
+    """
+    tags = _docker.named_image_tags()
+    if tags is None:
+        return _DOCKER_IMAGE_TAGS
+    unknown = sorted(set(tags) - set(_DOCKER_IMAGE_TAGS))
+    if unknown:
+        raise RuntimeError(f"the run names unknown images: {unknown}")
+    return tags
+
+
 #: Test modules whose cells launch a probe container. Their tests are
 #: marked `probe` at collection, so a tier that trades coverage for
 #: turnaround can deselect them with `-m "not probe"` while the tier
@@ -189,7 +211,7 @@ def _build_missing_docker_images(tags: tuple[str, ...]) -> None:
     exits non-zero or if any image is still missing after the build,
     so a test cannot silently skip on a missing image.
     """
-    if not [t for t in tags if not _docker.image_available(t)]:
+    if not [t for t in tags if not _docker.image_present(t)]:
         return
     with _image_build_lock():
         _build_missing_docker_images_locked(tags)
@@ -199,7 +221,7 @@ def _build_missing_docker_images_locked(tags: tuple[str, ...]) -> None:
     """Build under the lock. The caller's check is a fast path taken
     without it, so what is missing is established again here: another
     worker may have built everything while this one waited."""
-    missing = [t for t in tags if not _docker.image_available(t)]
+    missing = [t for t in tags if not _docker.image_present(t)]
     if not missing:
         return
     if not _DOCKER_IMAGE_BUILD_SCRIPT.exists():
@@ -208,7 +230,11 @@ def _build_missing_docker_images_locked(tags: tuple[str, ...]) -> None:
             f"{_DOCKER_IMAGE_BUILD_SCRIPT} not found"
         )
     completed = subprocess.run(
-        ["bash", str(_DOCKER_IMAGE_BUILD_SCRIPT)],
+        [
+            "bash",
+            str(_DOCKER_IMAGE_BUILD_SCRIPT),
+            *(tag.removeprefix(_docker.IMAGE_PREFIX) for tag in missing),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -218,7 +244,7 @@ def _build_missing_docker_images_locked(tags: tuple[str, ...]) -> None:
             f"docker image build failed (exit {completed.returncode}); "
             f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
         )
-    still_missing = [t for t in tags if not _docker.image_available(t)]
+    still_missing = [t for t in tags if not _docker.image_present(t)]
     if still_missing:
         raise RuntimeError(
             f"docker image build completed but images still missing: "
@@ -245,7 +271,7 @@ def _ensure_docker_environment() -> None:
     if os.environ.get("QUIVERS_SKIP_DOCKER") == "1":
         return
     _start_docker_daemon()
-    _build_missing_docker_images(_DOCKER_IMAGE_TAGS)
+    _build_missing_docker_images(_needed_image_tags())
 
 
 def pytest_configure(config: pytest.Config) -> None:
