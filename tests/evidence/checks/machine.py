@@ -14,7 +14,7 @@ from tests.evidence.compare import ELEMENTARY, Accuracy, Mismatch, compare_numbe
 from tests.evidence.oracles import derivations
 from tests.evidence.oracles.derivations import RuleRow, Tree, Variable
 from tests.evidence.problems import logarithm
-from tests.evidence.sources import program
+from tests.evidence.sources import deduction, program
 
 JOIN = Fraction(2, 5)
 """The weight of the binary rule."""
@@ -197,9 +197,9 @@ def check_nonlexical(semiring: str) -> None:
     }
     entries: list[bool | int | float]
     if semiring == "Boolean":
-        entries, wanted = [True, True], 1.0
+        entries, wanted = list[bool | int | float]([True, True]), 1.0
     elif semiring == "Counting":
-        entries, wanted = [1, 1], float(len(trees))
+        entries, wanted = list[bool | int | float]([1, 1]), float(len(trees))
     else:
         entries = [logarithm(weight) for weight in AXIOM_WEIGHTS]
         wanted = logarithm(
@@ -328,7 +328,7 @@ def check_normalized() -> None:
     Mismatch
         If the result differs from its reference.
     """
-    table = program("normalized").deductions["G"].production_log_probs()
+    table = deduction(program("normalized"), "G").production_log_probs()
     if not table:
         raise Mismatch("support", math.inf, "no production group")
     for label, group in table.items():

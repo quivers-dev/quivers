@@ -393,7 +393,7 @@ def consume(row: str, name: str) -> Result:
                 log_prior=consumers.PROBLEMS["beta"].log_prior,
                 log_likelihood=consumers.PROBLEMS["beta"].log_likelihood,
             )
-        model = program(name).morphism
+        model = problem.model()
         x, data = problem.data()
         if row in ("trace", "replay"):
             first = trace(model, x, observations=data)
@@ -404,7 +404,7 @@ def consume(row: str, name: str) -> Result:
             return [first.log_joint.detach()]
         if row == "latent-registry":
             registry = consumers.LatentRegistry.from_model(model, set(data))
-            return [registry.zero_unconstrained()]
+            return [registry.flatten_unconstrained(registry.zero_unconstrained())]
         if row == "potential":
             registry = consumers.LatentRegistry.from_model(model, set(data))
             potential = PotentialFn(model, registry, x, data)

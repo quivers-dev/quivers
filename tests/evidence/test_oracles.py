@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Mapping
 from fractions import Fraction
 
 import pytest
@@ -207,12 +208,12 @@ def test_logarithmic_gradients_agree_with_automatic_differentiation() -> None:
     proofs = trees_of("diamond")
     rational = problem.rational()
 
-    def log_weight(point: dict[str, torch.Tensor]) -> torch.Tensor:
+    def log_weight(point: Mapping[str, torch.Tensor]) -> torch.Tensor:
         """The log weight as a function of log weights.
 
         Parameters
         ----------
-        point : dict of str to torch.Tensor
+        point : Mapping of str to torch.Tensor
             The log weights.
 
         Returns

@@ -15,7 +15,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from types import CodeType, FunctionType
-from typing import Protocol
+from typing import Protocol, cast
 
 import didactic.api as dx
 import torch
@@ -157,6 +157,40 @@ type DispatchValue = (
     | Mapping[str, DispatchValue]
 )
 """An argument or a result of a dispatched operation."""
+
+
+class MemoryEvent(Protocol):
+    """An event of the profiler, as its allocator reports it."""
+
+    def name(self) -> str:
+        """The event's name.
+
+        Returns
+        -------
+        str
+            ``"[memory]"`` for an allocation or a release.
+        """
+        ...
+
+    def start_ns(self) -> int:
+        """When the event happened.
+
+        Returns
+        -------
+        int
+            Nanoseconds.
+        """
+        ...
+
+    def nbytes(self) -> int:
+        """The bytes allocated, negative for a release.
+
+        Returns
+        -------
+        int
+            The bytes.
+        """
+        ...
 
 
 class Operation(Protocol):
@@ -441,7 +475,9 @@ def memory(body: Callable[[], torch.Tensor | None]) -> WorkReport:
     total = 0
     recorder = session.profiler
     assert recorder is not None
-    events = recorder.kineto_results.events()
+    results = recorder.kineto_results
+    assert results is not None
+    events = cast(list[MemoryEvent], results.events())
     for event in sorted(
         (e for e in events if e.name() == "[memory]"), key=lambda e: e.start_ns()
     ):

@@ -83,8 +83,8 @@ from tests.evidence.sources import program
 type Values = Mapping[str, torch.Tensor]
 """One draw of every latent, without batch axes."""
 
-type Data = dict[str, torch.Tensor | list[list[str]]]
-"""The observations of a problem."""
+type Data = dict[str, torch.Tensor]
+"""The observations of a problem, as the consumers annotate them."""
 
 CORPUS = (("a", "b"), ("b", "a"))
 """The sentences of the grammar problem."""
@@ -143,7 +143,10 @@ class ConsumerProblem(ValueModel):
         if self.name == "hmm":
             return torch.tensor([SYMBOLS]), {}
         if self.name == "parsed":
-            return x, {"corpus": [list(sentence) for sentence in CORPUS]}
+            # The consumers read a corpus of words through an observation
+            # whose annotation names tensors only.
+            corpus = cast(torch.Tensor, [list(sentence) for sentence in CORPUS])
+            return x, {"corpus": corpus}
         return x, {"y": torch.tensor([0.5])}
 
     def log_joint(self, values: Values) -> torch.Tensor:

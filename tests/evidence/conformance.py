@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from _pytest.mark import ParameterSet
 
 from tests.evidence.checks.all import CHECKS
 
 
-def parameters(*prefixes: str) -> list[pytest.param]:
+def parameters(*prefixes: str) -> list[ParameterSet]:
     """The registered checks below some prefixes, the slow ones marked.
 
     Parameters
@@ -17,7 +18,7 @@ def parameters(*prefixes: str) -> list[pytest.param]:
 
     Returns
     -------
-    list of pytest.param
+    list of ParameterSet
         One parameter per check.
     """
     return [

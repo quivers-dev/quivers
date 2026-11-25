@@ -11,6 +11,7 @@ from contextlib import contextmanager
 
 from quivers.dsl import loads
 from quivers.program import Program
+from quivers.stochastic.agenda import DeductionSystem
 
 LEXICAL = """
 object Term : FinSet 4
@@ -276,3 +277,23 @@ def replaced(name: str, text: str) -> Iterator[None]:
         yield
     finally:
         SOURCES[name] = original
+
+
+def deduction(compiled: Program, name: str) -> DeductionSystem:
+    """A deduction system of a compiled program.
+
+    Parameters
+    ----------
+    compiled : Program
+        The program.
+    name : str
+        The deduction's name.
+
+    Returns
+    -------
+    DeductionSystem
+        The system.
+    """
+    found = vars(compiled)["deductions"][name]
+    assert isinstance(found, DeductionSystem)
+    return found

@@ -17,10 +17,11 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping
 from fractions import Fraction
+from typing import cast
 
 import didactic.api as dx
 import torch
-from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, HeldValue, ValueModel
 from quivers.core.algebras import (
     GODEL,
     LogProbAlgebra,
@@ -32,7 +33,7 @@ from quivers.core.objects import FinSet, ProductSet
 from quivers.core.wiring import EinsumWiring
 from quivers.dsl import loads
 from quivers.dsl.ast_nodes import LetExprCall, LetExprVar, SchemaDecl, TypeName
-from quivers.dsl.compiler.programs import _ProgramsMixin
+from quivers.dsl.compiler.programs import LetValue, _ProgramsMixin
 from quivers.effects.checked_program import CheckedProgram
 from quivers.enriched.kan_extensions import Projection, left_kan
 from quivers.inference import MCMC, AutoLaplaceApproximation, MetropolisKernel
@@ -89,7 +90,7 @@ from tests.evidence.oracles import closed_forms, derivations, exact, gradients
 from tests.evidence.oracles.derivations import Variable
 from tests.evidence.problems import logarithm
 from tests.evidence.sources import LEXICAL as LEXICAL_SOURCE
-from tests.evidence.sources import program
+from tests.evidence.sources import deduction, program
 
 type Facts = dict[str, str]
 """Named facts."""
@@ -1095,7 +1096,7 @@ def _parameters_while_firing() -> Facts:
     Facts
         The numbers.
     """
-    system = loads(BINDING_WEIGHTS).deductions["G"]
+    system = deduction(loads(BINDING_WEIGHTS), "G")
     counts = [len(list(system.named_parameters()))]
     for sentence in (["f", "a"], ["g", "f", "a"]):
         system(sentence)
@@ -1973,12 +1974,12 @@ def _composed() -> Facts:
             The deduction.
         """
 
-        def inject(value: str) -> list[tuple[Item, torch.Tensor]]:
+        def inject(value: HeldValue) -> list[tuple[Item, torch.Tensor]]:
             """Report the input and return the axioms.
 
             Parameters
             ----------
-            value : str
+            value : HeldValue
                 The input.
 
             Returns
@@ -1999,12 +2000,16 @@ def _composed() -> Facts:
     build = _ProgramsMixin._compile_let_expr(
         LetExprCall(func="compose", args=(LetExprVar(name="f"), LetExprVar(name="g")))
     )
-    composed = build(
+    # The compiler hands deduction systems to `compose` through values its
+    # annotation does not list.
+    systems = cast(
+        dict[str, LetValue],
         {
             "f": system("first", [(("G", "x"), scalar(1.0))]),
             "g": system("second", []),
-        }
+        },
     )
+    composed = build(systems)
     assert isinstance(composed, DeductionSystem)
     result = composed.run("input")
     return {
@@ -2049,7 +2054,7 @@ def _corpus_runs() -> Facts:
     Facts
         The number for each length.
     """
-    system = loads(TWO_WORDS).deductions["G"]
+    system = deduction(loads(TWO_WORDS), "G")
     facts = {}
     for length in (2, 3, 4):
         with CallCounter({"runs": DeductionSystem.run}) as calls:
