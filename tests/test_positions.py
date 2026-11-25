@@ -9,19 +9,23 @@ arrays, conditionals, and functions of an explicit leading axis.
 
 from __future__ import annotations
 
+import types
 from collections.abc import Callable, Iterator
 
 import pytest
 import torch
 from torch.distributions import (
+    Distribution,
     Geometric,
     MultivariateNormal,
     Normal,
     Wishart,
 )
 
+from quivers import _positions
 from quivers._positions import (
     PositionLayoutError,
+    UnreadRefusalError,
     anywhere,
     branch,
     demand,
@@ -33,6 +37,7 @@ from quivers._positions import (
     lift,
     map_positions,
     reject_unless,
+    rejects_position,
 )
 
 
@@ -330,3 +335,262 @@ def test_a_shared_operand_returned_as_it_was_is_not_taken_for_a_row() -> None:
 
     found = map_positions(lambda z: lift(changed, "changed", z), rows)
     assert found.accepted.tolist() == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# One refused position never affects another
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _unchecked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evaluate without the contract check, to reach the guard behind it."""
+    monkeypatch.setattr(_positions, "_check_contract", lambda: None)
+
+
+def _scale(z: torch.Tensor) -> torch.Tensor:
+    """A density whose scale validator refuses a nonpositive position."""
+    return Normal(0.0, z, validate_args=True).log_prob(torch.tensor(0.3)).sum()
+
+
+def test_a_validator_asking_from_a_helper_is_read_per_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Torch may move a validator's question into a function it calls."""
+    namespace: dict[str, object] = {
+        "__name__": "torch.distributions.distribution",
+        "torch": torch,
+    }
+    exec(  # noqa: S102 - the helper has to live in torch's namespace
+        """
+def all_true(valid, message):
+    return bool(torch._is_all_true(valid))
+
+
+def validate(self, value):
+    valid = self.support.check(value)
+    if not all_true(valid, "outside"):
+        raise ValueError("outside the support")
+""",
+        namespace,
+    )
+    validate = namespace["validate"]
+    assert isinstance(validate, types.FunctionType)
+    verdicts = {
+        **_positions._VALIDATORS,
+        validate.__code__: _positions._Verdict(accepts=True, refuses=True),
+    }
+    monkeypatch.setattr(_positions, "_VALIDATORS", verdicts)
+    monkeypatch.setattr(Distribution, "_validate_sample", validate)
+    found = map_positions(
+        lambda z: (
+            torch.distributions.Exponential(1.0, validate_args=True).log_prob(z).sum()
+        ),
+        _rows(1.0, -1.0, 2.0),
+    )
+    assert found.accepted.tolist() == [True, False, True]
+
+
+def test_an_unknown_validator_stops_the_evaluation(
+    monkeypatch: pytest.MonkeyPatch, _unchecked: None
+) -> None:
+    """A question no verdict covers is not answered once for every position."""
+    verdicts = dict(_positions._VALIDATORS)
+    del verdicts[Distribution.__init__.__code__]
+    monkeypatch.setattr(_positions, "_VALIDATORS", verdicts)
+    with pytest.raises(UnreadRefusalError, match=torch.__version__.split("+")[0]):
+        map_positions(_scale, _rows(1.0, -1.0))
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [
+        pytest.param(
+            _positions._Verdict(accepts=False, refuses=True),
+            id="refuses-every-position",
+        ),
+        pytest.param(
+            _positions._Verdict(
+                accepts=True,
+                valid=lambda frame: torch.ones_like(frame.f_locals["valid"]),
+                refuses=True,
+            ),
+            id="refuses-none",
+        ),
+        pytest.param(
+            _positions._Verdict(
+                accepts=True, valid=lambda frame: ~frame.f_locals["valid"], refuses=True
+            ),
+            id="refuses-the-others",
+        ),
+    ],
+)
+def test_a_wrong_verdict_fails_the_contract(
+    monkeypatch: pytest.MonkeyPatch, verdict: _positions._Verdict
+) -> None:
+    """Refusing the wrong positions names the torch version."""
+    verdicts = {**_positions._VALIDATORS, Distribution.__init__.__code__: verdict}
+    monkeypatch.setattr(_positions, "_VALIDATORS", verdicts)
+    _positions._check_contract.cache_clear()
+    try:
+        with pytest.raises(UnreadRefusalError, match=torch.__version__.split("+")[0]):
+            map_positions(_scale, _rows(1.0, 2.0))
+    finally:
+        _positions._check_contract.cache_clear()
+
+
+def test_the_contract_is_checked_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def counted(z: torch.Tensor) -> torch.Tensor:
+        calls.append(1)
+        return _scale(z)
+
+    monkeypatch.setattr(_positions, "_CONTRACT", (("counted", counted),))
+    _positions._check_contract.cache_clear()
+    try:
+        map_positions(_scale, _rows(1.0, 2.0))
+        checked = len(calls)
+        map_positions(_scale, _rows(1.0, 2.0))
+        assert checked and len(calls) == checked
+    finally:
+        _positions._check_contract.cache_clear()
+
+
+@pytest.mark.parametrize("merge", [torch._is_all_true, torch._is_any_true])
+def test_a_reduction_over_the_positions_is_not_read_as_one_answer(
+    merge: Callable[[torch.Tensor], torch.Tensor],
+) -> None:
+    with pytest.raises(UnreadRefusalError, match="every position"):
+        map_positions(lambda z: z.sum() * merge(z > 0), _rows(1.0, -1.0))
+
+
+def test_an_unread_factorization_stops_the_evaluation(
+    monkeypatch: pytest.MonkeyPatch, _unchecked: None
+) -> None:
+    """A factorization that raises for the batch is not every row's refusal."""
+    monkeypatch.setattr(_positions, "_FACTORIZATIONS", {})
+    with pytest.raises((UnreadRefusalError, RuntimeError)) as stopped:
+        map_positions(
+            lambda z: torch.linalg.cholesky(z * torch.eye(2)).sum(), _rows(1.0, -1.0)
+        )
+    assert not rejects_position(stopped.value)
+
+
+def test_a_refusal_raised_for_the_call_is_not_every_positions() -> None:
+    """An error that marks a position, raised for all of them by a check no
+    position accounts for."""
+
+    def density(z: torch.Tensor) -> torch.Tensor:
+        raise torch.linalg.LinAlgError("one of the matrices")
+
+    with pytest.raises(UnreadRefusalError, match="one of the matrices"):
+        map_positions(density, _rows(1.0, 2.0))
+
+
+def test_an_unread_refusal_is_never_a_position_outside_the_support() -> None:
+    assert not rejects_position(UnreadRefusalError("a check"))
+
+    def inner(z: torch.Tensor) -> torch.Tensor:
+        values = torch.tensor(z.detach().tolist())
+        reject_unless(values > 0, lambda: ValueError("inner"))
+        return z
+
+    with pytest.raises(PositionLayoutError) as stopped:
+        map_positions(lambda z: lift(inner, "inner", z).sum(), _rows(1.0, -1.0))
+    assert not rejects_position(stopped.value)
+
+
+def test_a_value_every_position_shares_refuses_them_all() -> None:
+    with pytest.raises(ValueError) as shared:
+        map_positions(lambda z: z.sum() + _scale(torch.tensor(-1.0)), _rows(1.0, 2.0))
+    assert rejects_position(shared.value)
+
+
+def test_a_shared_refusal_in_a_branch_refuses_the_positions_that_take_it() -> None:
+    def density(z: torch.Tensor) -> torch.Tensor:
+        return branch(
+            (z > 0).all(),
+            lambda v: v.sum(),
+            lambda v: v.sum() + _scale(torch.tensor(-1.0)),
+            z,
+        )
+
+    found = map_positions(density, _rows(1.0, -1.0, 3.0))
+    assert found.accepted.tolist() == [True, False, True]
+    assert found.values[found.accepted].tolist() == [1.0, 3.0]
+    with pytest.raises(ValueError) as everyone:
+        map_positions(density, _rows(-1.0, -2.0))
+    assert rejects_position(everyone.value)
+
+
+def test_a_refused_position_does_not_reach_a_routine_over_the_array() -> None:
+    """The routine raises, and iterates, on the values it is given."""
+
+    @elementwise
+    def routine(value: torch.Tensor) -> torch.Tensor:
+        if bool((value < 0).any()) or bool(value.isnan().any()):
+            raise ArithmeticError("outside the routine's domain")
+        return value.sqrt()
+
+    def density(z: torch.Tensor) -> torch.Tensor:
+        reject_unless(z >= 0, lambda: ValueError("negative"))
+        return routine(z).sum()
+
+    rows = _rows(4.0, -1.0, float("nan"), 9.0).requires_grad_()
+    found = map_positions(density, rows)
+    assert found.accepted.tolist() == [True, False, False, True]
+    assert found.values[found.accepted].tolist() == [2.0, 3.0]
+    (grad,) = torch.autograd.grad(found.values[found.accepted].sum(), rows)
+    assert grad.flatten().tolist()[:1] == [0.25] and grad[3].item() == 1 / 6
+    none = map_positions(lambda z: lift(torch.neg, "neg", z).sum(), _rows(1.0, -1.0))
+    assert none.values.tolist() == [-1.0, 1.0]
+
+
+def test_a_defect_of_a_refused_position_does_not_raise() -> None:
+    def density(z: torch.Tensor) -> torch.Tensor:
+        reject_unless(z > 0, lambda: ValueError("negative"))
+        demand(z > 0, lambda: ArithmeticError("defect"))
+        return z.sum()
+
+    assert map_positions(density, _rows(1.0, -1.0)).accepted.tolist() == [True, False]
+
+
+@pytest.mark.parametrize(
+    "decompose",
+    [
+        lambda m: torch.linalg.eigvalsh(m),
+        lambda m: torch.linalg.eigh(m).eigenvalues,
+        lambda m: torch.linalg.svdvals(m),
+        lambda m: torch.linalg.svd(m).S,
+    ],
+)
+def test_a_matrix_that_is_not_finite_has_no_decomposition_of_another(
+    decompose: Callable[[torch.Tensor], torch.Tensor],
+) -> None:
+    def density(z: torch.Tensor) -> torch.Tensor:
+        return decompose(z[0] * torch.diag(torch.tensor([1.0, 2.0]))).sum()
+
+    found = map_positions(density, _rows(1.0, float("nan"), 3.0))
+    assert found.values.isnan().tolist() == [False, True, False]
+    torch.testing.assert_close(found.values[[0, 2]], torch.tensor([3.0, 9.0]))
+
+
+def test_the_gradient_of_one_position_holds_nothing_of_another() -> None:
+    """A row whose derivative is not finite leaves the others' derivatives."""
+
+    def density(z: torch.Tensor) -> torch.Tensor:
+        return (_scale(z[:1].abs()) + z[1:].log().sum()) + torch.linalg.cholesky(
+            z[:1] * torch.eye(2)
+        ).diagonal().log().sum()
+
+    rows = torch.tensor([[1.0, 2.0], [-1.0, -2.0], [2.0, 0.0], [3.0, 1.0]])
+    leaf = rows.clone().requires_grad_()
+    found = map_positions(density, leaf)
+    kept = found.accepted & torch.isfinite(found.values)
+    assert kept.tolist() == [True, False, False, True]
+    (grad,) = torch.autograd.grad(found.values[kept].sum(), leaf)
+    for index in (0, 3):
+        own = rows[index].clone().requires_grad_()
+        (alone,) = torch.autograd.grad(density(own), own)
+        torch.testing.assert_close(grad[index], alone, rtol=1e-13, atol=0.0)

@@ -11,7 +11,7 @@ from quivers.continuous.param_transforms import (
 )
 from quivers.dsl import loads
 from quivers.inference.mcmc import PotentialFn
-from quivers.inference.mcmc.kernel import _rejects_position
+from quivers._positions import rejects_position
 from quivers.inference.registry import LatentRegistry
 from tests.benchmarks.datasets import neal_funnel
 
@@ -45,10 +45,10 @@ def test_tiny_valid_scale_keeps_its_potential_gradient() -> None:
 def test_parameter_validator_is_identified_by_its_raising_frame() -> None:
     with pytest.raises(ValueError) as genuine:
         positive_parameter(torch.tensor(0.0))
-    assert _rejects_position(genuine.value)
+    assert rejects_position(genuine.value)
     with pytest.raises(ValueError) as unrelated:
         raise ValueError(str(genuine.value))
-    assert not _rejects_position(unrelated.value)
+    assert not rejects_position(unrelated.value)
 
 
 def test_closed_domain_proposal_rejection_keeps_initial_validation_strict() -> None:
@@ -72,7 +72,7 @@ export p
             potential.check_initial(torch.tensor([invalid]))
     with pytest.raises(ValueError) as genuine:
         closed_interval_clamp(0.0, 1.0)(torch.tensor(1.1))
-    assert _rejects_position(genuine.value)
+    assert rejects_position(genuine.value)
     with pytest.raises(ValueError) as unrelated:
         raise ValueError(str(genuine.value))
-    assert not _rejects_position(unrelated.value)
+    assert not rejects_position(unrelated.value)

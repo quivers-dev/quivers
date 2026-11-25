@@ -44,7 +44,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from types import CodeType, FrameType
-from typing import ParamSpec, TypeVar, cast
+from typing import ParamSpec, Protocol, TypeVar, cast
 
 import didactic.api as dx
 import torch
@@ -54,11 +54,13 @@ from torch._C._functorch import (
     maybe_get_level,
 )
 from torch.autograd.function import FunctionCtx
-from torch._functorch.autograd_function import VmapInfo
 from torch.distributions import constraints as _constraints
 from torch.distributions.continuous_bernoulli import ContinuousBernoulli
 from torch.distributions.distribution import Distribution
+from torch.distributions.gamma import Gamma
 from torch.distributions.geometric import Geometric
+from torch.distributions.multivariate_normal import MultivariateNormal
+from torch.distributions.normal import Normal
 from torch.distributions.wishart import Wishart
 from torch.overrides import TorchFunctionMode
 from torch.utils import _pytree as pytree
@@ -89,6 +91,27 @@ class PositionLayoutError(ValueError):
     validator that refuses a value whose leading axis is not the position
     axis, cannot be read per position.
     """
+
+
+class UnreadRefusalError(RuntimeError):
+    """A refusal torch makes of a whole call that no position accounts for.
+
+    A position is refused alone. When a check inside torch refuses values
+    of many positions without saying which, or reduces them to one answer,
+    reading it as a refusal of every position would let one position decide
+    for the others. The evaluation stops instead.
+
+    Parameters
+    ----------
+    subject : str
+        What refused.
+    """
+
+    def __init__(self, subject: str) -> None:
+        super().__init__(
+            f"{subject}, and which positions it refuses cannot be read under torch "
+            f"{torch.__version__}"
+        )
 
 
 class PositionValues(ValueModel):
@@ -137,7 +160,7 @@ class _Frame:
         The number of positions.
     """
 
-    __slots__ = ("count", "level", "checks", "explicit", "refused")
+    __slots__ = ("count", "level", "checks", "explicit", "refused", "shared")
 
     def __init__(self, count: int) -> None:
         self.count = count
@@ -150,6 +173,9 @@ class _Frame:
         # Whether a position has failed a check so far, at the mapping
         # level.
         self.refused: torch.Tensor | None = None
+        # Whether a check of a value every position shares has failed, which
+        # refuses them all.
+        self.shared = False
 
     def add(self, check: _Check) -> None:
         """Add a check at the mapping level.
@@ -236,12 +262,19 @@ def _positional(value: torch.Tensor, frame: _Frame) -> bool:
     return _mapped(value, frame)
 
 
-_UNREAD = PositionLayoutError(
-    "a check inside a batched callable refuses a value that does not lead with "
-    "the positions, so which positions it refuses cannot be read; return -inf at "
-    "the positions outside the support"
-)
-"""The refusal, inside `lift`, of a value no position can be read from."""
+def _unread() -> PositionLayoutError:
+    """The error of a refusal, inside `lift`, no position can be read from.
+
+    Returns
+    -------
+    PositionLayoutError
+        The error.
+    """
+    return PositionLayoutError(
+        "a check inside a batched callable refuses a value that does not lead with "
+        "the positions, so which positions it refuses cannot be read; return -inf at "
+        "the positions outside the support"
+    )
 
 
 def reject_unless(valid: torch.Tensor, error: Callable[[], Exception]) -> None:
@@ -267,7 +300,65 @@ def reject_unless(valid: torch.Tensor, error: Callable[[], Exception]) -> None:
         frame.record(valid, None)
         return
     if not bool(valid.all()):
-        raise error() if frame is None or not frame.explicit else _UNREAD
+        if frame is not None:
+            if frame.explicit:
+                raise _unread()
+            frame.shared = True
+        raise error()
+
+
+def rejects_position(error: BaseException) -> bool:
+    """Whether an error raised while scoring a position means the
+    position lies outside the model's support.
+
+    A ``ValueError`` raised by a Torch distribution validator marks a
+    constraint violation, as does whatever `reject_unless` raises: the
+    inline parameter validators, the truncation-mass and
+    finite-parameter checks of recorded events, the COM-Poisson
+    modal-capacity and normalizer-budget refusals, which brms's Stan code
+    also rejects (``nu is too close to zero``, ``cannot handle y >
+    10000``), and the incomplete Beta continued fraction exhausting its
+    budget at extreme count shapes.
+    The code object of the innermost traceback frame identifies the
+    validator, independently of the error message.
+    A `torch.linalg.LinAlgError` is a factorization of a matrix that
+    the position makes numerically non-positive-definite. Every other
+    error is a defect of the program or its data.
+
+    Parameters
+    ----------
+    error : BaseException
+        The error raised by ``log_joint``.
+
+    Returns
+    -------
+    bool
+        ``True`` when the position should be rejected with a
+        log-density of ``-inf``; ``False`` when the error must
+        propagate.
+    """
+    if isinstance(error, PositionLayoutError | UnreadRefusalError):
+        return False
+    if isinstance(error, torch.linalg.LinAlgError):
+        return True
+    if not isinstance(error, ValueError | RuntimeError):
+        return False
+    frame = error.__traceback__
+    if frame is None:
+        return False
+    while frame.tb_next is not None:
+        frame = frame.tb_next
+    return frame.tb_frame.f_code in _REFUSING_CODE
+
+
+_REFUSING_CODE = frozenset(
+    {
+        Distribution.__init__.__code__,
+        Distribution._validate_sample.__code__,
+        reject_unless.__code__,
+    }
+)
+"""The raising frames that refuse a position."""
 
 
 def demand(valid: torch.Tensor, error: Callable[[], Exception]) -> None:
@@ -325,6 +416,21 @@ def evaluating() -> bool:
     return _FRAME.get() is not None
 
 
+class _Mapping(Protocol):
+    """What `torch.func.vmap` tells a function's own rule of the mapping."""
+
+    @property
+    def batch_size(self) -> int:
+        """The number of positions.
+
+        Returns
+        -------
+        int
+            The number.
+        """
+        ...
+
+
 class _Lifted(torch.autograd.Function):
     """Call a function with the position axis leading its tensors.
 
@@ -378,7 +484,7 @@ class _Lifted(torch.autograd.Function):
 
     @staticmethod
     def vmap(
-        info: VmapInfo,
+        info: _Mapping,
         in_dims: tuple[int | None, ...],
         *args: torch.Tensor,
     ) -> tuple[tuple[torch.Tensor, ...], tuple[int, ...]]:
@@ -386,7 +492,7 @@ class _Lifted(torch.autograd.Function):
 
         Parameters
         ----------
-        info : VmapInfo
+        info : _Mapping
             The mapping, unused.
         in_dims : tuple[int | None, ...]
             The position axis of each argument.
@@ -408,6 +514,36 @@ class _Lifted(torch.autograd.Function):
         ]
         results = function(*leading, carried=tuple(axis is not None for axis in axes))
         return results, (0,) * len(results)
+
+
+def _standing_in(value: torch.Tensor, refused: torch.Tensor) -> torch.Tensor:
+    """A value whose refused positions stand in for an accepted one.
+
+    What a refused position computes has no meaning, and is never read. Its
+    entries are those of a position still accepted, so that a routine over
+    the array of all positions meets no entry it would raise at or iterate
+    over on account of a refused one.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        The value, the position axis leading.
+    refused : torch.Tensor
+        Whether each position is refused.
+
+    Returns
+    -------
+    torch.Tensor
+        The value, unchanged at the positions accepted, and at every
+        position when none is.
+    """
+    accepted = (~refused).nonzero()
+    if not accepted.numel() or not bool(refused.any()):
+        return value.view_as(value)
+    own = value[accepted[0, 0]].detach()
+    return torch.where(
+        refused.reshape(-1, *((1,) * (value.dim() - 1))), own.unsqueeze(0), value
+    )
 
 
 def lift(
@@ -451,6 +587,7 @@ def lift(
         return function(*args, **kwargs)
     returned: list[pytree.TreeSpec] = []
     recorded: list[_Check] = []
+    refused = frame.refused
 
     def explicit(
         *tensors: torch.Tensor, carried: tuple[bool, ...]
@@ -476,11 +613,19 @@ def lift(
             axis.
         """
         filled = list(leaves)
-        for index, tensor, positional in zip(slots, tensors, carried, strict=True):
+        rows, *tensors = tensors if refused is not None else (None, *tensors)
+        for index, tensor, positional in zip(
+            slots, tensors, carried[-len(slots) :], strict=True
+        ):
+            assert tensor is not None
             if positional:
-                # A view of its own, so that marking it marks no other
+                # A value of its own, so that marking it marks no other
                 # tensor.
-                tensor = tensor.view_as(tensor)
+                tensor = (
+                    tensor.view_as(tensor)
+                    if rows is None
+                    else _standing_in(tensor, rows)
+                )
                 setattr(tensor, _ROW_MARK, True)
             filled[index] = tensor
         frame.explicit.append(recorded)
@@ -511,7 +656,11 @@ def lift(
 
     outputs = cast(
         "tuple[torch.Tensor, ...]",
-        _Lifted.apply(explicit, *(leaves[index] for index in slots)),
+        _Lifted.apply(
+            explicit,
+            *(() if refused is None else (refused,)),
+            *(leaves[index] for index in slots),
+        ),
     )
     (spec,) = returned
     count = spec.num_leaves
@@ -588,6 +737,7 @@ def branch(
         taken = chosen.reshape(-1)
         parts: list[list[torch.Tensor]] = []
         rows: list[torch.Tensor] = []
+        refusals: list[tuple[torch.Tensor, Exception]] = []
         for function, mask in ((when_true, taken), (when_false, ~taken)):
             index = mask.nonzero().squeeze(-1)
             if not index.numel():
@@ -624,15 +774,21 @@ def branch(
                 tensor.index_select(0, index) if positional else tensor
                 for tensor, positional in zip(tensors, carried, strict=True)
             ]
+            in_dims = [0 if positional else None for positional in carried]
+            part = _run_mapped(at, local, in_dims, index, frame)
+            if isinstance(part, Exception):
+                refusals.append((index, part))
+                continue
+            parts.append(part)
+            rows.append(index)
+        if not parts:
+            # Every position takes a branch that refuses a value they share.
+            frame.shared = True
+            raise refusals[0][1]
+        for index, _ in refusals:
+            count = int(index.numel())
             parts.append(
-                _run_mapped(
-                    at,
-                    local,
-                    [0 if positional else None for positional in carried],
-                    int(index.numel()),
-                    index,
-                    frame,
-                )
+                [leaf.new_zeros((count, *leaf.shape[1:])) for leaf in parts[0]]
             )
             rows.append(index)
         if (
@@ -657,14 +813,35 @@ def branch(
     return cast("Result", pytree.tree_unflatten(results, specs[0]))
 
 
+def _account(frame: _Frame, error: Exception) -> None:
+    """Refuse to read a refusal of every position that none accounts for.
+
+    Parameters
+    ----------
+    frame : _Frame
+        The evaluation.
+    error : Exception
+        The error that ended it.
+
+    Raises
+    ------
+    UnreadRefusalError
+        If the error refuses a position, and no check of a value the
+        positions share has failed.
+    """
+    if rejects_position(error) and not frame.shared:
+        raise UnreadRefusalError(
+            f"a check raises for every position: {error}"
+        ) from error
+
+
 def _run_mapped(
     function: Callable[..., list[torch.Tensor]],
     tensors: list[torch.Tensor],
     in_dims: list[int | None],
-    count: int,
     index: torch.Tensor,
     outer: _Frame,
-) -> list[torch.Tensor]:
+) -> list[torch.Tensor] | Exception:
     """Run a function at a subset of the positions of an evaluation.
 
     Parameters
@@ -675,8 +852,6 @@ def _run_mapped(
         The tensors, the subset leading those that depend on the position.
     in_dims : list[int | None]
         The position axis of each.
-    count : int
-        The size of the subset.
     index : torch.Tensor
         The positions of the subset.
     outer : _Frame
@@ -685,10 +860,12 @@ def _run_mapped(
 
     Returns
     -------
-    list[torch.Tensor]
-        The function's results, the subset leading each.
+    list[torch.Tensor] | Exception
+        The function's results, the subset leading each; or the refusal of
+        a value the subset shares, which refuses the subset and no other
+        position.
     """
-    inner = _Frame(count)
+    inner = _Frame(int(index.numel()))
 
     def at(*local: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """The function and the checks it makes, at one position.
@@ -712,6 +889,18 @@ def _run_mapped(
             results, outcomes = torch.func.vmap(
                 at, in_dims=tuple(in_dims), randomness="different"
             )(*tensors)
+    except (ValueError, RuntimeError) as error:
+        _account(inner, error)
+        if not rejects_position(error):
+            raise
+        outer.explicit[-1].append(
+            _Check(
+                valid=torch.ones(outer.count, dtype=torch.bool)
+                .index_fill(0, index.cpu(), False)
+                .to(index.device)
+            )
+        )
+        return error
     finally:
         _FRAME.reset(token)
     for check, valid in zip(inner.checks, outcomes, strict=True):
@@ -955,6 +1144,8 @@ class _Verdict(ValueModel):
     defect : str | None
         The message of the error the validator raises when a refusal is a
         defect of the program, or ``None`` when it refuses the position.
+    refuses : bool
+        Whether the validator raises when it does not accept.
     """
 
     accepts: bool
@@ -962,11 +1153,12 @@ class _Verdict(ValueModel):
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     defect: str | None = None
+    refuses: bool = False
 
 
 _VALIDATORS: Mapping[CodeType, _Verdict] = {
-    Distribution.__init__.__code__: _Verdict(accepts=True),
-    Distribution._validate_sample.__code__: _Verdict(accepts=True),
+    Distribution.__init__.__code__: _Verdict(accepts=True, refuses=True),
+    Distribution._validate_sample.__code__: _Verdict(accepts=True, refuses=True),
     type(_constraints.positive_semidefinite).check.__code__: _Verdict(accepts=True),
     type(_constraints.positive_definite).check.__code__: _Verdict(accepts=True),
     Geometric.__init__.__code__: _Verdict(
@@ -981,7 +1173,42 @@ _VALIDATORS: Mapping[CodeType, _Verdict] = {
         defect="Wishart: expected df to be greater than the matrix size less one",
     ),
 }
-"""The validators that branch on the values they are given."""
+"""The validators that branch on the values they are given.
+
+A validator asks one question, `torch._is_all_true` or the truth of a
+tensor, from its own frame or from a helper of `torch.distributions` it
+calls, and goes on when the answer is the verdict's. `_check_contract`
+holds torch to this.
+"""
+
+_MERGING: frozenset[Callable[..., torch.Tensor]] = frozenset(
+    {torch._is_all_true, torch._is_any_true}
+)
+"""The reductions whose mapping rule answers once for every position."""
+
+
+def _verdict_of(caller: FrameType | None) -> tuple[_Verdict, FrameType] | None:
+    """The verdict of the validator a question comes from.
+
+    Parameters
+    ----------
+    caller : FrameType | None
+        The frame that asks.
+
+    Returns
+    -------
+    tuple[_Verdict, FrameType] | None
+        The verdict and the validator's frame: the nearest validator among
+        the frames of `torch.distributions` that led to the question.
+    """
+    while caller is not None and str(caller.f_globals.get("__name__", "")).startswith(
+        "torch.distributions"
+    ):
+        verdict = _VALIDATORS.get(caller.f_code)
+        if verdict is not None:
+            return verdict, caller
+        caller = caller.f_back
+    return None
 
 
 type _Operation = Callable[..., tuple[torch.Tensor, torch.Tensor]]
@@ -996,6 +1223,19 @@ _FACTORIZATIONS: Mapping[Callable[..., torch.Tensor], _Operation] = {
 }
 """The factorizations that raise, and the form that reports instead."""
 
+
+_DECOMPOSITIONS: frozenset[Callable[..., Tree]] = frozenset(
+    {
+        torch.linalg.eigh,
+        torch.linalg.eigvalsh,
+        torch.linalg.eig,
+        torch.linalg.eigvals,
+        torch.linalg.svd,
+        torch.linalg.svdvals,
+    }
+)
+"""The decompositions whose backend may raise for every matrix when one is
+not finite. Such a matrix has a decomposition of NaN."""
 
 _ENTRYWISE: frozenset[Callable[..., torch.Tensor]] = frozenset(
     {torch.special.log_ndtr, torch.isclose}
@@ -1060,24 +1300,33 @@ class _Refusals(TorchFunctionMode):
         del types
         frame = self._frame
         named = kwargs or {}
-        if func is torch._is_all_true or func is torch.Tensor.__bool__:
+        if func in _MERGING or func is torch.Tensor.__bool__:
             operand = cast("torch.Tensor", args[0])
-            caller = sys._getframe(1)
-            verdict = _VALIDATORS.get(caller.f_code)
-            # A validator asking `bool` has reduced its operand over every
-            # axis, so inside `lift` its refusal names no position.
+            found = _verdict_of(sys._getframe(1))
+            positional = _positional(operand, frame)
+            # A validator asking the truth of a tensor has reduced it over
+            # every axis, so inside `lift` its refusal names no position.
             reduced = func is torch.Tensor.__bool__ and bool(frame.explicit)
-            if verdict is not None and not reduced and _positional(operand, frame):
+            if found is not None and positional and not reduced:
+                verdict, validator = found
                 frame.record(
-                    operand if verdict.valid is None else verdict.valid(caller),
+                    operand if verdict.valid is None else verdict.valid(validator),
                     None if verdict.defect is None else ValueError(verdict.defect),
                 )
                 return verdict.accepts
-            if verdict is not None and frame.explicit:
+            if found is not None and (frame.explicit or not positional):
+                verdict, _ = found
                 answer = bool(func(*args, **named))
-                if answer is not verdict.accepts:
-                    raise _UNREAD
+                if answer is not verdict.accepts and frame.explicit:
+                    raise _unread()
+                if answer is not verdict.accepts and verdict.refuses:
+                    frame.shared = True
                 return answer
+            if func in _MERGING and positional and not frame.explicit:
+                raise UnreadRefusalError(
+                    f"{getattr(func, '__name__', 'a reduction')} answers once for "
+                    "every position"
+                )
         elif func in _FACTORIZATIONS:
             reporting = _FACTORIZATIONS[cast("Callable[..., torch.Tensor]", func)]
             result, info = reporting(*args, **named)
@@ -1091,6 +1340,24 @@ class _Refusals(TorchFunctionMode):
                 ),
             )
             return result
+        elif func in _DECOMPOSITIONS:
+            matrix = cast("torch.Tensor", args[0])
+            finite = torch.isfinite(matrix).all(-1).all(-1)
+            result = func(
+                torch.where(finite[..., None, None], matrix, 0.0), *args[1:], **named
+            )
+            kept = pytree.tree_map(
+                lambda part: torch.where(
+                    finite.reshape(
+                        *finite.shape, *((1,) * (part.dim() - finite.dim()))
+                    ),
+                    part,
+                    torch.nan,
+                ),
+                result,
+            )
+            self._mark([matrix], _tensors(kept))
+            return kept
         elif func in _ENTRYWISE and not frame.explicit:
             return elementwise(func)(*args, **named)
         if not frame.explicit:
@@ -1156,6 +1423,32 @@ def map_positions(
         and the defect of the first failing check that positions still
         accepted fail.
     """
+    _check_contract()
+    return _evaluate(function, positions)
+
+
+def _evaluate(
+    function: Callable[[Positions], torch.Tensor], positions: Positions
+) -> PositionValues:
+    """Evaluate a function of one position at many, as `map_positions` does.
+
+    Parameters
+    ----------
+    function : Callable[[Positions], torch.Tensor]
+        The function of one position, returning a scalar.
+    positions : Positions
+        The positions, the position axis leading each tensor.
+
+    Returns
+    -------
+    PositionValues
+        The value at each position, and whether each is accepted.
+
+    Raises
+    ------
+    Exception
+        As `map_positions` raises it.
+    """
     leading = pytree.tree_leaves(positions)[0]
     count = int(leading.shape[0])
     frame = _Frame(count)
@@ -1181,6 +1474,9 @@ def map_positions(
     try:
         with _Refusals(frame):
             values, outcomes = torch.func.vmap(at, randomness="different")(positions)
+    except (ValueError, RuntimeError) as error:
+        _account(frame, error)
+        raise
     finally:
         _FRAME.reset(token)
     accepted = torch.ones(count, dtype=torch.bool, device=leading.device)
@@ -1189,3 +1485,76 @@ def map_positions(
             raise check.defect
         accepted = accepted & valid
     return PositionValues(values=values, accepted=accepted)
+
+
+_CONTRACT: tuple[tuple[str, Callable[[torch.Tensor], torch.Tensor]], ...] = (
+    (
+        "a parameter validator",
+        lambda z: Normal(0.0, z, validate_args=True).log_prob(torch.zeros_like(z)),
+    ),
+    (
+        "a value validator",
+        lambda z: Gamma(
+            z.new_tensor(2.0), z.new_tensor(1.0), validate_args=True
+        ).log_prob(z),
+    ),
+    (
+        "a matrix validator",
+        lambda z: MultivariateNormal(
+            z.new_zeros(2),
+            covariance_matrix=z * torch.eye(2, dtype=z.dtype),
+            validate_args=True,
+        ).log_prob(z.new_ones(2)),
+    ),
+    (
+        "a factorization",
+        lambda z: torch.linalg.cholesky(z * torch.eye(2, dtype=z.dtype)).sum(),
+    ),
+    (
+        "a validator inside a batched callable",
+        lambda z: lift(
+            lambda scale: Normal(0.0, scale, validate_args=True).log_prob(
+                torch.zeros_like(scale)
+            ),
+            "the contract",
+            z,
+        ),
+    ),
+)
+"""Functions of a scalar that refuse it exactly when it is negative."""
+
+
+@functools.cache
+def _check_contract() -> None:
+    """Check once that torch refuses positions the way this module reads it.
+
+    `_Refusals` and `lift` rest on how torch asks its validators'
+    questions, on which operations raise, and on the mapping levels of
+    `torch.func.vmap`, none of which torch promises. Each is exercised here
+    on positions of which some are refused and some are not: a version that
+    asks differently is named in an error, rather than refusing every
+    position or none.
+
+    Raises
+    ------
+    UnreadRefusalError
+        If a function of `_CONTRACT` refuses other positions than those it
+        refuses alone, or gives an accepted position another value.
+    """
+    rows = torch.tensor([1.0, -1.0, 2.0, -3.0, 0.5], dtype=torch.float64)
+    expected = rows > 0
+    for subject, function in _CONTRACT:
+        try:
+            found = _evaluate(function, rows)
+        except Exception as error:
+            raise UnreadRefusalError(f"{subject} stops: {error}") from error
+        if not torch.equal(found.accepted, expected):
+            raise UnreadRefusalError(
+                f"{subject} refuses positions {(~found.accepted).nonzero().flatten().tolist()} "
+                f"where it refuses {(~expected).nonzero().flatten().tolist()} one at a time"
+            )
+        alone = torch.stack([function(row) for row in rows[expected]])
+        if not torch.allclose(found.values[expected], alone, rtol=1e-12, atol=0.0):
+            raise UnreadRefusalError(
+                f"{subject} gives an accepted position another value"
+            )

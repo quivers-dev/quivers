@@ -46,7 +46,7 @@ from quivers.inference.mcmc.adapt import (
 )
 from quivers.inference.mcmc import HMCKernel, MCMC, NUTSKernel, PotentialFn
 from quivers.inference.mcmc.hmc import MassMatrixKind
-from quivers.inference.mcmc.kernel import _rejects_position
+from quivers._positions import rejects_position
 from quivers.inference.registry import LatentRegistry
 
 
@@ -1377,21 +1377,21 @@ def test_rejects_position_recognises_torch_validators_by_raising_frame() -> None
     """Pinned to the installed torch: its parameter and value
     validators are `Distribution.__init__` and
     `Distribution._validate_sample`."""
-    assert _rejects_position(_raised(lambda: Normal(0.0, -1.0)))
-    assert _rejects_position(
+    assert rejects_position(_raised(lambda: Normal(0.0, -1.0)))
+    assert rejects_position(
         _raised(lambda: Normal(0.0, 1.0).log_prob(torch.tensor(float("nan"))))
     )
-    assert _rejects_position(
+    assert rejects_position(
         _raised(lambda: Normal(torch.zeros(3), 1.0).log_prob(torch.zeros(4)))
     )
-    assert _rejects_position(
+    assert rejects_position(
         _raised(lambda: torch.linalg.cholesky(torch.tensor([[1.0, 2.0], [2.0, 1.0]])))
     )
     # Raised by a distribution's own argument handling, not its validator.
-    assert not _rejects_position(_raised(lambda: Categorical()))
-    assert not _rejects_position(_raised(lambda: torch.ones(2, 3) @ torch.ones(2)))
+    assert not rejects_position(_raised(lambda: Categorical()))
+    assert not rejects_position(_raised(lambda: torch.ones(2, 3) @ torch.ones(2)))
 
     def _user_value_error() -> None:
         raise ValueError("Expected parameter scale to satisfy the constraint")
 
-    assert not _rejects_position(_raised(_user_value_error))
+    assert not rejects_position(_raised(_user_value_error))

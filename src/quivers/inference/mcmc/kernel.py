@@ -32,7 +32,7 @@ import torch
 from torch.distributions import Distribution
 from torch.distributions import constraints as _constraints
 
-from quivers._positions import map_positions, reject_unless
+from quivers._positions import map_positions, rejects_position
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
@@ -44,66 +44,6 @@ from quivers.effects.joint_plan import (
 from quivers.effects.subsample import refuse_subsampling
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
-
-
-_DISTRIBUTION_VALIDATION_CODE = frozenset(
-    {
-        Distribution.__init__.__code__,
-        Distribution._validate_sample.__code__,
-        reject_unless.__code__,
-    }
-)
-"""Raising frames for distribution parameter and value constraints.
-
-Includes Torch's constructor and observation validators and
-`quivers._positions.reject_unless`, through which the library's own checks
-of a position raise: the inline parameter validators, the truncation-mass
-and finite-parameter checks of recorded events, the COM-Poisson
-modal-capacity and normalizer-budget refusals, which brms's Stan code also
-rejects (``nu is too close to zero``, ``cannot handle y > 10000``), and the
-incomplete Beta continued fraction exhausting its budget at extreme count
-shapes.
-"""
-
-
-def _rejects_position(error: BaseException) -> bool:
-    """Whether an error raised while scoring a position means the
-    position lies outside the model's support.
-
-    A ``ValueError`` raised by a Torch distribution validator or the
-    inline positive-parameter validator marks a constraint violation, as
-    do the registered numerical-range refusals: the COM-Poisson capacity
-    and normalizer-budget refusals (``NotImplementedError``) and an
-    exhausted incomplete Beta
-    continued fraction (a ``RuntimeError``).
-    The code object of the innermost traceback frame identifies the
-    validator, independently of the error message.
-    A `torch.linalg.LinAlgError` is a factorization of a matrix that
-    the position makes numerically non-positive-definite. Every other
-    error is a defect of the program or its data.
-
-    Parameters
-    ----------
-    error : BaseException
-        The error raised by ``log_joint``.
-
-    Returns
-    -------
-    bool
-        ``True`` when the position should be rejected with a
-        log-density of ``-inf``; ``False`` when the error must
-        propagate.
-    """
-    if isinstance(error, torch.linalg.LinAlgError):
-        return True
-    if not isinstance(error, ValueError | RuntimeError):
-        return False
-    frame = error.__traceback__
-    if frame is None:
-        return False
-    while frame.tb_next is not None:
-        frame = frame.tb_next
-    return frame.tb_frame.f_code in _DISTRIBUTION_VALIDATION_CODE
 
 
 def _check_observed_support(
@@ -721,7 +661,7 @@ class PotentialFn:
         try:
             result = self._joint_density(z)
         except (ValueError, RuntimeError) as error:
-            if not _rejects_position(error):
+            if not rejects_position(error):
                 raise
             return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
         if not torch.isfinite(result):
@@ -799,7 +739,7 @@ class PotentialFn:
         try:
             mapped = map_positions(self._joint_density, positions)
         except (ValueError, RuntimeError) as error:
-            if not _rejects_position(error):
+            if not rejects_position(error):
                 raise
             return outside
         inside = mapped.accepted & torch.isfinite(mapped.values)

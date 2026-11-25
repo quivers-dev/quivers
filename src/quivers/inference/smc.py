@@ -50,6 +50,7 @@ from typing import Literal
 import didactic.api as dx
 import torch
 
+from quivers._positions import rejects_position
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.programs import MonadicProgram
@@ -65,7 +66,6 @@ from quivers.inference.mcmc.kernel import (
     MCMCKernel,
     PotentialFn,
     _check_observed_support,
-    _rejects_position,
     _with_generator,
 )
 from quivers.inference.registry import LatentRegistry, _require_one_run
@@ -304,7 +304,7 @@ class TemperedPotential(PotentialFn):
         try:
             log_prior, log_likelihood = self._parts(z)
         except (ValueError, RuntimeError) as error:
-            if not _rejects_position(error):
+            if not rejects_position(error):
                 raise
             return minus_inf, minus_inf
         if not torch.isfinite(log_prior):
