@@ -1307,11 +1307,12 @@ def check_density(guide: str) -> None:
         If the mass is not one.
     """
     problem = PROBLEMS["beta"]
-    steps = 400
+    steps = 1200
+    reach = 30.0
     with double_precision(), torch.no_grad():
         torch.manual_seed(5)
         built = GUIDES[guide](problem)
-        grid = torch.linspace(-10.0, 10.0, steps + 1)
+        grid = torch.linspace(-reach, reach, steps + 1)
         row = torch.zeros(1, 1)
         log_q = torch.stack(
             [
@@ -1346,7 +1347,7 @@ def check_density(guide: str) -> None:
             The mass below it.
         """
         odds = math.log(x) - math.log1p(-x)
-        index = int((odds + 10.0) / 20.0 * steps)
+        index = int((odds + reach) / (2 * reach) * steps)
         return float(cumulative[min(max(index, 0), steps - 1)])
 
     compare_distribution(draws, distribution, f"{guide} draws")
@@ -1478,13 +1479,13 @@ def _register() -> None:
             question,
             partial(check_pathfinder, name),
         )
+        add(
+            f"consumer/potential/{name}",
+            "potential",
+            question,
+            partial(check_potential, name, "potential"),
+        )
         for kernel in KERNELS:
-            add(
-                f"consumer/potential/{kernel}/{name}",
-                kernel,
-                question,
-                partial(check_potential, name, "potential"),
-            )
             add(
                 f"consumer/kernel/{kernel}/{name}",
                 kernel,
