@@ -164,6 +164,8 @@ from quivers.formulas._ast import (
     _index,
     _factor,
     finite_object_sizes,
+    row_zero,
+    stack_rows,
 )
 from quivers.formulas._predictor_graph import (
     PredictorGraph,
@@ -3247,30 +3249,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             else:
                 value = base_mass(category)
             cases.append((category, _factor((("ordinal_row", "Resp"),), body=value)))
-        program_steps.append(
-            _let(
-                "ordinal_logits_by_category",
-                _factor(
-                    (("ordinal_category", "FormulaOrdinalCategory"),),
-                    cases=tuple(cases),
-                ),
-            )
-        )
         threshold_groups = formula.modifiers.threshold_groups
-        program_steps.append(
-            _let(
+        program_steps.extend(
+            stack_rows(
                 "ordinal_logits"
                 if threshold_groups is None
                 else "ordinal_padded_logits",
-                _factor(
-                    (
-                        ("ordinal_row", "Resp"),
-                        ("ordinal_category", "FormulaOrdinalCategory"),
-                    ),
-                    body=_index(
-                        "ordinal_logits_by_category", _var("ordinal_category"), row
-                    ),
-                ),
+                cases,
+                ("ordinal_category", "FormulaOrdinalCategory"),
+                stem="ordinal_logits_by_category",
+                row=("ordinal_row", "Resp"),
             )
         )
         if threshold_groups is not None:
@@ -3451,15 +3439,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             program_steps.append(_let("eta", _var(f"{prefix}eta_nonbaseline")))
             program_steps.append(_let("mu", _var("eta")))
             return
-        program_steps.append(
-            _let(
-                f"{prefix}categorical_zero_logit",
-                _factor(
-                    (("response", "Resp"),),
-                    body=LetExprLiteral(value=0.0),
-                ),
-            )
-        )
+        program_steps.append(row_zero(f"{prefix}categorical_zero_logit"))
         category_cases: tuple[tuple[int, LetExprNode], ...] = (
             ()
             if reference is None
@@ -3478,23 +3458,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             for coordinate, category in enumerate(coordinates)
         )
-        program_steps.append(
-            _let(
-                f"{prefix}categorical_logits_by_category",
-                _factor((("category", category_index),), cases=category_cases),
-            )
-        )
-        program_steps.append(
-            _let(
+        program_steps.extend(
+            stack_rows(
                 f"{prefix}eta",
-                _factor(
-                    (("response", "Resp"), ("category", category_index)),
-                    body=_index(
-                        f"{prefix}categorical_logits_by_category",
-                        _var("category"),
-                        response_var,
-                    ),
-                ),
+                category_cases,
+                ("category", category_index),
+                stem=f"{prefix}categorical_logits_by_category",
             )
         )
         link = (
@@ -4111,29 +4080,24 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         axis = axis or f"FormulaGraphCoordinate_{name}"
         self._append_finite_object(statements, axis, len(labels))
-        by_coordinate = f"{name}_by_coordinate"
-        cases = tuple(
-            (
-                index,
-                _factor(
-                    (("graph_row", "Resp"),),
-                    body=self._graph_expression_at(
-                        value.values[value.components.index(label)], row, label
-                    ),
-                ),
-            )
-            for index, label in enumerate(labels)
-        )
-        steps.append(
-            _let(by_coordinate, _factor((("graph_coordinate", axis),), cases=cases))
-        )
-        steps.append(
-            _let(
+        steps.extend(
+            stack_rows(
                 name,
-                _factor(
-                    (("graph_row", "Resp"), ("graph_coordinate", axis)),
-                    body=_index(by_coordinate, _var("graph_coordinate"), row),
+                (
+                    (
+                        index,
+                        _factor(
+                            (("graph_row", "Resp"),),
+                            body=self._graph_expression_at(
+                                value.values[value.components.index(label)], row, label
+                            ),
+                        ),
+                    )
+                    for index, label in enumerate(labels)
                 ),
+                ("graph_coordinate", axis),
+                stem=f"{name}_by_coordinate",
+                row=("graph_row", "Resp"),
             )
         )
 

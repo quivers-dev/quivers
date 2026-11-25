@@ -79,7 +79,16 @@ from quivers.dsl.program_templates import (
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._ast import _add, _call, _factor, _index, _let, _var
+from quivers.formulas._ast import (
+    _add,
+    _call,
+    _factor,
+    _index,
+    _let,
+    _var,
+    row_zero,
+    stack_rows,
+)
 from quivers.formulas._group_law import (
     GroupBlockLaw,
     law_inputs,
@@ -1079,30 +1088,13 @@ def _row_stack(
     """
     zero = "mixture_row_zero"
     if not any(isinstance(step, LetStep) and step.name == zero for step in steps):
-        steps.append(
-            _let(zero, _factor((("response", "Resp"),), body=LetExprLiteral(value=0.0)))
-        )
-    steps.append(
-        _let(
-            f"{name}_by_component",
-            _factor(
-                (("component", COMPONENT_AXIS),),
-                cases=tuple(
-                    (index, _add(_var(zero), value))
-                    for index, value in enumerate(values)
-                ),
-            ),
-        )
-    )
-    steps.append(
-        _let(
+        steps.append(row_zero(zero))
+    steps.extend(
+        stack_rows(
             name,
-            _factor(
-                (("response", "Resp"), ("component", COMPONENT_AXIS)),
-                body=_index(
-                    f"{name}_by_component", _var("component"), _var("response")
-                ),
-            ),
+            ((index, _add(_var(zero), value)) for index, value in enumerate(values)),
+            ("component", COMPONENT_AXIS),
+            stem=f"{name}_by_component",
         )
     )
 

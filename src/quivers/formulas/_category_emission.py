@@ -15,7 +15,7 @@ from quivers.dsl.ast_nodes import (
     ProgramStep,
     Statement,
 )
-from quivers.formulas._ast import _add, _factor, _index, _let, _var
+from quivers.formulas._ast import _add, _let, _var, row_zero, stack_rows
 from quivers.formulas._category_formulas import (
     check_scale_formulas,
     free_categories,
@@ -99,33 +99,16 @@ def append_category_predictors(
         steps.append(_let(f"dpar_{name}_eta", eta))
         steps.append(_let(name, _var(f"dpar_{name}_eta")))
         values.append(_var(f"dpar_{name}_eta"))
-    steps.append(
-        _let(
-            "category_row_zero",
-            _factor((("response", "Resp"),), body=LetExprLiteral(value=0.0)),
-        )
-    )
-    steps.append(
-        _let(
-            "eta_by_category",
-            _factor(
-                (("category_logit", "FormulaCategoryLogit"),),
-                cases=tuple(
-                    (index, _add(_var("category_row_zero"), value))
-                    for index, value in enumerate(values)
-                ),
-            ),
-        )
-    )
-    steps.append(
-        _let(
+    steps.append(row_zero("category_row_zero"))
+    steps.extend(
+        stack_rows(
             "eta_nonbaseline",
-            _factor(
-                (("response", "Resp"), ("category_logit", "FormulaCategoryLogit")),
-                body=_index(
-                    "eta_by_category", _var("category_logit"), _var("response")
-                ),
+            (
+                (index, _add(_var("category_row_zero"), value))
+                for index, value in enumerate(values)
             ),
+            ("category_logit", "FormulaCategoryLogit"),
+            stem="eta_by_category",
         )
     )
     lens._append_component_response(
@@ -196,12 +179,7 @@ def append_scale_predictors(
     check_scale_formulas(
         family, labels, lens._distributional.keys() | lens._fixed_parameters.keys()
     )
-    steps.append(
-        _let(
-            "scale_row_zero",
-            _factor((("response", "Resp"),), body=LetExprLiteral(value=0.0)),
-        )
-    )
+    steps.append(row_zero("scale_row_zero"))
     values: list[LetExprNode] = []
     for _, name in free_scales(family, labels):
         if name in lens._fixed_parameters:
@@ -222,26 +200,12 @@ def append_scale_predictors(
         steps.append(_let(f"dpar_{name}_eta", eta))
         link(steps, name, _var(f"dpar_{name}_eta"))
         values.append(_add(_var("scale_row_zero"), _var(name)))
-    steps.append(
-        _let(
-            f"{scale.name}_by_category",
-            _factor(
-                (("category_logit", "FormulaCategoryLogit"),),
-                cases=tuple(enumerate(values)),
-            ),
-        )
-    )
-    steps.append(
-        _let(
+    steps.extend(
+        stack_rows(
             scale.name,
-            _factor(
-                (("response", "Resp"), ("category_logit", "FormulaCategoryLogit")),
-                body=_index(
-                    f"{scale.name}_by_category",
-                    _var("category_logit"),
-                    _var("response"),
-                ),
-            ),
+            enumerate(values),
+            ("category_logit", "FormulaCategoryLogit"),
+            stem=f"{scale.name}_by_category",
         )
     )
     return True

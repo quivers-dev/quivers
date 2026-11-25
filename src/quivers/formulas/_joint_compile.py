@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
 from typing import TypeVar, cast
@@ -41,7 +41,16 @@ from quivers.dsl.program_templates import (
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._autocor import autocor_binding
-from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
+from quivers.formulas._ast import (
+    _add,
+    _factor,
+    _index,
+    _let,
+    _mul,
+    _var,
+    row_zero,
+    stack_rows,
+)
 from quivers.formulas._group_law import (
     GroupBlockLaw,
     IdentityCovariance,
@@ -948,42 +957,28 @@ def _correlated_residual(
             targets.append(original.with_(site=df, response=None))
         else:
             steps.append(_let(df, LetExprLiteral(value=float(fixed_nu))))
-    steps.append(
-        _let(
-            "formula_joint_zeros",
-            _factor((("row", row),), body=LetExprLiteral(value=0.0)),
-        )
-    )
-    for result, quantity in (
-        ("formula_joint_means_by_response", "mu"),
-        ("formula_joint_scales_by_response", elliptical.scale),
-    ):
+    rows, zero = ("row", row), "formula_joint_zeros"
+
+    def stacked(quantity: str) -> Iterator[tuple[int, LetExprNode]]:
         # Scalar-to-row broadcasting uses the ordinary typed binary operation;
         # nominal row ownership never depends on coincident axis cardinalities.
-        cases = tuple(
-            (
-                index,
-                _add(
-                    arguments_by_response[name][
-                        response.lens._family.native_parameter(quantity)
-                    ],
-                    _var("formula_joint_zeros"),
-                ),
-            )
-            for index, (name, response) in enumerate(responses.items())
-        )
-        steps.append(_let(result, _factor((("component", axis),), cases=cases)))
-    steps.append(
-        _let(
-            "formula_joint_mu",
-            _factor(
-                (("row", row), ("component", axis)),
-                body=_index(
-                    "formula_joint_means_by_response", _var("component"), _var("row")
-                ),
-            ),
-        )
+        for index, (name, response) in enumerate(responses.items()):
+            argument = response.lens._family.native_parameter(quantity)
+            yield index, _add(arguments_by_response[name][argument], _var(zero))
+
+    component = ("component", axis)
+    means, locations = stack_rows(
+        "formula_joint_mu",
+        stacked("mu"),
+        component,
+        stem="formula_joint_means_by_response",
+        row=rows,
     )
+    scales = _let(
+        "formula_joint_scales_by_response",
+        _factor((component,), cases=tuple(stacked(elliptical.scale))),
+    )
+    steps.extend((row_zero(zero, rows), means, scales, locations))
     steps.append(
         _let(
             "formula_joint_scale",
