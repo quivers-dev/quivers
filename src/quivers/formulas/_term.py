@@ -225,7 +225,7 @@ class VariableDecl(ValueModel):
         brms reports as part of another variable.
     site : str
         Site holding the draws.
-    kind : {"intercept", "population", "special"}
+    kind : {"intercept", "population", "special", "latent"}
         Part of brms's variable order.
     index : tuple[int, ...]
         Coordinates of the draws, before the variable's own axes.
@@ -234,6 +234,11 @@ class VariableDecl(ValueModel):
         determines, in place of the site.
     event_rank : int
         Number of axes of the variable after the indexed ones.
+    parameter : int
+        Position of the variable's parameter in a vector of parameters.
+    pairs : tuple[str, ...]
+        Labels of the coordinates whose correlations the variable reports,
+        for draws of Cholesky factors.
     flat : int or None
         Number of coordinates that each element of a flat site holds
         consecutively, which the last index selects from; None for a site
@@ -242,10 +247,12 @@ class VariableDecl(ValueModel):
 
     name: str
     site: str
-    kind: Literal["intercept", "population", "special"]
+    kind: Literal["intercept", "population", "special", "latent"]
     index: tuple[int, ...] = ()
     derived: bool = False
     event_rank: int = 0
+    pairs: tuple[str, ...] = ()
+    parameter: int = 0
     flat: int | None = None
 
 
@@ -340,7 +347,7 @@ def coordinate_scopes(
     if output is None or not output.parameters:
         return (((), scope),)
     return tuple(
-        ((index,), scope.coordinate(parameter))
+        ((index,), scope.coordinate(parameter).with_(position=index))
         for index, parameter in enumerate(output.parameters)
     )
 

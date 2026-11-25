@@ -53,7 +53,6 @@ from quivers.formulas.formula import (
     RowSelection,
     _formula_and_design,
     _qvr_name,
-    formula_from_data,
 )
 from quivers.formulas._row_retention import (
     complete_rows,
@@ -77,6 +76,7 @@ from quivers.formulas._autocor import (
     autocor_joint,
     autocor_linear_predictor,
     bind_autocor_terms,
+    fields_and_design,
     autocor_log_likelihood,
     split_autocor_terms,
 )
@@ -4222,7 +4222,7 @@ def _prepare_formula(
         distributional = category_distributional(
             family_obj,
             FormulaToQVRModule._component_labels(parsed),
-            formula,
+            authored,
             distributional,
         )
         # brms sigma<c>: per-category logistic-normal scale formulas.
@@ -4238,6 +4238,11 @@ def _prepare_formula(
     ):
         parsed = main_without_terms(parsed)
     parameter_designs: dict[str, DesignMatrices] = {}
+
+    def evaluate(text: str) -> tuple[Formula, DesignMatrices]:
+        """Evaluate one auxiliary formula on the included rows."""
+        return fields_and_design(text, data=data, data2=data2, caller=caller)
+
     with formula_data_options(knots, drop_unused_levels, data2):
         graph = build_predictor_graph(
             formula,
@@ -4248,6 +4253,7 @@ def _prepare_formula(
             family_parameters=frozenset(
                 {"mu", *(aux.name for aux in family_obj.aux_params)}
             ),
+            evaluate=evaluate,
             designs=parameter_designs,
         )
         parameter_formulas = _parse_distributional(
@@ -4256,8 +4262,8 @@ def _prepare_formula(
                 for name, value in (distributional or {}).items()
                 if isinstance(value, str)
             },
-            data,
             parsed.response_name,
+            evaluate=evaluate,
             designs=parameter_designs,
         )
     trials = (
@@ -4369,10 +4375,10 @@ def _threshold_formula_and_design(
 
 def _parse_distributional(
     formulas: Mapping[str, str] | None,
-    data: IntoDataFrame,
     response: str,
     *,
-    designs: dict[str, DesignMatrices] | None = None,
+    evaluate: Callable[[str], tuple[Formula, DesignMatrices]],
+    designs: dict[str, DesignMatrices],
 ) -> dict[str, Formula]:
     """Evaluate auxiliary design matrices on the same response rows.
 
@@ -4380,12 +4386,12 @@ def _parse_distributional(
     ----------
     formulas : Mapping[str, str] or None
         Auxiliary parameter names and their formulas.
-    data : IntoDataFrame
-        Shared source rows.
     response : str
         Primary response name used to evaluate design matrices.
-    designs : dict[str, DesignMatrices] or None
-        Optional output mapping that retains each fitted evaluator.
+    evaluate : Callable
+        Evaluates one formula.
+    designs : dict[str, DesignMatrices]
+        Receives each fitted evaluator.
 
     Returns
     -------
@@ -4412,12 +4418,7 @@ def _parse_distributional(
                 f"distributional formula for {parameter!r}: me() terms are "
                 "supported in the main formula of a joint model only"
             )
-        if designs is None:
-            parsed[parameter] = formula_from_data(f"{response} ~ {rhs}", data)
-        else:
-            parsed[parameter], designs[parameter] = _formula_and_design(
-                f"{response} ~ {rhs}", data
-            )
+        parsed[parameter], designs[parameter] = evaluate(f"{response} ~ {rhs}")
     return parsed
 
 

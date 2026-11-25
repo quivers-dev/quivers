@@ -456,6 +456,7 @@ class PopulationTerm(ValueModel):
                         if column.is_intercept and not specific
                         else "population",
                         index=index,
+                        parameter=part.position,
                     )
                 )
         return tuple(declarations)

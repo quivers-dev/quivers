@@ -702,6 +702,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
         consumed: set[str] = set()
         shrunk: dict[str, str] = {}
+        latent: dict[str, torch.Tensor] = {}
         scopes: dict[str, NameScope] = {}
         outputs: dict[str, OutputAxis | None] = {}
         for resp, response in self.emission.responses.items():
@@ -749,6 +750,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     local,
                 )
                 result |= {**named.population, **named.special}
+                latent |= named.latent
                 shrunk |= {
                     response.prefix + site: name for site, name in named.sites.items()
                 }
@@ -904,7 +906,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         chains, count = next(iter(draws.values())).shape[:2] if draws else (0, 0)
         return checked_variables(
             brms_order(
-                result | native_variables(draws, consumed),
+                result | latent | native_variables(draws, consumed),
                 [
                     name
                     for resp in self.response_names

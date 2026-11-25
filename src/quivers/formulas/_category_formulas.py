@@ -280,6 +280,7 @@ def main_without_terms(formula: Formula) -> Formula:
         design_terms=(),
         random_terms=(),
         offsets=(),
+        latent_terms=(),
         monotonic_terms=(),
     )
 

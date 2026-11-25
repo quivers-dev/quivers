@@ -402,6 +402,7 @@ class MonotonicRow(ValueModel):
                     site=site,
                     kind="population",
                     index=index,
+                    parameter=part.position,
                 ),
                 *(
                     VariableDecl(
@@ -409,6 +410,7 @@ class MonotonicRow(ValueModel):
                         site=simplex.site,
                         kind="special",
                         index=index,
+                        parameter=part.position,
                         event_rank=1,
                     )
                     for simplex in self.owned

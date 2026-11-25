@@ -421,6 +421,7 @@ def single_variables(
     thresholds = _ordinal_thresholds(fit)
     labels = coefficient_labels(fit)
     special: dict[str, torch.Tensor] = {}
+    latent: dict[str, torch.Tensor] = {}
     shrunk: dict[str, str] = {}
     items = _location_first(fit)
     planned = {predictor.prefix: predictor for predictor in plan.predictors}
@@ -436,6 +437,7 @@ def single_variables(
         )
         population |= named.population
         special |= named.special
+        latent |= named.latent
         intercepts |= named.intercepts
         shrunk |= named.sites
         consumed |= named.read
@@ -555,6 +557,7 @@ def single_variables(
             | correlations
             | special
             | group_coefficients
+            | latent
             | native_variables(draws, consumed),
             distributional_classes(fit),
         ),

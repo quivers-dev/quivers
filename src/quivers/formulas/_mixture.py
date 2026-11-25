@@ -1102,15 +1102,11 @@ def _component_formula(main: Formula, location: Formula) -> Formula:
     Raises
     ------
     ValueError
-        If the design carries latent-dependent inputs or structured latent
-        terms, which mixtures do not support.
+        If the design carries latent-dependent inputs.
     """
     if any(isinstance(column, SymbolicColumn) for column in location.fixed_columns):
         raise ValueError("mixture components do not support latent-dependent inputs")
-    if location.latent_terms or main.latent_terms:
-        raise ValueError("mixture components do not support structured latent terms")
     return location.with_(
-        formula=main.formula,
         response_name=main.response_name,
         response_values=main.response_values,
         response_layout=main.response_layout,

@@ -20,6 +20,7 @@ from quivers.formulas._smooth import SmoothState
 from quivers.formulas._term import OutputAxis, Term, VariableDecl
 from quivers.formulas._variable_catalogue import (
     CoefficientName,
+    correlation_pairs,
     SmoothNames,
     brms_rename,
     scalar_coordinates,
@@ -53,6 +54,8 @@ class NameScope(ValueModel):
     intercept : bool
         Whether the intercept is a coefficient of its own, not part of the
         thresholds of an ordinal response.
+    position : int
+        Position of the parameter in a vector of parameters.
     """
 
     parameter: str
@@ -63,6 +66,7 @@ class NameScope(ValueModel):
     states: Mapping[str, SmoothState] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     special: dict[str, str] = {}
     intercept: bool = True
+    position: int = 0
 
     @property
     def infix(self) -> str:
@@ -164,7 +168,18 @@ def named_variables(
         if declaration.index:
             event = (slice(None),) * declaration.event_rank
             value = value[(..., *declaration.index, *event)]
-        result.append((declaration, scalar_coordinates(declaration.name, value)))
+        result.append(
+            (
+                declaration,
+                correlation_pairs(
+                    declaration.name,
+                    declaration.pairs,
+                    value @ value.transpose(-1, -2),
+                )
+                if declaration.pairs
+                else scalar_coordinates(declaration.name, value),
+            )
+        )
     return tuple(result)
 
 
@@ -177,6 +192,8 @@ class TermVariables(ValueModel):
         Intercepts and coefficients.
     special : Mapping[str, torch.Tensor]
         Hyperparameters and latent coefficients.
+    latent : Mapping[str, torch.Tensor]
+        Coordinates of latent fields.
     intercepts : frozenset[str]
         Names of the intercepts.
     sites : dict[str, str]
@@ -189,6 +206,9 @@ class TermVariables(ValueModel):
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     special: Mapping[str, torch.Tensor] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    latent: Mapping[str, torch.Tensor] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     intercepts: frozenset[str]
@@ -217,12 +237,13 @@ def predictor_variables(
     """
     population: dict[str, torch.Tensor] = {}
     special: dict[str, torch.Tensor] = {}
+    latent: dict[str, torch.Tensor] = {}
     intercepts: set[str] = set()
     sites: dict[str, str] = {}
     read: set[str] = set()
     named = [
         (
-            declaration.index[-1] if term.output and term.output.parameters else 0,
+            declaration.parameter,
             declaration,
             values,
         )
@@ -232,8 +253,8 @@ def predictor_variables(
     # brms lists the variables of a vector of parameters parameter by parameter.
     for _, declaration, values in sorted(named, key=lambda item: item[0]):
         read.add(declaration.site)
-        if declaration.kind == "special":
-            special |= values
+        if declaration.kind in {"special", "latent"}:
+            (special if declaration.kind == "special" else latent).update(values)
             continue
         population |= values
         if declaration.kind == "intercept":
@@ -243,6 +264,7 @@ def predictor_variables(
     return TermVariables(
         population=population,
         special=special,
+        latent=latent,
         intercepts=frozenset(intercepts),
         sites=sites,
         read=frozenset(read),

@@ -1630,6 +1630,7 @@ class _ProcessTerm(ValueModel):
                     site=sdgp,
                     kind="special",
                     index=index,
+                    parameter=part.position,
                 ),
                 *(
                     VariableDecl(
@@ -1637,6 +1638,7 @@ class _ProcessTerm(ValueModel):
                         site=site,
                         kind="special",
                         index=index,
+                        parameter=part.position,
                     )
                     for site, label in zip(
                         lscales, self.block.lscale_labels, strict=True
@@ -1647,6 +1649,7 @@ class _ProcessTerm(ValueModel):
                     site=self.name + "_z",
                     kind="special",
                     index=index,
+                    parameter=part.position,
                     flat=self.output.size if self.output is not None else None,
                 ),
             )

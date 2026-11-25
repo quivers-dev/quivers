@@ -1038,6 +1038,8 @@ def predictor_terms(
     )
     fields: tuple[Term, ...] = field_terms(
         formula,
+        prefix,
+        output=output,
         scale_prior=options.scale_prior,
         correlation_prior=options.correlation_prior,
     )

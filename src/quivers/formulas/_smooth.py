@@ -1592,6 +1592,7 @@ class BasisTerm(ValueModel):
                         site=self.scale,
                         kind="special",
                         index=index,
+                        parameter=part.position,
                     )
                 )
             declarations.extend(
@@ -1600,6 +1601,7 @@ class BasisTerm(ValueModel):
                     site=self.name + "_z",
                     kind="special",
                     index=(position, *index),
+                    parameter=part.position,
                     derived=True,
                 )
                 for position, name in enumerate(names.coefficients[block])
