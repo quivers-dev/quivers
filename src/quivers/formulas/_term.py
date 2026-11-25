@@ -191,6 +191,146 @@ class SiteDecl(ValueModel):
         return axes[0] if axes else None
 
 
+class ColumnName(ValueModel):
+    """A data column of one predictor.
+
+    Parameters
+    ----------
+    prefix : str
+        Predictor namespace.
+    column : str
+        Column identifier.
+    """
+
+    prefix: str
+    column: str
+
+    @property
+    def name(self) -> str:
+        """Return the input name the column has unless it is taken.
+
+        Returns
+        -------
+        str
+            The column within its namespace.
+        """
+        return self.prefix + self.column
+
+    @property
+    def key(self) -> str:
+        """Return the identity of the column among all columns.
+
+        Returns
+        -------
+        str
+            Namespace and column, separated by a character neither has.
+        """
+        return f"{self.prefix}:{self.column}"
+
+
+class ProgramNames(ValueModel):
+    """Names a program gives to data columns and private bindings.
+
+    A column is read under its own name, and a binding has the name its term
+    gives it, unless the program already uses that name for something else.
+
+    Parameters
+    ----------
+    inputs : dict[str, str]
+        Input name of each column that cannot keep its own, by
+        `ColumnName.key`.
+    bindings : dict[str, str]
+        Name of each private binding that cannot keep its own, by owner
+        and name.
+    """
+
+    inputs: dict[str, str] = {}
+    bindings: dict[str, str] = {}
+
+    def input(self, column: ColumnName) -> str:
+        """Name the input of a column.
+
+        Parameters
+        ----------
+        column : ColumnName
+            Predictor namespace and column.
+
+        Returns
+        -------
+        str
+            Input name in the program.
+        """
+        return self.inputs.get(column.key, column.name)
+
+    def binding(self, owner: str, name: str) -> str:
+        """Name a private binding.
+
+        Parameters
+        ----------
+        owner : str
+            Term the binding belongs to.
+        name : str
+            Name the term gives it.
+
+        Returns
+        -------
+        str
+            Name in the program.
+        """
+        return self.bindings.get(f"{owner}:{name}", name)
+
+
+def resolve_names(
+    columns: Iterable[ColumnName],
+    bindings: Iterable[tuple[str, str]],
+    public: Iterable[str],
+    taken: Iterable[str],
+) -> ProgramNames:
+    """Give every column and private binding a name of its own.
+
+    Parameters
+    ----------
+    columns : Iterable[ColumnName]
+        Data columns, in order of precedence.
+    bindings : Iterable[tuple[str, str]]
+        Owner and name of each private binding, in order of precedence.
+    public : Iterable[str]
+        Sites and inputs whose names are fixed.
+    taken : Iterable[str]
+        Every other name the program binds.
+
+    Returns
+    -------
+    ProgramNames
+        The names that change. A binding avoids the public names and earlier
+        bindings, and a column every other name.
+    """
+    columns = tuple(dict.fromkeys(columns))
+    bindings = tuple(dict.fromkeys(bindings))
+    private = {name for _, name in bindings}
+    names = {column.name for column in columns} | private
+    # The names bound by no term keep theirs.
+    used = {*public, *(set(taken) - private)}
+
+    def fresh(name: str) -> str:
+        while name in used or name in names:
+            name += "_"
+        return name
+
+    renamed: dict[str, str] = {}
+    for owner, name in bindings:
+        if name in used:
+            renamed[f"{owner}:{name}"] = name = fresh(name + "_binding")
+        used.add(name)
+    inputs: dict[str, str] = {}
+    for column in columns:
+        name = column.name
+        if name in used:
+            name = inputs[column.key] = fresh("data_" + name)
+        used.add(name)
+    return ProgramNames(inputs=inputs, bindings=renamed)
+
+
 class Contribution(ValueModel):
     """One bound summand of a predictor.
 
@@ -200,6 +340,8 @@ class Contribution(ValueModel):
         Binding of the value.
     rows : bool
         Whether the value varies over the rows.
+    owner : str
+        Term the binding belongs to, when the program may rename it.
     coordinates : bool
         Whether the value varies over the output axis, which then precedes
         the rows.
@@ -208,6 +350,7 @@ class Contribution(ValueModel):
     name: str
     rows: bool
     coordinates: bool
+    owner: str | None = None
 
     def cell(self, row: LetExprNode, coordinate: LetExprNode) -> LetExprNode:
         """Read the value at one row and output coordinate.
@@ -418,6 +561,16 @@ class Term(Protocol):
         Term
             The same coefficients over the design of the rows. A site drawn afresh
             for them says so.
+        """
+        ...
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Columns of the term.
         """
         ...
 

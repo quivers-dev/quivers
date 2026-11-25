@@ -64,6 +64,7 @@ from quivers.formulas._grouping_emission import (
 from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
+    ColumnName,
     Contribution,
     Emission,
     InputDecl,
@@ -98,6 +99,26 @@ def coefficient_binding(prefix: str, group: str, slope: str) -> str:
     if slope == "Intercept":
         return f"{prefix}alpha_{qgroup}"
     return f"{prefix}beta_{qgroup}_{_qvr_name(slope)}"
+
+
+def coefficient_owner(prefix: str, group: str, slope: str) -> str:
+    """Identify one coefficient among the owners of private bindings.
+
+    Parameters
+    ----------
+    prefix : str
+        Predictor namespace.
+    group : str
+        Grouping-factor name.
+    slope : str
+        Coefficient label.
+
+    Returns
+    -------
+    str
+        The three parts, separated by a character no name has.
+    """
+    return f"{prefix}|{group}|{slope}"
 
 
 def scale_site(prefix: str, group: str, slope: str) -> str:
@@ -879,6 +900,9 @@ class GroupTerm(ValueModel):
     ----------
     prefix : str
         Predictor namespace.
+    binding : str
+        Binding of the contribution: a row vector, or an array over the
+        output axis and the rows.
     group, slope : str
         Authored grouping factor and coefficient label.
     rows : RowMap
@@ -901,6 +925,7 @@ class GroupTerm(ValueModel):
     """
 
     prefix: str
+    binding: str
     group: str
     slope: str
     rows: RowMap = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -996,6 +1021,16 @@ class GroupTerm(ValueModel):
             )
         return self.with_(column=column, membership=membership, covariate=covariate)
 
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -1009,6 +1044,7 @@ class GroupTerm(ValueModel):
                 name=self.binding,
                 rows=True,
                 coordinates=self.active and self.output is not None,
+                owner=coefficient_owner(*self.key),
             ),
         )
 
@@ -1120,17 +1156,6 @@ class GroupTerm(ValueModel):
             None.
         """
         return None
-
-    @property
-    def binding(self) -> str:
-        """Name the binding of the contribution.
-
-        Returns
-        -------
-        str
-            A row vector, or an array over the output axis and the rows.
-        """
-        return f"{coefficient_binding(*self.key)}_per_row"
 
     def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
         """Draw the term's sites and bind its contributions.

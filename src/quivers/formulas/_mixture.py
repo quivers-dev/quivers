@@ -41,7 +41,7 @@ from functools import reduce
 
 import numpy as np
 
-from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
     DrawArgDist,
     DrawArgList,
@@ -97,7 +97,7 @@ from quivers.formulas._group_law import (
 )
 from quivers.formulas._group_plan import check_names
 from quivers.formulas._prior_emission import build_prior_targets
-from quivers.formulas._term import declare_inputs
+from quivers.formulas._term import ColumnName, ProgramNames, declare_inputs
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.formulas._threshold_groups import (
@@ -593,6 +593,8 @@ class MixtureEmission(ValueModel):
         Group-block laws renamed into component namespaces.
     families : FamilyCatalog or None
         Laws the terms of the sub-emissions draw from.
+    names : ProgramNames
+        Names of the sub-emissions' columns and bindings.
     """
 
     module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -604,6 +606,9 @@ class MixtureEmission(ValueModel):
     )
     families: FamilyCatalog | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    names: ProgramNames = dx.field(
+        default_factory=ProgramNames, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
 
@@ -744,6 +749,8 @@ class _SubEmission(ValueModel):
         Group-level correlation identifiers used by the sub-emission.
     families : FamilyCatalog or None
         Laws its terms draw from, under namespaced names.
+    names : ProgramNames
+        Names of its columns and bindings, under namespaced names.
     """
 
     objects: tuple[Statement, ...] = dx.field(
@@ -767,6 +774,9 @@ class _SubEmission(ValueModel):
     correlation_ids: frozenset[str] = frozenset()
     families: FamilyCatalog | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    names: ProgramNames = dx.field(
+        default_factory=ProgramNames, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
 
@@ -1038,7 +1048,40 @@ def _sub_emission(
         group_laws=laws,
         correlation_ids=correlation_ids,
         families=term_laws.renamed(morphisms) if term_laws is not None else None,
+        names=ProgramNames(
+            inputs={
+                ColumnName(
+                    prefix=namespace.prefix(key.partition(":")[0]),
+                    column=key.partition(":")[2],
+                ).key: namespace.name(value)
+                for key, value in sub._names.inputs.items()
+            },
+            bindings={
+                f"{_namespaced_owner(namespace, owner)}:{name}": namespace.name(value)
+                for key, value in sub._names.bindings.items()
+                for owner, _, name in (key.rpartition(":"),)
+            },
+        ),
     )
+
+
+def _namespaced_owner(namespace: _Namespace, owner: str) -> str:
+    """Rename the owner of a private binding into a mixture parameter.
+
+    Parameters
+    ----------
+    namespace : _Namespace
+        Names of the mixture parameter.
+    owner : str
+        Predictor namespace, followed by the parts of a group coefficient.
+
+    Returns
+    -------
+    str
+        The owner in the mixture program.
+    """
+    prefix, separator, rest = owner.partition("|")
+    return namespace.prefix(prefix) + separator + rest
 
 
 def _component_formula(main: Formula, location: Formula) -> Formula:
@@ -1553,6 +1596,8 @@ def emit_mixture(
     targets: list[PriorTarget] = []
     laws: list[GroupBlockLaw] = []
     term_laws: list[FamilyCatalog] = []
+    inputs: dict[str, str] = {}
+    bindings: dict[str, str] = {}
     ordinal = spec.components[0].ordinal is not None
     # brms: an ordered ordinal mixture shares one threshold vector, ordered
     # when any component has ordered thresholds.
@@ -1582,6 +1627,8 @@ def emit_mixture(
             parameters.setdefault(parameter.name, parameter)
         targets.extend(emission.prior_targets)
         laws.extend(emission.group_laws)
+        inputs.update(emission.names.inputs)
+        bindings.update(emission.names.bindings)
         if emission.families is not None:
             term_laws.append(emission.families)
 
@@ -1903,6 +1950,7 @@ def emit_mixture(
             options=tuple(options),
         )
     )
+    lens._names = ProgramNames(inputs=inputs, bindings=bindings)
     check_names(laws)
     for parameter in declare_inputs(law_inputs(laws)):
         parameters.setdefault(parameter.name, parameter)
@@ -1924,6 +1972,7 @@ def emit_mixture(
         prior_targets=tuple(targets),
         group_laws=tuple(laws),
         families=reduce(FamilyCatalog.with_catalog, term_laws) if term_laws else None,
+        names=lens._names,
     )
 
 

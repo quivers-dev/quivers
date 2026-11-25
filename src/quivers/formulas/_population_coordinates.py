@@ -40,12 +40,14 @@ from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._row_source import PredictorRows, fresh_columns
 from quivers.formulas._term import (
     AxisDecl,
+    ColumnName,
     Contribution,
     at_coordinate,
     over_output,
     Emission,
     InputDecl,
     OutputAxis,
+    ProgramNames,
     SiteDecl,
     column_inputs,
     column_rms,
@@ -299,6 +301,8 @@ class PopulationTerm(ValueModel):
     ----------
     prefix : str
         Predictor namespace.
+    names : ProgramNames
+        Names of the columns and contributions in the program.
     prior : str
         Default prior of a coefficient.
     columns : tuple[FixedColumn or SymbolicColumn, ...]
@@ -314,6 +318,7 @@ class PopulationTerm(ValueModel):
     """
 
     prefix: str
+    names: ProgramNames = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     prior: str
     columns: tuple[FixedColumn | SymbolicColumn, ...] = dx.field(
         opaque=True, extras=OPAQUE_BY_VALUE
@@ -369,6 +374,20 @@ class PopulationTerm(ValueModel):
             )
         )
 
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            One per evaluated column.
+        """
+        return tuple(
+            ColumnName(prefix=self.prefix, column=column.qvr_name)
+            for column in self.columns
+            if isinstance(column, FixedColumn) and not column.is_intercept
+        )
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -380,9 +399,11 @@ class PopulationTerm(ValueModel):
         return tuple(
             Contribution(
                 name=coefficient_site(self.prefix, column)
-                + ("" if column.is_intercept else "_per_row"),
+                if column.is_intercept
+                else self.binding(column),
                 rows=not column.is_intercept,
                 coordinates=self.output is not None,
+                owner=None if column.is_intercept else self.prefix,
             )
             for column in self.columns
         )
@@ -406,8 +427,41 @@ class PopulationTerm(ValueModel):
             One inferred row vector per evaluated column, and one declared
             row vector, bound elsewhere, per symbolic column.
         """
-        return column_inputs(
-            (self.prefix + column.qvr_name, column) for column in self.columns
+        return column_inputs((self.input(column), column) for column in self.columns)
+
+    def input(self, column: FixedColumn | SymbolicColumn) -> str:
+        """Name the input of one column.
+
+        Parameters
+        ----------
+        column : FixedColumn or SymbolicColumn
+            Column of the block. A symbolic column keeps its declared name.
+
+        Returns
+        -------
+        str
+            Input name in the program.
+        """
+        name = ColumnName(prefix=self.prefix, column=column.qvr_name)
+        if isinstance(column, SymbolicColumn):
+            return name.name
+        return self.names.input(name)
+
+    def binding(self, column: FixedColumn | SymbolicColumn) -> str:
+        """Name the row contribution of one column.
+
+        Parameters
+        ----------
+        column : FixedColumn or SymbolicColumn
+            Column of the block.
+
+        Returns
+        -------
+        str
+            Binding in the program.
+        """
+        return self.names.binding(
+            self.prefix, coefficient_site(self.prefix, column) + "_per_row"
         )
 
     def site(self, column: FixedColumn | SymbolicColumn) -> SiteDecl:
@@ -487,10 +541,10 @@ class PopulationTerm(ValueModel):
         row = _var("response")
         bindings = tuple(
             _let(
-                coefficient_site(self.prefix, column) + "_per_row",
+                self.binding(column),
                 _mul(
                     _var(coefficient_site(self.prefix, column)),
-                    _var(self.prefix + column.qvr_name),
+                    _var(self.input(column)),
                 )
                 if self.output is None
                 else over_output(
@@ -499,7 +553,7 @@ class PopulationTerm(ValueModel):
                         at_coordinate(
                             coefficient_site(self.prefix, column), self.output
                         ),
-                        _index(self.prefix + column.qvr_name, row),
+                        _index(self.input(column), row),
                     ),
                     ("response", "Resp"),
                 ),

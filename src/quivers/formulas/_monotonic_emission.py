@@ -41,6 +41,7 @@ from quivers.formulas._monotonic import (
 from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
+    ColumnName,
     Contribution,
     Emission,
     InputDecl,
@@ -355,6 +356,16 @@ class MonotonicRow(ValueModel):
             )
         )
 
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -519,8 +530,7 @@ def monotonic_rows(
     Raises
     ------
     ValueError
-        If the predictor has an output axis, or a generated name collides
-        with a design input of the predictor.
+        If the predictor has an output axis.
     """
     if not formula.monotonic_terms:
         return ()
@@ -529,20 +539,10 @@ def monotonic_rows(
             "mo() terms are not supported in predictors that carry one "
             "coefficient per response category"
         )
-    taken = {prefix + column.qvr_name for column in formula.fixed_columns} | {
-        f"{prefix}random_{term.column.qvr_name}"
-        for term in formula.random_terms
-        if term.column is not None
-    }
     sites = simplex_sites(formula, prefix)
     rows = []
     drawn: set[str] = set()
     for term in formula.monotonic_terms:
-        value = value_binding(prefix, term)
-        if value in taken or coefficient_site(prefix, term) in taken:
-            raise ValueError(
-                f"mo() term {term.name!r} collides with the design input {value!r}"
-            )
         rows.append(
             MonotonicRow(
                 prefix=prefix,

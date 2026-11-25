@@ -68,6 +68,7 @@ from quivers.formulas._mgcv_smooth import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    ColumnName,
     Contribution,
     at_coordinate,
     flat_index,
@@ -1540,6 +1541,16 @@ class BasisTerm(ValueModel):
         if rows.frame is None:
             return self
         return self.with_(matrix=rows.matrix(self.label)[:, list(self.columns)])
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

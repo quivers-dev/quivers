@@ -32,6 +32,7 @@ from quivers.formulas._latent_effects import (
 from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
+    ColumnName,
     Contribution,
     Emission,
     InputDecl,
@@ -118,6 +119,16 @@ class FieldTerm(ValueModel):
             include=include,
             fresh=True,
         )
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

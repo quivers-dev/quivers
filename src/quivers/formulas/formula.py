@@ -30,7 +30,8 @@ namespace so users coming from R get the expected base R behaviour.
 
 from __future__ import annotations
 
-from typing import Literal, Mapping
+from collections.abc import Mapping, Sequence
+from typing import Literal
 import io
 import re
 import tokenize
@@ -398,6 +399,32 @@ class SplineBasis(ValueModel):
             raise ValueError(
                 "spline structure requires finite nondecreasing knots and a valid polynomial degree"
             )
+
+
+def _distinct_columns(columns: Sequence[FixedColumn]) -> list[FixedColumn]:
+    """Give every design column an identifier of its own.
+
+    Parameters
+    ----------
+    columns : Sequence[FixedColumn]
+        Columns whose labels may normalize to one identifier.
+
+    Returns
+    -------
+    list[FixedColumn]
+        The columns. A later column whose identifier is taken has the next
+        free number after it.
+    """
+    taken = {column.qvr_name for column in columns}
+    used: set[str] = set()
+    result = []
+    for column in columns:
+        name, number = column.qvr_name, 2
+        while name in used or name != column.qvr_name and name in taken:
+            name, number = f"{column.qvr_name}_{number}", number + 1
+        used.add(name)
+        result.append(column.with_(qvr_name=name))
+    return result
 
 
 class GaussianDesignTerm(ValueModel):
@@ -1698,6 +1725,7 @@ def _formula_and_design(
 
     if drop_intercept:
         fixed_columns = [column for column in fixed_columns if not column.is_intercept]
+    fixed_columns = _distinct_columns(fixed_columns)
     random_terms: list[RandomTerm] = []
     group_levels: dict[str, tuple[str, ...]] = {}
     group_indices: dict[str, tuple[int, ...]] = {}

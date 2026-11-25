@@ -77,6 +77,7 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
     LetExprBinOp,
     LetExprCall,
+    LetExprFactor,
     LetExprLiteral,
     LetExprNode,
     LetExprVar,
@@ -90,6 +91,7 @@ from quivers.dsl.ast_nodes import (
     Module,
     ObserveStep,
     OptionEntry,
+    ScoreStep,
     OptionName,
     ProgramDecl,
     ProgramStep,
@@ -144,6 +146,7 @@ from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
 from quivers.formulas._group_emission import emit_group_block
 from quivers.formulas._group_plan import (
+    coefficient_owner,
     plan_group_blocks,
     plan_threshold_block,
 )
@@ -172,7 +175,8 @@ from quivers.formulas._predictor_graph import (
     ComponentExpression,
     predictor_items,
 )
-from quivers.dsl.let_expr_traversal import substitute_let_expr
+from quivers.dsl.let_expr_traversal import substitute_let_expr, walk_let_expr
+from quivers.dsl.program_templates import _bound_names
 from quivers.formulas._priors import (
     PriorInput,
     PriorSet,
@@ -214,12 +218,14 @@ from quivers.formulas._term_emission import (
 )
 from quivers.formulas._term import (
     OutputAxis,
+    ProgramNames,
     SiteDecl,
     Term,
     bind_inputs,
     declare_axes,
     declare_inputs,
     join_catalogs,
+    resolve_names,
 )
 from quivers.formulas.formula import (
     FixedColumn,
@@ -978,6 +984,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._predictors: tuple[Predictor, ...] = ()
         self._term_laws: FamilyCatalog | None = None
         self._rows: RowSource | None = None
+        self._names = ProgramNames()
         conflicting = (
             self._distributional.keys() | expression_roots
         ) & self._named_prior_inputs.keys()
@@ -1521,15 +1528,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     "decisions must be checked integer 0/1 values aligned with response rows"
                 )
-            aliases = {"formula_response", "formula_decision"}
-            if aliases & {
-                _qvr_name(formula.response_name),
-                self._predictor_name,
-                *(column.qvr_name for column in formula.fixed_columns),
-            }:
-                raise ValueError(
-                    "formula_response and formula_decision are reserved response input aliases"
-                )
         if formula.modifiers.standard_error is not None:
             error = formula.modifiers.standard_error
             residual = self._family.error_scale
@@ -1564,22 +1562,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise ValueError(
                 "trials requires a response family with finite trial counts"
             )
-        role_aliases = {
-            column.qvr_name
-            for role, column in formula.modifiers.columns()
-            if role not in {"weights", "decision"}
-        }
-        if formula.modifiers.standard_error is not None:
-            role_aliases.update({"formula_sigma", "formula_error_reference"})
-        collisions = role_aliases & {
-            _qvr_name(formula.response_name),
-            self._predictor_name,
-            *(column.qvr_name for column in formula.fixed_columns),
-        }
-        if collisions:
-            raise ValueError(
-                f"{sorted(collisions)} are reserved response input aliases"
-            )
         if formula.modifiers.weights is not None:
             weights = formula.modifiers.weights.data
             if weights.shape != formula.response_values.shape[:1]:
@@ -1590,32 +1572,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 or np.any(weights < 0)
             ):
                 raise ValueError("weights must be finite nonnegative real values")
-            if (
-                _qvr_name(formula.response_name) == "formula_weights"
-                or self._predictor_name == "formula_weights"
-                or any(
-                    column.qvr_name == "formula_weights"
-                    for column in formula.fixed_columns
-                )
-            ):
-                raise ValueError(
-                    "formula_weights is reserved for response likelihood weights"
-                )
+        reserved = {column.qvr_name for _, column in formula.modifiers.columns()}
+        if formula.modifiers.decision is not None:
+            reserved.add("formula_response")
+        if formula.modifiers.standard_error is not None:
+            reserved.update({"formula_sigma", "formula_error_reference"})
+        taken = reserved & {_qvr_name(formula.response_name), self._predictor_name}
+        if taken:
+            raise ValueError(
+                f"{sorted(taken)} are reserved for response inputs; rename the "
+                "response or the host input"
+            )
         group_codings: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
         for name, _, predictor in self._predictor_items(formula):
             if predictor.response_values.shape != formula.response_values.shape:
                 raise ValueError(
                     f"distributional parameter {name!r} has a different row count"
-                )
-            reserved_offsets = {
-                f"formula_offset_{index}" for index, _ in enumerate(predictor.offsets)
-            }
-            collisions = reserved_offsets & {
-                column.qvr_name for column in predictor.fixed_columns
-            }
-            if collisions:
-                raise ValueError(
-                    f"offset input names are reserved: {sorted(collisions)}"
                 )
             for group, levels in predictor.group_levels.items():
                 normalized = _qvr_name(group)
@@ -1625,13 +1597,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     raise ValueError(
                         f"distributional parameter {name!r} has incompatible coding for {group!r}"
                     )
-        if self._distributional and any(
-            col.qvr_name.startswith("dpar_") for col in formula.fixed_columns
-        ):
-            raise ValueError(
-                "the 'dpar_' prefix is reserved for distributional coefficients and inputs"
-            )
-        module = self._build_module(formula, supplied_groups=supplied_groups)
+        module = self._named_module(formula, supplied_groups)
         targets = self._catalogue_prior_targets(formula, module)
         # brms default policy: one rule for every site no user rule selects.
         defaults = self._brms_defaults(formula, targets)
@@ -3595,6 +3561,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 decomp=self._decomp,
                 coordinates=self._coordinates_supported,
                 host=self._predictor_name,
+                names=self._names,
             ),
             outputs=self._output_axes(formula),
             transitions=self._transition_axis(formula),
@@ -3644,6 +3611,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if transitions is not None
             else None,
             supplied=supplied,
+        )
+        laws = tuple(
+            law.with_(
+                members=tuple(
+                    member
+                    if member.coefficient == member.raw_site
+                    else member.with_(
+                        coefficient=self._names.binding(
+                            coefficient_owner(member.prefix, law.group, member.slope),
+                            member.coefficient,
+                        )
+                    )
+                    for member in law.members
+                )
+            )
+            for law in laws
         )
         self._group_plan = {
             (member.prefix, law.group, member.slope): law
@@ -4280,6 +4263,116 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 program_steps.append(_let(eta_name, linear_predictor))
                 _append_link(program_steps, aux.name, _var(eta_name), planned.link)
 
+    def _named_module(
+        self,
+        formula: Formula,
+        supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None,
+    ) -> Module:
+        """Emit the program, giving every column and binding its own name.
+
+        Parameters
+        ----------
+        formula : Formula
+            Location predictor and response.
+        supplied_groups : Mapping or None
+            Group coefficients another program emits.
+
+        Returns
+        -------
+        Module
+            The emitted program.
+        """
+        self._names = ProgramNames()
+        module = self._build_module(formula, supplied_groups=supplied_groups)
+        # The components of a mixture name their own columns.
+        if self._family.mixture is None:
+            names = self._resolved_names(formula, module)
+            if names != ProgramNames():
+                self._names = names
+                self._emitted_groups = []
+                self._drawn_sites = self._supplied_sites
+                module = self._build_module(formula, supplied_groups=supplied_groups)
+        return module
+
+    def _resolved_names(self, formula: Formula, module: Module) -> ProgramNames:
+        """Find the columns and bindings whose names the program uses twice.
+
+        Parameters
+        ----------
+        formula : Formula
+            Location predictor and response.
+        module : Module
+            Program in which every column and binding keeps its name.
+
+        Returns
+        -------
+        ProgramNames
+            The names that change.
+        """
+        program = next(
+            item for item in module.statements if isinstance(item, ProgramDecl)
+        )
+        terms = tuple(
+            term for predictor in self._predictors for term in predictor.terms
+        )
+        columns = [name for term in terms for name in term.column_names()]
+        sites = {
+            name
+            for step in program.draws
+            if isinstance(step, SampleStep | ObserveStep)
+            for name in step.vars
+        }
+        inputs = {
+            *(parameter.name for parameter in program.value_parameters),
+            *(
+                name
+                for term in terms
+                for name in (
+                    {item.name for item in term.inputs()}
+                    - {column.name for column in term.column_names()}
+                )
+            ),
+            *(column.qvr_name for _, column in formula.modifiers.columns()),
+            *(
+                f"{_qvr_name(group)}_idx"
+                for _, _, predictor in self._predictor_items(formula)
+                for group in predictor.group_levels
+            ),
+        }
+        if isinstance(self._binomial_trials, str):
+            inputs.add(_qvr_name(self._binomial_trials))
+        if self._predictor_name is not None:
+            inputs.add(self._predictor_name)
+        binders = {
+            binder.var
+            for step in program.draws
+            if isinstance(step, LetStep | ScoreStep)
+            for node in walk_let_expr(step.value)
+            if isinstance(node, LetExprFactor)
+            for binder in node.binders
+        }
+        private = [
+            (
+                coefficient_owner(member.prefix, law.group, member.slope),
+                member.coefficient,
+            )
+            for law in self._emitted_groups
+            for member in law.members
+            if member.coefficient != member.raw_site
+        ]
+        private.extend(
+            (summand.owner, summand.name)
+            for term in terms
+            for summand in term.contributions()
+            if summand.owner is not None
+        )
+        return resolve_names(
+            columns,
+            private,
+            sites | inputs,
+            {*_bound_names(program.draws), *binders, *finite_object_sizes(module)},
+        )
+
     def _build_module(
         self,
         formula: Formula,
@@ -4292,6 +4385,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             self._mixture_targets = emission.prior_targets
             self._emitted_groups.extend(emission.group_laws)
             self._term_laws = emission.families
+            self._names = emission.names
             return emission.module
         formula = self._threshold_location_formula(formula)
         statements: list[Statement] = []

@@ -520,6 +520,7 @@ def prepare_prediction(
             if fit.predictor_graph is not None and name in fit.predictor_graph.leaves
         },
     )
+    module, _ = specialized_lens._forward(specialized["mu"], rows=source)
     terms = specialized_lens.terms(specialized["mu"], source)
     observations = finite_inputs(
         bind_inputs(item for term in terms for item in term.inputs())
@@ -611,7 +612,6 @@ def prepare_prediction(
             raise ValueError("new_data neural predictor must produce finite values")
         observations[fit.predictor_name] = neural
 
-    module, _ = specialized_lens._forward(specialized["mu"], rows=source)
     # The level inputs of every block on the compact prediction levels.
     observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
     # Improper flat priors are compilation-local native laws.

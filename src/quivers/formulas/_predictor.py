@@ -25,7 +25,12 @@ from quivers.formulas._category_formulas import is_scale_parameter
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._gp import process_term
 from quivers.formulas._group_law import GroupBlockLaw
-from quivers.formulas._group_plan import GroupTerm, row_map
+from quivers.formulas._group_plan import (
+    GroupTerm,
+    coefficient_binding,
+    coefficient_owner,
+    row_map,
+)
 from quivers.formulas._field_term import field_terms
 from quivers.formulas._monotonic_emission import monotonic_rows
 from quivers.formulas._population_coordinates import (
@@ -38,12 +43,14 @@ from quivers.formulas._row_source import PredictorRows, RowSource, fresh_columns
 from quivers.formulas._smooth import BasisTerm
 from quivers.formulas._term import (
     AxisDecl,
+    ColumnName,
     Contribution,
     flat_index,
     over_output,
     Emission,
     InputDecl,
     OutputAxis,
+    ProgramNames,
     SiteDecl,
     Term,
     column_rms,
@@ -98,6 +105,16 @@ class OffsetTerm(ValueModel):
         if rows.frame is None:
             return self
         return self.with_(columns=fresh_columns(self.columns, rows.column))
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -231,6 +248,16 @@ class HostTerm(ValueModel):
         """
         return self
 
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -333,6 +360,8 @@ class PredictorOptions(ValueModel):
         Whether the family admits centered and QR coordinates.
     host : str or None
         Input holding a host contribution to the location.
+    names : ProgramNames
+        Names of the columns and contributions in the program.
     """
 
     coefficient_prior: str
@@ -343,6 +372,9 @@ class PredictorOptions(ValueModel):
     decomp: Literal["none", "QR"]
     coordinates: bool
     host: str | None
+    names: ProgramNames = dx.field(
+        default_factory=ProgramNames, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class Predictor(ValueModel):
@@ -640,6 +672,7 @@ def group_term(
     term: RandomTerm,
     output: OutputAxis | None,
     laws: Mapping[tuple[str, str, str], GroupBlockLaw],
+    names: ProgramNames = ProgramNames(),
 ) -> GroupTerm:
     """Build one group-level coefficient of a predictor.
 
@@ -655,6 +688,9 @@ def group_term(
         Axis of its coefficient vectors.
     laws : Mapping[tuple[str, str, str], GroupBlockLaw]
         Laws of the blocks the program emits.
+
+    names : ProgramNames
+        Names of the contributions in the program.
 
     Returns
     -------
@@ -675,6 +711,10 @@ def group_term(
     position, width = _slope_position(formula, term)
     return GroupTerm(
         prefix=prefix,
+        binding=names.binding(
+            coefficient_owner(prefix, term.group, term.slope),
+            coefficient_binding(prefix, term.group, term.slope) + "_per_row",
+        ),
         group=term.group,
         slope=term.slope,
         rows=row_map(formula, term, prefix),
@@ -730,6 +770,7 @@ def _population(
     return (
         PopulationTerm(
             prefix=prefix,
+            names=options.names,
             prior=options.coefficient_prior,
             columns=columns,
             scales=tuple(
@@ -836,7 +877,7 @@ def predictor_terms(
         else ()
     )
     groups: tuple[Term, ...] = tuple(
-        group_term(formula, prefix, term, output, laws)
+        group_term(formula, prefix, term, output, laws, options.names)
         for term in formula.random_terms
         if term not in specific_randoms
     )
@@ -856,7 +897,7 @@ def predictor_terms(
             transform=False,
         ),
         *(
-            group_term(formula, prefix, term, transitions, laws)
+            group_term(formula, prefix, term, transitions, laws, options.names)
             for term in specific_randoms
         ),
     )

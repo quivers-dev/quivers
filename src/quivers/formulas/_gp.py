@@ -76,6 +76,7 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    ColumnName,
     Contribution,
     Emission,
     InputDecl,
@@ -1660,6 +1661,16 @@ class _ProcessTerm(ValueModel):
     columns: tuple[int, ...]
     scale_prior: str
     output: OutputAxis | None = None
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
