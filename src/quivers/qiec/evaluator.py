@@ -16,8 +16,9 @@ handler boundary.
 from __future__ import annotations
 
 import math
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from collections.abc import Callable, Hashable, Mapping
+from typing import cast
 
 import didactic.api as dx
 
@@ -689,7 +690,7 @@ class RuntimeRequest(QiecModel):
 
     core: EffectRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     arguments: tuple[HeldValue, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    resumption_path: tuple[int, ...]
+    resumption_path: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     dynamic_path: tuple[DynamicAddressFrame, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -1048,6 +1049,17 @@ class _CallFrame(ContinuationFrame):
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
+    @cached_property
+    def address(self) -> DynamicAddressFrame:
+        """The component this call contributes to a dynamic address.
+
+        Returns
+        -------
+        DynamicAddressFrame
+            The callee's name and the call's ordinal, under ``"call"``.
+        """
+        return DynamicAddressFrame(scope="call", key=f"{self.name}#{self.serial}")
+
 
 class _InstanceFrame(ContinuationFrame):
     """A stack frame marking a live local effect instance.
@@ -1063,6 +1075,17 @@ class _InstanceFrame(ContinuationFrame):
 
     instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     serial: int
+
+    @cached_property
+    def address(self) -> DynamicAddressFrame:
+        """The component this allocation contributes to a dynamic address.
+
+        Returns
+        -------
+        DynamicAddressFrame
+            The allocation's ordinal, under ``"instance"``.
+        """
+        return DynamicAddressFrame(scope="instance", key=self.serial)
 
 
 class _ClauseFrame(ContinuationFrame):
@@ -1093,7 +1116,7 @@ class _ClauseFrame(ContinuationFrame):
     environment: Mapping[Local, HeldValue] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    resumption_path: tuple[int, ...]
+    resumption_path: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _AnswerFrame(ContinuationFrame):
@@ -1117,7 +1140,7 @@ class _PathFrame(ContinuationFrame):
         The address in force before the shot began.
     """
 
-    resumption_path: tuple[int, ...]
+    resumption_path: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _Returned(QiecModel):
@@ -1149,7 +1172,7 @@ class _Continue(QiecModel):
     environment: dict[Local, HeldValue] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    resumption_path: tuple[int, ...]
+    resumption_path: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 type _Frame = (
@@ -1176,6 +1199,8 @@ _FRAME_CLASSES = (
     _PathFrame,
 )
 
+_FRAME_TYPES = frozenset(_FRAME_CLASSES)
+
 
 def _frames(stack: tuple[ContinuationFrame, ...]) -> tuple[_Frame, ...]:
     """Narrow a captured stack to the evaluator's closed set of frames.
@@ -1195,6 +1220,8 @@ def _frames(stack: tuple[ContinuationFrame, ...]) -> tuple[_Frame, ...]:
     TypeError
         If a frame is not one the evaluator creates.
     """
+    if _FRAME_TYPES.issuperset(map(type, stack)):
+        return cast("tuple[_Frame, ...]", stack)
     narrowed: list[_Frame] = []
     for frame in stack:
         if not isinstance(frame, _FRAME_CLASSES):
@@ -1584,15 +1611,16 @@ class Resumption:
             f"result of operation {self._request.operation}",
         )
         self._calls = next_call
-        self._evaluator._emit_trace(
-            "resumption.invoked",
-            {
-                "operation": str(self._request.operation),
-                "instance": str(self._request.instance),
-                "grade": self._grade.value,
-                "shot": next_call - 1,
-            },
-        )
+        if self._evaluator.trace_hook is not None:
+            self._evaluator._emit_trace(
+                "resumption.invoked",
+                {
+                    "operation": str(self._request.operation),
+                    "instance": str(self._request.instance),
+                    "grade": self._grade.value,
+                    "shot": next_call - 1,
+                },
+            )
         captured = (
             list(self._fork_owned(self._seed_stack))
             if self._grade is ResumptionGrade.UNRESTRICTED
@@ -2623,13 +2651,9 @@ class Evaluator:
         path: list[DynamicAddressFrame] = []
         for frame in stack:
             if isinstance(frame, _CallFrame):
-                path.append(
-                    DynamicAddressFrame(
-                        scope="call", key=f"{frame.name}#{frame.serial}"
-                    )
-                )
+                path.append(frame.address)
             elif isinstance(frame, _InstanceFrame):
-                path.append(DynamicAddressFrame(scope="instance", key=frame.serial))
+                path.append(frame.address)
         return tuple(path)
 
     def _drive_computation(
@@ -2774,17 +2798,19 @@ class Evaluator:
                     resumption_path = frame.resumption_path
                     continue
                 if isinstance(frame, _CallFrame):
-                    self._emit_trace(
-                        "call.returned",
-                        {"computation": frame.name, "serial": frame.serial},
-                    )
+                    if self.trace_hook is not None:
+                        self._emit_trace(
+                            "call.returned",
+                            {"computation": frame.name, "serial": frame.serial},
+                        )
                     env = dict(frame.environment)
                     continue
                 if isinstance(frame, _InstanceFrame):
-                    self._emit_trace(
-                        "instance.released",
-                        {"instance": str(frame.instance), "serial": frame.serial},
-                    )
+                    if self.trace_hook is not None:
+                        self._emit_trace(
+                            "instance.released",
+                            {"instance": str(frame.instance), "serial": frame.serial},
+                        )
                     continue
                 if isinstance(frame, _HandlerFrame):
                     handler = frame.handler
@@ -2842,13 +2868,14 @@ class Evaluator:
                         )
                     finally:
                         resumption._close_handled_capture()
-                    self._emit_trace(
-                        "clause.answered",
-                        {
-                            "handler": frame.definition.name,
-                            "operation": str(resumption._request.operation),
-                        },
-                    )
+                    if self.trace_hook is not None:
+                        self._emit_trace(
+                            "clause.answered",
+                            {
+                                "handler": frame.definition.name,
+                                "operation": str(resumption._request.operation),
+                            },
+                        )
                     env = dict(frame.environment)
                     resumption_path = frame.resumption_path
                     continue
@@ -2877,14 +2904,15 @@ class Evaluator:
                 )
                 self._validate_parameters(definition, arguments)
                 lifecycle = self._install_handler(handler)
-                self._emit_trace(
-                    "handler.entered",
-                    {
-                        "handler": definition.name,
-                        "handler_id": str(current.handler),
-                        "instance": str(current.instance),
-                    },
-                )
+                if self.trace_hook is not None:
+                    self._emit_trace(
+                        "handler.entered",
+                        {
+                            "handler": definition.name,
+                            "handler_id": str(current.handler),
+                            "instance": str(current.instance),
+                        },
+                    )
                 stack.append(
                     _HandlerFrame(
                         instance=current.instance,
@@ -2963,26 +2991,28 @@ class Evaluator:
                 # runs in constant stack.
                 if stack and isinstance(finished := stack[-1], _CallFrame):
                     stack.pop()
-                    self._emit_trace(
-                        "call.returned",
-                        {
-                            "computation": finished.name,
-                            "serial": finished.serial,
-                            "tail": True,
-                        },
-                    )
+                    if self.trace_hook is not None:
+                        self._emit_trace(
+                            "call.returned",
+                            {
+                                "computation": finished.name,
+                                "serial": finished.serial,
+                                "tail": True,
+                            },
+                        )
                     caller_environment = finished.environment
                 else:
                     caller_environment = dict(env)
-                self._emit_trace(
-                    "call.entered",
-                    {
-                        "computation": callee.name,
-                        "callee": str(callee.id),
-                        "serial": serial,
-                        "site": str(current.origin.site_id()),
-                    },
-                )
+                if self.trace_hook is not None:
+                    self._emit_trace(
+                        "call.entered",
+                        {
+                            "computation": callee.name,
+                            "callee": str(callee.id),
+                            "serial": serial,
+                            "site": str(current.origin.site_id()),
+                        },
+                    )
                 stack.append(
                     _CallFrame(
                         callee=callee.id,
@@ -2997,15 +3027,16 @@ class Evaluator:
             if isinstance(current, NewInstance):
                 self._instance_serial += 1
                 serial = self._instance_serial
-                self._emit_trace(
-                    "instance.allocated",
-                    {
-                        "instance": str(current.instance),
-                        "effect": current.effect.name,
-                        "serial": serial,
-                        "site": str(current.origin.site_id()),
-                    },
-                )
+                if self.trace_hook is not None:
+                    self._emit_trace(
+                        "instance.allocated",
+                        {
+                            "instance": str(current.instance),
+                            "effect": current.effect.name,
+                            "serial": serial,
+                            "site": str(current.origin.site_id()),
+                        },
+                    )
                 stack.append(_InstanceFrame(instance=current.instance, serial=serial))
                 current = current.body
                 continue
@@ -3043,14 +3074,15 @@ class Evaluator:
                     resumption_path=resumption_path,
                     dynamic_path=self._dynamic_path(stack),
                 )
-                self._emit_trace(
-                    "operation.requested",
-                    {
-                        "operation": str(runtime_request.operation),
-                        "instance": str(runtime_request.instance),
-                        "address": runtime_request.address,
-                    },
-                )
+                if self.trace_hook is not None:
+                    self._emit_trace(
+                        "operation.requested",
+                        {
+                            "operation": str(runtime_request.operation),
+                            "instance": str(runtime_request.instance),
+                            "address": runtime_request.address,
+                        },
+                    )
                 outcome = self._dispatch(runtime_request, env, stack, len(stack) - 1)
                 if isinstance(outcome, _Continue):
                     current = outcome.current
@@ -3121,13 +3153,14 @@ class Evaluator:
             frame.lifecycle.drop()
             raise
         frame.lifecycle.exit()
-        self._emit_trace(
-            "handler.returned",
-            {
-                "handler": frame.definition.name,
-                "instance": str(frame.instance),
-            },
-        )
+        if self.trace_hook is not None:
+            self._emit_trace(
+                "handler.returned",
+                {
+                    "handler": frame.definition.name,
+                    "instance": str(frame.instance),
+                },
+            )
 
     def _handler_for(self, handler: HandlerId) -> RuntimeHandler:
         """Find the runtime handler a ``handle`` installs.
@@ -3283,15 +3316,16 @@ class Evaluator:
                 continue
 
             runtime_clause = handler.clauses[request.operation]
-            self._emit_trace(
-                "operation.handled",
-                {
-                    "operation": str(request.operation),
-                    "instance": str(request.instance),
-                    "handler": definition.name,
-                    "grade": structural_clause.grade.value,
-                },
-            )
+            if self.trace_hook is not None:
+                self._emit_trace(
+                    "operation.handled",
+                    {
+                        "operation": str(request.operation),
+                        "instance": str(request.instance),
+                        "handler": definition.name,
+                        "grade": structural_clause.grade.value,
+                    },
+                )
             outer_stack = tuple(stack[:index])
             captured_stack = tuple(stack[index:])
             if runtime_clause.invoke is _authored_clause:
@@ -3327,14 +3361,15 @@ class Evaluator:
                         resumption_path=request.resumption_path,
                     )
                 )
-                self._emit_trace(
-                    "clause.entered",
-                    {
-                        "handler": definition.name,
-                        "operation": str(request.operation),
-                        "grade": structural_clause.grade.value,
-                    },
-                )
+                if self.trace_hook is not None:
+                    self._emit_trace(
+                        "clause.entered",
+                        {
+                            "handler": definition.name,
+                            "operation": str(request.operation),
+                            "grade": structural_clause.grade.value,
+                        },
+                    )
                 clause_environment = frame.bindings()
                 clause_environment.update(
                     zip(structural_clause.parameters, request.arguments, strict=True)
@@ -3401,14 +3436,15 @@ class Evaluator:
                 resumption._release_forward_seed()
                 if answer.on_response is not None:
                     stack.append(_ResponseHookFrame(hook=answer.on_response))
-                self._emit_trace(
-                    "operation.forwarded",
-                    {
-                        "operation": str(request.operation),
-                        "instance": str(request.instance),
-                        "handler": definition.name,
-                    },
-                )
+                if self.trace_hook is not None:
+                    self._emit_trace(
+                        "operation.forwarded",
+                        {
+                            "operation": str(request.operation),
+                            "instance": str(request.instance),
+                            "handler": definition.name,
+                        },
+                    )
                 index -= 1
                 continue
 
@@ -3429,14 +3465,15 @@ class Evaluator:
                 environment=dict(frame.environment),
                 resumption_path=request.resumption_path,
             )
-        self._emit_trace(
-            "operation.unhandled",
-            {
-                "operation": str(request.operation),
-                "instance": str(request.instance),
-                "address": request.address,
-            },
-        )
+        if self.trace_hook is not None:
+            self._emit_trace(
+                "operation.unhandled",
+                {
+                    "operation": str(request.operation),
+                    "instance": str(request.instance),
+                    "address": request.address,
+                },
+            )
         raise UnhandledEffectError(request.core)
 
     def _resolve_clause_answer(

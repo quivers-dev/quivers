@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from functools import cache
 from inspect import get_annotations
 import sys
@@ -70,6 +70,70 @@ def _model_classes(annotation: HeldValue) -> tuple[type[dx.Model], ...] | None:
     return None
 
 
+_PRIMITIVES = frozenset({bool, bytes, float, int, str, type(None)})
+"""The types a field names exactly: a subclass of one does not inhabit it."""
+
+
+@cache
+def _exact_types(annotation: HeldValue) -> frozenset[type] | None:
+    """The types whose direct instances all inhabit an annotation.
+
+    Parameters
+    ----------
+    annotation : HeldValue
+        A field annotation or recursive alias.
+
+    Returns
+    -------
+    frozenset[type] or None
+        Those types, when the annotation is a primitive, a model class, or
+        a union of them; ``None`` when no set of types decides it.
+    """
+    if isinstance(annotation, TypeAliasType):
+        return _exact_types(annotation.__value__)
+    if get_origin(annotation) is Union:
+        groups = tuple(_exact_types(item) for item in get_args(annotation))
+        if all(group is not None for group in groups):
+            return frozenset().union(*(group for group in groups if group is not None))
+        return None
+    if isinstance(annotation, type) and (
+        annotation in _PRIMITIVES or issubclass(annotation, dx.Model)
+    ):
+        return frozenset({annotation})
+    return None
+
+
+@cache
+def _items_predicate(
+    annotation: HeldValue,
+) -> Callable[[Iterable[HeldValue]], bool]:
+    """Compile the check that every item of a collection has one type.
+
+    Parameters
+    ----------
+    annotation : HeldValue
+        The declared item type.
+
+    Returns
+    -------
+    Callable[[Iterable[HeldValue]], bool]
+        A predicate over the items. Items whose types are named by the
+        annotation are settled by their types alone; any other item is
+        checked against the full shape.
+    """
+    if annotation is HeldValue:
+        return lambda items: True
+    check = _shape_predicate(annotation)
+    exact = _exact_types(annotation)
+    if exact is None:
+        return lambda items: all(check(item) for item in items)
+    if exact <= _PRIMITIVES:
+        return lambda items: exact.issuperset(map(type, items))
+    return lambda items: (
+        exact.issuperset(map(type, items)) or all(check(item) for item in items)
+    )
+
+
 @cache
 def _shape_predicate(annotation: HeldValue) -> Callable[[HeldValue], bool]:
     """Compile a field's type check independently of its values.
@@ -103,10 +167,8 @@ def _shape_predicate(annotation: HeldValue) -> Callable[[HeldValue], bool]:
         return lambda value: any(check(value) for check in alternatives)
     if origin is tuple:
         if len(arguments) == 2 and arguments[1] is Ellipsis:
-            check = _shape_predicate(arguments[0])
-            return lambda value: (
-                isinstance(value, tuple) and all(check(item) for item in value)
-            )
+            items_check = _items_predicate(arguments[0])
+            return lambda value: isinstance(value, tuple) and items_check(value)
         checks = tuple(_shape_predicate(item) for item in arguments)
         return lambda value: (
             isinstance(value, tuple)
@@ -115,17 +177,17 @@ def _shape_predicate(annotation: HeldValue) -> Callable[[HeldValue], bool]:
         )
     if origin in {list, set, frozenset}:
         container = cast(type, origin)
-        check = _shape_predicate(arguments[0])
+        items_check = _items_predicate(arguments[0])
         return lambda value: (
-            isinstance(value, container)
-            and all(check(item) for item in cast(list[HeldValue], value))
+            isinstance(value, container) and items_check(cast(list[HeldValue], value))
         )
     if origin in {dict, Mapping}:
-        key_check, value_check = (_shape_predicate(item) for item in arguments)
+        keys_check, values_check = (_items_predicate(item) for item in arguments)
         return lambda value: (
             isinstance(value, Mapping)
             and (origin is Mapping or isinstance(value, dict))
-            and all(key_check(key) and value_check(item) for key, item in value.items())
+            and keys_check(value.keys())
+            and values_check(value.values())
         )
     if origin is Callable or annotation is Callable:
         return callable
@@ -167,7 +229,7 @@ def _shape_predicate(annotation: HeldValue) -> Callable[[HeldValue], bool]:
 
         return matches_protocol
     if isinstance(annotation, type):
-        if annotation in {bool, bytes, float, int, str, type(None)}:
+        if annotation in _PRIMITIVES:
             return lambda value: type(value) is annotation
         return lambda value: isinstance(value, annotation)
     return lambda value: False
@@ -264,13 +326,37 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
         else:
             return
     elif isinstance(annotation, type):
-        primitive = annotation in {bool, bytes, float, int, str, type(None)}
+        primitive = annotation in _PRIMITIVES
         if type(value) is annotation if primitive else isinstance(value, annotation):
             return
     else:
         raise TypeError(f"unsupported kernel annotation {annotation!s} at {path}")
     raise TypeError(
         f"invalid field {path}: expected {annotation!s}, got {type(value).__name__}"
+    )
+
+
+@cache
+def _recursive_fields(
+    class_: type[dx.Model],
+) -> tuple[tuple[str, HeldValue, Callable[[HeldValue], bool]], ...]:
+    """The fields of a kernel record whose shape is checked on construction.
+
+    Parameters
+    ----------
+    class_ : type[didactic.api.Model]
+        The record class.
+
+    Returns
+    -------
+    tuple[tuple[str, HeldValue, Callable[[HeldValue], bool]], ...]
+        Each opaque field's name, annotation, and compiled shape check.
+    """
+    annotations = field_types(class_)
+    return tuple(
+        (name, annotations[name], _shape_predicate(annotations[name]))
+        for name, spec in class_.__field_specs__.items()
+        if spec.is_opaque
     )
 
 
@@ -292,14 +378,13 @@ class QiecModel(ValueModel):
             If an opaque field does not inhabit its declared kernel type.
         """
         cls = type(self)
-        annotations = field_types(cls)
-        for name, spec in cls.__field_specs__.items():
-            if spec.is_opaque:
-                validate_shape(
-                    getattr(self, name),
-                    annotations[name],
-                    path=f"{cls.__name__}.{name}",
-                )
+        storage = cast(
+            "dict[str, HeldValue]", object.__getattribute__(self, "_opaque_storage")
+        )
+        for name, annotation, fits in _recursive_fields(cls):
+            value = storage[name]
+            if not fits(value):
+                validate_shape(value, annotation, path=f"{cls.__name__}.{name}")
 
     def _comparison_key(
         self, *values: HeldValue
@@ -338,7 +423,4 @@ class QiecModel(ValueModel):
         if not cls.__field_specs__[name].is_opaque:
             raise TypeError(f"{name} is not a recursive kernel field")
         validate_shape(value, field_types(cls)[name], path=f"{cls.__name__}.{name}")
-        storage = cast(
-            "dict[str, HeldValue]", object.__getattribute__(self, "_opaque_storage")
-        )
-        storage[name] = value
+        self._store_opaque(name, value)
