@@ -1,0 +1,317 @@
+# What CI verifies, and where each part of it runs.
+#
+# This file is the one declaration. `tools/verification.py` derives the job
+# matrices of the workflows from it. Every collected test belongs to exactly
+# one part: the first gate below that claims it, or else the first bucket that
+# lists its file. A test that carries the marker of a gate and that no gate
+# claims stops the job that collects it, so a test cannot be in no part, and
+# the `Suite coverage` job checks after the run that every test of the suite
+# ran once in the part that owns it.
+#
+# Durations recorded in `test-durations.json` balance the jobs of a part. They
+# decide where a test runs, never whether it runs.
+
+# Ordinary tests run on every change. A bucket without `files` takes every
+# test file that no other bucket lists. `tools` names the external programs a
+# job installs; a test that needs a program its job lacks fails.
+
+[[bucket]]
+name = "languages"
+files = [
+    "tests/transpile/test_*.py",
+    "tests/test_event_primitive_renderers.py",
+    "tests/test_formula_link_renderers.py",
+    "tests/test_ordinal_primitive_renderers.py",
+    "tests/test_qiec_fixture_corpus.py",
+]
+jobs = 2
+tools = "languages"
+
+[[bucket]]
+name = "library"
+jobs = 6
+
+# Gates run on a change that can affect them, and on every change to `main`.
+# A gate claims the collected tests that carry its `marker`, that stand under
+# one of `tests` (a file, or a function of one), and, with `parameters`, that
+# have one of those words among their parameters or stand under one of `also`.
+# A change affects a gate when
+# it touches a file its tests can import, a file it declares in `reads`, or a
+# file that no gate and no line of `[inert]` accounts for. `unread` takes paths out of `reads` and `runs`. A job that opens a
+# file of the repository outside that closure fails.
+
+# The pages that fit through `quivers.modeling`, which builds on the formulas.
+[[gate]]
+name = "gallery modeling pages"
+marker = "slow"
+tests = ["tests/test_gallery_sweep.py"]
+parameters = ["bayesian", "lda.md"]
+runs = ["docs/examples/*"]
+jobs = 1
+
+# Pages that sample several chains in processes of their own: one test at a
+# time, with the cores of the machine to itself.
+[[gate]]
+name = "gallery sampling pages"
+marker = "slow"
+tests = ["tests/test_gallery_sweep.py"]
+parameters = ["irt", "zip"]
+runs = ["docs/examples/*"]
+workers = 1
+jobs = 2
+
+[[gate]]
+name = "gallery pages"
+marker = "slow"
+tests = ["tests/test_gallery_sweep.py"]
+runs = ["docs/examples/*"]
+unread = [
+    "docs/examples/bayesian-*.md",
+    "docs/examples/irt-2pl.md",
+    "docs/examples/lda.md",
+    "docs/examples/zip-regression.md",
+]
+jobs = 2
+
+[[gate]]
+name = "formula recovery"
+marker = "slow"
+tests = [
+    "tests/formulas/test_joint_missing.py",
+    "tests/formulas/test_mixture.py",
+    "tests/formulas/test_recorded_event_matrix.py",
+    "tests/test_formulas.py",
+]
+reads = ["tests/formulas/oracles/*"]
+jobs = 2
+
+[[gate]]
+name = "model recovery"
+marker = "slow"
+tests = [
+    "tests/dsl/test_latent_network_weights.py",
+    "tests/dsl/test_scan_cell_tensor_scope.py",
+    "tests/dsl/test_scan_initial_binding.py",
+    "tests/dsl/test_scan_program_cells.py",
+    "tests/test_deduction_multiple_context_free.py",
+    "tests/test_deduction_weight_priors.py",
+    "tests/test_gallery_grammars.py",
+    "tests/test_inference_dais.py",
+]
+reads = ["docs/examples/source/*"]
+jobs = 1
+
+[[gate]]
+name = "documentation blocks"
+tests = ["tests/test_doc_blocks.py"]
+reads = ["README.md", "docs/*"]
+everything = true
+jobs = 1
+
+# A selector `@name` stands for the files of the group of that name.
+
+[[group]]
+name = "probe modules"
+files = [
+    "tests/transpile/test_bernoulli_logits_numeric.py",
+    "tests/transpile/test_builtin_numeric.py",
+    "tests/transpile/test_closed_form_marginals.py",
+    "tests/transpile/test_construct_let_numeric.py",
+    "tests/transpile/test_construct_numeric.py",
+    "tests/transpile/test_edward2_half_student_numeric.py",
+    "tests/transpile/test_equivalence_sensitivity.py",
+    "tests/transpile/test_expected_offsets.py",
+    "tests/transpile/test_export_equivalence.py",
+    "tests/transpile/test_gallery_numeric_equivalence.py",
+    "tests/transpile/test_grouped_per_group_prior_numeric.py",
+    "tests/transpile/test_log_space_family_numeric.py",
+    "tests/transpile/test_marginal_logit_weights_numeric.py",
+    "tests/transpile/test_marginalize_numeric.py",
+    "tests/transpile/test_marginalize_shared_prior_numeric.py",
+    "tests/transpile/test_matrix_family_numeric.py",
+    "tests/transpile/test_numeric_equivalence.py",
+    "tests/transpile/test_ordinal_matrix_numeric.py",
+    "tests/transpile/test_over_array_numeric.py",
+    "tests/transpile/test_parameterization_numeric.py",
+    "tests/transpile/test_per_row_parameter_numeric.py",
+    "tests/transpile/test_qiec_call_equivalence.py",
+    "tests/transpile/test_qiec_distributions.py",
+    "tests/transpile/test_qiec_fixture_equivalence.py",
+    "tests/transpile/test_reduction_numeric.py",
+    "tests/transpile/test_row_gather_numeric.py",
+    "tests/transpile/test_tensor_parameter_numeric.py",
+    "tests/transpile/test_vector_location_numeric.py",
+    "tests/transpile/test_vector_parameter_numeric.py",
+    "tests/transpile/test_via_index_map_numeric.py",
+]
+
+# The probe gates run emitted programs in the containers of the target
+# languages. `images` names the containers a job loads before its tests; a
+# test that needs another one fails.
+
+[[gate]]
+name = "probes of Edward2 and PyMC"
+marker = "probe"
+tests = ["@probe modules"]
+parameters = ["edward2", "pymc"]
+also = [
+    "tests/transpile/test_edward2_half_student_numeric.py",
+    "tests/transpile/test_equivalence_sensitivity.py::test_edward2_accumulates_log_terms_without_float32_cancellation",
+]
+reads = [
+    "docs/examples/*",
+    "tests/benchmarks/models/*",
+    "tests/fixtures/qiec/*",
+    "tests/transpile/docker/*",
+    "tests/transpile/fixtures/*",
+    "tests/transpile/probes/*",
+]
+images = ["edward2", "pymc"]
+tools = "languages"
+jobs = 1
+
+[[gate]]
+name = "probes of NumPyro and Pyro"
+marker = "probe"
+tests = ["@probe modules"]
+parameters = ["numpyro", "pyro"]
+reads = [
+    "docs/examples/*",
+    "tests/benchmarks/models/*",
+    "tests/fixtures/qiec/*",
+    "tests/transpile/docker/*",
+    "tests/transpile/fixtures/*",
+    "tests/transpile/probes/*",
+]
+images = ["numpyro", "pyro"]
+tools = "languages"
+jobs = 1
+
+[[gate]]
+name = "probes of Turing and Gen"
+marker = "probe"
+tests = ["@probe modules"]
+parameters = ["gen", "turing"]
+reads = [
+    "docs/examples/*",
+    "tests/benchmarks/models/*",
+    "tests/fixtures/qiec/*",
+    "tests/transpile/docker/*",
+    "tests/transpile/fixtures/*",
+    "tests/transpile/probes/*",
+]
+images = ["julia"]
+tools = "languages"
+jobs = 1
+
+[[gate]]
+name = "probes of Stan, BUGS and JAGS"
+marker = "probe"
+tests = ["@probe modules"]
+parameters = ["bugs", "jags", "stan"]
+also = [
+    "tests/transpile/test_builtin_numeric.py::test_stan_scores_every_builtin_a_named_computation_applies",
+    "tests/transpile/test_closed_form_marginals.py",
+    "tests/transpile/test_marginalize_numeric.py",
+    "tests/transpile/test_marginalize_shared_prior_numeric.py::test_stan_indexes_each_row_s_accumulator_by_the_row",
+    "tests/transpile/test_via_index_map_numeric.py",
+]
+reads = [
+    "docs/examples/*",
+    "tests/benchmarks/models/*",
+    "tests/fixtures/qiec/*",
+    "tests/transpile/docker/*",
+    "tests/transpile/fixtures/*",
+    "tests/transpile/probes/*",
+]
+images = ["bugs", "jags", "numpyro", "stan"]
+tools = "languages"
+jobs = 1
+
+# A WebPPL probe computes for up to two minutes, which is also how long a probe
+# may take, so this gate leaves each worker a physical core.
+[[gate]]
+name = "probes of WebPPL, Church and the reference"
+marker = "probe"
+tests = ["@probe modules"]
+reads = [
+    "docs/examples/*",
+    "tests/benchmarks/models/*",
+    "tests/fixtures/qiec/*",
+    "tests/transpile/docker/*",
+    "tests/transpile/fixtures/*",
+    "tests/transpile/probes/*",
+]
+images = ["node"]
+tools = "languages"
+workers = 2
+jobs = 2
+
+# The tests of one page share state in order, so a page runs whole, on one
+# worker. `key` is a pattern whose first group names the page in a test id.
+
+[[sequence]]
+tests = "tests/test_doc_blocks.py"
+key = '\[([^\]:]+):'
+
+# A change to one of these affects every gate.
+
+[everything]
+files = [
+    ".config/*",
+    ".github/*",
+    "conftest.py",
+    "grammars/*",
+    "hatch_build.py",
+    "pyproject.toml",
+    "src/quivers/__init__.py",
+    "tests/conftest.py",
+    "tools/ci_changes.py",
+    "tools/import_graph.py",
+    "tools/verification.py",
+    "tools/verification_plugin.py",
+    "uv.lock",
+]
+
+# A change to one of these affects only the gates that declare it in `reads`.
+# The jobs that always run read them.
+
+[inert]
+files = [
+    ".gitattributes",
+    ".gitignore",
+    "CHANGELOG.md",
+    "CNAME",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "docs/*",
+    "editors/*",
+    "mkdocs.yml",
+    "regression.qvr",
+    "reports/*",
+    "scripts/*",
+    "tests/benchmarks/models/*",
+    "tests/data/*",
+    "tests/fixtures/*",
+    "tests/formulas/oracles/*",
+    "tools/check_api_reference.py",
+    "tools/check_editor_release.py",
+    "tools/docstring_audit.py",
+    "tools/griffe_didactic.py",
+    "tools/release_wheel_smoke.py",
+    "tools/sync_grammar_data.py",
+]
+
+# Why a test may be skipped. A skip for any other reason fails the run.
+
+[skips]
+reasons = [
+    "CUDA",
+    "MPS hardware unavailable",
+    "could not import 'jax'",
+    "could not import 'tensorflow'",
+    "got empty parameter set for (example)",
+    "the interval does not restrict the unit interval",
+    "this law fixes its coordinate convention",
+]
