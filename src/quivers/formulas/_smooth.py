@@ -69,6 +69,8 @@ from quivers.formulas._mgcv_smooth import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
     VariableDecl,
     SmoothPart,
     coordinate_scopes,
@@ -1621,6 +1623,16 @@ class BasisTerm(ValueModel):
             raw = raw.unflatten(-1, (-1, self.output.size))
         return scale.unsqueeze(2) * raw
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            Empty.
+        """
+        return ()
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -1658,6 +1670,16 @@ class BasisTerm(ValueModel):
         return torch.einsum(
             "cdj...,nj->cdn...", self.coefficients(draws).to(design), design
         )
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            The term.
+        """
+        return (EffectSource(label=self.label, kind="sm"),)
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

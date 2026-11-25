@@ -1039,9 +1039,11 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             Column labels mapped to coefficient draws on chain and draw axes.
         """
         self._selection(resp)
-        predictor, prefix = self._predictor(resp, parameter)
-        return BayesianFit._fixed_effects(
-            self.draws(num_samples=num_samples, seed=seed), predictor, prefix
+        view = self._response_fit(resp)
+        return view._fixed_effects(
+            self.draws(num_samples=num_samples, seed=seed),
+            view._formula_predictor(parameter)[1],
+            self.emission.responses[resp].prefix,
         )
 
     def random_effects(
@@ -1142,7 +1144,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         self._selection(resp)
         predictor, prefix = self._predictor(resp, parameter)
         draws = self.draws(num_samples=num_samples, seed=seed)
-        fixed = BayesianFit._fixed_effects(draws, predictor, prefix)
+        view = self._response_fit(resp)
+        fixed = view._fixed_effects(
+            draws,
+            view._formula_predictor(parameter)[1],
+            self.emission.responses[resp].prefix,
+        )
         varying = self._random(draws, predictor, prefix)
         for group, values in varying.items():
             for name, coefficient in fixed.items():

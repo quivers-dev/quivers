@@ -65,6 +65,8 @@ from quivers.formulas._grouping_emission import (
 from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
     VariableDecl,
     SmoothPart,
     ColumnName,
@@ -1075,6 +1077,16 @@ class GroupTerm(ValueModel):
         levels = {self.group: ("",) * self.law.level.size}
         return group_coefficients(draws, (self.law,), levels)[self.key]
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            Empty.
+        """
+        return ()
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -1090,6 +1102,16 @@ class GroupTerm(ValueModel):
         """
         return None
 
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            Empty: brms plots no group-level effects.
+        """
+        return ()
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -1104,6 +1126,7 @@ class GroupTerm(ValueModel):
                 rows=True,
                 coordinates=self.active and self.output is not None,
                 owner=coefficient_owner(*self.key),
+                varying=True,
             ),
         )
 

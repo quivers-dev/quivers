@@ -28,7 +28,7 @@ def test_population_hypothesis_uses_one_draw_stream_and_exact_authored_labels(fr
     frame["condition"] = pd.Categorical(["red", "blue", "red", "blue", "red", "blue"])
     result = fit("y ~ x + condition", data=frame, method="svi", num_steps=1)
     draws = result.draws(num_samples=8, seed=14)
-    fixed = result._fixed_effects(draws, result.formula, "")
+    fixed = result._fixed_effects(draws, "")
     label = next(
         column.name
         for column in result.formula.fixed_columns
@@ -81,7 +81,7 @@ def test_group_hypotheses_match_native_bindings_without_replay(
             "x-Intercept", scope="coef", group="g", num_samples=5, seed=9
         )
     torch.testing.assert_close(actual.estimate, expected.estimate.double())
-    population = result._fixed_effects(draws, result.formula, "")
+    population = result._fixed_effects(draws, "")
     torch.testing.assert_close(
         combined.estimate,
         (
@@ -108,9 +108,7 @@ def test_shared_distributional_block_and_nonlinear_predictors_retain_namespaces(
         num_steps=1,
     )
     draws = result.draws(num_samples=4, seed=12)
-    expected = result._fixed_effects(
-        draws, result.distributional["sigma"], "dpar_sigma_"
-    )["z"]
+    expected = result._fixed_effects(draws, "dpar_sigma_")["z"]
     actual = result.hypothesis("z", parameter="sigma", num_samples=4, seed=12)
     torch.testing.assert_close(actual.estimate, expected.double().mean())
     block = result.hypothesis("joint[0,1]", class_="cor", num_samples=4, seed=12)

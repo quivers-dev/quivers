@@ -222,6 +222,37 @@ class VariableDecl(ValueModel):
     derived: bool = False
 
 
+class EffectSource(ValueModel):
+    """A design term whose variables brms plots.
+
+    Parameters
+    ----------
+    label : str
+        Authored design term.
+    kind : {"fe", "sp", "sm", "gp"}
+        brms's term type: population-level, special, smooth, or Gaussian
+        process.
+    """
+
+    label: str
+    kind: Literal["fe", "sp", "sm", "gp"]
+
+
+class PopulationCoefficient(ValueModel):
+    """A coefficient of the population part of a predictor.
+
+    Parameters
+    ----------
+    label : str
+        Design column.
+    site : str
+        Value of the coefficient in the draws, on the original scale.
+    """
+
+    label: str
+    site: str
+
+
 class SmoothPart(Protocol):
     """A share of a smooth or Gaussian process on some rows."""
 
@@ -441,12 +472,15 @@ class Contribution(ValueModel):
     coordinates : bool
         Whether the value varies over the output axis, which then precedes
         the rows.
+    varying : bool
+        Whether the coefficient varies by the level of a grouping factor.
     """
 
     name: str
     rows: bool
     coordinates: bool
     owner: str | None = None
+    varying: bool = False
 
     def cell(self, row: LetExprNode, coordinate: LetExprNode) -> LetExprNode:
         """Read the value at one row and output coordinate.
@@ -706,6 +740,16 @@ class Term(Protocol):
         """
         ...
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            One per design column, in authored order.
+        """
+        ...
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -718,6 +762,16 @@ class Term(Protocol):
         -------
         SmoothPart or None
             The share, or None when the term is no part of the smooth.
+        """
+        ...
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            Design terms of the term.
         """
         ...
 

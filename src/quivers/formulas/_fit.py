@@ -858,7 +858,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
     def fixed_effects(
         self, *, parameter: str = "mu", num_samples: int | None = None, seed: int = 0
     ) -> dict[str, torch.Tensor]:
-        """Extract coefficients on the evaluated fixed-design columns.
+        """Extract the population coefficients of one predictor.
 
         Parameters
         ----------
@@ -876,9 +876,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             ``(chain, draw)`` or ``(chain, draw, K-1)`` for categorical
             reference-category coefficients.
         """
-        predictor, prefix = self._formula_predictor(parameter)
+        _, prefix = self._formula_predictor(parameter)
         return self._fixed_effects(
-            self.draws(num_samples=num_samples, seed=seed), predictor, prefix
+            self.draws(num_samples=num_samples, seed=seed), prefix
         )
 
     def random_effects(
@@ -939,7 +939,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         if not predictor.random_terms:
             return {}
         draws = self.draws(num_samples=num_samples, seed=seed)
-        fixed = self._fixed_effects(draws, predictor, prefix)
+        fixed = self._fixed_effects(draws, prefix)
         varying = self._random_effects(draws, shape, predictor, prefix)
         for group, coefficients in varying.items():
             for name, coefficient in fixed.items():
@@ -1026,6 +1026,15 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         width = len(self.threshold_labels)
+        plan = self.prediction_plan
+        shifts = tuple(
+            contribution.name
+            for predictor in (plan.predictors if plan is not None else ())
+            if not predictor.prefix
+            for term in predictor.part(None)
+            for contribution in term.contributions()
+            if contribution.varying
+        )
 
         def values():
             """Yield retained row values through the shared posterior replay.
@@ -1061,16 +1070,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                     cuts = cuts - row_binding(
                         recorded.sites["eta_nonbaseline"].value, context.rows, width
                     )
-                for term in self.formula.random_terms:
-                    if term.column is not None and term.column.category_specific:
-                        continue
-                    group = _qvr_name(term.group)
-                    latent = (
-                        f"alpha_{group}"
-                        if term.slope == "Intercept"
-                        else f"beta_{group}_{_qvr_name(term.slope)}"
-                    )
-                    name = f"{latent}_per_row"
+                for name in shifts:
                     cuts = cuts - row_binding(
                         recorded.sites[name].value, context.rows
                     ).unsqueeze(-1)
@@ -2229,32 +2229,40 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             )
         return self.distributional[parameter], f"dpar_{parameter}_"
 
-    @staticmethod
     def _fixed_effects(
-        draws: dict[str, torch.Tensor], predictor: Formula, prefix: str
+        self, draws: Mapping[str, torch.Tensor], prefix: str, namespace: str = ""
     ) -> dict[str, torch.Tensor]:
-        """Label native fixed-site draws with original design-column names.
+        """Label the population coefficients of one predictor.
 
         Parameters
         ----------
-        draws : dict[str, torch.Tensor]
+        draws : Mapping[str, torch.Tensor]
             Native site draws on chain and draw axes.
-        predictor : Formula
-            The evaluated design-column metadata.
         prefix : str
-            Native coefficient-name prefix for the selected parameter.
+            Namespace of the predictor in its own model.
+        namespace : str
+            Namespace of the model in the draws.
 
         Returns
         -------
         dict[str, torch.Tensor]
-            Original design-column labels mapped to native coefficient draws.
+            Design-column labels mapped to coefficient draws.
+
+        Raises
+        ------
+        ValueError
+            If retained term metadata is unavailable.
         """
+        if self.prediction_plan is None:
+            raise ValueError(
+                "coefficient extraction requires retained emission metadata"
+            )
         return {
-            column.name: draws[
-                prefix
-                + ("intercept" if column.is_intercept else f"beta_{column.qvr_name}")
-            ]
-            for column in predictor.fixed_columns
+            coefficient.label: draws[namespace + coefficient.site]
+            for predictor in self.prediction_plan.predictors
+            if predictor.prefix == prefix
+            for term in predictor.terms
+            for coefficient in term.population()
         }
 
     def _random_effects(

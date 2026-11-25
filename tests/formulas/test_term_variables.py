@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from quivers.formulas import BayesianFit, MultivariateFit, bf, fit, set_rescor
+from quivers.formulas._design_variables import design_variables
 from quivers.formulas._smooth_effects import conditional_smooths
 
 ROWS = 24
@@ -115,3 +116,42 @@ def test_level_tables_have_one_column_per_category():
     assert table.components == ("muB_c_Intercept", "muC_c_Intercept")
     single = _single("c ~ x + (1 | g)", "categorical").ranef(num_samples=3)["g"]
     assert single.components == ("muB_Intercept", "muC_Intercept")
+
+
+def test_monotonic_coefficients_are_part_of_the_population():
+    """A level's monotonic coefficient adds the population coefficient to it."""
+    fitted = _single("y ~ x + mo(z) + (1 + mo(z) | g)", "gaussian")
+    fixed = fitted.fixed_effects(num_samples=3, seed=2)
+    draws = fitted.draws(num_samples=3, seed=2)
+    torch.testing.assert_close(fixed["moz"], draws["bsp_moz"])
+    varying = fitted.random_effects(num_samples=3, seed=2)["g"]["moz"]
+    combined = fitted.coefficients(num_samples=3, seed=2)["g"]["moz"]
+    torch.testing.assert_close(combined, varying + draws["bsp_moz"].unsqueeze(2))
+    assert "x" in fixed
+
+
+def test_effect_kinds_are_those_of_the_terms():
+    """Each design term has brms's type and its own variables."""
+    fitted = _single(
+        "y ~ x2 + log(x + 9) + mo(z) + s(x, by = x2, k = 4) + gp(x2, k = 3, c = 1.25)",
+        "gaussian",
+    )
+    plan = fitted.prediction_plan
+    assert plan is not None
+    kinds = {
+        source.label: source.kind
+        for term in plan.predictors[0].terms
+        for source in term.effects()
+        if source.kind != "fe"
+    }
+    assert sorted(kinds.values()) == ["gp", "sm", "sp"]
+    design = plan.designs["mu"].common
+    assert design is not None
+    variables = {label: design_variables(term) for label, term in design.terms.items()}
+    smooth = next(label for label, kind in kinds.items() if kind == "sm")
+    assert variables[smooth].names == ("x", "x2")
+    assert variables[smooth].by == ("x2",)
+    monotonic = next(label for label, kind in kinds.items() if kind == "sp")
+    assert variables[monotonic].integer == ("z",)
+    logged = next(label for label in variables if label.startswith("log"))
+    assert variables[logged].names == ("x",)

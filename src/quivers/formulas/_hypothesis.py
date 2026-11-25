@@ -191,7 +191,7 @@ def _formula_contrast_inputs(
             for term in predictor.random_terms
             if term.group == group
         }
-        fixed = fit._fixed_effects(draws, predictor, prefix) if scope == "coef" else {}
+        fixed = fit._fixed_effects(draws, prefix) if scope == "coef" else {}
         population_targets = {
             target.coef: target
             for target in targets

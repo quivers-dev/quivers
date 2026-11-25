@@ -40,11 +40,10 @@ from quivers.formulas._postprocess_methods import (
     JointPredictionOptions,
     SinglePredictionOptions,
 )
-from quivers.formulas._formula_options import BRMS_INTERCEPT
 from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._postprocess_predict import PredictionMethod
 from quivers.formulas._response_modifiers import ExpectationOptions
-from quivers.formulas._smooth import term_constants
+from quivers.formulas._design_variables import design_variables
 from quivers.formulas._smooth_effects import conditional_smooths as smooth_contribution
 from quivers.formulas._fit_types import Fit
 
@@ -73,17 +72,6 @@ type IntCondition = (
 """``int_conditions`` entry: values, labeled values, or a function of the data."""
 
 #: Calls whose arguments brms treats as special-term variables, by term type.
-_SPECIAL_TYPES: dict[str, str] = {
-    "mo": "sp",
-    "me": "sp",
-    "mi": "sp",
-    "s": "sm",
-    "t2": "sm",
-    "te": "sm",
-    "ti": "sm",
-    "gp": "gp",
-}
-
 _IDENTIFIER = re.compile(r"[A-Za-z_.][A-Za-z0-9_.]*")
 
 
@@ -302,51 +290,33 @@ def _views(fit: Fit, resp: str | Sequence[str] | None) -> dict[str, BayesianFit]
     return {name: joint._response_fit(name) for name in joint._selection(resp)}
 
 
-def _term_variables(term: str, names: set[str]) -> list[str]:
-    """Return a term's variables in order of appearance.
+def _effect_kinds(view: BayesianFit, prefix: str) -> dict[str, str]:
+    """Return brms's type of each design term of one predictor.
 
     Parameters
     ----------
-    term : str
-        Term label, for instance ``x:z`` or ``s(x, by = f, k = 4)``.
-    names : set[str]
-        Variables the design evaluates for the term.
+    view : BayesianFit
+        Single-response fit or response view.
+    prefix : str
+        Namespace of the predictor.
 
     Returns
     -------
-    list[str]
-        Unique variables, keyword names and call names removed.
+    dict[str, str]
+        ``"fe"``, ``"sp"``, ``"sm"`` or ``"gp"`` by design term. A design term
+        several terms read, such as a smooth's unpenalized columns, has the
+        type of the most specific one.
     """
-    found: list[str] = []
-    for match in _IDENTIFIER.finditer(term):
-        token = match.group(0)
-        rest = term[match.end() :].lstrip()
-        if rest.startswith("(") or (rest.startswith("=") and not rest.startswith("==")):
+    plan = view.prediction_plan
+    kinds: dict[str, str] = {}
+    for predictor in plan.predictors if plan is not None else ():
+        if predictor.prefix != prefix:
             continue
-        if token in names and token not in found:
-            found.append(token)
-    return found
-
-
-def _special_type(term: str) -> str:
-    """Return brms's term type of a design term.
-
-    Parameters
-    ----------
-    term : str
-        Term label.
-
-    Returns
-    -------
-    str
-        ``"sp"``, ``"sm"``, ``"gp"`` when any part of the interaction is that
-        special call, else ``"fe"``.
-    """
-    for part in term.split(":"):
-        match = re.match(r"\s*([A-Za-z_.][A-Za-z0-9_.]*)\s*\(", part)
-        if match and match.group(1) in _SPECIAL_TYPES:
-            return _SPECIAL_TYPES[match.group(1)]
-    return "fe"
+        for term in predictor.terms:
+            for source in term.effects():
+                if source.kind != "fe" or source.label not in kinds:
+                    kinds[source.label] = source.kind
+    return kinds
 
 
 def _crossed(variables: list[str]) -> list[tuple[str, ...]]:
@@ -385,27 +355,22 @@ def _parameter_effects(view: BayesianFit) -> list[tuple[str, ...]]:
     out: list[tuple[str, ...]] = []
     if plan is None:
         return out
+    prefixes = {name: prefix for name, prefix, _ in view._predictor_items()}
     for parameter, design in plan.designs.items():
         if design.common is None:
             continue
+        kinds = _effect_kinds(view, prefixes[parameter])
         typed: dict[str, list[list[str]]] = {"fe": [], "sp": [], "sm": [], "gp": []}
         for label, term in design.common.terms.items():
-            # brms's Intercept term is a constant column, not an effect.
-            names = {
-                n
-                for n in getattr(term, "var_names", set())
-                if n and n != BRMS_INTERCEPT and n not in term_constants(term)
-            }
-            variables = _term_variables(label, names)
-            if variables:
-                typed[_special_type(label)].append(variables)
+            variables = list(design_variables(term).names)
+            if variables and label in kinds:
+                typed[kinds[label]].append(variables)
         # R's terms() orders population-level terms by interaction order.
         ordered_terms = sorted(typed["fe"], key=len)
         out.extend(tuple(v) for v in ordered_terms)
         for kind in ("sp", "sm", "gp"):
             for variables in typed[kind]:
                 out.extend(_crossed(variables))
-        del parameter
     graph = view.predictor_graph
     if graph is not None and graph.inputs:
         # The data columns of a custom family (brms vreal()/vint()) are
@@ -508,10 +473,12 @@ def _integer_variables(views: Mapping[str, BayesianFit]) -> set[str]:
     out: set[str] = set()
     for view in views.values():
         out.update(_trial_variables(view))
+        plan = view.prediction_plan
         # Every predictor: location, distributional, and per-category.
-        for _, _, predictor in view._predictor_items():
-            for term in predictor.monotonic_terms:
-                out.update(re.findall(r"mo\(\s*([A-Za-z_.][A-Za-z0-9_.]*)", term.term))
+        for design in plan.designs.values() if plan is not None else ():
+            if design.common is not None:
+                for term in design.common.terms.values():
+                    out.update(design_variables(term).integer)
     return out
 
 
@@ -1801,23 +1768,20 @@ def brms_conditional_smooths(
             if _joint(fit)
             else ""
         )
+        prefixes = {name: prefix for name, prefix, _ in view._predictor_items()}
         for parameter, design in plan.designs.items():
             if design.common is None:
                 continue
+            kinds = _effect_kinds(view, prefixes[parameter])
             for label, term in design.common.terms.items():
-                if _special_type(label) != "sm":
+                if kinds.get(label) != "sm":
                     continue
                 compact = re.sub(r"\s", "", label)
                 if wanted is not None and compact not in wanted:
                     continue
-                names = {
-                    n
-                    for n in getattr(term, "var_names", set())
-                    if n and n not in term_constants(term)
-                }
-                by_match = re.search(r"by\s*=\s*([A-Za-z_.][A-Za-z0-9_.]*)", label)
-                byvars = [by_match.group(1)] if by_match else []
-                covars = [v for v in _term_variables(label, names) if v not in byvars]
+                sources = design_variables(term)
+                byvars = list(sources.by)
+                covars = [v for v in sources.names if v not in byvars]
                 if len(covars) > 2:
                     byvars = covars[2:] + byvars
                     covars = covars[:2]

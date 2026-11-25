@@ -44,6 +44,8 @@ from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
     VariableDecl,
     SmoothPart,
     coordinate_scopes,
@@ -425,6 +427,20 @@ class MonotonicRow(ValueModel):
         """
         return draws[coefficient_site(self.prefix, self.term)]
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            The coefficient of the monotonic value.
+        """
+        return (
+            PopulationCoefficient(
+                label=self.term.name, site=coefficient_site(self.prefix, self.term)
+            ),
+        )
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -439,6 +455,16 @@ class MonotonicRow(ValueModel):
             None.
         """
         return None
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            The term.
+        """
+        return (EffectSource(label=self.label, kind="sp"),)
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

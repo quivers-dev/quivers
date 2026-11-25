@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
 import numpy as np
@@ -44,6 +44,8 @@ from quivers.formulas._row_source import PredictorRows, fresh_columns
 from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
     VariableDecl,
     SmoothPart,
     coordinate_scopes,
@@ -465,6 +467,21 @@ class PopulationTerm(ValueModel):
         ]
         return torch.stack(values, 2)
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            One per column.
+        """
+        return tuple(
+            PopulationCoefficient(
+                label=column.name, site=coefficient_site(self.prefix, column)
+            )
+            for column in self.columns
+        )
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -520,6 +537,24 @@ class PopulationTerm(ValueModel):
         )
         return torch.einsum(
             "cdj...,jn->cdn...", self.coefficients(draws).to(design), design
+        )
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            Each design term of the columns.
+        """
+        kinds: dict[str, Literal["fe", "sp"]] = {}
+        for column in self.columns:
+            if column.is_intercept:
+                continue
+            special = isinstance(column, SymbolicColumn)
+            kinds.setdefault(column.term, "sp" if special else "fe")
+        return tuple(
+            EffectSource(label=label, kind=kind) for label, kind in kinds.items()
         )
 
     def contributions(self) -> tuple[Contribution, ...]:

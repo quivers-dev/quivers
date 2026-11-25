@@ -76,6 +76,8 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
     VariableDecl,
     SmoothPart,
     coordinate_scopes,
@@ -1670,6 +1672,16 @@ class _ProcessTerm(ValueModel):
             )
         )
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            Empty.
+        """
+        return ()
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -1684,6 +1696,16 @@ class _ProcessTerm(ValueModel):
             The process.
         """
         return self if self.label == label else None
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            The term.
+        """
+        return (EffectSource(label=self.label, kind="gp"),)
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

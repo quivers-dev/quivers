@@ -44,6 +44,8 @@ from quivers.formulas._smooth import BasisTerm
 from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
     VariableDecl,
     SmoothPart,
     ColumnName,
@@ -157,6 +159,16 @@ class OffsetTerm(ValueModel):
         """
         raise ValueError(f"{self.label!r} has no coefficients")
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            Empty.
+        """
+        return ()
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -171,6 +183,18 @@ class OffsetTerm(ValueModel):
             None.
         """
         return None
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            Each offset.
+        """
+        return tuple(
+            EffectSource(label=column.term, kind="fe") for column in self.columns
+        )
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -349,6 +373,16 @@ class HostTerm(ValueModel):
         """
         raise ValueError(f"{self.label!r} has no coefficients")
 
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            Empty.
+        """
+        return ()
+
     def smooth_part(self, label: str) -> SmoothPart | None:
         """Return the term's share of one smooth or Gaussian process.
 
@@ -363,6 +397,16 @@ class HostTerm(ValueModel):
             None.
         """
         return None
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            Empty: the host reads its own data.
+        """
+        return ()
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
