@@ -1090,7 +1090,8 @@ class Family(ValueModel):
         ----------
         **parameters : str
             Link names keyed by ``mu`` for the location or an auxiliary
-            parameter name, for instance ``sigma="softplus"``.
+            parameter name, for instance ``sigma="softplus"``. The links of
+            a mixture template are those of its one component.
 
         Returns
         -------
@@ -1105,10 +1106,13 @@ class Family(ValueModel):
             links. Categorical models require their multinomial softmax
             location link.
         """
-        if self.mixture is not None and len(self.mixture.components) > 1:
-            raise ValueError(
-                "mixture links belong to the components; set them before mixture()"
-            )
+        if self.mixture is not None:
+            if len(self.mixture.components) > 1:
+                raise ValueError(
+                    "mixture links belong to the components; set them before mixture()"
+                )
+            template = self.mixture.components[0].with_links(**parameters)
+            return self.with_(mixture=self.mixture.with_(components=(template,)))
         known = {"mu", *(aux.name for aux in self.aux_params)}
         unknown = parameters.keys() - known
         if unknown:
@@ -2047,7 +2051,6 @@ families: Mapping[str, Family] = FamilyRegistry({
     "mixture": Family(
         name="mixture",
         location_link=_IDENTITY,
-        location_links=_REAL_LINKS,
         observe_family="Mixture",
         recorded_events=True,
         mixture=MixtureSpec(components=(_GAUSSIAN,)),

@@ -809,3 +809,16 @@ def test_group_identifier_shared_across_components_is_one_block():
     assert fitted.posterior_epred(
         new_data=fresh, allow_new_levels=True, num_samples=2
     ).shape == (1, 2, 1)
+
+
+def test_template_links_are_the_links_of_its_component():
+    linked = families["mixture"].with_links(mu="log", sigma="softplus")
+    component = families["gaussian"].with_links(mu="log", sigma="softplus")
+    frame = _frame()
+    source = formula_to_qvr("y ~ x", data=frame, family=linked)
+    assert source == formula_to_qvr(
+        "y ~ x", data=frame, family=mixture(component, component)
+    )
+    assert source != formula_to_qvr("y ~ x", data=frame, family="mixture")
+    with pytest.raises(ValueError, match="admissible links"):
+        families["mixture"].with_links(mu="softmax")
