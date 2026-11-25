@@ -253,8 +253,8 @@ def check_machine(name: str) -> None:
 def check_compiled_gradient(name: str) -> None:
     """Compare a mixture's gradient in the class weights with the exact one.
 
-    The weight is a polynomial in the two class probabilities, so the
-    derivative of its logarithm is a ratio of enumerated sums.
+    A categorical reads its class weights up to a factor, so the function
+    differentiated is the log weight at the weights divided by their sum.
 
     Parameters
     ----------
@@ -280,10 +280,11 @@ def check_compiled_gradient(name: str) -> None:
             The log likelihood, summed over the draws of every group.
         """
         answer = torch.zeros((), dtype=torch.float64)
+        scale = weights["p0"] + weights["p1"]
         for group in sorted(set(groups)):
             total = torch.zeros((), dtype=torch.float64)
             for value in (0, 1):
-                product = weights[f"p{value}"]
+                product = weights[f"p{value}"] / scale
                 for row, of in zip(ROWS, groups, strict=True):
                     if of == group:
                         chance = float(rate(value))
@@ -355,7 +356,12 @@ def check_chain_batch() -> None:
 
 
 def check_chain_gradient() -> None:
-    """Compare a chain's gradient with expected counts over enumerated paths."""
+    """Compare a chain's gradient with expected counts over enumerated paths.
+
+    A categorical reads a row up to a factor, so the derivative in an
+    entry is its expected count over the entry minus the expected count
+    of the row.
+    """
     model = program("hmm").morphism
     assert isinstance(model, MonadicProgram)
     with double_precision():
@@ -374,17 +380,28 @@ def check_chain_gradient() -> None:
             uses[name] = uses.get(name, Fraction(0)) + outcome.weight / mass
     grads: dict[str, torch.Tensor | None] = {}
     wanted: dict[str, Fraction] = {}
+
+    def row(label: str, values: Sequence[Fraction], entries: torch.Tensor) -> None:
+        """Add the derivatives of one distribution.
+
+        Parameters
+        ----------
+        label : str
+            The distribution's name.
+        values : Sequence of Fraction
+            Its entries.
+        entries : torch.Tensor
+            The computed derivatives.
+        """
+        counts = [uses.get(f"{label}{k}", Fraction(0)) for k in range(len(values))]
+        for k, value in enumerate(values):
+            grads[f"{label}{k}"] = entries[k]
+            wanted[f"{label}{k}"] = counts[k] / value - sum(counts, Fraction(0))
+
+    row("i", INITIAL, found[0])
     for k in (0, 1):
-        grads[f"i{k}"] = found[0][k]
-        wanted[f"i{k}"] = uses.get(f"i{k}", Fraction(0)) / INITIAL[k]
-        for m in (0, 1):
-            grads[f"t{k}{m}"] = found[1][k, m]
-            wanted[f"t{k}{m}"] = uses.get(f"t{k}{m}", Fraction(0)) / TRANSITION[k][m]
-        for symbol in (0, 1, 2):
-            grads[f"e{k}{symbol}"] = found[2][k, symbol]
-            wanted[f"e{k}{symbol}"] = (
-                uses.get(f"e{k}{symbol}", Fraction(0)) / EMISSION[k][symbol]
-            )
+        row(f"t{k}", TRANSITION[k], found[1][k])
+        row(f"e{k}", EMISSION[k], found[2][k])
     compare_gradients(grads, wanted, mixture_accuracy(backward=True), "chain gradient")
 
 
