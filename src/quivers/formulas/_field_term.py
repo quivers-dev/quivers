@@ -50,7 +50,7 @@ from quivers.formulas._term import (
     OutputAxis,
     SiteDecl,
 )
-from quivers.formulas._variable_catalogue import CHOLESKY_CLASSES
+from quivers.formulas._variable_catalogue import CHOLESKY_CLASSES, time_label
 from quivers.formulas.formula import Formula
 
 if TYPE_CHECKING:
@@ -218,7 +218,11 @@ class FieldTerm(ValueModel):
                         site=f"{self.prefix}{site.name}{suffix if vector else ''}",
                         kind="special",
                         index=() if vector else index,
-                        pairs=self.term.time_levels if vector else (),
+                        pairs=tuple(
+                            time_label(level) for level in self.term.time_levels
+                        )
+                        if vector
+                        else (),
                         parameter=part.position,
                     )
                 )

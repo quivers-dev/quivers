@@ -45,6 +45,7 @@ from quivers.formulas._variable_catalogue import (
     shrinkage_variables,
     threshold_variables,
     CoefficientName,
+    time_label,
     group_variables,
 )
 from quivers.inference._posterior import draw_count
@@ -166,27 +167,6 @@ def _ordinal_thresholds(fit: BayesianFit) -> bool:
     return not fit.formula.category_specific
 
 
-def _time_label(level: str) -> str:
-    """Spell a retained time level as R prints the time value.
-
-    Parameters
-    ----------
-    level : str
-        Canonical time level: ``repr`` of a float for numbers, text otherwise.
-
-    Returns
-    -------
-    str
-        An integer-valued number without its fraction (``"1.0"`` is ``"1"``),
-        other values with brms's character renaming.
-    """
-    try:
-        number = float(level)
-    except ValueError:
-        return brms_rename(level)
-    return str(int(number)) if number.is_integer() else brms_rename(level)
-
-
 def coordinate_labels(fit: BayesianFit, target: PriorTarget) -> tuple[str, ...]:
     """Return the coordinate labels of a correlation-class target.
 
@@ -212,7 +192,7 @@ def coordinate_labels(fit: BayesianFit, target: PriorTarget) -> tuple[str, ...]:
     binding = autocor_binding(fit.family)
     if binding is None:
         return ()
-    return tuple(_time_label(level) for level in binding.time_levels)
+    return tuple(time_label(level) for level in binding.time_levels)
 
 
 def shrinkage_scales(

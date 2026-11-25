@@ -301,6 +301,27 @@ def smooth_names(
     )
 
 
+def time_label(level: str) -> str:
+    """Spell a retained time level as R prints the time value.
+
+    Parameters
+    ----------
+    level : str
+        Canonical time level: ``repr`` of a float for numbers, text otherwise.
+
+    Returns
+    -------
+    str
+        An integer-valued number without its fraction (``"1.0"`` is ``"1"``),
+        other values with brms's character renaming.
+    """
+    try:
+        number = float(level)
+    except ValueError:
+        return brms_rename(level)
+    return str(int(number)) if number.is_integer() else brms_rename(level)
+
+
 def scalar_coordinates(stem: str, value: torch.Tensor) -> dict[str, torch.Tensor]:
     """Split draws of one site into brms's scalar variables.
 

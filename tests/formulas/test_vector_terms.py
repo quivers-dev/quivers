@@ -373,3 +373,12 @@ def test_the_vector_program_has_the_density_of_one_program_per_category(term, op
     np.testing.assert_allclose(
         _density(vector, whole), _density(separate, values), rtol=0, atol=2e-4
     )
+
+
+def test_latent_unstructured_residuals_name_their_correlations():
+    """brms names the correlation of two times by their values, per category."""
+    fitted = fit("o ~ x + unstr(t, u)", family="poisson", **OPTIONS)
+    assert "cortime__0__1" in fitted.variables(num_samples=1)
+    vector = fit("c ~ x + unstr(t, u)", family="categorical", **OPTIONS)
+    names = set(vector.variables(num_samples=1))
+    assert {"cortime_muB__0__1", "cortime_muC__0__1", "err_muB[1]"} <= names
