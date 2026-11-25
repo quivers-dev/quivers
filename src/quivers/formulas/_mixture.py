@@ -961,13 +961,13 @@ def _sub_emission(
     for group in groups:
         names[f"{_qvr_name(group)}_idx"] = f"{_qvr_name(group)}_idx"
     # Two components may draw from one law over different coordinates.
-    families = sub.term_laws
+    term_laws = sub.term_laws
     morphisms = (
         {}
-        if families is None
+        if term_laws is None
         else {
             record.name: namespace.prefix("") + record.name
-            for record in families.definitions
+            for record in term_laws.definitions
         }
     )
     bindings = TemplateBindings(objects=objects, values={}, morphisms=morphisms)
@@ -1025,7 +1025,7 @@ def _sub_emission(
         prior_targets=targets,
         group_laws=laws,
         correlation_ids=correlation_ids,
-        families=families.renamed(morphisms) if families is not None else None,
+        families=term_laws.renamed(morphisms) if term_laws is not None else None,
     )
 
 
@@ -1538,7 +1538,7 @@ def emit_mixture(
     parameters: dict[str, QiecValueParameter] = {}
     targets: list[PriorTarget] = []
     laws: list[GroupBlockLaw] = []
-    families: list[FamilyCatalog] = []
+    term_laws: list[FamilyCatalog] = []
     ordinal = spec.components[0].ordinal is not None
     # brms: an ordered ordinal mixture shares one threshold vector, ordered
     # when any component has ordered thresholds.
@@ -1569,7 +1569,7 @@ def emit_mixture(
         targets.extend(emission.prior_targets)
         laws.extend(emission.group_laws)
         if emission.families is not None:
-            families.append(emission.families)
+            term_laws.append(emission.families)
 
     external = dict(supplied_groups or {})
     supplied = _shared_blocks(lens, formula, statements, steps, targets, laws, external)
@@ -1909,7 +1909,7 @@ def emit_mixture(
         module=Module(statements=tuple(statements)),
         prior_targets=tuple(targets),
         group_laws=tuple(laws),
-        families=reduce(FamilyCatalog.with_catalog, families) if families else None,
+        families=reduce(FamilyCatalog.with_catalog, term_laws) if term_laws else None,
     )
 
 
