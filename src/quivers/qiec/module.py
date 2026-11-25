@@ -444,6 +444,10 @@ def _require_unique(values: object, *, subject: str) -> None:
         raise ValueError(f"duplicate {subject} in QIEC module")
 
 
+_RECHECKED = "_quivers_rechecked"
+"""The instance entry that marks a module whose bodies passed the recheck."""
+
+
 def validate_module(module: QiecModule) -> KernelRegistry:
     """Recheck a whole lowered module and return its resolved registry.
 
@@ -451,6 +455,10 @@ def validate_module(module: QiecModule) -> KernelRegistry:
     registry from the module's own declarations and rechecks every body
     against it, so a module that arrived from elsewhere, or from a
     lowerer with a bug, is held to the same standard as one just built.
+
+    A module is immutable and the recheck reads nothing else, so the bodies
+    of one instance are rechecked once. Every call resolves a registry of
+    its own, which the caller may extend.
 
     Parameters
     ----------
@@ -473,7 +481,9 @@ def validate_module(module: QiecModule) -> KernelRegistry:
 
     if module.abi != QIEC_ABI:
         raise KernelError(f"unsupported QIEC ABI {module.abi!r}")
-    _validate_index_sorts(module)
+    rechecked = _RECHECKED in module.__dict__
+    if not rechecked:
+        _validate_index_sorts(module)
     names = [item.name for item in module.distribution_families]
     if len(set(names)) != len(names) or any(name in FAMILIES for name in names):
         raise KernelError(
@@ -514,6 +524,28 @@ def validate_module(module: QiecModule) -> KernelRegistry:
         )
     for handler in module.handlers:
         registry.register_handler(handler)
+    if not rechecked:
+        _recheck_bodies(module, registry)
+        module.__dict__[_RECHECKED] = True
+    return registry
+
+
+def _recheck_bodies(module: QiecModule, registry: KernelRegistry) -> None:
+    """Recheck every handler row and computation body of a module.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module.
+    registry : KernelRegistry
+        The registry resolved from its declarations.
+
+    Raises
+    ------
+    KernelError
+        If a row or a body names an unknown instance, a body fails to check,
+        or its inferred type does not conform to the declared one.
+    """
     instance_interfaces = {
         instance.entry.instance: instance.entry.effect for instance in module.instances
     }
@@ -554,7 +586,6 @@ def validate_module(module: QiecModule) -> KernelRegistry:
                 f"not declared type "
                 f"{render_computation_type(computation.type, registry.instance_names)}"
             )
-    return registry
 
 
 def render_computation_type(

@@ -7,6 +7,7 @@ from quivers.qiec import (
     ComputationId,
     EMPTY_ROW,
     INT,
+    KernelError,
     QIEC_ABI,
     ComputationType,
     EffectDef,
@@ -31,6 +32,7 @@ from quivers.qiec import (
     RowVariable,
     RowVariableId,
     Return,
+    STRING,
     SiteProvenance,
     SourceOrigin,
     TypeBinder,
@@ -41,6 +43,7 @@ from quivers.qiec import (
     loads,
     validate_module,
 )
+from quivers.qiec import module as kernel_module
 
 
 SOURCE_PROTOCOL = "qvr-source/v0.19"
@@ -446,3 +449,63 @@ def test_module_rejects_static_variables_in_module_effect_instances(
                 instances=(instance,),
             )
         )
+
+
+def _module() -> QiecModule:
+    return QiecModule(
+        module="example",
+        source_protocol=SOURCE_PROTOCOL,
+        computations=(
+            NamedComputation(
+                id=ComputationId.derive("tests", "answer"),
+                name="answer",
+                telescope=(),
+                parameters=(),
+                body=Return(value=LiteralValue(value=42, type=INT)),
+                type=ComputationType(effects=EMPTY_ROW, result=INT),
+                origin=_origin(),
+            ),
+        ),
+    )
+
+
+def test_a_module_is_rechecked_once_and_resolves_a_registry_on_every_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    inferred: list[str] = []
+    infer = kernel_module.infer_computation
+
+    def counting(body, registry, context):
+        inferred.append(type(body).__name__)
+        return infer(body, registry, context)
+
+    monkeypatch.setattr(kernel_module, "infer_computation", counting)
+    first = validate_module(module)
+    second = validate_module(module)
+    assert len(inferred) == len(module.computations)
+    assert first is not second
+    assert first.computations == second.computations
+    assert first.instance_names == second.instance_names
+    # A registry a caller extends is not the next caller's.
+    first.computations.clear()
+    assert validate_module(module).computations == second.computations
+    # Another value of the same module is rechecked on its own.
+    validate_module(loads(dumps(module)))
+    assert len(inferred) == 2 * len(module.computations)
+
+
+def test_a_module_that_fails_its_recheck_fails_it_every_time() -> None:
+    module = _module()
+    validate_module(module)
+    (computation, *rest) = module.computations
+    wrong = module.with_(
+        computations=(
+            computation.with_(type=computation.type.with_(result=STRING)),
+            *rest,
+        )
+    )
+    for _ in range(2):
+        with pytest.raises(KernelError, match="not declared type"):
+            validate_module(wrong)
+    validate_module(module)
