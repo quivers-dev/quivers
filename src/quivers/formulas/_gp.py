@@ -69,7 +69,6 @@ from quivers.formulas._ast import (
     _call,
     _div,
     _draw,
-    _index,
     _let,
     _mul,
     _sub,
@@ -77,6 +76,7 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
     Emission,
     InputDecl,
     OutputAxis,
@@ -1722,27 +1722,21 @@ class _ProcessTerm(ValueModel):
     scale_prior: str
     output: OutputAxis | None = None
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True.
+        tuple[Contribution, ...]
+            The row contribution.
         """
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            False.
-        """
-        return False
+        return (
+            Contribution(
+                name=self.name + "_per_row",
+                rows=True,
+                coordinates=self.output is not None,
+            ),
+        )
 
     def hyperparameters(self) -> tuple[SiteDecl, ...]:
         """Declare the ``sdgp`` and ``lscale`` sites.
@@ -1757,7 +1751,6 @@ class _ProcessTerm(ValueModel):
             SiteDecl(
                 name=sdgp,
                 class_="sdgp",
-                section="design",
                 default=self.scale_prior,
                 coef=self.block.label,
                 lower=0.0,
@@ -1766,7 +1759,6 @@ class _ProcessTerm(ValueModel):
                 SiteDecl(
                     name=site,
                     class_="lscale",
-                    section="design",
                     default=default,
                     coef=label,
                     lower=0.0,
@@ -1798,7 +1790,6 @@ class _ProcessTerm(ValueModel):
         return SiteDecl(
             name=self.name + suffix,
             class_="zgp",
-            section="design",
             axes=(self.name + axis,),
             overridable=False,
         )
@@ -1844,33 +1835,6 @@ class _ProcessTerm(ValueModel):
         """
         return _draw(self.name + "_z", "Normal", (0.0, 1.0), index=TypeName(name=axis))
 
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution.
-        """
-        return (_var(self.name + "_per_row"),)
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution at the row, the same at every coordinate.
-        """
-        return (_index(self.name + "_per_row", row),)
-
 
 class SpectralTerm(_ProcessTerm):
     """An approximate Gaussian process on brms's spectral basis.
@@ -1902,7 +1866,6 @@ class SpectralTerm(_ProcessTerm):
                     name=f"{self.name}_frequency_sq_{d + 1}",
                     element="Real",
                     axes=(self.name + "_Coordinate",),
-                    section="design",
                     declared=True,
                     values=torch.as_tensor(
                         self.block.frequencies[:, d] ** 2, dtype=torch.float64
@@ -2001,7 +1964,6 @@ class ExactProcessTerm(_ProcessTerm):
         return AxisDecl(
             name=_input_axis(self.name, self.block),
             size=len(self.block.inputs),
-            section="design",
         )
 
     def axes(self) -> tuple[AxisDecl, ...]:
@@ -2045,7 +2007,6 @@ class ExactProcessTerm(_ProcessTerm):
                     name=self.name + "_anchor",
                     element="Real",
                     axes=(self.name + "_Coordinate",),
-                    section="design",
                     declared=True,
                     values=torch.zeros(
                         len(block.prediction_inputs), dtype=torch.float64
@@ -2061,7 +2022,6 @@ class ExactProcessTerm(_ProcessTerm):
                     name=name,
                     element="Real",
                     axes=(axis, axis),
-                    section="design",
                     declared=True,
                     values=torch.as_tensor(values, dtype=torch.float64),
                 )
@@ -2091,7 +2051,6 @@ class ExactProcessTerm(_ProcessTerm):
             SiteDecl(
                 name=self.name + "_coefficients",
                 class_="zgp",
-                section="design",
                 event_axis=self.name + "_Coordinate",
                 overridable=False,
             ),

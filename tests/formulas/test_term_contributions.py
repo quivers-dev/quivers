@@ -13,7 +13,6 @@ from quivers._values import ValueModel
 from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     DrawArgScalar,
-    LetExprNode,
     LetExprVar,
     LetStep,
     ProgramStep,
@@ -21,10 +20,11 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.emit import _emit_let_expr
 from quivers.formulas import BayesianFit, FormulaToQVRModule, fit, families
-from quivers.formulas._ast import _index, _let, _var
+from quivers.formulas._ast import _let, _var
 from quivers.formulas._predictor import HostTerm, OffsetTerm, Predictor
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
     Emission,
     InputDecl,
     OutputAxis,
@@ -32,7 +32,7 @@ from quivers.formulas._term import (
 )
 from quivers.formulas._term_emission import (
     ProgramEmission,
-    emit_cells,
+    emit_axis_part,
     emit_predictor,
     emit_terms,
 )
@@ -199,20 +199,20 @@ class _Stub(ValueModel):
     """A term with one coefficient and no design."""
 
     name: str
-    late: bool = False
     output: OutputAxis | None = None
 
     @property
     def label(self) -> str:
         return self.name
 
-    @property
-    def rowwise(self) -> bool:
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        return self.late
+    def contributions(self) -> tuple[Contribution, ...]:
+        return (
+            Contribution(
+                name=self.name + "_per_row",
+                rows=False,
+                coordinates=self.output is not None,
+            ),
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         return ()
@@ -232,7 +232,6 @@ class _Stub(ValueModel):
                 SiteDecl(
                     name=self.name,
                     class_="b",
-                    section="column",
                     default="Normal(0.0, 6.0)",
                     divisor=2.0,
                 )
@@ -240,28 +239,25 @@ class _Stub(ValueModel):
             _let(self.name + "_per_row", _var(self.name)),
         )
 
-    def summands(self) -> tuple[LetExprNode, ...]:
-        return (_var(self.name + "_per_row"),)
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        return (_index(self.name, component, row),)
-
 
 def _emission(**options) -> ProgramEmission:
     lens = FormulaToQVRModule(families["gaussian"], **options)
     return ProgramEmission(lens, [], {})
 
 
-def test_predictors_sum_their_terms_in_order_and_leave_deferred_terms():
-    """Steps precede the sum, and a deferred term is emitted by a later call."""
+def test_predictors_sum_the_terms_of_each_part_in_order():
+    """The steps of a part precede its sum, and an empty part is zero."""
+    axis = OutputAxis(name="K", size=2)
     predictor = Predictor(
         parameter="mu",
         role="dpar",
         prefix="",
         link=links["identity"],
-        terms=(_Stub(name="a"), _Stub(name="late", late=True), _Stub(name="b")),
+        terms=(
+            _Stub(name="a"),
+            _Stub(name="vector", output=axis),
+            _Stub(name="b"),
+        ),
     )
     steps: list[ProgramStep] = []
     value = emit_predictor(predictor, _emission(), steps)
@@ -271,8 +267,14 @@ def test_predictors_sum_their_terms_in_order_and_leave_deferred_terms():
         for step in steps
         if isinstance(step, SampleStep | LetStep)
     ] == ["a", "a_per_row", "b", "b_per_row"]
-    rest = emit_terms([predictor.terms[1]], _emission(), steps)
-    assert [_emit_let_expr(item) for item in rest] == ["late_per_row"]
+    emit_axis_part(predictor, axis, _emission(), steps, "eta")
+    last = steps[-1]
+    assert isinstance(last, LetStep)
+    assert last.name == "eta"
+    assert _emit_let_expr(last.value) == (
+        "factor response : Resp, output_coordinate : K in "
+        "vector_per_row[output_coordinate]"
+    )
     empty = predictor.with_(terms=())
     assert _emit_let_expr(emit_predictor(empty, _emission(), [])) == "0.0"
 
@@ -291,23 +293,31 @@ def test_default_scales_follow_the_design_and_explicit_priors_do_not():
         assert values == {"loc": 0.0, "scale": scale}
 
 
-def test_cells_repeat_scalar_designs_and_read_component_coefficients():
+def test_contributions_are_indexed_by_the_axes_they_vary_over():
     """Offsets are shared by coordinates, and host values are stored by row."""
     axis = OutputAxis(name="K", size=2)
-    terms = (
-        OffsetTerm(
-            prefix="p_",
-            columns=(_column("first"), _column("second")),
-            output=axis,
-        ),
-        HostTerm(name="net", output=axis),
-        _Stub(name="t", output=axis),
+    row, component = LetExprVar(name="n"), LetExprVar(name="k")
+    offsets = OffsetTerm(
+        prefix="p_", columns=(_column("first"), _column("second")), output=axis
     )
-    value = emit_cells(
-        terms, _emission(), [], LetExprVar(name="n"), LetExprVar(name="k")
-    )
-    assert _emit_let_expr(value) == (
-        "p_formula_offset_0[n] + p_formula_offset_1[n] + net[n * 2 + k] + t[k, n]"
+    host = HostTerm(name="net", output=axis)
+    cells = [
+        _emit_let_expr(summand.cell(row, component))
+        for term in (offsets, host, _Stub(name="t", output=axis), _Stub(name="s"))
+        for summand in term.contributions()
+    ]
+    assert cells == [
+        "p_formula_offset_0[n]",
+        "p_formula_offset_1[n]",
+        "net_by_coordinate[k, n]",
+        "t_per_row[k]",
+        "s_per_row",
+    ]
+    (binding,) = host.steps(_emission())
+    assert isinstance(binding, LetStep)
+    assert _emit_let_expr(binding.value) == (
+        "factor output_coordinate : K, response : Resp in "
+        "net[response * 2 + output_coordinate]"
     )
 
 

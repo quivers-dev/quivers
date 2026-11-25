@@ -485,24 +485,19 @@ def build_prior_targets(
             **metadata,
         )
 
-    def add_terms(*, deferred):
-        for predictor in predictors:
-            for site in catalogue_sites(
-                term for term in predictor.terms if term.deferred is deferred
-            ):
-                add(
-                    site.name,
-                    site.class_,
-                    coef=site.coef,
-                    group=site.group,
-                    lower=site.lower,
-                    upper=site.upper,
-                    component_labels=site.component_labels,
-                    partition_labels=site.partition_labels,
-                    **(scopes[predictor.prefix] if site.scoped else {}),
-                )
-
-    add_terms(deferred=False)
+    for predictor in predictors:
+        for site in catalogue_sites(predictor.terms):
+            add(
+                site.name,
+                site.class_,
+                coef=site.coef,
+                group=site.group,
+                lower=site.lower,
+                upper=site.upper,
+                component_labels=site.component_labels,
+                partition_labels=site.partition_labels,
+                **scopes[predictor.prefix],
+            )
     # brms gr(dist = "student") df and gr(by =) per-level correlations.
     for site, role, group, coef, lower in option_prior_sites(laws):
         add(site, role, group=group, coef=coef, lower=lower)
@@ -569,7 +564,6 @@ def build_prior_targets(
             add(name, name, lower=0.0, dpar=name)
     for site, role in autocor_matrix_targets(family):
         add(site, role)
-    add_terms(deferred=True)
     return tuple(targets.values())
 
 

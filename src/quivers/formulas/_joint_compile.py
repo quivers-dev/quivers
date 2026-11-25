@@ -1153,7 +1153,6 @@ def _shared_groups(
                     group_term(
                         predictor,
                         actual_prefix,
-                        predictor.random_terms.index(term),
                         term,
                         OutputAxis(
                             name=axis[0],

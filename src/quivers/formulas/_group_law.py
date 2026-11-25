@@ -793,7 +793,6 @@ def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[InputDecl, ...]:
                 name=name,
                 element=element,
                 axes=axes,
-                section="level",
                 declared=True,
                 values=value,
             ),

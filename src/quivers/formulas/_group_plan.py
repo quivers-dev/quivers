@@ -18,7 +18,7 @@ import torch
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import LetExprNode, ProgramStep
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._ast import _index, _var
+from quivers.formulas._ast import _index
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceBasis
 from quivers.formulas._group_emission import bind_rows
@@ -57,6 +57,7 @@ from quivers.formulas._grouping_emission import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
     Emission,
     InputDecl,
     OutputAxis,
@@ -884,8 +885,6 @@ class GroupTerm(ValueModel):
     law : GroupBlockLaw or None
         Law of the block holding the coefficient; None when another program
         emits the block.
-    rank : int
-        Position of the coefficient in the formula.
     output : OutputAxis or None
         Axis of the coefficient vectors.
     """
@@ -906,7 +905,6 @@ class GroupTerm(ValueModel):
     law: GroupBlockLaw | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    rank: int = 0
     output: OutputAxis | None = None
 
     @property
@@ -931,27 +929,19 @@ class GroupTerm(ValueModel):
         """
         return f"{self.slope} | {self.group}"
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True.
+        tuple[Contribution, ...]
+            The row contribution.
         """
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            False.
-        """
-        return False
+        return (
+            Contribution(
+                name=self.binding, rows=True, coordinates=self.output is not None
+            ),
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -999,7 +989,6 @@ class GroupTerm(ValueModel):
                     name=name,
                     element="Int" if name in codes else "Real",
                     axes=("Resp",),
-                    section="level",
                     declared=self.law is not None,
                     values=value,
                 )
@@ -1031,7 +1020,6 @@ class GroupTerm(ValueModel):
             SiteDecl(
                 name=member.scale.site,
                 class_="sd",
-                section="level",
                 coef=self.slope,
                 group=self.group,
                 axes=(member.scale.axis,) if member.scale.axis is not None else (),
@@ -1040,7 +1028,6 @@ class GroupTerm(ValueModel):
                 if labelled and self.output is not None
                 else (),
                 partition_labels=by.levels if by is not None else (),
-                rank=self.rank,
             ),
         )
 
@@ -1088,16 +1075,6 @@ class GroupTerm(ValueModel):
             contribution,
         )
         return (*steps, *contribution)
-
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution.
-        """
-        return (_var(self.binding),)
 
     def cells(
         self, row: LetExprNode, component: LetExprNode

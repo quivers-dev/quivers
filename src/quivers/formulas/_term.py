@@ -14,8 +14,14 @@ laws that only its compilation knows. The functions of this module turn those
 declarations into program declarations and bindings without knowing which term
 made them.
 
-An emitted program lists its objects, inputs and prior targets by *section*,
-then by predictor, then by term. A declaration names its section.
+A term over an output axis is the scalar term under a binder over the axis,
+with each coefficient read at the bound coordinate. `over_output` and
+`at_coordinate` write that rule once, so a term states its mathematics for one
+coordinate. The contributions of such a term are bound over the axis first and
+the rows second.
+
+An emitted program lists its objects, inputs and prior targets in the order of
+the predictors and their terms.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.dsl.ast_nodes import (
+    LetExprLiteral,
     LetExprNode,
     ProgramStep,
     QiecIndexName,
@@ -39,6 +46,7 @@ from quivers.dsl.ast_nodes import (
     SampleStep,
 )
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._ast import _add, _factor, _index, _mul, _var
 from quivers.formulas._design import SymbolicColumn
 
 if TYPE_CHECKING:
@@ -46,36 +54,6 @@ if TYPE_CHECKING:
     from quivers.formulas.formula import FixedColumn
 
 __all__: list[str] = []
-
-type Section = Literal[
-    "field", "special", "simplex", "level", "column", "design", "inline"
-]
-"""Part of a program's declarations: the inputs and sites of structured fields,
-of special-effect columns and their simplexes, of grouping levels, of design
-columns, and of coupled design blocks. ``inline`` axes are declared beside the
-steps that use them."""
-
-AXIS_SECTIONS: tuple[Section, ...] = ("design", "special")
-"""Order of the axes declared ahead of the program body."""
-
-INPUT_SECTIONS: tuple[Section, ...] = (
-    "field",
-    "special",
-    "level",
-    "column",
-    "design",
-)
-"""Order of the inputs in the typed telescope of a program."""
-
-SITE_SECTIONS: tuple[Section, ...] = (
-    "design",
-    "column",
-    "special",
-    "simplex",
-    "level",
-    "field",
-)
-"""Order of the prior targets of one predictor."""
 
 
 class OutputAxis(ValueModel):
@@ -106,13 +84,10 @@ class AxisDecl(ValueModel):
         Object name.
     size : int
         Number of elements.
-    section : Section
-        Part of the declarations it belongs to.
     """
 
     name: str
     size: int
-    section: Section
 
 
 class InputDecl(ValueModel):
@@ -126,8 +101,6 @@ class InputDecl(ValueModel):
         Element carrier.
     axes : tuple[str, ...]
         Finite axes of the input, outermost first; empty for a scalar.
-    section : Section
-        Part of the telescope it belongs to.
     declared : bool
         Whether the program declares the input with its type, or the type is
         inferred from its uses.
@@ -139,7 +112,6 @@ class InputDecl(ValueModel):
     name: str
     element: Literal["Real", "Int", "Bool"]
     axes: tuple[str, ...]
-    section: Section
     declared: bool
     values: torch.Tensor | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -155,8 +127,6 @@ class SiteDecl(ValueModel):
         Site name.
     class_ : str
         brms prior class.
-    section : Section
-        Part of the prior catalogue it belongs to.
     default : str
         Default prior as QVR source; empty when the term fixes the law.
     coef : str or None
@@ -180,15 +150,10 @@ class SiteDecl(ValueModel):
         Labels of the output coordinates indexing the site.
     partition_labels : tuple[str, ...]
         Labels of the partition of the levels indexing the site.
-    scoped : bool
-        Whether the site belongs to the parameter its predictor predicts.
-    rank : int
-        Position among the predictor's sites of the same section.
     """
 
     name: str
     class_: str
-    section: Section
     default: str = ""
     coef: str | None = None
     group: str | None = None
@@ -201,8 +166,6 @@ class SiteDecl(ValueModel):
     multiplier: float | None = None
     component_labels: tuple[str, ...] = ()
     partition_labels: tuple[str, ...] = ()
-    scoped: bool = True
-    rank: int = 0
 
     @property
     def index(self) -> str | None:
@@ -224,6 +187,135 @@ class SiteDecl(ValueModel):
         return axes[0] if axes else None
 
 
+class Contribution(ValueModel):
+    """One bound summand of a predictor.
+
+    Parameters
+    ----------
+    name : str
+        Binding of the value.
+    rows : bool
+        Whether the value varies over the rows.
+    coordinates : bool
+        Whether the value varies over the output axis, which then precedes
+        the rows.
+    """
+
+    name: str
+    rows: bool
+    coordinates: bool
+
+    def cell(self, row: LetExprNode, coordinate: LetExprNode) -> LetExprNode:
+        """Read the value at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, coordinate : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        LetExprNode
+            The binding indexed by the axes it varies over.
+        """
+        indices = (
+            *((coordinate,) if self.coordinates else ()),
+            *((row,) if self.rows else ()),
+        )
+        return _index(self.name, *indices) if indices else _var(self.name)
+
+
+COORDINATE = "output_coordinate"
+"""Binder of the output axis inside the steps of a term."""
+
+
+def coordinate(output: OutputAxis | None) -> LetExprNode | None:
+    """Return the bound output coordinate of a term.
+
+    Parameters
+    ----------
+    output : OutputAxis or None
+        Axis of the term.
+
+    Returns
+    -------
+    LetExprNode or None
+        The binder of the axis, or None for a scalar term.
+    """
+    return _var(COORDINATE) if output is not None else None
+
+
+def at_coordinate(
+    name: str, output: OutputAxis | None, *indices: LetExprNode
+) -> LetExprNode:
+    """Read a binding of a term at the bound output coordinate.
+
+    Parameters
+    ----------
+    name : str
+        Binding with one value per coordinate of the axis, outermost.
+    output : OutputAxis or None
+        Axis of the term.
+    *indices : LetExprNode
+        Further indices.
+
+    Returns
+    -------
+    LetExprNode
+        The binding at the coordinate and the indices.
+    """
+    bound = coordinate(output)
+    every = (*((bound,) if bound is not None else ()), *indices)
+    return _index(name, *every) if every else _var(name)
+
+
+def over_output(
+    output: OutputAxis | None,
+    body: LetExprNode,
+    *axes: tuple[str, str],
+) -> LetExprNode:
+    """Bind the output coordinate of an expression.
+
+    Parameters
+    ----------
+    output : OutputAxis or None
+        Axis of the term.
+    body : LetExprNode
+        Expression at one coordinate.
+    *axes : tuple[str, str]
+        Further binders and their finite axes, inside the output axis.
+
+    Returns
+    -------
+    LetExprNode
+        The expression over the axes, or the body itself without any.
+    """
+    binders = (*(((COORDINATE, output.name),) if output is not None else ()), *axes)
+    return _factor(binders, body=body) if binders else body
+
+
+def flat_index(output: OutputAxis | None, position: LetExprNode) -> LetExprNode:
+    """Index a flat site holding each element's coordinates consecutively.
+
+    Parameters
+    ----------
+    output : OutputAxis or None
+        Axis of the term.
+    position : LetExprNode
+        Element of the term's own axis.
+
+    Returns
+    -------
+    LetExprNode
+        ``position * size + coordinate``, or the position of a scalar term.
+    """
+    bound = coordinate(output)
+    if output is None or bound is None:
+        return position
+    size = LetExprLiteral(value=output.size, integral=True)
+    return _add(_mul(position, size), bound)
+
+
 class Emission(Protocol):
     """What a term asks of the program being emitted."""
 
@@ -239,16 +331,6 @@ class Emission(Protocol):
         -------
         SampleStep
             The draw over the site's axis.
-        """
-        ...
-
-    def declare(self, axis: AxisDecl) -> None:
-        """Declare a finite axis beside the steps that use it.
-
-        Parameters
-        ----------
-        axis : AxisDecl
-            Axis to declare once.
         """
         ...
 
@@ -319,26 +401,13 @@ class Term(Protocol):
         """
         ...
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            False only for a term with no row-varying design, such as an
-            intercept.
-        """
-        ...
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            True for a term whose steps follow the auxiliary parameters.
+        tuple[Contribution, ...]
+            Values whose sum is the contribution of the term.
         """
         ...
 
@@ -394,33 +463,6 @@ class Term(Protocol):
         -------
         tuple[ProgramStep, ...]
             Draws and bindings in dependency order.
-        """
-        ...
-
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            Values over the rows, whose sum is the contribution.
-        """
-        ...
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            Values whose sum is the contribution there.
         """
         ...
 
@@ -489,7 +531,6 @@ def column_inputs(
             name=name,
             element="Real",
             axes=("Resp",),
-            section="column",
             declared=True,
         )
         if isinstance(column, SymbolicColumn)
@@ -497,7 +538,6 @@ def column_inputs(
             name=name,
             element="Real",
             axes=("Resp",),
-            section="column",
             declared=False,
             values=torch.as_tensor(column.data.copy(), dtype=torch.float32),
         )
@@ -521,19 +561,18 @@ def design_declarations(name: str, matrix: np.ndarray) -> tuple[AxisDecl, InputD
     tuple[AxisDecl, InputDecl]
         The coordinate axis, and the matrix in double precision.
     """
-    axis = AxisDecl(name=name + "_Coordinate", size=matrix.shape[1], section="design")
+    axis = AxisDecl(name=name + "_Coordinate", size=matrix.shape[1])
     return axis, InputDecl(
         name=name,
         element="Real",
         axes=("Resp", axis.name),
-        section="design",
         declared=True,
         values=torch.as_tensor(matrix.copy(), dtype=torch.float64),
     )
 
 
 def declare_axes(terms: Iterable[Term]) -> tuple[AxisDecl, ...]:
-    """List the axes a program declares ahead of its body.
+    """List the axes a program declares for its terms.
 
     Parameters
     ----------
@@ -543,12 +582,9 @@ def declare_axes(terms: Iterable[Term]) -> tuple[AxisDecl, ...]:
     Returns
     -------
     tuple[AxisDecl, ...]
-        Axes by section, then in term order.
+        Axes in term order.
     """
-    axes = [axis for term in terms for axis in term.axes()]
-    return tuple(
-        axis for section in AXIS_SECTIONS for axis in axes if axis.section == section
-    )
+    return tuple(axis for term in terms for axis in term.axes())
 
 
 def declare_inputs(inputs: Iterable[InputDecl]) -> tuple[QiecValueParameter, ...]:
@@ -562,25 +598,22 @@ def declare_inputs(inputs: Iterable[InputDecl]) -> tuple[QiecValueParameter, ...
     Returns
     -------
     tuple[QiecValueParameter, ...]
-        One parameter per declared input, by section, then in order of first
-        appearance.
+        One parameter per declared input, in order of first appearance.
 
     Raises
     ------
     ValueError
         If two terms declare one input with different types.
     """
-    declared = tuple(item for item in inputs if item.declared)
     parameters: dict[str, QiecValueParameter] = {}
-    for section in INPUT_SECTIONS:
-        for item in declared:
-            if item.section != section:
-                continue
-            parameter = QiecValueParameter(
-                name=item.name, type_expr=tensor_type(item.element, *item.axes)
-            )
-            if parameters.setdefault(item.name, parameter) != parameter:
-                raise ValueError(f"terms declare input {item.name!r} with two types")
+    for item in inputs:
+        if not item.declared:
+            continue
+        parameter = QiecValueParameter(
+            name=item.name, type_expr=tensor_type(item.element, *item.axes)
+        )
+        if parameters.setdefault(item.name, parameter) != parameter:
+            raise ValueError(f"terms declare input {item.name!r} with two types")
     return tuple(parameters.values())
 
 
@@ -625,12 +658,9 @@ def catalogue_sites(terms: Iterable[Term]) -> tuple[SiteDecl, ...]:
     Returns
     -------
     tuple[SiteDecl, ...]
-        Overridable sites by section, then by their rank within it.
+        Overridable sites in term order.
     """
-    sites = [site for term in terms for site in term.sites() if site.overridable]
-    return tuple(
-        sorted(sites, key=lambda site: (SITE_SECTIONS.index(site.section), site.rank))
-    )
+    return tuple(site for term in terms for site in term.sites() if site.overridable)
 
 
 def join_catalogs(

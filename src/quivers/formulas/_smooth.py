@@ -23,17 +23,13 @@ import pandas as pd
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
-    LetExprLiteral,
-    LetExprNode,
     ProgramStep,
     TypeName,
 )
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import (
-    _add,
     _call,
     _draw,
-    _factor,
     _index,
     _let,
     _mul,
@@ -71,6 +67,10 @@ from quivers.formulas._mgcv_smooth import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
+    at_coordinate,
+    flat_index,
+    over_output,
     Emission,
     InputDecl,
     OutputAxis,
@@ -1516,27 +1516,21 @@ class BasisTerm(ValueModel):
     prior: str
     output: OutputAxis | None = None
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True.
+        tuple[Contribution, ...]
+            The row contribution.
         """
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            False.
-        """
-        return False
+        return (
+            Contribution(
+                name=self.name + "_per_row",
+                rows=True,
+                coordinates=self.output is not None,
+            ),
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -1568,7 +1562,6 @@ class BasisTerm(ValueModel):
         return AxisDecl(
             name=self.name + "_InnovationCoordinate",
             size=self.matrix.shape[1] * output.size,
-            section="inline",
         )
 
     def inputs(self) -> tuple[InputDecl, ...]:
@@ -1592,7 +1585,6 @@ class BasisTerm(ValueModel):
         scale = SiteDecl(
             name=self.scale,
             class_="sds",
-            section="design",
             default=self.prior,
             coef=self.label,
             axes=(self.output.name,) if self.output is not None else (),
@@ -1602,7 +1594,6 @@ class BasisTerm(ValueModel):
         innovations = SiteDecl(
             name=self.name + "_z",
             class_="z",
-            section="design",
             axes=(
                 self.name + "_Coordinate"
                 if self.output is None
@@ -1636,65 +1627,31 @@ class BasisTerm(ValueModel):
             The scale, the innovations, the coefficients, and the contribution.
         """
         draws = {site.name: site for site in self.sites()}
-        raw = draws[self.name + "_z"]
+        raw, output = draws[self.name + "_z"], self.output
         coefficients = self.name + "_coefficients"
+        axis = self.name + "_Coordinate"
+        scale = at_coordinate(self.scale, output)
+        value = (
+            _mul(scale, _var(raw.name))
+            if output is None
+            else over_output(
+                output,
+                _mul(scale, _index(raw.name, flat_index(output, _var("design_basis")))),
+                ("design_basis", axis),
+            )
+        )
         steps: list[ProgramStep] = []
         if self.owns_scale:
             steps.append(emission.draw(draws[self.scale]))
-        if self.output is None:
-            value = _mul(_var(self.scale), _var(raw.name))
-        else:
-            emission.declare(self._innovations(self.output))
-            basis, component = _var("design_basis"), _var("design_component")
-            flat = _add(
-                _mul(basis, LetExprLiteral(value=self.output.size, integral=True)),
-                component,
-            )
-            value = _factor(
-                (
-                    ("design_basis", self.name + "_Coordinate"),
-                    ("design_component", self.output.name),
-                ),
-                body=_mul(_index(self.scale, component), _index(raw.name, flat)),
-            )
         steps.append(
             _draw(raw.name, "Normal", (0.0, 1.0), index=TypeName(name=raw.axes[0]))
         )
         steps.append(_let(coefficients, value))
-        steps.append(
-            _let(
-                self.name + "_per_row",
-                _call("matmul", _var(self.name), _var(coefficients)),
-            )
+        contribution = _call(
+            "matmul", _var(self.name), at_coordinate(coefficients, output)
         )
+        steps.append(_let(self.name + "_per_row", over_output(output, contribution)))
         return tuple(steps)
-
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution.
-        """
-        return (_var(self.name + "_per_row"),)
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution there.
-        """
-        return (_index(self.name + "_per_row", row, component),)
 
 
 __all__: list[str] = []

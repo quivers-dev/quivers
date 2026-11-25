@@ -39,6 +39,9 @@ from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
+    at_coordinate,
+    over_output,
     Emission,
     InputDecl,
     OutputAxis,
@@ -299,8 +302,6 @@ class PopulationTerm(ValueModel):
         Default prior of a coefficient.
     columns : tuple[FixedColumn or SymbolicColumn, ...]
         Design columns, in authored order.
-    ranks : tuple[int, ...]
-        Position of each column in the formula.
     coordinates : PopulationCoordinates or None
         Centered and QR coordinates of the block; None samples the
         coefficients themselves.
@@ -313,7 +314,6 @@ class PopulationTerm(ValueModel):
     columns: tuple[FixedColumn | SymbolicColumn, ...] = dx.field(
         opaque=True, extras=OPAQUE_BY_VALUE
     )
-    ranks: tuple[int, ...]
     coordinates: PopulationCoordinates | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -330,27 +330,23 @@ class PopulationTerm(ValueModel):
         """
         return " + ".join(dict.fromkeys(column.term for column in self.columns))
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True when the block has a column besides the intercept.
+        tuple[Contribution, ...]
+            The intercept, and the row contribution of each column.
         """
-        return any(not column.is_intercept for column in self.columns)
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            False.
-        """
-        return False
+        return tuple(
+            Contribution(
+                name=coefficient_site(self.prefix, column)
+                + ("" if column.is_intercept else "_per_row"),
+                rows=not column.is_intercept,
+                coordinates=self.output is not None,
+            )
+            for column in self.columns
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -375,15 +371,13 @@ class PopulationTerm(ValueModel):
             (self.prefix + column.qvr_name, column) for column in self.columns
         )
 
-    def site(self, column: FixedColumn | SymbolicColumn, rank: int) -> SiteDecl:
+    def site(self, column: FixedColumn | SymbolicColumn) -> SiteDecl:
         """Declare the sampled coordinate of one column.
 
         Parameters
         ----------
         column : FixedColumn or SymbolicColumn
             Column of the block.
-        rank : int
-            Its position in the formula.
 
         Returns
         -------
@@ -408,14 +402,12 @@ class PopulationTerm(ValueModel):
         return SiteDecl(
             name=site,
             class_="Intercept" if column.is_intercept else "b",
-            section="column",
             default=self.prior,
             coef=column.name,
             axes=(self.output.name,) if self.output is not None else (),
             component_labels=self.output.labels if self.output is not None else (),
             divisor=divisor,
             multiplier=multiplier,
-            rank=rank,
         )
 
     def sites(self) -> tuple[SiteDecl, ...]:
@@ -426,10 +418,7 @@ class PopulationTerm(ValueModel):
         tuple[SiteDecl, ...]
             One site per column, in authored order.
         """
-        return tuple(
-            self.site(column, rank)
-            for column, rank in zip(self.columns, self.ranks, strict=True)
-        )
+        return tuple(self.site(column) for column in self.columns)
 
     def catalog(self) -> FamilyCatalog | None:
         """Return the laws only the term's compilation knows.
@@ -456,15 +445,27 @@ class PopulationTerm(ValueModel):
             then, for scalar coefficients, the contribution of each column.
         """
         steps: list[ProgramStep] = []
+        row = _var("response")
         bindings = tuple(
             _let(
                 coefficient_site(self.prefix, column) + "_per_row",
                 _mul(
                     _var(coefficient_site(self.prefix, column)),
                     _var(self.prefix + column.qvr_name),
+                )
+                if self.output is None
+                else over_output(
+                    self.output,
+                    _mul(
+                        at_coordinate(
+                            coefficient_site(self.prefix, column), self.output
+                        ),
+                        _index(self.prefix + column.qvr_name, row),
+                    ),
+                    ("response", "Resp"),
                 ),
             )
-            if self.output is None and not column.is_intercept
+            if not column.is_intercept
             else None
             for column in self.columns
         )
@@ -479,47 +480,6 @@ class PopulationTerm(ValueModel):
         steps.extend(coordinate_bindings(self.coordinates))
         steps.extend(binding for binding in bindings if binding is not None)
         return tuple(steps)
-
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The intercept, and the bound contribution of each column.
-        """
-        return tuple(
-            _var(
-                coefficient_site(self.prefix, column)
-                + ("" if column.is_intercept else "_per_row")
-            )
-            for column in self.columns
-        )
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            Each coordinate's coefficient times its column.
-        """
-        return tuple(
-            _index(coefficient_site(self.prefix, column), component)
-            if column.is_intercept
-            else _mul(
-                _index(coefficient_site(self.prefix, column), component),
-                _index(self.prefix + column.qvr_name, row),
-            )
-            for column in self.columns
-        )
 
 
 def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[str]:

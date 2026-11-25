@@ -35,7 +35,6 @@ from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     LetExprIndex,
     LetExprLiteral,
-    LetExprNode,
     ProgramStep,
     SampleStep,
     TypeName,
@@ -43,9 +42,10 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._residual_dependence import ResidualLayout, ResidualResponse
-from quivers.formulas._ast import _add, _call, _index, _let, _mul, _sub, _var
+from quivers.formulas._ast import _add, _call, _let, _mul, _sub, _var
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
     Emission,
     InputDecl,
     OutputAxis,
@@ -885,23 +885,19 @@ class LatentTerm(ValueModel):
             return SiteDecl(
                 name=name,
                 class_=class_,
-                section="field",
                 default=default,
                 lower=lower,
                 upper=upper,
                 event_axis=event_axis,
-                scoped=False,
             )
 
         def coordinates(name: str, *, event: bool = True) -> SiteDecl:
             return SiteDecl(
                 name=name,
                 class_="field",
-                section="field",
                 axes=() if event else (self.axis,),
                 event_axis=self.axis if event else None,
                 overridable=False,
-                scoped=False,
             )
 
         name = self.name
@@ -1160,27 +1156,21 @@ class FieldTerm(ValueModel):
         """
         return self.term.label
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True.
+        tuple[Contribution, ...]
+            The row contribution.
         """
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            True.
-        """
-        return True
+        return (
+            Contribution(
+                name=f"{self.term.name}_per_row",
+                rows=True,
+                coordinates=self.output is not None,
+            ),
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -1192,13 +1182,12 @@ class FieldTerm(ValueModel):
             axis of their correlation.
         """
         term = self.term
-        axes = [AxisDecl(name=term.axis, size=term.size, section="inline")]
+        axes = [AxisDecl(name=term.axis, size=term.size)]
         if term.layout is not None and term.layout.kind == "unstr":
             axes.append(
                 AxisDecl(
                     name="FormulaAutocorTime",
                     size=term.layout.times,
-                    section="inline",
                 )
             )
         return tuple(axes)
@@ -1223,7 +1212,6 @@ class FieldTerm(ValueModel):
                 name=name,
                 element=axes.get(name, ("Real", ()))[0],
                 axes=axes.get(name, ("Real", (term.axis,)))[1],
-                section="field",
                 declared=True,
                 values=value,
             )
@@ -1275,10 +1263,8 @@ class FieldTerm(ValueModel):
             Hyperparameters, coordinates, and contribution.
         """
         name = self.term.name
-        coordinate, *others = self.axes()
-        emission.declare(coordinate)
         effect, steps = (
-            self._residual_steps(emission, tuple(others))
+            self._residual_steps(emission, self.axes()[1:])
             if self.term.layout is not None
             else self._spatial_steps(emission)
         )
@@ -1317,7 +1303,6 @@ class FieldTerm(ValueModel):
             **{site: site for site in coefficients},
         }
         for axis in axes:
-            emission.declare(axis)
             factor = "formula_cortime_factor"
             steps.extend(emission.correlation("Lcortime", axis, factor))
             arguments["factor"] = factor
@@ -1379,33 +1364,6 @@ class FieldTerm(ValueModel):
         )
         steps.append(_let(effect, _mul(_add(unstructured, spatial), _var(scale))))
         return effect, tuple(steps)
-
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution.
-        """
-        return (_var(f"{self.term.name}_per_row"),)
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution at the row, the same at every coordinate.
-        """
-        return (_index(f"{self.term.name}_per_row", row),)
 
 
 def field_terms(

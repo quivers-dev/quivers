@@ -1,8 +1,9 @@
 """Emit the terms of a predictor into a program.
 
 `ProgramEmission` is what the terms ask of the program being emitted.
-`emit_terms` appends the steps of a sequence of terms, and `emit_predictor`
-the scalar part of one predictor, without knowing which terms they are.
+`emit_terms` appends the steps of a sequence of terms, `emit_predictor` the
+scalar part of one predictor, and `emit_axis_part` its part over an output axis,
+without knowing which terms they are.
 """
 
 from __future__ import annotations
@@ -11,11 +12,18 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from quivers.dsl.ast_nodes import LetExprNode, ProgramStep, SampleStep, Statement
-from quivers.formulas._ast import _add
+from quivers.formulas._ast import _add, _factor, _let, _var
 from quivers.formulas._group_emission import emit_group_block
 from quivers.formulas._group_law import GroupBlockLaw
 from quivers.formulas._predictor import Predictor
-from quivers.formulas._term import AxisDecl, SiteDecl, Term
+from quivers.formulas._term import (
+    COORDINATE,
+    AxisDecl,
+    Contribution,
+    OutputAxis,
+    SiteDecl,
+    Term,
+)
 
 if TYPE_CHECKING:
     from quivers.formulas.compile import FormulaToQVRModule
@@ -62,16 +70,6 @@ class ProgramEmission:
             The draw over the site's axis.
         """
         return self._lens.draw_site(site)
-
-    def declare(self, axis: AxisDecl) -> None:
-        """Declare a finite axis beside the steps that use it.
-
-        Parameters
-        ----------
-        axis : AxisDecl
-            Axis to declare once.
-        """
-        self._lens._append_finite_object(self._statements, axis.name, axis.size)
 
     def gathered(
         self, key: tuple[str, str, str], law: GroupBlockLaw | None
@@ -133,8 +131,8 @@ class ProgramEmission:
 
 def emit_terms(
     terms: Iterable[Term], emission: ProgramEmission, steps: list[ProgramStep]
-) -> tuple[LetExprNode, ...]:
-    """Append the steps of scalar terms.
+) -> tuple[Contribution, ...]:
+    """Append the steps of a sequence of terms.
 
     Parameters
     ----------
@@ -147,23 +145,20 @@ def emit_terms(
 
     Returns
     -------
-    tuple[LetExprNode, ...]
-        The summands of every contribution.
+    tuple[Contribution, ...]
+        The bound summands of the terms.
     """
-    summands: list[LetExprNode] = []
+    contributions: list[Contribution] = []
     for term in terms:
         steps.extend(term.steps(emission))
-        summands.extend(term.summands())
-    return tuple(summands)
+        contributions.extend(term.contributions())
+    return tuple(contributions)
 
 
 def emit_predictor(
     predictor: Predictor, emission: ProgramEmission, steps: list[ProgramStep]
 ) -> LetExprNode:
     """Append the scalar part of one predictor.
-
-    Terms drawn after the auxiliary parameters are left to a later call of
-    `emit_terms`.
 
     Parameters
     ----------
@@ -177,39 +172,42 @@ def emit_predictor(
     Returns
     -------
     LetExprNode
-        Sum of the contributions, or zero without terms.
+        Sum of the contributions over the rows, or zero without terms.
     """
-    terms = (term for term in predictor.part(None) if not term.deferred)
-    return _add(*emit_terms(terms, emission, steps))
+    summands = emit_terms(predictor.part(None), emission, steps)
+    return _add(*(_var(summand.name) for summand in summands))
 
 
-def emit_cells(
-    terms: Iterable[Term],
+def emit_axis_part(
+    predictor: Predictor,
+    output: OutputAxis,
     emission: ProgramEmission,
     steps: list[ProgramStep],
-    row: LetExprNode,
-    component: LetExprNode,
-) -> LetExprNode:
-    """Append the steps of terms over an output axis.
+    name: str,
+) -> None:
+    """Append the part of one predictor over an output axis.
 
     Parameters
     ----------
-    terms : Iterable[Term]
-        Terms in emission order.
+    predictor : Predictor
+        Planned predictor.
+    output : OutputAxis
+        Axis of the part.
     emission : ProgramEmission
         Program being emitted.
     steps : list[ProgramStep]
         Program steps receiving the draws and bindings.
-    row, component : LetExprNode
-        Row and output coordinate of the value.
-
-    Returns
-    -------
-    LetExprNode
-        Sum of the contributions at the row and coordinate.
+    name : str
+        Binding of the sum of the contributions over the rows and the axis.
     """
-    cells: list[LetExprNode] = []
-    for term in terms:
-        steps.extend(term.steps(emission))
-        cells.extend(term.cells(row, component))
-    return _add(*cells)
+    row, coordinate = _var("response"), _var(COORDINATE)
+    summands = emit_terms(predictor.part(output), emission, steps)
+    steps.append(
+        _let(
+            name,
+            _factor(
+                (("response", "Resp"), (COORDINATE, output.name)),
+                body=_add(*(summand.cell(row, coordinate) for summand in summands)),
+            ),
+        )
+    )

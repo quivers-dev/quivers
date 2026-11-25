@@ -35,13 +35,14 @@ from quivers.dsl.ast_nodes import (
     SampleStep,
 )
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._ast import _call, _index, _let, _mul, _var
+from quivers.formulas._ast import _call, _let, _mul, _var
 from quivers.formulas._monotonic import (
     MonotonicTerm,
     evaluate_monotonic_term,
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
     Emission,
     InputDecl,
     OutputAxis,
@@ -339,8 +340,6 @@ class MonotonicRow(ValueModel):
         Simplex of each factor of the column.
     owned : tuple[Simplex, ...]
         Simplexes drawn with this column.
-    rank : int
-        Position of the column in the predictor.
     output : OutputAxis or None
         None; a column has one scalar coefficient.
     """
@@ -350,7 +349,6 @@ class MonotonicRow(ValueModel):
     prior: str
     simplexes: tuple[Simplex, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     owned: tuple[Simplex, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    rank: int
     output: OutputAxis | None = None
 
     @property
@@ -364,27 +362,21 @@ class MonotonicRow(ValueModel):
         """
         return self.term.term
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True.
+        tuple[Contribution, ...]
+            The row contribution.
         """
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            False.
-        """
-        return False
+        return (
+            Contribution(
+                name=coefficient_site(self.prefix, self.term) + "_per_row",
+                rows=True,
+                coordinates=self.output is not None,
+            ),
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -395,8 +387,7 @@ class MonotonicRow(ValueModel):
             The axis of each simplex the column draws.
         """
         return tuple(
-            AxisDecl(name=simplex.axis, size=simplex.width, section="special")
-            for simplex in self.owned
+            AxisDecl(name=simplex.axis, size=simplex.width) for simplex in self.owned
         )
 
     def inputs(self) -> tuple[InputDecl, ...]:
@@ -423,7 +414,6 @@ class MonotonicRow(ValueModel):
                 name=name,
                 element="Real",
                 axes=axes.get(name, ("Resp",)),
-                section="special",
                 declared=True,
                 values=value,
             )
@@ -443,7 +433,6 @@ class MonotonicRow(ValueModel):
                 SiteDecl(
                     name=simplex.site,
                     class_="simo",
-                    section="simplex",
                     default="Dirichlet([" + ", ".join(["1.0"] * simplex.width) + "])",
                     coef=simplex.label,
                     event_axis=simplex.axis,
@@ -453,11 +442,9 @@ class MonotonicRow(ValueModel):
             SiteDecl(
                 name=coefficient_site(self.prefix, self.term),
                 class_="b",
-                section="special",
                 default=self.prior,
                 coef=self.term.name,
                 divisor=column_rms(self.term.linear_values),
-                rank=self.rank,
             ),
         )
 
@@ -511,41 +498,14 @@ class MonotonicRow(ValueModel):
             _let(coefficient + "_per_row", _mul(_var(coefficient), _var(value))),
         )
 
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution.
-        """
-        return (_var(coefficient_site(self.prefix, self.term) + "_per_row"),)
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution at the row, the same at every coordinate.
-        """
-        return (_index(coefficient_site(self.prefix, self.term) + "_per_row", row),)
-
 
 def monotonic_rows(
     formula: Formula, prefix: str, *, prior: str, output: OutputAxis | None
 ) -> tuple[MonotonicRow, ...]:
     """Build the special-effects columns of one predictor.
 
-    The first column draws the simplexes of every column, so columns sharing
-    an ``id`` read one site.
+    A simplex is drawn with the first column that reads it, so columns
+    sharing an ``id`` read one site.
 
     Parameters
     ----------
@@ -583,7 +543,8 @@ def monotonic_rows(
     }
     sites = simplex_sites(formula, prefix)
     rows = []
-    for rank, term in enumerate(formula.monotonic_terms):
+    drawn: set[str] = set()
+    for term in formula.monotonic_terms:
         value = value_binding(prefix, term)
         if value in taken or coefficient_site(prefix, term) in taken:
             raise ValueError(
@@ -595,8 +556,13 @@ def monotonic_rows(
                 term=term,
                 prior=prior,
                 simplexes=tuple(sites[factor.simplex] for factor in term.factors),
-                owned=tuple(sites.values()) if not rank else (),
-                rank=rank,
+                owned=tuple(
+                    site
+                    for name, site in sites.items()
+                    if name not in drawn
+                    and name in {factor.simplex for factor in term.factors}
+                ),
             )
         )
+        drawn.update(factor.simplex for factor in term.factors)
     return tuple(rows)

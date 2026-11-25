@@ -206,9 +206,8 @@ from quivers.formulas._predictor import (
 )
 from quivers.formulas._term_emission import (
     ProgramEmission,
-    emit_cells,
+    emit_axis_part,
     emit_predictor,
-    emit_terms,
 )
 from quivers.formulas._term import (
     OutputAxis,
@@ -3365,44 +3364,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             result = _autoscaled_prior_step(result, site.divisor)
         return result
 
-    def _append_axis_part(
-        self,
-        predictor: Predictor,
-        output: OutputAxis,
-        emission: ProgramEmission,
-        steps: list[ProgramStep],
-    ) -> None:
-        """Emit the part of one predictor over an output axis.
-
-        Parameters
-        ----------
-        predictor : Predictor
-            Planned predictor.
-        output : OutputAxis
-            Axis of the part.
-        emission : ProgramEmission
-            Program being emitted.
-        steps : list[ProgramStep]
-            Steps receiving the draws and ``eta_nonbaseline``, the value over
-            the rows and the axis.
-        """
-        value = emit_cells(
-            predictor.part(output),
-            emission,
-            steps,
-            _var("response"),
-            _var("category_logit"),
-        )
-        steps.append(
-            _let(
-                f"{predictor.prefix}eta_nonbaseline",
-                _factor(
-                    (("response", "Resp"), ("category_logit", output.name)),
-                    body=value,
-                ),
-            )
-        )
-
     def _append_categorical_predictor(
         self,
         formula: Formula,
@@ -3438,8 +3399,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         category_index = f"{predictor.prefix}FormulaCategory"
         self._append_finite_object(statements, category_index, components)
         self._append_finite_object(statements, output.name, output.size)
-        self._append_axis_part(
-            predictor, output, ProgramEmission(self, statements, correlated), steps
+        emit_axis_part(
+            predictor,
+            output,
+            ProgramEmission(self, statements, correlated),
+            steps,
+            f"{predictor.prefix}eta_nonbaseline",
         )
         self._append_component_response(
             steps,
@@ -4525,19 +4490,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         for output in transitions:
             assert output is not None
-            self._append_axis_part(location, output, emission, program_steps)
+            emit_axis_part(location, output, emission, program_steps, "eta_nonbaseline")
 
         program_steps.extend(cutpoint_steps)
 
-        # Deferred terms, such as structured fields, follow the cutpoints.
-        eta_expr = _add(
-            eta_expr,
-            *emit_terms(
-                (term for term in location.part(None) if term.deferred),
-                emission,
-                program_steps,
-            ),
-        )
         program_steps.append(_let("eta", eta_expr))
         # A log-scale location remains useful even when exp(eta) overflows.
         # Its inverse-link prediction is evaluated on request, not as an

@@ -9,16 +9,16 @@ are one thing here: a namespace, a link, and a tuple of terms.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from typing import Literal
 
 import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
-from quivers.dsl.ast_nodes import LetExprLiteral, LetExprNode, ProgramStep
+from quivers.dsl.ast_nodes import ProgramStep
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._ast import _add, _index, _mul, _var
+from quivers.formulas._ast import _index, _let, _var
 from quivers.formulas._brms_priors import DefaultPriorPolicy, sdgp_prior
 from quivers.formulas._category_formulas import is_scale_parameter
 from quivers.formulas._design import SymbolicColumn
@@ -36,6 +36,9 @@ from quivers.formulas._predictor_graph import PredictorGraph
 from quivers.formulas._smooth import BasisTerm
 from quivers.formulas._term import (
     AxisDecl,
+    Contribution,
+    flat_index,
+    over_output,
     Emission,
     InputDecl,
     OutputAxis,
@@ -76,27 +79,18 @@ class OffsetTerm(ValueModel):
         """
         return " + ".join(column.name for column in self.columns)
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True.
+        tuple[Contribution, ...]
+            Each offset, shared by every output coordinate.
         """
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            False.
-        """
-        return False
+        return tuple(
+            Contribution(name=name, rows=True, coordinates=False)
+            for name in self.names()
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -134,7 +128,6 @@ class OffsetTerm(ValueModel):
                 name=name,
                 element="Real",
                 axes=("Resp",),
-                section="column",
                 declared=False,
                 values=torch.as_tensor(column.data.copy(), dtype=torch.float32),
             )
@@ -176,33 +169,6 @@ class OffsetTerm(ValueModel):
         """
         return ()
 
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            One input per offset.
-        """
-        return tuple(_var(name) for name in self.names())
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            Each offset at the row.
-        """
-        return tuple(_index(name, row) for name in self.names())
-
 
 class HostTerm(ValueModel):
     """A contribution computed by a host module at every evaluation.
@@ -230,27 +196,21 @@ class HostTerm(ValueModel):
         """
         return self.name
 
-    @property
-    def rowwise(self) -> bool:
-        """Report whether the contribution varies over the rows.
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
 
         Returns
         -------
-        bool
-            True.
+        tuple[Contribution, ...]
+            The host input, by coordinate for a term with an output axis.
         """
-        return True
-
-    @property
-    def deferred(self) -> bool:
-        """Report whether the term is drawn after the auxiliary parameters.
-
-        Returns
-        -------
-        bool
-            False.
-        """
-        return False
+        return (
+            Contribution(
+                name=self.name if self.output is None else self.name + "_by_coordinate",
+                rows=True,
+                coordinates=self.output is not None,
+            ),
+        )
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -293,7 +253,7 @@ class HostTerm(ValueModel):
         return None
 
     def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
-        """Draw the term's sites and bind its contributions.
+        """Bind the host values by coordinate.
 
         Parameters
         ----------
@@ -303,38 +263,17 @@ class HostTerm(ValueModel):
         Returns
         -------
         tuple[ProgramStep, ...]
-            Empty.
+            Empty for a scalar term.
         """
-        return ()
-
-    def summands(self) -> tuple[LetExprNode, ...]:
-        """Read the contributions of a scalar term.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The host input.
-        """
-        return (_var(self.name),)
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The host input at the flat position of the row and coordinate.
-        """
-        assert self.output is not None
-        width = LetExprLiteral(value=float(self.output.size), integral=True)
-        return (_index(self.name, _add(_mul(row, width), component)),)
+        if self.output is None:
+            return ()
+        value = _index(self.name, flat_index(self.output, _var("response")))
+        return (
+            _let(
+                self.name + "_by_coordinate",
+                over_output(self.output, value, ("response", "Resp")),
+            ),
+        )
 
 
 class PredictorOptions(ValueModel):
@@ -438,7 +377,11 @@ class Predictor(ValueModel):
             True when a term of the part over the predictor's output axis has
             a row-varying design, or a nonlinear expression gives the value.
         """
-        return self.nonlinear or any(term.rowwise for term in self.part(self.output))
+        return self.nonlinear or any(
+            contribution.rows
+            for term in self.part(self.output)
+            for contribution in term.contributions()
+        )
 
     @property
     def scope(self) -> dict[str, str]:
@@ -613,7 +556,6 @@ def design_terms(
 def group_term(
     formula: Formula,
     prefix: str,
-    position: int,
     term: RandomTerm,
     output: OutputAxis | None,
     laws: Mapping[tuple[str, str, str], GroupBlockLaw],
@@ -626,8 +568,6 @@ def group_term(
         Evaluated predictor.
     prefix : str
         Its namespace.
-    position : int
-        Position of the coefficient in the formula.
     term : RandomTerm
         Parsed coefficient.
     output : OutputAxis or None
@@ -660,13 +600,12 @@ def group_term(
         membership=membership,
         covariate=covariate if membership is not None else None,
         law=laws.get((prefix, term.group, term.slope)),
-        rank=position,
         output=output,
     )
 
 
 def _population(
-    columns: Iterable[tuple[int, FixedColumn | SymbolicColumn]],
+    columns: tuple[FixedColumn | SymbolicColumn, ...],
     formula: Formula,
     prefix: str,
     role: Literal["dpar", "nlpar"],
@@ -679,8 +618,8 @@ def _population(
 
     Parameters
     ----------
-    columns : Iterable[tuple[int, FixedColumn or SymbolicColumn]]
-        Design columns with their positions in the formula.
+    columns : tuple[FixedColumn or SymbolicColumn, ...]
+        Design columns, in authored order.
     formula : Formula
         Evaluated predictor.
     prefix : str
@@ -699,13 +638,8 @@ def _population(
     tuple[Term, ...]
         The block, or nothing without columns.
     """
-    columns = tuple(columns)
     coordinates = (
-        _coordinates(
-            formula, prefix, role, tuple(column for _, column in columns), options
-        )
-        if transform
-        else None
+        _coordinates(formula, prefix, role, columns, options) if transform else None
     )
     if not columns:
         return ()
@@ -713,8 +647,7 @@ def _population(
         PopulationTerm(
             prefix=prefix,
             prior=options.coefficient_prior,
-            columns=tuple(column for _, column in columns),
-            ranks=tuple(rank for rank, _ in columns),
+            columns=columns,
             coordinates=coordinates,
             output=output,
         ),
@@ -765,19 +698,19 @@ def predictor_terms(
         symbolic column belongs to other rows.
     """
     rows = len(formula.response_values)
-    columns = tuple(enumerate(formula.fixed_columns))
-    randoms = tuple(enumerate(formula.random_terms))
     for column in (
         *formula.fixed_columns,
         *(term.column for term in formula.random_terms),
     ):
         if isinstance(column, SymbolicColumn):
             column.validate_rows("Resp", rows)
-    specific_columns = tuple(item for item in columns if item[1].category_specific)
+    specific_columns = tuple(
+        column for column in formula.fixed_columns if column.category_specific
+    )
     specific_randoms = tuple(
-        item
-        for item in randoms
-        if item[1].column is not None and item[1].column.category_specific
+        term
+        for term in formula.random_terms
+        if term.column is not None and term.column.category_specific
     )
     if (specific_columns or specific_randoms) and transitions is None:
         raise ValueError("cs terms require an ordinal response family")
@@ -797,7 +730,9 @@ def predictor_terms(
         formula, prefix, prior=options.coefficient_prior, output=output
     )
     population = _population(
-        (item for item in columns if item not in specific_columns),
+        tuple(
+            column for column in formula.fixed_columns if not column.category_specific
+        ),
         formula,
         prefix,
         role,
@@ -811,9 +746,9 @@ def predictor_terms(
         else ()
     )
     groups: tuple[Term, ...] = tuple(
-        group_term(formula, prefix, position, term, output, laws)
-        for position, term in randoms
-        if (position, term) not in specific_randoms
+        group_term(formula, prefix, term, output, laws)
+        for term in formula.random_terms
+        if term not in specific_randoms
     )
     fields: tuple[Term, ...] = field_terms(
         formula,
@@ -831,12 +766,10 @@ def predictor_terms(
             transform=False,
         ),
         *(
-            group_term(formula, prefix, position, term, transitions, laws)
-            for position, term in specific_randoms
+            group_term(formula, prefix, term, transitions, laws)
+            for term in specific_randoms
         ),
     )
-    if output is not None:
-        return (*population, *offsets, *host, *groups, *design, *special, *fields)
     return (
         *offsets,
         *design,

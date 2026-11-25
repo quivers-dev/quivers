@@ -14,10 +14,8 @@ import torch
 
 import quivers.formulas
 from quivers.dsl.ast_nodes import (
-    LetExprNode,
     Module,
     ProgramDecl,
-    ProgramStep,
     SampleStep,
     TypeName,
 )
@@ -30,16 +28,10 @@ from quivers.formulas._fit import _formula_lens
 from quivers.formulas._group_law import law_inputs
 from quivers.formulas._predictor import Predictor, response_axis, transition_axis
 from quivers.formulas._term import (
-    AxisDecl,
-    Emission,
     InputDecl,
     OutputAxis,
-    Section,
-    SiteDecl,
     bind_inputs,
-    catalogue_sites,
     column_rms,
-    declare_axes,
     declare_inputs,
     tensor_type,
 )
@@ -247,10 +239,10 @@ CATALOGUE: dict[str, list[tuple[str, str, str | None, str | None, float | None]]
         ("sigma", "sigma", None, None, 0.0),
     ],
     "monotonic": [
+        ("simo_moz1", "simo", "moz1", None, None),
+        ("bsp_mo_z", "b", "mo(z)", None, None),
         ("intercept", "Intercept", "Intercept", None, None),
         ("beta_x", "b", "x", None, None),
-        ("bsp_mo_z", "b", "mo(z)", None, None),
-        ("simo_moz1", "simo", "moz1", None, None),
         ("sigma", "sigma", None, None, 0.0),
     ],
     "group_uncorrelated": [
@@ -332,79 +324,11 @@ def test_exact_process_inputs_are_the_pairwise_distances():
     )
 
 
-def test_declarations_are_listed_by_section_and_deduplicated():
-    """Sections order axes, inputs and targets; a repeated input appears once."""
-
-    class Fake:
-        label: str = "fake"
-        output: OutputAxis | None = None
-        rowwise: bool = True
-        deferred: bool = False
-
-        def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
-            return ()
-
-        def summands(self) -> tuple[LetExprNode, ...]:
-            return ()
-
-        def cells(
-            self, row: LetExprNode, component: LetExprNode
-        ) -> tuple[LetExprNode, ...]:
-            return ()
-
-        def axes(self):
-            return (
-                AxisDecl(name="S", size=2, section="special"),
-                AxisDecl(name="I", size=2, section="inline"),
-                AxisDecl(name="D", size=2, section="design"),
-            )
-
-        def inputs(self):
-            entries: tuple[tuple[str, Section, bool], ...] = (
-                ("d", "design", True),
-                ("c", "column", True),
-                ("hidden", "column", False),
-                ("f", "field", True),
-                ("d", "design", True),
-            )
-            return tuple(
-                InputDecl(
-                    name=name,
-                    element="Real",
-                    axes=("Resp",),
-                    section=section,
-                    declared=declared,
-                )
-                for name, section, declared in entries
-            )
-
-        def sites(self):
-            return (
-                SiteDecl(name="late", class_="b", section="column", rank=3),
-                SiteDecl(name="simplex", class_="simo", section="simplex"),
-                SiteDecl(name="early", class_="b", section="column", rank=1),
-                SiteDecl(name="z", class_="z", section="design", overridable=False),
-            )
-
-        def catalog(self):
-            return None
-
-    term = Fake()
-    assert [axis.name for axis in declare_axes([term])] == ["D", "S"]
-    assert [item.name for item in declare_inputs(term.inputs())] == ["f", "c", "d"]
-    assert [site.name for site in catalogue_sites([term])] == [
-        "early",
-        "late",
-        "simplex",
-    ]
-
-
 def _input(**changes) -> InputDecl:
     return InputDecl(
         name="v",
         element="Real",
         axes=("Resp",),
-        section="column",
         declared=True,
         values=torch.tensor([1.0, float("nan")]),
     ).with_(**changes)
