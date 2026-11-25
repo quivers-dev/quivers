@@ -139,16 +139,76 @@ export coins
 """Coin flips with a Beta prior."""
 
 DISCRETE = """
-object K : FinSet 2
-object Obs : FinSet 4
+object Unit : FinSet 1
 object V : Real 1
-program latent : Obs -> V
-    sample a : K <- Categorical(probs=rates)
-    observe y : Obs <- Bernoulli(probs=0.5)
-    return a
+program latent : Unit -> V
+    sample a <- Bernoulli(probs=0.25)
+    let location = 2.0 * real(a)
+    observe y <- Normal(loc=location, scale=1.0)
+    return location
 export latent
 """
 """A discrete latent that is drawn and not summed out."""
+
+PARSED = """
+object Term : FinSet 4
+object Sentence : FinSet 2
+object Weight : Real 1
+deduction G : Term -> Term [semiring=LogProb, start=S, depth=1, normalize=lhs]
+    atoms S, V, span, a, b
+    rule join : span(I, K, S), span(K, J, S) |- span(I, J, S)
+    rule lift : span(I, J, V) |- span(I, J, S)
+    lexicon
+        "a" : S = a
+        "b" : V = b
+        "a" : V = a
+program scored : Term -> Weight
+    sample p_s <- Dirichlet(concentration=[1.0, 1.0, 1.0])
+    sample p_v <- Dirichlet(concentration=[1.0, 1.0])
+    let chart = parse(G, corpus, Sentence, ("S", p_s), ("V", p_v))
+    score evidence = chart.goal_weight()
+    return evidence
+export scored
+"""
+"""A grammar with a prior on its productions and two observed sentences."""
+
+RECURSIVE = """
+object Unit : FinSet 1
+object V : Real 1
+define triangle(n : Int) : Real !{} =
+    if n <= 0 then
+        return 0.0
+    else
+        let rest <- triangle(n - 1)
+        return rest + 1.0
+program recursive : Unit -> V
+    sample t <- Normal(loc=0.0, scale=1.0)
+    let k <- triangle(3)
+    let m = t + k
+    observe y <- Normal(loc=m, scale=1.0)
+    return t
+export recursive
+"""
+"""A program that calls a recursive computation."""
+
+STRUCTURED = """
+signature Trees
+    sorts
+        T : object [dim=2]
+    constructors
+        Leaf : -> T
+        Node : T, T -> T
+decoder Dec : Trees [depth=2]
+    body |-> recursive
+object Unit : FinSet 1
+object V : Real 2
+program drawn : Unit -> V
+    sample h <- Normal(loc=[0.0, 0.0], scale=[1.0, 1.0])
+    sample t <- Dec(h)
+    return h
+export drawn
+"""
+"""A program that draws a tree."""
 
 SOURCES: dict[str, str] = {
     "lexical": LEXICAL,
@@ -162,6 +222,9 @@ SOURCES: dict[str, str] = {
     "conjugate": CONJUGATE,
     "beta": BETA,
     "discrete": DISCRETE,
+    "parsed": PARSED,
+    "recursive": RECURSIVE,
+    "structured": STRUCTURED,
 }
 """The sources by name."""
 
