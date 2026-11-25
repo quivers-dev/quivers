@@ -66,7 +66,62 @@ def docker_available() -> bool:
     return _DAEMON_ANSWERED
 
 
+#: Environment variable naming the images a run needs, separated by
+#: spaces, when its tests use only some of them.
+PROBE_IMAGES_ENV = "QUIVERS_PROBE_IMAGES"
+
+#: What an image's tag adds to its name.
+IMAGE_PREFIX = "panproto-test-"
+
+
+def named_image_tags() -> tuple[str, ...] | None:
+    """The tags of the images the run names.
+
+    Returns
+    -------
+    tuple[str, ...] | None
+        The tags `PROBE_IMAGES_ENV` names, or ``None`` when it is unset.
+    """
+    named = os.environ.get(PROBE_IMAGES_ENV)
+    if named is None:
+        return None
+    return tuple(f"{IMAGE_PREFIX}{image}" for image in named.split())
+
+
 def image_available(tag: str) -> bool:
+    """True iff a Docker image is present, in a run that may lack it.
+
+    A run that names its images has every one of them, so a test that asks
+    for another, or finds one absent, is an error of the run's declaration.
+    Answering False there would let a test compare fewer targets and pass.
+
+    Parameters
+    ----------
+    tag : str
+        The image tag.
+
+    Returns
+    -------
+    bool
+        Whether the image is present.
+
+    Raises
+    ------
+    RuntimeError
+        If the run names its images and the image is not among them, or is
+        absent.
+    """
+    named = named_image_tags()
+    present = image_present(tag)
+    if named is not None and (tag not in named or not present):
+        raise RuntimeError(
+            f"a test needs the image {tag}, which is "
+            + ("absent" if tag in named else f"not among `{PROBE_IMAGES_ENV}`")
+        )
+    return present
+
+
+def image_present(tag: str) -> bool:
     """True iff a Docker image matching ``tag`` is built or pulled locally.
 
     Uses ``docker images --filter reference=<tag>`` rather than
@@ -118,6 +173,12 @@ def image_available(tag: str) -> bool:
 #: Environment variable naming the directory that holds memoised probe
 #: results. Unset, nothing is cached and every call runs its container.
 PROBE_CACHE_ENV = "QUIVERS_PROBE_CACHE"
+
+#: Environment variable that, set to ``1``, keeps the cache write-only:
+#: every call runs its container and stores what it measured, and no
+#: stored measurement answers a call. A run that certifies a commit sets
+#: it, so that its own measurements are fresh and later runs may use them.
+PROBE_CACHE_RECORD_ENV = "QUIVERS_PROBE_CACHE_RECORD"
 
 
 def probe_cache_dir() -> pathlib.Path | None:
@@ -407,7 +468,8 @@ def run_probe(
                 )
                 + ".json"
             )
-            if cache_path.exists():
+            recording = os.environ.get(PROBE_CACHE_RECORD_ENV) == "1"
+            if not recording and cache_path.exists():
                 # The inputs above are already on disk, so a caller that
                 # inspects the scratch sees what this call wrote either
                 # way. What the hit skips is the container, and the key
@@ -449,9 +511,13 @@ def run_probe(
 
 __all__ = [
     "PROBE_CACHE_ENV",
+    "PROBE_CACHE_RECORD_ENV",
+    "PROBE_IMAGES_ENV",
     "docker_available",
     "image_available",
     "image_id",
+    "image_present",
+    "named_image_tags",
     "probe_cache_dir",
     "run_probe",
 ]

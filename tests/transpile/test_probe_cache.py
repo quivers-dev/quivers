@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 
 import pytest
 
@@ -170,6 +171,66 @@ def test_a_hit_does_not_launch_a_container(
     assert result == {"log_densities": [-1.5, -2.5]}
 
 
+def test_a_recording_run_executes_and_stores_what_a_hit_would_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A run that certifies a commit measures afresh over a stored entry.
+
+    The stored entry is wrong on purpose: a recording run that consulted
+    it would return it, and one that stored nothing would leave it.
+    """
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setenv(_docker.PROBE_CACHE_ENV, str(cache_dir))
+    monkeypatch.setattr(_docker, "image_id", lambda tag: "sha256:pinned")
+    script = tmp_path / "probe.py"
+    script.write_bytes(b"print(1)\n")
+    scratch = tmp_path / "scratch"
+    key = _docker._probe_cache_key(
+        image="panproto-test-numpyro",
+        resolved_image_id="sha256:pinned",
+        source=b"model = 1",
+        source_ext="py",
+        points=[{"params": {}, "data": {}}],
+        shapes=None,
+        dtypes=None,
+        script=script,
+        side_files={},
+    )
+    stale, fresh = {"log_densities": [-9.0]}, {"log_densities": [-1.5]}
+    _write_cache_entry(cache_dir, key, stale)
+    launches: list[list[str]] = []
+
+    def _measure(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        launches.append(argv)
+        (scratch / "result.json").write_text(json.dumps(fresh))
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(_docker.subprocess, "run", _measure)
+
+    def _probe() -> dict:
+        return _docker.run_probe(
+            image="panproto-test-numpyro",
+            script=script,
+            source=b"model = 1",
+            source_ext="py",
+            points=[{"params": {}, "data": {}}],
+            scratch=scratch,
+        )
+
+    assert _probe() == stale
+    assert launches == []
+    monkeypatch.setenv(_docker.PROBE_CACHE_RECORD_ENV, "1")
+    assert _probe() == fresh
+    assert _probe() == fresh
+    assert len(launches) == 2
+    monkeypatch.delenv(_docker.PROBE_CACHE_RECORD_ENV)
+    assert _probe() == fresh
+    assert len(launches) == 2
+
+
 def test_a_changed_source_misses_the_entry_written_for_the_old_one(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -266,3 +327,24 @@ def test_a_file_added_to_the_mounted_directory_misses_the_entry_without_it(
             points=points,
             scratch=scratch,
         )
+
+
+def test_a_run_that_names_its_images_refuses_any_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A test that needs an image its job lacks errs instead of skipping.
+
+    Several tests compare whatever targets they can reach, so an absent
+    image answered with False would let them pass on fewer.
+    """
+    present = {"panproto-test-stan"}
+    monkeypatch.setattr(_docker, "image_present", present.__contains__)
+    monkeypatch.delenv(_docker.PROBE_IMAGES_ENV, raising=False)
+    assert _docker.image_available("panproto-test-stan")
+    assert not _docker.image_available("panproto-test-jags")
+    monkeypatch.setenv(_docker.PROBE_IMAGES_ENV, "stan julia")
+    assert _docker.image_available("panproto-test-stan")
+    with pytest.raises(RuntimeError, match="panproto-test-julia, which is absent"):
+        _docker.image_available("panproto-test-julia")
+    with pytest.raises(RuntimeError, match="panproto-test-jags, which is not among"):
+        _docker.image_available("panproto-test-jags")
