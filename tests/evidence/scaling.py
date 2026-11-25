@@ -37,8 +37,6 @@ from quivers.stochastic.agenda import (
 from quivers.stochastic.inside import InsideAlgorithm
 from quivers.stochastic.parsers import ChartParser
 from quivers.stochastic.semiring import LOG_PROB
-from didactic.models._model import Model
-
 from quivers.inference.mcmc import PotentialFn
 from tests.evidence.checks import terms
 from tests.evidence.checks.consumers import PROBLEMS, positions, registry_of
@@ -117,6 +115,7 @@ def accept(
     what : str
         A description for the report.
 
+
     Raises
     ------
     Mismatch
@@ -142,6 +141,7 @@ def check_family(family: Family) -> None:
     ----------
     family : Family
         The family.
+
 
     Raises
     ------
@@ -730,7 +730,7 @@ def records_per_run(rules: int) -> int:
     Returns
     -------
     int
-        Records instantiated by the second of two runs.
+        Records validated by the second of two runs.
     """
     system = [
         InferenceRule(name=f"r{k}", premises=(("n", k),), conclusion=("n", k + 1))
@@ -748,7 +748,7 @@ def records_per_run(rules: int) -> int:
         return run_agenda([(("n", 0), _scalar(0.0))], system, semiring=LOG_PROB)
 
     once()
-    with CallCounter({"made": Model.__init__}) as calls:
+    with CallCounter({"made": dx.Model._validate_instance}) as calls:
         once()
     return calls.counts["made"]
 
@@ -764,7 +764,7 @@ def potential_calls(calls: int) -> int:
     Returns
     -------
     int
-        Records instantiated by the calls.
+        Records validated by the calls.
     """
     problem = PROBLEMS["hmm"]
     with double_precision():
@@ -773,7 +773,7 @@ def potential_calls(calls: int) -> int:
         potential = PotentialFn(problem.model(), registry, x, data)
         position = positions(registry)[1]
         potential.value_and_grad(position)
-        with CallCounter({"made": Model.__init__}) as counter:
+        with CallCounter({"made": dx.Model._validate_instance}) as counter:
             for _ in range(calls):
                 potential.value_and_grad(position)
     return counter.counts["made"]

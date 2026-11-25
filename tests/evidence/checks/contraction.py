@@ -26,6 +26,7 @@ from quivers.core.algebras import (
 from quivers.core.wiring import EinsumWiring
 from tests.evidence.checks._registry import add
 from tests.evidence.compare import (
+    differentiate,
     ELEMENTARY,
     Accuracy,
     Mismatch,
@@ -63,6 +64,7 @@ RULES: dict[str, CompositionRule] = {
 }
 """The composition rules a contraction is checked in."""
 
+
 def table(letters: str, sizes: Mapping[str, int], salt: int, *, zeros: bool) -> Table:
     """A rational tensor with entries in the open unit interval.
 
@@ -83,7 +85,9 @@ def table(letters: str, sizes: Mapping[str, int], salt: int, *, zeros: bool) -> 
         The entries.
     """
     entries: Table = {}
-    for position, key in enumerate(itertools.product(*(range(sizes[x]) for x in letters))):
+    for position, key in enumerate(
+        itertools.product(*(range(sizes[x]) for x in letters))
+    ):
         numerator = 1 + (7 * position + 5 * salt) % 12
         entries[key] = Fraction(numerator, 13)
         if zeros and position % 4 == salt % 4:
@@ -113,7 +117,9 @@ def decode(rule: str, value: Fraction) -> float:
     return float(value)
 
 
-def tensor(rule: str, letters: str, sizes: Mapping[str, int], entries: Table) -> torch.Tensor:
+def tensor(
+    rule: str, letters: str, sizes: Mapping[str, int], entries: Table
+) -> torch.Tensor:
     """A rational tensor in a rule's representation.
 
     Parameters
@@ -154,7 +160,9 @@ def read(rule: str, entries: Table) -> Table:
         rule, the entries otherwise.
     """
     if rule == "boolean":
-        return {key: Fraction(int(value > Fraction(1, 2))) for key, value in entries.items()}
+        return {
+            key: Fraction(int(value > Fraction(1, 2))) for key, value in entries.items()
+        }
     if rule == "counting":
         return {key: Fraction(int(13 * value)) for key, value in entries.items()}
     return entries
@@ -411,8 +419,46 @@ def check_empty(rule: str) -> None:
         )
 
 
+def check_impossible_row() -> None:
+    """Compare a gradient of a contraction with an impossible row.
+
+    The first row of the left factor is impossible. The objective reads
+    the second row, whose derivative in a log entry of the left factor is
+    that entry's share of each output, and is zero in the first row.
+    """
+    left = [[Fraction(0), Fraction(0)], [Fraction(1, 3), Fraction(2, 5)]]
+    right = [[Fraction(1, 2), Fraction(1, 7)], [Fraction(3, 4), Fraction(2, 9)]]
+    leaves = [
+        torch.tensor(
+            [[logarithm(x) for x in row] for row in matrix], dtype=torch.float64
+        ).requires_grad_()
+        for matrix in (left, right)
+    ]
+    value = EinsumWiring(RULES["logprob"], "ij,jk->ik").apply(*leaves)[1].sum()
+    (found,) = differentiate(value, leaves[:1], "impossible row")
+    reference: dict[str, Fraction] = {}
+    for row in range(2):
+        for column in range(2):
+            reference[f"{row}{column}"] = Fraction(0)
+            if row == 1:
+                for k in range(2):
+                    total = sum(
+                        (left[1][m] * right[m][k] for m in range(2)), Fraction(0)
+                    )
+                    reference[f"{row}{column}"] += (
+                        left[1][column] * right[column][k] / total
+                    )
+    compare_gradients(
+        {key: found[int(key[0]), int(key[1])] for key in reference},
+        reference,
+        Accuracy(domain="linear", operations=40 * ELEMENTARY, condition=4.0),
+        "impossible row",
+    )
+
+
 def check_refuses_diagonal() -> None:
     """Require a repeated letter in one input to be refused by name.
+
 
     Raises
     ------
@@ -520,6 +566,7 @@ def _register() -> None:
                 partial(check_contraction_gradient, network, rule),
             )
     add("contraction/order", row, "Q6", check_order)
+    add("contraction/impossible_row", row, "Q1g", check_impossible_row)
     add("contraction/refuses_diagonal", row, "Q6", check_refuses_diagonal)
 
 

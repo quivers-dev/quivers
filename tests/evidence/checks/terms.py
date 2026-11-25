@@ -6,7 +6,6 @@ import itertools
 import math
 from collections.abc import Callable
 from fractions import Fraction
-from functools import partial
 
 import torch
 
@@ -15,6 +14,7 @@ from quivers.structural.encoder import Encoder, PerOpFn
 from quivers.structural.signature import Constructor, Signature, Sort, Term
 from tests.evidence.checks._registry import add
 from tests.evidence.compare import (
+    differentiate,
     ELEMENTARY,
     Accuracy,
     Mismatch,
@@ -277,6 +277,7 @@ def check_encoder_update() -> None:
 def check_encoder_refusal() -> None:
     """Require a term with an undeclared operation to be refused by name.
 
+
     Raises
     ------
     Mismatch
@@ -303,7 +304,8 @@ LOGITS = (Fraction(1, 3), Fraction(5, 4))
 
 
 def decoder(
-    logits: torch.Tensor, structure: Callable[[torch.Tensor], torch.Tensor] | None = None
+    logits: torch.Tensor,
+    structure: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> Decoder:
     """A decoder of binary trees with constant structure logits.
 
@@ -429,7 +431,7 @@ def check_decoder_gradient() -> None:
     score = decoder(logits).log_prob(
         node(leaf(), leaf()), torch.zeros(1, dtype=torch.float64)
     )
-    (found,) = torch.autograd.grad(score, logits)
+    (found,) = differentiate(score, [logits], "decoder")
     weights = [math.exp(float(value)) for value in LOGITS]
     chance = [weight / math.fsum(weights) for weight in weights]
     reference = {"leaf": 2 - 3 * chance[0], "node": 1 - 3 * chance[1]}
@@ -448,6 +450,7 @@ def check_decoder_gradient() -> None:
 
 def check_decoder_support() -> None:
     """Require a tree below the depth bound to be refused by name.
+
 
     Raises
     ------
@@ -472,7 +475,13 @@ def check_decoder_support() -> None:
 
 
 def check_decoder_replay() -> None:
-    """Require every sampled tree to be scored at its sampling probability."""
+    """Require every sampled tree to be scored at its sampling probability.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
+    """
     decode = decoder(torch.tensor([float(v) for v in LOGITS], dtype=torch.float64))
     vector = torch.zeros(1, dtype=torch.float64)
     support = {term.to_tuple() for term in terms_within(DEPTH)}

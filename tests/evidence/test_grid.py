@@ -23,7 +23,11 @@ from tests.evidence.runs import CONSUMERS
 
 PASSING = Counter((check.executor, check.question) for check in CHECKS.values())
 GRID = cells(PASSING)
-REFUSED = sorted(f"{row}/{column}" for (row, column), cell in GRID.items() if cell.status == "refuses")
+REFUSED = sorted(
+    f"{row}/{column}"
+    for (row, column), cell in GRID.items()
+    if cell.status == "refuses"
+)
 
 
 def test_every_check_is_a_cell() -> None:
@@ -71,5 +75,9 @@ def test_a_refusing_cell_refuses_exactly(cell: str) -> None:
 def test_cells_move_to_pass_only() -> None:
     """Require every cell that passed when pinned to pass now."""
     pinned = set(json.loads(PINS.read_text())["passing cells"])
-    now = {f"{row}/{column}" for (row, column), cell in GRID.items() if cell.status == "pass"}
+    now = {
+        f"{row}/{column}"
+        for (row, column), cell in GRID.items()
+        if cell.status == "pass"
+    }
     assert pinned <= now, sorted(pinned - now)

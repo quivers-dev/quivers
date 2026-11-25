@@ -376,6 +376,7 @@ def check_count(name: str, discipline: str) -> None:
     discipline : str
         The agenda's name.
 
+
     Raises
     ------
     Mismatch
@@ -560,6 +561,7 @@ def check_forest(name: str, discipline: str) -> None:
     discipline : str
         The agenda's name.
 
+
     Raises
     ------
     Mismatch
@@ -600,9 +602,16 @@ def check_outcomes(discipline: str) -> None:
     discipline : str
         The agenda's name.
     """
-    axioms = [(f"w{i}", ("proof", i, reading)) for i, (reading, _) in enumerate(READINGS)]
+    axioms = [
+        (f"w{i}", ("proof", i, reading)) for i, (reading, _) in enumerate(READINGS)
+    ]
     rules = [
-        ("read", (("proof", Variable("i"), Variable("r")),), ("means", Variable("r")), None)
+        (
+            "read",
+            (("proof", Variable("i"), Variable("r")),),
+            ("means", Variable("r")),
+            None,
+        )
     ]
     weight_of = {
         f"w{i}": Fraction(READING_WEIGHTS[key]) for i, (_, key) in enumerate(READINGS)
@@ -827,6 +836,7 @@ def check_budget(discipline: str) -> None:
     discipline : str
         The agenda's name.
 
+
     Raises
     ------
     Mismatch
@@ -946,7 +956,12 @@ def _register() -> None:
                     "Q11" if name == "edit_lattice" else "Q1g",
                     partial(check_gradient, name, semiring, discipline),
                 )
-        add(f"deduction/outcomes/{discipline}", row, "Q23", partial(check_outcomes, discipline))
+        add(
+            f"deduction/outcomes/{discipline}",
+            row,
+            "Q23",
+            partial(check_outcomes, discipline),
+        )
         add(
             f"deduction/nonlinear/{discipline}",
             row,
@@ -968,8 +983,18 @@ def _register() -> None:
                     "Q9",
                     partial(check_branching, branch, discipline),
                 )
-        add(f"deduction/budget/{discipline}", row, "Q8", partial(check_budget, discipline))
-        add(f"deduction/update/{discipline}", row, "Q24", partial(check_update, discipline))
+        add(
+            f"deduction/budget/{discipline}",
+            row,
+            "Q8",
+            partial(check_budget, discipline),
+        )
+        add(
+            f"deduction/update/{discipline}",
+            row,
+            "Q24",
+            partial(check_update, discipline),
+        )
 
 
 _register()

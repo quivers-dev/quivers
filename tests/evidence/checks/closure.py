@@ -30,6 +30,7 @@ from quivers.stochastic.semiring import (
 )
 from tests.evidence.checks._registry import add
 from tests.evidence.compare import (
+    differentiate,
     ELEMENTARY,
     Accuracy,
     Mismatch,
@@ -250,7 +251,7 @@ def check_star_gradient(name: str, semiring: str) -> None:
     size = len(matrix)
     entries = encode(matrix, log).requires_grad_()
     target = kleene_star(entries, CLOSURES[semiring])[0, size - 1]
-    (found,) = torch.autograd.grad(target, entries)
+    (found,) = differentiate(target, [entries], "closure")
     reference = {}
     for k in range(size):
         for m in range(size):
@@ -280,6 +281,7 @@ def check_divergence(name: str, semiring: str) -> None:
         The matrix.
     semiring : str
         The semiring's name.
+
 
     Raises
     ------
@@ -362,7 +364,9 @@ def check_trace(algebra: str) -> None:
     log = algebra in ("logprob", "maxplus")
     inner = [row[2:] for row in rows[2:]]
     star = (
-        exact.simple_path_star(inner) if algebra == "maxplus" else exact.linear_star(inner)
+        exact.simple_path_star(inner)
+        if algebra == "maxplus"
+        else exact.linear_star(inner)
     )
     wanted: exact.Matrix = []
     for a in range(2):
@@ -420,7 +424,7 @@ def check_trace_gradient() -> None:
     algebra = TRACES["markov"]
     morphism = observed(whole, whole, entries, algebra=algebra)
     value = KleeneStarTrace(algebra).trace(morphism, loop, outer, outer).tensor[0, 0]
-    (found,) = torch.autograd.grad(value, entries)
+    (found,) = differentiate(value, [entries], "trace")
     into = [
         sum((rows[0][2 + u] * star[u][v] for u in range(2)), Fraction(0))
         for v in range(2)
@@ -452,6 +456,7 @@ def check_trace_gradient() -> None:
 
 def check_trace_refuses_signed() -> None:
     """Require the signed real algebra to be refused by name.
+
 
     Raises
     ------
@@ -521,9 +526,19 @@ def _register() -> None:
     add("closure/near_boundary", "kleene-star", "Q8", check_near_boundary)
     add("closure/tiny_edge", "kleene-star", "Q8", check_tiny_edge)
     for algebra in TRACES:
-        add(f"closure/trace/{algebra}", "kleene-star-trace", "Q8", partial(check_trace, algebra))
+        add(
+            f"closure/trace/{algebra}",
+            "kleene-star-trace",
+            "Q8",
+            partial(check_trace, algebra),
+        )
     add("closure/trace/gradient", "kleene-star-trace", "Q1g", check_trace_gradient)
-    add("closure/trace/refuses_signed", "kleene-star-trace", "Q8", check_trace_refuses_signed)
+    add(
+        "closure/trace/refuses_signed",
+        "kleene-star-trace",
+        "Q8",
+        check_trace_refuses_signed,
+    )
 
 
 _register()

@@ -1,10 +1,9 @@
 """Write the pins of the harness after a reviewed change.
 
 The pins hold the digest of every harness file and the cells of the grid
-that pass. A cell that passed stays a passing cell; a change that turns
-it into another kind fails `test_grid` whatever the pins say, because
-the test reads the cells pinned before the change from version control
-only through this file, which a reviewer compares.
+that pass. Writing refuses to drop a cell that passed before, and
+`test_grid` fails when a pinned passing cell no longer passes, so a cell
+moves to ``pass`` only.
 """
 
 from __future__ import annotations
@@ -27,12 +26,20 @@ def passing_cells() -> list[str]:
     """
     grid = cells(Counter((check.executor, check.question) for check in CHECKS.values()))
     return sorted(
-        f"{row}/{column}" for (row, column), cell in grid.items() if cell.status == "pass"
+        f"{row}/{column}"
+        for (row, column), cell in grid.items()
+        if cell.status == "pass"
     )
 
 
 def write() -> None:
-    """Write the pins, keeping every cell that passed before."""
+    """Write the pins, keeping every cell that passed before.
+
+    Raises
+    ------
+    SystemExit
+        If a cell that passed no longer passes.
+    """
     before: list[str] = []
     if PINS.exists():
         before = json.loads(PINS.read_text()).get("passing cells", [])

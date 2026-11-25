@@ -51,6 +51,7 @@ class Draws:
         int
             The index of this run.
 
+
         Raises
         ------
         RepeatedAddress
@@ -59,9 +60,7 @@ class Draws:
         if address in self.addresses:
             raise RepeatedAddress(address)
         position = len(self.values)
-        value = (
-            self._prescribed[position] if position < len(self._prescribed) else 0
-        )
+        value = self._prescribed[position] if position < len(self._prescribed) else 0
         self.addresses.append(address)
         self.values.append(value)
         self.supports.append(len(probabilities))
@@ -185,9 +184,7 @@ def evidence(program: Callable[[Draws], int]) -> Fraction:
     return sum(law(program).values(), Fraction(0))
 
 
-def joint(
-    program: Callable[[Draws], int], fixed: Mapping[str, int]
-) -> Fraction:
+def joint(program: Callable[[Draws], int], fixed: Mapping[str, int]) -> Fraction:
     """The total weight of the runs that agree with fixed draws.
 
     Parameters

@@ -75,6 +75,7 @@ def gamma(operations: int, roundoff: float) -> float:
     float
         ``n u / (1 - n u)``.
 
+
     Raises
     ------
     ValueError
@@ -157,6 +158,7 @@ def compare_number(
     what : str
         A description for the report.
 
+
     Raises
     ------
     Mismatch
@@ -192,6 +194,7 @@ def compare_tensor(
         The accuracy to reach.
     what : str
         A description for the report.
+
 
     Raises
     ------
@@ -245,6 +248,7 @@ def compare_gradients(
     what : str
         A description for the report.
 
+
     Raises
     ------
     Mismatch
@@ -262,9 +266,7 @@ def compare_gradients(
         gradient = found[name]
         try:
             if gradient is None:
-                raise Mismatch(
-                    "missing", math.inf, f"{what}: no gradient for {name!r}"
-                )
+                raise Mismatch("missing", math.inf, f"{what}: no gradient for {name!r}")
             if gradient.numel() != 1:
                 raise Mismatch(
                     "shape", math.inf, f"{what}: {tuple(gradient.shape)} for {name!r}"
@@ -275,3 +277,36 @@ def compare_gradients(
                 worst = difference
     if worst is not None:
         raise worst
+
+
+def differentiate(
+    value: torch.Tensor, leaves: list[torch.Tensor], what: str
+) -> list[torch.Tensor]:
+    """The gradient of a scalar in every leaf, none of them missing.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        The scalar.
+    leaves : list of torch.Tensor
+        The tensors differentiated by.
+    what : str
+        A description for the report.
+
+    Returns
+    -------
+    list of torch.Tensor
+        One gradient per leaf.
+
+
+    Raises
+    ------
+    Mismatch
+        If the scalar has no gradient path, or a leaf is not reached.
+    """
+    if not value.requires_grad:
+        raise Mismatch("missing", math.inf, f"{what}: the value has no gradient path")
+    found = torch.autograd.grad(value, leaves, allow_unused=True)
+    if any(gradient is None for gradient in found):
+        raise Mismatch("missing", math.inf, f"{what}: a leaf has no gradient")
+    return [gradient for gradient in found if gradient is not None]

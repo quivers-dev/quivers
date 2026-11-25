@@ -17,9 +17,14 @@ from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.inside import InsideAlgorithm
 from quivers.stochastic.parsers import ChartParser
 from quivers.stochastic.semiring import LOG_PROB, VITERBI, ChartSemiring
-from quivers.stochastic.span import BinarySpanDeduction, LexicalAxiom, UnarySpanDeduction
+from quivers.stochastic.span import (
+    BinarySpanDeduction,
+    LexicalAxiom,
+    UnarySpanDeduction,
+)
 from tests.evidence.checks._registry import add
 from tests.evidence.compare import (
+    differentiate,
     ELEMENTARY,
     Accuracy,
     Mismatch,
@@ -146,9 +151,7 @@ def parses(sentence: tuple[int, ...], unary: bool) -> tuple[Tree, ...]:
             )
             for a, b in UNARY
         ]
-    return tuple(
-        derivations.derivations(axioms, rules, ("span", 0, 0, len(sentence)))
-    )
+    return tuple(derivations.derivations(axioms, rules, ("span", 0, 0, len(sentence))))
 
 
 def weights_of(sentence: tuple[int, ...]) -> dict[str, Fraction]:
@@ -436,9 +439,10 @@ def check_parser_gradient() -> None:
         assert isinstance(axiom, LexicalAxiom)
         assert isinstance(binary, BinarySpanDeduction)
         assert isinstance(chains, UnarySpanDeduction)
-        found = torch.autograd.grad(
+        found = differentiate(
             parser(torch.tensor(sentence)),
             [binary.weights, chains.weights, axiom.lexicon_logits],
+            "chart parser",
         )
     gradients: dict[str, torch.Tensor | None] = {}
     reference: dict[str, Fraction] = {}
@@ -503,7 +507,7 @@ def check_inside_gradient() -> None:
     with double_precision():
         algorithm, tensors = inside_algorithm(UNARY, requires_grad=True)
         value = algorithm(torch.tensor(sentence))
-        found = torch.autograd.grad(value, list(tensors.values()))
+        found = differentiate(value, list(tensors.values()), "inside")
     gradients: dict[str, torch.Tensor | None] = {}
     reference: dict[str, Fraction] = {}
     for (a, b, c), weight in BINARY.items():
@@ -558,7 +562,7 @@ def check_impossible_cell_gradient() -> None:
             tensors["binary"][0, 0, 1] = 0.5
             tensors["binary"][0, 1, 0] = 0.5
         value = algorithm(torch.tensor(sentence))
-        (found,) = torch.autograd.grad(value, tensors["binary"])
+        (found,) = differentiate(value, [tensors["binary"]], "inside")
     axioms = [
         (f"{i}:{a}", ("span", a, i, i + 1))
         for i, token in enumerate(sentence)
@@ -567,7 +571,12 @@ def check_impossible_cell_gradient() -> None:
     ]
     i, k, j = Variable("i"), Variable("k"), Variable("j")
     rules: list[derivations.RuleRow] = [
-        (f"b{a}{b}{c}", (("span", b, i, k), ("span", c, k, j)), ("span", a, i, j), f"b{a}{b}{c}")
+        (
+            f"b{a}{b}{c}",
+            (("span", b, i, k), ("span", c, k, j)),
+            ("span", a, i, j),
+            f"b{a}{b}{c}",
+        )
         for a, b, c in ((0, 0, 1), (0, 1, 0))
     ]
     trees = derivations.derivations(axioms, rules, ("span", 0, 0, 3))
@@ -575,7 +584,9 @@ def check_impossible_cell_gradient() -> None:
         "b001": Fraction(1, 2),
         "b010": Fraction(1, 2),
         **{
-            name: Fraction(LEXICAL[(int(name.split(":")[1]), sentence[int(name.split(":")[0])])])
+            name: Fraction(
+                LEXICAL[(int(name.split(":")[1]), sentence[int(name.split(":")[0])])]
+            )
             for name, _ in axioms
         },
     }
@@ -608,6 +619,7 @@ def check_divergent_unary(executor: str) -> None:
     executor : str
         ``"chart-parser"`` or ``"inside"``.
 
+
     Raises
     ------
     Mismatch
@@ -632,6 +644,7 @@ def check_empty_sentence(executor: str) -> None:
     ----------
     executor : str
         ``"chart-parser"`` or ``"inside"``.
+
 
     Raises
     ------
@@ -682,10 +695,14 @@ def check_update() -> None:
 def _register() -> None:
     """Register every check of this module."""
     for semiring in PARSERS:
-        for unary in ("none", "acyclic") if semiring == "viterbi" else (
-            "none",
-            "acyclic",
-            "cyclic",
+        for unary in (
+            ("none", "acyclic")
+            if semiring == "viterbi"
+            else (
+                "none",
+                "acyclic",
+                "cyclic",
+            )
         ):
             add(
                 f"span/chart-parser/{semiring}/{unary}",

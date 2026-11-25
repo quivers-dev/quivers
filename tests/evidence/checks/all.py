@@ -18,7 +18,17 @@ from tests.evidence.checks import (
 )
 from tests.evidence.checks._registry import CHECKS, add
 
-MODULES = (closure, consumers, contraction, deduction, machine, mixture, span, terms, work)
+MODULES = (
+    closure,
+    consumers,
+    contraction,
+    deduction,
+    machine,
+    mixture,
+    span,
+    terms,
+    work,
+)
 """The modules whose checks are registered."""
 
 

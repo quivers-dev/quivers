@@ -29,6 +29,7 @@ def geometric(ratio: Fraction) -> Fraction:
     Fraction
         ``1 / (1 - ratio)``.
 
+
     Raises
     ------
     Divergent
@@ -75,6 +76,7 @@ def two_state_star(
     -------
     tuple of tuple of Fraction
         The inverse by Cramer's rule.
+
 
     Raises
     ------
@@ -224,9 +226,7 @@ def delannoy(left: int, right: int) -> int:
     int
         ``sum_k C(left, k) C(right, k) 2^k``.
     """
-    return sum(
-        math.comb(left, k) * math.comb(right, k) * 2**k for k in range(left + 1)
-    )
+    return sum(math.comb(left, k) * math.comb(right, k) * 2**k for k in range(left + 1))
 
 
 def catalan(size: int) -> int:

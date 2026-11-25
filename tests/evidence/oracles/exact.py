@@ -51,6 +51,7 @@ def solve(matrix: Matrix, right: Matrix) -> Matrix:
     Matrix
         The solution.
 
+
     Raises
     ------
     Singular

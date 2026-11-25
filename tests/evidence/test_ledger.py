@@ -23,7 +23,9 @@ def test_entry(name: str) -> None:
 
 def test_every_entry_is_named_by_a_cell() -> None:
     """Require every entry to be a cell of the grid and every cell's entry to exist."""
-    named = {entry for row in LEDGERED.values() for cell in row.values() for entry in cell}
+    named = {
+        entry for row in LEDGERED.values() for cell in row.values() for entry in cell
+    }
     assert named == set(ENTRIES)
 
 

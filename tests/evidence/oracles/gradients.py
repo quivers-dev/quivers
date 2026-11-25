@@ -107,10 +107,10 @@ def richardson(
     coarse, size = central(step)
     fine, _ = central(step / 2)
     extrapolated = (4 * fine - coarse) / 3
-    rounding = 4 * torch.finfo(torch.float64).eps * size / step
-    return Difference(
-        value=extrapolated, error=abs(extrapolated - fine) + rounding
-    )
+    # A value computed with sums of numbers near one has an absolute error
+    # of a few roundings of one, even where the value itself is small.
+    rounding = 16 * torch.finfo(torch.float64).eps * max(1.0, size) / step
+    return Difference(value=extrapolated, error=abs(extrapolated - fine) + rounding)
 
 
 class BoundaryCase(dx.Model):

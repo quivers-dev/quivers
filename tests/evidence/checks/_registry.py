@@ -66,6 +66,7 @@ def add(
     slow : bool
         Whether the check runs only with the slow tests.
 
+
     Raises
     ------
     ValueError

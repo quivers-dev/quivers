@@ -267,16 +267,14 @@ class TensorCounter(TorchDispatchMode):
             self.counts["products"] += max(made, 1) * inner
             self.counts["sums"] += max(made, 1) * inner
         elif name in SOLVES:
-            side = max((t.shape[-1] for t in tensors(tuple(args)) if t.dim()), default=0)
+            side = max(
+                (t.shape[-1] for t in tensors(tuple(args)) if t.dim()), default=0
+            )
             self.counts["solves"] += side**3
         else:
             self.counts["moved"] += made
         owners = {t.untyped_storage()._cdata for t in tensors(tuple(args))}
-        fresh = [
-            t
-            for t in tensors(result)
-            if t.untyped_storage()._cdata not in owners
-        ]
+        fresh = [t for t in tensors(result) if t.untyped_storage()._cdata not in owners]
         self.counts["allocated"] += sum(t.numel() for t in fresh)
         self.largest = max([self.largest, *(t.numel() for t in fresh)])
         return result
@@ -315,9 +313,7 @@ class CallCounter:
             self._tool, monitoring.events.PY_START, self._count
         )
         for code in self._names:
-            monitoring.set_local_events(
-                self._tool, code, monitoring.events.PY_START
-            )
+            monitoring.set_local_events(self._tool, code, monitoring.events.PY_START)
         return self
 
     def __exit__(self, *exception: type | BaseException | None) -> None:
@@ -480,8 +476,6 @@ def forwarding(base: ChartSemiring) -> tuple[ChartSemiring, dict[str, int]]:
 
         Parameters
         ----------
-        self : ChartSemiring
-            The counting semiring.
         a : torch.Tensor
             The first factor.
         b : torch.Tensor
@@ -501,8 +495,6 @@ def forwarding(base: ChartSemiring) -> tuple[ChartSemiring, dict[str, int]]:
 
         Parameters
         ----------
-        self : ChartSemiring
-            The counting semiring.
         scores : torch.Tensor
             The terms.
         dim : int
@@ -524,8 +516,6 @@ def forwarding(base: ChartSemiring) -> tuple[ChartSemiring, dict[str, int]]:
 
         Parameters
         ----------
-        self : ChartSemiring
-            The counting semiring.
         a : torch.Tensor
             The first term.
         b : torch.Tensor

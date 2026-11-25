@@ -20,8 +20,6 @@ from fractions import Fraction
 
 import didactic.api as dx
 import torch
-from didactic.models._model import Model
-
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core.algebras import (
     GODEL,
@@ -47,7 +45,7 @@ from quivers.qiec.program_runtime import (
     run_program,
 )
 from quivers.monadic.instances import Identity
-from quivers.stochastic._kleene import DivergentClosureError, kleene_star
+from quivers.stochastic._kleene import kleene_star
 from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.agenda import (
     AgendaResult,
@@ -134,6 +132,7 @@ def verify(entry: Entry) -> None:
     ----------
     entry : Entry
         The entry.
+
 
     Raises
     ------
@@ -473,9 +472,7 @@ def _residual_required() -> Facts:
         The log weight for each turn.
     """
     facts = {
-        f"agenda at {turn}": number(
-            logarithm(closed_forms.geometric(Fraction(turn)))
-        )
+        f"agenda at {turn}": number(logarithm(closed_forms.geometric(Fraction(turn))))
         for turn in RESIDUAL_TURNS
     }
     half = number(logarithm(closed_forms.geometric(Fraction(1, 2))))
@@ -559,17 +556,13 @@ record(
     {"p(x, x) matches p(None, 3)": "False"},
     lambda: {
         "p(x, x) matches p(None, 3)": str(
-            match(
-                ("p", make_wildcard("x"), make_wildcard("x")), ("p", None, 3)
-            )
+            match(("p", make_wildcard("x"), make_wildcard("x")), ("p", None, 3))
             is not None
         )
     },
     lambda: {
         "p(x, x) matches p(None, 3)": str(
-            derivations.bind(
-                ("p", Variable("x"), Variable("x")), ("p", None, 3), {}
-            )
+            derivations.bind(("p", Variable("x"), Variable("x")), ("p", None, 3), {})
             is not None
         )
     },
@@ -969,7 +962,11 @@ def _nullary() -> Facts:
         semiring=COUNTING,
     )
     value = result.chart.get(("C",))
-    return {"weight over a rule without premises": "absent" if value is None else number(value)}
+    return {
+        "weight over a rule without premises": "absent"
+        if value is None
+        else number(value)
+    }
 
 
 record(
@@ -1034,6 +1031,7 @@ def _chart_choice() -> Facts:
         -------
         HashChart
             The chart.
+
 
         Raises
         ------
@@ -1292,7 +1290,9 @@ record(
         "goal weight of items headed span": _named_goal("part"),
         "closure in a forwarding semiring": number(-math.log(1 - math.exp(-1))),
         "configured handlers after renaming": str(
-            len(foreign_handler_configuration(module_of("lexical", SEMIRING="Counting")))
+            len(
+                foreign_handler_configuration(module_of("lexical", SEMIRING="Counting"))
+            )
         ),
     },
 )
@@ -1584,9 +1584,7 @@ def _impossible_sentence() -> Facts:
     binary[0, 1, 1] = 1.0
     lexical = torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64)
     algorithm = type(inside_algorithm({})[0])(
-        observed(
-            categories, ProductSet(components=(categories, categories)), binary
-        ),
+        observed(categories, ProductSet(components=(categories, categories)), binary),
         observed(categories, terminals, lexical),
     )
     rules = torch.zeros(2, 2, 2, dtype=torch.float64)
@@ -1662,7 +1660,7 @@ record(
                     2,
                 )[0]
             )
-        )
+        ),
     },
 )
 
@@ -1704,7 +1702,12 @@ def _linear_scores_required() -> Facts:
     trees = derivations.derivations(
         axioms,
         [
-            (f"{a}{b}{c}", (("span", b, i, k), ("span", c, k, j)), ("span", a, i, j), None)
+            (
+                f"{a}{b}{c}",
+                (("span", b, i, k), ("span", c, k, j)),
+                ("span", a, i, j),
+                None,
+            )
             for a, b, c in ((0, 1, 2), (0, 0, 0), (1, 2, 1), (2, 1, 1), (1, 0, 2))
         ],
         ("span", 0, 0, 2),
@@ -1768,7 +1771,7 @@ record(
 
 
 def _models_made(module: QiecModule) -> int:
-    """How many records one short run of a deduction makes.
+    """How many records one short run of a deduction validates.
 
     Parameters
     ----------
@@ -1781,7 +1784,7 @@ def _models_made(module: QiecModule) -> int:
         The number.
     """
     run_deduction(module, "G", tokens=["b"])
-    with CallCounter({"made": Model.__init__}) as calls:
+    with CallCounter({"made": dx.Model._validate_instance}) as calls:
         run_deduction(module, "G", tokens=["b"])
     return calls.counts["made"]
 
@@ -1823,7 +1826,9 @@ def _graph_per_call() -> Facts:
         Whether a run with unrelated deductions makes more records.
     """
     alone, beside = _models_made(_unrelated(0)), _models_made(_unrelated(4))
-    return {"records of a run grow with unrelated declarations": str(beside > 2 * alone)}
+    return {
+        "records of a run grow with unrelated declarations": str(beside > 2 * alone)
+    }
 
 
 record(
@@ -2135,9 +2140,7 @@ record(
     lambda: {
         "entries visited beside 64 unused constructors": str(_signature_reads(64))
     },
-    lambda: {
-        "entries visited beside 64 unused constructors": str(_signature_reads(0))
-    },
+    lambda: {"entries visited beside 64 unused constructors": str(_signature_reads(0))},
 )
 
 
@@ -2261,9 +2264,7 @@ def _first_row_required() -> Facts:
             built = GUIDES[guide](PROBLEMS["beta"])
             one, two = (
                 float(
-                    built.log_prob(
-                        torch.zeros(1, 1), {"theta": torch.tensor([value])}
-                    )
+                    built.log_prob(torch.zeros(1, 1), {"theta": torch.tensor([value])})
                 )
                 for value in (0.5, 0.9)
             )

@@ -76,7 +76,12 @@ def parses(sentence: tuple[str, ...]) -> tuple[Tree, ...]:
     ]
     i, k, j = Variable("i"), Variable("k"), Variable("j")
     rules: list[RuleRow] = [
-        ("join", (("span", i, k, "S"), ("span", k, j, "S")), ("span", i, j, "S"), "join"),
+        (
+            "join",
+            (("span", i, k, "S"), ("span", k, j, "S")),
+            ("span", i, j, "S"),
+            "join",
+        ),
         ("lift", (("span", i, j, "V"),), ("span", i, j, "S"), "lift"),
     ]
     return tuple(
@@ -255,6 +260,7 @@ def check_budget(name: str) -> None:
     name : str
         ``"cycle"`` or ``"chained"``.
 
+
     Raises
     ------
     Mismatch
@@ -288,6 +294,7 @@ def check_wrong_input(name: str) -> None:
     name : str
         ``"lexical"`` or ``"nonlexical"``.
 
+
     Raises
     ------
     Mismatch
@@ -314,7 +321,13 @@ def check_wrong_input(name: str) -> None:
 
 
 def check_normalized() -> None:
-    """Require the productions of each left-hand side to sum to one."""
+    """Require the productions of each left-hand side to sum to one.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
+    """
     table = program("normalized").deductions["G"].production_log_probs()
     if not table:
         raise Mismatch("support", math.inf, "no production group")
@@ -353,9 +366,17 @@ def _register() -> None:
             partial(check_nonlexical, semiring),
         )
     for name, row in (("cycle", "machine-nonlexical"), ("chained", "machine-chained")):
-        add(f"machine/boolean_cycle/{name}", row, "Q2", partial(check_boolean_cycle, name))
+        add(
+            f"machine/boolean_cycle/{name}",
+            row,
+            "Q2",
+            partial(check_boolean_cycle, name),
+        )
         add(f"machine/budget/{name}", row, "Q8", partial(check_budget, name))
-    for name, row in (("lexical", "machine-lexical"), ("nonlexical", "machine-nonlexical")):
+    for name, row in (
+        ("lexical", "machine-lexical"),
+        ("nonlexical", "machine-nonlexical"),
+    ):
         add(f"machine/wrong_input/{name}", row, "Q24", partial(check_wrong_input, name))
     add("machine/normalized", "machine-lexical", "Q14", check_normalized)
 

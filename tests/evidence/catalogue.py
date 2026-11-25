@@ -70,4 +70,3 @@ def digests() -> dict[str, str]:
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in pinned_files()
     }
-

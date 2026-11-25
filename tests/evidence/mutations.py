@@ -64,7 +64,8 @@ class Mutation(dx.Model):
         The checks that have to reject the mutation.
     min_effect : float
         A lower bound on the deviation each check reports, about half of
-        the smallest one measured.
+        the smallest one measured; one for a deviation that is infinite
+        (a missing gradient, a refusal that is not raised, a wrong type).
     """
 
     name: str
@@ -97,6 +98,7 @@ def rewrite(text: str, rewrites: tuple[Rewrite, ...], what: str) -> str:
     -------
     str
         The changed text.
+
 
     Raises
     ------
@@ -242,7 +244,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/value/fifo/logprob/three_equal_premises",
             "deduction/value/lifo/counting/three_equal_premises",
         ),
-        min_effect=0.02,
+        min_effect=0.16,
     ),
     Mutation(
         name="repeated-premise-uses-the-old-weight-everywhere",
@@ -277,7 +279,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("terms/decoder", "terms/decoder_gradient", "terms/decoder_replay"),
-        min_effect=0.2,
+        min_effect=0.79,
     ),
     Mutation(
         name="productions-not-normalized",
@@ -290,7 +292,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("machine/normalized",),
-        min_effect=0.5,
+        min_effect=1.0,
     ),
     Mutation(
         name="lexicon-normalized-over-words",
@@ -303,8 +305,11 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="log_lex = torch.log_softmax(self.lexicon_logits, dim=0)[tokens]",
             ),
         ),
-        rejected_by=("span/chart-parser/logprob/none", "span/chart-parser/viterbi/none"),
-        min_effect=0.1,
+        rejected_by=(
+            "span/chart-parser/logprob/none",
+            "span/chart-parser/viterbi/none",
+        ),
+        min_effect=0.49,
     ),
     Mutation(
         name="sum-replaced-by-maximum",
@@ -323,7 +328,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/outcomes/fifo",
             "span/chart-parser/logprob/none",
         ),
-        min_effect=0.1,
+        min_effect=0.016,
     ),
     Mutation(
         name="maximum-replaced-by-sum",
@@ -340,7 +345,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/value/fifo/viterbi/diamond",
             "span/chart-parser/viterbi/none",
         ),
-        min_effect=0.1,
+        min_effect=0.016,
     ),
     Mutation(
         name="contraction-keeps-the-largest-term",
@@ -348,13 +353,15 @@ MUTATIONS: tuple[Mutation, ...] = (
         provenance="a maximum over the contracted axes of a sum",
         target="quivers.core.algebras:RealAlgebra.join",
         rewrites=(
-            Rewrite(old="result = result.sum(dim=d)", new="result = result.amax(dim=d)"),
+            Rewrite(
+                old="result = result.sum(dim=d)", new="result = result.amax(dim=d)"
+            ),
         ),
         rejected_by=(
             "contraction/value/real/product/positive",
             "contraction/value/real/triangle/zeros",
         ),
-        min_effect=0.1,
+        min_effect=0.29,
     ),
     Mutation(
         name="mixture-keeps-the-best-class",
@@ -367,8 +374,9 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="log_probs_per_class.max(dim=-1).values",
             ),
         ),
+        also_in=("tests.evidence.checks.mixture",),
         rejected_by=("mixture/primitives",),
-        min_effect=0.05,
+        min_effect=0.0031,
     ),
     Mutation(
         name="gradient-cut-at-one-premise",
@@ -387,7 +395,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/gradient/fifo/counting/ambiguous",
             "deduction/gradient/lifo/logprob/high_arity",
         ),
-        min_effect=0.1,
+        min_effect=1.0,
     ),
     Mutation(
         name="closure-gradient-cut",
@@ -396,7 +404,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=f"{KLEENE}:_log_star",
         rewrites=(Rewrite(old="star = matrix\n", new="star = matrix.detach()\n"),),
         rejected_by=("span/inside/gradient", "span/chart-parser/gradient"),
-        min_effect=0.05,
+        min_effect=1.0,
     ),
     Mutation(
         name="wiring-gradient-cut",
@@ -413,7 +421,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "contraction/gradient/real/chain",
             "contraction/gradient/markov/triangle",
         ),
-        min_effect=0.1,
+        min_effect=1.0,
     ),
     Mutation(
         name="groups-share-one-draw",
@@ -421,13 +429,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         provenance="two draws of two groups are replaced by one draw",
         target="source:grouped",
         rewrites=(
-            Rewrite(
-                old="[over=G]\n", new="[reduction=logsumexp]\n"
-            ),
+            Rewrite(old="[over=G]\n", new="[reduction=logsumexp]\n"),
             Rewrite(old=" [via=idx]", new=""),
         ),
         rejected_by=("mixture/compiled/grouped",),
-        min_effect=0.05,
+        min_effect=0.068,
     ),
     Mutation(
         name="one-draw-duplicated",
@@ -439,9 +445,7 @@ MUTATIONS: tuple[Mutation, ...] = (
                 old="object Obs : FinSet 4\n",
                 new="object G : FinSet 4\nobject Obs : FinSet 4\n",
             ),
-            Rewrite(
-                old="[reduction=logsumexp]\n", new="[over=G]\n"
-            ),
+            Rewrite(old="[reduction=logsumexp]\n", new="[over=G]\n"),
             Rewrite(
                 old="Bernoulli(probs=rate)\n", new="Bernoulli(probs=rate) [via=rows]\n"
             ),
@@ -465,7 +469,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "closure/near_boundary",
             "closure/star/logprob/near_one",
         ),
-        min_effect=0.1,
+        min_effect=1.4,
     ),
     Mutation(
         name="divergence-test-removed",
@@ -495,14 +499,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
-        name="last-item-omitted",
+        name="first-item-omitted",
         defect_class="omitted alternative",
-        provenance="a scan of the chart stops one item early",
+        provenance="a scan of the chart skips its first item",
         target=f"{AGENDA}:HashChart.lookup",
         rewrites=(
             Rewrite(
                 old="for item, w in self._store.items():",
-                new="for item, w in list(self._store.items())[:-1]:",
+                new="for item, w in list(self._store.items())[1:]:",
             ),
         ),
         rejected_by=(
@@ -510,7 +514,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/count/fifo/reach",
             "deduction/forest/fifo/reach",
         ),
-        min_effect=0.5,
+        min_effect=1.5,
     ),
     Mutation(
         name="last-split-omitted",
@@ -524,7 +528,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("span/chart-parser/logprob/none",),
-        min_effect=0.1,
+        min_effect=1.1,
     ),
     Mutation(
         name="support-from-current-numbers",
@@ -544,7 +548,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/gradient/fifo/counting/exact_zero",
             "deduction/gradient/lifo/counting/exact_zero",
         ),
-        min_effect=0.5,
+        min_effect=1.0,
     ),
     Mutation(
         name="contraction-masks-zeros",
@@ -559,7 +563,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("contraction/gradient/real/product",),
-        min_effect=0.1,
+        min_effect=0.57,
     ),
     Mutation(
         name="duplicate-contributions-dropped",
@@ -579,7 +583,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/outcomes/lifo",
             "deduction/count/lifo/equal_proofs",
         ),
-        min_effect=0.3,
+        min_effect=0.34,
     ),
     Mutation(
         name="premise-order-permuted",
@@ -593,7 +597,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("contraction/order",),
-        min_effect=1.0,
+        min_effect=3.5,
     ),
     Mutation(
         name="applications-merged-by-conclusion",
@@ -607,7 +611,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("deduction/forest/fifo/ambiguous", "deduction/forest/fifo/reach"),
-        min_effect=0.5,
+        min_effect=1.0,
     ),
     Mutation(
         name="observer-applied-to-an-aggregate",
@@ -652,17 +656,17 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
-        name="impossible-class-without-a-mask",
+        name="impossible-sum-without-a-mask",
         defect_class="empty reduction",
-        provenance="an impossible term is reduced without the mask",
-        target=f"{INSIDE}:_masked_logsumexp",
+        provenance="an impossible sum takes the logarithm of zero",
+        target="quivers.core.algebras:LogProbAlgebra.join",
         rewrites=(
             Rewrite(
-                old="bounded = torch.where(empty, torch.full_like(scores, floor), scores)",
-                new="bounded = scores",
+                old="safe_total = torch.where(empty, torch.ones_like(total), total)",
+                new="safe_total = total",
             ),
         ),
-        rejected_by=("span/inside/impossible_cell_gradient",),
+        rejected_by=("contraction/impossible_row",),
         min_effect=1.0,
     ),
     Mutation(
@@ -709,7 +713,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("span/chart-parser/update",),
-        min_effect=0.01,
+        min_effect=0.33,
     ),
     Mutation(
         name="rules-copied-per-run",
@@ -722,8 +726,9 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="rules = tuple(rule.with_(name=rule.name) for rule in rules)",
             ),
         ),
+        also_in=("tests.evidence.scaling",),
         rejected_by=("work/repeated-runs-of-one-rule-set",),
-        min_effect=2.0,
+        min_effect=32.0,
     ),
 )
 """The catalogue."""

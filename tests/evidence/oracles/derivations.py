@@ -160,6 +160,7 @@ def ground(
     list of Instance
         The grounded rules in rule order.
 
+
     Raises
     ------
     TooManyItems
@@ -243,6 +244,7 @@ def derivations(
     list of Tree
         The trees, each once.
 
+
     Raises
     ------
     CyclicDerivations
@@ -297,6 +299,7 @@ def _refuse_cycles(goal: Term, incoming: Mapping[Term, Sequence[Instance]]) -> N
     incoming : Mapping[Term, Sequence of Instance]
         The grounded rules by conclusion.
 
+
     Raises
     ------
     CyclicDerivations
@@ -311,6 +314,7 @@ def _refuse_cycles(goal: Term, incoming: Mapping[Term, Sequence[Instance]]) -> N
         ----------
         item : Term
             The item.
+
 
         Raises
         ------
@@ -428,7 +432,9 @@ def outcome_masses(
     return masses
 
 
-def fold(tree: Tree, algebra: Callable[[str, tuple[Fraction, ...]], Fraction]) -> Fraction:
+def fold(
+    tree: Tree, algebra: Callable[[str, tuple[Fraction, ...]], Fraction]
+) -> Fraction:
     """Interpret one tree by a function of names and child values.
 
     Parameters

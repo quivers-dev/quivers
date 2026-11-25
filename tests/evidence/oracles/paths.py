@@ -194,6 +194,7 @@ def accepting_paths(machine: Machine, *, max_arcs: int | None = None) -> list[Pa
     list of Path
         The paths, each once.
 
+
     Raises
     ------
     CyclicMachine
@@ -204,7 +205,9 @@ def accepting_paths(machine: Machine, *, max_arcs: int | None = None) -> list[Pa
     if max_arcs is None and _has_cycle(arcs):
         raise CyclicMachine("the accepting paths are infinite")
 
-    def walk(state: int, taken: tuple[Arc, ...]) -> Iterator[tuple[int, tuple[Arc, ...]]]:
+    def walk(
+        state: int, taken: tuple[Arc, ...]
+    ) -> Iterator[tuple[int, tuple[Arc, ...]]]:
         """The walks that extend a prefix.
 
         Parameters

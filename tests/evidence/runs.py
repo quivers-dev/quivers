@@ -522,6 +522,7 @@ def check_repeat(name: str) -> None:
     name : str
         The executor.
 
+
     Raises
     ------
     Mismatch

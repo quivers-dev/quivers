@@ -20,6 +20,7 @@ from quivers.qiec.program_runtime import run_program
 from tests.evidence.checks._registry import add
 from tests.evidence.checks.span import double_precision
 from tests.evidence.compare import (
+    differentiate,
     ELEMENTARY,
     Accuracy,
     Mismatch,
@@ -92,9 +93,7 @@ def mixture(draws: Draws, groups: Sequence[int]) -> int:
     int
         Always zero; the weight is what is read.
     """
-    values = {
-        group: draws.choose(f"a{group}", PRIOR) for group in sorted(set(groups))
-    }
+    values = {group: draws.choose(f"a{group}", PRIOR) for group in sorted(set(groups))}
     for row, group in zip(ROWS, groups, strict=True):
         draws.score(rate(values[group]) if row else 1 - rate(values[group]))
     return 0
@@ -177,9 +176,12 @@ def log_joint(name: str, prior: torch.Tensor) -> torch.Tensor:
     """
     model = program(name).morphism
     assert isinstance(model, MonadicProgram)
-    sites = {"prior": prior, "y": torch.tensor(ROWS, dtype=torch.bool)}
-    if name == "grouped":
-        sites["idx"] = torch.tensor(GROUPS)
+    sites = {
+        "prior": prior,
+        "y": torch.tensor(ROWS, dtype=torch.bool),
+        "idx": torch.tensor(GROUPS),
+        "rows": torch.arange(len(ROWS)),
+    }
     return model.log_joint(torch.zeros(1, 1), sites)
 
 
@@ -263,7 +265,7 @@ def check_compiled_gradient(name: str) -> None:
     """
     with double_precision():
         prior = floats(PRIOR).requires_grad_()
-        (found,) = torch.autograd.grad(log_joint(name, prior).sum(), prior)
+        (found,) = differentiate(log_joint(name, prior).sum(), [prior], name)
     groups = groups_of(name)
 
     def likelihood(weights: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -343,8 +345,7 @@ def check_chain_batch() -> None:
     with double_precision():
         value = model.log_joint(torch.tensor(rows), chain_sites())
     wanted = [
-        logarithm(exact.forward(INITIAL, TRANSITION, EMISSION, row))
-        + 2 * UNIFORM_THREE
+        logarithm(exact.forward(INITIAL, TRANSITION, EMISSION, row)) + 2 * UNIFORM_THREE
         for row in rows
     ]
     compare_tensor(
@@ -367,7 +368,7 @@ def check_chain_gradient() -> None:
     with double_precision():
         sites = {name: value.requires_grad_() for name, value in chain_sites().items()}
         value = model.log_joint(torch.tensor([SYMBOLS]), sites).sum()
-        found = torch.autograd.grad(value, list(sites.values()))
+        found = differentiate(value, list(sites.values()), "chain")
     mass = finite_effects.evidence(chain)
     uses: dict[str, Fraction] = {}
     for outcome in finite_effects.runs(chain):
@@ -420,9 +421,7 @@ def check_primitives() -> None:
     log_prior = floats(PRIOR).log()
     found = marginalize_grouped(classes, torch.tensor(GROUPS), log_prior, 2)
     wanted = logarithm(finite_effects.evidence(partial(mixture, groups=GROUPS)))
-    compare_number(
-        float(found), wanted, mixture_accuracy(), "grouped primitive"
-    )
+    compare_number(float(found), wanted, mixture_accuracy(), "grouped primitive")
     single = marginalize_categorical(classes.sum(0, keepdim=True) + log_prior)
     alone = logarithm(
         finite_effects.evidence(partial(mixture, groups=(0,) * len(ROWS)))
@@ -469,7 +468,7 @@ def check_impossible_class() -> None:
     found = marginalize_grouped(
         classes, torch.tensor([0, 1]), torch.zeros(2, dtype=torch.float64), 2
     )
-    (gradient,) = torch.autograd.grad(found, classes)
+    (gradient,) = differentiate(found, [classes], "classes")
     compare_gradients(
         {f"{i}{k}": gradient[i, k] for i in (0, 1) for k in (0, 1)},
         {"00": 0.0, "01": 1.0, "10": 0.0, "11": 1.0},
@@ -481,6 +480,7 @@ def check_impossible_class() -> None:
 def check_unknown_reduction() -> None:
     """Require an unknown reduction to be refused.
 
+
     Raises
     ------
     Mismatch
@@ -488,7 +488,11 @@ def check_unknown_reduction() -> None:
     """
     try:
         value = marginalize_grouped(
-            torch.zeros(2, 2), torch.tensor([0, 0]), torch.zeros(2), 1, reduction="median"
+            torch.zeros(2, 2),
+            torch.tensor([0, 0]),
+            torch.zeros(2),
+            1,
+            reduction="median",
         )
     except ValueError as refusal:
         if "median" in str(refusal):
@@ -536,6 +540,11 @@ def check_scan_gradient() -> None:
 
     The differences are of the sum of normal log densities written out
     here, with the cell's parameters read once per position.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
     """
     inputs = Euclidean(name="Input", dim=1)
     hidden = Euclidean(name="Hidden", dim=1)
@@ -545,7 +554,7 @@ def check_scan_gradient() -> None:
         scan = ScanMorphism(cell).double()
         x = torch.tensor([[[0.5], [-1.0]]])
         states = torch.tensor([[[0.25], [1.5]]], requires_grad=True)
-        (found,) = torch.autograd.grad(scan.log_prob(x, states).sum(), states)
+        (found,) = differentiate(scan.log_prob(x, states).sum(), [states], "scan")
 
         def density(values: Mapping[str, float]) -> float:
             """The trajectory's log density.
@@ -584,6 +593,7 @@ def check_scan_gradient() -> None:
 def check_scan_refuses_final_state() -> None:
     """Require a scan to refuse to score a final state alone.
 
+
     Raises
     ------
     Mismatch
@@ -607,9 +617,7 @@ def check_collapse() -> None:
     assert isinstance(model, MonadicProgram)
     value = 0.75
     with double_precision(), collapse({"t": "y"}):
-        run = trace(
-            model, torch.zeros(1, 1), observations={"y": torch.tensor([value])}
-        )
+        run = trace(model, torch.zeros(1, 1), observations={"y": torch.tensor([value])})
     variance = 2.0**2 + 0.5**2
     wanted = -0.5 * (value - 0.5) ** 2 / variance - 0.5 * math.log(
         2 * math.pi * variance
@@ -631,7 +639,7 @@ def check_collapse_gradient() -> None:
         value = torch.tensor([0.75], requires_grad=True)
         run = trace(model, torch.zeros(1, 1), observations={"y": value})
         assert run.log_joint is not None
-        (found,) = torch.autograd.grad(run.log_joint.sum(), value)
+        (found,) = differentiate(run.log_joint.sum(), [value], "collapse")
     compare_gradients(
         {"y": found},
         {"y": -(Fraction(3, 4) - Fraction(1, 2)) / (Fraction(4) + Fraction(1, 4))},
@@ -648,6 +656,7 @@ def check_collapse_refusal(case: str) -> None:
     case : str
         ``"plate"`` for a plated child, ``"missing"`` for a child without
         an observation.
+
 
     Raises
     ------
@@ -681,11 +690,23 @@ def _register() -> None:
         row = f"marginalize-{name}"
         add(f"mixture/compiled/{name}", row, "Q6", partial(check_compiled, name))
         add(f"mixture/machine/{name}", row, "Q1", partial(check_machine, name))
-        add(f"mixture/gradient/{name}", row, "Q1g", partial(check_compiled_gradient, name))
+        add(
+            f"mixture/gradient/{name}",
+            row,
+            "Q1g",
+            partial(check_compiled_gradient, name),
+        )
     add("mixture/primitives", "marginalize-grouped", "Q6", check_primitives)
     add("mixture/empty_group", "marginalize-grouped", "Q6", check_empty_group)
-    add("mixture/impossible_class", "marginalize-grouped", "Q1g", check_impossible_class)
-    add("mixture/unknown_reduction", "marginalize-grouped", "Q24", check_unknown_reduction)
+    add(
+        "mixture/impossible_class", "marginalize-grouped", "Q1g", check_impossible_class
+    )
+    add(
+        "mixture/unknown_reduction",
+        "marginalize-grouped",
+        "Q24",
+        check_unknown_reduction,
+    )
     add("mixture/chain", "marginalize-chain", "Q10", check_chain)
     add("mixture/chain_batch", "marginalize-chain", "Q10", check_chain_batch)
     add("mixture/chain_gradient", "marginalize-chain", "Q1g", check_chain_gradient)

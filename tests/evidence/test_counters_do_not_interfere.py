@@ -6,7 +6,12 @@ import pytest
 import torch
 
 from tests.evidence.compare import Mismatch
-from tests.evidence.counters import CallCounter, TensorCounter, forwarding, saved_elements
+from tests.evidence.counters import (
+    CallCounter,
+    TensorCounter,
+    forwarding,
+    saved_elements,
+)
 from tests.evidence.mutations import Mutation, Rewrite, installed
 from tests.evidence.runs import RUNS, Result, same_bits
 from tests.evidence.checks import deduction
@@ -67,6 +72,7 @@ def forwarded(semiring: ChartSemiring) -> Result:
 def check_forwarding() -> None:
     """Require the forwarding semiring to equal its base bit by bit.
 
+
     Raises
     ------
     Mismatch
@@ -84,17 +90,19 @@ def test_forwarding_semiring_is_bitwise_equal() -> None:
 
 
 REASSOCIATED = Mutation(
-    name="counter-reassociates-a-sum",
+    name="counter-rounds-a-sum",
     defect_class="instrumentation",
-    provenance="a counter that recomputes a sum in its own order",
+    provenance="a counter that copies the terms of a sum in the default type",
     target="tests.evidence.counters:forwarding",
     rewrites=(
         Rewrite(
             old="result = parent.plus(self, scores, dim)",
-            new="peak = scores.amax(dim=dim, keepdim=True)\n"
-            "        result = (scores - peak).exp().sum(dim=dim).log() + peak.squeeze(dim)",
+            new="result = parent.plus(\n"
+            "            self, scores.to(torch.get_default_dtype()), dim\n"
+            "        ).to(scores.dtype)",
         ),
     ),
+    also_in=(__name__,),
     rejected_by=("forwarding",),
     min_effect=1.0,
 )
@@ -102,7 +110,7 @@ REASSOCIATED = Mutation(
 
 
 def test_instrument_that_changes_a_value_is_rejected() -> None:
-    """Require the bitwise check to reject a counter that reassociates a sum."""
+    """Require the bitwise check to reject a counter that rounds a sum."""
     with installed(REASSOCIATED):
         with pytest.raises(Mismatch):
             check_forwarding()

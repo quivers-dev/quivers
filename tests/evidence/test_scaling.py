@@ -59,25 +59,27 @@ SIZES = (2, 4, 8, 16, 32)
 
 
 @pytest.mark.parametrize(
-    ("work", "reason"),
+    ("work", "constant", "reason"),
     [
-        pytest.param([2.0 * n for n in SIZES], "above", id="above-the-constant"),
-        pytest.param([n * math.log(n) for n in SIZES], "grows", id="a-log-factor"),
-        pytest.param([1.0, 2.0, 4.0, 9.0, 16.0], "grows", id="one-step-up"),
+        pytest.param([2.0 * n for n in SIZES], 1.5, "above", id="above-the-constant"),
+        pytest.param([n * math.log(n) for n in SIZES], 10.0, "grow", id="a-log-factor"),
+        pytest.param([1.0, 2.0, 4.0, 9.0, 16.0], 10.0, "grow", id="one-step-up"),
     ],
 )
-def test_accept_rejects(work: list[float], reason: str) -> None:
+def test_accept_rejects(work: list[float], constant: float, reason: str) -> None:
     """Require the bound check to reject counters that break a linear bound.
 
     Parameters
     ----------
     work : list of float
         The counters.
+    constant : float
+        The stated constant.
     reason : str
-        ``"above"`` or ``"grows"``.
+        ``"above"`` or ``"grow"``.
     """
     with pytest.raises(Mismatch) as caught:
-        accept(SIZES, work, [float(n) for n in SIZES], 1.5, "control")
+        accept(SIZES, work, [float(n) for n in SIZES], constant, "control")
     assert reason in str(caught.value)
 
 

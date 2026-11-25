@@ -98,7 +98,11 @@ def test_cycles_are_refused_and_bounded_on_request() -> None:
 
 def test_sums_agree_with_the_rational_recurrence() -> None:
     """Compare the sum over parse trees with the cubic recurrence."""
-    binary = {(0, 1, 1): Fraction(1, 3), (1, 1, 1): Fraction(1, 4), (0, 0, 1): Fraction(1, 5)}
+    binary = {
+        (0, 1, 1): Fraction(1, 3),
+        (1, 1, 1): Fraction(1, 4),
+        (0, 0, 1): Fraction(1, 5),
+    }
     lexical = {(1, 0): Fraction(1, 2), (0, 0): Fraction(1, 7), (1, 1): Fraction(2, 9)}
     for sentence in itertools.product((0, 1), repeat=4):
         axioms = [
@@ -108,11 +112,18 @@ def test_sums_agree_with_the_rational_recurrence() -> None:
             if t == token
         ]
         rules = [
-            (f"{a}{b}{c}", (("span", b, i, k), ("span", c, k, j)), ("span", a, i, j), f"{a}{b}{c}")
+            (
+                f"{a}{b}{c}",
+                (("span", b, i, k), ("span", c, k, j)),
+                ("span", a, i, j),
+                f"{a}{b}{c}",
+            )
             for a, b, c in binary
         ]
         weights = {f"{a}{b}{c}": w for (a, b, c), w in binary.items()}
-        weights |= {name: lexical[(int(name[-1]), sentence[int(name[0])])] for name, _ in axioms}
+        weights |= {
+            name: lexical[(int(name[-1]), sentence[int(name[0])])] for name, _ in axioms
+        }
         enumerated = derivations.total(
             derivations.derivations(axioms, rules, ("span", 0, 0, 4)),
             weights,
@@ -219,7 +230,11 @@ def test_logarithmic_gradients_agree_with_automatic_differentiation() -> None:
         exact_value = derivations.logarithmic_gradient(proofs, rational, name)
         assert found[name] == pytest.approx(float(exact_value), rel=1e-14, abs=1e-15)
         slope = gradients.richardson(
-            lambda p: float(log_weight({n: torch.tensor(v, dtype=torch.float64) for n, v in p.items()})),
+            lambda p: float(
+                log_weight(
+                    {n: torch.tensor(v, dtype=torch.float64) for n, v in p.items()}
+                )
+            ),
             point,
             name,
             step=2.0**-6,
@@ -280,7 +295,13 @@ def epsilon_pair() -> tuple[Machine, Machine]:
     return first, second
 
 
-WEIGHTS = {"p": Fraction(1, 2), "q": Fraction(1, 3), "r": Fraction(2, 5), "s": Fraction(3, 4), "one": Fraction(1)}
+WEIGHTS = {
+    "p": Fraction(1, 2),
+    "q": Fraction(1, 3),
+    "r": Fraction(2, 5),
+    "s": Fraction(3, 4),
+    "one": Fraction(1),
+}
 
 
 def naive_composition(left: Machine, right: Machine) -> Machine:
@@ -380,8 +401,12 @@ def test_composition_without_a_filter_is_rejected_in_counting() -> None:
 
 def test_parallel_epsilon_arcs_are_two_paths() -> None:
     """Require two parallel arcs that write nothing to be two paths."""
-    single = paths.relation(line_machine(False), WEIGHTS | {"q": Fraction(1, 3)}, tapes=2)
-    double = paths.relation(line_machine(True), WEIGHTS | {"q": Fraction(1, 3)}, tapes=2)
+    single = paths.relation(
+        line_machine(False), WEIGHTS | {"q": Fraction(1, 3)}, tapes=2
+    )
+    double = paths.relation(
+        line_machine(True), WEIGHTS | {"q": Fraction(1, 3)}, tapes=2
+    )
     assert len(paths.accepting_paths(line_machine(True))) == 2
     assert double == {key: 2 * value for key, value in single.items()}
 
@@ -400,11 +425,16 @@ def test_merging_states_with_different_futures_is_rejected() -> None:
     )
     merged = apart.with_(
         arcs=tuple(
-            arc.with_(source=1 if arc.source == 2 else arc.source, target=1 if arc.target == 2 else arc.target)
+            arc.with_(
+                source=1 if arc.source == 2 else arc.source,
+                target=1 if arc.target == 2 else arc.target,
+            )
             for arc in apart.arcs
         )
     )
-    assert paths.relation(apart, WEIGHTS, tapes=1) != paths.relation(merged, WEIGHTS, tapes=1)
+    assert paths.relation(apart, WEIGHTS, tapes=1) != paths.relation(
+        merged, WEIGHTS, tapes=1
+    )
 
 
 def test_cyclic_machines_are_refused_without_a_bound() -> None:
@@ -456,24 +486,43 @@ def test_spanning_trees_are_counted_and_summed_twice(nodes: int) -> None:
         flipped = {(y, x): w for (x, y), w in weights.items() if x != 0}
         flipped |= {(0, y): weights[(0, y)] for y in range(1, nodes)}
         assert exact.tree_partition(nodes, 0, flipped) != total
-        assert exact.tree_partition(nodes, 1, {**weights, **{(y, 0): Fraction(1) for y in range(1, nodes)}}) != total
+        assert (
+            exact.tree_partition(
+                nodes, 1, {**weights, **{(y, 0): Fraction(1) for y in range(1, nodes)}}
+            )
+            != total
+        )
 
 
 def test_exact_closures_agree_with_their_series_and_closed_form() -> None:
     """Compare the rational inverse with the closed form and with partial sums."""
-    stay, forth, back, rest = Fraction(1, 4), Fraction(1, 2), Fraction(1, 3), Fraction(1, 5)
+    stay, forth, back, rest = (
+        Fraction(1, 4),
+        Fraction(1, 2),
+        Fraction(1, 3),
+        Fraction(1, 5),
+    )
     matrix = [[stay, forth], [back, rest]]
     closed = closed_forms.two_state_star(stay, forth, back, rest)
     assert [list(row) for row in closed] == exact.linear_star(matrix)
     power = exact.identity(2)
     partial = exact.identity(2)
     for _ in range(60):
-        power = [[sum((power[r][m] * matrix[m][c] for m in range(2)), Fraction(0)) for c in range(2)] for r in range(2)]
+        power = [
+            [
+                sum((power[r][m] * matrix[m][c] for m in range(2)), Fraction(0))
+                for c in range(2)
+            ]
+            for r in range(2)
+        ]
         partial = [[partial[r][c] + power[r][c] for c in range(2)] for r in range(2)]
-    gap = max(abs(float(closed[r][c] - partial[r][c])) for r in range(2) for c in range(2))
-    assert 0 < gap < 1e-12
+    gap = max(abs(closed[r][c] - partial[r][c]) for r in range(2) for c in range(2))
+    # The largest row sum is three quarters, which bounds the tail.
+    assert 0 < gap <= Fraction(3, 4) ** 61 / (1 - Fraction(3, 4))
     with pytest.raises(closed_forms.Divergent):
-        closed_forms.two_state_star(Fraction(1, 2), Fraction(1), Fraction(1, 2), Fraction(1, 2))
+        closed_forms.two_state_star(
+            Fraction(1, 2), Fraction(1), Fraction(1, 2), Fraction(1, 2)
+        )
 
 
 def test_quadratic_least_root_is_the_limit_from_zero() -> None:
@@ -552,7 +601,12 @@ def test_contraction_is_a_sum_over_assignments() -> None:
     left = {(r, c): Fraction(r + 2 * c + 1, 7) for r in range(2) for c in range(3)}
     right = {(r, c): Fraction(3 * r + c + 1, 11) for r in range(3) for c in range(2)}
     found = exact.contraction(
-        ["ij", "jk"], "ik", {"i": 2, "j": 3, "k": 2}, [left, right], Fraction(0), Fraction(1)
+        ["ij", "jk"],
+        "ik",
+        {"i": 2, "j": 3, "k": 2},
+        [left, right],
+        Fraction(0),
+        Fraction(1),
     )
     for r, c in itertools.product(range(2), repeat=2):
         assert found[(r, c)] == sum(left[(r, m)] * right[(m, c)] for m in range(3))
@@ -572,9 +626,13 @@ def test_boundary_derivatives_are_their_hand_values() -> None:
 
 def test_differences_estimate_their_own_error() -> None:
     """Require the extrapolated difference to be within its error estimate."""
-    slope = gradients.richardson(lambda p: math.exp(3 * p["x"]), {"x": 0.25}, "x", step=0.01)
+    slope = gradients.richardson(
+        lambda p: math.exp(3 * p["x"]), {"x": 0.25}, "x", step=0.01
+    )
     assert abs(slope.value - 3 * math.exp(0.75)) <= slope.error
-    coarse = gradients.richardson(lambda p: math.exp(3 * p["x"]), {"x": 0.25}, "x", step=0.5)
+    coarse = gradients.richardson(
+        lambda p: math.exp(3 * p["x"]), {"x": 0.25}, "x", step=0.5
+    )
     assert coarse.error > slope.error
 
 
@@ -612,7 +670,9 @@ def test_shared_and_independent_draws_have_different_laws() -> None:
 def test_every_sequence_of_draws_is_run_once() -> None:
     """Require one run per sequence of values."""
     found = finite_effects.runs(
-        lambda d: d.choose("a", (Fraction(1, 2),) * 2) + d.choose("b", (Fraction(1, 3),) * 3)
+        lambda d: (
+            d.choose("a", (Fraction(1, 2),) * 2) + d.choose("b", (Fraction(1, 3),) * 3)
+        )
     )
     assert len(found) == 6
     assert len({outcome.values for outcome in found}) == 6

@@ -192,7 +192,10 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         "Q14": ("depth-bound-shifts-choices",),
         "Q24": ("signature-rebuilt-per-node",),
     },
-    **{kernel: {"R1": ("default-precision",)} for kernel in ("hmc", "nuts", "metropolis")},
+    **{
+        kernel: {"R1": ("default-precision",)}
+        for kernel in ("hmc", "nuts", "metropolis")
+    },
     **{
         f"svi-{guide}": {"R1": ("guide-scores-first-row",)}
         for guide in ("mvn", "low-rank", "structured")

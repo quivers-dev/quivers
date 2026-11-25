@@ -6,7 +6,13 @@ import pytest
 
 from tests.evidence.checks.all import CHECKS
 from tests.evidence.compare import Mismatch
-from tests.evidence.mutations import MUTATIONS, MovedAnchor, Mutation, Rewrite, installed
+from tests.evidence.mutations import (
+    MUTATIONS,
+    MovedAnchor,
+    Mutation,
+    Rewrite,
+    installed,
+)
 from tests.evidence.mutations import rewrite
 
 CASES = [

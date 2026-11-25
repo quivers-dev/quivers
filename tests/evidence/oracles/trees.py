@@ -35,6 +35,7 @@ def spanning_trees(nodes: int, root: int) -> list[Parents]:
     list of Parents
         The trees, each once.
 
+
     Raises
     ------
     ValueError

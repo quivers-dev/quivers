@@ -7,7 +7,9 @@ import pytest
 from tests.evidence.conformance import parameters, run
 
 
-@pytest.mark.parametrize("name", parameters("closure", "repeat/kleene-star", "repeat/kleene-star-trace"))
+@pytest.mark.parametrize(
+    "name", parameters("closure", "repeat/kleene-star", "repeat/kleene-star-trace")
+)
 def test_check(name: str) -> None:
     """Run one registered check.
 

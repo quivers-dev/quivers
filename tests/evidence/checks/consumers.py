@@ -515,6 +515,11 @@ def check_replay(name: str) -> None:
     ----------
     name : str
         The problem.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
     """
     problem = PROBLEMS[name]
     with double_precision():
@@ -632,6 +637,11 @@ def check_registry(name: str) -> None:
     ----------
     name : str
         The problem.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
     """
     problem = PROBLEMS[name]
     with double_precision():
@@ -676,6 +686,11 @@ def check_potential(name: str, consumer: str) -> None:
     consumer : str
         ``"potential"`` for the full density, ``"tempered"`` for the
         density with the likelihood raised to a power.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
     """
     problem = PROBLEMS[name]
     with double_precision():
@@ -801,6 +816,7 @@ def compare_distribution(
     what : str
         A description for the report.
 
+
     Raises
     ------
     Mismatch
@@ -864,6 +880,11 @@ def check_prior(name: str, draws: int) -> None:
         The problem.
     draws : int
         The number of draws.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
     """
     problem = PROBLEMS[name]
     with double_precision():
@@ -899,6 +920,7 @@ def check_predictive(name: str) -> None:
     ----------
     name : str
         The problem.
+
 
     Raises
     ------
@@ -970,6 +992,11 @@ def check_kernel(name: str, kernel: str) -> None:
         The problem.
     kernel : str
         The kernel's name.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
     """
     problem = PROBLEMS[name]
     with double_precision():
@@ -983,7 +1010,9 @@ def check_kernel(name: str, kernel: str) -> None:
         moved = set()
         for step in range(6):
             draw = {key: value[0, step] for key, value in result.samples.items()}
-            moved.add(tuple(float(v) for value in draw.values() for v in value.reshape(-1)))
+            moved.add(
+                tuple(float(v) for value in draw.values() for v in value.reshape(-1))
+            )
             parts = {
                 site.name: site.unconstrain(draw[site.name])[0]
                 for site in registry.sites.values()
@@ -1012,6 +1041,7 @@ def check_kernel_distribution(kernel: str) -> None:
     kernel : str
         The kernel's name.
 
+
     Raises
     ------
     Mismatch
@@ -1034,12 +1064,20 @@ def check_kernel_distribution(kernel: str) -> None:
     error = 6 * float(batches.std()) / math.sqrt(30) + 1e-3 * deviation
     if abs(float(draws.mean()) - mean) > error:
         raise Mismatch(
-            "value", abs(float(draws.mean()) - mean), f"{kernel} mean {float(draws.mean())}"
+            "value",
+            abs(float(draws.mean()) - mean),
+            f"{kernel} mean {float(draws.mean())}",
         )
 
 
 def check_gibbs() -> None:
-    """Compare a Gibbs block's draws of a coin with its exact posterior."""
+    """Compare a Gibbs block's draws of a coin with its exact posterior.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
+    """
     problem = PROBLEMS["discrete"]
     count = 300
     with double_precision():
@@ -1071,6 +1109,7 @@ def check_smc(name: str, particles: int) -> None:
         The problem.
     particles : int
         The number of particles.
+
 
     Raises
     ------
@@ -1344,6 +1383,7 @@ def check_density(guide: str) -> None:
     guide : str
         The guide's name.
 
+
     Raises
     ------
     Mismatch
@@ -1397,7 +1437,13 @@ def check_density(guide: str) -> None:
 
 
 def check_delta() -> None:
-    """Require a point guide to place every draw at its point."""
+    """Require a point guide to place every draw at its point.
+
+    Raises
+    ------
+    Mismatch
+        If the result differs from its reference.
+    """
     problem = PROBLEMS["beta"]
     with double_precision(), torch.no_grad():
         torch.manual_seed(7)
@@ -1435,13 +1481,12 @@ def check_laplace() -> None:
         - math.log(at)
         - math.log1p(-at)
     )
-    compare_number(
-        found, wanted, joint_accuracy(wanted, 16.0), "Laplace density"
-    )
+    compare_number(found, wanted, joint_accuracy(wanted, 16.0), "Laplace density")
 
 
 def check_dais() -> None:
     """Require a path estimate of the evidence to average to the evidence.
+
 
     Raises
     ------
@@ -1472,12 +1517,15 @@ def check_dais() -> None:
     error = 6 * float(sample.std()) / math.sqrt(len(ratios))
     if abs(float(sample.mean()) - 1) > error:
         raise Mismatch(
-            "value", abs(float(sample.mean()) - 1), f"evidence ratio {float(sample.mean())}"
+            "value",
+            abs(float(sample.mean()) - 1),
+            f"evidence ratio {float(sample.mean())}",
         )
 
 
 def consistency() -> None:
     """Require the mixture and chain parameters to be distributions.
+
 
     Raises
     ------
@@ -1494,9 +1542,17 @@ def _register() -> None:
     """Register every check of this module."""
     consistency()
     for name in PROBLEMS:
-        add(f"consumer/trace/{name}", "trace", QUESTIONS[name], partial(check_trace, name))
         add(
-            f"consumer/replay/{name}", "replay", QUESTIONS[name], partial(check_replay, name)
+            f"consumer/trace/{name}",
+            "trace",
+            QUESTIONS[name],
+            partial(check_trace, name),
+        )
+        add(
+            f"consumer/replay/{name}",
+            "replay",
+            QUESTIONS[name],
+            partial(check_replay, name),
         )
     for name in CONTINUOUS:
         question = QUESTIONS[name]
@@ -1545,7 +1601,12 @@ def _register() -> None:
                 partial(check_objective, name, guide),
             )
     for name in ("beta", "ungrouped", "hmm", "discrete"):
-        add(f"consumer/prior/{name}", "prior", QUESTIONS[name], partial(check_prior, name, 200))
+        add(
+            f"consumer/prior/{name}",
+            "prior",
+            QUESTIONS[name],
+            partial(check_prior, name, 200),
+        )
         add(
             f"consumer/prior_long/{name}",
             "prior",
