@@ -45,6 +45,7 @@ from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
+    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -573,6 +574,7 @@ class PopulationTerm(ValueModel):
                 rows=not column.is_intercept,
                 coordinates=self.output is not None,
                 owner=None if column.is_intercept else self.prefix,
+                part=FormulaPart(field="fixed_columns", key=column.name),
             )
             for column in self.columns
         )

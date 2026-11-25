@@ -45,6 +45,7 @@ from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
+    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -205,8 +206,13 @@ class OffsetTerm(ValueModel):
             Each offset, shared by every output coordinate.
         """
         return tuple(
-            Contribution(name=name, rows=True, coordinates=False)
-            for name in self.names()
+            Contribution(
+                name=name,
+                rows=True,
+                coordinates=False,
+                part=FormulaPart(field="offsets", key=str(index)),
+            )
+            for index, name in enumerate(self.names())
         )
 
     def axes(self) -> tuple[AxisDecl, ...]:

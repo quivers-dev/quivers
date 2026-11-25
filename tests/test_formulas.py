@@ -49,8 +49,9 @@ import torch
 import pytest
 
 from quivers.dsl import Compiler, loads, parse
-from quivers.dsl.ast_nodes import Module
+from quivers.dsl.ast_nodes import LetStep, Module, ProgramDecl, SampleStep
 from quivers.dsl.emit import module_to_source
+from quivers.dsl.let_expr_traversal import free_let_names
 from quivers.formulas import (
     FixedColumn,
     Formula,
@@ -475,39 +476,7 @@ def _mutate_formula(parsed: Formula, field: str) -> Formula:
 
 def _mutate_complement(complement: FormulaData, field: str) -> FormulaData:
     """Change exactly one field of the complement of ``y ~ x + (1 | g)``."""
-    response_values = complement.response_values
-    fixed_column_names = dict(complement.fixed_column_names)
-    fixed_column_data = dict(complement.fixed_column_data)
-    group_original_names = complement.group_original_names
-    group_levels = complement.group_levels
-    group_indices = complement.group_indices
-    if field == "response_values":
-        response_values = response_values.copy()
-        response_values[0] += 1.0
-    elif field == "fixed_column_data":
-        data = fixed_column_data["x"].copy()
-        data[0] += 1.0
-        fixed_column_data["x"] = data
-    elif field == "fixed_column_names":
-        fixed_column_names["x"] = ("x", "renamed")
-    elif field == "group_original_names":
-        group_original_names = {"g": "renamed"}
-    elif field == "group_levels":
-        group_levels = {"g": tuple(reversed(group_levels["g"]))}
-    elif field == "group_indices":
-        group_indices = {"g": _swap_two_codes(group_indices["g"])}
-    else:
-        raise AssertionError(field)
-    return FormulaData(
-        formula=complement.formula,
-        response_name=complement.response_name,
-        response_values=response_values,
-        fixed_column_names=fixed_column_names,
-        fixed_column_data=fixed_column_data,
-        group_original_names=group_original_names,
-        group_levels=group_levels,
-        group_indices=group_indices,
-    )
+    return complement.with_(source=_mutate_formula(complement.source, field))
 
 
 class TestLensLaws:
@@ -562,8 +531,7 @@ class TestLensLaws:
         [
             "response_values",
             "fixed_column_data",
-            "fixed_column_names",
-            "group_original_names",
+            "fixed_columns",
             "group_levels",
             "group_indices",
         ],
@@ -624,52 +592,63 @@ class TestLensLaws:
         assert clone.fixed_columns == parsed.fixed_columns
         assert clone.group_indices == parsed.group_indices
 
-    def test_complement_is_formula_data_not_formula(self, base_df):
-        """The lens' complement is :class:`FormulaData`, carrying only
-        the fields not recoverable from the emitted :class:`Module`
-        (per-row data arrays, original identifier names, the
-        original formula string). It is not the entire
-        :class:`Formula`."""
-        parsed = formula_from_data("y ~ x + (1 | g)", base_df)
-        lens = FormulaToQVRModule(families["gaussian"])
-        _module, complement = lens.forward(parsed)
-        assert isinstance(complement, FormulaData)
-        assert complement.formula == "y ~ x + (1 | g)"
-        assert complement.response_name == "y"
-        assert "x" in complement.fixed_column_data
-        assert "g" in complement.group_levels
-
-    def test_backward_decodes_structure_from_module(self, base_df):
-        """The structural fields of the recovered :class:`Formula`
-        (fixed-column qvr names, intercept flag, random-effect
-        group / slope pairs) come from decoding the
-        :class:`Module`, not from the complement. Verify by
-        producing a Module without forwarding through the lens and
-        observing that backward recovers the correct structure."""
-        parsed = formula_from_data("y ~ x + (1 | g)", base_df)
-        lens = FormulaToQVRModule(families["gaussian"])
+    @pytest.mark.parametrize(
+        "spec, options, dropped",
+        [
+            ("y ~ x + z + (1 | g)", {}, "z"),
+            ("y ~ x + z + (1 + x | g)", {}, "g:x"),
+            ("y ~ x + z + (1 | g)", {}, "Intercept"),
+            ("y ~ x + z", {"center": True}, "Intercept"),
+            ("y ~ x + z", {"decomp": "QR"}, "x"),
+            ("y ~ x + offset(z)", {}, "0"),
+            ("y ~ x + s(z, k = 4)", {}, "smooth_s_z_k_4"),
+            ("y ~ x + gp(z, k = 3, c = 1.25)", {}, "design"),
+            ("y ~ x + mo(m)", {}, "mom"),
+        ],
+    )
+    def test_backward_reads_the_terms_from_the_module(
+        self, spec, options, dropped, base_df
+    ):
+        """A formula has exactly the terms whose bindings the module states."""
+        frame = base_df.assign(m=np.arange(len(base_df)) % 4)
+        parsed = formula_from_data(spec, frame)
+        lens = FormulaToQVRModule(families["gaussian"], **options)
         module, complement = lens.forward(parsed)
-        # Synthesise a minimal FormulaData with the data fields kept
-        # but the structural metadata stripped; the decoder fills the
-        # structural fields from the Module.
-        stripped = FormulaData(
-            formula=complement.formula,
-            response_name=complement.response_name,
-            response_values=complement.response_values,
-            fixed_column_names={},  # decoder uses qvr_name as fallback
-            fixed_column_data=complement.fixed_column_data,
-            group_original_names={},  # decoder uses qvr_group_name
-            group_levels=complement.group_levels,
-            group_indices=complement.group_indices,
+        assert lens.backward(module, complement) == parsed
+        witness = next(
+            witness
+            for witness in complement.witnesses
+            if dropped in (witness.part.key, witness.part.field.split("_")[0])
         )
-        recovered = lens.backward(module, stripped)
-        assert len(recovered.fixed_columns) == 2
-        assert recovered.fixed_columns[0].is_intercept is True
-        assert recovered.fixed_columns[1].qvr_name == "x"
-        assert recovered.fixed_columns[1].is_intercept is False
-        assert len(recovered.random_terms) == 1
-        assert recovered.random_terms[0].slope == "Intercept"
-        assert recovered.random_terms[0].group == "g"
+        edited = module.with_(
+            statements=tuple(
+                statement.with_(
+                    draws=tuple(
+                        step
+                        for step in statement.draws
+                        if not (
+                            (
+                                isinstance(step, LetStep)
+                                and (
+                                    step.name == witness.binding
+                                    or witness.binding in free_let_names(step.value)
+                                )
+                            )
+                            or (
+                                isinstance(step, SampleStep)
+                                and witness.binding in step.vars
+                            )
+                        )
+                    )
+                )
+                if isinstance(statement, ProgramDecl)
+                else statement
+                for statement in module.statements
+            )
+        )
+        recovered = lens.backward(edited, complement)
+        assert recovered == parsed.without([witness.part])
+        assert recovered != parsed
 
 
 # ---------------------------------------------------------------------------

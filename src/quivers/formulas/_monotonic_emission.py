@@ -45,6 +45,7 @@ from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
+    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -479,6 +480,7 @@ class MonotonicRow(ValueModel):
                 name=coefficient_site(self.prefix, self.term) + "_per_row",
                 rows=True,
                 coordinates=self.output is not None,
+                part=FormulaPart(field="monotonic_terms", key=self.term.name),
             ),
         )
 

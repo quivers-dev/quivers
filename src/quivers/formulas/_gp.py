@@ -77,6 +77,7 @@ from quivers.formulas._ast import (
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
+    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -1720,6 +1721,9 @@ class _ProcessTerm(ValueModel):
                 name=self.name + "_per_row",
                 rows=True,
                 coordinates=self.output is not None,
+                part=FormulaPart(
+                    field="design_terms", key=self.name.removeprefix(self.prefix)
+                ),
             ),
         )
 

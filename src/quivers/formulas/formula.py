@@ -30,7 +30,7 @@ namespace so users coming from R get the expected base R behaviour.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Literal
 import io
 import re
@@ -73,6 +73,7 @@ from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._latent_effects import LatentTerm
 from quivers.formulas._priors import PriorTarget
+from quivers.formulas._term import FormulaField, FormulaPart
 from quivers.formulas._ordered_contrasts import apply_ordered_contrasts
 from quivers.formulas._ordinal_coding import (
     CategoryCoding,
@@ -864,93 +865,99 @@ class Formula(ValueModel):
         default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
+    def without(self, parts: Collection[FormulaPart]) -> Formula:
+        """Return the formula without some of its elements.
 
-class FormulaData(ValueModel):
-    """Store the nonstructural complement of a `Formula` lens mapping.
+        Parameters
+        ----------
+        parts : Collection[FormulaPart]
+            Elements to leave out.
 
-    The emitted QVR module records formula structure under normalized
-    identifiers. This complement retains the source formula, original names,
-    presentation labels, per-row arrays, group levels, and group indices so
-    ``backward(module, complement)`` can reconstruct the original `Formula`.
-    Complements compare by value over every field, the arrays (stored
-    as read-only copies made at construction) included.
+        Returns
+        -------
+        Formula
+            The formula with every other element, in authored order.
+        """
 
-    Attributes
+        def absent(field: FormulaField, key: str) -> bool:
+            return FormulaPart(field=field, key=key) in parts
+
+        return self.with_(
+            fixed_columns=tuple(
+                column
+                for column in self.fixed_columns
+                if not absent("fixed_columns", column.name)
+            ),
+            design_terms=tuple(
+                term
+                for term in self.design_terms
+                if not absent("design_terms", term.qvr_name)
+            ),
+            random_terms=tuple(
+                term
+                for term in self.random_terms
+                if not absent("random_terms", f"{term.group}:{term.slope}")
+            ),
+            latent_terms=tuple(
+                term
+                for term in self.latent_terms
+                if not absent("latent_terms", term.name)
+            ),
+            monotonic_terms=tuple(
+                term
+                for term in self.monotonic_terms
+                if not absent("monotonic_terms", term.name)
+            ),
+            offsets=tuple(
+                column
+                for index, column in enumerate(self.offsets)
+                if not absent("offsets", str(index))
+            ),
+        )
+
+
+class Witness(ValueModel):
+    """The program binding that shows one element of a formula.
+
+    Parameters
     ----------
-    formula : str
-        Original formula string.
-    response_name : str
-        Original response column name.
-    response_values : np.ndarray
-        Response values with shape ``(N, *response_layout.event_shape)``; read-only.
-    response_layout : ResponseLayout
-        Event coordinates and evaluated numeric carrier.
-    fixed_column_names : Mapping[str, tuple[str, str]]
-        ``(term, name)`` pairs keyed by normalized fixed-column name; a
-        read-only mapping.
-    fixed_column_data : Mapping[str, np.ndarray]
-        Predictor values keyed by normalized fixed-column name; a
-        read-only mapping of read-only arrays.
-    category_specific_columns : tuple[str, ...]
-        Normalized fixed-column names carrying ordinal transition coefficients.
-    fixed_column_order : tuple[str, ...]
-        Authored fixed-column order, retained across staged predictor emission.
-    design_terms : tuple[GaussianDesignTerm, ...]
-        Retained coupled Gaussian designs, preserving source-lens value equality.
-    group_original_names : dict[str, str]
-        Original group names keyed by normalized group name.
-    group_levels : dict[str, tuple[str, ...]]
-        Canonical level order for each group.
-    modifiers : ResponseModifiers
-        Checked response-row weights and decision columns, independent of
-        predictor coefficients.
-    offsets : tuple[FixedColumn, ...]
-        Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
-        the linear-predictor scale. These columns receive no coefficients.
-    group_indices : dict[str, tuple[int, ...]]
-        Per-row integer codes for each group.
-    group_laws : tuple[GroupBlockLaw, ...]
-        Immutable group-block laws from this forward pass, independent of
-        subsequent uses of the configured lens.
-    prior_targets : tuple[PriorTarget, ...]
-        Immutable parameter roles, authored labels, and nominal coefficient
-        axes used to resolve the matching forward pass's prior rules.
-    random_terms : tuple[RandomTerm, ...]
-        Original slope-column data and correlation identities, matched to
-        the group/slope structure decoded from the emitted module.
-    monotonic_terms : tuple[MonotonicTerm, ...]
-        Retained ``mo()`` columns with their training indicators.
-    grouping : GroupingPlan
-        Retained derived grouping factors and multi-membership codes.
+    part : FormulaPart
+        Element of the formula.
+    binding : str
+        Name in the program.
     """
 
-    formula: str = ""
-    response_name: str = ""
-    response_layout: ResponseLayout = dx.field(
-        default_factory=ResponseLayout, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    response_values: np.ndarray = dx.field(
-        opaque=True, extras=opaque_by_value(_read_only)
-    )
-    fixed_column_names: Mapping[str, tuple[str, str]] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    fixed_column_data: Mapping[str, np.ndarray] = dx.field(
-        default_factory=dict,
-        opaque=True,
-        extras=opaque_by_value(_read_only_columns),
-    )
-    symbolic_columns: Mapping[str, SymbolicColumn] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    category_specific_columns: tuple[str, ...] = ()
-    fixed_column_order: tuple[str, ...] = ()
-    design_terms: tuple[GaussianDesignTerm, ...] = dx.field(
+    part: FormulaPart
+    binding: str
+
+
+class FormulaData(ValueModel):
+    """The complement of a `Formula` under its translation to a program.
+
+    The program states which terms a model has. The complement holds what a
+    program cannot state: the data, the authored names, and the binding by
+    which each authored element is recognized. ``backward(module, complement)``
+    reads the terms from the module and their content from here.
+
+    Parameters
+    ----------
+    source : Formula
+        The translated formula.
+    witnesses : tuple[Witness, ...]
+        Binding of each element of the formula in the program.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Laws of the group blocks of the program.
+    level_sites : tuple[LevelSite, ...]
+        Sites holding values for every level of a grouping factor.
+    prior_targets : tuple[PriorTarget, ...]
+        Parameter roles, authored labels, and nominal coefficient axes of the
+        program's sites.
+    """
+
+    source: Formula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    witnesses: tuple[Witness, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
-    group_original_names: dict[str, str] = dx.field(default_factory=dict)
-    group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
-    group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
     group_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -959,21 +966,6 @@ class FormulaData(ValueModel):
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    offsets: tuple[FixedColumn, ...] = dx.field(
-        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    modifiers: ResponseModifiers = dx.field(
-        default_factory=ResponseModifiers, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    random_terms: tuple[RandomTerm, ...] = dx.field(
-        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    monotonic_terms: tuple[MonotonicTerm, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    grouping: GroupingPlan = dx.field(
-        default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     @property

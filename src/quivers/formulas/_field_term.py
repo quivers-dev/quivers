@@ -36,6 +36,7 @@ from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
+    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -232,6 +233,7 @@ class FieldTerm(ValueModel):
                 name=f"{self.term.name}_per_row",
                 rows=True,
                 coordinates=self.output is not None,
+                part=FormulaPart(field="latent_terms", key=self.term.name),
             ),
         )
 

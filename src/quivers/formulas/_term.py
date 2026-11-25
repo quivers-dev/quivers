@@ -458,6 +458,32 @@ def resolve_names(
     return ProgramNames(inputs=inputs, bindings=renamed)
 
 
+type FormulaField = Literal[
+    "fixed_columns",
+    "design_terms",
+    "random_terms",
+    "latent_terms",
+    "monotonic_terms",
+    "offsets",
+]
+"""A field of `Formula` whose elements terms contribute."""
+
+
+class FormulaPart(ValueModel):
+    """One authored element of a formula.
+
+    Parameters
+    ----------
+    field : str
+        Field of `Formula` that holds the element.
+    key : str
+        Name of the element within the field.
+    """
+
+    field: FormulaField
+    key: str
+
+
 class Contribution(ValueModel):
     """One bound summand of a predictor.
 
@@ -474,6 +500,9 @@ class Contribution(ValueModel):
         the rows.
     varying : bool
         Whether the coefficient varies by the level of a grouping factor.
+    part : FormulaPart or None
+        Authored element the summand comes from; None for a summand no
+        formula states, such as a neural predictor.
     """
 
     name: str
@@ -481,6 +510,7 @@ class Contribution(ValueModel):
     coordinates: bool
     owner: str | None = None
     varying: bool = False
+    part: FormulaPart | None = None
 
     def cell(self, row: LetExprNode, coordinate: LetExprNode) -> LetExprNode:
         """Read the value at one row and output coordinate.

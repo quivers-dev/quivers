@@ -66,6 +66,7 @@ from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
+    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -1127,6 +1128,9 @@ class GroupTerm(ValueModel):
                 coordinates=self.active and self.output is not None,
                 owner=coefficient_owner(*self.key),
                 varying=True,
+                part=FormulaPart(
+                    field="random_terms", key=f"{self.group}:{self.slope}"
+                ),
             ),
         )
 

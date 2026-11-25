@@ -2,18 +2,11 @@
 QVR [`quivers.dsl.ast_nodes.Module`][quivers.dsl.ast_nodes.Module] AST.
 
 The compilation from a formula to a QVR program is a panproto-style
-*lens* whose complement is the strict subset of `Formula`
-fields that are not recoverable from the emitted
-`Module`, packaged as `FormulaData`. The forward
-direction produces ``(module, formula_data)`` where the structural
-fields of the formula (which columns exist, intercept flag, random
-effect group / slope structure, response identifier) are encoded as
-QVR latent / let / observe shape and the un-encodable fields (per-row
-data, original identifier names lost to `_qvr_name`'s
-non-alphanumeric → underscore substitution, the ``term`` / ``name``
-presentation labels, the original formula string) ride in
-`FormulaData`. The backward direction recovers the structure
-by calling `_decode_module` on the target and fuses it with the
+*lens*. The forward direction produces ``(module, formula_data)``: the module
+states which terms the model has, and `FormulaData` holds what a program
+cannot state (the data, the authored names, the original formula string) with
+the binding by which each authored element is recognized. The backward
+direction reads the terms from the module and their content from the
 complement.
 
 The lens target is a `Module`
@@ -175,7 +168,11 @@ from quivers.formulas._predictor_graph import (
     ComponentExpression,
     predictor_items,
 )
-from quivers.dsl.let_expr_traversal import substitute_let_expr, walk_let_expr
+from quivers.dsl.let_expr_traversal import (
+    free_let_names,
+    substitute_let_expr,
+    walk_let_expr,
+)
 from quivers.dsl.program_templates import _bound_names
 from quivers.formulas._priors import (
     PriorInput,
@@ -217,6 +214,7 @@ from quivers.formulas._term_emission import (
     emit_predictor,
 )
 from quivers.formulas._term import (
+    FormulaPart,
     OutputAxis,
     ProgramNames,
     SiteDecl,
@@ -228,9 +226,9 @@ from quivers.formulas._term import (
     resolve_names,
 )
 from quivers.formulas.formula import (
-    FixedColumn,
     Formula,
     FormulaData,
+    Witness,
     RandomTerm,
     _qvr_name,
 )
@@ -583,188 +581,38 @@ def _append_link(
     )
 
 
-def _decode_module(module: Module, layouts: tuple[GroupBlockLayout, ...] = ()) -> dict:
-    """Recover the structural part of a `Formula` from the
-    emitted `Module`.
+def _program_names(module: Module) -> frozenset[str]:
+    """List the names a program binds or reads.
 
-    Returns a dict carrying the fields the lens forward can deterministically
-    produce from a `Formula`:
+    Parameters
+    ----------
+    module : Module
+        Emitted module.
 
-    * ``n_obs``: the ``Resp`` cardinality.
-    * ``group_cardinalities``: ``{qvr_group_name: K}`` for each
-      ``object G : K`` declaration preceding the program block.
-    * ``fixed_qvr_names``: list of ``(qvr_name, is_intercept)`` in
-      emission order, recovered from the latent ``intercept`` /
-      ``beta_<qvr_name>`` declarations.
-    * ``random_terms_qvr``: list of ``(qvr_group_name, slope_qvr_or_intercept)``
-      in emission order, recovered from the
-      ``sigma_<g>_<slope>`` + ``alpha_<g>``/``beta_<g>_<slope>`` pattern.
-    * ``response_qvr_name``: the QVR-legal identifier of the
-      observe step's target.
-    * ``observe_family``: the family name on the observe step.
-
-    The decoder is intentionally narrow: it knows the canonical
-    emission shape of `FormulaToQVRModule` and recognises that
-    shape only. It is not a general QVR parser.
+    Returns
+    -------
+    frozenset[str]
+        Drawn sites, bindings, and the names the bindings read.
     """
-    sizes = finite_object_sizes(module)
-    n_obs = sizes.get("Resp")
-    group_cardinalities = {
-        name: size
-        for name, size in sizes.items()
-        if name != "Resp" and not name.startswith("Formula")
-    }
-    program = next(
-        (
-            statement
-            for statement in module.statements
-            if isinstance(statement, ProgramDecl)
-        ),
-        None,
-    )
-
-    if program is None or n_obs is None:
-        raise ValueError(
-            "_decode_module: module is not a formula-emitted program "
-            "(missing Resp object or program declaration)"
-        )
-
-    # Walk the program steps in emission order. The lens emits, per
-    # the layout in `_build_module`, the following pattern:
-    #
-    #   * One SampleStep per fixed coefficient (`intercept` or
-    #     `beta_<qvr_name>`).
-    #   * For non-intercepts, a LetStep `<beta_name>_per_row =
-    #     beta_name * <qvr_name>` immediately after the SampleStep.
-    #   * One SampleStep `sigma_<g>_<slope>` per random-effect entry,
-    #     followed by the plate draw (`alpha_<g>` or
-    #     `beta_<g>_<slope>`) and a LetStep `<latent_var>_per_row`.
-    #   * Aux-family SampleSteps (one per aux param).
-    #   * `let eta = ...`, `let mu = ...`.
-    #   * A final ObserveStep indexed by `Resp` bearing the response
-    #     qvr_name and the observe-family.
-    fixed_qvr_names: list[tuple[str, bool]] = []
-    random_terms_qvr: list[tuple[str, str]] = []
-    response_qvr_name: str = ""
-    observe_family: str = ""
-
-    seen_letnames: set[str] = set()
-    for step in program.draws:
-        if isinstance(step, LetStep):
-            seen_letnames.add(step.name)
+    names: set[str] = set()
+    for statement in module.statements:
+        if not isinstance(statement, ProgramDecl):
             continue
-        if isinstance(step, ObserveStep):
-            if step.index is not None:
-                response_qvr_name = step.vars[0]
-                observe_family = step.morphism
-            continue
-        if not isinstance(step, SampleStep):
-            continue
-        if len(step.vars) != 1:
-            continue
-        var = step.vars[0]
-        # Fixed effects: `intercept` or `beta_<qvr_name>` with no
-        # plate index. Random-effect sigmas are also unindexed, but
-        # are followed by an indexed plate draw; distinguish by
-        # checking the variable name pattern.
-        if step.index is None:
-            if var == "intercept":
-                fixed_qvr_names.append(("", True))
-            elif var.startswith("beta_") and not var.startswith("beta_"):
-                # unreachable; placeholder to clarify next branch
-                pass
-            elif var.startswith("sigma_"):
-                # random-effect scale; defer to the plate draw that
-                # follows, which carries (group, slope) in its name.
-                continue
-            elif var.startswith("beta_"):
-                qvr_name = var.removeprefix("beta_")
-                fixed_qvr_names.append((qvr_name, False))
-            else:
-                # aux family parameter (e.g. `sigma`, `phi`, ...).
-                continue
-        else:
-            # Indexed plate draw: this is the random-effect latent.
-            # Centered emission:    `alpha_<g>` or `beta_<g>_<slope>`
-            # Non-centered emission: `z_<g>_<slope>`, the unit-scale
-            # standard-Normal that the let-expression scales by sigma.
-            # `alpha_<g>` ↔ intercept slope; `beta_<g>_<slope>` ↔
-            # named slope.
-            if not isinstance(step.index, TypeName):
-                continue
-            qgroup = step.index.name
-            if qgroup in {"FormulaCategoryLogit", "FormulaCutpoint"}:
-                if var == "intercept":
-                    fixed_qvr_names.append(("", True))
-                elif var.startswith("beta_"):
-                    fixed_qvr_names.append((var.removeprefix("beta_"), False))
-                continue
-            if qgroup.startswith("FormulaRandomCell_") and var.startswith("z_"):
-                for source_group in sorted(group_cardinalities, key=len, reverse=True):
-                    prefix = f"z_{source_group}_"
-                    if not var.startswith(prefix):
-                        continue
-                    slope_qvr = var.removeprefix(prefix)
-                    random_terms_qvr.append((source_group, slope_qvr))
-                    break
-                continue
-            if var.startswith("alpha_"):
-                random_terms_qvr.append((qgroup, "Intercept"))
-            elif var.startswith("beta_"):
-                # Strip `beta_<qgroup>_` to isolate the slope qvr_name.
-                prefix = f"beta_{qgroup}_"
-                if var.startswith(prefix):
-                    slope_qvr = var.removeprefix(prefix)
-                    random_terms_qvr.append((qgroup, slope_qvr))
-            elif var.startswith("z_"):
-                # Non-centered form: `z_<qgroup>_<slope>`.
-                prefix = f"z_{qgroup}_"
-                if var.startswith(prefix):
-                    slope_qvr = var.removeprefix(prefix)
-                    if slope_qvr == "Intercept":
-                        random_terms_qvr.append((qgroup, "Intercept"))
-                    else:
-                        random_terms_qvr.append((qgroup, slope_qvr))
-
-    raw_names = {
-        step.vars[0]
-        for step in program.draws
-        if isinstance(step, SampleStep) and len(step.vars) == 1
-    }
-    for layout in layouts:
-        if not set(layout.raw_sites) <= raw_names:
-            continue
-        for member in layout.members:
-            term = (_qvr_name(layout.group), _qvr_name(member.slope))
-            if (
-                not member.prefix
-                and member.coefficient in seen_letnames
-                and term not in random_terms_qvr
-            ):
-                random_terms_qvr.append(term)
-
-    return {
-        "n_obs": n_obs,
-        "group_cardinalities": group_cardinalities,
-        "fixed_qvr_names": fixed_qvr_names,
-        "random_terms_qvr": random_terms_qvr,
-        "response_qvr_name": response_qvr_name,
-        "observe_family": observe_family,
-    }
+        for step in statement.draws:
+            if isinstance(step, SampleStep):
+                names.update(step.vars)
+            elif isinstance(step, LetStep):
+                names.add(step.name)
+                names.update(free_let_names(step.value))
+    return frozenset(names)
 
 
 class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     """Translate a `Formula` to a QVR `Module` AST.
 
-    A typed `didactic.api.Lens` whose complement is a
-    `FormulaData` carrier containing the fields of the source
-    `Formula` that are *not* recoverable from the emitted
-    `Module`. The per-row data arrays, the original (pre-
-    `_qvr_name`) identifiers, the per-column ``term`` / ``name``
-    presentation labels, and the original formula string travel in
-    the complement; everything else (which columns there are, the
-    intercept / random-term structure, the family choice) is decoded
-    back out of the Module by `_decode_module`.
+    A typed `didactic.api.Lens` whose complement is a `FormulaData`: the
+    source formula and the program binding of each of its elements. Which
+    terms a formula has is read back from the module.
 
     Parameters
     ----------
@@ -1737,39 +1585,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 families=with_flat_catalog(self.families(), module),
             )
         complement = FormulaData(
-            formula=formula.formula,
-            response_name=formula.response_name,
-            response_values=formula.response_values,
-            response_layout=formula.response_layout,
-            fixed_column_names={
-                col.qvr_name: (col.term, col.name) for col in formula.fixed_columns
-            },
-            fixed_column_data={
-                col.qvr_name: col.data
-                for col in formula.fixed_columns
-                if isinstance(col, FixedColumn) and not col.is_intercept
-            },
-            symbolic_columns={
-                col.qvr_name: col
-                for col in formula.fixed_columns
-                if isinstance(col, SymbolicColumn)
-            },
-            group_original_names={_qvr_name(g): g for g in formula.group_levels.keys()},
-            group_levels=dict(formula.group_levels),
-            group_indices=dict(formula.group_indices),
+            source=formula,
+            witnesses=self._witnesses(),
             group_laws=self.group_laws,
             level_sites=self.level_sites,
             prior_targets=self.prior_targets,
-            random_terms=formula.random_terms,
-            fixed_column_order=tuple(col.qvr_name for col in formula.fixed_columns),
-            design_terms=formula.design_terms,
-            category_specific_columns=tuple(
-                col.qvr_name for col in formula.fixed_columns if col.category_specific
-            ),
-            offsets=formula.offsets,
-            modifiers=formula.modifiers,
-            monotonic_terms=formula.monotonic_terms,
-            grouping=formula.grouping,
         )
         return module, complement
 
@@ -1925,9 +1745,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     def backward(self, target: Module, complement: FormulaData, /) -> Formula:
         """Recover a formula from a QVR module and its complement.
 
-        The column, intercept, and random-term structure is decoded
-        from ``target``; the data arrays and presentation labels come
-        from ``complement``.
+        The terms are those the module states; their data and authored names
+        come from the complement.
 
         Parameters
         ----------
@@ -1939,115 +1758,36 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Returns
         -------
         Formula
-            The reconstructed formula.
+            The complement's formula without the elements whose bindings the
+            module lacks.
         """
-        decoded = _decode_module(target, complement.group_layouts)
-        fixed_column_names = complement.fixed_column_names
-        fixed_column_data = complement.fixed_column_data
-
-        fixed_columns: list[FixedColumn | SymbolicColumn] = []
-        n_obs = decoded["n_obs"]
-        ones = np.ones(n_obs, dtype=float)
-        for qvr_name, is_intercept in decoded["fixed_qvr_names"]:
-            if is_intercept:
-                term, name = fixed_column_names.get(
-                    "intercept", ("Intercept", "Intercept")
-                )
-                fixed_columns.append(
-                    FixedColumn(
-                        term=term,
-                        name=name,
-                        qvr_name="intercept",
-                        is_intercept=True,
-                        data=ones,
-                    )
-                )
-            elif qvr_name in complement.symbolic_columns:
-                fixed_columns.append(complement.symbolic_columns[qvr_name])
-            else:
-                term, name = fixed_column_names.get(qvr_name, (qvr_name, qvr_name))
-                fixed_columns.append(
-                    FixedColumn(
-                        term=term,
-                        name=name,
-                        qvr_name=qvr_name,
-                        is_intercept=False,
-                        category_specific=qvr_name
-                        in complement.category_specific_columns,
-                        data=fixed_column_data[qvr_name],
-                    )
-                )
-
-        if complement.fixed_column_order:
-            by_name = {column.qvr_name: column for column in fixed_columns}
-            fixed_columns = [
-                by_name.pop(name)
-                for name in complement.fixed_column_order
-                if name in by_name
-            ]
-            fixed_columns.extend(by_name.values())
-
-        random_terms: list[RandomTerm] = []
-        for qgroup, slope_qvr in decoded["random_terms_qvr"]:
-            group = (
-                complement.group_original_names[qgroup]
-                if qgroup in complement.group_original_names
-                else qgroup
+        names = _program_names(target)
+        witnessed: dict[FormulaPart, bool] = {}
+        for witness in complement.witnesses:
+            witnessed[witness.part] = (
+                witnessed.get(witness.part, False) or witness.binding in names
             )
-            if slope_qvr == "Intercept":
-                random_terms.append(RandomTerm(slope="Intercept", group=group))
-            else:
-                # Recover the original slope name by inverting via the
-                # presentation map when available; otherwise pass the
-                # qvr-name through.
-                term_name_pairs = {
-                    qvr: (term, name)
-                    for qvr, (term, name) in fixed_column_names.items()
-                }
-                _, original_slope = term_name_pairs.get(
-                    slope_qvr, (slope_qvr, slope_qvr)
-                )
-                random_terms.append(RandomTerm(slope=original_slope, group=group))
+        return complement.source.without(
+            [part for part, present in witnessed.items() if not present]
+        )
 
-        original_terms = {
-            (_qvr_name(term.group), _qvr_name(term.slope)): term
-            for term in complement.random_terms
-        }
-        random_terms = [
-            original_terms.get((_qvr_name(term.group), _qvr_name(term.slope)), term)
-            for term in random_terms
-        ]
-        by_term = {
-            (_qvr_name(term.group), _qvr_name(term.slope)): term
-            for term in random_terms
-        }
-        random_terms = [
-            by_term.pop(key) for key in original_terms if key in by_term
-        ] + list(by_term.values())
-        if self._thresholds_by is not None:
-            random_terms = [
-                term
-                for term in random_terms
-                if not (
-                    term.group == self._thresholds_by
-                    and term.slope == "Intercept"
-                    and (_qvr_name(term.group), "Intercept") not in original_terms
-                )
-            ]
-        return Formula(
-            formula=complement.formula,
-            response_name=complement.response_name,
-            fixed_columns=tuple(fixed_columns),
-            design_terms=complement.design_terms,
-            monotonic_terms=complement.monotonic_terms,
-            grouping=complement.grouping,
-            random_terms=tuple(random_terms),
-            offsets=complement.offsets,
-            modifiers=complement.modifiers,
-            response_values=complement.response_values,
-            response_layout=complement.response_layout,
-            group_levels=complement.group_levels,
-            group_indices=complement.group_indices,
+    def _witnesses(self) -> tuple[Witness, ...]:
+        """List the bindings of the formula's own elements in the program.
+
+        Returns
+        -------
+        tuple[Witness, ...]
+            One per summand of the predictors the formula states. A parameter
+            with a formula of its own is no part of it.
+        """
+        return tuple(
+            Witness(part=contribution.part, binding=contribution.name)
+            for predictor in self._predictors
+            if predictor.role == "dpar"
+            and predictor.parameter not in self._distributional
+            for term in predictor.terms
+            for contribution in term.contributions()
+            if contribution.part is not None
         )
 
     def symbolic_column_expressions(self, formula: Formula) -> dict[str, LetExprNode]:
@@ -4051,16 +3791,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if isinstance(value, ComponentExpression):
                 if component is None:
                     # Only reject an actually used vector, not unrelated nodes.
-                    from quivers.dsl.let_expr_traversal import free_let_names
-
                     if f"nlpar_{name}" in free_let_names(expression):
                         raise ValueError(
                             f"nonlinear vector {name!r} requires explicit component expressions"
                         )
                     continue
                 if component not in value.components:
-                    from quivers.dsl.let_expr_traversal import free_let_names
-
                     if f"nlpar_{name}" in free_let_names(expression):
                         raise ValueError(
                             f"nonlinear vector {name!r} has no component {component!r}"
