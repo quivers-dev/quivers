@@ -16,9 +16,12 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.dsl.ast_nodes import LetExprNode, ProgramStep
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._ast import _index, _var
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceBasis
+from quivers.formulas._group_emission import bind_rows
 from quivers.formulas._group_law import (
     ByLevels,
     ByLKJCorrelation,
@@ -54,6 +57,7 @@ from quivers.formulas._grouping_emission import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Emission,
     InputDecl,
     OutputAxis,
     SiteDecl,
@@ -1049,3 +1053,65 @@ class GroupTerm(ValueModel):
             None.
         """
         return None
+
+    @property
+    def binding(self) -> str:
+        """Name the binding of the contribution.
+
+        Returns
+        -------
+        str
+            A row vector, or an array over the output axis and the rows.
+        """
+        return f"{coefficient_binding(*self.key)}_per_row"
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The block holding the coefficient, unless emitted, and the contribution.
+        """
+        steps, gathered = emission.gathered(self.key, self.law)
+        contribution: list[ProgramStep] = []
+        bind_rows(
+            self.binding,
+            self.rows,
+            gathered,
+            self.output.name if self.output is not None else None,
+            contribution,
+        )
+        return (*steps, *contribution)
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution.
+        """
+        return (_var(self.binding),)
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution there.
+        """
+        return (_index(self.binding, component, row),)

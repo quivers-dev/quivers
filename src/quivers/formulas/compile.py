@@ -114,9 +114,11 @@ from quivers.formulas.family import Domain, Family, Link, families, links
 from quivers.formulas._recorded_event_families import check_recorded_event_family
 
 # brms mu<c>: category-specific predictors of categorical and simplex families.
-from quivers.formulas._category_formulas import (
+from quivers.formulas._category_emission import (
     append_category_predictors,
     append_scale_predictors,
+)
+from quivers.formulas._category_formulas import (
     component_valued_prefixes,
     is_category_parameter,
     is_scale_parameter,
@@ -140,11 +142,9 @@ from quivers.formulas._mixture import (
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
-from quivers.formulas._group_emission import bind_rows, emit_group_block
+from quivers.formulas._group_emission import emit_group_block
 from quivers.formulas._group_plan import (
-    coefficient_binding,
     plan_group_blocks,
-    row_map,
     plan_threshold_block,
 )
 from quivers.formulas._group_covariance import (
@@ -190,20 +190,13 @@ from quivers.formulas._prior_emission import (
 from quivers.formulas._brms_priors import (
     DefaultPriorPolicy,
     brms_default_rule,
-    sdgp_prior,
     with_flat_catalog,
 )
 from quivers.formulas._population_coordinates import (
     CENTERED_SUFFIX,
-    PopulationCoordinates,
-    emit_population,
-    population_coordinates,
 )
 
 from quivers.formulas._autocor import append_autocor_steps
-from quivers.formulas._gp import gp_block_steps
-from quivers.formulas._monotonic_emission import append_monotonic_terms
-from quivers.formulas._latent_effects import append_latent_terms
 from quivers.formulas._predictor import (
     Predictor,
     PredictorOptions,
@@ -211,8 +204,15 @@ from quivers.formulas._predictor import (
     response_axis,
     transition_axis,
 )
+from quivers.formulas._term_emission import (
+    ProgramEmission,
+    emit_cells,
+    emit_predictor,
+    emit_terms,
+)
 from quivers.formulas._term import (
     OutputAxis,
+    SiteDecl,
     Term,
     bind_inputs,
     declare_axes,
@@ -234,25 +234,21 @@ _AUTOSCALED_PRIOR_FAMILIES: frozenset[str] = frozenset(
 )
 
 
-def _autoscaled_prior_step(
-    step: SampleStep,
-    column: "np.ndarray",
-) -> SampleStep:
+def _autoscaled_prior_step(step: SampleStep, divisor: float) -> SampleStep:
     """Rescale a default coefficient prior for its predictor column.
 
     For a term ``beta * column``, a coefficient scale ``s`` induces contribution
     scale ``s * rms(column)``. If the prior family has a scalar scale
     argument, this function divides that argument by the column RMS. It leaves
-    unsupported families, nonnumeric scales, and columns with nonpositive or
-    nonfinite RMS unchanged. This follows the default autoscaling convention
-    used by `rstanarm`.
+    unsupported families and nonnumeric scales unchanged. This follows the
+    default autoscaling convention used by `rstanarm`.
 
     Parameters
     ----------
     step : SampleStep
         Parsed default coefficient prior.
-    column : np.ndarray
-        Predictor column entering the coefficient's contribution.
+    divisor : float
+        Root mean square of the column entering the coefficient's contribution.
 
     Returns
     -------
@@ -262,10 +258,7 @@ def _autoscaled_prior_step(
     scale = _default_scalar_scale(step)
     if scale is None:
         return step
-    rms = float(np.sqrt(np.mean(np.square(np.asarray(column, dtype=np.float64)))))
-    if not np.isfinite(rms) or rms <= 0.0:
-        return step
-    return _with_scalar_scale(step, scale, scale.value / rms)
+    return _with_scalar_scale(step, scale, scale.value / divisor)
 
 
 def _default_scalar_scale(step: SampleStep) -> DrawArgScalar | None:
@@ -3358,7 +3351,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         name: str,
         default: str,
         *,
-        column: FixedColumn | SymbolicColumn | None = None,
         index=None,
         lower: float | None = None,
     ) -> SampleStep:
@@ -3368,8 +3360,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         ----------
         name, default : str
             Existing site binder and its default source prior.
-        column : FixedColumn or None
-            Autoscale only an unoverridden non-intercept default coefficient.
         index : ObjectExpr or None
             Original nominal coefficient axes.
         lower : float or None
@@ -3380,173 +3370,123 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         SampleStep
             Proper source prior with unchanged site name and index metadata.
         """
-        if name in self._prior_steps:
-            result = self._prior_steps[name]
-        else:
-            explicit = name in self._user_priors
-            text = self._user_priors.get(name, default)
-            result = self._parse_prior(name, text)
-            if not explicit and column is not None and not column.is_intercept:
-                result = (
-                    _scaled_prior_step(result, column.prior_multiplier)
-                    if isinstance(column, SymbolicColumn)
-                    else _autoscaled_prior_step(result, column.data)
-                )
+        result = (
+            self._prior_steps[name]
+            if name in self._prior_steps
+            else self._parse_prior(name, self._user_priors.get(name, default))
+        )
         return _prior_lower_bound(result, lower).with_(index=index)
+
+    def draw_site(self, site: SiteDecl) -> SampleStep:
+        """Draw a declared site from its configured or default prior.
+
+        A default prior is scaled to the design column its coefficient
+        multiplies; a configured prior is drawn as written.
+
+        Parameters
+        ----------
+        site : SiteDecl
+            Declared site with a default prior.
+
+        Returns
+        -------
+        SampleStep
+            The draw over the site's axis.
+        """
+        index = TypeName(name=site.index) if site.index is not None else None
+        result = self._prior_draw(site.name, site.default, index=index)
+        if site.name in self._prior_steps or site.name in self._user_priors:
+            return result
+        if site.multiplier is not None:
+            result = _scaled_prior_step(result, site.multiplier)
+        if site.divisor is not None:
+            result = _autoscaled_prior_step(result, site.divisor)
+        return result
+
+    def _append_axis_part(
+        self,
+        predictor: Predictor,
+        output: OutputAxis,
+        emission: ProgramEmission,
+        steps: list[ProgramStep],
+    ) -> None:
+        """Emit the part of one predictor over an output axis.
+
+        Parameters
+        ----------
+        predictor : Predictor
+            Planned predictor.
+        output : OutputAxis
+            Axis of the part.
+        emission : ProgramEmission
+            Program being emitted.
+        steps : list[ProgramStep]
+            Steps receiving the draws and ``eta_nonbaseline``, the value over
+            the rows and the axis.
+        """
+        value = emit_cells(
+            predictor.part(output),
+            emission,
+            steps,
+            _var("response"),
+            _var("category_logit"),
+        )
+        steps.append(
+            _let(
+                f"{predictor.prefix}eta_nonbaseline",
+                _factor(
+                    (("response", "Resp"), ("category_logit", output.name)),
+                    body=value,
+                ),
+            )
+        )
 
     def _append_categorical_predictor(
         self,
         formula: Formula,
+        predictor: Predictor,
         statements: list[Statement],
-        program_steps: list[ProgramStep],
-        *,
-        ordinal_transitions: bool = False,
-        correlated: Mapping[tuple[str, str, str], LetExprNode] | None = None,
-        parameter: str = "mu",
-        component_count: int | None = None,
-        reference: int | None = 0,
-        prefix: str = "",
+        steps: list[ProgramStep],
+        correlated: Mapping[tuple[str, str, str], LetExprNode],
     ) -> None:
-        """Emit one shared scalar-component predictor in retained label order.
+        """Emit a predictor with one coefficient vector over the components.
+
+        The location has every category, with the reference at zero; another
+        parameter has only the free coordinates.
 
         Parameters
         ----------
         formula : Formula
-            Evaluated design columns and group identities.
+            Response layout and categories.
+        predictor : Predictor
+            Planned predictor with an output axis.
         statements : list[Statement]
             Module objects receiving component and innovation axes.
-        program_steps : list[ProgramStep]
+        steps : list[ProgramStep]
             Priors, deterministic predictors, and group transformations.
-        ordinal_transitions : bool
-            Retain transition coordinates for the ordinal likelihood emitter.
-        correlated : Mapping or None
+        correlated : Mapping
             Coefficients already transformed by joint correlation blocks.
-        parameter : str
-            Location or coordinate-valued auxiliary parameter name.
-        component_count : int or None
-            Explicit coordinate extent, or the retained response category count.
-        reference : int or None
-            Zero-predictor component; None estimates every coordinate.
-        prefix : str
-            Native namespacing for auxiliary designs and coefficients.
-
-        Raises
-        ------
-        ValueError
-            If the response categories or retained component axis are invalid.
         """
-        n_categories = component_count or self._category_count(
-            formula, family=self._family.name
+        output = predictor.output
+        assert output is not None and self._family.response is not None
+        labels = self._component_labels(formula)
+        location = predictor.parameter == "mu"
+        reference = self._family.response.reference_index(labels) if location else None
+        components = len(labels) if location else output.size
+        category_index = f"{predictor.prefix}FormulaCategory"
+        self._append_finite_object(statements, category_index, components)
+        self._append_finite_object(statements, output.name, output.size)
+        self._append_axis_part(
+            predictor, output, ProgramEmission(self, statements, correlated), steps
         )
-        if (
-            not ordinal_transitions
-            and self._family.response is not None
-            and parameter == "mu"
-        ):
-            labels = self._component_labels(formula)
-            reference = self._family.response.reference_index(labels)
-        coordinates = tuple(
-            index for index in range(n_categories) if index != reference
-        )
-        if (
-            ordinal_transitions
-            and self._family.ordinal is not None
-            and self._family.ordinal.kind == "hurdle_cumulative"
-        ):
-            n_categories -= 1
-        n_logits = n_categories - int(reference is not None)
-        category_index = f"{prefix}FormulaCategory"
-        logit_index = (
-            "FormulaCutpoint"
-            if ordinal_transitions
-            else f"{prefix}FormulaCategoryLogit"
-        )
-        if not ordinal_transitions:
-            self._append_finite_object(statements, category_index, n_categories)
-            self._append_finite_object(statements, logit_index, n_logits)
-
-        cell_terms: list[LetExprNode] = []
-        response_var = _var("response")
-        logit_var = _var("category_logit")
-
-        for col in formula.fixed_columns:
-            beta_name = prefix + (
-                "intercept" if col.is_intercept else f"beta_{col.qvr_name}"
-            )
-            program_steps.append(
-                self._prior_draw(
-                    beta_name,
-                    self._fixed_prior,
-                    column=col,
-                    index=TypeName(name=logit_index),
-                )
-            )
-            coefficient = _index(beta_name, logit_var)
-            if col.is_intercept:
-                cell_terms.append(coefficient)
-            else:
-                cell_terms.append(
-                    _mul(coefficient, _index(prefix + col.qvr_name, response_var))
-                )
-
-        cell_terms.extend(
-            _index(f"{prefix}formula_offset_{index}", response_var)
-            for index, _ in enumerate(formula.offsets)
-        )
-
-        if (
-            self._predictor_name is not None
-            and not ordinal_transitions
-            and parameter == "mu"
-        ):
-            predictor_index = _add(
-                _mul(
-                    response_var,
-                    LetExprLiteral(value=float(n_logits), integral=True),
-                ),
-                logit_var,
-            )
-            cell_terms.append(_index(self._predictor_name, predictor_index))
-
-        cell_terms.extend(
-            _index(name, logit_var, response_var)
-            for name in self._append_group_terms(
-                formula,
-                statements,
-                program_steps,
-                prefix=prefix,
-                correlated=correlated,
-                output_axis=logit_index,
-            )
-        )
-
-        for contribution in self._append_design_terms(
-            formula,
-            program_steps,
-            prefix=prefix,
-            component_axis=logit_index,
-            components=n_logits,
-            statements=statements,
-        ):
-            cell_terms.append(_index(contribution.name, response_var, logit_var))
-
-        program_steps.append(
-            _let(
-                f"{prefix}eta_nonbaseline",
-                _factor(
-                    (("response", "Resp"), ("category_logit", logit_index)),
-                    body=_add(*cell_terms),
-                ),
-            )
-        )
-        if ordinal_transitions:
-            return
         self._append_component_response(
-            program_steps,
-            parameter=parameter,
-            prefix=prefix,
+            steps,
+            parameter=predictor.parameter,
+            prefix=predictor.prefix,
             reference=reference,
-            coordinates=coordinates,
+            coordinates=tuple(
+                index for index in range(components) if index != reference
+            ),
             category_index=category_index,
         )
 
@@ -3830,304 +3770,20 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 result.update(emit_group_block(self, law, statements, steps))
         return result
 
-    def _append_group_terms(
-        self,
-        formula: Formula,
-        statements: list[Statement],
-        steps: list[ProgramStep],
-        *,
-        prefix: str,
-        correlated: Mapping[tuple[str, str, str], LetExprNode] | None,
-        output_axis: str | None,
-    ) -> list[str]:
-        """Emit the row contribution of every group coefficient of a predictor.
-
-        Each coefficient is gathered at the rows' levels, from its joint
-        block or from its own block emitted here, and carried to the rows by
-        its row map.
+    def _predictor(self, prefix: str) -> Predictor:
+        """Return the planned predictor of one namespace.
 
         Parameters
         ----------
-        formula : Formula
-            Evaluated group terms and their row maps.
-        statements : list[Statement]
-            Module declarations receiving the axes of group blocks.
-        steps : list[ProgramStep]
-            Steps receiving the blocks and the row contributions.
         prefix : str
-            Namespace of the predictor's coefficients and covariates.
-        correlated : Mapping or None
-            Coefficients of blocks emitted ahead of the predictor, gathered
-            at the rows' levels.
-        output_axis : str or None
-            Component axis of the predictor's coefficients; None for scalar
-            coefficients.
+            Namespace: empty for the location.
 
         Returns
         -------
-        list[str]
-            The binding of each group coefficient's contribution: a row
-            vector for scalar coefficients, otherwise an array over the
-            output axis and the rows.
+        Predictor
+            The predictor of the latest plan.
         """
-        emitted = dict(correlated or {})
-        names: list[str] = []
-        for term in formula.random_terms:
-            key = (prefix, term.group, term.slope)
-            if key not in emitted:
-                emitted.update(
-                    emit_group_block(self, self._group_plan[key], statements, steps)
-                )
-            name = f"{coefficient_binding(prefix, term.group, term.slope)}_per_row"
-            bind_rows(
-                name, row_map(formula, term, prefix), emitted[key], output_axis, steps
-            )
-            names.append(name)
-        return names
-
-    def _append_predictor(
-        self,
-        formula: Formula,
-        statements: list[Statement],
-        program_steps: list[ProgramStep],
-        *,
-        prefix: str = "",
-        predictor_name: str | None = None,
-        correlated: Mapping[tuple[str, str, str], LetExprNode] | None = None,
-    ) -> LetExprNode:
-        """Emit one independently named predictor, sharing only grouping axes.
-
-        Parameters
-        ----------
-        formula : Formula
-            Evaluated design columns and group coding.
-        statements : list[Statement]
-            Module declarations receiving the axes of group blocks.
-        program_steps : list[ProgramStep]
-            Steps to append coefficient draws and row contributions to.
-        prefix : str
-            Namespace for this predictor's coefficients and covariates.
-        predictor_name : str or None
-            Optional host-computed contribution on the predictor scale.
-        correlated : Mapping[tuple[str, str, str], LetExprNode] or None
-            Row-wise coefficients keyed by predictor prefix, group, and slope.
-
-        Returns
-        -------
-        LetExprNode
-            Sum of the predictor contributions, or scalar zero.
-        """
-        linear_terms: list[LetExprNode] = [
-            _var(f"{prefix}formula_offset_{index}")
-            for index, _ in enumerate(formula.offsets)
-        ]
-        linear_terms.extend(
-            self._append_design_terms(formula, program_steps, prefix=prefix)
-        )
-        linear_terms.extend(
-            append_monotonic_terms(self, formula, program_steps, prefix=prefix)
-        )
-
-        # brms centering and QR coordinates replace the ordinary coefficient loop.
-        coordinates = self._population_plan(formula, prefix)
-        if coordinates is not None:
-            linear_terms.extend(
-                emit_population(
-                    formula,
-                    program_steps,
-                    prefix,
-                    coordinates,
-                    lambda name, column: self._prior_draw(
-                        name, self._fixed_prior, column=column
-                    ),
-                )
-            )
-        # Fixed effects: one scalar latent per design-matrix column.
-        for col in formula.fixed_columns if coordinates is None else ():
-            beta_name = prefix + (
-                "intercept" if col.is_intercept else f"beta_{col.qvr_name}"
-            )
-            program_steps.append(
-                self._prior_draw(beta_name, self._fixed_prior, column=col)
-            )
-            if col.is_intercept:
-                linear_terms.append(_var(beta_name))
-            else:
-                contrib_name = f"{beta_name}_per_row"
-                program_steps.append(
-                    _let(
-                        contrib_name, _mul(_var(beta_name), _var(prefix + col.qvr_name))
-                    )
-                )
-                linear_terms.append(_var(contrib_name))
-
-        if predictor_name is not None:
-            # A host-attached differentiable predictor contributes on the
-            # linear-predictor scale. The free name is supplied by ``fit`` at
-            # every optimization step, so gradients remain connected to the
-            # external module rather than being frozen into the data frame.
-            linear_terms.append(_var(predictor_name))
-
-        linear_terms.extend(
-            _var(name)
-            for name in self._append_group_terms(
-                formula,
-                statements,
-                program_steps,
-                prefix=prefix,
-                correlated=correlated,
-                output_axis=None,
-            )
-        )
-
-        return _add(*linear_terms) if linear_terms else LetExprLiteral(value=0.0)
-
-    def _population_plan(
-        self, formula: Formula, prefix: str
-    ) -> PopulationCoordinates | None:
-        """Decide brms centering and QR coordinates for one predictor.
-
-        Parameters
-        ----------
-        formula : Formula
-            Evaluated predictor.
-        prefix : str
-            Its namespace: location, ``dpar_<name>_``, or ``nlpar_<name>_``.
-
-        Returns
-        -------
-        PopulationCoordinates or None
-            The coordinate plan, or None for the ordinary emission.
-        """
-        if not self._coordinates_supported or prefix.startswith("nlpar_"):
-            return None
-        if prefix:
-            center = self._default_priors == "brms" or self._center is True
-            decomp = "none"
-        else:
-            center = (
-                self._center
-                if self._center is not None
-                else self._default_priors == "brms"
-            )
-            decomp = self._decomp
-        return population_coordinates(formula, prefix, center=center, decomp=decomp)
-
-    def _append_design_terms(
-        self,
-        formula: Formula,
-        steps: list[ProgramStep],
-        *,
-        prefix: str = "",
-        component_axis: str | None = None,
-        components: int | None = None,
-        statements: list[Statement] | None = None,
-    ) -> list[LetExprVar]:
-        """Emit coupled Gaussian coordinates through the shared source priors.
-
-        Parameters
-        ----------
-        formula : Formula
-            Retained row designs and coupled coefficient blocks.
-        steps : list[ProgramStep]
-            Existing source program receiving priors and contractions.
-        prefix : str
-            Owning predictor namespace.
-        component_axis : str or None
-            Existing nominal free-response or transition coordinate axis.
-        components : int or None
-            Extent of that axis, when a component-valued predictor is required.
-        statements : list[Statement] or None
-            Existing module declarations receiving joint innovation axes.
-
-        Returns
-        -------
-        list[LetExprVar]
-            Scalar-row or row-by-component additive contribution bindings.
-        """
-        values = []
-        shared_scales: set[str] = set()
-        for term in formula.design_terms:
-            name = prefix + term.qvr_name
-            scale, raw, coefficients = (
-                prefix + (term.scale_group or term.qvr_name) + "_scale",
-                name + "_z",
-                name + "_coefficients",
-            )
-            axis = name + "_Coordinate"
-            # brms approximate gp(): coefficients sqrt(spd(sdgp, lscale)) * z.
-            if term.gp is not None:
-                if component_axis is not None:
-                    raise ValueError(
-                        f"{term.term}: gp() terms are not supported in predictors "
-                        "with one coefficient per response category"
-                    )
-                steps.extend(
-                    gp_block_steps(
-                        self,
-                        term.gp,
-                        name,
-                        prefix,
-                        sdgp_prior(formula.response_values, self._family),
-                    )
-                )
-                contribution = name + "_per_row"
-                steps.append(
-                    _let(contribution, _call("matmul", _var(name), _var(coefficients)))
-                )
-                values.append(_var(contribution))
-                continue
-            # Smooths sharing an mgcv id share one sampled smoothing scale.
-            if scale not in shared_scales:
-                shared_scales.add(scale)
-                steps.append(
-                    self._prior_draw(
-                        scale,
-                        self._random_scale_prior,
-                        index=TypeName(name=component_axis)
-                        if component_axis is not None
-                        else None,
-                    )
-                )
-            if component_axis is None:
-                steps.append(
-                    _draw(raw, "Normal", (0.0, 1.0), index=TypeName(name=axis))
-                )
-                steps.append(_let(coefficients, _mul(_var(scale), _var(raw))))
-            else:
-                assert components is not None and statements is not None
-                innovation_axis = name + "_InnovationCoordinate"
-                self._append_finite_object(
-                    statements, innovation_axis, term.data.shape[1] * components
-                )
-                steps.append(
-                    _draw(
-                        raw, "Normal", (0.0, 1.0), index=TypeName(name=innovation_axis)
-                    )
-                )
-                basis, component = _var("design_basis"), _var("design_component")
-                flat = _add(
-                    _mul(basis, LetExprLiteral(value=components, integral=True)),
-                    component,
-                )
-                steps.append(
-                    _let(
-                        coefficients,
-                        _factor(
-                            (
-                                ("design_basis", axis),
-                                ("design_component", component_axis),
-                            ),
-                            body=_mul(_index(scale, component), _index(raw, flat)),
-                        ),
-                    )
-                )
-            contribution = name + "_per_row"
-            steps.append(
-                _let(contribution, _call("matmul", _var(name), _var(coefficients)))
-            )
-            values.append(_var(contribution))
-        return values
+        return next(item for item in self._predictors if item.prefix == prefix)
 
     def _runtime_parameters(self, formula: Formula) -> tuple[QiecValueParameter, ...]:
         """Declare checked group-index and response-weight input tensors.
@@ -4576,8 +4232,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if graph is None:
             return
         for name, leaf in graph.leaves.items():
-            value = self._append_predictor(
-                leaf, statements, steps, prefix=f"nlpar_{name}_", correlated=correlated
+            value = emit_predictor(
+                self._predictor(f"nlpar_{name}_"),
+                ProgramEmission(self, statements, correlated),
+                steps,
             )
             raw = f"nlpar_{name}_raw"
             steps.append(_let(raw, value))
@@ -4673,14 +4331,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 continue
             if aux.per_component and predictor is not None:
                 self._append_categorical_predictor(
-                    predictor,
+                    formula,
+                    self._predictor(f"dpar_{aux.name}_"),
                     statements,
                     program_steps,
-                    parameter=aux.name,
-                    component_count=len(self._component_labels(formula)) - 1,
-                    reference=None,
-                    prefix=f"dpar_{aux.name}_",
-                    correlated=correlated,
+                    correlated,
                 )
                 continue
             if predictor is None:
@@ -4705,16 +4360,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     draw = draw.with_(index=TypeName(name="FormulaCategoryLogit"))
                 program_steps.append(draw)
             else:
-                linear_predictor = self._append_predictor(
-                    predictor,
-                    statements,
+                planned = self._predictor(f"dpar_{aux.name}_")
+                linear_predictor = emit_predictor(
+                    planned,
+                    ProgramEmission(self, statements, correlated),
                     program_steps,
-                    prefix=f"dpar_{aux.name}_",
-                    correlated=correlated,
                 )
                 eta_name = f"dpar_{aux.name}_eta"
                 program_steps.append(_let(eta_name, linear_predictor))
-                _append_link(program_steps, aux.name, _var(eta_name), aux.link)
+                _append_link(program_steps, aux.name, _var(eta_name), planned.link)
 
     def _build_module(
         self,
@@ -4848,7 +4502,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self, formula, statements, program_steps, correlated
             ):
                 self._append_categorical_predictor(
-                    formula, statements, program_steps, correlated=correlated
+                    formula, self._predictor(""), statements, program_steps, correlated
                 )
             if self._family.vector_response:
                 self._append_auxiliaries(formula, statements, program_steps, correlated)
@@ -4880,27 +4534,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             statements.append(ExportDecl(expr=ExprIdent(name="model")))
             return Module(statements=tuple(statements))
 
-        proportional = formula.with_(
-            fixed_columns=tuple(
-                col for col in formula.fixed_columns if not col.category_specific
-            ),
-            random_terms=tuple(
-                term
-                for term in formula.random_terms
-                if term.column is None or not term.column.category_specific
-            ),
-        )
         correlated = self._append_correlations(
             laws, statements, program_steps, supplied_groups or {}
         )
         self._append_graph_parameters(formula, statements, program_steps, correlated)
-        eta_expr = self._append_predictor(
-            proportional,
-            statements,
-            program_steps,
-            predictor_name=self._predictor_name,
-            correlated=correlated,
-        )
+        location = self._predictor("")
+        emission = ProgramEmission(self, statements, correlated)
+        eta_expr = emit_predictor(location, emission, program_steps)
 
         if self._predictor_graph is not None and "mu" in self._predictor_graph.roots:
             root = self._predictor_graph.roots["mu"]
@@ -4921,33 +4561,23 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 formula, statements, cutpoint_steps
             )
 
-        category_columns = tuple(
-            col for col in formula.fixed_columns if col.category_specific
+        transitions = tuple(
+            output for output, _ in location.parts() if output != location.output
         )
-        category_terms = tuple(
-            term
-            for term in formula.random_terms
-            if term.column is not None and term.column.category_specific
-        )
-        if category_columns or category_terms:
-            self._append_categorical_predictor(
-                formula.with_(
-                    fixed_columns=category_columns,
-                    design_terms=(),
-                    random_terms=category_terms,
-                    offsets=(),
-                ),
-                statements,
-                program_steps,
-                ordinal_transitions=True,
-                correlated=correlated,
-            )
+        for output in transitions:
+            assert output is not None
+            self._append_axis_part(location, output, emission, program_steps)
 
         program_steps.extend(cutpoint_steps)
 
-        # Structured latent terms (brms car) add coordinates to the predictor.
-        eta_expr = append_latent_terms(
-            self, formula, statements, program_steps, eta_expr
+        # Deferred terms, such as structured fields, follow the cutpoints.
+        eta_expr = _add(
+            eta_expr,
+            *emit_terms(
+                (term for term in location.part(None) if term.deferred),
+                emission,
+                program_steps,
+            ),
         )
         program_steps.append(_let("eta", eta_expr))
         # A log-scale location remains useful even when exp(eta) overflows.
@@ -4974,8 +4604,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     self._fixed_parameters.get("disc", 1.0) == 1.0
                     and "disc" not in self._distributional
                     and "disc" not in self._user_priors
-                    and not category_columns
-                    and not category_terms
+                    and not transitions
                 )
                 if not disc_is_unit:
                     self._append_ordinal_contrasts(

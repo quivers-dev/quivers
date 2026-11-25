@@ -15,6 +15,7 @@ contributions.
 
 from __future__ import annotations
 
+from functools import reduce
 from typing import TYPE_CHECKING
 
 import didactic.api as dx
@@ -30,28 +31,27 @@ from quivers.dsl.ast_nodes import (
     DrawArgScalar,
     LetExprLiteral,
     LetExprNode,
-    LetExprVar,
     ProgramStep,
     SampleStep,
-    TypeName,
 )
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._ast import _call, _let, _mul, _var
+from quivers.formulas._ast import _call, _index, _let, _mul, _var
 from quivers.formulas._monotonic import (
     MonotonicTerm,
     evaluate_monotonic_term,
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Emission,
     InputDecl,
     OutputAxis,
     SiteDecl,
     column_rms,
 )
-from quivers.formulas.formula import FixedColumn, Formula, _qvr_name
+from quivers.formulas.formula import Formula, _qvr_name
 
 if TYPE_CHECKING:
-    from quivers.formulas.compile import FormulaToQVRModule
+    pass
 
 __all__: list[str] = []
 
@@ -206,31 +206,29 @@ def value_binding(prefix: str, term: MonotonicTerm) -> str:
     return prefix + _qvr_name(term.name)
 
 
-def _simplex_prior(lens: FormulaToQVRModule, simplex: Simplex) -> SampleStep:
-    """Emit the Dirichlet prior of one simplex, expanding a scalar concentration.
+def _recycled_simplex(step: SampleStep, simplex: Simplex) -> SampleStep:
+    """Expand a scalar concentration of one simplex's Dirichlet prior.
 
     brms's ``dirichlet(1)`` recycles a scalar concentration to the simplex
     dimension; a vector concentration must have that length.
 
     Parameters
     ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the default and overriding priors.
+    step : SampleStep
+        Draw of the simplex.
     simplex : Simplex
         Site and extent.
 
     Returns
     -------
     SampleStep
-        The Dirichlet draw over the simplex axis.
+        The draw with one concentration per coordinate.
 
     Raises
     ------
     ValueError
         If the prior is not a Dirichlet, or its concentration has another length.
     """
-    default = "Dirichlet([" + ", ".join(["1.0"] * simplex.width) + "])"
-    step = lens._prior_draw(simplex.site, default, index=TypeName(name=simplex.axis))
     if step.morphism != "Dirichlet":
         raise ValueError(
             f"the simo prior of {simplex.label!r} must be a Dirichlet distribution, "
@@ -250,91 +248,6 @@ def _simplex_prior(lens: FormulaToQVRModule, simplex: Simplex) -> SampleStep:
             argument = argument.with_(value=value)
         arguments.append(argument)
     return step.with_(args=tuple(arguments))
-
-
-def append_monotonic_terms(
-    lens: FormulaToQVRModule,
-    formula: Formula,
-    steps: list[ProgramStep],
-    *,
-    prefix: str = "",
-) -> list[LetExprVar]:
-    """Emit the simplexes, coefficients, and row contributions of ``mo()`` terms.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
-    formula : Formula
-        One predictor's evaluated terms.
-    steps : list[ProgramStep]
-        Program steps receiving the draws and bindings.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    list[LetExprVar]
-        One row contribution per special-effects column.
-
-    Raises
-    ------
-    ValueError
-        If a generated name collides with a design input of the predictor, or
-        a simplex prior is invalid.
-    """
-    if not formula.monotonic_terms:
-        return []
-    taken = {prefix + column.qvr_name for column in formula.fixed_columns} | {
-        f"{prefix}random_{term.column.qvr_name}"
-        for term in formula.random_terms
-        if term.column is not None
-    }
-    sites = simplex_sites(formula, prefix)
-    for simplex in sites.values():
-        steps.append(_simplex_prior(lens, simplex))
-    contributions = []
-    for term in formula.monotonic_terms:
-        value = value_binding(prefix, term)
-        if value in taken or coefficient_site(prefix, term) in taken:
-            raise ValueError(
-                f"mo() term {term.name!r} collides with the design input {value!r}"
-            )
-        factors: list[LetExprNode] = []
-        for position, factor in enumerate(term.factors):
-            factors.append(
-                _mul(
-                    LetExprLiteral(value=float(factor.width)),
-                    _call(
-                        "matmul",
-                        _var(_design_input(prefix, term, position)),
-                        _var(sites[factor.simplex].site),
-                    ),
-                )
-            )
-        if term.column >= 0:
-            factors.append(_var(_covariate_input(prefix, term)))
-        product = factors[0]
-        for factor_value in factors[1:]:
-            product = _mul(product, factor_value)
-        steps.append(_let(value, product))
-        coefficient = coefficient_site(prefix, term)
-        steps.append(
-            lens._prior_draw(
-                coefficient,
-                lens._fixed_prior,
-                column=FixedColumn(
-                    term=term.term,
-                    name=term.name,
-                    qvr_name=_qvr_name(term.name),
-                    data=term.linear_values,
-                ),
-            )
-        )
-        contribution = coefficient + "_per_row"
-        steps.append(_let(contribution, _mul(_var(coefficient), _var(value))))
-        contributions.append(_var(contribution))
-    return contributions
 
 
 def _bindings(
@@ -557,6 +470,73 @@ class MonotonicRow(ValueModel):
             None.
         """
         return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The simplexes drawn with the column, its value, its coefficient,
+            and its contribution.
+        """
+        value = value_binding(self.prefix, self.term)
+        coefficient = coefficient_site(self.prefix, self.term)
+        declared = {site.name: site for site in self.sites()}
+        factors: list[LetExprNode] = [
+            _mul(
+                LetExprLiteral(value=float(simplex.width)),
+                _call(
+                    "matmul",
+                    _var(_design_input(self.prefix, self.term, position)),
+                    _var(simplex.site),
+                ),
+            )
+            for position, simplex in enumerate(self.simplexes)
+        ]
+        if self.term.column >= 0:
+            factors.append(_var(_covariate_input(self.prefix, self.term)))
+        return (
+            *(
+                _recycled_simplex(emission.draw(declared[simplex.site]), simplex)
+                for simplex in self.owned
+            ),
+            _let(value, reduce(_mul, factors)),
+            emission.draw(declared[coefficient]),
+            _let(coefficient + "_per_row", _mul(_var(coefficient), _var(value))),
+        )
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution.
+        """
+        return (_var(coefficient_site(self.prefix, self.term) + "_per_row"),)
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution at the row, the same at every coordinate.
+        """
+        return (_index(coefficient_site(self.prefix, self.term) + "_per_row", row),)
 
 
 def monotonic_rows(

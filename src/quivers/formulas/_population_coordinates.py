@@ -22,7 +22,7 @@ Both maps are linear with constant Jacobian (one for centering,
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import didactic.api as dx
 import numpy as np
@@ -33,13 +33,13 @@ from quivers.dsl.ast_nodes import (
     LetExprNode,
     LetStep,
     ProgramStep,
-    SampleStep,
 )
-from quivers.formulas._ast import _add, _let, _mul, _sub, _var
+from quivers.formulas._ast import _add, _index, _let, _mul, _sub, _var
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._term import (
     AxisDecl,
+    Emission,
     InputDecl,
     OutputAxis,
     SiteDecl,
@@ -446,6 +446,99 @@ class PopulationTerm(ValueModel):
         """
         return None
 
+    def coefficient(self, column: FixedColumn | SymbolicColumn) -> str:
+        """Name the reported coefficient of one column.
+
+        Parameters
+        ----------
+        column : FixedColumn or SymbolicColumn
+            Column of the block.
+
+        Returns
+        -------
+        str
+            Sampled site, or binding of the sampled coordinates.
+        """
+        return coefficient_site(
+            self.prefix, "intercept" if column.is_intercept else column.qvr_name
+        )
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The coefficients, or their sampled coordinates and the map back;
+            then, for scalar coefficients, the contribution of each column.
+        """
+        steps: list[ProgramStep] = []
+        bindings = tuple(
+            _let(
+                self.coefficient(column) + "_per_row",
+                _mul(
+                    _var(self.coefficient(column)), _var(self.prefix + column.qvr_name)
+                ),
+            )
+            if self.output is None and not column.is_intercept
+            else None
+            for column in self.columns
+        )
+        draws = tuple(emission.draw(site) for site in self.sites())
+        if self.coordinates is None:
+            for draw, binding in zip(draws, bindings, strict=True):
+                steps.append(draw)
+                if binding is not None:
+                    steps.append(binding)
+            return tuple(steps)
+        steps.extend(draws)
+        steps.extend(coordinate_bindings(self.coordinates))
+        steps.extend(binding for binding in bindings if binding is not None)
+        return tuple(steps)
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The intercept, and the bound contribution of each column.
+        """
+        return tuple(
+            _var(self.coefficient(column) + ("" if column.is_intercept else "_per_row"))
+            for column in self.columns
+        )
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            Each coordinate's coefficient times its column.
+        """
+        return tuple(
+            _index(self.coefficient(column), component)
+            if column.is_intercept
+            else _mul(
+                _index(self.coefficient(column), component),
+                _index(self.prefix + column.qvr_name, row),
+            )
+            for column in self.columns
+        )
+
 
 def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[str]:
     """List the reported population coefficient sites of every predictor.
@@ -468,67 +561,3 @@ def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[
 
 
 __all__: list[str] = []
-
-
-def emit_population(
-    formula: Formula,
-    steps: list[ProgramStep],
-    prefix: str,
-    plan: PopulationCoordinates,
-    draw: Callable[[str, FixedColumn | SymbolicColumn], SampleStep],
-) -> list[LetExprNode]:
-    """Emit population effects in brms's sampled coordinates.
-
-    Parameters
-    ----------
-    formula : Formula
-        Evaluated predictor.
-    steps : list
-        Program steps receiving draws, bindings, and contributions.
-    prefix : str
-        Predictor namespace.
-    plan : PopulationCoordinates
-        Centering and QR plan of this predictor.
-    draw : Callable
-        The compiler's prior emission for a coefficient site and its column,
-        which applies explicit priors and default autoscaling.
-
-    Returns
-    -------
-    list[LetExprNode]
-        Additive contributions on the original design, ``b_Intercept +
-        sum_j b_j x_j``; scoring costs O(N K) as for the ordinary emission.
-    """
-    transformed = set(plan.columns)
-    q_columns = dict(zip(plan.columns, plan.q_columns or (), strict=False))
-    for column in formula.fixed_columns:
-        name = "intercept" if column.is_intercept else column.qvr_name
-        site = coefficient_site(prefix, name)
-        if column.is_intercept and plan.centered:
-            steps.append(draw(site + CENTERED_SUFFIX, column))
-        elif plan.r_inverse is not None and name in transformed:
-            # Default coordinate priors scale with the XQ column they multiply.
-            coordinate = FixedColumn(
-                term=column.term,
-                name=column.name,
-                qvr_name=column.qvr_name,
-                data=np.asarray(q_columns[name], dtype=np.float64),
-            )
-            steps.append(draw(site + QR_SUFFIX, coordinate))
-        else:
-            steps.append(draw(site, column))
-    steps.extend(coordinate_bindings(plan))
-    contributions: list[LetExprNode] = []
-    for column in formula.fixed_columns:
-        site = coefficient_site(
-            prefix, "intercept" if column.is_intercept else column.qvr_name
-        )
-        if column.is_intercept:
-            contributions.append(_var(site))
-            continue
-        contribution = f"{site}_per_row"
-        steps.append(
-            _let(contribution, _mul(_var(site), _var(prefix + column.qvr_name)))
-        )
-        contributions.append(_var(contribution))
-    return contributions

@@ -38,6 +38,7 @@ u m^2 + m^3) per draw.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from functools import reduce
 import math
 from typing import TYPE_CHECKING, Literal
 
@@ -67,6 +68,8 @@ from quivers.formulas._ast import (
     _add,
     _call,
     _div,
+    _draw,
+    _index,
     _let,
     _mul,
     _sub,
@@ -74,6 +77,7 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Emission,
     InputDecl,
     OutputAxis,
     SiteDecl,
@@ -85,7 +89,6 @@ from quivers.qiec.types import REAL
 if TYPE_CHECKING:
     from formulae.matrices import DesignMatrices
 
-    from quivers.formulas.compile import FormulaToQVRModule
     from quivers.formulas.formula import Formula
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
@@ -928,90 +931,6 @@ def _log_spectral_density(
     )
 
 
-def gp_block_steps(
-    lens: FormulaToQVRModule,
-    block: GaussianProcessBlock,
-    name: str,
-    prefix: str,
-    sdgp_default: str,
-) -> list[ProgramStep]:
-    """Emit one GP's hyperparameters, innovations, and coefficients.
-
-    For the approximation the coefficients are brms's
-    ``rgp = sqrt(spd(slambda; sdgp, lscale)) .* zgp``, computed as
-    ``exp(log(spd) / 2)`` so a vanishing density keeps finite gradients. For
-    the exact GP they are the latent function at the distinct inputs (see
-    `_exact_steps`). ``name_coefficients`` then enters the shared design
-    contraction.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler with the shared prior emitter.
-    block : GaussianProcessBlock
-        Retained block.
-    name : str
-        Prefixed design identifier.
-    prefix : str
-        Owning predictor namespace.
-    sdgp_default : str
-        Default ``sdgp`` prior.
-
-    Returns
-    -------
-    list[ProgramStep]
-        Prior draws, innovations, and coefficient bindings.
-    """
-    sdgp, lscales = block.sites(prefix)
-    steps: list[ProgramStep] = [lens._prior_draw(sdgp, sdgp_default)]
-    for site, default in zip(lscales, block.lscale_priors, strict=True):
-        steps.append(lens._prior_draw(site, default))
-    if block.exact:
-        return steps + _exact_steps(block, name, sdgp, lscales)
-    raw = name + "_z"
-    steps.append(
-        SampleStep(
-            vars=(raw,),
-            morphism="Normal",
-            args=(
-                DrawArgNamed(parameter="loc", value=atom_to_draw_arg(0.0)),
-                DrawArgNamed(parameter="scale", value=atom_to_draw_arg(1.0)),
-            ),
-            index=TypeName(name=name + "_Coordinate"),
-        )
-    )
-    frequency_names = [
-        _var(f"{name}_frequency_sq_{d + 1}") for d in range(block.dimension)
-    ]
-    lscale_values = (
-        tuple(_var(lscales[0]) for _ in range(block.dimension))
-        if block.isotropic
-        else tuple(_var(site) for site in lscales)
-    )
-    log_spd = name + "_log_spd"
-    steps.append(
-        _let(
-            log_spd,
-            _log_spectral_density(
-                block,
-                _call("log", _var(sdgp)),
-                lscale_values,
-                tuple(frequency_names),
-            ),
-        )
-    )
-    steps.append(
-        _let(
-            name + "_coefficients",
-            _mul(
-                _call("exp", _mul(LetExprLiteral(value=0.5), _var(log_spd))),
-                _var(raw),
-            ),
-        )
-    )
-    return steps
-
-
 def _input_axis(name: str, block: GaussianProcessBlock) -> str:
     """Name the axis of an exact GP's training inputs.
 
@@ -1122,97 +1041,6 @@ def _correlation_expression(
             polynomial, _mul(LetExprLiteral(value=5.0 / 3.0), _mul(ratio, ratio))
         )
     return _mul(polynomial, _call("exp", _mul(LetExprLiteral(value=-root), ratio)))
-
-
-def _exact_steps(
-    block: GaussianProcessBlock, name: str, sdgp: str, lscales: tuple[str, ...]
-) -> list[ProgramStep]:
-    """Emit brms's exact GP from its sampled hyperparameters.
-
-    The steps are brms's ``gp_<cov>`` Stan function: the kernel matrix
-    ``sdgp^2 prod_d k_d(r_d / l_d)`` of the training inputs (one factor of
-    the Euclidean distance for an isotropic GP), plus ``1e-12`` on the
-    diagonal, its lower Cholesky factor, and ``f = L zgp`` with
-    ``zgp ~ N(0, I)``. A block specialized to prediction rows then draws
-    ``f`` at the fresh inputs from `GaussianProcessConditional`.
-
-    Parameters
-    ----------
-    block : GaussianProcessBlock
-        Exact block.
-    name : str
-        Prefixed design identifier.
-    sdgp : str
-        Marginal standard deviation site.
-    lscales : tuple[str, ...]
-        Length-scale sites.
-
-    Returns
-    -------
-    list[ProgramStep]
-        Innovations, kernel, factor, and ``name_coefficients``.
-    """
-    raw = name + "_z"
-    steps: list[ProgramStep] = [
-        SampleStep(
-            vars=(raw,),
-            morphism="Normal",
-            args=(
-                DrawArgNamed(parameter="loc", value=atom_to_draw_arg(0.0)),
-                DrawArgNamed(parameter="scale", value=atom_to_draw_arg(1.0)),
-            ),
-            index=TypeName(name=_input_axis(name, block)),
-        )
-    ]
-    correlation: LetExprNode | None = None
-    for distance, lscale in zip(
-        _distance_names(name, block),
-        lscales if not block.isotropic else lscales[:1],
-        strict=True,
-    ):
-        factor = _correlation_expression(block.kernel, _var(distance), _var(lscale))
-        correlation = factor if correlation is None else _mul(correlation, factor)
-    assert correlation is not None
-    steps.append(
-        _let(
-            name + "_kernel",
-            _add(
-                _mul(_mul(_var(sdgp), _var(sdgp)), correlation),
-                _var(name + "_jitter"),
-            ),
-        )
-    )
-    steps.append(_let(name + "_factor", _call("cholesky", _var(name + "_kernel"))))
-    if block.prediction_inputs is None:
-        steps.append(
-            _let(
-                name + "_coefficients",
-                _call("matmul", _var(name + "_factor"), _var(raw)),
-            )
-        )
-        return steps
-    steps.append(
-        _let(name + "_values", _call("matmul", _var(name + "_factor"), _var(raw)))
-    )
-    arguments = {"values": name + "_values", "scale": sdgp}
-    arguments.update(
-        {
-            f"lscale_{d + 1}": site
-            for d, site in enumerate(lscales if not block.isotropic else lscales[:1])
-        }
-    )
-    arguments["anchor"] = name + "_anchor"
-    steps.append(
-        SampleStep(
-            vars=(name + "_coefficients",),
-            morphism=conditional_family_name(name),
-            args=tuple(
-                DrawArgNamed(parameter=key, value=atom_to_draw_arg(value))
-                for key, value in arguments.items()
-            ),
-        )
-    )
-    return steps
 
 
 def gp_rows(
@@ -1975,6 +1803,74 @@ class _ProcessTerm(ValueModel):
             overridable=False,
         )
 
+    def _drawn(
+        self, emission: Emission, coefficients: tuple[ProgramStep, ...]
+    ) -> tuple[ProgramStep, ...]:
+        """Wrap the coefficients in the hyperparameters and the contribution.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+        coefficients : tuple[ProgramStep, ...]
+            Steps binding ``name_coefficients``.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Every step of the term.
+        """
+        return (
+            *(emission.draw(site) for site in self.hyperparameters()),
+            *coefficients,
+            _let(
+                self.name + "_per_row",
+                _call("matmul", _var(self.name), _var(self.name + "_coefficients")),
+            ),
+        )
+
+    def _innovations(self, axis: str) -> ProgramStep:
+        """Draw the standard-normal innovations.
+
+        Parameters
+        ----------
+        axis : str
+            Axis of the innovations.
+
+        Returns
+        -------
+        ProgramStep
+            The draw.
+        """
+        return _draw(self.name + "_z", "Normal", (0.0, 1.0), index=TypeName(name=axis))
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution.
+        """
+        return (_var(self.name + "_per_row"),)
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution at the row, the same at every coordinate.
+        """
+        return (_index(self.name + "_per_row", row),)
+
 
 class SpectralTerm(_ProcessTerm):
     """An approximate Gaussian process on brms's spectral basis.
@@ -2036,6 +1932,52 @@ class SpectralTerm(_ProcessTerm):
             None.
         """
         return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contribution.
+
+        The coefficients are brms's ``rgp = sqrt(spd(slambda; sdgp, lscale))
+        .* zgp``, computed as ``exp(log(spd) / 2)`` so a vanishing density
+        keeps finite gradients.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Hyperparameters, innovations, coefficients, and contribution.
+        """
+        block, name = self.block, self.name
+        sdgp, lscales = block.sites(self.prefix)
+        log_spd = _log_spectral_density(
+            block,
+            _call("log", _var(sdgp)),
+            tuple(
+                _var(lscales[0] if block.isotropic else lscales[d])
+                for d in range(block.dimension)
+            ),
+            tuple(_var(f"{name}_frequency_sq_{d + 1}") for d in range(block.dimension)),
+        )
+        return self._drawn(
+            emission,
+            (
+                self._innovations(name + "_Coordinate"),
+                _let(name + "_log_spd", log_spd),
+                _let(
+                    name + "_coefficients",
+                    _mul(
+                        _call(
+                            "exp",
+                            _mul(LetExprLiteral(value=0.5), _var(name + "_log_spd")),
+                        ),
+                        _var(name + "_z"),
+                    ),
+                ),
+            ),
+        )
 
 
 class ExactProcessTerm(_ProcessTerm):
@@ -2165,6 +2107,70 @@ class ExactProcessTerm(_ProcessTerm):
             specialized block, or None.
         """
         return gp_conditional_catalog(((self.name, self.block),))
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contribution.
+
+        The steps are brms's ``gp_<cov>`` Stan function: the kernel matrix
+        ``sdgp^2 prod_d k_d(r_d / l_d)`` of the training inputs (one factor of
+        the Euclidean distance for an isotropic GP), plus ``1e-12`` on the
+        diagonal, its lower Cholesky factor, and ``f = L zgp`` with
+        ``zgp ~ N(0, I)``. A block specialized to prediction rows then draws
+        ``f`` at the fresh inputs from `GaussianProcessConditional`.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Hyperparameters, innovations, kernel, factor, coefficients, and
+            contribution.
+        """
+        block, name = self.block, self.name
+        sdgp, lscales = block.sites(self.prefix)
+        lengths = lscales[:1] if block.isotropic else lscales
+        correlation = reduce(
+            _mul,
+            (
+                _correlation_expression(block.kernel, _var(distance), _var(lscale))
+                for distance, lscale in zip(
+                    _distance_names(name, block), lengths, strict=True
+                )
+            ),
+        )
+        kernel = _add(
+            _mul(_mul(_var(sdgp), _var(sdgp)), correlation), _var(name + "_jitter")
+        )
+        values = _call("matmul", _var(name + "_factor"), _var(name + "_z"))
+        steps: list[ProgramStep] = [
+            self._innovations(_input_axis(name, block)),
+            _let(name + "_kernel", kernel),
+            _let(name + "_factor", _call("cholesky", _var(name + "_kernel"))),
+        ]
+        if block.prediction_inputs is None:
+            steps.append(_let(name + "_coefficients", values))
+            return self._drawn(emission, tuple(steps))
+        arguments = {
+            "values": name + "_values",
+            "scale": sdgp,
+            **{f"lscale_{d + 1}": site for d, site in enumerate(lengths)},
+            "anchor": name + "_anchor",
+        }
+        steps.append(_let(name + "_values", values))
+        steps.append(
+            SampleStep(
+                vars=(name + "_coefficients",),
+                morphism=conditional_family_name(name),
+                args=tuple(
+                    DrawArgNamed(parameter=key, value=atom_to_draw_arg(value))
+                    for key, value in arguments.items()
+                ),
+            )
+        )
+        return self._drawn(emission, tuple(steps))
 
 
 def process_term(

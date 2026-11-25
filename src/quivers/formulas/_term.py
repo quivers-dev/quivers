@@ -29,16 +29,20 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.dsl.ast_nodes import (
+    LetExprNode,
+    ProgramStep,
     QiecIndexName,
     QiecShapeIndex,
     QiecTypeApplication,
     QiecTypeName,
     QiecValueParameter,
+    SampleStep,
 )
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
 
 if TYPE_CHECKING:
+    from quivers.formulas._group_law import GroupBlockLaw
     from quivers.formulas.formula import FixedColumn
 
 __all__: list[str] = []
@@ -220,6 +224,76 @@ class SiteDecl(ValueModel):
         return axes[0] if axes else None
 
 
+class Emission(Protocol):
+    """What a term asks of the program being emitted."""
+
+    def draw(self, site: SiteDecl) -> SampleStep:
+        """Draw a site from its configured or default prior.
+
+        Parameters
+        ----------
+        site : SiteDecl
+            Site with a default prior.
+
+        Returns
+        -------
+        SampleStep
+            The draw over the site's axis.
+        """
+        ...
+
+    def declare(self, axis: AxisDecl) -> None:
+        """Declare a finite axis beside the steps that use it.
+
+        Parameters
+        ----------
+        axis : AxisDecl
+            Axis to declare once.
+        """
+        ...
+
+    def gathered(
+        self, key: tuple[str, str, str], law: GroupBlockLaw | None
+    ) -> tuple[tuple[ProgramStep, ...], LetExprNode]:
+        """Read a group-level coefficient at the rows' levels.
+
+        Parameters
+        ----------
+        key : tuple[str, str, str]
+            Predictor namespace, grouping factor, and coefficient label.
+        law : GroupBlockLaw or None
+            Law of the coefficient's block; None when another program emits it.
+
+        Returns
+        -------
+        tuple[tuple[ProgramStep, ...], LetExprNode]
+            The steps of the block, empty once it is emitted, and the gathered
+            coefficient.
+        """
+        ...
+
+    def correlation(
+        self, site: str, axis: AxisDecl, result: str
+    ) -> tuple[ProgramStep, ...]:
+        """Draw a correlation factor over a finite axis.
+
+        Parameters
+        ----------
+        site : str
+            Factor site.
+        axis : AxisDecl
+            Axis of the factor.
+        result : str
+            Binding of the factor, constant over an axis of one element.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The draw and the binding.
+        """
+        ...
+
+
 class Term(Protocol):
     """One additive term of a predictor."""
 
@@ -305,6 +379,48 @@ class Term(Protocol):
         -------
         FamilyCatalog or None
             Native laws the term's sites are drawn from, or None.
+        """
+        ...
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Draws and bindings in dependency order.
+        """
+        ...
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            Values over the rows, whose sum is the contribution.
+        """
+        ...
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            Values whose sum is the contribution there.
         """
         ...
 

@@ -22,7 +22,23 @@ import numpy.typing as npt
 import pandas as pd
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.dsl.ast_nodes import (
+    LetExprLiteral,
+    LetExprNode,
+    ProgramStep,
+    TypeName,
+)
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._ast import (
+    _add,
+    _call,
+    _draw,
+    _factor,
+    _index,
+    _let,
+    _mul,
+    _var,
+)
 import didactic.api as dx
 
 from quivers.formulas._data_options import (
@@ -55,6 +71,7 @@ from quivers.formulas._mgcv_smooth import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    Emission,
     InputDecl,
     OutputAxis,
     SiteDecl,
@@ -1604,6 +1621,80 @@ class BasisTerm(ValueModel):
             None.
         """
         return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The scale, the innovations, the coefficients, and the contribution.
+        """
+        draws = {site.name: site for site in self.sites()}
+        raw = draws[self.name + "_z"]
+        coefficients = self.name + "_coefficients"
+        steps: list[ProgramStep] = []
+        if self.owns_scale:
+            steps.append(emission.draw(draws[self.scale]))
+        if self.output is None:
+            value = _mul(_var(self.scale), _var(raw.name))
+        else:
+            emission.declare(self._innovations(self.output))
+            basis, component = _var("design_basis"), _var("design_component")
+            flat = _add(
+                _mul(basis, LetExprLiteral(value=self.output.size, integral=True)),
+                component,
+            )
+            value = _factor(
+                (
+                    ("design_basis", self.name + "_Coordinate"),
+                    ("design_component", self.output.name),
+                ),
+                body=_mul(_index(self.scale, component), _index(raw.name, flat)),
+            )
+        steps.append(
+            _draw(raw.name, "Normal", (0.0, 1.0), index=TypeName(name=raw.axes[0]))
+        )
+        steps.append(_let(coefficients, value))
+        steps.append(
+            _let(
+                self.name + "_per_row",
+                _call("matmul", _var(self.name), _var(coefficients)),
+            )
+        )
+        return tuple(steps)
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution.
+        """
+        return (_var(self.name + "_per_row"),)
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution there.
+        """
+        return (_index(self.name + "_per_row", row, component),)
 
 
 __all__: list[str] = []

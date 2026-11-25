@@ -16,7 +16,9 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.dsl.ast_nodes import LetExprLiteral, LetExprNode, ProgramStep
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._ast import _add, _index, _mul, _var
 from quivers.formulas._brms_priors import DefaultPriorPolicy, sdgp_prior
 from quivers.formulas._category_formulas import is_scale_parameter
 from quivers.formulas._design import SymbolicColumn
@@ -31,7 +33,14 @@ from quivers.formulas._population_coordinates import (
 )
 from quivers.formulas._predictor_graph import PredictorGraph, predictor_items
 from quivers.formulas._smooth import BasisTerm
-from quivers.formulas._term import AxisDecl, InputDecl, OutputAxis, SiteDecl, Term
+from quivers.formulas._term import (
+    AxisDecl,
+    Emission,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    Term,
+)
 from quivers.formulas.family import Family, Link, links
 from quivers.formulas.formula import FixedColumn, Formula, RandomTerm
 
@@ -151,6 +160,48 @@ class OffsetTerm(ValueModel):
         """
         return None
 
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Empty.
+        """
+        return ()
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            One input per offset.
+        """
+        return tuple(_var(name) for name in self.names())
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            Each offset at the row.
+        """
+        return tuple(_index(name, row) for name in self.names())
+
 
 class HostTerm(ValueModel):
     """A contribution computed by a host module at every evaluation.
@@ -239,6 +290,50 @@ class HostTerm(ValueModel):
             None.
         """
         return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Empty.
+        """
+        return ()
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The host input.
+        """
+        return (_var(self.name),)
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The host input at the flat position of the row and coordinate.
+        """
+        assert self.output is not None
+        width = LetExprLiteral(value=float(self.output.size), integral=True)
+        return (_index(self.name, _add(_mul(row, width), component)),)
 
 
 class PredictorOptions(ValueModel):

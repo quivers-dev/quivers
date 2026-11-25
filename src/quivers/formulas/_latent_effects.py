@@ -38,15 +38,15 @@ from quivers.dsl.ast_nodes import (
     LetExprNode,
     ProgramStep,
     SampleStep,
-    Statement,
     TypeName,
     atom_to_draw_arg,
 )
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._residual_dependence import ResidualLayout, ResidualResponse
-from quivers.formulas._ast import _add, _call, _let, _mul, _sub, _var
+from quivers.formulas._ast import _add, _call, _index, _let, _mul, _sub, _var
 from quivers.formulas._term import (
     AxisDecl,
+    Emission,
     InputDecl,
     OutputAxis,
     SiteDecl,
@@ -55,7 +55,6 @@ from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 
 if TYPE_CHECKING:
-    from quivers.formulas.compile import FormulaToQVRModule
     from quivers.formulas.formula import Formula
 
 CarType = Literal["escar", "esicar", "icar", "bym2"]
@@ -1126,134 +1125,6 @@ def _named_draw(
     )
 
 
-def append_latent_terms(
-    lens: FormulaToQVRModule,
-    formula: Formula,
-    statements: list[Statement],
-    steps: list[ProgramStep],
-    eta: LetExprNode,
-) -> LetExprNode:
-    """Emit each latent term's coordinates and add them to the predictor.
-
-    The emitted parameterization follows brms's Stan code: ``escar`` and
-    ``esicar`` draw ``rcar`` directly with precision ``1 / sdcar^2``; ``icar``
-    draws unit-precision ``zcar`` and sets ``rcar = sdcar * zcar``; ``bym2``
-    sets ``rcar = (sqrt(1 - rhocar) nszcar + sqrt(rhocar / s) zcar) sdcar``.
-    Latent residuals draw ``err`` from their structured law with scale
-    ``sderr``. Each contribution is multiplied by the data scalar
-    ``{name}_include``, zero for brms's ``incl_autocor = FALSE``.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler with the shared prior emitter.
-    formula : Formula
-        Location formula and its latent terms.
-    statements : list[Statement]
-        Module declarations receiving the coordinate axis.
-    steps : list[ProgramStep]
-        Program steps receiving priors and coordinates.
-    eta : LetExprNode
-        Linear predictor before latent terms.
-
-    Returns
-    -------
-    LetExprNode
-        Linear predictor including every latent contribution.
-    """
-    for term in formula.latent_terms:
-        prefix = term.name
-        anchor = f"{prefix}_anchor"
-        lens._append_finite_object(statements, term.axis, term.size)
-        if term.kind == "residual":
-            assert term.layout is not None
-            steps.append(lens._prior_draw("sderr", lens._random_scale_prior))
-            arguments: dict[str, str | float] = {"scale": "sderr"}
-            for site, _, lower, upper in term.coefficients:
-                steps.append(lens._prior_draw(site, f"Uniform({lower!r}, {upper!r})"))
-                arguments[site] = site
-            if term.layout.kind == "unstr":
-                lens._append_finite_object(
-                    statements, "FormulaAutocorTime", term.layout.times
-                )
-                lens._append_residual_correlation(
-                    steps,
-                    "FormulaAutocorTime",
-                    term.layout.times,
-                    result="formula_cortime_factor",
-                    site="Lcortime",
-                )
-                arguments["factor"] = "formula_cortime_factor"
-            arguments["anchor"] = anchor
-            steps.append(_named_draw(prefix, "LatentResidual", arguments))
-            effect = prefix
-        else:
-            effect = f"r{prefix}"
-            steps.append(lens._prior_draw(f"sd{prefix}", lens._random_scale_prior))
-            if term.car_type == "escar":
-                steps.append(lens._prior_draw(prefix, "Uniform(0.0, 1.0)"))
-                steps.append(
-                    _named_draw(
-                        effect,
-                        "SparseCAR",
-                        {"scale": f"sd{prefix}", "alpha": prefix, "anchor": anchor},
-                    )
-                )
-            elif term.car_type == "esicar":
-                steps.append(
-                    _named_draw(
-                        effect, "SparseICAR", {"scale": f"sd{prefix}", "anchor": anchor}
-                    )
-                )
-            else:
-                steps.append(
-                    _named_draw(
-                        f"z{prefix}", "SparseICAR", {"scale": 1.0, "anchor": anchor}
-                    )
-                )
-                if term.car_type == "icar":
-                    steps.append(
-                        _let(effect, _mul(_var(f"z{prefix}"), _var(f"sd{prefix}")))
-                    )
-                else:
-                    steps.append(lens._prior_draw(f"rho{prefix}", "Beta(1.0, 1.0)"))
-                    steps.append(
-                        _named_draw(
-                            f"nsz{prefix}",
-                            "Normal",
-                            {"loc": 0.0, "scale": 1.0},
-                            index=term.axis,
-                        )
-                    )
-                    rho = _var(f"rho{prefix}")
-                    spatial = _mul(
-                        _call("sqrt", _mul(rho, _var(f"{prefix}_inverse_scale"))),
-                        _var(f"z{prefix}"),
-                    )
-                    unstructured = _mul(
-                        _call("sqrt", _sub(LetExprLiteral(value=1.0), rho)),
-                        _var(f"nsz{prefix}"),
-                    )
-                    steps.append(
-                        _let(
-                            effect,
-                            _mul(_add(unstructured, spatial), _var(f"sd{prefix}")),
-                        )
-                    )
-        contribution = f"{prefix}_per_row"
-        steps.append(
-            _let(
-                contribution,
-                _mul(
-                    _var(f"{prefix}_include"),
-                    LetExprIndex(array=_var(effect), indices=(_var(f"{prefix}_idx"),)),
-                ),
-            )
-        )
-        eta = _add(eta, _var(contribution))
-    return eta
-
-
 class FieldTerm(ValueModel):
     """A structured field indexed by a coordinate of each row.
 
@@ -1380,6 +1251,161 @@ class FieldTerm(ValueModel):
             The laws of the field's coordinates.
         """
         return self.term.catalog
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the field and bind its contribution.
+
+        The emitted parameterization follows brms's Stan code: ``escar`` and
+        ``esicar`` draw ``rcar`` directly with precision ``1 / sdcar^2``;
+        ``icar`` draws unit-precision ``zcar`` and sets
+        ``rcar = sdcar * zcar``; ``bym2`` sets
+        ``rcar = (sqrt(1 - rhocar) nszcar + sqrt(rhocar / s) zcar) sdcar``.
+        Latent residuals draw ``err`` from their structured law with scale
+        ``sderr``. The contribution is multiplied by the data scalar
+        ``{name}_include``, zero for brms's ``incl_autocor = FALSE``.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Hyperparameters, coordinates, and contribution.
+        """
+        name = self.term.name
+        coordinate, *others = self.axes()
+        emission.declare(coordinate)
+        effect, steps = (
+            self._residual_steps(emission, tuple(others))
+            if self.term.layout is not None
+            else self._spatial_steps(emission)
+        )
+        contribution = _mul(
+            _var(f"{name}_include"),
+            LetExprIndex(array=_var(effect), indices=(_var(f"{name}_idx"),)),
+        )
+        return (*steps, _let(f"{name}_per_row", contribution))
+
+    def _residual_steps(
+        self, emission: Emission, axes: tuple[AxisDecl, ...]
+    ) -> tuple[str, tuple[ProgramStep, ...]]:
+        """Draw latent residuals from their structured law.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+        axes : tuple[AxisDecl, ...]
+            The time axis of an unstructured correlation.
+
+        Returns
+        -------
+        tuple[str, tuple[ProgramStep, ...]]
+            The residual binding and its steps.
+        """
+        name = self.term.name
+        declared = {site.name: site for site in self.sites()}
+        scale = f"sd{name}"
+        coefficients = tuple(site for site, *_ in self.term.coefficients)
+        steps: list[ProgramStep] = [
+            emission.draw(declared[site]) for site in (scale, *coefficients)
+        ]
+        arguments: dict[str, str | float] = {
+            "scale": scale,
+            **{site: site for site in coefficients},
+        }
+        for axis in axes:
+            emission.declare(axis)
+            factor = "formula_cortime_factor"
+            steps.extend(emission.correlation("Lcortime", axis, factor))
+            arguments["factor"] = factor
+        arguments["anchor"] = f"{name}_anchor"
+        steps.append(_named_draw(name, "LatentResidual", arguments))
+        return name, tuple(steps)
+
+    def _spatial_steps(self, emission: Emission) -> tuple[str, tuple[ProgramStep, ...]]:
+        """Draw a conditional autoregressive field over its locations.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[str, tuple[ProgramStep, ...]]
+            The binding of the location effects and its steps.
+        """
+        term, name = self.term, self.term.name
+        declared = {site.name: site for site in self.sites()}
+        scale, effect, anchor = f"sd{name}", f"r{name}", f"{name}_anchor"
+        steps: list[ProgramStep] = [emission.draw(declared[scale])]
+        if term.car_type == "escar":
+            steps.append(emission.draw(declared[name]))
+            steps.append(
+                _named_draw(
+                    effect,
+                    "SparseCAR",
+                    {"scale": scale, "alpha": name, "anchor": anchor},
+                )
+            )
+            return effect, tuple(steps)
+        if term.car_type == "esicar":
+            steps.append(
+                _named_draw(effect, "SparseICAR", {"scale": scale, "anchor": anchor})
+            )
+            return effect, tuple(steps)
+        standard = f"z{name}"
+        steps.append(
+            _named_draw(standard, "SparseICAR", {"scale": 1.0, "anchor": anchor})
+        )
+        if term.car_type == "icar":
+            steps.append(_let(effect, _mul(_var(standard), _var(scale))))
+            return effect, tuple(steps)
+        steps.append(emission.draw(declared[f"rho{name}"]))
+        steps.append(
+            _named_draw(
+                f"nsz{name}", "Normal", {"loc": 0.0, "scale": 1.0}, index=term.axis
+            )
+        )
+        rho = _var(f"rho{name}")
+        spatial = _mul(
+            _call("sqrt", _mul(rho, _var(f"{name}_inverse_scale"))), _var(standard)
+        )
+        unstructured = _mul(
+            _call("sqrt", _sub(LetExprLiteral(value=1.0), rho)), _var(f"nsz{name}")
+        )
+        steps.append(_let(effect, _mul(_add(unstructured, spatial), _var(scale))))
+        return effect, tuple(steps)
+
+    def summands(self) -> tuple[LetExprNode, ...]:
+        """Read the contributions of a scalar term.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution.
+        """
+        return (_var(f"{self.term.name}_per_row"),)
+
+    def cells(
+        self, row: LetExprNode, component: LetExprNode
+    ) -> tuple[LetExprNode, ...]:
+        """Read the contributions at one row and output coordinate.
+
+        Parameters
+        ----------
+        row, component : LetExprNode
+            Row and output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            The bound contribution at the row, the same at every coordinate.
+        """
+        return (_index(f"{self.term.name}_per_row", row),)
 
 
 def field_terms(
