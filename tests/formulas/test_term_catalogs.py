@@ -231,6 +231,7 @@ def test_joined_catalogs_hold_every_law_once():
     adjacency = _cycle("l", 4)
     labels = tuple(adjacency.index)
     spatial = FieldTerm(
+        prefix="",
         term=LatentTerm(
             name="car",
             kind="car",

@@ -455,6 +455,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             distributional=dict(response.lens._distributional),
             predictor_graph=response.lens._predictor_graph,
             fixed_parameters=dict(authored.fixed_parameters or {}),
+            default_priors=response.lens._default_priors,
+            center=response.lens._center,
+            decomp=response.lens._decomp,
             prediction_plan=FormulaPredictionPlan(
                 module=module,
                 designs=part.designs,
@@ -758,6 +761,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
 
         def member_names(member: GroupMemberLaw) -> tuple[CoefficientName, ...]:
             """Name the components of one group-level coefficient."""
+            if member.prefix not in scopes:
+                return ()
             return coefficient_names(
                 scopes[member.prefix],
                 outputs[member.prefix],

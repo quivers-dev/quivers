@@ -461,6 +461,8 @@ def single_variables(
 
     def member_names(member: GroupMemberLaw) -> tuple[CoefficientName, ...]:
         """Name the components of one group-level coefficient."""
+        if member.prefix not in scopes:
+            return ()
         return coefficient_names(
             scopes[member.prefix],
             planned[member.prefix].output,

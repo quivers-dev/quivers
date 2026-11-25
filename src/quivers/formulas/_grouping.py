@@ -1317,19 +1317,17 @@ def named_covariance(
     -------
     GroupCovariance or None
         The covariance of ``gr(g, cov = M)``, whose row names cover the
-        levels of ``g``; None for a term that names none.
+        levels of ``g``; None for a term that names none, or one absent from
+        ``data2``.
 
     Raises
     ------
     ValueError
-        If the matrix is absent, unlabeled, or its row and column labels
-        differ.
+        If the matrix is unlabeled, or its row and column labels differ.
     """
     name, group = options.covariance, options.group
-    if name is None:
+    if name is None or name not in data2:
         return None
-    if name not in data2:
-        raise ValueError(f"gr({group}, cov = {name}) requires data2[{name!r}]")
     matrix = data2[name].value
     if not isinstance(matrix, pd.DataFrame):
         raise ValueError(

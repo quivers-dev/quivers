@@ -1439,10 +1439,10 @@ def prior_table(
                 lower = rule.lower if lower is None else max(lower, rule.lower)
             if rule.upper is not None:
                 upper = rule.upper if upper is None else min(upper, rule.upper)
-        # Each component of a vector of parameters has brms's row.
+        # Each component of a vector of parameters has a row, as in brms.
         rows.extend(
             PriorRow(
-                site=target.site if site is None else site,
+                site=target.site,
                 prior=_step_prior(step),
                 class_=target.class_,
                 coef=target.coef,
@@ -1455,10 +1455,7 @@ def prior_table(
                 tag=None if rule is None else rule.tag,
                 source="default" if rule is None else "user",
             )
-            for dpar, site in (
-                [(name, target.component_site(name)) for name in target.parameters]
-                or [(target.dpar, None)]
-            )
+            for dpar in target.parameters or (target.dpar,)
         )
     return PriorTable(rows=tuple(rows), policy=policy)
 

@@ -433,7 +433,8 @@ def group_variables(
     laws : Sequence[GroupBlockLaw]
         Laws of the blocks, in the order of their variables.
     names : MemberNames
-        Names of a coefficient's components.
+        Names of a coefficient's components; empty for a coefficient of no
+        predictor, such as a threshold spacing.
     draws : Mapping[str, torch.Tensor]
         Draws holding the blocks' scales and Cholesky factors.
 
@@ -462,7 +463,7 @@ def group_variables(
                 ((rank, component.parameter), component.name)
                 for component in components
             )
-            if member.scale.site not in draws:
+            if not components or member.scale.site not in draws:
                 continue
             value = draws[member.scale.site]
             levels = value.reshape(*value.shape[:2], -1, member.width)

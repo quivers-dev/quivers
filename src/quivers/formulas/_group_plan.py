@@ -662,7 +662,8 @@ def block_covariance(
     Raises
     ------
     ValueError
-        If the terms name several covariances, or one besides the factor's.
+        If the terms name several covariances, one besides the factor's, or
+        one that is absent.
     """
     named = {
         _qvr_name(term.options.covariance): term.covariance
@@ -678,6 +679,8 @@ def block_covariance(
     if not named:
         return "", given
     ((name, covariance),) = named.items()
+    if covariance is None:
+        raise ValueError(f"gr({group}, cov = {name}) requires data2[{name!r}]")
     if given is not None and given != covariance:
         raise ValueError(
             f"grouping factor {group!r} has both gr(cov = {name}) and another "

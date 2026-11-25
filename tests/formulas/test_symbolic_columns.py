@@ -93,8 +93,7 @@ def test_symbolic_lens_retains_matching_complement_across_interleaved_forward_ca
     module, complement = lens.forward(a)
     lens.forward(b)
     assert lens.backward(module, complement) == a
-    assert complement.symbolic_columns == {"latent_x": a.fixed_columns[0]}
-    assert not complement.fixed_column_data
+    assert complement.source.fixed_columns == a.fixed_columns
     assert "latent_x" not in lens.fixed_column_observations(a)
 
 

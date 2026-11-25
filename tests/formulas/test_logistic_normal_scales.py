@@ -190,7 +190,7 @@ def test_brms_predicts_each_scale_through_the_log_link():
         "b",
         "sigmab",
     )
-    assert table["dpar_sigmab_intercept"].class_ == "Intercept"
+    assert table["dpar_sigmab_intercept_centered"].class_ == "Intercept"
     assert "sigma" not in table and "sigmab" not in table
 
 

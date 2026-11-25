@@ -165,14 +165,21 @@ def test_gr_cov_uses_the_data2_covariance_as_brms_lcov():
         num_steps=1,
         seed=1,
     )
-    covariance = priors.group_covariances["g2"].tensor()
+    covariance = priors.formula.random_terms[0].covariance.tensor()
     torch.testing.assert_close(covariance, lcov @ lcov.T)
     supplied = GroupCovariance(levels=("u", "v", "w"), matrix=lcov @ lcov.T)
     by_option = _forward("y ~ (1 | g2)", group_covariances={"g2": supplied})[2]
-    by_data2 = FormulaToQVRModule(
-        families["gaussian"], group_covariances=priors.group_covariances
-    ).forward(formula_from_data("y ~ (1 | g2)", frame))[0]
-    assert module_to_source(by_option) == module_to_source(by_data2)
+    by_data2 = FormulaToQVRModule(families["gaussian"]).forward(
+        formula_from_data(
+            "y ~ (1 | gr(g2, cov = A))", frame, data2={"A": _covariance()}
+        )
+    )[0]
+    # The covariance a term names is named after its matrix.
+    assert module_to_source(by_option) == (
+        module_to_source(by_data2)
+        .replace("level_basis_g2_A_", "level_basis_g2_")
+        .replace("FormulaGroupSupport_g2_A", "FormulaGroupSupport_g2")
+    )
     # The emitted factor reproduces brms's sd * Lcov * z law.
     lens = FormulaToQVRModule(families["gaussian"], group_covariances={"g2": supplied})
     formula = formula_from_data("y ~ (1 | g2)", frame)
@@ -250,7 +257,7 @@ def test_training_rows_reproduce_and_artifact_round_trips(tmp_path):
         fitted.posterior_linpred(num_samples=3, seed=4),
     )
     refit = fitted.update(data=frame.iloc[:27].reset_index(drop=True))
-    assert refit.group_covariances.keys() == {"g2"}
+    assert refit.formula.random_terms[-1].covariance is not None
     fresh = pd.DataFrame({"x": [0.1, -0.5], "g1": ["a", "c"], "g2": ["w", "u"]})
     expected = fitted.posterior_epred(new_data=fresh, num_samples=2, seed=9)
     path = tmp_path / "grouping.qfit"

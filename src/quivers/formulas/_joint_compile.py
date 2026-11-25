@@ -502,6 +502,7 @@ def _namespace(
     names = {value: prefix + value for value in variables - global_names}
     explicit_inputs = supplied_inputs or {}
     supplied_inputs = lens.symbolic_column_expressions(formula)
+    symbolic = set(supplied_inputs)
     for value, expression in explicit_inputs.items():
         if value in supplied_inputs and supplied_inputs[value] != expression:
             raise ValueError(
@@ -512,9 +513,15 @@ def _namespace(
     # Fixed columns may be inferred inputs of an ordinary emission, so use the
     # actual retained input metadata as well as explicit runtime parameters.
     known_inputs.update(lens.fixed_column_observations(formula))
-    unknown = set(supplied_inputs) - known_inputs
+    unknown = set(explicit_inputs) - known_inputs - symbolic
     if unknown:
         raise ValueError(f"unknown supplied response inputs: {sorted(unknown)!r}")
+    # A group-level coefficient the request leaves out reads no column.
+    supplied_inputs = {
+        value: expression
+        for value, expression in supplied_inputs.items()
+        if value in known_inputs
+    }
     for value in supplied_inputs:
         names.setdefault(value, prefix + value)
     # Two responses may draw from one law over different coordinates.
