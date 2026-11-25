@@ -13,7 +13,9 @@ sequence. A score whose contribution is a sum over
 [units](../../semantics/programs.md#271-units-and-row-scores) declares them in a
 [`UnitFactorization`](#quivers.continuous.program_steps.UnitFactorization), and an observation whose
 density a score holds draws its response from a
-[`ResponseLaw`](#quivers.continuous.program_steps.ResponseLaw). The [`Indexed`](#quivers.continuous.program_steps.Indexed) argument form indexes a
+[`ResponseLaw`](#quivers.continuous.program_steps.ResponseLaw).
+[`RunConditions`](#quivers.continuous.program_steps.RunConditions) says which factors a run leaves
+out, and a step that holds a factor gives its function under them. The [`Indexed`](#quivers.continuous.program_steps.Indexed) argument form indexes a
 collection, and [`reading`](#quivers.continuous.program_steps.reading) declares the names a step
 function reads. A function given to a step declares whether it can be evaluated at
 [many positions](../../guides/inference-mcmc.md#densities-at-many-positions) at once, through the

@@ -581,9 +581,13 @@ estimator. The importance-weighted and Rényi bounds, `ChiVI`, and `RWS`
 exponentiate or self-normalize the log weights and refuse a subsampled
 plate, and so do the consumers of the exact posterior, MCMC and
 `PotentialFn`, the Laplace approximation, `AutoDAIS`, and
-`lift_to_bayesian_program`. A site in the plate that is neither a draw nor an observation
-over the plate (a grouped marginalization, for instance) has no density for each row
-and is refused, as is a plate whose extent the program leaves to its data.
+`lift_to_bayesian_program`. A plate whose extent the program leaves to its data is refused.
+
+A `marginalize` block is subsampled by its
+[units](../semantics/programs.md#274-subsampled-units). Subsampling the plate a block is grouped over
+keeps some groups, each scored with all its rows, and scales their sum. Subsampling the plate of the
+rows does the same when the rows of each group are kept together, and a subset that splits a group is
+refused, since rows that share a class have no scores of their own.
 
 ## Predictive sampling
 

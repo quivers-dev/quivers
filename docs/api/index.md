@@ -99,6 +99,7 @@ continuous morphisms.
 - **[Families](continuous/families.md)**: families of continuous distributions
 - **[Programs](continuous/programs.md)**: probabilistic programs over continuous spaces
 - **[Marginalized responses](continuous/marginal.md)**: laws of responses whose density a marginal score holds
+- **[Subsampled units](continuous/unit_subsets.md)**: coefficients of unit weights under subsampled plates
 - **[Boundaries](continuous/boundaries.md)**: discretization and embedding between finite and continuous spaces
 - **[Flows](continuous/flows.md)**: [normalizing flows](https://en.wikipedia.org/wiki/Flow-based_generative_model)
 

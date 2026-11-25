@@ -370,6 +370,7 @@ nav:
       - Program Steps: api/continuous/program_steps.md
       - Plates: api/continuous/plate.md
       - Marginalized responses: api/continuous/marginal.md
+      - Subsampled units: api/continuous/unit_subsets.md
       - Deterministic Morphisms: api/continuous/deterministic.md
       - Measure Algebra: api/continuous/measure.md
       - Bijectors: api/continuous/bijectors.md

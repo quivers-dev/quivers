@@ -1576,6 +1576,54 @@ for all its rows as well, where rows have no scores of their own. A truncated re
 within each class before the classes are mixed. The laws are defined for the log-sum-exp reduction
 only.
 
+#### 2.7.3 Interventions on marginalized responses {#273-interventions-on-marginalized-responses}
+
+An intervention $\mathrm{do}(r_m = v)$ on a response of a block replaces the conditional law of $r_m$
+given the classes by the point mass at $v$. The factors $\ell_m(n, k)$ leave the product within each
+class, and nothing else changes:
+
+$$
+\sum_{u} \log \sum_k \exp\Bigl[\log \pi(u, k)
+  + \sum_{m' \neq m} \sum_{n \,:\, \iota_{m'}(n) = u} \ell_{m'}(n, k)\Bigr].
+$$
+
+The class prior and the factors of the other responses stay, and every step that reads $r_m$ reads
+$v$. The value $v$ is not evidence about the classes, so a later response of the block that is drawn
+is drawn from its law given the other responses alone
+([§2.7.2](#272-laws-of-marginalized-responses)). Conditioning on $r_m = v$ keeps $\ell_m(n, k)$ and
+gives another density. In nested blocks the factor leaves the block that holds the observation and
+the aggregates of the blocks around it follow. A block with one latent whose only response is fixed
+contributes $\log \sum_k \pi(k) = 0$. The unit scores of a run under an intervention are those of the
+responses that are not fixed.
+
+An intervention that fixes sites and does nothing else is also evaluated by the compiled joint and at
+many positions at once, with the same result as the reference machine.
+
+#### 2.7.4 Subsampled units {#274-subsampled-units}
+
+Let a plate $P$ of extent $N$ be [subsampled](../guides/inference-svi.md#minibatches-subsampled-plates)
+at a subset $S$ of size $B$. A block's score is a sum over its units, so when $S$ selects units, the
+weights of those units, scaled, estimate it:
+
+- $P$ is a unit axis. The units kept are those whose coordinate lies in $S$, and the factor is $N/B$,
+  the product of the factors when several unit axes are subsampled.
+- $P$ is the plate of the rows of a response, or of the units of an inner block. A unit is kept when
+  all its elements of $P$ lie in $S$ and left out when none does. The factor is the number of units
+  that have elements of $P$ over the number kept, which is $N/B$ for a row map that sends no two rows
+  to one unit. A unit without elements of $P$ is scored in full.
+
+For a uniform subset of the units, the expectation of $\sum_u c(u)\, w(u)$ over subsets is
+$\sum_u w(u)$, and the same holds for its gradient, since the estimate is linear in the weights.
+
+A subset that has some elements of a unit and not others is refused. The elements share a summed-out
+class, so $w(u)$ is the log of a sum of products over them and not a sum of one term per element, and
+no part of them estimates it. For the same reason a plate inside the units, as $H$ in an inner block
+over $G \times H$, is subsampled only with whole outer units. A block with one latent for all its rows
+is one unit, which only the whole plate keeps. When a unit axis is subsampled, the subsets of other
+plates only say which elements are read, and have to hold every element of the units kept. When two
+plates of rows are subsampled and no unit axis is, each subset would select the units, and the chance
+that a unit is in both depends on how the two are drawn together, so the pair is refused.
+
 ### 2.8 Effect annotations {#28-effect-signatures}
 
 A program may declare which effects its body performs:

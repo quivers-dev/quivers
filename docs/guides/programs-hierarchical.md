@@ -123,6 +123,11 @@ out one group at a time.
 Prediction draws a class for each group and then the rows of the group at that class. An expectation
 is the mean of each row weighted by its group's class probabilities.
 
+An intervention on a response of the block
+([`do`](../api/effects/handlers.md#quivers.effects.do.do)) removes the response's likelihood and
+keeps the class prior and the other responses
+([interventions](../semantics/programs.md#273-interventions-on-marginalized-responses)).
+
 ### Constraints and runtime
 
 The `over` object must be declared, and every `observe` in the body needs a `via`. The
