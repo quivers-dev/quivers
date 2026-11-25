@@ -719,24 +719,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise TypeError("center must be True, False, or None")
         if decomp not in ("none", "QR"):
             raise ValueError("decomp must be 'none' or 'QR'")
-        coordinates_supported = (
-            family.ordinal is None
-            and family.response is None
-            and family.mixture is None
-        )
-        if (center or decomp == "QR") and not coordinates_supported:
-            raise ValueError(
-                f"center=True and decomp='QR' are not supported for the "
-                f"{family.name} family, whose intercepts are thresholds, "
-                "category logits, or mixture components; use center=False"
-            )
         self._default_priors: DefaultPriorPolicy = default_priors
         # Recorded rows of an mi() response, the rows brms's default scales
         # read (median and mad with na.rm = TRUE; fit-followups).
         self._recorded_rows: np.ndarray | None = None
         self._center = center
         self._decomp: Literal["none", "QR"] = decomp
-        self._coordinates_supported = coordinates_supported
         self._group_covariances = dict(group_covariances or {})
         if any(
             not isinstance(value, GroupCovariance)
@@ -3368,7 +3356,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 default_priors=self._default_priors,
                 center=self._center,
                 decomp=self._decomp,
-                coordinates=self._coordinates_supported,
                 host=self._predictor_name,
                 names=self._names,
             ),

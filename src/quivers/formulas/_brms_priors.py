@@ -59,7 +59,7 @@ from quivers.dsl.compiler.programs import _ProgramsMixin
 from quivers.dsl.emit import draw_call_to_source
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _factor, finite_object_sizes
-from quivers.formulas._category_formulas import is_scale_parameter
+from quivers.formulas._category_formulas import is_category_parameter, is_scale_parameter
 from quivers.formulas.family import RESPONSE_MIN, Family, Link, links
 from quivers.formulas._priors import (
     ConstantPrior,
@@ -1200,7 +1200,13 @@ def brms_default_rule(
     if role == "Intercept":
         if target.site not in centered:
             return None
-        dpar = target.dpar or "mu"
+        # A component of a vector of parameters has the vector's default.
+        dpar = target.vector or target.dpar or "mu"
+        if is_category_parameter(family, dpar):
+            dpar = "mu"
+        if dpar == "mu" and family.ordinal is not None:
+            # brms has the thresholds in place of the intercept.
+            return None
         if dpar == "mu":
             if family.location_link.brms_intercept_prior is not None:
                 return rule(family.location_link.brms_intercept_prior)

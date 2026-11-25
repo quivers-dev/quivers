@@ -265,13 +265,18 @@ def coefficient_site(prefix: str, column: FixedColumn | SymbolicColumn) -> str:
     return prefix + (INTERCEPT if column.is_intercept else f"beta_{column.qvr_name}")
 
 
-def coordinate_bindings(plan: PopulationCoordinates) -> list[LetStep]:
+def coordinate_bindings(
+    plan: PopulationCoordinates, output: OutputAxis | None
+) -> list[LetStep]:
     """Bind the reported coefficients from the sampled coordinates.
 
     Parameters
     ----------
     plan : PopulationCoordinates
         The predictor's coordinate plan.
+    output : OutputAxis or None
+        Axis of the coefficient vectors, each of whose coordinates has the
+        same map.
 
     Returns
     -------
@@ -283,22 +288,27 @@ def coordinate_bindings(plan: PopulationCoordinates) -> list[LetStep]:
     if plan.r_inverse is not None:
         for site, row in zip(plan.sites, plan.r_inverse, strict=True):
             terms: list[LetExprNode] = [
-                _mul(LetExprLiteral(value=weight), _var(other + QR_SUFFIX))
+                _mul(
+                    LetExprLiteral(value=weight),
+                    at_coordinate(other + QR_SUFFIX, output),
+                )
                 for other, weight in zip(plan.sites, row, strict=True)
                 if weight != 0.0
             ]
-            steps.append(_let(site, _add(*terms)))
+            steps.append(_let(site, over_output(output, _add(*terms))))
     if plan.centered:
         shift: list[LetExprNode] = [
-            _mul(LetExprLiteral(value=mean), _var(site))
+            _mul(LetExprLiteral(value=mean), at_coordinate(site, output))
             for site, mean in zip(plan.sites, plan.means, strict=True)
             if site != plan.intercept and mean != 0.0
         ]
-        intercept = _var(plan.intercept + CENTERED_SUFFIX)
+        intercept = at_coordinate(plan.intercept + CENTERED_SUFFIX, output)
         steps.append(
             _let(
                 plan.intercept,
-                _sub(intercept, _add(*shift)) if shift else intercept,
+                over_output(
+                    output, _sub(intercept, _add(*shift)) if shift else intercept
+                ),
             )
         )
     return steps
@@ -742,7 +752,7 @@ class PopulationTerm(ValueModel):
                     steps.append(binding)
             return tuple(steps)
         steps.extend(draws)
-        steps.extend(coordinate_bindings(self.coordinates))
+        steps.extend(coordinate_bindings(self.coordinates, self.output))
         steps.extend(binding for binding in bindings if binding is not None)
         return tuple(steps)
 

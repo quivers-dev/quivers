@@ -1410,7 +1410,7 @@ def _shared_thresholds(
     index: int,
     source: int,
     cutpoints: int,
-    intercept: bool,
+    intercept: str | None,
     grouped: bool = False,
 ) -> list[ProgramStep]:
     """Give one ordinal component the thresholds of the source component.
@@ -1431,8 +1431,8 @@ def _shared_thresholds(
         One-based number of the component whose thresholds are sampled.
     cutpoints : int
         Number of thresholds.
-    intercept : bool
-        Whether the components have location intercepts.
+    intercept : str or None
+        Sampled location intercept of the component; None without one.
     grouped : bool
         Whether the response has threshold groups.
 
@@ -1443,6 +1443,9 @@ def _shared_thresholds(
         whose bindings read the source component's values.
     """
     stem = f"dpar_mu{index}_cutpoint"
+    shared_intercept = (intercept or "").replace(
+        f"dpar_mu{index}_", f"dpar_mu{source}_", 1
+    )
     if grouped:
         matrix = f"dpar_mu{index}_{MATRIX_SITE}"
         own = (
@@ -1461,24 +1464,14 @@ def _shared_thresholds(
                 if isinstance(step, LetStep)
                 else None
             )
-            if (
-                intercept
-                and isinstance(step, SampleStep)
-                and name == f"dpar_mu{index}_intercept"
-            ):
-                shared.append(
-                    _let(
-                        f"dpar_mu{index}_intercept",
-                        _var(f"dpar_mu{source}_intercept"),
-                    )
-                )
+            if intercept is not None and name == intercept:
+                shared.append(_let(intercept, _var(shared_intercept)))
             elif name == matrix:
                 shared.append(_let(matrix, _var(f"dpar_mu{source}_{MATRIX_SITE}")))
             elif name is None or not name.startswith(own):
                 shared.append(step)
         return shared
     centered = f"dpar_mu{index}_cutpoints"
-    own_intercept = f"dpar_mu{index}_intercept"
     result: list[ProgramStep] = []
     placed = False
     for step in steps:
@@ -1489,8 +1482,8 @@ def _shared_thresholds(
             if isinstance(step, LetStep)
             else None
         )
-        if intercept and isinstance(step, SampleStep) and name == own_intercept:
-            result.append(_let(own_intercept, _var(f"dpar_mu{source}_intercept")))
+        if intercept is not None and name == intercept:
+            result.append(_let(intercept, _var(shared_intercept)))
             continue
         if name is None or not name.startswith(stem):
             result.append(step)
@@ -1774,7 +1767,7 @@ def emit_mixture(
                     if isinstance(step, SampleStep)
                     and (
                         step.vars[0].startswith(f"dpar_mu{index}_cutpoint")
-                        or step.vars[0] == f"dpar_mu{index}_intercept"
+                        or step.vars[0] == intercept
                         or step.vars[0] == f"dpar_mu{index}_{LOCATION_SITE}"
                     )
                 }
@@ -1783,7 +1776,7 @@ def emit_mixture(
                     index,
                     threshold_source,
                     lens._category_count(formula, family=component.name) - 1,
-                    intercepts == {True},
+                    intercept if intercepts == {True} else None,
                     grouped=formula.modifiers.threshold_groups is not None,
                 )
                 targets[:] = [

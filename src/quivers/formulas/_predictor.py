@@ -512,8 +512,6 @@ class PredictorOptions(ValueModel):
         policy.
     decomp : {"none", "QR"}
         Coordinates of the location coefficients.
-    coordinates : bool
-        Whether the family admits centered and QR coordinates.
     host : str or None
         Input holding a host contribution to the location.
     names : ProgramNames
@@ -526,7 +524,6 @@ class PredictorOptions(ValueModel):
     default_priors: DefaultPriorPolicy
     center: bool | None
     decomp: Literal["none", "QR"]
-    coordinates: bool
     host: str | None
     names: ProgramNames = dx.field(
         default_factory=ProgramNames, opaque=True, extras=OPAQUE_BY_VALUE
@@ -707,7 +704,7 @@ def _coordinates(
     role : {"dpar", "nlpar"}
         Role of the predictor.
     columns : tuple[FixedColumn or SymbolicColumn, ...]
-        Scalar columns of the predictor.
+        Columns every coordinate of the predictor has.
     options : PredictorOptions
         Centering and decomposition options.
 
@@ -716,7 +713,7 @@ def _coordinates(
     PopulationCoordinates or None
         The coordinate plan, or None for the coefficients themselves.
     """
-    if not options.coordinates or role == "nlpar":
+    if role == "nlpar":
         return None
     center = options.default_priors == "brms"
     if prefix:
@@ -1027,7 +1024,7 @@ def predictor_terms(
         role,
         output,
         options,
-        transform=output is None,
+        transform=True,
     )
     host: tuple[Term, ...] = (
         (HostTerm(name=options.host, output=output),)
@@ -1100,7 +1097,6 @@ def data_terms(formula: Formula, prefix: str) -> tuple[Term, ...]:
             default_priors="quivers",
             center=None,
             decomp="none",
-            coordinates=False,
             host=None,
         ),
         output=None,
