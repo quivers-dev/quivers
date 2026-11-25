@@ -722,7 +722,7 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="rules = tuple(rule.with_(name=rule.name) for rule in rules)",
             ),
         ),
-        rejected_by=("work/repeated/deduction",),
+        rejected_by=("work/repeated-runs-of-one-rule-set",),
         min_effect=2.0,
     ),
     Mutation(

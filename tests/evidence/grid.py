@@ -257,20 +257,20 @@ SAMPLES: dict[str, HeldValue] = {
     "Q6": ("ij,jk->ik", {"i": 2, "j": 2, "k": 2}),
     "Q7": (("1/2", "1/3"), ("1/4", "1/5")),
     "Q8": _LOOP,
-    "Q9": {"x": (("1/5", ("x", "x")), ("4/5", ()))},
+    "Q9": (("x", ("1/5", ("x", "x"))), ("x", ("4/5", ()))),
     "Q10": _LINE,
     "Q11": (_LINE, {"a": (Fraction(1), Fraction(2))}),
     "Q12": (_LINE, _LINE),
-    "Q13": ("ab", "aba"),
+    "Q13": (("a", "b"), ("a", "b", "a")),
     "Q14": (_LINE, ("a",)),
     "Q15": (_LINE, "string"),
     "Q16": (_LINE, "minimal"),
     "Q17": (_LINE, {0: 1}),
     "Q18": (_LINE, _LOOP, 1),
     "Q19": {(0, 1): "1/2", (0, 2): "1/3", (1, 2): "1/5", (2, 1): "1/7"},
-    "Q20": {"variables": ("x", "y"), "factors": (_LINE, _LOOP)},
-    "Q21": {"copies": (_LINE, _LOOP), "penalty": "1/2"},
-    "Q22": {"factors": (_LINE, _LOOP), "order": 2},
+    "Q20": ((("x", "y"), _LINE), (("y",), _LOOP)),
+    "Q21": ((_LINE, _LOOP), Fraction(1, 2)),
+    "Q22": ((_LINE, _LOOP), 2),
     "Q23": (("low", "1/4"), ("high", "1/5")),
     "Q24": {"presentation": "rules"},
 }
@@ -498,7 +498,7 @@ def refusal(row: str, column: str) -> str | None:
         ask(row, column)
     except Exception as failure:
         text = " ".join(f"{type(failure).__name__}: {failure}".split())
-        return re.sub(r"0x[0-9a-f]+", "0x", text)[:240]
+        return re.sub(r"0x[0-9a-f]+", "0x", text)[:110]
     return None
 
 
