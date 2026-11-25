@@ -21,12 +21,8 @@ from quivers.formulas import (
     mixture,
     set_rescor,
 )
-from quivers.formulas._latent_effects import (
-    FieldTerm,
-    LatentTerm,
-    car_catalog,
-    car_graph,
-)
+from quivers.formulas._field_term import FieldTerm
+from quivers.formulas._latent_effects import LatentTerm, car_catalog, car_graph
 from quivers.formulas._predictor import OffsetTerm
 from quivers.formulas._term import join_catalogs
 from quivers.inference.trace import trace

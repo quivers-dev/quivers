@@ -594,7 +594,7 @@ def prepare_prediction(
             if fit.family.response is not None
             else 0
         )
-        modes = tuple((module, module.training) for module in fit.predictor.modules())
+        modes = tuple((layer, layer.training) for layer in fit.predictor.modules())
         try:
             fit.predictor.eval()
             with torch.no_grad():
@@ -606,8 +606,8 @@ def prepare_prediction(
                     reference=reference,
                 ).detach()
         finally:
-            for module, training in modes:
-                module.training = training
+            for layer, training in modes:
+                layer.training = training
         if not torch.isfinite(neural).all():
             raise ValueError("new_data neural predictor must produce finite values")
         observations[fit.predictor_name] = neural

@@ -388,7 +388,7 @@ VARIANTS = {
     "ExactProcessTerm": "_gp.py",
     "MonotonicRow": "_monotonic_emission.py",
     "GroupTerm": "_group_plan.py",
-    "FieldTerm": "_latent_effects.py",
+    "FieldTerm": "_field_term.py",
 }
 
 
