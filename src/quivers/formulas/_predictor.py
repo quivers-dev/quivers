@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
 import torch
@@ -41,8 +41,11 @@ from quivers.formulas._population_coordinates import (
 from quivers.formulas._predictor_graph import PredictorGraph
 from quivers.formulas._row_source import PredictorRows, RowSource, fresh_columns
 from quivers.formulas._smooth import BasisTerm
+from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
+    VariableDecl,
+    SmoothPart,
     ColumnName,
     Contribution,
     flat_index,
@@ -57,6 +60,9 @@ from quivers.formulas._term import (
 )
 from quivers.formulas.family import Family, Link, links
 from quivers.formulas.formula import FixedColumn, Formula, RandomTerm
+
+if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
 
 __all__: list[str] = []
 
@@ -115,6 +121,56 @@ class OffsetTerm(ValueModel):
             Empty: the inputs are named after the term.
         """
         return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            Empty: offsets have no draws.
+        """
+        return ()
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Never: the term has no coefficients.
+
+        Raises
+        ------
+        ValueError
+            Always.
+        """
+        raise ValueError(f"{self.label!r} has no coefficients")
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            None.
+        """
+        return None
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -257,6 +313,56 @@ class HostTerm(ValueModel):
             Empty: the inputs are named after the term.
         """
         return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            Empty: the host has no draws.
+        """
+        return ()
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Never: the term has no coefficients.
+
+        Raises
+        ------
+        ValueError
+            Always.
+        """
+        raise ValueError(f"{self.label!r} has no coefficients")
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            None.
+        """
+        return None
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -500,6 +606,7 @@ def response_axis(family: Family, labels: tuple[str, ...]) -> OutputAxis | None:
         name="FormulaCategoryLogit",
         size=len(free),
         labels=tuple(str(labels[index]) for index in free),
+        parameters=tuple("mu" + brms_rename(str(labels[index])) for index in free),
     )
 
 
@@ -626,6 +733,7 @@ def design_terms(
             BasisTerm(
                 label=block.term,
                 name=name,
+                prefix=prefix,
                 matrix=block.data,
                 columns=block.column_indices,
                 scale=scale,

@@ -26,19 +26,17 @@ from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import smooth_states
 from quivers.formulas._threshold_groups import LOCATION_SITE
 from quivers.formulas.formula import Formula
+from quivers.formulas._name_scope import NameScope, predictor_variables
 from quivers.formulas._variable_catalogue import (
     brms_order,
     brms_rename,
     checked_variables,
     class_variables,
-    design_term_variables,
     native_variables,
     scalar_coordinates,
     shrinkage_blocks,
     shrinkage_scale_site,
     shrinkage_variables,
-    SmoothNames,
-    smooth_names,
     threshold_variables,
     correlation_variables,
     scale_variables,
@@ -366,61 +364,33 @@ def single_variables(
     intercepts: set[str] = set()
     thresholds = _ordinal_thresholds(fit)
     labels = coefficient_labels(fit)
-    prefixes: dict[str, str] = {}
     special: dict[str, torch.Tensor] = {}
     shrunk: dict[str, str] = {}
-    smooths: dict[str, SmoothNames] = {}
-    scale_names: dict[str, str] = {}
     items = _location_first(fit)
+    planned = {predictor.prefix: predictor for predictor in plan.predictors}
     for parameter, prefix, predictor in items:
-        prefixes[parameter] = prefix
-        smooths[parameter] = smooth_names(
-            predictor,
-            smooth_states(plan.designs.get(parameter)),
-            infix=_infix(parameter),
+        named = predictor_variables(
+            planned[prefix].terms,
+            NameScope(
+                parameter=parameter,
+                role=planned[prefix].role,
+                response="",
+                formula=predictor,
+                labels={
+                    column: label
+                    for (owner, column), label in labels.items()
+                    if owner == parameter
+                },
+                states=smooth_states(plan.designs.get(parameter)),
+                intercept=not (thresholds and parameter == "mu"),
+            ),
+            draws,
         )
-        scale_names |= {
-            prefix + site: name for site, name in smooths[parameter].scales.items()
-        }
-        for column in predictor.fixed_columns:
-            site = prefix + (
-                "intercept" if column.is_intercept else f"beta_{column.qvr_name}"
-            )
-            if site not in draws:
-                continue
-            consumed.add(site)
-            if thresholds and parameter == "mu" and column.is_intercept:
-                continue
-            value = draws[site]
-            coef = labels[(parameter, column.name)]
-            name = f"b_{_infix(parameter)}{coef}"
-            shrunk[site] = f"{_infix(parameter)}{coef}"
-            if column.is_intercept:
-                intercepts.add(name)
-            if column.name in smooths[parameter].population:
-                # brms names the unpenalized columns of a smooth bs_<label>_<k>.
-                population |= scalar_coordinates(
-                    smooths[parameter].population[column.name], value
-                )
-            elif column.category_specific:
-                # brms names category-specific coefficients bcs_<coef>[k].
-                population |= scalar_coordinates(
-                    f"bcs_{_infix(parameter)}"
-                    f"{brms_rename(column.term.removeprefix('cs(').removesuffix(')'))}"
-                    if column.term.startswith("cs(")
-                    else f"bcs_{_infix(parameter)}{coef}",
-                    value,
-                )
-            elif value.ndim > len(shape) and fit.coefficient_labels:
-                for index, label in enumerate(fit.coefficient_labels):
-                    population |= scalar_coordinates(
-                        f"b_mu{brms_rename(str(label))}_{coef}"
-                        if parameter == "mu"
-                        else f"{name}[{index + 1}]",
-                        value[..., index],
-                    )
-            else:
-                population |= scalar_coordinates(name, value)
+        population |= named.population
+        special |= named.special
+        intercepts |= named.intercepts
+        shrunk |= named.sites
+        consumed |= named.read
     # brms lists every intercept before the other population coefficients.
     population = {
         name: value for name, value in population.items() if name in intercepts
@@ -461,12 +431,7 @@ def single_variables(
         parameter = target.nlpar or target.dpar or "mu"
         value = draws[target.site]
         if target.class_ in {"b", "Intercept"}:
-            local = target.site.removeprefix(prefixes.get(parameter, ""))
-            if local.startswith("bsp_") and target.coef is not None:
-                # brms names special-term coefficients bsp_<term>.
-                population |= scalar_coordinates(
-                    f"bsp_{_infix(parameter)}{brms_rename(target.coef)}", value
-                )
+            # The reported coefficients of transformed coordinates.
             consumed.add(target.site)
         elif target.class_ == "sd" and target.group is not None:
             coef = target.coef or "Intercept"
@@ -507,7 +472,6 @@ def single_variables(
                 target,
                 value,
                 infix=_infix(parameter),
-                scales=scale_names,
                 labels=coordinate_labels(fit, target),
             )
             consumed.add(target.site)
@@ -553,16 +517,6 @@ def single_variables(
                 )
             )
         correlations |= correlation_variables(law, member_terms, draws)
-    for parameter, prefix, predictor in items:
-        named, read = design_term_variables(
-            predictor,
-            prefix,
-            draws,
-            infix=_infix(parameter),
-            smooths=smooths[parameter],
-        )
-        special |= named
-        consumed |= read
     named, read = shrinkage_variables(
         draws, consumed, shrinkage_scales(plan.module, draws, shrunk)
     )

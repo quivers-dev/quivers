@@ -28,6 +28,7 @@ from quivers.formulas._autocor import (
 )
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
+from quivers.formulas._predictor import Predictor
 from quivers.formulas._row_source import RowSource, finite_inputs
 from quivers.formulas._term import bind_inputs
 from quivers.formulas._group_layout import GroupBlockLayout
@@ -70,6 +71,8 @@ class FormulaPredictionPlan(ValueModel):
         Emitted sites holding values for every level of a grouping factor.
     prior_targets : tuple[PriorTarget, ...]
         Actual emitted parameter roles, authored labels, and nominal axes.
+    predictors : tuple[Predictor, ...]
+        Planned predictors of the training program.
     version : str
         Runtime-plan schema identifier. This plan contains formulae objects
         and is deliberately not a portable serialized model representation.
@@ -84,6 +87,9 @@ class FormulaPredictionPlan(ValueModel):
     )
     group_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    predictors: tuple[Predictor, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     level_sites: tuple[LevelSite, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE

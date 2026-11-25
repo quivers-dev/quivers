@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from formulae.matrices import DesignMatrices
 from formulae.terms.terms import Term
 import numpy as np
+import torch
 import numpy.typing as npt
 import pandas as pd
 
@@ -68,6 +69,9 @@ from quivers.formulas._mgcv_smooth import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    VariableDecl,
+    SmoothPart,
+    coordinate_scopes,
     ColumnName,
     Contribution,
     at_coordinate,
@@ -82,6 +86,7 @@ from quivers.formulas._term import (
 )
 
 if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
     from quivers.formulas._row_source import PredictorRows
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
@@ -1502,6 +1507,8 @@ class BasisTerm(ValueModel):
         Authored term.
     name : str
         Prefixed design identifier.
+    prefix : str
+        Predictor namespace.
     matrix : np.ndarray
         Rows by coordinates; read-only.
     columns : tuple[int, ...]
@@ -1518,6 +1525,7 @@ class BasisTerm(ValueModel):
 
     label: str
     name: str
+    prefix: str
     matrix: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(read_only))
     columns: tuple[int, ...]
     scale: str
@@ -1551,6 +1559,104 @@ class BasisTerm(ValueModel):
             Empty: the inputs are named after the term.
         """
         return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            The scale this block draws, and the coefficients of the basis.
+        """
+        block = self.name.removeprefix(self.prefix)
+        scale = self.scale.removeprefix(self.prefix)
+        declarations: list[VariableDecl] = []
+        for index, part in coordinate_scopes(self.output, scope):
+            names = part.smooths
+            if block not in names.coefficients:
+                raise ValueError(
+                    f"smooth block {block!r} of {self.label!r} retains no names"
+                )
+            if self.owns_scale:
+                declarations.append(
+                    VariableDecl(
+                        name=names.scales[scale],
+                        site=self.scale,
+                        kind="special",
+                        index=index,
+                    )
+                )
+            declarations.extend(
+                VariableDecl(
+                    name=name,
+                    site=self.name + "_z",
+                    kind="special",
+                    index=(position, *index),
+                    derived=True,
+                )
+                for position, name in enumerate(names.coefficients[block])
+            )
+        return tuple(declarations)
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients by basis coordinate, then output coordinate.
+        """
+        raw = draws[self.name + "_z"].double()
+        scale = draws[self.scale].double()
+        if self.output is not None:
+            raw = raw.unflatten(-1, (-1, self.output.size))
+        return scale.unsqueeze(2) * raw
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            The penalized coordinates of the smooth.
+        """
+        return self if self.label == label else None
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Unused: the basis is known.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
+        """
+        design = torch.tensor(self.matrix)
+        return torch.einsum("cdj...,nj->cdn...", self.coefficients(draws), design)
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

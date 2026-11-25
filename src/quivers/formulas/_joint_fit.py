@@ -149,17 +149,15 @@ from quivers.formulas._postprocess_names import (
 )
 
 # One catalogue of brms variable names shared with single-response fits.
+from quivers.formulas._name_scope import NameScope, predictor_variables
 from quivers.formulas._variable_catalogue import (
     brms_order,
     checked_variables,
     class_variables,
     correlation_pairs,
-    design_term_variables,
     native_variables,
     scalar_coordinates,
     shrinkage_variables,
-    SmoothNames,
-    smooth_names,
     threshold_variables,
     correlation_variables,
     scale_variables,
@@ -458,6 +456,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 group_laws=complement.group_laws,
                 level_sites=complement.level_sites,
                 prior_targets=complement.prior_targets,
+                predictors=lens.planned(response.formula),
             ),
         )
         self.response_fits[name] = view
@@ -720,28 +719,45 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
         consumed: set[str] = set()
         shrunk: dict[str, str] = {}
-        # Names of every smooth term, by response and parameter.
-        smooths: dict[tuple[str, str], SmoothNames] = {}
-        scale_names: dict[str, dict[str, str]] = {}
         for resp, response in self.emission.responses.items():
-            scale_names[resp] = {}
-            designs = self._response_fit(resp).prediction_plan.designs
+            plan = self._response_fit(resp).prediction_plan
+            assert plan is not None
+            local = {
+                site.removeprefix(response.prefix): value
+                for site, value in draws.items()
+                if site.startswith(response.prefix)
+            }
+            planned = {predictor.prefix: predictor for predictor in plan.predictors}
             for parameter, prefix, predictor in response.lens._predictor_items(
                 response.formula
             ):
-                if prefix.startswith("nlpar_"):
-                    infix = f"{tag(resp)}{parameter}_"
-                elif prefix.startswith("dpar_"):
-                    infix = f"{parameter}_{tag(resp)}"
-                else:
-                    infix = tag(resp)
-                smooths[(resp, parameter)] = smooth_names(
-                    predictor, smooth_states(designs.get(parameter)), infix=infix
+                named = predictor_variables(
+                    planned[prefix].terms,
+                    NameScope(
+                        parameter=parameter,
+                        role=planned[prefix].role,
+                        response=resp if joint else "",
+                        formula=predictor,
+                        labels={
+                            column: label
+                            for (owner, column), label in renamed[resp].items()
+                            if owner == parameter
+                        },
+                        states=smooth_states(plan.designs.get(parameter)),
+                        special={
+                            column: label
+                            for (owner, name, column), label in special.items()
+                            if (owner, name) == (resp, parameter)
+                        },
+                        intercept=not (resp in thresholds and parameter == "mu"),
+                    ),
+                    local,
                 )
-                scale_names[resp] |= {
-                    prefix + site: name
-                    for site, name in smooths[(resp, parameter)].scales.items()
+                result |= {**named.population, **named.special}
+                shrunk |= {
+                    response.prefix + site: name for site, name in named.sites.items()
                 }
+                consumed |= {response.prefix + site for site in named.read}
         block_laws = self.emission.group_laws
         grouped = {site for law in block_laws for site in law.correlation.sites}
         scale_members = {
@@ -754,6 +770,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 continue
             value = draws[target.site]
             resp = target.response
+            if target.site in consumed and not (
+                resp is not None and resp in thresholds and target.class_ == "Intercept"
+            ):
+                continue
             consumed.add(target.site)
             if target.class_ == "cor" and target.site in grouped:
                 continue
@@ -779,40 +799,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 )
                 continue
             if target.class_ in {"b", "Intercept"} and resp is not None:
-                coef = target.coef or "Intercept"
-                key = (resp, target.nlpar or target.dpar or "mu", coef)
-                if key in special:
-                    if target.nlpar is not None:
-                        name = f"bsp_{tag(resp)}{target.nlpar}_{special[key]}"
-                    elif key[1] != "mu":
-                        name = f"bsp_{key[1]}_{tag(resp)}{special[key]}"
-                    else:
-                        name = f"bsp_{tag(resp)}{special[key]}"
-                    result |= scalar_coordinates(name, value)
-                    continue
-                local = target.site.removeprefix(self.emission.responses[resp].prefix)
-                if local.removeprefix(self._local_prefix(target)).startswith("bsp_"):
-                    # brms names special-term coefficients bsp_<term>.
-                    result |= scalar_coordinates(
-                        f"bsp_{self._infix(target)}{brms_rename(coef)}", value
-                    )
-                    continue
-                if coef in smooths[(resp, key[1])].population:
-                    # brms names the unpenalized columns of a smooth
-                    # bs_<label>_<k>.
-                    result |= scalar_coordinates(
-                        smooths[(resp, key[1])].population[coef], value
-                    )
-                    continue
-                coef = coefficient_label(resp, key[1], coef)
-                if target.nlpar is not None:
-                    name = f"b_{tag(resp)}{target.nlpar}_{coef}"
-                elif target.dpar not in (None, "mu"):
-                    name = f"b_{target.dpar}_{tag(resp)}{coef}"
-                else:
-                    name = f"b_{tag(resp)}{coef}"
-                shrunk[target.site] = name.removeprefix("b_")
-                result |= scalar_coordinates(name, value)
+                # The reported coefficients of transformed coordinates.
+                continue
             elif target.class_ == "sd" and resp is not None:
                 term = self._term(target, coefficient_label)
                 terms[target.site] = term
@@ -859,7 +847,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     else target,
                     value,
                     infix=self._infix(target),
-                    scales=scale_names[resp] if resp is not None else None,
                     labels=coordinate_labels(self._response_fit(resp), target)
                     if resp is not None
                     else tuple(str(label) for label in target.component_labels),
@@ -900,25 +887,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                         for index, level in enumerate(levels[group]):
                             name = f"r_{group}__{label}" if label else f"r_{group}"
                             result[f"{name}[{level},{brms_coef}]"] = value[:, :, index]
-        for resp, response in self.emission.responses.items():
-            for parameter, prefix, predictor in response.lens._predictor_items(
-                response.formula
-            ):
-                if prefix.startswith("nlpar_"):
-                    infix = f"{tag(resp)}{parameter}_"
-                elif prefix.startswith("dpar_"):
-                    infix = f"{parameter}_{tag(resp)}"
-                else:
-                    infix = tag(resp)
-                named, read = design_term_variables(
-                    predictor,
-                    response.prefix + prefix,
-                    draws,
-                    infix=infix,
-                    smooths=smooths[(resp, parameter)],
-                )
-                result |= named
-                consumed |= read
         for law in block_laws:
             consumed.update(law.correlation.sites)
             consumed.update(

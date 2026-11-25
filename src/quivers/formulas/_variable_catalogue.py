@@ -505,16 +505,7 @@ def class_variables(
                 f"correlation site {target.site!r} retains no coordinate labels"
             )
         return correlation_pairs(CHOLESKY_CLASSES[kind] + owner, labels, value)
-    if kind == "sds" and target.coef is not None:
-        if scales is None or target.site not in scales:
-            raise ValueError(
-                f"smoothing scale site {target.site!r} belongs to no retained "
-                "smooth block"
-            )
-        stem = scales[target.site]
-    elif kind in {"sdgp", "lscale", "simo"} and target.coef is not None:
-        stem = f"{kind}_{infix}{brms_rename(target.coef)}"
-    elif kind == "df" and target.group is not None:
+    if kind == "df" and target.group is not None:
         stem = f"df_{target.group}"
     elif kind in _LAGGED_CLASSES and re.fullmatch(rf"(.*_)?{kind}_[0-9]+", target.site):
         return {f"{kind}{owner}[{target.site.rsplit('_', 1)[1]}]": value}
@@ -523,72 +514,6 @@ def class_variables(
     else:
         stem = target.site + owner
     return scalar_coordinates(stem, value)
-
-
-def design_term_variables(
-    predictor: Formula,
-    prefix: str,
-    draws: Mapping[str, torch.Tensor],
-    *,
-    infix: str,
-    smooths: SmoothNames,
-) -> tuple[dict[str, torch.Tensor], set[str]]:
-    """Name the innovations of a predictor's smooth and GP blocks.
-
-    Parameters
-    ----------
-    predictor : Formula
-        One evaluated predictor with its design blocks.
-    prefix : str
-        Site prefix of the predictor.
-    draws : Mapping[str, torch.Tensor]
-        Constrained draws.
-    infix : str
-        Parameter and response part of the names.
-    smooths : SmoothNames
-        Names of the predictor's smooth terms.
-
-    Returns
-    -------
-    tuple[dict[str, torch.Tensor], set[str]]
-        The variables and the sites they read. A penalized smooth block is
-        ``s_<label>_<j>[k]``, the block's coefficients (its standard
-        deviation times its standardized innovations, as brms reports
-        them), with ``j`` counting the penalties of the block; a block of a
-        per-category predictor is ``zs_<label>_<j>[k,c]``, its standardized
-        innovations. A Gaussian process block is ``zgp_<label>[k]``, its
-        standardized innovations.
-
-    Raises
-    ------
-    ValueError
-        If a smooth block has no retained names.
-    """
-    result: dict[str, torch.Tensor] = {}
-    consumed: set[str] = set()
-    for block in predictor.design_terms:
-        raw = prefix + block.qvr_name + "_z"
-        if raw not in draws:
-            continue
-        consumed.add(raw)
-        if block.gp is not None:
-            result |= scalar_coordinates(f"zgp_{infix}{block.gp.label}", draws[raw])
-            continue
-        if block.qvr_name not in smooths.coefficients:
-            raise ValueError(
-                f"smooth block {block.qvr_name!r} of {block.term!r} retains no names"
-            )
-        names = smooths.coefficients[block.qvr_name]
-        scale = draws[prefix + (block.scale_group or block.qvr_name) + "_scale"]
-        if scale.ndim == 2 and draws[raw].ndim == 3:
-            coefficients = scale[..., None] * draws[raw]
-            result |= {
-                name: coefficients[..., index] for index, name in enumerate(names)
-            }
-        else:
-            # ``s_<label>_<j>[1]`` without its index is the block's stem.
-            result |= scalar_coordinates("z" + names[0].split("[", 1)[0], draws[raw])
-    return result, consumed
 
 
 def shrinkage_blocks(draws: Mapping[str, torch.Tensor]) -> tuple[str, ...]:

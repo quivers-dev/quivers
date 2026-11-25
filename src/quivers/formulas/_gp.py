@@ -76,6 +76,9 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._term import (
     AxisDecl,
+    VariableDecl,
+    SmoothPart,
+    coordinate_scopes,
     ColumnName,
     Contribution,
     Emission,
@@ -89,6 +92,7 @@ from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 
 if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
     from quivers.formulas._row_source import PredictorRows
 
 
@@ -1499,56 +1503,6 @@ def gp_conditional_catalog(
     return catalog
 
 
-def exact_contribution(
-    draws: Mapping[str, torch.Tensor],
-    block: GaussianProcessBlock,
-    name: str,
-    prefix: str,
-    raw: npt.NDArray[np.float64],
-    generator: torch.Generator,
-) -> torch.Tensor:
-    """Evaluate one exact sub-GP's contribution at rows for posterior draws.
-
-    The latent function is drawn at the rows' distinct inputs from its law
-    given the training values of each draw, as brms's ``conditional_effects``
-    does through ``.predictor_gp_new``.
-
-    Parameters
-    ----------
-    draws : Mapping[str, torch.Tensor]
-        Constrained draws with chain and draw axes.
-    block : GaussianProcessBlock
-        Exact block.
-    name : str
-        Prefixed design identifier.
-    prefix : str
-        Owning predictor namespace.
-    raw : numpy.ndarray
-        ``(rows, 1 + D)`` contrast values and covariates.
-    generator : torch.Generator
-        Seeded source of the conditional draws.
-
-    Returns
-    -------
-    torch.Tensor
-        Contributions with shape ``(chain, draw, rows)``.
-    """
-    points, rows = gp_rows(raw, block)
-    sdgp_site, lscale_sites = block.sites(prefix)
-    sdgp = draws[sdgp_site].double()
-    lscales = tuple(
-        draws[site].double()
-        for site in (lscale_sites[:1] if block.isotropic else lscale_sites)
-    )
-    if not len(points):
-        return sdgp.new_zeros((*sdgp.shape, raw.shape[0]))
-    values = exact_values(block, sdgp, lscales, draws[name + "_z"])
-    mean, factor = conditional_moments(block, values, sdgp, lscales, points)
-    noise = torch.randn(mean.shape, generator=generator, dtype=torch.float64)
-    latent = mean + (factor @ noise[..., None])[..., 0]
-    return latent @ torch.as_tensor(rows, dtype=torch.float64).T
-
-
 def spectral_density(
     block: GaussianProcessBlock, sdgp: torch.Tensor, lscales: tuple[torch.Tensor, ...]
 ) -> torch.Tensor:
@@ -1671,6 +1625,65 @@ class _ProcessTerm(ValueModel):
             Empty: the inputs are named after the term.
         """
         return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            The hyperparameters and the standardized innovations.
+        """
+        sdgp, lscales = self.block.sites(self.prefix)
+        return tuple(
+            declaration
+            for index, part in coordinate_scopes(self.output, scope)
+            for declaration in (
+                VariableDecl(
+                    name=f"sdgp_{part.infix}{brms_rename(self.block.label)}",
+                    site=sdgp,
+                    kind="special",
+                    index=index,
+                ),
+                *(
+                    VariableDecl(
+                        name=f"lscale_{part.infix}{brms_rename(label)}",
+                        site=site,
+                        kind="special",
+                        index=index,
+                    )
+                    for site, label in zip(
+                        lscales, self.block.lscale_labels, strict=True
+                    )
+                ),
+                VariableDecl(
+                    name=f"zgp_{part.infix}{self.block.label}",
+                    site=self.name + "_z",
+                    kind="special",
+                    index=index,
+                ),
+            )
+        )
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            The process.
+        """
+        return self if self.label == label else None
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -1808,6 +1821,41 @@ class SpectralTerm(_ProcessTerm):
         if rows.frame is None:
             return self
         return self.with_(matrix=rows.matrix(self.label)[:, list(self.columns)])
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients by spectral basis function.
+        """
+        return gp_block_coefficients(dict(draws), self.block, self.name, self.prefix)
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Unused: the basis is known.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``.
+        """
+        design = torch.tensor(self.matrix)
+        return self.coefficients(draws) @ design.T
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -1957,6 +2005,65 @@ class ExactProcessTerm(_ProcessTerm):
         if not len(points):
             points, design = block.inputs[:1], np.zeros((len(raw), 1))
         return self.with_(matrix=design, block=block.with_(prediction_inputs=points))
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Values of the function at the training inputs.
+        """
+        block = self.block
+        sdgp, lscales = block.sites(self.prefix)
+        lengths = tuple(
+            draws[site].double()
+            for site in (lscales[:1] if block.isotropic else lscales)
+        )
+        return exact_values(
+            block, draws[sdgp].double(), lengths, draws[self.name + "_z"]
+        )
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Source of the draws of the function at the rows' inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``.
+        """
+        block = self.block
+        values = self.coefficients(draws)
+        design = torch.tensor(self.matrix)
+        if block.prediction_inputs is None:
+            return values @ design.T
+        if not design.any():
+            return values.new_zeros((*values.shape[:-1], len(design)))
+        sdgp, lscales = block.sites(self.prefix)
+        lengths = tuple(
+            draws[site].double()
+            for site in (lscales[:1] if block.isotropic else lscales)
+        )
+        mean, factor = conditional_moments(
+            block, values, draws[sdgp].double(), lengths, block.prediction_inputs
+        )
+        noise = torch.randn(mean.shape, generator=generator, dtype=torch.float64)
+        latent = mean + (factor @ noise[..., None])[..., 0]
+        return latent @ design.T
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.

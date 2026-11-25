@@ -6,14 +6,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import narwhals as nw
-import numpy as np
 import torch
 from narwhals.typing import IntoDataFrame
 
+from quivers.formulas._row_source import PredictorRows, RowSource
 from quivers.formulas._gp import (
     GaussianProcess,
-    exact_contribution,
-    gp_block_coefficients,
 )
 from quivers.formulas._fit_types import SingleFit
 from quivers.formulas._smooth import SmoothTransform
@@ -70,13 +68,14 @@ def conditional_smooths(
     Returns
     -------
     torch.Tensor
-        Contributions with shape ``(chain, draw, rows)``.
+        Contributions with shape ``(chain, draw, rows)``, followed by the free
+        coordinates of a vector-valued parameter.
 
     Raises
     ------
     ValueError
-        If the fit is joint, the term is not a fitted scalar-predictor
-        smooth, or the rows are invalid for its retained basis.
+        If the fit is joint, the term is not a fitted smooth of the
+        predictor, or the rows are invalid for its retained basis.
     """
     if hasattr(fitted, "response_fits"):
         raise ValueError(
@@ -105,59 +104,26 @@ def conditional_smooths(
     ):
         raise ValueError(f"{term!r} is not a fitted s(), t2(), or gp() term")
     frame = nw.from_native(new_data, eager_only=True).to_pandas()
-    values = np.asarray(terms[term].eval_new_data(frame), dtype=np.float64)
-    if values.ndim == 1:
-        values = values[:, None]
-    if values.shape[0] != len(frame) or not np.isfinite(values).all():
-        raise ValueError("smooth evaluation requires finite values for every row")
     draws = dict(
         fitted.draws(num_samples=num_samples, seed=seed) if draws is None else draws
     )
-    prefix = site_prefix + prefix
-    matrix = torch.as_tensor(values)
-    total = None
-    fixed = [column for column in formula.fixed_columns if column.term == term]
-    for position, column in enumerate(fixed):
-        coefficient = draws[prefix + "beta_" + column.qvr_name].double()
-        if coefficient.ndim != 2:
-            raise ValueError("conditional_smooths supports scalar linear predictors")
-        part = coefficient[..., None] * matrix[:, position]
-        total = part if total is None else total + part
+    if site_prefix:
+        draws = {
+            site.removeprefix(site_prefix): value
+            for site, value in draws.items()
+            if site.startswith(site_prefix)
+        }
+    predictor = next(item for item in plan.predictors if item.prefix == prefix)
+    rows = PredictorRows(RowSource(frame=frame), design)
     generator = torch.Generator().manual_seed(seed)
-    for block in formula.design_terms:
-        if block.term != term:
-            continue
-        # gp-exact: draw the latent function at the rows' distinct inputs.
-        if block.gp is not None and block.gp.exact:
-            part = exact_contribution(
-                draws,
-                block.gp,
-                prefix + block.qvr_name,
-                prefix,
-                values[:, list(block.column_indices)],
-                generator,
-            )
-            total = part if total is None else total + part
-            continue
-        # An approximate gp() block scales its innovations by sqrt(spd).
-        if block.gp is not None:
-            coefficients = gp_block_coefficients(
-                draws, block.gp, prefix + block.qvr_name, prefix
-            )
-            part = coefficients @ matrix[:, list(block.column_indices)].T
-            total = part if total is None else total + part
-            continue
-        scale = draws[
-            prefix + (block.scale_group or block.qvr_name) + "_scale"
-        ].double()
-        raw = draws[prefix + block.qvr_name + "_z"].double()
-        if scale.ndim != 2:
-            raise ValueError("conditional_smooths supports scalar linear predictors")
-        coefficients = scale[..., None] * raw
-        part = coefficients @ matrix[:, list(block.column_indices)].T
-        total = part if total is None else total + part
-    assert total is not None
-    return total
+    parts = [
+        part.at(rows).effect(draws, generator)
+        for item in predictor.terms
+        if (part := item.smooth_part(term)) is not None
+    ]
+    if not parts:
+        raise ValueError(f"{term!r} has no share in the predictor of {parameter!r}")
+    return sum(parts[1:], start=parts[0])
 
 
 __all__ = ["conditional_smooths"]

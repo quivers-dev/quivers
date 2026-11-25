@@ -22,10 +22,13 @@ Both maps are linear with constant Jacobian (one for centering,
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+
+from typing import TYPE_CHECKING
 
 import didactic.api as dx
 import numpy as np
+import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
@@ -38,8 +41,12 @@ from quivers.formulas._ast import _add, _index, _let, _mul, _sub, _var
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._row_source import PredictorRows, fresh_columns
+from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
+    VariableDecl,
+    SmoothPart,
+    coordinate_scopes,
     ColumnName,
     Contribution,
     at_coordinate,
@@ -388,6 +395,132 @@ class PopulationTerm(ValueModel):
             if isinstance(column, FixedColumn) and not column.is_intercept
         )
 
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            Every intercept and coefficient, reported on the original
+            scale.
+        """
+        declarations = []
+        for column in self.columns:
+            if column.is_intercept and not scope.intercept:
+                declarations.append(
+                    VariableDecl(
+                        name="",
+                        site=coefficient_site(self.prefix, column),
+                        kind="intercept",
+                    )
+                )
+                continue
+            for index, part in coordinate_scopes(self.output, scope):
+                smooth = part.smooths.population.get(column.name)
+                specific = column.category_specific
+                if smooth is not None:
+                    name = smooth
+                elif column.name in scope.special:
+                    name = f"bsp_{part.infix}{scope.special[column.name]}"
+                elif specific:
+                    inner = column.term.removeprefix("cs(").removesuffix(")")
+                    authored = column.term.startswith("cs(")
+                    name = f"bcs_{part.infix}" + (
+                        brms_rename(inner) if authored else part.label(column.name)
+                    )
+                else:
+                    name = f"b_{part.infix}{part.label(column.name)}"
+                declarations.append(
+                    VariableDecl(
+                        name=name,
+                        site=coefficient_site(self.prefix, column),
+                        kind="intercept"
+                        if column.is_intercept and not specific
+                        else "population",
+                        index=index,
+                    )
+                )
+        return tuple(declarations)
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients by column, then output coordinate.
+        """
+        values = [
+            draws[coefficient_site(self.prefix, column)] for column in self.columns
+        ]
+        return torch.stack(values, 2)
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            The unpenalized columns of the smooth.
+        """
+        columns = tuple(column for column in self.columns if column.term == label)
+        if not columns:
+            return None
+        kept = {column.qvr_name for column in columns}
+        return self.with_(
+            columns=columns,
+            scales=tuple(
+                scale
+                for column, scale in zip(self.columns, self.scales, strict=True)
+                if column.qvr_name in kept
+            ),
+        )
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Unused: the columns are known.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
+        """
+        design = torch.as_tensor(
+            np.stack(
+                [
+                    np.asarray(column.data, dtype=np.float64)
+                    for column in self.columns
+                    if isinstance(column, FixedColumn)
+                ]
+            )
+        )
+        coefficients = self.coefficients(draws).double()
+        return torch.einsum("cdj...,jn->cdn...", coefficients, design)
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -594,5 +727,8 @@ def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[
         for column in formula.fixed_columns
     ]
 
+
+if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
 
 __all__: list[str] = []

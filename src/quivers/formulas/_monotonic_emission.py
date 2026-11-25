@@ -15,6 +15,8 @@ contributions.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from functools import reduce
 from typing import TYPE_CHECKING
 
@@ -39,8 +41,12 @@ from quivers.formulas._monotonic import (
     evaluate_monotonic_term,
 )
 from quivers.formulas._row_source import PredictorRows
+from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
+    VariableDecl,
+    SmoothPart,
+    coordinate_scopes,
     ColumnName,
     Contribution,
     Emission,
@@ -52,6 +58,8 @@ from quivers.formulas._term import (
 from quivers.formulas.formula import Formula, _qvr_name
 
 if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
+
     pass
 
 __all__: list[str] = []
@@ -365,6 +373,72 @@ class MonotonicRow(ValueModel):
             Empty: the inputs are named after the term.
         """
         return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            The coefficient, and the simplexes drawn with the column.
+        """
+        site = coefficient_site(self.prefix, self.term)
+        return tuple(
+            declaration
+            for index, part in coordinate_scopes(self.output, scope)
+            for declaration in (
+                VariableDecl(
+                    name=f"bsp_{part.infix}{brms_rename(self.term.name)}",
+                    site=site,
+                    kind="population",
+                    index=index,
+                ),
+                *(
+                    VariableDecl(
+                        name=f"simo_{part.infix}{brms_rename(simplex.label)}",
+                        site=simplex.site,
+                        kind="special",
+                        index=index,
+                    )
+                    for simplex in self.owned
+                ),
+            )
+        )
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            The coefficient.
+        """
+        return draws[coefficient_site(self.prefix, self.term)]
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            None.
+        """
+        return None
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

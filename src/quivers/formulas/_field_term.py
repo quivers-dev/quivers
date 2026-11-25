@@ -7,9 +7,12 @@ residual of the row itself.
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Mapping
+
+from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
+import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
@@ -32,6 +35,8 @@ from quivers.formulas._latent_effects import (
 from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
+    VariableDecl,
+    SmoothPart,
     ColumnName,
     Contribution,
     Emission,
@@ -40,6 +45,9 @@ from quivers.formulas._term import (
     SiteDecl,
 )
 from quivers.formulas.formula import Formula
+
+if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
 
 __all__: list[str] = []
 
@@ -129,6 +137,65 @@ class FieldTerm(ValueModel):
             Empty: the inputs are named after the term.
         """
         return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            Empty: the field's classes name its draws.
+        """
+        return ()
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Field by coordinate.
+        """
+        term, name = self.term, self.term.name
+        if term.layout is not None:
+            return draws[name]
+        if term.car_type in {"escar", "esicar"}:
+            return draws[f"r{name}"]
+        scale = draws[f"sd{name}"][..., None]
+        if term.car_type == "icar":
+            return scale * draws[f"z{name}"]
+        assert term.graph is not None
+        mixing = draws[f"rho{name}"][..., None]
+        inverse = torch.tensor(term.graph.inverse_scale, dtype=scale.dtype)
+        return scale * (
+            (1 - mixing).sqrt() * draws[f"nsz{name}"]
+            + (mixing * inverse).sqrt() * draws[f"z{name}"]
+        )
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            None.
+        """
+        return None
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

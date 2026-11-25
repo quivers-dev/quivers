@@ -26,7 +26,7 @@ the predictors and their terms.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Literal, Protocol
 
 import didactic.api as dx
@@ -50,6 +50,7 @@ from quivers.formulas._ast import _add, _factor, _index, _mul, _var
 from quivers.formulas._design import SymbolicColumn
 
 if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
     from quivers.formulas._row_source import PredictorRows
     from quivers.formulas._group_law import GroupBlockLaw
     from quivers.formulas.formula import FixedColumn
@@ -69,11 +70,15 @@ class OutputAxis(ValueModel):
     labels : tuple[str, ...]
         Retained label of each coordinate, or empty when coordinates are named
         by position.
+    parameters : tuple[str, ...]
+        Parameter each coordinate is, such as ``muB``, or empty when the
+        coordinates index one parameter.
     """
 
     name: str
     size: int
     labels: tuple[str, ...] = ()
+    parameters: tuple[str, ...] = ()
 
 
 class AxisDecl(ValueModel):
@@ -189,6 +194,97 @@ class SiteDecl(ValueModel):
         if len(axes) > 1:
             raise ValueError(f"site {self.name!r} is drawn over several axes {axes}")
         return axes[0] if axes else None
+
+
+class VariableDecl(ValueModel):
+    """One of brms's variables and the draws it reads.
+
+    Parameters
+    ----------
+    name : str
+        brms name; a vector of draws appends its index. Empty for draws
+        brms reports as part of another variable.
+    site : str
+        Site holding the draws.
+    kind : {"intercept", "population", "special"}
+        Part of brms's variable order.
+    index : tuple[int, ...]
+        Trailing coordinates of the draws.
+    derived : bool
+        Whether the variable reads the term's coefficients, which the site
+        determines, in place of the site.
+    """
+
+    name: str
+    site: str
+    kind: Literal["intercept", "population", "special"]
+    index: tuple[int, ...] = ()
+    derived: bool = False
+
+
+class SmoothPart(Protocol):
+    """A share of a smooth or Gaussian process on some rows."""
+
+    def at(self, rows: PredictorRows) -> SmoothPart:
+        """Return the share on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request.
+
+        Returns
+        -------
+        SmoothPart
+            The same coefficients over the design of the rows.
+        """
+        ...
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Source of the draws of a latent function at fresh inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis of the term.
+        """
+        ...
+
+
+def coordinate_scopes(
+    output: OutputAxis | None, scope: NameScope
+) -> tuple[tuple[tuple[int, ...], NameScope], ...]:
+    """Name the coordinates of a term that are parameters of their own.
+
+    Parameters
+    ----------
+    output : OutputAxis or None
+        Axis of the term.
+    scope : NameScope
+        Names of its predictor.
+
+    Returns
+    -------
+    tuple[tuple[tuple[int, ...], NameScope], ...]
+        Trailing index and scope of each parameter: the predictor's own scope
+        for a scalar term and for coordinates that index one parameter.
+    """
+    if output is None or not output.parameters:
+        return (((), scope),)
+    return tuple(
+        ((index,), scope.coordinate(parameter))
+        for index, parameter in enumerate(output.parameters)
+    )
 
 
 class ColumnName(ValueModel):
@@ -571,6 +667,57 @@ class Term(Protocol):
         -------
         tuple[ColumnName, ...]
             Columns of the term.
+        """
+        ...
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            Every variable the term gives a name.
+        """
+        ...
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients with chain and draw axes, then the term's own axis,
+            then its output axis.
+
+        Raises
+        ------
+        ValueError
+            If the term has no coefficients.
+        """
+        ...
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            The share, or None when the term is no part of the smooth.
         """
         ...
 

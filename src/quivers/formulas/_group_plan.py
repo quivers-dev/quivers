@@ -10,7 +10,7 @@ density, and `check_names` refuses blocks that would own one name.
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
 import numpy as np
@@ -28,6 +28,7 @@ from quivers.formulas._group_law import (
     ByLKJCorrelation,
     CoefficientCorrelation,
     GroupBlockLaw,
+    group_coefficients,
     GroupLevelLaw,
     GroupMean,
     GroupMemberLaw,
@@ -64,6 +65,8 @@ from quivers.formulas._grouping_emission import (
 from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
+    VariableDecl,
+    SmoothPart,
     ColumnName,
     Contribution,
     Emission,
@@ -73,6 +76,9 @@ from quivers.formulas._term import (
     column_inputs,
 )
 from quivers.formulas.formula import FixedColumn, Formula, RandomTerm, _qvr_name
+
+if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
 
 __all__: list[str] = []
 
@@ -1030,6 +1036,59 @@ class GroupTerm(ValueModel):
             Empty: the inputs are named after the term.
         """
         return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            Empty: the block law names the draws its coefficients share.
+        """
+        return ()
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients by level, then output coordinate.
+
+        Raises
+        ------
+        ValueError
+            If another program emits the block.
+        """
+        if self.law is None:
+            raise ValueError(f"no block of this program holds {self.label!r}")
+        levels = {self.group: ("",) * self.law.level.size}
+        return group_coefficients(draws, (self.law,), levels)[self.key]
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            None.
+        """
+        return None
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

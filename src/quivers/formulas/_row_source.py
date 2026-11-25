@@ -151,7 +151,7 @@ class PredictorRows:
         """
         self.source = source
         self._design = design
-        self._common: np.ndarray | None = None
+        self._common: dict[str, np.ndarray] = {}
 
     @property
     def frame(self) -> pd.DataFrame | None:
@@ -202,12 +202,12 @@ class PredictorRows:
         design, frame = self._design, self.frame
         if design is None or design.common is None or frame is None:
             raise ValueError(f"term {term!r} has no retained evaluator")
-        if self._common is None:
-            evaluated = design.common.evaluate_new_data(frame)
-            assert evaluated.design_matrix is not None
-            self._common = np.asarray(evaluated.design_matrix)
         columns = design.common.slices[term]
-        matrix = numeric_matrix(self._common[:, columns], len(frame), term)
+        if term not in self._common:
+            self._common[term] = numeric_matrix(
+                design.common.terms[term].eval_new_data(frame), len(frame), term
+            )
+        matrix = self._common[term]
         if matrix.shape[1] != columns.stop - columns.start:
             raise ValueError(f"new_data changed the design width of {term!r}")
         return matrix

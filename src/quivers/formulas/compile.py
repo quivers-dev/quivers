@@ -1177,6 +1177,32 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             return response if response is not None else self._term_laws
         return response.with_catalog(self._term_laws)
 
+    def planned(self, formula: Formula) -> tuple[Predictor, ...]:
+        """Return the predictors of the latest forward pass.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula of that pass.
+
+        Returns
+        -------
+        tuple[Predictor, ...]
+            The emitted predictors. Those of a mixture's parameters have the
+            laws of the components' group blocks.
+        """
+        if self._predictors:
+            return self._predictors
+        return self._plan(
+            formula,
+            {
+                (member.prefix, law.group, member.slope): law
+                for law in self.group_laws
+                for member in law.members
+            },
+            None,
+        )
+
     def terms(
         self, formula: Formula, rows: RowSource | None = None
     ) -> tuple[Term, ...]:
@@ -3496,7 +3522,19 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             return {}
         axis = response_axis(self._family, self._component_labels(formula))
         assert axis is not None
-        return {prefix: axis.with_(name=prefix + axis.name) for prefix in prefixes}
+        scale = self._family.component_scale
+        return {
+            prefix: axis.with_(
+                name=prefix + axis.name,
+                parameters=axis.parameters
+                if not prefix or scale is None
+                else tuple(
+                    scale.name + parameter.removeprefix("mu")
+                    for parameter in axis.parameters
+                ),
+            )
+            for prefix in prefixes
+        }
 
     def _transition_axis(self, formula: Formula) -> OutputAxis | None:
         """Read the axis of category-specific coefficients.
