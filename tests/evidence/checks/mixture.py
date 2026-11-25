@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from functools import partial
 
@@ -531,6 +531,56 @@ def check_scan() -> None:
     )
 
 
+def check_scan_gradient() -> None:
+    """Compare a scan's gradient in its trajectory with differences.
+
+    The differences are of the sum of normal log densities written out
+    here, with the cell's parameters read once per position.
+    """
+    inputs = Euclidean(name="Input", dim=1)
+    hidden = Euclidean(name="Hidden", dim=1)
+    with double_precision():
+        torch.manual_seed(1)
+        cell = ConditionalNormal(ProductSpace(components=(inputs, hidden)), hidden)
+        scan = ScanMorphism(cell).double()
+        x = torch.tensor([[[0.5], [-1.0]]])
+        states = torch.tensor([[[0.25], [1.5]]], requires_grad=True)
+        (found,) = torch.autograd.grad(scan.log_prob(x, states).sum(), states)
+
+        def density(values: Mapping[str, float]) -> float:
+            """The trajectory's log density.
+
+            Parameters
+            ----------
+            values : Mapping of str to float
+                The two states.
+
+            Returns
+            -------
+            float
+                The log density.
+            """
+            before, answer = 0.0, 0.0
+            for position in range(2):
+                with torch.no_grad():
+                    raw = cell.param_source(
+                        torch.tensor([[float(x[0, position, 0]), before]])
+                    )[0]
+                location, log_scale = float(raw[0]), float(raw[1])
+                at = values[f"s{position}"]
+                answer += -0.5 * ((at - location) / math.exp(log_scale)) ** 2
+                answer -= log_scale
+                before = at
+            return answer
+
+        point = {"s0": 0.25, "s1": 1.5}
+        for position, name in enumerate(point):
+            slope = gradients.richardson(density, point, name, step=2.0**-8)
+            gap = abs(float(found[0, position, 0]) - slope.value)
+            if gap > slope.error:
+                raise Mismatch("value", gap, f"scan gradient {name}")
+
+
 def check_scan_refuses_final_state() -> None:
     """Require a scan to refuse to score a final state alone.
 
@@ -570,6 +620,23 @@ def check_collapse() -> None:
         torch.tensor([wanted], dtype=torch.float64),
         Accuracy(domain="log", operations=12 * ELEMENTARY, magnitude=2.0),
         "collapsed pair",
+    )
+
+
+def check_collapse_gradient() -> None:
+    """Compare the slope of a collapsed marginal in its observation."""
+    model = program("conjugate").morphism
+    assert isinstance(model, MonadicProgram)
+    with double_precision(), collapse({"t": "y"}):
+        value = torch.tensor([0.75], requires_grad=True)
+        run = trace(model, torch.zeros(1, 1), observations={"y": value})
+        assert run.log_joint is not None
+        (found,) = torch.autograd.grad(run.log_joint.sum(), value)
+    compare_gradients(
+        {"y": found},
+        {"y": -(Fraction(3, 4) - Fraction(1, 2)) / (Fraction(4) + Fraction(1, 4))},
+        Accuracy(domain="linear", operations=12 * ELEMENTARY, condition=4.0),
+        "collapsed slope",
     )
 
 
@@ -625,7 +692,9 @@ def _register() -> None:
     add("mixture/chain_counts", "marginalize-chain", "Q11", check_chain_gradient)
     add("mixture/scan", "scan", "Q10", check_scan)
     add("mixture/scan_final_state", "scan", "Q24", check_scan_refuses_final_state)
+    add("mixture/scan_gradient", "scan", "Q1g", check_scan_gradient)
     add("mixture/collapse", "collapse", "Q6", check_collapse)
+    add("mixture/collapse_gradient", "collapse", "Q1g", check_collapse_gradient)
     for case in ("plate", "missing"):
         add(
             f"mixture/collapse_refuses/{case}",

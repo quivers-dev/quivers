@@ -2079,7 +2079,7 @@ record(
     "structural/signature.py: Signature.constructors, sorts, binders",
     "the declarations are put in a new dictionary at every read, so a fold costs "
     "the size of the term times the size of the signature",
-    {"entries visited beside 64 unused constructors": "1230"},
+    {"entries visited beside 64 unused constructors": "1196"},
     {"entries visited beside 64 unused constructors": "44"},
     lambda: {
         "entries visited beside 64 unused constructors": str(_signature_reads(64))

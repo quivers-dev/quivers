@@ -402,6 +402,54 @@ def check_trace(algebra: str) -> None:
     )
 
 
+def check_trace_gradient() -> None:
+    """Compare a trace's gradient with the one of its matrix formula.
+
+    The entry from the first input to the first output is
+    ``f_AB + f_AU (f_UU)* f_UB``; its derivative in an entry of the
+    feedback block is the product of the weights of the walks into and
+    out of it.
+    """
+    rows = rational(FEEDBACK)
+    inner = [row[2:] for row in rows[2:]]
+    star = exact.linear_star(inner)
+    outer = FinSet(name="A", cardinality=2)
+    loop = FinSet(name="U", cardinality=2)
+    whole = CoproductSet(components=(outer, loop))
+    entries = encode(rows, False).requires_grad_()
+    algebra = TRACES["markov"]
+    morphism = observed(whole, whole, entries, algebra=algebra)
+    value = KleeneStarTrace(algebra).trace(morphism, loop, outer, outer).tensor[0, 0]
+    (found,) = torch.autograd.grad(value, entries)
+    into = [
+        sum((rows[0][2 + u] * star[u][v] for u in range(2)), Fraction(0))
+        for v in range(2)
+    ]
+    out = [
+        sum((star[v][w] * rows[2 + w][0] for w in range(2)), Fraction(0))
+        for v in range(2)
+    ]
+    reference: dict[str, Fraction] = {"0,0": Fraction(1)}
+    for u in range(2):
+        reference[f"0,{2 + u}"] = out[u]
+        reference[f"{2 + u},0"] = into[u]
+        for v in range(2):
+            reference[f"{2 + u},{2 + v}"] = into[u] * out[v]
+    compare_gradients(
+        {
+            key: found[int(key.split(",")[0]), int(key.split(",")[1])]
+            for key in reference
+        },
+        reference,
+        Accuracy(
+            domain="linear",
+            operations=40 * (5 * ELEMENTARY + 5),
+            condition=norm(star) ** 2,
+        ),
+        "gradient of the markov trace",
+    )
+
+
 def check_trace_refuses_signed() -> None:
     """Require the signed real algebra to be refused by name.
 
@@ -474,6 +522,7 @@ def _register() -> None:
     add("closure/tiny_edge", "kleene-star", "Q8", check_tiny_edge)
     for algebra in TRACES:
         add(f"closure/trace/{algebra}", "kleene-star-trace", "Q8", partial(check_trace, algebra))
+    add("closure/trace/gradient", "kleene-star-trace", "Q1g", check_trace_gradient)
     add("closure/trace/refuses_signed", "kleene-star-trace", "Q8", check_trace_refuses_signed)
 
 

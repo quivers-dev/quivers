@@ -1,0 +1,738 @@
+"""Deliberately wrong executors.
+
+A mutation rewrites the source of one library function with literal
+replacements, each with the exact number of times its text occurs, and
+installs the result for the duration of a check. The unmutated check has
+to pass, the mutated run has to execute, the named check has to reject
+it, and the deviation it reports has to exceed the recorded minimum. A
+replacement whose text has moved fails, so a mutation is never silently
+absent. A mutation of a program source replaces the program by one that
+denotes another law.
+"""
+
+from __future__ import annotations
+
+import importlib
+import inspect
+import textwrap
+from collections.abc import Iterator
+from contextlib import contextmanager, ExitStack
+from types import FunctionType
+from unittest.mock import patch
+
+import didactic.api as dx
+
+from tests.evidence import sources
+
+
+class Rewrite(dx.Model):
+    """One literal replacement.
+
+    Parameters
+    ----------
+    old : str
+        The text.
+    new : str
+        Its replacement.
+    occurrences : int
+        How often the text occurs.
+    """
+
+    old: str
+    new: str
+    occurrences: int = 1
+
+
+class Mutation(dx.Model):
+    """One wrong executor and the checks that reject it.
+
+    Parameters
+    ----------
+    name : str
+        The mutation.
+    defect_class : str
+        The kind of error.
+    provenance : str
+        Why the error is plausible.
+    target : str
+        ``"module:qualified.name"`` of a function, or ``"source:name"``.
+    rewrites : tuple of Rewrite
+        The replacements.
+    also_in : tuple of str
+        Further modules that hold the function under its own name.
+    rejected_by : tuple of str
+        The checks that have to reject the mutation.
+    min_effect : float
+        A lower bound on the deviation each check reports, about half of
+        the smallest one measured.
+    """
+
+    name: str
+    defect_class: str
+    provenance: str
+    target: str
+    rewrites: tuple[Rewrite, ...]
+    also_in: tuple[str, ...] = ()
+    rejected_by: tuple[str, ...]
+    min_effect: float
+
+
+class MovedAnchor(AssertionError):
+    """A replacement's text does not occur as often as recorded."""
+
+
+def rewrite(text: str, rewrites: tuple[Rewrite, ...], what: str) -> str:
+    """Apply replacements with their exact counts.
+
+    Parameters
+    ----------
+    text : str
+        The text.
+    rewrites : tuple of Rewrite
+        The replacements.
+    what : str
+        A description for the report.
+
+    Returns
+    -------
+    str
+        The changed text.
+
+    Raises
+    ------
+    MovedAnchor
+        If a replacement's text occurs another number of times.
+    """
+    for change in rewrites:
+        found = text.count(change.old)
+        if found != change.occurrences:
+            raise MovedAnchor(
+                f"{what}: {change.old!r} occurs {found} times, recorded "
+                f"{change.occurrences}; find the operation again and do not "
+                "relax the count"
+            )
+        text = text.replace(change.old, change.new)
+    return text
+
+
+def _mutated_function(target: str, rewrites: tuple[Rewrite, ...]) -> FunctionType:
+    """A library function with its source rewritten.
+
+    Parameters
+    ----------
+    target : str
+        ``"module:qualified.name"``.
+    rewrites : tuple of Rewrite
+        The replacements.
+
+    Returns
+    -------
+    FunctionType
+        The function, compiled in its own module's namespace.
+    """
+    module_name, path = target.split(":")
+    module = importlib.import_module(module_name)
+    holder = module
+    for part in path.split(".")[:-1]:
+        holder = getattr(holder, part)
+    function = inspect.getattr_static(holder, path.split(".")[-1])
+    assert isinstance(function, FunctionType)
+    source = textwrap.dedent(inspect.getsource(function))
+    changed = rewrite(source, rewrites, target)
+    namespace = dict(vars(module))
+    compiled = compile(
+        "from __future__ import annotations\n" + changed, f"<{target}>", "exec"
+    )
+    exec(compiled, namespace)
+    mutant = namespace[function.__name__]
+    assert isinstance(mutant, FunctionType)
+    # The module's own globals stay live, so a later patch is seen.
+    return FunctionType(
+        mutant.__code__,
+        vars(module),
+        function.__name__,
+        function.__defaults__,
+        function.__closure__,
+    )
+
+
+@contextmanager
+def installed(mutation: Mutation) -> Iterator[None]:
+    """Install a mutation.
+
+    Parameters
+    ----------
+    mutation : Mutation
+        The mutation.
+
+    Yields
+    ------
+    None
+        Inside, the library is wrong.
+    """
+    kind, name = mutation.target.split(":")
+    if kind == "source":
+        text = rewrite(sources.SOURCES[name], mutation.rewrites, mutation.target)
+        with sources.replaced(name, text):
+            yield
+        return
+    original_module = importlib.import_module(kind)
+    mutant = _mutated_function(mutation.target, mutation.rewrites)
+    mutant.__kwdefaults__ = _keyword_defaults(mutation.target)
+    holder = original_module
+    for part in name.split(".")[:-1]:
+        holder = getattr(holder, part)
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(holder, name.split(".")[-1], mutant))
+        for module in mutation.also_in:
+            stack.enter_context(
+                patch.object(importlib.import_module(module), name, mutant)
+            )
+        yield
+
+
+def _keyword_defaults(target: str) -> dict[str, str | int | float | bool | None]:
+    """The keyword-only defaults of a function.
+
+    Parameters
+    ----------
+    target : str
+        ``"module:qualified.name"``.
+
+    Returns
+    -------
+    dict of str to (str or int or float or bool or None)
+        The defaults.
+    """
+    module_name, path = target.split(":")
+    holder = importlib.import_module(module_name)
+    for part in path.split(".")[:-1]:
+        holder = getattr(holder, part)
+    function = inspect.getattr_static(holder, path.split(".")[-1])
+    return dict(function.__kwdefaults__ or {})
+
+
+AGENDA = "quivers.stochastic.agenda"
+SEMIRING = "quivers.stochastic.semiring"
+KLEENE = "quivers.stochastic._kleene"
+SPAN = "quivers.stochastic.span"
+INSIDE = "quivers.stochastic.inside"
+WIRING = "quivers.core.wiring"
+PLATE = "quivers.continuous.plate"
+CHART_FIFO = "deduction/value/fifo"
+
+MUTATIONS: tuple[Mutation, ...] = (
+    Mutation(
+        name="repeated-premise-uses-the-update-everywhere",
+        defect_class="repeated premise",
+        provenance=(
+            "an item that fills several premises contributes its new weight at "
+            "every position, so terms with several increments are counted again"
+        ),
+        target=f"{AGENDA}:_fire",
+        rewrites=(
+            Rewrite(
+                old="if i < fixed_idx and premise_item == update.item:",
+                new="if False:",
+            ),
+        ),
+        rejected_by=(
+            "deduction/value/fifo/logprob/repeated_premise",
+            "deduction/count/fifo/repeated_premise",
+            "deduction/value/fifo/logprob/three_equal_premises",
+            "deduction/value/lifo/counting/three_equal_premises",
+        ),
+        min_effect=0.02,
+    ),
+    Mutation(
+        name="repeated-premise-uses-the-old-weight-everywhere",
+        defect_class="repeated premise",
+        provenance="every other position of the popped item reads its old weight",
+        target=f"{AGENDA}:_fire",
+        rewrites=(
+            Rewrite(
+                old="if i < fixed_idx and premise_item == update.item:",
+                new="if i != fixed_idx and premise_item == update.item:",
+            ),
+        ),
+        rejected_by=(
+            "deduction/count/fifo/repeated_premise",
+            "deduction/count/fifo/three_equal_premises",
+        ),
+        min_effect=0.5,
+    ),
+    Mutation(
+        name="input-side-normalizer",
+        defect_class="normalizer",
+        provenance="a decoder that does not normalize its choices",
+        target="quivers.structural.decoder:Decoder._logp_object",
+        rewrites=(
+            Rewrite(
+                old="structure_lp = torch.log_softmax(\n"
+                "        self._structure_logits(vec, sort, cands),\n"
+                "        dim=-1,\n"
+                "    )[cands.index(term.op)]",
+                new="structure_lp = self._structure_logits(vec, sort, cands)"
+                "[cands.index(term.op)]",
+            ),
+        ),
+        rejected_by=("terms/decoder", "terms/decoder_gradient", "terms/decoder_replay"),
+        min_effect=0.2,
+    ),
+    Mutation(
+        name="productions-not-normalized",
+        defect_class="normalizer",
+        provenance="the weights of a left-hand side are used as they are",
+        target="quivers.stochastic.productions:ProductionWeights.log_probs",
+        rewrites=(),
+        rejected_by=(),
+        min_effect=0.0,
+    ),
+    Mutation(
+        name="lexicon-normalized-over-words",
+        defect_class="normalizer",
+        provenance="the normalizer runs over the wrong axis of the lexicon",
+        target=f"{SPAN}:LexicalAxiom.forward",
+        rewrites=(
+            Rewrite(
+                old="log_lex = self.log_lexicon[tokens]",
+                new="log_lex = torch.log_softmax(self.lexicon_logits, dim=0)[tokens]",
+            ),
+        ),
+        rejected_by=("span/chart-parser/logprob/none", "span/chart-parser/viterbi/none"),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="sum-replaced-by-maximum",
+        defect_class="aggregation",
+        provenance="a best-path reduction in a partition computation",
+        target=f"{SEMIRING}:LogProbSemiring.plus",
+        rewrites=(
+            Rewrite(
+                old="torch.logsumexp(scores, dim=dim)",
+                new="scores.max(dim=dim).values",
+            ),
+        ),
+        rejected_by=(
+            "deduction/value/fifo/logprob/diamond",
+            "deduction/value/fifo/logprob/equal_proofs",
+            "deduction/outcomes/fifo",
+            "span/chart-parser/logprob/none",
+        ),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="maximum-replaced-by-sum",
+        defect_class="aggregation",
+        provenance="a partition reduction in a best-path computation",
+        target=f"{SEMIRING}:ViterbiSemiring.plus",
+        rewrites=(
+            Rewrite(
+                old="scores.max(dim=dim).values",
+                new="torch.logsumexp(scores, dim=dim)",
+            ),
+        ),
+        rejected_by=(
+            "deduction/value/fifo/viterbi/diamond",
+            "span/chart-parser/viterbi/none",
+        ),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="contraction-keeps-the-largest-term",
+        defect_class="aggregation",
+        provenance="a maximum over the contracted axes of a sum",
+        target="quivers.core.algebras:RealAlgebra.join",
+        rewrites=(),
+        rejected_by=(),
+        min_effect=0.0,
+    ),
+    Mutation(
+        name="mixture-keeps-the-best-class",
+        defect_class="aggregation",
+        provenance="the most probable class instead of the sum over classes",
+        target=f"{PLATE}:marginalize_categorical",
+        rewrites=(
+            Rewrite(
+                old="torch.logsumexp(log_probs_per_class, dim=-1)",
+                new="log_probs_per_class.max(dim=-1).values",
+            ),
+        ),
+        rejected_by=("mixture/primitives",),
+        min_effect=0.05,
+    ),
+    Mutation(
+        name="gradient-cut-at-one-premise",
+        defect_class="gradient path",
+        provenance="a lookup returns a detached value",
+        target=f"{AGENDA}:_fire",
+        rewrites=(
+            Rewrite(
+                old="w = chart.get(premise_item)",
+                new="w = chart.get(premise_item)\n"
+                "            w = None if w is None else w.detach()",
+            ),
+        ),
+        rejected_by=(
+            "deduction/gradient/fifo/logprob/reach",
+            "deduction/gradient/fifo/counting/ambiguous",
+            "deduction/gradient/lifo/logprob/high_arity",
+        ),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="closure-gradient-cut",
+        defect_class="gradient path",
+        provenance="a closure computed without its gradient",
+        target=f"{KLEENE}:_log_star",
+        rewrites=(Rewrite(old="star = matrix\n", new="star = matrix.detach()\n"),),
+        rejected_by=("span/inside/gradient", "span/chart-parser/gradient"),
+        min_effect=0.05,
+    ),
+    Mutation(
+        name="wiring-gradient-cut",
+        defect_class="gradient path",
+        provenance="one factor of a contraction is detached",
+        target=f"{WIRING}:EinsumWiring.apply",
+        rewrites=(
+            Rewrite(
+                old="acc = self._rule.tensor_op(acc, nxt)",
+                new="acc = self._rule.tensor_op(acc, nxt.detach())",
+            ),
+        ),
+        rejected_by=(
+            "contraction/gradient/real/chain",
+            "contraction/gradient/markov/triangle",
+        ),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="chain-gradient-cut",
+        defect_class="gradient path",
+        provenance="the rows of a summed-out class are detached",
+        target=f"{PLATE}:marginalize_grouped",
+        rewrites=(),
+        rejected_by=(),
+        min_effect=0.0,
+    ),
+    Mutation(
+        name="groups-share-one-draw",
+        defect_class="effect sharing",
+        provenance="two draws of two groups are replaced by one draw",
+        target="source:grouped",
+        rewrites=(
+            Rewrite(
+                old="[over=G]\n", new="[reduction=logsumexp]\n"
+            ),
+            Rewrite(old=" [via=idx]", new=""),
+        ),
+        rejected_by=("mixture/compiled/grouped",),
+        min_effect=0.05,
+    ),
+    Mutation(
+        name="one-draw-duplicated",
+        defect_class="effect sharing",
+        provenance="one draw that several rows read is drawn once per group",
+        target="source:ungrouped",
+        rewrites=(
+            Rewrite(
+                old="object Obs : FinSet 4\n",
+                new="object G : FinSet 4\nobject Obs : FinSet 4\n",
+            ),
+            Rewrite(
+                old="[reduction=logsumexp]\n", new="[over=G]\n"
+            ),
+            Rewrite(
+                old="Bernoulli(probs=rate)\n", new="Bernoulli(probs=rate) [via=rows]\n"
+            ),
+        ),
+        rejected_by=("mixture/compiled/ungrouped",),
+        min_effect=0.05,
+    ),
+    Mutation(
+        name="closure-stops-on-a-residual",
+        defect_class="stopping rule",
+        provenance="a truncated series whose last term is small",
+        target=f"{KLEENE}:_log_star",
+        rewrites=(
+            Rewrite(
+                old="repeat = -torch.log(-torch.expm1(loop))",
+                new="repeat = torch.logsumexp("
+                "loop * torch.arange(64, dtype=loop.dtype), 0)",
+            ),
+        ),
+        rejected_by=(
+            "closure/near_boundary",
+            "closure/star/logprob/near_one",
+        ),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="divergence-test-removed",
+        defect_class="stopping rule",
+        provenance="a divergent cycle returns a number",
+        target=f"{KLEENE}:_linear_star",
+        rewrites=(Rewrite(old="if not radius < 1.0:", new="if False:"),),
+        rejected_by=("closure/divergence/counting/above_one",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="budget-returns-the-partial-chart",
+        defect_class="budget",
+        provenance="a spent budget ends the loop instead of refusing",
+        target=f"{AGENDA}:run_agenda",
+        rewrites=(
+            Rewrite(
+                old="raise RuntimeError(\n"
+                '                f"agenda exceeded max_iterations={max_iterations}; "\n'
+                '                f"likely a non-terminating deduction"\n'
+                "            )",
+                new="break",
+            ),
+        ),
+        also_in=("tests.evidence.checks.deduction",),
+        rejected_by=("deduction/budget/fifo", "deduction/budget/lifo"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="last-item-omitted",
+        defect_class="omitted alternative",
+        provenance="a scan of the chart stops one item early",
+        target=f"{AGENDA}:HashChart.lookup",
+        rewrites=(
+            Rewrite(
+                old="for item, w in self._store.items():",
+                new="for item, w in list(self._store.items())[:-1]:",
+            ),
+        ),
+        rejected_by=(
+            "deduction/count/fifo/ambiguous",
+            "deduction/count/fifo/reach",
+            "deduction/forest/fifo/reach",
+        ),
+        min_effect=0.5,
+    ),
+    Mutation(
+        name="last-split-omitted",
+        defect_class="omitted alternative",
+        provenance="a span's last split point is skipped",
+        target=f"{SPAN}:BinarySpanDeduction.forward",
+        rewrites=(
+            Rewrite(
+                old="for k in range(i + 1, j):",
+                new="for k in range(i + 1, max(i + 2, j - 1)):",
+            ),
+        ),
+        rejected_by=("span/chart-parser/logprob/none",),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="support-from-current-numbers",
+        defect_class="support",
+        provenance="a weight that is zero now is dropped from the chart",
+        target=f"{AGENDA}:HashChart.insert_or_aggregate",
+        rewrites=(
+            Rewrite(
+                old="if item not in self._store:\n        self._store[item] = weight",
+                new="if float(weight) == float(semiring.zero):\n"
+                "        return False\n"
+                "    if item not in self._store:\n"
+                "        self._store[item] = weight",
+            ),
+        ),
+        rejected_by=(
+            "deduction/gradient/fifo/counting/exact_zero",
+            "deduction/gradient/lifo/counting/exact_zero",
+        ),
+        min_effect=0.5,
+    ),
+    Mutation(
+        name="contraction-masks-zeros",
+        defect_class="support",
+        provenance="products with a zero factor are masked out",
+        target=f"{WIRING}:EinsumWiring.apply",
+        rewrites=(
+            Rewrite(
+                old="acc = self._rule.tensor_op(acc, nxt)",
+                new="acc = self._rule.tensor_op(acc, nxt)\n"
+                "        acc = acc.where(acc.detach() != 0, acc.detach())",
+            ),
+        ),
+        rejected_by=("contraction/gradient/real/product",),
+        min_effect=0.1,
+    ),
+    Mutation(
+        name="duplicate-contributions-dropped",
+        defect_class="multiplicity",
+        provenance="a contribution equal to the stored weight counts as seen",
+        target=f"{AGENDA}:HashChart.insert_or_aggregate",
+        rewrites=(
+            Rewrite(
+                old="existing = self._store[item]\n",
+                new="existing = self._store[item]\n"
+                "    if bool((existing == weight).all()):\n"
+                "        return False\n",
+            ),
+        ),
+        rejected_by=(
+            "deduction/value/lifo/logprob/equal_proofs",
+            "deduction/outcomes/lifo",
+            "deduction/count/lifo/equal_proofs",
+        ),
+        min_effect=0.3,
+    ),
+    Mutation(
+        name="premise-order-permuted",
+        defect_class="order",
+        provenance="a contraction folds its inputs from the right",
+        target=f"{WIRING}:EinsumWiring.apply",
+        rewrites=(
+            Rewrite(
+                old="acc = self._rule.tensor_op(acc, nxt)",
+                new="acc = self._rule.tensor_op(nxt, acc)",
+            ),
+        ),
+        rejected_by=("contraction/order",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="applications-merged-by-conclusion",
+        defect_class="provenance",
+        provenance="applications of one rule with one conclusion are one record",
+        target=f"{AGENDA}:_fire",
+        rewrites=(
+            Rewrite(
+                old="key = (rule_index, tuple(antecedents))",
+                new="key = (rule_index, (conclusion_item,))",
+            ),
+        ),
+        rejected_by=("deduction/forest/fifo/ambiguous", "deduction/forest/fifo/reach"),
+        min_effect=0.5,
+    ),
+    Mutation(
+        name="observer-applied-to-an-aggregate",
+        defect_class="observer",
+        provenance="the square of a sum instead of the sum of squares",
+        target="tests.evidence.checks.deduction:square_of_each",
+        rewrites=(
+            Rewrite(
+                old="torch.stack(weights).square().sum()",
+                new="torch.stack(weights).sum().square()",
+            ),
+        ),
+        rejected_by=("deduction/nonlinear/fifo", "deduction/nonlinear/lifo"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="empty-reduction-loses-its-type",
+        defect_class="empty reduction",
+        provenance="the zero of an empty reduction is made in the default type",
+        target="quivers.core.algebras:LogProbAlgebra.join",
+        rewrites=(
+            Rewrite(
+                old="return reduced + torch.full_like(reduced, self.zero)",
+                new="return torch.full(reduced.shape, self.zero)",
+            ),
+        ),
+        rejected_by=("contraction/empty/logprob",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="empty-reduction-loses-an-axis",
+        defect_class="empty reduction",
+        provenance="an empty reduction returns a scalar",
+        target="quivers.core.algebras:LogProbAlgebra.join",
+        rewrites=(
+            Rewrite(
+                old="return reduced + torch.full_like(reduced, self.zero)",
+                new="return torch.tensor(self.zero, dtype=t.dtype)",
+            ),
+        ),
+        rejected_by=("contraction/empty/logprob",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="impossible-class-without-a-mask",
+        defect_class="empty reduction",
+        provenance="an impossible term is reduced without the mask",
+        target=f"{INSIDE}:_masked_logsumexp",
+        rewrites=(
+            Rewrite(
+                old="bounded = torch.where(empty, torch.full_like(scores, floor), scores)",
+                new="bounded = scores",
+            ),
+        ),
+        rejected_by=("span/inside/impossible_cell_gradient",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="log-weights-exponentiated",
+        defect_class="scaling",
+        provenance="a sum in the linear domain",
+        target=f"{SEMIRING}:LogProbSemiring.plus",
+        rewrites=(
+            Rewrite(
+                old="torch.logsumexp(scores, dim=dim)",
+                new="scores.exp().sum(dim=dim).log()",
+            ),
+        ),
+        rejected_by=("deduction/value/fifo/logprob/tiny",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="closure-in-the-linear-domain",
+        defect_class="scaling",
+        provenance="a closure computed from exponentials of the weights",
+        target=f"{KLEENE}:_log_star",
+        rewrites=(
+            Rewrite(
+                old="star = matrix\n",
+                new="return torch.linalg.inv(torch.eye(n, dtype=matrix.dtype)"
+                " - matrix.exp()).log()\n    star = matrix\n",
+            ),
+        ),
+        rejected_by=("closure/tiny_edge",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="stale-closure-across-updates",
+        defect_class="cache",
+        provenance="a closure is kept from an earlier parameter value",
+        target=f"{SPAN}:UnarySpanDeduction.closure",
+        rewrites=(
+            Rewrite(
+                old="return kleene_star(self.rule_matrix(n_categories, semiring), semiring)",
+                new="if not hasattr(self, '_kept'):\n"
+                "        object.__setattr__(self, '_kept', kleene_star("
+                "self.rule_matrix(n_categories, semiring), semiring))\n"
+                "    return self._kept",
+            ),
+        ),
+        rejected_by=("span/chart-parser/update",),
+        min_effect=0.01,
+    ),
+    Mutation(
+        name="rules-copied-per-run",
+        defect_class="graph work",
+        provenance="an immutable rule set is copied at every call",
+        target=f"{AGENDA}:run_agenda",
+        rewrites=(
+            Rewrite(
+                old="rules = tuple(rules)",
+                new="rules = tuple(rule.with_(name=rule.name) for rule in rules)",
+            ),
+        ),
+        rejected_by=("work/repeated/deduction",),
+        min_effect=2.0,
+    ),
+    Mutation(
+        name="pathfinder-drops-the-jacobian",
+        defect_class="normalizer",
+        provenance="a potential without the log determinant of its bijector",
+        target="quivers.inference.mcmc.kernel:PotentialFn._unconstrained",
+        rewrites=(),
+        rejected_by=(),
+        min_effect=0.0,
+    ),
+)
+"""The catalogue."""

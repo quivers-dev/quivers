@@ -14,6 +14,7 @@ import math
 from collections.abc import Callable, Mapping
 from fractions import Fraction
 from functools import partial
+from typing import cast
 
 import didactic.api as dx
 import torch
@@ -121,9 +122,9 @@ class ConsumerProblem(ValueModel):
         MonadicProgram
             The program.
         """
-        model = program(self.name).morphism
-        assert isinstance(model, MonadicProgram)
-        return model
+        # A program that does not compile to steps is handed on as it is,
+        # so that a consumer's own diagnostic is seen.
+        return cast(MonadicProgram, program(self.name).morphism)
 
     def data(self) -> tuple[torch.Tensor, Data]:
         """The program's input and observations.
@@ -891,22 +892,65 @@ def check_prior(name: str, draws: int) -> None:
             raise Mismatch("value", abs(share - 0.25), f"share {share} of ones")
 
 
-def check_predictive() -> None:
-    """Compare predictive rows with the recorded draws they condition on."""
-    problem = PROBLEMS["beta"]
-    count = 100
+def check_predictive(name: str) -> None:
+    """Compare predictive rows with the recorded draws they condition on.
+
+    Parameters
+    ----------
+    name : str
+        The problem.
+
+    Raises
+    ------
+    Mismatch
+        If a recorded draw changes or rows have another frequency.
+    """
+    problem = PROBLEMS[name]
+    count = 60
     with double_precision():
         torch.manual_seed(2)
-        x, _ = problem.data()
-        recorded = torch.full((1, count), 0.8)
-        draws = PriorDraws(samples={"theta": recorded}, num_samples=count)
-        found = Predictive(problem.model(), draws, num_samples=count)(x)
-    if not bool((found["theta"] == 0.8).all()):
-        raise Mismatch("support", math.inf, "predictive changed a recorded draw")
-    share = float(found["y"].double().mean())
-    bound = uniform_bound(found["y"].numel())
-    if abs(share - 0.8) > bound:
-        raise Mismatch("value", abs(share - 0.8), f"share {share} of ones")
+        x, data = problem.data()
+        recorded = {
+            key: value.expand(1, count, *value.shape).contiguous()
+            for key, value in RECORDED[name].items()
+        }
+        draws = PriorDraws(samples=recorded, num_samples=count)
+        context = {key: value for key, value in data.items() if key != "y"}
+        found = Predictive(problem.model(), draws, num_samples=count)(x, context)
+    for key, value in RECORDED[name].items():
+        if not bool((found[key].reshape(count, -1) == value.reshape(1, -1)).all()):
+            raise Mismatch("support", math.inf, f"predictive changed {key!r}")
+    if name in ("beta", "ungrouped"):
+        rows = found["y"].double().reshape(count, -1)[:, 0]
+        if name == "beta":
+            wanted = 0.8
+        else:
+            weight = float(RECORDED[name]["prior"][1])
+            wanted = float(rate(0)) * (1 - weight) + float(rate(1)) * weight
+        share = float(rows.mean())
+        if abs(share - wanted) > uniform_bound(count):
+            raise Mismatch("value", abs(share - wanted), f"share {share} of ones")
+
+
+RECORDED: dict[str, dict[str, torch.Tensor]] = {
+    "beta": {"theta": torch.tensor(0.8, dtype=torch.float64)},
+    "ungrouped": {"prior": torch.tensor([0.25, 0.75], dtype=torch.float64)},
+    "hmm": {
+        "initial_row": torch.tensor([0.25, 0.75], dtype=torch.float64),
+        "transition_rows": torch.tensor(
+            [[0.5, 0.5], [0.125, 0.875]], dtype=torch.float64
+        ),
+        "emission_rows": torch.tensor(
+            [[0.5, 0.25, 0.25], [0.125, 0.375, 0.5]], dtype=torch.float64
+        ),
+    },
+    "parsed": {
+        "p_s": torch.tensor([0.5, 0.25, 0.25], dtype=torch.float64),
+        "p_v": torch.tensor([0.5, 0.5], dtype=torch.float64),
+    },
+    "discrete": {"a": torch.tensor(1.0, dtype=torch.float64)},
+}
+"""One fixed draw of each problem."""
 
 
 KERNELS: dict[str, Callable[[], MCMCKernel]] = {
@@ -1223,9 +1267,8 @@ GUIDES: dict[str, Callable[[ConsumerProblem], Guide]] = {
 def guide_applies(guide: str, name: str) -> bool:
     """Whether a guide is built for a problem.
 
-    A flow with couplings needs two free coordinates, an encoder is given
-    the features of the problems that have them, and a list of guides is
-    built for one latent.
+    A flow with couplings needs two free coordinates, and an encoder is
+    given the features of the problems that have them.
 
     Parameters
     ----------
@@ -1241,7 +1284,7 @@ def guide_applies(guide: str, name: str) -> bool:
     """
     if guide in ("iaf", "spline"):
         return name in ("hmm", "parsed")
-    if guide in ("amortized", "list"):
+    if guide == "amortized":
         return name in ("beta", "ungrouped")
     return True
 
@@ -1510,7 +1553,13 @@ def _register() -> None:
             partial(check_prior, name, 4000),
             slow=True,
         )
-    add("consumer/predictive/beta", "predictive", "R1", check_predictive)
+    for name in PROBLEMS:
+        add(
+            f"consumer/predictive/{name}",
+            "predictive",
+            QUESTIONS[name],
+            partial(check_predictive, name),
+        )
     add("consumer/gibbs/discrete", "gibbs", "R5", check_gibbs)
     for guide in GUIDES:
         if guide not in ("delta", "dais", "laplace") and guide_applies(guide, "beta"):

@@ -881,19 +881,23 @@ def check_update(discipline: str) -> None:
         )
 
 
-def questions(name: str) -> str:
-    """The problem class of a deduction problem.
+def question(name: str, semiring: str) -> str:
+    """The problem class of a deduction problem in a semiring.
 
     Parameters
     ----------
     name : str
         The problem.
+    semiring : str
+        The semiring's name.
 
     Returns
     -------
     str
         Its column.
     """
+    if name == "ambiguous":
+        return {"boolean": "Q2", "logprob": "Q3", "viterbi": "Q4"}.get(semiring, "Q1")
     return {
         "edit_lattice": "Q13",
         "skip": "Q10",
@@ -916,7 +920,7 @@ def _register() -> None:
                 add(
                     f"deduction/value/{discipline}/{semiring}/{name}",
                     row,
-                    questions(name),
+                    question(name, semiring),
                     partial(check_value, name, semiring, discipline),
                 )
             if name in UNDERIVABLE:
@@ -924,7 +928,7 @@ def _register() -> None:
             add(
                 f"deduction/count/{discipline}/{name}",
                 row,
-                "Q10" if questions(name) == "Q10" else "Q1",
+                question(name, "counting"),
                 partial(check_count, name, discipline),
             )
             add(
@@ -939,7 +943,7 @@ def _register() -> None:
                 add(
                     f"deduction/gradient/{discipline}/{semiring}/{name}",
                     row,
-                    "Q1g" if questions(name) != "Q13" else "Q11",
+                    "Q11" if name == "edit_lattice" else "Q1g",
                     partial(check_gradient, name, semiring, discipline),
                 )
         add(f"deduction/outcomes/{discipline}", row, "Q23", partial(check_outcomes, discipline))
