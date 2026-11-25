@@ -407,8 +407,9 @@ define score(out : Outcome) : Real !{ch} =
 
 define subject(out : Outcome) : Real !{} =
     handle ch with mixed in
+        let k <- perform ch.flip(1.0)
         let x <- score(out)
-        return x + 1.0
+        return x + k
 """,
         "branches with `case` on a value known only at run time",
     ),
@@ -497,6 +498,40 @@ define subject(a : Real) : Real !{} =
     assert sum(isinstance(term, Case) for term in _terms(body)) == 1
     for checked in (module, discharge_module(module).module):
         assert run_named(checked, "subject", (0.25,)).value == pytest.approx(13.0)
+
+
+def test_a_request_in_one_branch_of_a_case_that_resumes_twice_is_discharged() -> None:
+    """Both shots and the other branch arrive around the handler as one value."""
+    module = _module(
+        HANDLERS
+        + """
+family Outcome : Type
+    constructor Won : Real -> Outcome
+    constructor Lost : Outcome
+
+define score(out : Outcome) : Real !{ch} =
+    case out motive => Real
+        Won(x) =>
+            let y <- perform ch.flip(x)
+            return y
+        Lost =>
+            return 0.5
+
+define flipped(out : Outcome) : Real !{} =
+    handle ch with mixed in
+        let x <- score(out)
+        return x + 1.0
+
+define subject(a : Real) : Real !{} =
+    let won <- flipped(construct Won(a) as Outcome)
+    let lost <- flipped(construct Lost() as Outcome)
+    return won * 10.0 + lost
+"""
+    )
+    _discharged(module, "flipped")
+    expected = 10.0 * (0.25 * 1.25 + 0.75 * 0.75) + 1.5
+    for checked in (module, discharge_module(module).module):
+        assert run_named(checked, "subject", (0.25,)).value == pytest.approx(expected)
 
 
 def test_branches_meet_at_the_handler_whose_clause_ends_one() -> None:
