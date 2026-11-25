@@ -316,7 +316,9 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
     with torch.random.fork_rng():
         torch.manual_seed(481)
         for _ in range(1500 if policy == "gaussian" else 40):
-            mapped = _remap_covariance_group(group, values, shapes, policy, fixed)
+            mapped = _remap_covariance_group(
+                group, group.covariances[0], 0, values, shapes, policy, fixed
+            )
             physical = block_coefficients(values | mapped, compact, sample_ndims=0)
             torch.testing.assert_close(physical[[0, 2]], fitted[[1, 0]])
             draws.append(physical[1])

@@ -575,7 +575,7 @@ class TestLensLaws:
         _, complement = FormulaToQVRModule(families["gaussian"]).forward(parsed)
         for value, array_field in (
             (parsed, "response_values"),
-            (complement, "response_values"),
+            (complement.source, "response_values"),
             (parsed.fixed_columns[1], "data"),
         ):
             for clone in (

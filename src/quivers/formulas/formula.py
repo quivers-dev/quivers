@@ -59,6 +59,8 @@ from quivers.formulas._r_transforms import r_transform_namespace
 
 # brms drop_unused_levels.
 from quivers.formulas._data_options import (
+    Data2Object,
+    formula_data_options,
     dropping_unused_levels,
     formula_data2,
     keep_unused_levels,
@@ -1479,6 +1481,7 @@ def formula_from_data(
     decision: str | None = None,
     groups: tuple[str, ...] = (),
     extra_namespace: Mapping[str, object] | None = None,
+    data2: Mapping[str, Data2Object] | None = None,
 ) -> Formula:
     """Build a typed `Formula` IR by lifting
     `formulae.design_matrices` over a dataframe.
@@ -1528,6 +1531,9 @@ def formula_from_data(
     extra_namespace : Mapping[str, object], optional
         Additional names visible inside the formula's expression
         evaluation, merged on top of the R-style transforms.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Named matrices the formula reads, such as the ``cov`` matrix of a
+        ``gr()`` term.
 
     Returns
     -------
@@ -1544,14 +1550,15 @@ def formula_from_data(
         interaction or group, or weights are nonnumeric, negative, nonfinite,
         or misaligned with the evaluated response rows.
     """
-    return _formula_and_design(
-        formula,
-        data,
-        weights=weights,
-        decision=decision,
-        groups=groups,
-        extra_namespace=extra_namespace,
-    )[0]
+    with formula_data_options(data2=data2):
+        return _formula_and_design(
+            formula,
+            data,
+            weights=weights,
+            decision=decision,
+            groups=groups,
+            extra_namespace=extra_namespace,
+        )[0]
 
 
 def _formula_and_design(

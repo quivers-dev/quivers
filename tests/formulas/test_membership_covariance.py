@@ -47,7 +47,6 @@ from quivers.formulas import (
     formula_from_data,
     get_prior,
 )
-from quivers.formulas._grouping import resolve_group_covariances
 from quivers.formulas.formula import _qvr_name
 from quivers.inference.trace import trace
 from quivers.modeling import load_fit, refit_callback, save_fit
@@ -75,10 +74,9 @@ def _data2() -> dict[str, pd.DataFrame]:
 
 def _compiled(text: str, frame: pd.DataFrame):
     """Compile a formula and return its program, lens and bound inputs."""
-    formula = formula_from_data(text, frame)
+    formula = formula_from_data(text, frame, data2=_data2())
     lens = FormulaToQVRModule(
         families["gaussian"],
-        group_covariances=resolve_group_covariances((text,), _data2(), None),
     )
     module, _ = lens.forward(formula)
     program = Compiler(module).compile().morphism

@@ -191,8 +191,8 @@ def population_coordinates(
     Returns
     -------
     PopulationCoordinates or None
-        None when neither transformation applies (no intercept to center and
-        no QR), so the ordinary emission is used.
+        None when neither transformation applies (no columns, or no intercept
+        to center and no QR), so the ordinary emission is used.
 
     Raises
     ------
@@ -203,6 +203,8 @@ def population_coordinates(
     columns = _design_columns(formula)
     has_intercept = any(column.is_intercept for column in formula.fixed_columns)
     centered = center and has_intercept
+    if not formula.fixed_columns:
+        return None
     if decomp == "QR":
         if not columns:
             raise ValueError("QR decomposition requires non-intercept predictors")

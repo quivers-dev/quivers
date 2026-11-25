@@ -171,7 +171,7 @@ def test_shared_student_block_has_one_mixing_multiplier_per_level(covariance):
     generator = torch.Generator().manual_seed(3)
     carrier = torch.randn(factor.shape[1], 2, generator=generator)
     values = {
-        law.correlation.site: torch.tensor(CHOLESKY),
+        law.correlation.sites[0]: torch.tensor(CHOLESKY),
         "scales": torch.tensor([0.7, 0.4]),
         "df_g": torch.tensor(3.5),
         "udf_g": torch.tensor([0.4, 0.7, 1.1]),
@@ -181,7 +181,7 @@ def test_shared_student_block_has_one_mixing_multiplier_per_level(covariance):
     }
     values = {name: value.requires_grad_() for name, value in values.items()}
     sites = {
-        law.correlation.site: values[law.correlation.site],
+        law.correlation.sites[0]: values[law.correlation.sites[0]],
         "df_g": values["df_g"],
         "udf_g": values["udf_g"],
     }
@@ -202,7 +202,7 @@ def test_shared_student_block_has_one_mixing_multiplier_per_level(covariance):
     rows = torch.tensor(emission.responses["first"].formula.group_indices["g"])
 
     def oracle(mixed: bool) -> torch.Tensor:
-        cholesky, scales = values[law.correlation.site], values["scales"]
+        cholesky, scales = values[law.correlation.sites[0]], values["scales"]
         effects = factor @ values["carrier"] @ (scales[:, None] * cholesky).T
         if mixed:
             effects = torch.sqrt(values["df_g"] * values["udf_g"])[:, None] * effects
