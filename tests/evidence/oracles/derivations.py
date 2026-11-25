@@ -171,15 +171,8 @@ def ground(
     while True:
         before = (len(items), len(found))
         for index, (name, premises, conclusion, _) in enumerate(rules):
-            for chosen in itertools.product(tuple(items), repeat=len(premises)):
-                binding: Binding | None = {}
-                for pattern, item in zip(premises, chosen, strict=True):
-                    binding = bind(pattern, item, binding)
-                    if binding is None:
-                        break
-                if binding is None:
-                    continue
-                condition = conditions.get(name)
+            condition = conditions.get(name)
+            for chosen, binding in _matches(premises, tuple(items), {}):
                 if condition is not None and not condition(binding):
                     continue
                 result = substitute(conclusion, binding)
@@ -189,6 +182,36 @@ def ground(
                     raise TooManyItems(f"more than {limit} items are derivable")
         if (len(items), len(found)) == before:
             return list(found)
+
+
+def _matches(
+    premises: Sequence[Term], items: Sequence[Term], binding: Binding
+) -> Iterator[tuple[tuple[Term, ...], Binding]]:
+    """Every choice of one item per premise under one binding.
+
+    Parameters
+    ----------
+    premises : Sequence of Term
+        The premise patterns.
+    items : Sequence of Term
+        The items.
+    binding : Binding
+        The variables bound so far.
+
+    Yields
+    ------
+    tuple of (tuple of Term, Binding)
+        The items in premise order and the complete binding.
+    """
+    if not premises:
+        yield (), binding
+        return
+    for item in items:
+        extended = bind(premises[0], item, binding)
+        if extended is None:
+            continue
+        for rest, complete in _matches(premises[1:], items, extended):
+            yield (item, *rest), complete
 
 
 def derivations(
