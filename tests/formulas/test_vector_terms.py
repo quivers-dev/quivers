@@ -153,7 +153,8 @@ def _at(
 )
 def test_each_category_has_the_scalar_term(term, options):
     vector = fit(f"c ~ {term}", family="categorical", **OPTIONS, **options)
-    scalar = fit(f"y ~ {term}", **OPTIONS, **options)
+    # The scalar location of a Poisson response has latent residuals too.
+    scalar = fit(f"o ~ {term}", family="poisson", **OPTIONS, **options)
     assert isinstance(vector, BayesianFit) and isinstance(scalar, BayesianFit)
     values = _draws(vector)
     # A shared mixing scale is one site of both programs.
