@@ -78,7 +78,7 @@ def _compiled(text: str, frame: pd.DataFrame):
     formula = formula_from_data(text, frame)
     lens = FormulaToQVRModule(
         families["gaussian"],
-        group_covariances=resolve_group_covariances(text, _data2(), None),
+        group_covariances=resolve_group_covariances((text,), _data2(), None),
     )
     module, _ = lens.forward(formula)
     program = Compiler(module).compile().morphism
