@@ -540,6 +540,7 @@ class MonotonicRow(ValueModel):
         output = self.output
         axes = (output.name,) if output is not None else ()
         labels = output.labels if output is not None else ()
+        parameters = output.parameters if output is not None else ()
         return (
             *(
                 SiteDecl(
@@ -550,6 +551,7 @@ class MonotonicRow(ValueModel):
                     axes=axes,
                     event_axis=simplex.axis,
                     component_labels=labels,
+                    parameters=parameters,
                 )
                 for simplex in self.owned
             ),
@@ -560,6 +562,7 @@ class MonotonicRow(ValueModel):
                 coef=self.term.name,
                 axes=axes,
                 component_labels=labels,
+                parameters=parameters,
                 divisor=self.scale,
             ),
         )

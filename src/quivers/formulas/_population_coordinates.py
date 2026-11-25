@@ -670,6 +670,7 @@ class PopulationTerm(ValueModel):
             coef=column.name,
             axes=(self.output.name,) if self.output is not None else (),
             component_labels=self.output.labels if self.output is not None else (),
+            parameters=self.output.parameters if self.output is not None else (),
             divisor=divisor,
             multiplier=multiplier,
         )

@@ -156,8 +156,13 @@ class SiteDecl(ValueModel):
         Factor multiplying the scale of a default prior.
     component_labels : tuple[str, ...]
         Labels of the output coordinates indexing the site.
+    parameters : tuple[str, ...]
+        Parameter of each output coordinate, when every coordinate is a
+        parameter of its own.
     partition_labels : tuple[str, ...]
         Labels of the partition of the levels indexing the site.
+    partition_axis : str or None
+        Axis over the partition.
     """
 
     name: str
@@ -174,7 +179,9 @@ class SiteDecl(ValueModel):
     divisor: float | None = None
     multiplier: float | None = None
     component_labels: tuple[str, ...] = ()
+    parameters: tuple[str, ...] = ()
     partition_labels: tuple[str, ...] = ()
+    partition_axis: str | None = None
 
     @property
     def index(self) -> str | None:

@@ -1285,7 +1285,11 @@ class GroupTerm(ValueModel):
                 component_labels=self.output.labels
                 if labelled and self.output is not None
                 else (),
+                parameters=self.output.parameters
+                if labelled and self.output is not None
+                else (),
                 partition_labels=by.levels if by is not None else (),
+                partition_axis=by.axis if by is not None else None,
             ),
         )
 

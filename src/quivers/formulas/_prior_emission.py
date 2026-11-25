@@ -411,6 +411,7 @@ def build_prior_targets(
     draw,
     thresholds_by=None,
     predictor_scopes=None,
+    separated=frozenset(),
 ):
     """Combine explicit formula roles, group-block laws, and actual sample axes.
 
@@ -433,6 +434,8 @@ def build_prior_targets(
     predictor_scopes : Mapping or None
         Explicit response/dpar/nlpar coordinates for a joint program's
         existing predictor prefixes. Ordinary programs derive their scopes.
+    separated : Collection[str]
+        Sites whose components are drawn on their own.
 
     Returns
     -------
@@ -460,29 +463,39 @@ def build_prior_targets(
         labels = tuple(str(names[i]) for i in family.response.coordinate_indices(names))
 
     def add(site, role, *, lower=None, upper=None, **metadata):
-        if site not in samples or site in targets:
+        if site in targets:
             return
-        step = samples[site]
+        if site in separated:
+            whole = PriorTarget(
+                site=site, class_=role, lower=lower, upper=upper, **metadata
+            )
+            for component in whole.components():
+                record(component)
+            return
+        if site in samples:
+            record(
+                PriorTarget(
+                    site=site, class_=role, lower=lower, upper=upper, **metadata
+                )
+            )
+
+    def record(target):
+        step = samples[target.site]
         axes = ()
         if step.index is not None:
             if not isinstance(step.index, TypeName) or step.index.name not in sizes:
                 raise ValueError(
-                    f"prior target {site!r} has no retained nominal finite axis"
+                    f"prior target {target.site!r} has no retained nominal finite axis"
                 )
             axes = (step.index.name,)
         # Improper flat laws live in a compilation-local catalog.
         event_rank = flat_event_rank(step.morphism)
         if event_rank is None:
             event_rank = semantic_family(step.morphism).event_rank
-        targets[site] = PriorTarget(
-            site=site,
-            class_=role,
+        targets[target.site] = target.with_(
             axes=axes,
             shape=tuple(sizes[axis] for axis in axes),
-            lower=lower,
-            upper=upper,
             event_rank=event_rank,
-            **metadata,
         )
 
     for predictor in predictors:
@@ -495,7 +508,9 @@ def build_prior_targets(
                 lower=site.lower,
                 upper=site.upper,
                 component_labels=site.component_labels,
+                parameters=site.parameters,
                 partition_labels=site.partition_labels,
+                partition_axis=site.partition_axis,
                 **scopes[predictor.prefix],
             )
     # brms gr(dist = "student") df and gr(by =) per-level correlations.
@@ -650,3 +665,85 @@ def restrict_prior_step(
         )
         prior = prior.with_(morphism="Restrict", args=tuple(arguments))
     return prior
+
+
+def separate_components(
+    module: Module,
+    targets: Sequence[PriorTarget],
+    priors: Mapping[str, SampleStep],
+) -> Module:
+    """Draw the components of some sites one by one.
+
+    Each component is drawn from the site's own law, or from its configured
+    prior, and the site becomes the array of its components.
+
+    Parameters
+    ----------
+    module : Module
+        Program drawing every site whole.
+    targets : Sequence[PriorTarget]
+        Sites to separate.
+    priors : Mapping[str, SampleStep]
+        Configured prior of each component's site.
+
+    Returns
+    -------
+    Module
+        The same law, with one site per component where no prior is
+        configured.
+    """
+    by_site = {target.site: target for target in targets}
+
+    def steps(step: ProgramStep) -> tuple[ProgramStep, ...]:
+        target = by_site.get(step.vars[0]) if isinstance(step, SampleStep) else None
+        if target is None or not isinstance(step, SampleStep):
+            return (step,)
+        assert isinstance(step.index, TypeName)
+        # The component of a plated event keeps the event's axis.
+        event = step.axes.over[0] if step.axes is not None and step.axes.over else None
+        axis = event or target.partition_axis
+        draws = []
+        for component in target.components():
+            prior = priors.get(component.site, step)
+            draws.append(
+                step.with_(
+                    vars=(component.site,),
+                    morphism=prior.morphism,
+                    args=prior.args,
+                    static_args=prior.static_args,
+                    index=TypeName(name=axis) if axis is not None else None,
+                    axes=None,
+                    options=(),
+                )
+            )
+        count = len(draws)
+        names = [draw.vars[0] for draw in draws]
+        if target.partition_axis is None:
+            value = _factor(
+                (("prior_component", step.index.name),),
+                cases=tuple((index, _var(name)) for index, name in enumerate(names)),
+            )
+        else:
+            value = _factor(
+                (("prior_cell", step.index.name),),
+                cases=tuple(
+                    (
+                        index,
+                        _index(
+                            names[index % count],
+                            _literal(index // count, integral=True),
+                        ),
+                    )
+                    for index in range(count * len(target.partition_labels))
+                ),
+            )
+        return (*draws, _let(target.site, value))
+
+    return module.with_(
+        statements=tuple(
+            item.with_(draws=tuple(new for step in item.draws for new in steps(step)))
+            if isinstance(item, ProgramDecl)
+            else item
+            for item in module.statements
+        )
+    )

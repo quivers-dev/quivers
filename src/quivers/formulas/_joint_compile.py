@@ -72,6 +72,7 @@ from quivers.formulas._term import OutputAxis, bind_inputs, declare_inputs
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
+    separate_components,
     build_prior_targets,
     ordinary_prior_step,
     order_prior_dependencies,
@@ -82,6 +83,7 @@ from quivers.formulas._priors import (
     PriorSpec,
     PriorTarget,
     normalize_priors,
+    component_rules,
     resolve_priors,
 )
 from quivers.formulas._response import response_tensor
@@ -701,6 +703,12 @@ def _response_parts(
             target.with_(
                 site=response.names[target.site],
                 axes=tuple(response.objects.get(axis, axis) for axis in target.axes),
+                whole=None
+                if target.whole is None
+                else response.names.get(target.whole, target.whole),
+                partition_axis=None
+                if target.partition_axis is None
+                else response.objects.get(target.partition_axis, target.partition_axis),
                 response=name,
             )
             for target in response.lens.prior_targets
@@ -1294,35 +1302,88 @@ def emit_joint(
         emitter._append_finite_object(statements, _qvr_name(group), len(names))
     emitter._append_finite_object(statements, "FormulaJointUnit", 1)
     initial_objects = tuple(statements)
-    statements, steps, parameters, returned, targets, layouts = _response_parts(
-        responses,
-        initial_objects,
-        global_steps,
-        global_parameters,
-        emitter.group_laws,
-    )
-    global_module = Module(
-        statements=(
-            *statements,
-            ProgramDecl(
-                name="model",
-                params=None,
-                domain=TypeName(name="FormulaJointUnit"),
-                codomain=TypeName(name="FormulaJointUnit"),
-                draws=tuple(global_steps),
-                return_vars=(),
+    plan = normalize_priors(priors)
+
+    def shared_targets(
+        separated: Sequence[PriorTarget],
+    ) -> tuple[list[ProgramStep], tuple[PriorTarget, ...]]:
+        """Draw the shared group blocks, with some sites by component."""
+        module = separate_components(
+            Module(
+                statements=(
+                    *statements,
+                    ProgramDecl(
+                        name="model",
+                        params=None,
+                        domain=TypeName(name="FormulaJointUnit"),
+                        codomain=TypeName(name="FormulaJointUnit"),
+                        draws=tuple(global_steps),
+                        return_vars=(),
+                    ),
+                )
             ),
+            separated,
+            {},
         )
-    )
-    global_targets = build_prior_targets(
-        global_module,
-        grouping,
-        emitter._family,
-        predictors,
-        layouts,
-        draw=emitter._parse_prior,
-        predictor_scopes=scopes,
-    )
+        targets = build_prior_targets(
+            module,
+            grouping,
+            emitter._family,
+            predictors,
+            layouts,
+            draw=emitter._parse_prior,
+            predictor_scopes=scopes,
+            separated=frozenset(target.site for target in separated),
+        )
+        program = next(
+            item for item in module.statements if isinstance(item, ProgramDecl)
+        )
+        return list(program.draws), targets
+
+    def parts() -> tuple[
+        list[Statement],
+        list[ProgramStep],
+        list[QiecValueParameter],
+        list[str],
+        list[PriorTarget],
+        list[GroupBlockLaw],
+    ]:
+        """Join the responses' programs."""
+        return _response_parts(
+            responses,
+            initial_objects,
+            global_steps,
+            global_parameters,
+            emitter.group_laws,
+        )
+
+    statements, steps, parameters, returned, targets, layouts = parts()
+    _, global_targets = shared_targets(())
+    separated = component_rules(plan, [*targets, *global_targets])
+    if separated:
+        sites = {target.site for target in separated}
+        for name, response in tuple(responses.items()):
+            local = frozenset(
+                local for local, site in response.names.items() if site in sites
+            )
+            if local:
+                lens = copy(response.lens)
+                lens._component_sites = lens._component_sites | local
+                responses[name] = _namespace(
+                    name,
+                    lens,
+                    response.formula,
+                    shared_objects=shared_objects,
+                    global_names=global_names,
+                    supplied_groups=supplied[name],
+                    supplied_sites=emitter._drawn_sites,
+                    supplied_inputs=supplied_inputs.get(name),
+                    rows=(rows or {}).get(name),
+                )
+        global_steps, global_targets = shared_targets(
+            [target for target in separated if target in global_targets]
+        )
+        statements, steps, parameters, returned, targets, layouts = parts()
     targets.extend(global_targets)
     program = ProgramDecl(
         name="model",
@@ -1340,7 +1401,6 @@ def emit_joint(
     module = Module(
         statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
     )
-    plan = normalize_priors(priors)
     if plan.rules:
         selected = resolve_priors(plan, targets)
         ordinary = {

@@ -5,11 +5,12 @@ from __future__ import annotations
 from contextlib import nullcontext
 import math
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 import torch
 
+from quivers._values import ValueModel
 from quivers._rng import seeded_rng
 from quivers.inference._posterior import constrained_draws
 from quivers.inference.registry import LatentRegistry
@@ -77,7 +78,7 @@ def posterior_draws(
         plan.module,
         draws,
         reported_coefficients(fit._predictor_items())
-        + [target.site for target in plan.prior_targets]
+        + [site for target in plan.prior_targets for site in target.sites]
         # mixtures: parameters equated to a sampled one keep their own name.
         + equated_sites(fit.family, draws),
     )
@@ -408,3 +409,52 @@ def collect_draws(
     from quivers.inference._posterior import collect_draws as collect
 
     return collect(values, shape)
+
+
+class LinpredBinding(ValueModel):
+    """The row binding holding a linear predictor, and how it is read.
+
+    Parameters
+    ----------
+    site : str
+        Binding of the program.
+    width : int
+        Number of coordinates per row; zero for a scalar.
+    exponentiate : bool
+        Whether the requested value is the exponential of the binding.
+    specific : str or None
+        Binding of category-specific effects added to every row's value.
+    coordinate : int or None
+        Coordinate to select.
+    """
+
+    site: str
+    width: int = 0
+    exponentiate: bool = False
+    specific: str | None = None
+    coordinate: int | None = None
+
+    def read(self, binding: Callable[[str], torch.Tensor], rows: int) -> torch.Tensor:
+        """Read the values over the rows.
+
+        Parameters
+        ----------
+        binding : Callable[[str], torch.Tensor]
+            Value of a binding in one replayed program.
+        rows : int
+            Number of rows.
+
+        Returns
+        -------
+        torch.Tensor
+            One value per row, or per row and coordinate.
+        """
+        value = binding(self.site)
+        if self.exponentiate:
+            value = value.exp()
+        if self.specific is not None:
+            value = row_binding(value, rows).unsqueeze(-1) + row_binding(
+                binding(self.specific), rows, self.width
+            )
+        value = row_binding(value, rows, self.width)
+        return value if self.coordinate is None else value[..., self.coordinate]

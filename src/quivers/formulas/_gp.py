@@ -1719,6 +1719,7 @@ class _ProcessTerm(ValueModel):
         output = self.output
         axes = (output.name,) if output is not None else ()
         labels = output.labels if output is not None else ()
+        parameters = output.parameters if output is not None else ()
         return (
             SiteDecl(
                 name=sdgp,
@@ -1727,6 +1728,7 @@ class _ProcessTerm(ValueModel):
                 coef=self.block.label,
                 axes=axes,
                 component_labels=labels,
+                parameters=parameters,
                 lower=0.0,
             ),
             *(
@@ -1737,6 +1739,7 @@ class _ProcessTerm(ValueModel):
                     coef=label,
                     axes=axes,
                     component_labels=labels,
+                    parameters=parameters,
                     lower=0.0,
                 )
                 for site, default, label in zip(

@@ -518,7 +518,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             self.emission.module,
             draws,
             reported
-            + [target.site for target in self.emission.prior_targets]
+            + [site for target in self.emission.prior_targets for site in target.sites]
             + equated,
         )
 
@@ -787,7 +787,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             resp = target.response
             if target.site in consumed:
                 continue
-            consumed.add(target.site)
+            # A component drawn on its own is part of its site's variables.
+            consumed.update(target.sites)
+            if target.whole is not None:
+                continue
             if target.class_ == "cor" and target.site in grouped:
                 continue
             if (
@@ -1312,7 +1315,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         """
         names = self._selection(resp)
         bindings = {
-            name: _linpred_binding(self._response_fit(name), parameter, transform)
+            name: self._response_fit(name)._linpred_binding(parameter, transform)
             for name in names
         }
         prepared = self._prepare(
@@ -1341,18 +1344,13 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             result = {}
             for name in names:
                 response = self.emission.responses[name]
-                binding, exponentiate, specific, width = bindings[name]
                 rows = prepared.rows[name]
-                value = recorded.sites[response.names[binding]].value
-                if exponentiate:
-                    value = value.exp()
-                if specific:
-                    value = row_binding(value, rows).unsqueeze(-1) + row_binding(
-                        recorded.sites[response.names["eta_nonbaseline"]].value,
-                        rows,
-                        width,
-                    )
-                result[name] = row_binding(value, rows, width)
+                result[name] = bindings[name].read(
+                    lambda binding, names=response.names: (
+                        recorded.sites[names[binding]].value
+                    ),
+                    rows,
+                )
             return result
 
         return self._replay(
@@ -2334,81 +2332,6 @@ def _brms_name(text: str) -> str:
         Letters and digits only.
     """
     return "".join(character for character in text if character.isalnum())
-
-
-def _linpred_binding(
-    view: BayesianFit, parameter: str, transform: bool
-) -> tuple[str, bool, bool, int]:
-    """Choose a response's native linear-predictor binding.
-
-    The rules are those of `BayesianFit.posterior_linpred`, applied to the
-    response view before namespacing.
-
-    Parameters
-    ----------
-    view : BayesianFit
-        Response view.
-    parameter : str
-        Predictor name.
-    transform : bool
-        Request the inverse-link binding.
-
-    Returns
-    -------
-    tuple[str, bool, bool, int]
-        Local binding name, whether to exponentiate a retained log rate,
-        whether category-specific effects are added, and the event width.
-
-    Raises
-    ------
-    ValueError
-        If the parameter has no predictor or an ordinal inverse link is
-        requested.
-    """
-    graph = view.predictor_graph
-    graph_parameter = graph is not None and parameter in (
-        graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
-    )
-    # brms: an auxiliary parameter without a formula is constant over rows.
-    if view._constant_parameter(parameter):
-        return parameter, False, False, 0
-    # mixtures: parameter="mu" stacks the component locations.
-    if not graph_parameter and not (
-        parameter == "mu" and view.family.mixture is not None
-    ):
-        view._formula_predictor(parameter)
-    if transform and parameter == "mu" and view.family.ordinal is not None:
-        raise ValueError(
-            "ordinal probabilities depend on thresholds; use posterior_epred"
-        )
-    retained_log_rate = view.family.retains_log_location and parameter == "mu"
-    binding = (
-        ("mu" if transform and not retained_log_rate else "eta")
-        if parameter == "mu"
-        else (parameter if transform else f"dpar_{parameter}_eta")
-    )
-    if graph is not None and parameter in (
-        graph.leaves.keys() | graph.expressions.keys()
-    ):
-        binding = f"nlpar_{parameter}"
-    specific = parameter == "mu" and (
-        any(column.category_specific for column in view.formula.fixed_columns)
-        or any(
-            term.column is not None and term.column.category_specific
-            for term in view.formula.random_terms
-        )
-    )
-    width = view._predictor_width(parameter)
-    if specific:
-        width = (
-            len(view.category_labels)
-            - 1
-            - int(
-                view.family.ordinal is not None
-                and view.family.ordinal.kind == "hurdle_cumulative"
-            )
-        )
-    return binding, retained_log_rate and transform, specific, width
 
 
 def _joint_observations(

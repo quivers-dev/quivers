@@ -1430,20 +1430,25 @@ def prior_table(
                 lower = rule.lower if lower is None else max(lower, rule.lower)
             if rule.upper is not None:
                 upper = rule.upper if upper is None else min(upper, rule.upper)
-        rows.append(
+        # Each component of a vector of parameters has brms's row.
+        rows.extend(
             PriorRow(
-                site=target.site,
+                site=target.site if site is None else site,
                 prior=_step_prior(step),
                 class_=target.class_,
                 coef=target.coef,
                 group=target.group,
                 response=target.response,
-                dpar=target.dpar,
+                dpar=dpar,
                 nlpar=target.nlpar,
                 lower=lower,
                 upper=upper,
                 tag=None if rule is None else rule.tag,
                 source="default" if rule is None else "user",
+            )
+            for dpar, site in (
+                [(name, target.component_site(name)) for name in target.parameters]
+                or [(target.dpar, None)]
             )
         )
     return PriorTable(rows=tuple(rows), policy=policy)
@@ -1466,7 +1471,9 @@ def user_selection(
     dict[str, PriorSpec]
         Winning rule per selected site.
     """
-    return resolve_priors(priors, targets) if priors.rules else {}
+    if not priors.rules:
+        return {}
+    return resolve_priors(priors, targets)
 
 
 def join_main_rules(

@@ -180,12 +180,14 @@ from quivers.formulas._priors import (
     PriorSpec,
     PriorTarget,
     normalize_priors,
+    component_rules,
     resolve_priors,
 )
 from quivers.formulas._prior_emission import (
     build_prior_targets,
     ordinary_prior_step,
     apply_prior_plan,
+    separate_components,
     order_prior_dependencies,
 )
 
@@ -830,6 +832,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._drawn_sites: frozenset[str] = frozenset()
         self._group_plan: dict[tuple[str, str, str], GroupBlockLaw] = {}
         self._predictors: tuple[Predictor, ...] = ()
+        self._separated: tuple[PriorTarget, ...] = ()
+        self._component_sites: frozenset[str] = frozenset()
         self._term_laws: FamilyCatalog | None = None
         self._rows: RowSource | None = None
         self._names = ProgramNames()
@@ -1243,6 +1247,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     auxiliary.name: auxiliary.prior
                 }
         self._emitted_groups = []
+        self._separated = ()
         self._rows = rows
         self._supplied_sites = frozenset(supplied_sites)
         self._drawn_sites = self._supplied_sites
@@ -1473,6 +1478,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     )
         module = self._named_module(formula, supplied_groups)
         targets = self._catalogue_prior_targets(formula, module)
+        told_apart = component_rules(self._prior_set, targets)
+        separated = tuple(
+            target
+            for target in targets
+            if target.parameters
+            and (target in told_apart or target.site in self._component_sites)
+        )
+        if separated:
+            self._separated = separated
+            module = separate_components(module, separated, {})
+            targets = self._catalogue_prior_targets(formula, module)
         # brms default policy: one rule for every site no user rule selects.
         defaults = self._brms_defaults(formula, targets)
         if self._prior_set.rules or defaults:
@@ -1529,7 +1545,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self._prior_steps = steps
                 self._emitted_groups = []
                 self._drawn_sites = self._supplied_sites
-                module = self._build_module(formula, supplied_groups=supplied_groups)
+                module = separate_components(
+                    self._build_module(formula, supplied_groups=supplied_groups),
+                    self._separated,
+                    self._prior_steps,
+                )
                 targets = self._catalogue_prior_targets(formula, module)
             special = {
                 site: rule
@@ -1668,6 +1688,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             self.group_laws,
             draw=self._parse_prior,
             thresholds_by=self._thresholds_by,
+            separated=frozenset(target.site for target in self._separated),
         )
         # brms center = FALSE puts the location intercept in class b.
         if self._center is False:

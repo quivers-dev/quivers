@@ -478,6 +478,10 @@ def single_variables(
     for target in targets:
         if target.site not in draws or target.site in consumed:
             continue
+        if target.whole is not None:
+            # A component drawn on its own is part of its site's variables.
+            consumed.update(target.sites)
+            continue
         parameter = target.nlpar or target.dpar or "mu"
         value = draws[target.site]
         if target.class_ in {"b", "Intercept"}:
