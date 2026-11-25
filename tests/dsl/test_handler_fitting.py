@@ -465,7 +465,7 @@ export fitted
 
     def normal(value: object, loc: float, scale: float) -> float:
         return float(
-            torch.distributions.Normal(loc, scale)
+            torch.distributions.Normal(torch.tensor(loc, dtype=_F64), scale)
             .log_prob(torch.as_tensor(cast(float, value), dtype=_F64))
             .sum()
         )
@@ -476,7 +476,7 @@ export fitted
         + normal(w, a, 2.0)
         + normal(_Y4, location, 1.5)
     )
-    assert float(joint) == pytest.approx(expected, rel=1e-7)
+    assert float(joint) == pytest.approx(expected, rel=1e-9)
 
 
 # ---------------------------------------------------------------------------

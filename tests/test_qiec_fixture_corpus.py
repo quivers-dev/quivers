@@ -750,10 +750,11 @@ def _g_joint(point: Mapping[str, Host]) -> float:
     """The joint of fixture G, its effects eliminated by hand."""
     a, b = (cast(float, point[name]) for name in ("a", "b"))
     left, right = (3.0 * x if x > 0.0 else -1.0 for x in (a, b))
-    location = 0.25 * left + 0.75 * right
+    zero = torch.tensor(0.0, dtype=torch.float64)
+    location = zero + 0.25 * left + 0.75 * right
     normal = torch.distributions.Normal
     return float(
-        normal(0.0, 1.0).log_prob(torch.tensor([a, b], dtype=torch.float64)).sum()
+        normal(zero, 1.0).log_prob(torch.tensor([a, b], dtype=torch.float64)).sum()
         + normal(location, 1.0)
         .log_prob(torch.tensor(_G_DATA["y"], dtype=torch.float64))
         .sum()
