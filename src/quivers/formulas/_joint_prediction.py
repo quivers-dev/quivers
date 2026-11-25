@@ -28,7 +28,9 @@ from quivers.dsl.ast_nodes import (
     SampleStep,
 )
 from quivers.formulas._autocor import AutocorMatrix, autocor_catalog
+from quivers.formulas._group_law import KnownCovariance
 from quivers.formulas._group_prediction import (
+    CovarianceRemap,
     GroupRemap,
     NewLevelPolicy,
     selected_effects,
@@ -233,28 +235,37 @@ def _merge_groups(
                 )
     merged = {}
     for group, remap in chosen.items():
-        # The response declaring a by partition codes it on the compact levels.
-        partition = next(
-            (
-                other
-                for context in contexts.values()
-                if (other := context.groups.get(group)) is not None
-                and other.by_codes
-                and other.fitted_indices == remap.fitted_indices
-            ),
-            remap,
-        )
+        # The responses declaring by partitions code them on the compact levels.
+        partitions = {
+            partition.axis: partition
+            for context in contexts.values()
+            if (other := context.groups.get(group)) is not None
+            and other.fitted_indices == remap.fitted_indices
+            for partition in other.partitions
+        }
+        # One covariance of the factor may have blocks in several responses.
+        covariances: dict[str, CovarianceRemap] = {}
+        for context in contexts.values():
+            other = context.groups.get(group)
+            for known in other.covariances if other is not None else ():
+                covariances.setdefault(known.name, known)
         merged[group] = remap.with_(
             level_sites=tuple(
                 site for site in fit.emission.level_sites if site.group == group
             ),
-            covariance_laws=tuple(
-                law
-                for law in fit.emission.group_laws
-                if law.group == group and law.level.basis is not None
+            partitions=tuple(partitions.values()),
+            covariances=tuple(
+                known.with_(
+                    laws=tuple(
+                        law
+                        for law in fit.emission.group_laws
+                        if law.group == group
+                        and isinstance(law.level.covariance, KnownCovariance)
+                        and law.level.covariance.name == name
+                    )
+                )
+                for name, known in covariances.items()
             ),
-            by_codes=partition.by_codes,
-            compact_by_codes=partition.compact_by_codes,
         )
     return merged
 

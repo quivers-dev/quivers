@@ -61,9 +61,13 @@ class KnownCovariance(LevelCovariance):
     basis : GroupCovarianceBasis
         Projection from support coordinates to the physical levels and the
         factored support covariance.
+    name : str
+        Name of the matrix, which tells several covariances of one factor
+        apart; empty for the covariance given with the factor.
     """
 
     basis: GroupCovarianceBasis = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    name: str = ""
     kind: Literal["known"] = "known"
 
 
@@ -192,7 +196,20 @@ class GroupLevelLaw(ValueModel):
         str
             Finite axis name.
         """
-        return f"FormulaGroupSupport_{self.axis}"
+        return f"FormulaGroupSupport_{self._covariance_name}"
+
+    @property
+    def _covariance_name(self) -> str:
+        """Name the known level covariance in the program.
+
+        Returns
+        -------
+        str
+            The level axis and the name of the matrix.
+        """
+        covariance = self.covariance
+        name = covariance.name if isinstance(covariance, KnownCovariance) else ""
+        return f"{self.axis}_{name}" if name else self.axis
 
     def basis_input(self, matrix: BasisMatrix) -> str:
         """Name the runtime input holding one matrix of the support basis.
@@ -207,7 +224,7 @@ class GroupLevelLaw(ValueModel):
         str
             Runtime input name.
         """
-        return f"__formula_level_basis_{self.axis}_{matrix}"
+        return f"__formula_level_basis_{self._covariance_name}_{matrix}"
 
 
 class CoefficientCorrelation(dx.TaggedUnion, discriminator="kind"):
@@ -405,6 +422,8 @@ class GroupMemberLaw(ValueModel):
     cell_axis : str or None
         Flat axis over the levels and components, level-major, indexing the
         raw site of a member with a component axis that owns its site.
+    bar : int
+        Position of the coefficient's bar in its formula.
     """
 
     prefix: str
@@ -418,6 +437,7 @@ class GroupMemberLaw(ValueModel):
     rows: RowMap = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     mean: GroupMean | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
     cell_axis: str | None = None
+    bar: int = 0
 
     @property
     def mean_site(self) -> str | None:

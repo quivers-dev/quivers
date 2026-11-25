@@ -40,7 +40,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from functools import reduce
 import math
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 import didactic.api as dx
 import numpy as np
@@ -83,7 +83,6 @@ from quivers.formulas._term import (
     FormulaPart,
     PopulationCoefficient,
     VariableDecl,
-    SmoothPart,
     coordinate_scopes,
     ColumnName,
     Contribution,
@@ -1679,7 +1678,7 @@ class _ProcessTerm(ValueModel):
         """
         return ()
 
-    def smooth_part(self, label: str) -> SmoothPart | None:
+    def smooth_part(self, label: str) -> Self | None:
         """Return the term's share of one smooth or Gaussian process.
 
         Parameters
@@ -1689,7 +1688,7 @@ class _ProcessTerm(ValueModel):
 
         Returns
         -------
-        SmoothPart or None
+        Self or None
             The process.
         """
         return self if self.label == label else None

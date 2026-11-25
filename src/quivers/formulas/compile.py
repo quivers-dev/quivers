@@ -1274,6 +1274,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for group, covariance in self._group_covariances.items():
                 if group in predictor.group_levels:
                     covariance.subset(predictor.group_levels[group])
+            for term in predictor.random_terms:
+                if term.covariance is not None:
+                    term.covariance.subset(predictor.group_levels[term.group])
         if self._family.vector_response:
             if not formula.response_layout.event_shape:
                 raise ValueError(
@@ -3257,12 +3260,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Returns
         -------
         GroupCovarianceBasis
-            The basis of an emitted block of the factor, or a new
-            factorization over its labels.
+            Factorization of the factor's covariance over its labels.
         """
-        for law in self._emitted_groups:
-            if law.group == group and law.level.basis is not None:
-                return law.level.basis
         return self._group_covariances[group].basis(levels[group])
 
     def _output_axes(self, formula: Formula) -> dict[str, OutputAxis]:
@@ -4276,10 +4275,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 if self._predictor_graph is not None
                 else None
             )
-            if (
-                isinstance(root, ComponentExpression)
-                and not self._category_parameters
-            ):
+            if isinstance(root, ComponentExpression) and not self._category_parameters:
                 labels = self._component_labels(formula)
                 response = self._family.response
                 assert response is not None

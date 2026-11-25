@@ -14,7 +14,7 @@ new-level policies of the shared Gaussian group layout unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -41,7 +41,7 @@ __all__: list[str] = []
 
 def joint_group_blocks(
     predictors: Iterable[tuple[str, str, Formula]],
-    covariances: Collection[str],
+    known: Callable[[RandomTerm], bool],
     supplied: Collection[tuple[str, str, str]] = (),
 ) -> dict[tuple[str, str], list[tuple[str, RandomTerm]]]:
     """Collect the group terms that share one joint coefficient distribution.
@@ -55,8 +55,8 @@ def joint_group_blocks(
     ----------
     predictors : Iterable[tuple[str, str, Formula]]
         Predicted parameters as (name, coefficient prefix, design).
-    covariances : Collection[str]
-        Grouping factors with a known level covariance.
+    known : Callable[[RandomTerm], bool]
+        Whether a term has a known level covariance.
     supplied : Collection[tuple[str, str, str]]
         Members, as (prefix, group, slope), whose block is already emitted.
 
@@ -72,7 +72,7 @@ def joint_group_blocks(
             if (prefix, term.group, term.slope) in supplied:
                 continue
             if term.correlation_id is None:
-                if term.group not in covariances:
+                if not known(term):
                     continue
                 identity = (
                     prefix
@@ -189,52 +189,58 @@ def member_covariates(
     }
 
 
-def by_axis(group: str) -> str:
-    """Name the finite axis of a grouping factor's ``by`` levels.
+def by_axis(group: str, variable: str) -> str:
+    """Name the finite axis of a ``by`` variable's levels.
 
     Parameters
     ----------
     group : str
         Grouping-factor name.
+    variable : str
+        Authored ``by`` variable.
 
     Returns
     -------
     str
         Axis name.
     """
-    return f"FormulaBy_{_qvr_name(group)}"
+    return f"FormulaBy_{_qvr_name(group)}_{_qvr_name(variable)}"
 
 
-def by_input(group: str) -> str:
+def by_input(group: str, variable: str) -> str:
     """Name the input holding each grouping level's ``by`` level.
 
     Parameters
     ----------
     group : str
         Grouping-factor name.
+    variable : str
+        Authored ``by`` variable.
 
     Returns
     -------
     str
         Runtime input name.
     """
-    return f"{_qvr_name(group)}_by"
+    return f"{_qvr_name(group)}_by_{_qvr_name(variable)}"
 
 
-def weight_input(group: str) -> str:
+def weight_input(group: str, column: str) -> str:
     """Name the input holding each grouping level's prior weight.
 
     Parameters
     ----------
     group : str
         Grouping-factor name.
+    column : str
+        Column of the weights.
 
     Returns
     -------
     str
         Runtime input name.
     """
-    return f"{_qvr_name(group)}_prior_weight"
+    return f"{_qvr_name(group)}_prior_weight_{_qvr_name(column)}"
 
 
 def student_sites(group: str) -> tuple[str, str, str]:
@@ -257,7 +263,7 @@ def student_sites(group: str) -> tuple[str, str, str]:
 def merged_group_option(
     options: Iterable[GroupLevelOptions],
 ) -> GroupLevelOptions | None:
-    """Merge the ``gr()`` options the members of one block declare.
+    """Merge the ``gr()`` options the terms of one block declare.
 
     The coefficients of a block have one law, so an option any member
     declares applies to the block, as in brms.
@@ -275,7 +281,7 @@ def merged_group_option(
     Raises
     ------
     ValueError
-        If members give one factor different ``by`` variables or prior
+        If members give one block different ``by`` variables or prior
         weights.
     """
     merged: GroupLevelOptions | None = None
@@ -297,8 +303,8 @@ def merged_group_option(
         ):
             if any(first) and any(second) and first != second:
                 raise ValueError(
-                    "Each grouping factor can only be associated with one "
-                    f"{label}; {option.group!r} has several"
+                    "Each block of group-level effects can only be associated "
+                    f"with one {label}; a block of {option.group!r} has several"
                 )
         merged = GroupLevelOptions(
             options=merged.options.with_(

@@ -16,8 +16,10 @@ from quivers.formulas._group_covariance import (
     _tolerance,
 )
 from quivers.formulas._grouping import rewrite_grouping
-from quivers.formulas._grouping_emission import compact_option, merged_group_option
+from quivers.formulas._group_plan import block_covariance
+from quivers.formulas._grouping_emission import by_axis, compact_option
 from quivers.formulas._group_law import (
+    KnownCovariance,
     GroupBlockLaw,
     LevelSite,
     encode_support,
@@ -43,6 +45,55 @@ type NewLevelPolicy = Literal[
 ]
 
 
+class LevelPartition(ValueModel):
+    """The levels of one ``by`` variable on the fitted and prediction axes.
+
+    Parameters
+    ----------
+    axis : str
+        Axis over the levels of the variable.
+    codes : tuple[int, ...]
+        The ``by`` level of each fitted level.
+    compact : tuple[int, ...]
+        The ``by`` level of each compact level.
+    """
+
+    axis: str
+    codes: tuple[int, ...]
+    compact: tuple[int, ...]
+
+
+class CovarianceRemap(ValueModel):
+    """One known level covariance on the prediction levels.
+
+    Parameters
+    ----------
+    name : str
+        Name of the covariance among those of the factor.
+    covariance : GroupCovariance
+        Complete labeled covariance, including requested future identities.
+    laws : tuple[GroupBlockLaw, ...]
+        Fitted blocks with the covariance.
+    target : GroupCovarianceBasis
+        Support factors of the compact levels.
+    conditional : GroupCovarianceBasis or None
+        Support factors of the new levels given the fitted ones.
+    mean_map : tuple[tuple[float, ...], ...]
+        Conditional mean map from all fitted levels.
+    """
+
+    name: str
+    covariance: GroupCovariance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    laws: tuple[GroupBlockLaw, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    target: GroupCovarianceBasis = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    conditional: GroupCovarianceBasis | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    mean_map: tuple[tuple[float, ...], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+
 class GroupRemap(ValueModel):
     """One compact prediction axis and its positions in the fitted axis.
 
@@ -60,18 +111,10 @@ class GroupRemap(ValueModel):
         Sample sites holding values for every level of the factor.
     levels : tuple[str, ...]
         Compact labels; supplied covariance retains authored identities.
-    by_codes : tuple[int, ...]
-        The ``by`` level of each fitted level; empty without a partition.
-    compact_by_codes : tuple[int, ...]
-        The ``by`` level of each compact level; empty without a partition.
-    covariance : GroupCovariance or None
-        Complete labeled covariance, including requested future identities.
-    covariance_laws : tuple[GroupBlockLaw, ...]
-        Fitted Gaussian support and coefficient slices.
-    covariance_target, covariance_conditional : GroupCovarianceBasis or None
-        Once-per-request compact and Schur-conditional support factors.
-    covariance_mean_map : tuple[tuple[float, ...], ...]
-        Once-per-request conditional mean map from all fitted levels.
+    partitions : tuple[LevelPartition, ...]
+        Partitions of the levels by ``by`` variables.
+    covariances : tuple[CovarianceRemap, ...]
+        Known covariances between the levels.
     member_indices : tuple[torch.Tensor, ...]
         Compact codes of every member of a brms ``mm()`` factor, in member
         order; empty for an ordinary factor, whose codes are ``row_indices``.
@@ -85,21 +128,10 @@ class GroupRemap(ValueModel):
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     levels: tuple[str, ...] = ()
-    by_codes: tuple[int, ...] = ()
-    compact_by_codes: tuple[int, ...] = ()
-    covariance: GroupCovariance | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    covariance_laws: tuple[GroupBlockLaw, ...] = dx.field(
+    partitions: tuple[LevelPartition, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
-    covariance_target: GroupCovarianceBasis | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    covariance_conditional: GroupCovarianceBasis | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    covariance_mean_map: tuple[tuple[float, ...], ...] = dx.field(
+    covariances: tuple[CovarianceRemap, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     member_indices: tuple[torch.Tensor, ...] = dx.field(
@@ -139,14 +171,15 @@ class GroupRemap(ValueModel):
         """
         return frozenset(
             law.support_site
-            for law in self.covariance_laws
+            for known in self.covariances
+            for law in known.laws
             if law.support_site is not None
         )
 
     def donor_indices(self) -> torch.Tensor:
         """Draw a fitted level for each new compact level.
 
-        A donor shares the ``by`` level of the new level, whose standard
+        A donor shares the ``by`` levels of the new level, whose standard
         deviations and correlations its coefficients have, as in brms.
 
         Returns
@@ -154,20 +187,42 @@ class GroupRemap(ValueModel):
         torch.Tensor
             Fitted level of each compact level, with a uniformly drawn donor
             in the place of each new level.
+
+        Raises
+        ------
+        ValueError
+            If no fitted level has the ``by`` levels of a new one.
         """
         indices = torch.tensor(self.fitted_indices, dtype=torch.long)
         new = indices < 0
-        fitted = torch.tensor(
-            self.by_codes or (0,) * self.fitted_size, dtype=torch.long
+        fitted = (
+            list(zip(*(partition.codes for partition in self.partitions), strict=True))
+            or [()] * self.fitted_size
         )
-        compact = torch.tensor(
-            self.compact_by_codes or (0,) * len(self.fitted_indices), dtype=torch.long
-        )
-        for code in sorted(set(compact[new].tolist())):
-            candidates = (fitted == code).nonzero().squeeze(-1)
-            chosen = new & (compact == code)
-            indices[chosen] = candidates[
-                torch.randint(len(candidates), (int(chosen.sum()),))
+        compact = list(
+            zip(*(partition.compact for partition in self.partitions), strict=True)
+        ) or [()] * len(self.fitted_indices)
+        chosen = [code for code, fresh in zip(compact, new.tolist()) if fresh]
+        for code in sorted(set(chosen)):
+            candidates = torch.tensor(
+                [index for index, value in enumerate(fitted) if value == code],
+                dtype=torch.long,
+            )
+            if not len(candidates):
+                raise ValueError(
+                    f"no fitted level of {self.group!r} has the by levels of a new "
+                    "level; use sample_new_levels='gaussian'"
+                )
+            positions = torch.tensor(
+                [
+                    index
+                    for index, value in enumerate(compact)
+                    if value == code and bool(new[index])
+                ],
+                dtype=torch.long,
+            )
+            indices[positions] = candidates[
+                torch.randint(len(candidates), (len(positions),))
             ]
         return indices
 
@@ -335,14 +390,31 @@ def compact_groups(
                         f"fitted group term {term.slope!r} of {name!r} for "
                         f"{group!r} has no compiled law"
                     )
-        covariance = fit.group_covariances.get(group)
-        covariance_laws = tuple(law for law in laws if law.level.basis is not None)
-        if covariance is not None:
+        known: dict[str, GroupCovariance] = {}
+        for formula in predictors.values():
+            for term in formula.random_terms:
+                if term.group == group:
+                    name, covariance = block_covariance(
+                        group, (term,), fit.group_covariances
+                    )
+                    if covariance is not None:
+                        known[name] = covariance
+        if group in fit.group_covariances:
+            known.setdefault("", fit.group_covariances[group])
+        blocks: dict[str, list[GroupBlockLaw]] = {}
+        for law in laws:
+            if isinstance(law.level.covariance, KnownCovariance):
+                blocks.setdefault(law.level.covariance.name, []).append(law)
+        requested = tuple(key for key in keys if key is not None)
+        new_labels = tuple(label for label in requested if label not in positions)
+        covariances = []
+        for name, covariance in known.items():
+            covariance_laws = blocks.get(name, [])
             if any(key is None for key in keys):
                 raise ValueError(
                     f"supplied covariance requires explicit labeled identities for group {group!r}"
                 )
-            covariance.subset(tuple(key for key in keys if key is not None))
+            covariance.subset(requested)
             for law in covariance_laws:
                 basis = law.level.basis
                 assert basis is not None
@@ -357,16 +429,22 @@ def compact_groups(
                     raise ValueError(
                         f"prediction covariance for group {group!r} changes the fitted principal submatrix"
                     )
-        target_basis, conditional_basis, mean_map = None, None, ()
-        if covariance is not None:
-            requested = tuple(key for key in keys if key is not None)
-            target_basis = covariance.basis(requested)
-            new_labels = tuple(label for label in requested if label not in positions)
+            conditional_basis, mean_map = None, ()
             if new_labels:
                 mean_tensor, conditional_basis = covariance.conditional(
                     levels, new_labels
                 )
                 mean_map = tuple(tuple(row) for row in mean_tensor.tolist())
+            covariances.append(
+                CovarianceRemap(
+                    name=name,
+                    covariance=covariance,
+                    laws=tuple(covariance_laws),
+                    target=covariance.basis(requested),
+                    conditional=conditional_basis,
+                    mean_map=mean_map,
+                )
+            )
         remap = GroupRemap(
             group=group,
             fitted_size=len(levels),
@@ -376,32 +454,32 @@ def compact_groups(
             row_indices=torch.tensor(row_codes, dtype=torch.long),
             level_sites=tuple(site for site in level_sites if site.group == group),
             levels=tuple(
-                key
-                if covariance is not None and key is not None
-                else f"prediction_{index}"
+                key if known and key is not None else f"prediction_{index}"
                 for index, key in enumerate(keys)
             ),
-            covariance=covariance,
-            covariance_laws=covariance_laws,
-            covariance_target=target_basis,
-            covariance_conditional=conditional_basis,
-            covariance_mean_map=mean_map,
+            covariances=tuple(covariances),
             member_indices=tuple(
                 torch.tensor(codes, dtype=torch.long) for codes in member_rows
             )
             if membership is not None
             else (),
         )
-        partition = merged_group_option(
-            option
-            for formula in predictors.values()
-            if (option := formula.grouping.option(group)) is not None
-        )
-        if partition is not None and partition.by_levels:
-            remap = remap.with_(
-                by_codes=partition.by_codes,
-                compact_by_codes=compact_option(partition, frame, remap).by_codes,
+        remap = remap.with_(
+            partitions=tuple(
+                {
+                    option.options.by: LevelPartition(
+                        axis=by_axis(group, option.options.by),
+                        codes=option.by_codes,
+                        compact=compact_option(option, frame, remap).by_codes,
+                    )
+                    for formula in predictors.values()
+                    for option in formula.grouping.options
+                    if option.group == group
+                    and option.by_levels
+                    and option.options.by is not None
+                }.values()
             )
+        )
         result[group] = remap
     return result
 
@@ -509,12 +587,12 @@ def remap_draw(
                 },
             )
         for group_name, group in context.groups.items():
-            if group.covariance is not None:
-                for name in group.support_sites:
-                    result.pop(name, None)
+            for name in group.support_sites:
+                result.pop(name, None)
+            for position, known in enumerate(group.covariances):
                 result.update(
                     _remap_covariance_group(
-                        group, latents, shapes, policy, fixed_donors
+                        group, known, position, latents, shapes, policy, fixed_donors
                     )
                 )
             if not group.sites:
@@ -529,7 +607,7 @@ def remap_draw(
                     if group_name not in fixed_donors:
                         fixed_donors[group_name] = group.donor_indices()[new]
                     indices[new] = fixed_donors[group_name]
-            if donors is not None and policy != "gaussian" and group.covariance is None:
+            if donors is not None and policy != "gaussian" and not group.covariances:
                 donors[group_name] = indices.clone()
             for name, width in group.sites.items():
                 source = latents[name].reshape(group.fitted_size, width)
@@ -549,6 +627,8 @@ def remap_draw(
 
 def _remap_covariance_group(
     group: GroupRemap,
+    known: CovarianceRemap,
+    position: int,
     latents: dict[str, torch.Tensor],
     shapes: Mapping[str, tuple[int, ...]],
     policy: str,
@@ -566,7 +646,11 @@ def _remap_covariance_group(
     Parameters
     ----------
     group : GroupRemap
+        Compact prediction axis.
+    known : CovarianceRemap
         Labeled covariance and the fitted laws of its blocks.
+    position : int
+        Position of the covariance among those of the factor.
     latents : dict[str, torch.Tensor]
         One posterior draw in original support coordinates.
     shapes : Mapping[str, tuple[int, ...]]
@@ -586,16 +670,13 @@ def _remap_covariance_group(
     ValueError
         If an empirical policy has no stochastic fitted support to resample.
     """
-    covariance = group.covariance
-    assert covariance is not None
     indices = torch.tensor(group.fitted_indices, dtype=torch.long)
     new = indices < 0
     new_labels = tuple(
         label for label, fresh in zip(group.levels, new.tolist(), strict=True) if fresh
     )
-    target_basis = group.covariance_target
-    assert target_basis is not None
-    conditional = group.covariance_conditional
+    target_basis = known.target
+    conditional = known.conditional
     empirical_donors = None
     if (
         new_labels
@@ -603,14 +684,14 @@ def _remap_covariance_group(
         and conditional.rank
         and policy != "gaussian"
     ):
-        fitted_basis = group.covariance_laws[0].level.basis
+        fitted_basis = known.laws[0].level.basis
         assert fitted_basis is not None
         fitted_rank = fitted_basis.rank
         if not fitted_rank:
             raise ValueError(
                 "empirical new-group prediction has no fitted support innovations; use sample_new_levels='gaussian'"
             )
-        key = f"{group.group}:support"
+        key = f"{group.group}:support" + (f":{position}" if position else "")
         if policy == "old_levels":
             if key not in fixed_donors:
                 fixed_donors[key] = torch.randint(fitted_rank, (conditional.rank,))
@@ -618,13 +699,21 @@ def _remap_covariance_group(
         else:
             empirical_donors = torch.randint(fitted_rank, (conditional.rank,))
     output = {}
-    for law in group.covariance_laws:
+    for law in known.laws:
         basis = law.level.basis
         assert basis is not None
         # The column factor of a compact level is that of its by level.
+        by = law.level.by
         codes = (
-            torch.tensor(group.compact_by_codes, dtype=torch.long)
-            if law.level.by is not None
+            torch.tensor(
+                next(
+                    partition.compact
+                    for partition in group.partitions
+                    if partition.axis == by.axis
+                ),
+                dtype=torch.long,
+            )
+            if by is not None
             else None
         )
         fitted = block_gaussian(latents, law, sample_ndims=0)
@@ -632,7 +721,7 @@ def _remap_covariance_group(
         if new_labels:
             assert conditional is not None
             mean_map = torch.tensor(
-                group.covariance_mean_map, dtype=fitted.dtype, device=fitted.device
+                known.mean_map, dtype=fitted.dtype, device=fitted.device
             )
             expectation = mean_map @ fitted
             if conditional.rank:

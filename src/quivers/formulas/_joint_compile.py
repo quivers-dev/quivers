@@ -54,17 +54,22 @@ from quivers.formulas._ast import (
 from quivers.formulas._group_law import (
     GroupBlockLaw,
     IdentityCovariance,
+    KnownCovariance,
     LevelSite,
     law_inputs,
     renamed_law,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_emission import draw_level, emit_group_block
-from quivers.formulas._group_plan import check_names, level_law, plan_joint_block
+from quivers.formulas._group_plan import (
+    block_covariance,
+    check_names,
+    level_law,
+    plan_joint_block,
+)
 from quivers.formulas._predictor import (
     Predictor,
     group_term,
-    response_axis,
     slot_link,
 )
 from quivers.formulas._row_source import RowSource
@@ -178,7 +183,9 @@ class _JointEmission:
         return tuple(law.layout for law in self.group_laws)
 
 
-_LevelFactors = tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+type _ByLevels = dict[tuple[str, str | None], dict[str, str]]
+type _PriorWeights = dict[tuple[str, str | None], dict[str, float]]
+_LevelFactors = tuple[_ByLevels, _PriorWeights]
 
 
 def _declared_level_factors(components: _Components) -> _LevelFactors:
@@ -196,9 +203,9 @@ def _declared_level_factors(components: _Components) -> _LevelFactors:
 
     Returns
     -------
-    tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+    tuple
         The declared ``by`` level and the declared prior weight of each
-        labeled level, by grouping factor.
+        labeled level, by grouping factor and declaring column.
 
     Raises
     ------
@@ -206,31 +213,36 @@ def _declared_level_factors(components: _Components) -> _LevelFactors:
         If two declarations give one level of a grouping factor different
         ``by`` levels or different prior weights.
     """
-    by: dict[str, dict[str, str]] = {}
-    weights: dict[str, dict[str, float]] = {}
+    by: _ByLevels = {}
+    weights: _PriorWeights = {}
     for lens, formula in components.values():
         for _, _, predictor in lens._predictor_items(formula):
             for option in predictor.grouping.options:
                 group = option.group
                 labels = predictor.group_levels[group]
                 if option.by_levels:
+                    partition = by.setdefault((group, option.options.by), {})
                     for label, code in zip(labels, option.by_codes, strict=True):
                         value = option.by_levels[code]
-                        if by.setdefault(group, {}).setdefault(label, value) != value:
+                        if partition.setdefault(label, value) != value:
                             raise ValueError(
-                                f"gr({group}, by = ...): a by partition assigns "
-                                f"each level of {group!r} one by level, and the "
-                                f"responses give level {label!r} both "
-                                f"{by[group][label]!r} and {value!r}"
+                                f"gr({group}, by = {option.options.by}): a by "
+                                f"partition assigns each level of {group!r} one by "
+                                f"level, and the responses give level {label!r} both "
+                                f"{partition[label]!r} and {value!r}"
                             )
                 if option.prior_weights:
+                    declared = weights.setdefault(
+                        (group, option.options.prior_weight), {}
+                    )
                     for label, weight in zip(labels, option.prior_weights, strict=True):
-                        known = weights.setdefault(group, {}).setdefault(label, weight)
+                        known = declared.setdefault(label, weight)
                         if known != weight:
                             raise ValueError(
-                                f"gr({group}, pw = ...): a prior weight belongs to "
-                                f"a level of {group!r}, and the responses give "
-                                f"level {label!r} both {known!r} and {weight!r}"
+                                f"gr({group}, pw = {option.options.prior_weight}): a "
+                                f"prior weight belongs to a level of {group!r}, and "
+                                f"the responses give level {label!r} both {known!r} "
+                                f"and {weight!r}"
                             )
     return by, weights
 
@@ -246,9 +258,9 @@ def _recode(
         Response formula carrying its own group levels and codes.
     levels : Mapping[str, tuple[str, ...]]
         Joint levels for every group, a superset of each response's levels.
-    factors : tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+    factors : tuple
         The ``by`` level and the prior weight declared for each labeled
-        level, by grouping factor.
+        level, by grouping factor and declaring column.
 
     Returns
     -------
@@ -274,7 +286,7 @@ def _recode(
         group = option.group
         joint = levels[group]
         if option.by_levels:
-            declared = factors[0][group]
+            declared = factors[0][(group, option.options.by)]
             missing = [label for label in joint if label not in declared]
             if missing:
                 raise ValueError(
@@ -290,7 +302,7 @@ def _recode(
                 by_codes=tuple(position[declared[label]] for label in joint),
             )
         if option.prior_weights:
-            known = factors[1][group]
+            known = factors[1][(group, option.options.prior_weight)]
             missing = [label for label in joint if label not in known]
             if missing:
                 raise ValueError(
@@ -727,8 +739,8 @@ def _member_axis(
     formula: Formula,
     prefix: str,
     term: RandomTerm,
-) -> tuple[str, int] | None:
-    """Read an explicit response-component or ordinal-transition coordinate.
+) -> OutputAxis | None:
+    """Locate the coordinate axis of one member of a shared block.
 
     Parameters
     ----------
@@ -745,31 +757,15 @@ def _member_axis(
 
     Returns
     -------
-    tuple[str, int] or None
-        The namespaced coordinate axis and its width, or None for a scalar
-        member.
+    OutputAxis or None
+        The namespaced coordinate axis, or None for a scalar member.
     """
-    namespace = "response_" + _qvr_name(name) + "__"
-    if lens._family.response is not None and (
-        prefix == ""
-        or lens._family.component_scale is not None
-        and prefix == f"dpar_{lens._family.component_scale.name}_"
-    ):
-        labels = lens._component_labels(formula)
-        width = len(lens._family.response.coordinate_indices(labels))
-        axis = (
-            "FormulaCategoryLogit" if prefix == "" else prefix + "FormulaCategoryLogit"
-        )
-        return namespace + axis, width
-    if term.category_specific:
-        count = lens._category_count(formula, family=lens._family.name) - 1
-        if (
-            lens._family.ordinal is not None
-            and lens._family.ordinal.kind == "hurdle_cumulative"
-        ):
-            count -= 1
-        return namespace + "FormulaCutpoint", count
-    return None
+    axis = lens._output_axes(formula).get(prefix)
+    if axis is None and term.category_specific:
+        axis = lens._transition_axis(formula)
+    if axis is None:
+        return None
+    return axis.with_(name="response_" + _qvr_name(name) + "__" + axis.name)
 
 
 def _validate_residual_rows(components: _Components) -> None:
@@ -1098,7 +1094,7 @@ def _shared_groups(
         if len({item[0] for item in members}) < 2:
             continue
         actual: list[tuple[str, RandomTerm]] = []
-        axes: list[tuple[str, int] | None] = []
+        axes: list[OutputAxis | None] = []
         for name, parameter, prefix, predictor, term in members:
             lens, formula = components[name]
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
@@ -1106,7 +1102,7 @@ def _shared_groups(
             axis = _member_axis(name, lens, formula, prefix, term)
             axes.append(axis)
             if axis is not None:
-                emitter._append_finite_object(statements, *axis)
+                emitter._append_finite_object(statements, axis.name, axis.size)
             role = (
                 "nlpar"
                 if lens._predictor_graph is not None
@@ -1123,6 +1119,9 @@ def _shared_groups(
                     link=slot_link(lens._family, parameter),
                 ),
             )
+        matrix_name, matrix = block_covariance(
+            group, [term for _, term in actual], emitter._group_covariances
+        )
         law = plan_joint_block(
             group,
             "joint_shared_" + identity,
@@ -1132,10 +1131,12 @@ def _shared_groups(
                     actual, members, strict=True
                 )
             ],
-            axes,
-            basis=emitter._level_basis(group, grouping.group_levels)
-            if group in emitter._group_covariances
-            else None,
+            [None if axis is None else (axis.name, axis.size) for axis in axes],
+            covariance=IdentityCovariance()
+            if matrix is None
+            else KnownCovariance(
+                basis=matrix.basis(grouping.group_levels[group]), name=matrix_name
+            ),
             correlate=True,
             components=1,
             vectors={
@@ -1148,13 +1149,6 @@ def _shared_groups(
         values = emit_group_block(emitter, law, statements, steps)
         for (name, _, prefix, predictor, term), axis in zip(members, axes, strict=True):
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
-            lens, formula = components[name]
-            response = response_axis(
-                lens._family,
-                lens._component_labels(formula)
-                if lens._family.response is not None
-                else (),
-            )
             planned[actual_prefix] = planned[actual_prefix].with_(
                 terms=(
                     *planned[actual_prefix].terms,
@@ -1162,16 +1156,7 @@ def _shared_groups(
                         predictor,
                         actual_prefix,
                         term,
-                        OutputAxis(
-                            name=axis[0],
-                            size=axis[1],
-                            labels=response.labels if response is not None else (),
-                            parameters=response.parameters
-                            if response is not None and not term.category_specific
-                            else (),
-                        )
-                        if axis is not None
-                        else None,
+                        axis,
                         {(actual_prefix, group, term.slope): law},
                     ),
                 )
@@ -1184,7 +1169,7 @@ def _shared_groups(
     for lens, formula in components.values():
         for _, _, predictor in lens._predictor_items(formula):
             for term in predictor.random_terms:
-                option = predictor.grouping.option(term.group)
+                option = predictor.grouping.option(term.options)
                 if option is not None and option.options.student:
                     draw_level(
                         emitter,

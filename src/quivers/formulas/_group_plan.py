@@ -284,14 +284,18 @@ def level_law(
             variable=option.options.by,
             levels=option.by_levels,
             codes=option.by_codes,
-            axis=by_axis(group),
-            input=by_input(group),
+            axis=by_axis(group, option.options.by),
+            input=by_input(group, option.options.by),
         )
     if option is not None and option.options.student:
         df, udf, dfm = student_sites(group)
         mixing = StudentMixing(df_site=df, mixing_site=udf, multiplier=dfm)
     if option is not None and option.prior_weights:
-        weight = PriorWeight(input=weight_input(group), weights=option.prior_weights)
+        assert option.options.prior_weight is not None
+        weight = PriorWeight(
+            input=weight_input(group, option.options.prior_weight),
+            weights=option.prior_weights,
+        )
     return GroupLevelLaw(
         group=group,
         axis=_qvr_name(group),
@@ -427,6 +431,7 @@ def _member_law(
         cell_axis=cell_axis(prefix, group, slope)
         if component is not None and owns_site
         else None,
+        bar=term.bar,
     )
 
 
@@ -437,7 +442,7 @@ def plan_joint_block(
     axes: Sequence[tuple[str, int] | None],
     *,
     vectors: Collection[str],
-    basis: GroupCovarianceBasis | None,
+    covariance: LevelCovariance,
     correlate: bool,
     components: int,
     parameterization: Literal["centered", "noncentered"],
@@ -458,8 +463,8 @@ def plan_joint_block(
         Component axis and width of each member.
     vectors : Collection[str]
         Namespaces of the predictors with an output axis.
-    basis : GroupCovarianceBasis or None
-        Support basis of a known level covariance.
+    covariance : LevelCovariance
+        Covariance between the levels.
     correlate : bool
         Whether the members share a correlation identifier.
     components : int
@@ -483,13 +488,11 @@ def plan_joint_block(
         raise ValueError("group member axes must align with every coefficient")
     token = _qvr_name(identity)
     width = sum(axis[1] if axis is not None else 1 for axis in axes)
-    covariance: LevelCovariance = (
-        KnownCovariance(basis=basis) if basis is not None else IdentityCovariance()
-    )
+    basis = covariance.basis if isinstance(covariance, KnownCovariance) else None
     option = merged_group_option(
         option
-        for _, _, formula in members
-        if (option := formula.grouping.option(group)) is not None
+        for _, term, formula in members
+        if (option := formula.grouping.option(term.options)) is not None
     )
     level = level_law(group, len(members[0][2].group_levels[group]), option, covariance)
     correlation: CoefficientCorrelation = IndependentCoordinates()
@@ -598,7 +601,7 @@ def plan_inline_block(
     level = level_law(
         group,
         len(formula.group_levels[group]),
-        formula.grouping.option(group),
+        formula.grouping.option(term.options),
         IdentityCovariance(),
     )
     if parameterization == "noncentered":
@@ -630,6 +633,57 @@ def plan_inline_block(
     )
     check_block(law)
     return law
+
+
+def block_covariance(
+    group: str,
+    terms: Iterable[RandomTerm],
+    covariances: Mapping[str, GroupCovariance],
+) -> tuple[str, GroupCovariance | None]:
+    """Find the known level covariance of the terms of one block.
+
+    The coefficients of a block have one law, so the covariance any term
+    names applies to the block, as in brms.
+
+    Parameters
+    ----------
+    group : str
+        Grouping factor.
+    terms : Iterable[RandomTerm]
+        Terms of the block.
+    covariances : Mapping[str, GroupCovariance]
+        Known level covariance of every term of a grouping factor.
+
+    Returns
+    -------
+    tuple[str, GroupCovariance or None]
+        Name of the matrix, empty for the factor's own, and the covariance.
+
+    Raises
+    ------
+    ValueError
+        If the terms name several covariances, or one besides the factor's.
+    """
+    named = {
+        _qvr_name(term.options.covariance): term.covariance
+        for term in terms
+        if term.options is not None and term.options.covariance is not None
+    }
+    if len(named) > 1:
+        raise ValueError(
+            f"a block of group-level effects of {group!r} names the covariances "
+            f"{sorted(named)}; its levels have one"
+        )
+    given = covariances.get(group)
+    if not named:
+        return "", given
+    ((name, covariance),) = named.items()
+    if given is not None and given != covariance:
+        raise ValueError(
+            f"grouping factor {group!r} has both gr(cov = {name}) and another "
+            "group_covariances entry"
+        )
+    return name, covariance
 
 
 def check_block(law: GroupBlockLaw) -> None:
@@ -687,11 +741,11 @@ def check_names(laws: Iterable[GroupBlockLaw]) -> None:
     ------
     ValueError
         If two blocks, two members, or two grouping factors would own the
-        same name, or the blocks of one factor declare several ``by``
-        variables.
+        same name, or two blocks partition one factor differently by one
+        variable.
     """
     owners: dict[str, str] = {}
-    partitions: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
+    partitions: dict[str, tuple[tuple[str, ...], tuple[int, ...]]] = {}
 
     def own(names: Iterable[str | None], owner: str) -> None:
         for name in names:
@@ -718,13 +772,16 @@ def check_names(laws: Iterable[GroupBlockLaw]) -> None:
         factor = f"the grouping factor {law.group!r}"
         own((level.axis,), factor)
         if level.by is not None:
-            by = (level.by.variable, level.by.levels, level.by.codes)
-            if partitions.setdefault(law.group, by) != by:
+            partition = (level.by.levels, level.by.codes)
+            if partitions.setdefault(level.by.axis, partition) != partition:
                 raise ValueError(
-                    "Each grouping factor can only be associated with one 'by' "
-                    f"variable; {law.group!r} has several"
+                    f"the blocks of {law.group!r} partition its levels by "
+                    f"{level.by.variable!r} in different ways"
                 )
-            own((level.by.axis, level.by.input), factor)
+            own(
+                (level.by.axis, level.by.input),
+                f"{factor} partitioned by {level.by.variable!r}",
+            )
         if level.mixing is not None:
             own(
                 (
@@ -735,7 +792,7 @@ def check_names(laws: Iterable[GroupBlockLaw]) -> None:
                 factor,
             )
         if level.prior_weight is not None:
-            own((level.prior_weight.input,), factor)
+            own((level.prior_weight.input,), f"{factor} with prior weights")
         for member in law.members:
             parameter = f" of {member.prefix!r}" if member.prefix else ""
             owner = (
@@ -777,10 +834,9 @@ def plan_group_blocks(
     predictors : Iterable[tuple[str, str, Formula]]
         Predicted parameters as (name, coefficient prefix, design).
     levels : Mapping[str, Sequence[str]]
-        Labels of each grouping factor with a known covariance, in the
-        order of its level axis.
+        Labels of each grouping factor, in the order of its level axis.
     covariances : Mapping[str, GroupCovariance]
-        Known level covariance by grouping factor.
+        Known level covariance of every term of a grouping factor.
     parameterization : {"centered", "noncentered"}
         Coordinates of the raw sites.
     component_axes : Mapping[str, tuple[str, int]]
@@ -809,10 +865,23 @@ def plan_group_blocks(
         for _, prefix, formula in predictors
         for term in formula.random_terms
     }
-    bases: dict[str, GroupCovarianceBasis] = {}
+    bases: dict[tuple[str, str], GroupCovarianceBasis] = {}
+
+    def known(term: RandomTerm) -> bool:
+        return term.covariance is not None or term.group in covariances
+
+    def level_covariance(group: str, terms: Sequence[RandomTerm]) -> LevelCovariance:
+        """Read the one level covariance of a block's terms."""
+        name, matrix = block_covariance(group, terms, covariances)
+        if matrix is None:
+            return IdentityCovariance()
+        if (group, name) not in bases:
+            bases[(group, name)] = matrix.basis(levels[group])
+        return KnownCovariance(basis=bases[(group, name)], name=name)
+
     laws: list[GroupBlockLaw] = []
     planned: set[tuple[str, str, str]] = set(supplied)
-    blocks = joint_group_blocks(predictors, covariances, supplied)
+    blocks = joint_group_blocks(predictors, known, supplied)
     identities: dict[str, tuple[str, str]] = {}
     for block in blocks:
         if identities.setdefault(_qvr_name(block[1]), block) != block:
@@ -836,10 +905,9 @@ def plan_group_blocks(
             )
             else 1
         )
-        if width // components < 2 and group not in covariances:
+        covariance = level_covariance(group, [term for _, term in members])
+        if width // components < 2 and isinstance(covariance, IdentityCovariance):
             continue
-        if group in covariances and group not in bases:
-            bases[group] = covariances[group].basis(levels[group])
         laws.append(
             plan_joint_block(
                 group,
@@ -850,7 +918,7 @@ def plan_group_blocks(
                 ],
                 axes,
                 vectors=component_axes,
-                basis=bases.get(group),
+                covariance=covariance,
                 correlate=any(term.correlation_id is not None for _, term in members),
                 components=components,
                 parameterization=parameterization,

@@ -87,7 +87,10 @@ from quivers.formulas._row_retention import (
     role_columns,
 )
 from quivers.formulas._mgcv_smooth import BSplineBasis
+from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._grouping import (
+    GroupOptions,
+    named_covariance,
     GroupingPlan,
     add_grouping_columns,
     fit_group_options,
@@ -358,6 +361,12 @@ class RandomTerm(ValueModel):
     specific : bool
         Whether a slope the program computes has one coefficient per ordinal
         transition.
+    options : GroupOptions or None
+        ``gr()`` or ``mm()`` options of the term; None without any.
+    covariance : GroupCovariance or None
+        Known covariance between the levels that the options name.
+    bar : int
+        Position of the term's bar in the formula.
     """
 
     slope: str
@@ -368,6 +377,13 @@ class RandomTerm(ValueModel):
     column: FixedColumn | SymbolicColumn | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    options: GroupOptions | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    covariance: GroupCovariance | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    bar: int = 0
 
     @property
     def category_specific(self) -> bool:
@@ -1232,12 +1248,54 @@ def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
     ]
 
 
+class RandomBlock(ValueModel):
+    """The bar a random coefficient is written in.
+
+    Parameters
+    ----------
+    identity : str or None
+        Correlation identity; None for independent coefficients.
+    shared : bool
+        Whether the identity was authored.
+    options : GroupOptions or None
+        Options of the bar's grouping term.
+    position : int
+        Position of the bar in the formula.
+    """
+
+    identity: str | None
+    shared: bool
+    position: int = 0
+    options: GroupOptions | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+
 def _random_blocks(
-    formula: str,
-) -> tuple[str, dict[tuple[str, str], tuple[str | None, bool]]]:
-    """Normalize bar notation and retain each random-effect correlation block."""
+    formula: str, options: Sequence[GroupOptions] = ()
+) -> tuple[str, dict[tuple[str, str], RandomBlock]]:
+    """Normalize bar notation and retain each random-effect correlation block.
+
+    Parameters
+    ----------
+    formula : str
+        Formula over plain grouping factors.
+    options : Sequence[GroupOptions]
+        Options of each bar, in text order; empty when they are not needed.
+
+    Returns
+    -------
+    tuple[str, dict[tuple[str, str], RandomBlock]]
+        The formula with plain bars, and the block of each coefficient term
+        and grouping factor.
+
+    Raises
+    ------
+    ValueError
+        If a bar is malformed or a coefficient appears in two.
+    """
     replacements: list[tuple[int, int, str]] = []
-    metadata: dict[tuple[str, str], tuple[str | None, bool]] = {}
+    metadata: dict[tuple[str, str], RandomBlock] = {}
     starts: list[int] = []
     quote: str | None = None
     escaped = False
@@ -1308,7 +1366,12 @@ def _random_blocks(
                     raise ValueError(
                         f"random coefficient {key[0]!r} for {key[1]!r} appears in multiple blocks"
                     )
-                metadata[key] = (identity, shared)
+                metadata[key] = RandomBlock(
+                    identity=identity,
+                    shared=shared,
+                    options=options[len(replacements) - 1] if options else None,
+                    position=len(replacements) - 1,
+                )
     for start, end, replacement in reversed(replacements):
         formula = formula[:start] + replacement + formula[end:]
     return formula, metadata
@@ -1633,7 +1696,7 @@ def _formula_and_design(
     nw_df = nw.from_native(pandas_df, eager_only=True)
     member_covariates = []
     memberships = []
-    normalized, random_blocks = _random_blocks(regrouped.formula)
+    normalized, random_blocks = _random_blocks(regrouped.formula, regrouped.options)
     # Inspect only formulas containing modifiers, so ordinary formulas retain
     # their single design-matrix parse. Inspect before evaluation because a
     # nested offset object can otherwise fail inside formulae arithmetic.
@@ -1784,7 +1847,15 @@ def _formula_and_design(
             ):
                 raise ValueError("gp() terms cannot be group-level coefficients")
             group = term.factor.name
-            identity, shared = random_blocks.get((term.expr.name, group), (None, False))
+            block = random_blocks.get(
+                (term.expr.name, group), RandomBlock(identity=None, shared=False)
+            )
+            identity, shared = block.identity, block.shared
+            covariance = (
+                named_covariance(block.options, formula_data2())
+                if block.options is not None
+                else None
+            )
             # A group-level mo() slope varies the matching population column.
             slopes = (
                 monotonic_slopes(monotonic_terms, term.expr.name, group)
@@ -1797,6 +1868,9 @@ def _formula_and_design(
                     group=group,
                     correlation_id=identity,
                     shared=shared,
+                    options=block.options,
+                    covariance=covariance,
+                    bar=block.position,
                     specific=any(
                         column.name == slope and column.category_specific
                         for column in monotonic_terms
@@ -1828,6 +1902,9 @@ def _formula_and_design(
                         group=group,
                         correlation_id=identity,
                         shared=shared,
+                        options=block.options,
+                        covariance=covariance,
+                        bar=block.position,
                     )
                 )
                 member_covariates.append(
@@ -1851,6 +1928,9 @@ def _formula_and_design(
                         group=group,
                         correlation_id=identity,
                         shared=shared,
+                        options=block.options,
+                        covariance=covariance,
+                        bar=block.position,
                         column=column,
                     )
                 )
@@ -1997,7 +2077,6 @@ def _formula_and_design(
         monotonic_terms=tuple(monotonic_terms),
         grouping=GroupingPlan(
             specs=regrouped.specs,
-            covariances=regrouped.covariances,
             memberships=tuple(memberships),
             covariates=tuple(member_covariates),
             options=fit_group_options(

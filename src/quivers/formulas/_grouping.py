@@ -44,6 +44,7 @@ from formulae.terms.call import Call
 from formulae.terms.variable import Variable
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
+from quivers.formulas._data_options import Data2Entry
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._latent_design import IndexedDesign
 
@@ -138,7 +139,7 @@ class GroupingSpec(ValueModel):
 
 
 class GroupOptions(ValueModel):
-    """The ``gr()`` or ``mm()`` options of one grouping factor.
+    """The ``gr()`` or ``mm()`` options of one group-level term.
 
     Attributes
     ----------
@@ -157,6 +158,9 @@ class GroupOptions(ValueModel):
     prior_weight : str or None
         Column of per-level weights on the standard-normal prior of the
         group-level innovations (brms ``pw``).
+    covariance : str or None
+        ``data2`` name of the known covariance between the levels (brms
+        ``cov``).
     """
 
     group: str
@@ -164,10 +168,22 @@ class GroupOptions(ValueModel):
     by_columns: tuple[str, ...] = ()
     student: bool = False
     prior_weight: str | None = None
+    covariance: str | None = None
+
+    @property
+    def coded(self) -> bool:
+        """Return whether the options depend on the levels' data.
+
+        Returns
+        -------
+        bool
+            True with a ``by`` variable, prior weights, or Student-t effects.
+        """
+        return bool(self.by_columns or self.student or self.prior_weight)
 
 
 class GroupLevelOptions(ValueModel):
-    """The ``gr()`` options of one grouping factor, coded on its levels.
+    """The ``gr()`` options of group-level terms, coded on the levels.
 
     Attributes
     ----------
@@ -261,7 +277,8 @@ def fit_group_options(
     Parameters
     ----------
     options : Sequence[GroupOptions]
-        Authored options per grouping factor.
+        Authored options of the group-level terms; equal options are coded
+        once.
     frame : pandas.DataFrame
         Included training rows.
     group_levels, group_indices : Mapping
@@ -282,7 +299,9 @@ def fit_group_options(
     """
     members = {membership.group: membership.codes for membership in memberships}
     fitted = []
-    for option in options:
+    for option in dict.fromkeys(options):
+        if not option.coded:
+            continue
         levels = group_levels[option.group]
         codes = members.get(option.group, (group_indices[option.group],))
         by_levels: tuple[str, ...] = ()
@@ -801,15 +820,12 @@ class GroupingRewrite(ValueModel):
         Rewritten formula text.
     specs : tuple[GroupingSpec, ...]
         Derived grouping factors to materialize as columns.
-    covariances : tuple[tuple[str, str], ...]
-        Grouping factors and the ``data2`` names of their ``cov`` matrices.
+    options : tuple[GroupOptions, ...]
+        Options of each bar of the rewritten formula, in text order.
     """
 
     formula: str
     specs: tuple[GroupingSpec, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    covariances: tuple[tuple[str, str], ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     options: tuple[GroupOptions, ...] = dx.field(
@@ -828,7 +844,8 @@ def rewrite_grouping(formula: str) -> GroupingRewrite:
     Returns
     -------
     GroupingRewrite
-        Formula over plain grouping factors and the constructions they need.
+        Formula over plain grouping factors, the constructions they need,
+        and the options of each bar.
 
     Raises
     ------
@@ -837,8 +854,7 @@ def rewrite_grouping(formula: str) -> GroupingRewrite:
         disagree on a derived factor.
     """
     specs: dict[str, GroupingSpec] = {}
-    covariances: dict[str, str] = {}
-    options: dict[str, GroupOptions] = {}
+    options: list[GroupOptions] = []
     replacements = []
     for start, end, body in _blocks(formula):
         bars = _top_level(body, "|")
@@ -855,28 +871,17 @@ def rewrite_grouping(formula: str) -> GroupingRewrite:
                 raise ValueError(
                     f"grouping factor {spec.name!r} is constructed inconsistently"
                 )
-        if grouping.covariance is not None:
-            for name in grouping.names:
-                if (
-                    covariances.setdefault(name, grouping.covariance)
-                    != grouping.covariance
-                ):
-                    raise ValueError(
-                        f"grouping factor {name!r} has conflicting cov matrices"
-                    )
-        for name in grouping.names:
-            option = GroupOptions(
+        options.extend(
+            GroupOptions(
                 group=name,
                 by=grouping.by,
                 by_columns=grouping.by_columns,
                 student=grouping.student,
                 prior_weight=grouping.prior_weight,
+                covariance=grouping.covariance,
             )
-            if options.setdefault(name, option) != option:
-                raise ValueError(
-                    f"every group-level term of {name!r} must use the same gr() "
-                    "options by, dist, and pw"
-                )
+            for name in grouping.names
+        )
         if not grouping.cor:
             bar = "||"
         elif grouping.identity is not None:
@@ -896,12 +901,7 @@ def rewrite_grouping(formula: str) -> GroupingRewrite:
     return GroupingRewrite(
         formula=formula,
         specs=tuple(specs.values()),
-        covariances=tuple(covariances.items()),
-        options=tuple(
-            option
-            for option in options.values()
-            if option.by_columns or option.student or option.prior_weight
-        ),
+        options=tuple(options),
     )
 
 
@@ -1119,8 +1119,6 @@ class GroupingPlan(ValueModel):
     ----------
     specs : tuple[GroupingSpec, ...]
         Interaction and multi-membership factors built from source columns.
-    covariances : tuple[tuple[str, str], ...]
-        Grouping factors and the ``data2`` names of their ``cov`` matrices.
     memberships : tuple[Membership, ...]
         Training codes and weights of each ``mm()`` factor.
     covariates : tuple[MemberCovariate, ...]
@@ -1130,9 +1128,6 @@ class GroupingPlan(ValueModel):
     """
 
     specs: tuple[GroupingSpec, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    covariances: tuple[tuple[str, str], ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     memberships: tuple[Membership, ...] = dx.field(
@@ -1145,20 +1140,23 @@ class GroupingPlan(ValueModel):
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
-    def option(self, group: str) -> GroupLevelOptions | None:
-        """Find the ``gr()`` options of a grouping factor.
+    def option(self, options: GroupOptions | None) -> GroupLevelOptions | None:
+        """Find the coded options of a group-level term.
 
         Parameters
         ----------
-        group : str
-            Grouping-factor name.
+        options : GroupOptions or None
+            Authored options of the term.
 
         Returns
         -------
         GroupLevelOptions or None
-            Its level-coded options, or None without options.
+            The options coded on the levels in use, or None when the term
+            has none that depend on the levels.
         """
-        return next((option for option in self.options if option.group == group), None)
+        return next(
+            (option for option in self.options if option.options == options), None
+        )
 
     def spec(self, group: str) -> GroupingSpec | None:
         """Find the construction of a derived grouping factor.
@@ -1303,63 +1301,44 @@ def member_covariate(
     )
 
 
-def resolve_group_covariances(
-    formulas: Sequence[str],
-    data2: Mapping[str, np.ndarray | pd.DataFrame] | None,
-    group_covariances: Mapping[str, GroupCovariance] | None,
-) -> dict[str, GroupCovariance] | None:
-    """Turn ``gr(g, cov = M)`` into a known covariance between levels of ``g``.
-
-    brms reads ``M`` from ``data2`` and requires its row names to cover the
-    levels of ``g``. The result joins the explicitly given covariances and
-    feeds the shared Gaussian group layout, which scales the Cholesky factor
-    of ``M`` by the coefficient's standard deviation, as brms's ``Lcov``.
+def named_covariance(
+    options: GroupOptions, data2: Mapping[str, Data2Entry]
+) -> GroupCovariance | None:
+    """Read the known covariance between levels a term names.
 
     Parameters
     ----------
-    formulas : Sequence[str]
-        Authored formula texts of every predictor.
-    data2 : Mapping or None
+    options : GroupOptions
+        Authored options of the term.
+    data2 : Mapping[str, Data2Entry]
         Named matrices.
-    group_covariances : Mapping[str, GroupCovariance] or None
-        Covariances given directly.
 
     Returns
     -------
-    dict[str, GroupCovariance] or None
-        All covariances by grouping factor, or the given mapping unchanged
-        when the formula names none.
+    GroupCovariance or None
+        The covariance of ``gr(g, cov = M)``, whose row names cover the
+        levels of ``g``; None for a term that names none.
 
     Raises
     ------
     ValueError
-        If a named matrix is absent, unlabeled, not square with matching row
-        and column labels, or a factor receives two covariances.
+        If the matrix is absent, unlabeled, or its row and column labels
+        differ.
     """
-    covariances = tuple(
-        pair for text in formulas for pair in rewrite_grouping(text).covariances
-    )
-    if not covariances:
-        return None if group_covariances is None else dict(group_covariances)
-    resolved = dict(group_covariances or {})
-    for group, name in covariances:
-        if data2 is None or name not in data2:
-            raise ValueError(f"gr({group}, cov = {name}) requires data2[{name!r}]")
-        matrix = data2[name]
-        if not isinstance(matrix, pd.DataFrame):
-            raise ValueError(
-                f"data2[{name!r}] needs row and column names matching the levels "
-                f"of {group!r}; pass a labeled pandas DataFrame"
-            )
-        labels = tuple(str(label) for label in matrix.index)
-        if tuple(str(label) for label in matrix.columns) != labels:
-            raise ValueError(f"data2[{name!r}] must have matching row and column names")
-        covariance = GroupCovariance(
-            levels=labels, matrix=torch.tensor(matrix.to_numpy(dtype=np.float64))
+    name, group = options.covariance, options.group
+    if name is None:
+        return None
+    if name not in data2:
+        raise ValueError(f"gr({group}, cov = {name}) requires data2[{name!r}]")
+    matrix = data2[name].value
+    if not isinstance(matrix, pd.DataFrame):
+        raise ValueError(
+            f"data2[{name!r}] needs row and column names matching the levels "
+            f"of {group!r}; pass a labeled pandas DataFrame"
         )
-        if resolved.setdefault(group, covariance) != covariance:
-            raise ValueError(
-                f"grouping factor {group!r} has both gr(cov = {name}) and another "
-                "group_covariances entry"
-            )
-    return resolved
+    labels = tuple(str(label) for label in matrix.index)
+    if tuple(str(label) for label in matrix.columns) != labels:
+        raise ValueError(f"data2[{name!r}] must have matching row and column names")
+    return GroupCovariance(
+        levels=labels, matrix=torch.tensor(matrix.to_numpy(dtype=np.float64))
+    )

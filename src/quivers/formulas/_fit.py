@@ -69,7 +69,6 @@ from quivers.formulas._predictor_graph import (
 )
 
 from quivers.formulas._prediction import FormulaPredictionPlan
-from quivers.formulas._grouping import resolve_group_covariances
 from quivers.formulas._autocor import (
     AutocorMatrix,
     autocor_binding,
@@ -4127,10 +4126,6 @@ def _prepare_formula(
     ValueError
         If a family, response role, predictor, or trial contract is invalid.
     """
-    # brms gr(g, cov = M) reads a known level covariance from data2.
-    group_covariances = resolve_group_covariances(
-        model_texts(formula, (distributional, nonlinear)), data2, group_covariances
-    )
     if isinstance(family, str):
         if family not in families:
             raise ValueError(

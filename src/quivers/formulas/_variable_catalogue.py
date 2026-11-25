@@ -451,7 +451,12 @@ def group_variables(
         coordinates: list[tuple[tuple[int, int], str]] = []
         for member in law.members:
             components = names(member)
-            key = f"{law.group}|{member.prefix if len(prefixes) == 1 else law.identity}"
+            # A bar is a block of its own, whose coefficients may be independent.
+            key = (
+                f"{law.group}|{member.prefix}|{member.bar}"
+                if len(prefixes) == 1
+                else f"{law.group}|{law.identity}"
+            )
             rank = prefixes.index(member.prefix)
             coordinates.extend(
                 ((rank, component.parameter), component.name)
