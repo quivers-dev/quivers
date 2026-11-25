@@ -7,13 +7,12 @@ tolerance, a point set, a minimum effect, a claimed bound, or a known
 defect is listed with the digest of its bytes in `pins.json`, so a
 change of any of them is a visible change of the pins.
 
-Run `python -m tests.evidence.catalogue` to print the digests.
+`python -m tests.evidence.pin` writes the pins after a reviewed change.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 
 OPERATIONS: dict[str, int] = {
@@ -72,6 +71,3 @@ def digests() -> dict[str, str]:
         for path in pinned_files()
     }
 
-
-if __name__ == "__main__":
-    print(json.dumps(digests(), indent=1, sort_keys=True))
