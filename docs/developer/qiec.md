@@ -301,6 +301,16 @@ The following leave a program to the machine:
 A prepared joint refuses values of any layout but its own, so a stale preparation raises rather
 than scores.
 
+Many positions are scored by replaying the plan once on values that carry a position axis. The axis
+is part of a value's type rather than of its shape: the replay runs under `torch.func.vmap`, so every
+layout rule of a step, a plate, or a distribution reads one run's shape, and two axes of equal length
+are never confused. `quivers._positions` states the three things a computation may do that have no
+meaning for many positions at once. A check that refuses a position goes through `reject_unless`, or
+`demand` when a failure is a defect, and marks the failing positions. An iteration or a branch over a
+whole array asks `everywhere`, `anywhere`, or `largest`. A routine that selects entries by value is
+declared `elementwise` and is called with the axis leading, as is a step's callable declared
+`batched`.
+
 #### Calls between programs
 
 A draw from another program, `sample theta <- school_effects[School](0.6)` or

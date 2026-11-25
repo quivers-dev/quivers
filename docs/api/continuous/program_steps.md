@@ -11,7 +11,9 @@ records, each of which does one thing in the environment of named values
 [`Scan`](#quivers.continuous.program_steps.Scan) runs a step program once per position of a
 sequence. The [`Indexed`](#quivers.continuous.program_steps.Indexed) argument form indexes a
 collection, and [`reading`](#quivers.continuous.program_steps.reading) declares the names a step
-function reads. The DSL compiler emits these records, so a program built from them in Python is the
+function reads. A function given to a step declares whether it can be evaluated at
+[many positions](../../guides/inference-mcmc.md#densities-at-many-positions) at once, through the
+step's `batched` field or [`mappable`](#quivers.continuous.program_steps.mappable). The DSL compiler emits these records, so a program built from them in Python is the
 one the compiler would build from the equivalent source, as the
 [programs guide](../../guides/programs.md#building-programs-in-python) shows.
 
