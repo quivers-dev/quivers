@@ -299,41 +299,4 @@ def apply_star(
         ``(batch, C)``: ``out[:, a] = ⊕_b cell[:, b] ⊗ star[b, a]``.
     """
     products = semiring.times(cell.unsqueeze(2), star.unsqueeze(0))
-    return semiring_sum(products, dim=1, semiring=semiring)
-
-
-def semiring_sum(
-    scores: torch.Tensor, dim: int, semiring: ChartSemiring
-) -> torch.Tensor:
-    """The semiring sum over an axis, with a zero gradient on empty sums.
-
-    Under ``LogProb`` a sum whose terms are all ``-inf`` is ``-inf``;
-    ``torch.logsumexp`` returns that value but differentiates it to
-    ``nan``. Such terms are bounded at the dtype's floor for the
-    reduction and the empty sums restored to ``-inf``, so they carry no
-    gradient. Other semirings reduce with their own ``plus``.
-
-    Parameters
-    ----------
-    scores : torch.Tensor
-        The terms.
-    dim : int
-        The axis to sum over.
-    semiring : ChartSemiring
-        The semiring.
-
-    Returns
-    -------
-    torch.Tensor
-        The sums, with ``dim`` removed.
-    """
-    if not isinstance(semiring, LogProbSemiring):
-        return semiring.plus(scores, dim=dim)
-    empty = torch.isneginf(scores)
-    bounded = torch.where(
-        empty, torch.full_like(scores, torch.finfo(scores.dtype).min), scores
-    )
-    reduced = torch.logsumexp(bounded, dim=dim)
-    return torch.where(
-        empty.all(dim=dim), torch.full_like(reduced, float("-inf")), reduced
-    )
+    return semiring.plus(products, dim=1)
