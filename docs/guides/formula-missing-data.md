@@ -90,15 +90,17 @@ correlated = fit(
 names = set(correlated.variables(num_samples=4))
 assert {"rescor__bmi__chl", "Ymi_chl[2]", "bsp_bmi_michl"} <= names
 joint = correlated.log_likelihood(num_samples=4)["bmi__chl"]
-assert bool(joint[..., 1].isnan().all()) and bool(joint[..., 0].isfinite().all())
+assert bool(joint.isfinite().all())
 drawn = correlated.posterior_predict(num_samples=4)
 assert drawn["bmi"].shape == drawn["chl"].shape == (1, 4, 8)
 ```
 
-The pointwise unit of such a model is the row's vector event. Its score is
-missing (`nan`) on a training row where a selected response has no recorded
-value, as brms reports `NA`, and `resp` selects the responses whose exact
-marginal is scored. `posterior_predict` draws each row's vector jointly at
+The pointwise unit of such a model is the row's vector event. On a
+training row where a selected response has no recorded value, the score is
+the log density of the row's recorded values under the joint law given the
+completed value, and a row with no recorded value scores zero; brms reports
+`NA` for such rows. `resp` selects the responses whose exact marginal is
+scored. `posterior_predict` draws each row's vector jointly at
 the completed predictor values, and `posterior_epred` returns the locations
 at those values.
 
@@ -200,7 +202,8 @@ imputed values of each posterior draw. On fresh rows the recorded values
 of `x` in `new_data` are used directly. brms returns missing predictions
 for fresh rows whose `mi()` or `me()` values are missing, so QVR refuses
 such rows with that reason. Pointwise log-likelihoods of an `mi()`
-response are missing (`nan`) at its missing rows, as brms reports `NA`.
+response are zero at its missing rows, which have no recorded likelihood
+(brms reports `NA`).
 `refit_callback` thus defines held-out units on the rows whose
 `mi()` values used by the scored responses are recorded. The true values
 of an `mi(sdx)` response are replayed from their posterior draws, which is

@@ -220,8 +220,8 @@ def test_mi_likelihood_units_prediction_and_index_joins():
     fitted = _fixed(fitted, values)
     missing = ~np.isfinite(data.x.to_numpy())
     scores = fitted.log_likelihood(resp="x")["x"][0, 0]
-    # brms log_lik returns NA at missing mi() rows and scores recorded rows.
-    assert torch.isnan(scores[missing]).all()
+    # A missing mi() row has no recorded likelihood (brms log_lik gives NA).
+    assert bool((scores[missing] == 0).all())
     expected = stats.norm.logpdf(data.x[~missing], 0.1 + 0.6 * data.z[~missing], 0.5)
     torch.testing.assert_close(
         scores[~missing].double(), torch.tensor(expected), rtol=1e-5, atol=1e-6

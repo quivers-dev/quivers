@@ -45,7 +45,13 @@ from quivers.formulas._fit import (
     fit,
 )
 from quivers.formulas._autocor import AutocorMatrix
-from quivers.formulas._joint_residual import coordinate, marginal
+from quivers.formulas._blocks import ResponseData
+from quivers.formulas._joint_residual import (
+    RecursiveResiduals,
+    coordinate,
+    marginal,
+    recorded_log_prob,
+)
 from quivers.formulas._residual_law import pointwise_scores
 
 # brms fitting controls, flat priors, and derived sites.
@@ -108,7 +114,6 @@ from quivers.formulas._priors import PriorInput, PriorSet, PriorTarget, normaliz
 from quivers.formulas._response import expected_response, response_tensor
 from quivers.formulas.formula import Formula, _qvr_name
 from quivers.formulas._response_modifiers import response_input_name
-from quivers.inference._likelihood import collect_log_likelihood
 from quivers.inference._posterior import (
     collect_site_draws,
     constrained_draws,
@@ -1669,6 +1674,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         response gives its own pointwise scores, and a selection of several
         sums their scores per row, as brms ``log_lik`` does.
 
+        On the training rows only recorded values are scored. Where an
+        ``mi()`` value is missing, the recorded values of the row are scored
+        by the joint law conditional on the completed value
+        (`recorded_log_prob`), and a row with no recorded value scores zero.
+        brms reports these rows as missing (NA) instead.
+
         Parameters
         ----------
         resp : str or Sequence[str] or None
@@ -1720,81 +1731,79 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             incl_autocor=incl_autocor,
         )
 
-        def recorded_rows(scores: torch.Tensor) -> torch.Tensor:
-            """Report missing scores where a selected ``mi()`` value is missing.
-
-            brms scores a training row of a joint residual event as NA when
-            a selected response has no recorded value there.
-
-            Parameters
-            ----------
-            scores : torch.Tensor
-                Pointwise scores on ``(chain, draw, row)``.
-
-            Returns
-            -------
-            torch.Tensor
-                The scores with NaN at rows lacking a recorded value.
-            """
-            if new_data is not None:
-                return scores
-            for name in names:
-                spec = self.missing_specs.get(name)
-                if spec is None:
-                    continue
-                absent = torch.ones(scores.shape[-1], dtype=torch.bool)
-                absent[list(spec.observed_positions)] = False
-                scores = scores.masked_fill(absent.to(scores.device), float("nan"))
-            return scores
-
-        if self.rescor and names == self.response_names:
-            shape = draw_count(self.posterior, num_samples)
-            draws = self.draws(num_samples=num_samples, seed=seed)
-            with torch.no_grad():
-                joint = collect_log_likelihood(
-                    replay(
-                        cast(BayesianFit, self),
-                        draws,
-                        shape,
-                        context=prepared.context,
-                        score_observations=True,
-                    ),
-                    {JOINT_RESPONSE},
-                    shape,
-                )
-            return {key: recorded_rows(joint[JOINT_RESPONSE])}
         if self.rescor:
             indices = [self.response_names.index(name) for name in names]
-            outcome = prepared.context.observations[JOINT_RESPONSE][..., indices]
+            width = len(self.response_names)
+            rows = prepared.rows[names[0]]
+            outcome = prepared.context.observations[JOINT_RESPONSE].reshape(rows, width)
+            # On training rows a missing mi() value is completed by the
+            # program; on new rows every value is recorded.
+            recorded = (
+                torch.stack(
+                    [
+                        torch.as_tensor(self._response_data(name).recorded)
+                        for name in self.response_names
+                    ],
+                    dim=-1,
+                )
+                if new_data is None
+                else torch.ones((rows, width), dtype=torch.bool)
+            )
 
-            def selected(recorded: Trace) -> dict[str, torch.Tensor]:
-                """Score the selected components by their exact marginal law.
+            def selected(trace: Trace) -> dict[str, torch.Tensor]:
+                """Score the recorded values of the selected responses.
+
+                A missing value is conditioned on at its completion, which
+                the recursions of later rows also read; a strict subset is
+                scored by the exact marginal of the joint event.
 
                 Parameters
                 ----------
-                recorded : Trace
+                trace : Trace
                     One replayed joint trace.
 
                 Returns
                 -------
                 dict[str, torch.Tensor]
-                    Marginal pointwise scores.
+                    Pointwise scores.
                 """
-                law = marginal(response_distribution(recorded, JOINT_RESPONSE), indices)
+                values = outcome
+                if not bool(recorded.all()):
+                    completed = torch.stack(
+                        [
+                            trace.sites[f"mi_{name}__completed"].value.reshape(rows)
+                            if f"mi_{name}__completed" in trace.sites
+                            else outcome[:, position]
+                            for position, name in enumerate(self.response_names)
+                        ],
+                        dim=-1,
+                    ).to(outcome.dtype)
+                    values = torch.where(recorded, outcome, completed)
+                law = response_distribution(trace, JOINT_RESPONSE)
+                if isinstance(law, RecursiveResiduals):
+                    law = law.given(values)
+                if len(indices) < width:
+                    law = marginal(law, indices)
                 return {
                     key: row_binding(
-                        law.log_prob(outcome.to(law.loc.dtype)),
-                        prepared.rows[names[0]],
+                        recorded_log_prob(
+                            law, values[:, indices], recorded[:, indices]
+                        ),
+                        rows,
                     )
                 }
 
-            scores = self._replay(
-                prepared, selected, num_samples=num_samples, seed=seed, stream=2
+            return self._replay(
+                prepared,
+                selected,
+                num_samples=num_samples,
+                seed=seed,
+                stream=2,
+                score=True,
             )
-            return {key: recorded_rows(scores[key])}
         training = new_data is None and re_formula is None
         # On training rows an mi() response is scored on its recorded events;
-        # brms reports missing scores (NA) at its missing rows.
+        # a missing row has no recorded likelihood.
         events = {
             name: self.missing_specs[name]
             for name in names
@@ -1843,14 +1852,35 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
         for name, spec in events.items():
             recorded = scores[sites[name]]
-            full = recorded.new_full(
-                (*recorded.shape[:2], prepared.rows[name]), float("nan")
-            )
+            full = recorded.new_zeros((*recorded.shape[:2], prepared.rows[name]))
             positions = torch.as_tensor(spec.observed_rows, dtype=torch.long)
             included = {row: index for index, row in enumerate(spec.rows.positions)}
             full[..., [included[int(row)] for row in positions]] = recorded
             scores[sites[name]] = full
         return {key: sum((scores[site] for site in sites.values()), torch.zeros(()))}
+
+    def _response_data(self, name: str) -> ResponseData:
+        """Return the response data of one response.
+
+        Parameters
+        ----------
+        name : str
+            Response label.
+
+        Returns
+        -------
+        ResponseData
+            Values, recorded rows, and the columns the program reads; an
+            ``mi()`` response is recorded at its observed rows only.
+        """
+        response = self.emission.responses[name]
+        data = response.lens.response_data(response.formula)
+        spec = self.missing_specs.get(name)
+        if spec is None:
+            return data
+        recorded = np.zeros(len(data.recorded), dtype=bool)
+        recorded[list(spec.observed_positions)] = True
+        return data.with_(recorded=recorded)
 
     def observed(self, *, resp: ResponseSelection = None) -> dict[str, torch.Tensor]:
         """Return the training outcomes of the selected responses.
