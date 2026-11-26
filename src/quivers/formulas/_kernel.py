@@ -203,7 +203,7 @@ class KernelArguments(ValueModel):
     factorized: bool = True
 
 
-class KernelPart(dx.TaggedUnion, discriminator="kind"):
+class KernelPart(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """One construction of a kernel body."""
 
     def emit(self, emission: KernelEmission) -> None:
@@ -397,7 +397,7 @@ class ParameterSlot(ValueModel):
     )
 
 
-class ParameterSource(dx.TaggedUnion, discriminator="kind"):
+class ParameterSource(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """What feeds a parameter slot."""
 
     def emit(self, slot: ParameterSlot, emission: KernelEmission) -> None:
