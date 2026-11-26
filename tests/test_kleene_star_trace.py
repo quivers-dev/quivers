@@ -21,6 +21,7 @@ from quivers.core import (
     MAX_PLUS,
     PRODUCT_FUZZY,
     REAL,
+    TROPICAL,
     Algebra,
     CoproductSet,
     FinSet,
@@ -281,7 +282,7 @@ class _CustomMarkov(MarkovAlgebra):
 
 
 @pytest.mark.parametrize(
-    "algebra", (REAL, PRODUCT_FUZZY, GODEL, _CustomMarkov()), ids=lambda q: q.name
+    "algebra", (REAL, PRODUCT_FUZZY, _CustomMarkov()), ids=lambda q: q.name
 )
 def test_trace_rejects_undeclared_algebras(algebra: Algebra) -> None:
     """Reject signed and unproved carriers at construction.
@@ -341,3 +342,9 @@ def test_trace_checks_objects_and_algebra() -> None:
         KleeneStarTrace(MARKOV).trace(morph, u, b, a)
     with pytest.raises(ValueError, match="same algebra"):
         KleeneStarTrace(COUNTING).trace(morph, u, a, b)
+
+
+def test_trace_accepts_algebras_by_their_closure() -> None:
+    """Accept the lattice algebras, which have a closure, by capability."""
+    for algebra in (GODEL, TROPICAL):
+        assert KleeneStarTrace(algebra).algebra is algebra

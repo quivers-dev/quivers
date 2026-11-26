@@ -129,12 +129,24 @@ class KleeneStarTrace:
 
     @property
     def algebra(self) -> Semiring:
-        """The semiring whose finite path weights are combined."""
+        """The semiring whose finite path weights are combined.
+
+        Returns
+        -------
+        Semiring
+            The algebra.
+        """
         return self._algebra
 
     @property
     def monoidal(self) -> CoproductMonoidal:
-        """The coproduct monoidal structure used by this partial trace."""
+        """The coproduct monoidal structure used by this partial trace.
+
+        Returns
+        -------
+        CoproductMonoidal
+            The structure.
+        """
         return self._monoidal
 
     def trace(
@@ -295,12 +307,24 @@ class TracedMonoidal(ABC):
 
     @property
     def monoidal(self) -> MonoidalStructure:
-        """The underlying monoidal structure."""
+        """The underlying monoidal structure.
+
+        Returns
+        -------
+        MonoidalStructure
+            The structure.
+        """
         return self._monoidal
 
     @property
     def algebra(self) -> Semiring:
-        """The enrichment algebra."""
+        """The enrichment algebra.
+
+        Returns
+        -------
+        Semiring
+            The algebra.
+        """
         return self._algebra
 
     @abstractmethod
@@ -361,6 +385,13 @@ class TracedMonoidal(ABC):
         return torch.allclose(traced.tensor, expected, atol=atol)
 
     def __repr__(self) -> str:
+        """The class and its monoidal structure.
+
+        Returns
+        -------
+        str
+            The representation.
+        """
         cls = type(self).__name__
         return f"{cls}({self._monoidal!r})"
 

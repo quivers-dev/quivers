@@ -2449,7 +2449,7 @@ def check_star(member: Member, dtype: torch.dtype) -> None:
         on either side, or a divergent closure is not refused.
     """
     structure = member.structure
-    assert isinstance(structure, Star)
+    assert isinstance(structure, Star) and isinstance(structure, CompositionRule)
     cases = CLOSURE_CASES[member.name]
     for rows in cases.convergent:
         a = _matrix(rows, dtype)
@@ -2506,7 +2506,7 @@ def _check_least(
         If some solution is not above the closure.
     """
     structure = member.structure
-    assert isinstance(structure, Star)
+    assert isinstance(structure, Star) and isinstance(structure, CompositionRule)
     unit = structure.identity_tensor((2,), dtype=dtype)
     for entries in itertools.product(member.samples, repeat=4):
         x = torch.tensor(entries, dtype=dtype).reshape(2, 2)

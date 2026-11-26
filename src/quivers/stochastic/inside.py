@@ -145,17 +145,35 @@ class InsideAlgorithm(nn.Module):
 
     @property
     def n_nonterminals(self) -> int:
-        """Number of nonterminal symbols."""
+        """Number of nonterminal symbols.
+
+        Returns
+        -------
+        int
+            The count.
+        """
         return self._n_nonterm
 
     @property
     def n_terminals(self) -> int:
-        """Number of terminal symbols."""
+        """Number of terminal symbols.
+
+        Returns
+        -------
+        int
+            The count.
+        """
         return self._n_term
 
     @property
     def start(self) -> int:
-        """Index of the start symbol."""
+        """Index of the start symbol.
+
+        Returns
+        -------
+        int
+            The index.
+        """
         return self._start
 
     def _fill_chart(self, tokens: torch.Tensor) -> torch.Tensor:
@@ -293,6 +311,13 @@ class InsideAlgorithm(nn.Module):
         return chart
 
     def __repr__(self) -> str:
+        """The sizes of the grammar.
+
+        Returns
+        -------
+        str
+            The representation.
+        """
         return f"InsideAlgorithm(N={self._n_nonterm}, T={self._n_term}, start={self._start})"
 
 
