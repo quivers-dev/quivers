@@ -361,12 +361,13 @@ reads from the chart for the whole sentence. A program writes
 runs a deduction alone on the reference machine, and
 [`deduction_item`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.deduction_item)
 builds the axioms of a system without a lexicon. Such a system computes a weighted chart by
-repeatedly adding the axiom weights to rule contributions from the preceding chart. Beside each
-weight the chart counts the item's derivations, and it stops when two rounds agree in every
-weight, exactly or within `tolerance`, or in every count. Equal counts mean that no derivation is
-left, so the weight is exact up to rounding. Equal weights prove the same only when the
-arithmetic is exact, as it is for `Boolean` and `Counting`, since a fixed point reached from below
-is the least one. A `LogProb` or `Viterbi` cycle whose weights stop changing while its derivations
+repeatedly adding the axiom weights to rule contributions from the preceding chart; so does a
+lexical system whose derivations no search bounds, with the axioms its lexicon reads off the
+sentence. Beside each weight the chart counts the item's derivations, and it stops when two rounds
+agree in every count, or in every weight, exactly or within `tolerance`. Equal counts mean that no
+derivation is left, so the weight is exact up to rounding. Equal weights prove the same only when
+the arithmetic is exact, as it is for `Boolean` and `Counting`, since a fixed point reached from
+below is the least one; in rounded arithmetic they stop the chart only once a cycle is shown. A `LogProb` or `Viterbi` cycle whose weights stop changing while its derivations
 keep growing has not shown its value, and neither has a stop within `tolerance`. Such a run raises
 [`ContractNotMet`](../api/qiec/contracts.md#quivers.qiec.contracts.ContractNotMet) by default.
 With `on_failure=FailurePolicy.RETURN_UNESTABLISHED`, `run_deduction` instead returns the last

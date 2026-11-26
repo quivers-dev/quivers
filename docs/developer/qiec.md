@@ -736,15 +736,20 @@ slots, read in pairs as the components of its yield. A rule binds its conclusion
 frame, chooses in order the positions inside each component where its premises' components meet,
 and derives each premise from its own frame.
 
-The lowering accepts such a system when two conditions hold, and refuses it otherwise:
+This search bounds every derivation when the following hold:
 
+- every item has a head symbol;
 - its rules are linear: each conclusion component is the concatenation of premise components, and
   every nonempty premise component is used once, so premises are derived over fewer tokens than
   their conclusion;
-- its unary rules form no cycle.
+- no rule derives an item with positions from one without them that a rule erasing positions
+  derives;
+- neither its unary rules nor its rules among items without positions form a cycle.
 
-Its goal spans cover the whole sentence, as the agenda algorithm's do. Any other system takes its
-axioms and their weights as input.
+A span-shaped search likewise needs no premise over its conclusion's whole span beside other
+premises. When a search does not bound a lexical system, the system is computed by its chart, which
+reads its axioms off the sentence through the lexicon (see the charts below). Goal spans cover the
+whole sentence, as the agenda algorithm's do.
 
 **The lexical run entry.** `<name>__run` handles the weight instance with a collecting handler and the
 search instance with a handler that resumes once per alternative and combines the shots by the
@@ -764,12 +769,16 @@ counterpart of the chart's fixed-point iteration, which repeats until weights st
 through `<name>__depth`, the measure the agenda algorithm uses, and never the length of a
 derivation.
 
-**Nonlexical charts.** A system without a lexicon takes an axiom tensor and a weight tensor.
-Its `<name>__Chart` family stores one weight per item. Each round computes the sum of the axiom
-weights and all rule contributions from the preceding chart, using semiring multiplication for
-the premise and rule weights. The computation compares every item weight, including intermediate
-items that do not match the goal, and repeats until the whole chart converges within `tolerance`
-(exactly when no tolerance is declared). `<name>__run` then sums the goal entries.
+**Charts.** A system without a lexicon takes an axiom tensor and a weight tensor; a lexical system
+that no search bounds takes the sentence, and `<name>__chart_lexicon` adds, at each position, the
+span of every entry whose word is the token there, at the entry's weight. Its `<name>__Chart`
+family stores one weight and one count of derivations per item. Each round computes the sum of the
+axiom weights and all rule contributions from the preceding chart, using semiring multiplication
+for the premise and rule weights. The iteration stops when two rounds agree in every count, which
+certifies the value, or agree in every weight, within `tolerance` or exactly: in exact arithmetic
+that certifies the value, and in rounded arithmetic it stops only once more rounds have passed
+than the chart has items, which shows a cycle. `<name>__run` then sums the goal entries, which for a
+lexical system are the spans that cover the sentence and the items without positions.
 
 This iteration imposes no proof-height limit. Constructor depth can bound the reachable items,
 but convergence also depends on the weights and cycles in the rules. Passing `fuel` to
