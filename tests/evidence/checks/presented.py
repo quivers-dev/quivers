@@ -24,6 +24,7 @@ from quivers.dsl.compiler._deduction_presentation import (
     DeductionPresentation,
     deduction_presentation,
 )
+from quivers.qiec.rules import Ground
 from quivers.dsl.parser import parse
 from quivers.qiec.contracts import OccurrenceId, ParameterId
 from quivers.qiec.identifiers import StableId
@@ -382,6 +383,25 @@ BARE_HEIGHT = 3
 """The height the derivations are listed to: ``keep`` makes every item cyclic."""
 
 
+def _ground(term: Term) -> Ground:
+    """An oracle term without variables, as a ground index value.
+
+    Parameters
+    ----------
+    term : Term
+        A number, a name, or a tuple of them.
+
+    Returns
+    -------
+    Ground
+        The same value.
+    """
+    if isinstance(term, tuple):
+        return tuple(_ground(part) for part in term)
+    assert isinstance(term, (int, str)) and not isinstance(term, Variable)
+    return term
+
+
 def _oracle_item(presented: DeductionPresentation, item: Item) -> Term:
     """The oracle's spelling of an item of the presentation.
 
@@ -478,7 +498,9 @@ def check_bare_items() -> None:
         AxiomOccurrence(
             slot=slot.id,
             occurrence=OccurrenceId.derive("bare", name),
-            binding=tuple(zip(names, item[1:], strict=True)),
+            binding=tuple(
+                zip(names, (_ground(part) for part in item[1:]), strict=True)
+            ),
             values=(BARE_WORDS[str(item[3])],),
         )
         for name, item in BARE_AXIOMS
@@ -632,7 +654,7 @@ def check_categorial() -> None:
                 AxiomOccurrence(
                     slot=slot.id,
                     occurrence=identity,
-                    binding=(("x0", item),),
+                    binding=(("x0", _ground(item)),),
                 )
                 for identity, (_, item) in zip(leaves, rows, strict=True)
             ],
@@ -655,10 +677,11 @@ def check_categorial() -> None:
             axiom_weights=[1] * len(sentence),
             fuel=500_000,
         ).weight
+        assert isinstance(counted, int)
         if counted != wanted.total():
             raise Mismatch(
                 "value",
-                float(abs(int(counted) - wanted.total())),
+                float(abs(counted - wanted.total())),
                 f"the machine counts {counted} derivations of {sentence}",
             )
 
