@@ -4448,7 +4448,7 @@ def admissibility(
                     ),
                 )
             )
-        elif guaranteed and not any(claim.established for claim in matching):
+        if matching and guaranteed and not any(c.established for c in matching):
             found.append(
                 Refusal(
                     code=RefusalCode.CLAIM_NOT_ESTABLISHED,
@@ -4638,46 +4638,47 @@ def report_refusals(
                 reason=f"a run stopped by {report.stop.tag} is not exact",
             )
         )
-    if isinstance(attained, Certified):
-        certificate = attained.certificate
-        if certificate is None:
-            found.append(
-                Refusal(
-                    code=RefusalCode.CERTIFIED_WITHOUT_CERTIFICATE,
-                    reason="an attained bound carries the certificate that shows it",
-                )
+    claimed = attained.bound.fraction if isinstance(attained, Certified) else None
+    certificate = attained.certificate if isinstance(attained, Certified) else None
+    if claimed is not None and certificate is None:
+        found.append(
+            Refusal(
+                code=RefusalCode.CERTIFIED_WITHOUT_CERTIFICATE,
+                reason="an attained bound carries the certificate that shows it",
             )
-        else:
-            if attained.bound.fraction < certificate.bound:
-                found.append(
-                    Refusal(
-                        code=RefusalCode.BOUND_BELOW_CERTIFICATE,
-                        reason=(
-                            f"the bound {attained.bound.fraction} is below the "
-                            f"{certificate.bound} its {certificate.tag} shows"
-                        ),
-                    )
-                )
-            if isinstance(certificate, Argument) and not certificate.claim.established:
-                found.append(
-                    Refusal(
-                        code=RefusalCode.ARGUMENT_NOT_ESTABLISHED,
-                        reason=(
-                            f"the argument {certificate.claim.law.name} is only "
-                            f"{certificate.claim.status.value}"
-                        ),
-                    )
-                )
-            if not _certificate_metric(certificate, report.attainment.metric):
-                found.append(
-                    Refusal(
-                        code=RefusalCode.CERTIFICATE_METRIC,
-                        reason=(
-                            f"a {certificate.tag} does not bound the "
-                            f"{report.attainment.metric.tag} metric"
-                        ),
-                    )
-                )
+        )
+    if claimed is not None and certificate is not None and claimed < certificate.bound:
+        found.append(
+            Refusal(
+                code=RefusalCode.BOUND_BELOW_CERTIFICATE,
+                reason=(
+                    f"the bound {claimed} is below the {certificate.bound} its "
+                    f"{certificate.tag} shows"
+                ),
+            )
+        )
+    if isinstance(certificate, Argument) and not certificate.claim.established:
+        found.append(
+            Refusal(
+                code=RefusalCode.ARGUMENT_NOT_ESTABLISHED,
+                reason=(
+                    f"the argument {certificate.claim.law.name} is only "
+                    f"{certificate.claim.status.value}"
+                ),
+            )
+        )
+    if certificate is not None and not _certificate_metric(
+        certificate, report.attainment.metric
+    ):
+        found.append(
+            Refusal(
+                code=RefusalCode.CERTIFICATE_METRIC,
+                reason=(
+                    f"a {certificate.tag} does not bound the "
+                    f"{report.attainment.metric.tag} metric"
+                ),
+            )
+        )
     if not isinstance(attained, Heuristic):
         weak = [claim for claim in report.claims if not claim.established]
         if weak:
