@@ -35,6 +35,7 @@
   "runs.py": "d9fef3d74998e96f832a61e7413632ec755e26957cdbcfe5ee9118145c39322c",
   "scaling.py": "953a0ed3a6040a7322e09eee88b278c3a0a5eff13b76ed4e64eaf3f817ebb53e",
   "sources.py": "60a5b690973ca1563ab4258f964268abef56d4d97bdde73ef8ab803db60e30fa",
+  "spanning_controls.py": "584d6c777dc67c47ecf43dfac885aa5c2c66bf089fb9335893edc6fdc588e78c",
   "test_catalogue.py": "c50a07eaf84f66fb959f83fd3eaf0fa6e2b31c015cba65a65c1246d102f925e6",
   "test_closure_conformance.py": "53bbaba1adac3986091bb519cb6782c31340a51cc92e9ed792ef3b74c9da3e2d",
   "test_compare.py": "6c3c32e1a469aff178c0f20a07893eb0c117b702adc1a264494faf81256f8078",
@@ -51,6 +52,7 @@
   "test_reference_machine_conformance.py": "631316c1042f3d2342009281d13eb79ae5ad4d81915888e98c19e6aa0fb33368",
   "test_scaling.py": "b89c1c4396d34cfb8d838848934db488243d158151558e47b60e306e69316279",
   "test_span_conformance.py": "e86a330bdd795b1d2116a69bfc0fd74be6884c18a31da1c88c216bd46d5765ce",
+  "test_spanning_controls.py": "6530ebb9bc7cd7295218cede88f5103a7eda0fe6a460eca2091183872665b912",
   "test_structure_conformance.py": "e852e5e47447e630cb535e3f2270f191e73b87f2159febb7b09f66fd4ae77e07"
  },
  "passing cells": [

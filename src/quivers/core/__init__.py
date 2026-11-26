@@ -214,6 +214,12 @@ from quivers.core.tensor_ops import (
     noisy_and_reduce,
     componentwise_lift,
 )
+from quivers.core.spanning import (
+    DirectedTrees,
+    directed_tree,
+    tree_marginals,
+    tree_partition,
+)
 
 __all__ = [
     # laws
@@ -407,4 +413,9 @@ __all__ = [
     "noisy_or_reduce",
     "noisy_and_reduce",
     "componentwise_lift",
+    # spanning trees
+    "DirectedTrees",
+    "directed_tree",
+    "tree_marginals",
+    "tree_partition",
 ]

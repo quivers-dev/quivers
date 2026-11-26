@@ -301,6 +301,7 @@ nav:
       - Overview: api/core/objects.md
       - Algebras: api/core/algebras.md
       - Laws: api/core/laws.md
+      - Spanning trees: api/core/spanning.md
       - Morphisms: api/core/morphisms.md
       - Tensor Operations: api/core/tensor_ops.md
       - Utilities: api/core/util.md
