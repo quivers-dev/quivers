@@ -9,16 +9,18 @@ is:
 
 In our finite setting, this becomes a computable coend (join over
 all pairs (A, B) such that A ⊗ B can map to C). The coend is a join,
-so V must be a complete lattice (an `IdempotentSemiring`).
+so V must be a complete lattice (an `IdempotentSemiring`). The products
+are contractions of `quivers.core.wiring.EinsumWiring`, so Day
+convolution and wiring share one evaluation and its cost claim.
 
 The unit for Day convolution is the representable presheaf at the
 monoidal unit: y(I)(C) = C(C, I).
 
 This module provides:
 
-    day_convolution()          — compute F ⊛ G
-    day_unit()                 — the unit presheaf for ⊛
-    day_convolution_profunctors() — Day convolution on profunctors
+    day_convolution(): compute F ⊛ G
+    day_unit(): the unit presheaf for ⊛
+    day_convolution_profunctors(): Day convolution on profunctors
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ import torch
 
 from quivers.core.objects import SetObject
 from quivers.core.algebras import IdempotentSemiring
+from quivers.core.elimination import fiber_join
+from quivers.core.wiring import EinsumWiring
 from quivers.enriched._lattice import require_lattice
 from quivers.categorical.monoidal import MonoidalStructure
 from quivers.enriched.profunctors import Profunctor
@@ -49,9 +53,16 @@ def day_convolution(
 
         (F ⊛ G)(C) = ⋁_{A,B : A⊗B=C} F(A) ⊗ G(B)
 
-    For general finite categories with hom-data:
+    With a product table that names, for each pair, the object ``C_k``
+    with ``A_i ⊗ B_j ≅ C_k`` and the weight ``h = C(C_k, A_i ⊗ B_j)``:
 
-        (F ⊛ G)(C) = ⋁_{A,B} C(C, A⊗B) ⊗ F(A) ⊗ G(B)
+        (F ⊛ G)(C_k) = ⋁_{(i, j) ↦ k} h(i, j) ⊗ F(A_i) ⊗ G(B_j)
+
+    The products over the pairs are the contraction ``ab, a, b -> ab``
+    of `quivers.core.wiring.EinsumWiring` (``a, b -> ab`` without a
+    table), and the coend sums them over the fiber of each object, so the
+    work is ``2 n^2`` products and at most ``n f`` sums for ``n`` objects
+    and a largest fiber of ``f`` pairs, never ``n^3``.
 
     Parameters
     ----------
@@ -65,13 +76,14 @@ def day_convolution(
         The objects of the finite category (indexed 0..n-1).
     monoidal : MonoidalStructure
         The monoidal structure providing ⊗ and I.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
     product_table : dict or None
         Optional precomputed product table mapping (i, j) to
         (k, hom_tensor) where objects[i] ⊗ objects[j] ≅ objects[k]
-        and hom_tensor is C(objects[k], objects[i] ⊗ objects[j]).
-        If None, uses identity hom (discrete category).
-    algebra : IdempotentSemiring
-        The enrichment algebra, a complete lattice.
+        and hom_tensor is the scalar C(objects[k], objects[i] ⊗ objects[j]).
+        A pair it omits contributes nothing. If None, uses identity hom
+        (discrete category).
 
     Returns
     -------
@@ -95,37 +107,10 @@ def day_convolution(
             f"{f_values.shape} and {g_values.shape}"
         )
 
-    result = torch.full((n,), q.zero)
-
-    for i in range(n):
-        for j in range(n):
-            f_i = f_values[i]
-            g_j = g_values[j]
-
-            # compute f(A) ⊗ g(B)
-            fg = q.tensor_op(f_i.unsqueeze(0), g_j.unsqueeze(0)).squeeze(0)
-
-            if product_table is not None:
-                if (i, j) not in product_table:
-                    continue
-
-                k, hom = product_table[(i, j)]
-
-                # C(C_k, A_i ⊗ B_j) ⊗ F(A_i) ⊗ G(B_j)
-                contribution = q.tensor_op(hom, fg)
-
-                # join into result[k]
-                current = result[k].unsqueeze(0)
-                new_val = q.join(
-                    torch.stack([current, contribution.unsqueeze(0)]),
-                    dim=0,
-                )
-                result[k] = new_val.squeeze(0)
-
-            else:
-                # Discrete case: (F ⊛ G)(C) joins F(A) ⊗ G(B) over the
-                # pairs with A ⊗ B = C, so A ⊗ B must be one of the
-                # objects.
+    fibers: list[list[int]] = [[] for _ in range(n)]
+    if product_table is None:
+        for i in range(n):
+            for j in range(n):
                 prod = monoidal.product(objects[i], objects[j])
                 matches = [k for k in range(n) if objects[k] == prod]
                 if not matches:
@@ -135,15 +120,24 @@ def day_convolution(
                         f"{objects[i]!r} ⊗ {objects[j]!r} = {prod!r} is not "
                         f"among them"
                     )
-                k = matches[0]
-                current = result[k].unsqueeze(0)
-                new_val = q.join(
-                    torch.stack([current, fg.unsqueeze(0)]),
-                    dim=0,
-                )
-                result[k] = new_val.squeeze(0)
+                fibers[matches[0]].append(i * n + j)
+        pairs = EinsumWiring(q, "a,b->ab").apply(f_values, g_values)
+        return fiber_join(q, pairs.reshape(-1), fibers, q.zero_like((1,), pairs))
 
-    return result
+    unit = q.unit_like((), f_values)
+    weights: list[torch.Tensor] = []
+    for i in range(n):
+        for j in range(n):
+            entry = product_table.get((i, j))
+            if entry is None:
+                weights.append(unit)
+                continue
+            k, hom = entry
+            fibers[k].append(i * n + j)
+            weights.append(hom.to(dtype=f_values.dtype, device=f_values.device))
+    table = torch.stack(weights).reshape(n, n)
+    pairs = EinsumWiring(q, "ab,a,b->ab").apply(table, f_values, g_values)
+    return fiber_join(q, pairs.reshape(-1), fibers, q.zero_like((1,), pairs))
 
 
 def day_unit(
@@ -229,33 +223,20 @@ def day_convolution_profunctors(
     contra = monoidal.product(p.contra, q_prof.contra)
     co = monoidal.product(p.co, q_prof.co)
 
-    # compute outer tensor product
-    pt = p.tensor
-    qt = q_prof.tensor
-
-    n_p = pt.ndim
-    n_q = qt.ndim
-
-    # expand: P(*a, *b, 1..1) ⊗ Q(1..1, *c, *d)
-    pt_exp = pt.reshape(*pt.shape, *([1] * n_q))
-    qt_exp = qt.reshape(*([1] * n_p), *qt.shape)
-
-    outer = qnt.tensor_op(pt_exp, qt_exp)
-
-    # current layout: [a_dims, b_dims, c_dims, d_dims]
-    # target layout:  [a_dims, c_dims, b_dims, d_dims]
+    # the external product (P ⊛ Q)(ac, bd) = P(a, b) ⊗ Q(c, d), a
+    # contraction that sums nothing and reorders the axes as a c b d
     n_a = p.contra.ndim
     n_b = p.co.ndim
     n_c = q_prof.contra.ndim
     n_d = q_prof.co.ndim
-
-    a_dims = list(range(n_a))
-    b_dims = list(range(n_a, n_a + n_b))
-    c_dims = list(range(n_a + n_b, n_a + n_b + n_c))
-    d_dims = list(range(n_a + n_b + n_c, n_a + n_b + n_c + n_d))
-
-    perm = a_dims + c_dims + b_dims + d_dims
-    result = outer.permute(*perm)
+    letters = [chr(0x100 + index) for index in range(n_a + n_b + n_c + n_d)]
+    a = "".join(letters[:n_a])
+    b = "".join(letters[n_a : n_a + n_b])
+    c = "".join(letters[n_a + n_b : n_a + n_b + n_c])
+    d = "".join(letters[n_a + n_b + n_c :])
+    result = EinsumWiring(qnt, f"{a}{b},{c}{d}->{a}{c}{b}{d}").apply(
+        p.tensor, q_prof.tensor
+    )
 
     return Profunctor(contra=contra, co=co, tensor=result, algebra=qnt)
 

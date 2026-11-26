@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import random
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from functools import partial
@@ -13,6 +14,7 @@ import torch
 from quivers.core.algebras import (
     BooleanAlgebra,
     CompositionRule,
+    GODEL,
     CountingAlgebra,
     GodelAlgebra,
     LogProbAlgebra,
@@ -23,8 +25,18 @@ from quivers.core.algebras import (
     StandardMVAlgebra,
     TropicalAlgebra,
 )
+from quivers.core.elimination import (
+    ELIMINATION_LAWS,
+    plan_contraction,
+    run_contraction,
+)
 from quivers.core.wiring import EinsumWiring
+from quivers.enriched.day_convolution import day_convolution
+from quivers.categorical.monoidal import CartesianProductMonoidal
+from quivers.core.objects import FinSet
+from quivers.qiec.contracts import Phase, measured_total
 from tests.evidence.checks._registry import add
+from tests.evidence.counters import TensorCounter
 from tests.evidence.compare import (
     differentiate,
     ELEMENTARY,
@@ -49,6 +61,47 @@ NETWORKS: dict[str, tuple[str, dict[str, int]]] = {
     "unary": ("ij->j", {"i": 3, "j": 2}),
 }
 """Contraction networks and their extents."""
+
+
+def random_networks(count: int, seed: int) -> dict[str, tuple[str, dict[str, int]]]:
+    """Contraction networks drawn at random, of at most 216 assignments.
+
+    Each has two to four inputs of one to three letters from three to six
+    letters of extent one to three, and an output of up to two of them.
+
+    Parameters
+    ----------
+    count : int
+        How many.
+    seed : int
+        The seed.
+
+    Returns
+    -------
+    dict of str to tuple of str and dict of str to int
+        Each network's wiring and extents, by name.
+    """
+    chooser = random.Random(seed)
+    found: dict[str, tuple[str, dict[str, int]]] = {}
+    while len(found) < count:
+        letters = "abcdef"[: chooser.randint(3, 6)]
+        inputs = [
+            "".join(chooser.sample(letters, chooser.randint(1, 3)))
+            for _ in range(chooser.randint(2, 4))
+        ]
+        universe = sorted(set("".join(inputs)))
+        sizes = {x: chooser.randint(1, 3) for x in universe}
+        if math.prod(sizes.values()) > 216:
+            continue
+        output = "".join(
+            chooser.sample(universe, chooser.randint(0, min(2, len(universe))))
+        )
+        found[f"random_{len(found)}"] = (",".join(inputs) + "->" + output, sizes)
+    return found
+
+
+NETWORKS.update(random_networks(12, 2026))
+"""Twelve random networks join the named ones."""
 
 RULES: dict[str, CompositionRule] = {
     "real": RealAlgebra(),
@@ -403,6 +456,12 @@ def check_empty(rule: str) -> None:
     ----------
     rule : str
         The rule's name.
+
+    Raises
+    ------
+    Mismatch
+        If the value differs, or the contraction refuses a sum whose shape
+        is not the shape of its terms without the summed axes.
     """
     zero = {"logprob": -math.inf, "maxplus": -math.inf, "tropical": math.inf}.get(
         rule, 0.0
@@ -410,7 +469,10 @@ def check_empty(rule: str) -> None:
     for dtype in (torch.float32, torch.float64):
         left = torch.zeros(2, 0, dtype=dtype, requires_grad=True)
         right = torch.zeros(0, 3, dtype=dtype, requires_grad=True)
-        value = EinsumWiring(RULES[rule], "ij,jk->ik").apply(left, right)
+        try:
+            value = EinsumWiring(RULES[rule], "ij,jk->ik").apply(left, right)
+        except ValueError as refused:
+            raise Mismatch("shape", math.inf, str(refused)) from refused
         compare_tensor(
             value.detach().abs() if zero == 0.0 else value,
             torch.full((2, 3), zero, dtype=dtype),
@@ -494,6 +556,304 @@ def check_order() -> None:
     )
 
 
+def chain_of_matrices(
+    length: int, size: int
+) -> tuple[EinsumWiring, list[torch.Tensor]]:
+    """A line of log-weight matrices and its contraction to the end points.
+
+    Parameters
+    ----------
+    length : int
+        The number of matrices.
+    size : int
+        Their order.
+
+    Returns
+    -------
+    tuple of EinsumWiring and list of torch.Tensor
+        The wiring and the matrices.
+    """
+    letters = [chr(0x100 + k) for k in range(length + 1)]
+    spec = (
+        ",".join(letters[k] + letters[k + 1] for k in range(length))
+        + "->"
+        + letters[0]
+        + letters[length]
+    )
+    generator = torch.Generator().manual_seed(length)
+    matrices = [
+        torch.rand(size, size, dtype=torch.float64, generator=generator).log()
+        for _ in range(length)
+    ]
+    return EinsumWiring(RULES["logprob"], spec), matrices
+
+
+def check_chain_peak() -> None:
+    """Require a line of matrices to be contracted within three of its axes.
+
+    A line of ``k`` matrices of order six, contracted to its end points,
+    is eliminated one inner letter at a time; the largest tensor formed
+    is a bag of three letters, ``6^3`` elements, for every ``k``, as the
+    dispatch counter sees it and as the plan and its work report record.
+
+    Raises
+    ------
+    Mismatch
+        If a larger tensor is formed or recorded.
+    """
+    for length in (3, 4, 5):
+        wiring, matrices = chain_of_matrices(length, 6)
+        with TensorCounter() as counter:
+            _, report = wiring.apply_with_work(*matrices)
+        plan = wiring.plan({name: 6 for name in "".join(wiring.input_specs)})
+        for what, found in (
+            ("formed", counter.largest),
+            ("planned", plan.largest),
+        ):
+            if found != 6**3:
+                raise Mismatch(
+                    "work",
+                    found / 6**3,
+                    f"{length} matrices: the largest tensor {what} has {found} elements",
+                )
+        if report.peak_live_elements > 2 * 6**3:
+            raise Mismatch(
+                "work",
+                report.peak_live_elements / 6**3,
+                f"{length} matrices: {report.peak_live_elements} elements held",
+            )
+
+
+def check_counts_are_measured() -> None:
+    """Require the work a contraction reports to be the work it dispatches.
+
+    Over the reals a product is one multiplication, and a sum over ``a``
+    axes of a bag is ``a`` sums of one axis, each reading at most the
+    bag. So the dispatch counter's products are the reported ones, and
+    its sums lie between the reported binary sums and the bags' elements
+    times their summed letters. Every named and random network is
+    checked.
+
+    Raises
+    ------
+    Mismatch
+        If the counts disagree.
+    """
+    for network, (spec, sizes) in NETWORKS.items():
+        _, _, _, tensors = inputs_of(network, "real", zeros=False)
+        wiring = EinsumWiring(RULES["real"], spec)
+        with TensorCounter() as counter:
+            value, report = wiring.apply_with_work(*tensors)
+        plan = wiring.plan(sizes)
+        bags = sum(step.elements * len(step.letters) for step in plan.steps)
+        if counter.counts["products"] != report.scalar_products:
+            raise Mismatch(
+                "work",
+                math.inf,
+                f"{network}: dispatched {counter.counts['products']} products, "
+                f"reported {report.scalar_products}",
+            )
+        if not report.scalar_sums <= counter.counts["sums"] <= max(bags, value.numel()):
+            raise Mismatch(
+                "work",
+                math.inf,
+                f"{network}: dispatched {counter.counts['sums']} sums, reported "
+                f"{report.scalar_sums} over bags of {bags} elements",
+            )
+        bound = next(
+            bound
+            for bound in wiring.complexity.bounds
+            if bound.phase is Phase.EXECUTION and bound.resource == "time"
+        )
+        terms = len(plan.inputs) + len(plan.summed)
+        if measured_total(bound, report) > 2 * terms * max(plan.largest, 1):
+            raise Mismatch(
+                "work",
+                measured_total(bound, report) / (2 * terms * max(plan.largest, 1)),
+                f"{network}: work above twice (k + s) W",
+            )
+
+
+def _day_reference(
+    f: Sequence[Fraction],
+    g: Sequence[Fraction],
+    table: Mapping[tuple[int, int], tuple[int, Fraction]],
+) -> list[Fraction]:
+    """Day convolution over a product table in the Godel algebra, by its definition.
+
+    Parameters
+    ----------
+    f : Sequence of Fraction
+        The first presheaf.
+    g : Sequence of Fraction
+        The second presheaf.
+    table : Mapping
+        The object and weight of each pair.
+
+    Returns
+    -------
+    list of Fraction
+        ``max`` over each object's pairs of ``min(h, f, g)``.
+    """
+    out = [Fraction(0)] * len(f)
+    for (a, b), (target, hom) in table.items():
+        out[target] = max(out[target], min(hom, f[a], g[b]))
+    return out
+
+
+def check_day_convolution() -> None:
+    """Compare Day convolution with its definition, and its work with ``n^2``.
+
+    Over ``Z/5`` with weights on the pairs, in the Godel algebra, each
+    object's value is the largest ``min(h, f(a), g(b))`` over its pairs.
+    The products are two per pair and no tensor of ``n^3`` elements is
+    formed.
+
+    Raises
+    ------
+    Mismatch
+        If a value differs, or a tensor of more than ``n^2`` elements is
+        formed.
+    """
+    n = 5
+    f = [Fraction(1 + (3 * a) % 7, 8) for a in range(n)]
+    g = [Fraction(1 + (5 * b + 2) % 7, 8) for b in range(n)]
+    table = {
+        (a, b): ((a + b) % n, Fraction(1 + (a * b) % 6, 7))
+        for a in range(n)
+        for b in range(n)
+    }
+    objects = [FinSet(name=f"g{i}", cardinality=1) for i in range(n)]
+    with TensorCounter() as counter:
+        value = day_convolution(
+            torch.tensor([float(x) for x in f], dtype=torch.float64),
+            torch.tensor([float(x) for x in g], dtype=torch.float64),
+            objects,
+            CartesianProductMonoidal(),
+            GODEL,
+            product_table={
+                key: (target, torch.tensor(float(hom), dtype=torch.float64))
+                for key, (target, hom) in table.items()
+            },
+        )
+    compare_tensor(
+        value,
+        torch.tensor(
+            [float(x) for x in _day_reference(f, g, table)], dtype=torch.float64
+        ),
+        Accuracy(domain="linear", operations=4),
+        "Day convolution over Z/5",
+    )
+    if counter.largest > n * n + 1:
+        raise Mismatch(
+            "work",
+            counter.largest / (n * n),
+            f"a tensor of {counter.largest} elements for {n} objects",
+        )
+
+
+def check_plan(network: str, rule: str) -> None:
+    """Compare the planned contraction with the sum over assignments.
+
+    The plan is made and run directly, without a wiring, so the engine is
+    checked as its own executor; its plan is elimination exactly for the
+    rules that establish the laws.
+
+    Parameters
+    ----------
+    network : str
+        The network.
+    rule : str
+        The rule's name.
+
+    Raises
+    ------
+    Mismatch
+        If the value differs, or the algorithm is not the one the laws
+        decide.
+    """
+    spec, sizes, tables, tensors = inputs_of(network, rule, zeros=True)
+    letters, output = spec.split("->")
+    algebra = RULES[rule]
+    plan = plan_contraction(algebra, letters.split(","), output, sizes)
+    wanted = (
+        "variable elimination"
+        if algebra.establishes(*ELIMINATION_LAWS)
+        else "written order"
+    )
+    if plan.algorithm != wanted:
+        raise Mismatch("value", math.inf, f"{rule} {network}: {plan.algorithm}")
+    value, _ = run_contraction(plan, algebra, tensors)
+    compare_tensor(
+        value,
+        tensor(rule, output, sizes, reference(rule, spec, sizes, tables)),
+        accuracy(network, rule),
+        f"plan {rule} {network}",
+    )
+
+
+def check_plan_gradient(network: str) -> None:
+    """Compare the planned contraction's gradient at exact zeros with the oracle's.
+
+    Parameters
+    ----------
+    network : str
+        The network.
+    """
+    spec, sizes, tables, tensors = inputs_of(network, "real", zeros=True)
+    letters, output = spec.split("->")
+    names = letters.split(",")
+    plan = plan_contraction(RULES["real"], names, output, sizes)
+    leaves = [value.requires_grad_() for value in tensors]
+    total = run_contraction(plan, RULES["real"], leaves)[0].sum()
+    found = torch.autograd.grad(total, leaves, allow_unused=True)
+    gradients: dict[str, torch.Tensor | None] = {}
+    wanted: dict[str, Fraction] = {}
+    for position, (spec_letters, entries) in enumerate(zip(names, tables, strict=True)):
+        gradient = found[position]
+        for key in entries:
+            label = f"{position}{spec_letters}{key}"
+            gradients[label] = None if gradient is None else gradient[key]
+            unit: Table = {other: Fraction(int(other == key)) for other in entries}
+            changed = [*tables[:position], unit, *tables[position + 1 :]]
+            wanted[label] = sum(
+                exact.contraction(
+                    names, "", sizes, changed, Fraction(0), Fraction(1)
+                ).values(),
+                Fraction(0),
+            )
+    compare_gradients(
+        gradients,
+        wanted,
+        Accuracy(domain="linear", operations=5 * accuracy(network, "real").operations),
+        f"plan gradient {network}",
+    )
+
+
+def check_plan_refusals() -> None:
+    """Require a malformed plan to be refused by name.
+
+    Raises
+    ------
+    Mismatch
+        If one is admitted or the reason differs.
+    """
+    cases = (
+        ((), "", {}, "a contraction has at least one input"),
+        (("ii",), "i", {"i": 2}, "input 0 repeats a letter of 'ii'"),
+        (("ij",), "k", {"i": 2, "j": 2}, "output letter 'k' is in no input"),
+        (("ij",), "i", {"i": 2}, "letter 'j' has no extent of at least zero"),
+    )
+    for inputs, output, extents, wanted in cases:
+        try:
+            plan_contraction(RULES["real"], inputs, output, extents)
+        except ValueError as refused:
+            if str(refused) != wanted:
+                raise Mismatch("refusal", math.inf, str(refused)) from refused
+            continue
+        raise Mismatch("refusal", math.inf, f"{inputs} -> {output} was planned")
+
+
 class _LeftProjection(CompositionRule):
     """A rule whose product is its first factor and whose join is the sum."""
 
@@ -565,6 +925,25 @@ def _register() -> None:
                 partial(check_contraction_gradient, network, rule),
             )
     add("contraction/order", row, "Q6", check_order)
+    add("contraction/chain-peak", row, "Q6", check_chain_peak)
+    add("contraction/counts-measured", row, "Q6", check_counts_are_measured)
+    add("contraction/day-convolution", row, "Q6", check_day_convolution)
+    for rule in RULES:
+        for network in NETWORKS:
+            add(
+                f"contraction-plan/value/{rule}/{network}",
+                "contraction-plan",
+                "Q6",
+                partial(check_plan, network, rule),
+            )
+    for network in NETWORKS:
+        add(
+            f"contraction-plan/gradient/{network}",
+            "contraction-plan",
+            "Q1g",
+            partial(check_plan_gradient, network),
+        )
+    add("contraction-plan/refusals", "contraction-plan", "Q6", check_plan_refusals)
     add("contraction/impossible_row", row, "Q1g", check_impossible_row)
     add("contraction/refuses_diagonal", row, "Q6", check_refuses_diagonal)
 

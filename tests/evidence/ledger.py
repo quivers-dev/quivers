@@ -24,12 +24,10 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, HeldValue, ValueModel
 from quivers.core.algebras import (
     GODEL,
-    LogProbAlgebra,
     ProductFuzzyAlgebra,
 )
 from quivers.core.morphisms import Morphism, observed
 from quivers.core.objects import FinSet, ProductSet
-from quivers.core.wiring import EinsumWiring
 from quivers.dsl import loads
 from quivers.dsl.ast_nodes import LetExprCall, LetExprVar, SchemaDecl, TypeName
 from quivers.dsl.compiler.programs import LetValue, _ProgramsMixin
@@ -605,40 +603,6 @@ record(
 
 # -- closures, algebras, and contractions --------------------------------
 
-
-def _join_peak(length: int, size: int = 6) -> int:
-    """The largest tensor of a contraction along a line of matrices.
-
-    Parameters
-    ----------
-    length : int
-        The number of matrices.
-    size : int
-        Their order.
-
-    Returns
-    -------
-    int
-        Elements of the largest tensor made.
-    """
-    letters = "abcdefgh"
-    inputs = [letters[k : k + 2] for k in range(length)]
-    wiring = EinsumWiring(LogProbAlgebra(), f"{','.join(inputs)}->a{letters[length]}")
-    matrices = [torch.zeros(size, size, dtype=torch.float64)] * length
-    with TensorCounter() as counter:
-        wiring.apply(*matrices)
-    return counter.largest
-
-
-record(
-    "dense-join",
-    "core/wiring.py: EinsumWiring.apply",
-    "a contraction builds the join of all its inputs before it reduces, so a "
-    "line of matrices needs the order to the power of its length plus one",
-    {f"largest tensor of {k} matrices": str(6 ** (k + 1)) for k in (3, 4, 5)},
-    {f"largest tensor of {k} matrices": str(6**3) for k in (3, 4, 5)},
-    lambda: {f"largest tensor of {k} matrices": str(_join_peak(k)) for k in (3, 4, 5)},
-)
 
 record(
     "certain-entry-clamped",

@@ -49,7 +49,7 @@ def _with(entry: Entry, **changes: dict[str, str]) -> Entry:
 
 def test_a_repaired_defect_fails_its_entry() -> None:
     """Require an entry whose library now gives the required facts to fail."""
-    entry = ENTRIES["dense-join"]
+    entry = ENTRIES["certain-entry-clamped"]
     repaired = entry.with_(observe=entry.require)
     with pytest.raises(Mismatch, match="repaired"):
         verify(repaired)
@@ -65,7 +65,7 @@ def test_a_changed_defect_fails_its_entry() -> None:
 
 def test_a_fact_that_is_right_cannot_be_recorded_as_wrong() -> None:
     """Require every recorded fact to differ from its requirement."""
-    entry = ENTRIES["dense-join"]
+    entry = ENTRIES["certain-entry-clamped"]
     with pytest.raises(Mismatch, match="not wrong"):
         verify(_with(entry, wrong=dict(entry.right)))
 

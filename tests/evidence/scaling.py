@@ -38,7 +38,9 @@ from quivers.stochastic.inside import InsideAlgorithm
 from quivers.stochastic.parsers import ChartParser
 from quivers.stochastic.semiring import LOG_PROB, VITERBI
 from quivers.inference.mcmc import PotentialFn
+from quivers.qiec.contracts import Phase, measured_total
 from tests.evidence.checks import terms
+from tests.evidence.checks.contraction import chain_of_matrices
 from tests.evidence.checks.consumers import PROBLEMS, positions, registry_of
 from tests.evidence.checks.span import double_precision
 from tests.evidence.checks.deduction import geometric_run, weighted
@@ -552,6 +554,47 @@ def contraction_construction(count: int) -> int:
     return sum(len(part) for part in wiring.input_specs)
 
 
+def chain_contraction(length: int) -> float:
+    """The measured time of contracting a line of matrices to its end points.
+
+    Parameters
+    ----------
+    length : int
+        The number of matrices of order six.
+
+    Returns
+    -------
+    float
+        The time counters of the work report, summed as the claim's
+        execution time bound reads them.
+    """
+    wiring, matrices = chain_of_matrices(length, 6)
+    _, report = wiring.apply_with_work(*matrices)
+    bound = next(
+        bound
+        for bound in wiring.complexity.bounds
+        if bound.phase is Phase.EXECUTION and bound.resource == "time"
+    )
+    return float(measured_total(bound, report))
+
+
+def chain_peak(order: int) -> float:
+    """The elements a line of four matrices holds at once while contracted.
+
+    Parameters
+    ----------
+    order : int
+        The order of the matrices.
+
+    Returns
+    -------
+    float
+        The peak of the work report.
+    """
+    wiring, matrices = chain_of_matrices(4, order)
+    return float(wiring.apply_with_work(*matrices)[1].peak_live_elements)
+
+
 def parser_of(categories: int) -> ChartParser:
     """A chart parser with one binary rule per category.
 
@@ -1017,6 +1060,28 @@ FAMILIES: tuple[Family, ...] = (
         work=skewed_triangle,
         claim=lambda n: n**3,
         constant=10.0,
+    ),
+    Family(
+        name="contraction along a line",
+        executor="einsum-wiring",
+        question="Q6",
+        varies="length",
+        part="forward",
+        sizes=(4, 8, 16, 32, 64),
+        work=chain_contraction,
+        claim=lambda n: (2 * n - 1) * 6**3,
+        constant=1.0,
+    ),
+    Family(
+        name="memory of a contraction along a line",
+        executor="einsum-wiring",
+        question="Q6",
+        varies="order",
+        part="memory",
+        sizes=(2, 4, 8, 16, 32),
+        work=chain_peak,
+        claim=lambda n: 4 * n**3,
+        constant=1.0,
     ),
     Family(
         name="wiring construction",

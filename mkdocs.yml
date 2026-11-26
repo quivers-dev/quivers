@@ -307,6 +307,7 @@ nav:
       - Tensor Operations: api/core/tensor_ops.md
       - Utilities: api/core/util.md
       - Transformations: api/core/transformations.md
+      - Contractions: api/core/elimination.md
       - Wiring: api/core/wiring.md
     - Categorical:
       - Overview: api/categorical/functors.md

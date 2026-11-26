@@ -157,11 +157,16 @@ $$
 $$
 
 where $c$ ranges over assignments of an index to each reduced letter, and $(y, c)|_{\mathrm{spec}_i}$
-is the index of $T_i$ read off the output index $y$ and the assignment $c$. The runtime evaluates
-the formula in four steps: it broadcasts each input to all of $\mathcal L$, folds the inputs
-from left to right with $\otimes$, reduces the letters of $\mathcal L_c$ with $\bigoplus$, and
-permutes the remaining axes into the order of the output. For a rule that is not a commutative
-semiring, the result can depend on this order of the inputs.
+is the index of $T_i$ read off the output index $y$ and the assignment $c$. How the runtime
+evaluates the formula depends on the laws the rule establishes, read from its law claims
+([`elimination`](../api/core/elimination.md)). A rule that establishes the laws of a commutative
+semiring is contracted by variable elimination: one reduced letter at a time, only the inputs that
+contain it are multiplied over their letters (the letter's *bag*) and the letter is summed away, so
+the largest tensor formed is the largest bag of the chosen order rather than the product of all
+extents. For any other rule the runtime evaluates the formula as written: it broadcasts each input
+to all of $\mathcal L$, folds the inputs from left to right with $\otimes$, reduces the letters of
+$\mathcal L_c$ with $\bigoplus$, and permutes the remaining axes into the order of the output. For
+such a rule the result can depend on this order of the inputs.
 
 A contraction is declared as
 
