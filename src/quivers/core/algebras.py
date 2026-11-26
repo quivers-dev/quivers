@@ -58,6 +58,7 @@ from quivers.core._carriers import (
     validate_carrier,
 )
 from quivers.core._util import EPS
+from quivers.core.elimination import plan_contraction, run_contraction
 from quivers.core.laws import (
     ADDITIVE_INVERSE,
     COMPOSITION_ASSOCIATIVE,
@@ -378,6 +379,54 @@ class UnitalCarrier(Carrier):
 # ============================================================================
 
 
+def _composite(
+    rule: CompositionRule,
+    m: torch.Tensor,
+    n: torch.Tensor,
+    n_contract: int,
+    rank: int,
+) -> torch.Tensor:
+    """The composite of two tensors, as the contraction of their shared axes.
+
+    The contraction ``d s, s c -> d c`` is planned and run by
+    `quivers.core.elimination`: its one step multiplies the two tensors
+    over every axis and sums the shared ones, so a rule that is not a
+    semiring computes the same as one that is.
+
+    Parameters
+    ----------
+    rule : CompositionRule
+        The rule.
+    m : torch.Tensor
+        Shape ``(*domain, *shared, *element_shape)``.
+    n : torch.Tensor
+        Shape ``(*shared, *codomain, *element_shape)``.
+    n_contract : int
+        Number of shared index axes, at least one.
+    rank : int
+        Number of element axes.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(*domain, *codomain, *element_shape)``.
+    """
+    n_domain = m.dim() - rank - n_contract
+    n_codomain = n.dim() - rank - n_contract
+    letters = [
+        chr(0x100 + index) for index in range(n_domain + n_contract + n_codomain)
+    ]
+    domain = "".join(letters[:n_domain])
+    shared = "".join(letters[n_domain : n_domain + n_contract])
+    codomain = "".join(letters[n_domain + n_contract :])
+    extents = dict(zip(domain + shared, m.shape[: m.dim() - rank], strict=True))
+    extents.update(zip(codomain, n.shape[n_contract : n.dim() - rank], strict=True))
+    plan = plan_contraction(
+        rule, (domain + shared, shared + codomain), domain + codomain, extents
+    )
+    return run_contraction(plan, rule, (m, n), rank)[0]
+
+
 class CompositionRule(Lawful):
     """A binary tensor contraction that promises no algebraic law.
 
@@ -499,13 +548,7 @@ class CompositionRule(Lawful):
                 f"shared dimensions do not match: "
                 f"m trailing {shared_m} != n leading {shared_n}"
             )
-        n_domain = m.ndim - n_contract
-        n_codomain = n.ndim - n_contract
-        m_expanded = m.reshape(*m.shape, *([1] * n_codomain))
-        n_expanded = n.reshape(*([1] * n_domain), *n.shape)
-        product = self.tensor_op(m_expanded, n_expanded)
-        contract_dims = tuple(range(n_domain, n_domain + n_contract))
-        return self.join(product, dim=contract_dims)
+        return _composite(self, m, n, n_contract, 0)
 
     def is_compatible(self, other: CompositionRule) -> bool:
         """Whether two rules compose: the same type, or the same name.
@@ -663,14 +706,7 @@ class OrderPreservingSemiring(Semigroupoid, UnitalCarrier):
                 f"shared dimensions do not match: "
                 f"m trailing {shared_m} != n leading {shared_n}"
             )
-        n_domain = m_index - n_contract
-        n_codomain = n_index - n_contract
-        m_expanded = m.reshape(
-            *m.shape[:m_index], *([1] * n_codomain), *self.element_shape
-        )
-        n_expanded = n.reshape(*([1] * n_domain), *n.shape)
-        product = self.tensor_op(m_expanded, n_expanded)
-        return self.join(product, tuple(range(n_domain, n_domain + n_contract)))
+        return _composite(self, m, n, n_contract, rank)
 
 
 class Algebra(CompositionRule, UnitalCarrier):

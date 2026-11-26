@@ -218,7 +218,7 @@ AGENDA = "quivers.stochastic.agenda"
 ALGEBRAS = "quivers.core.algebras"
 SPAN = "quivers.stochastic.span"
 INSIDE = "quivers.stochastic.inside"
-WIRING = "quivers.core.wiring"
+ELIMINATION = "quivers.core.elimination"
 PLATE = "quivers.continuous.plate"
 CHART_FIFO = "deduction/value/fifo"
 BUILTINS = "quivers.qiec.builtins"
@@ -416,11 +416,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="wiring-gradient-cut",
         defect_class="gradient path",
         provenance="one factor of a contraction is detached",
-        target=f"{WIRING}:EinsumWiring.apply",
+        target=f"{ELIMINATION}:_product",
         rewrites=(
             Rewrite(
-                old="acc = self._rule.tensor_op(acc, nxt)",
-                new="acc = self._rule.tensor_op(acc, nxt.detach())",
+                old="result = algebra.tensor_op(total, _aligned(factor, target, rank))",
+                new=(
+                    "result = algebra.tensor_op("
+                    "total, _aligned(factor, target, rank).detach())"
+                ),
             ),
         ),
         rejected_by=(
@@ -607,12 +610,15 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="contraction-masks-zeros",
         defect_class="support",
         provenance="products with a zero factor are masked out",
-        target=f"{WIRING}:EinsumWiring.apply",
+        target=f"{ELIMINATION}:_product",
         rewrites=(
             Rewrite(
-                old="acc = self._rule.tensor_op(acc, nxt)",
-                new="acc = self._rule.tensor_op(acc, nxt)\n"
-                "        acc = acc.where(acc.detach() != 0, acc.detach())",
+                old="result = algebra.tensor_op(total, _aligned(factor, target, rank))",
+                new=(
+                    "result = algebra.tensor_op(total, _aligned(factor, target, rank))"
+                    "\n        result = result.where(result.detach() != 0, "
+                    "result.detach())"
+                ),
             ),
         ),
         rejected_by=("contraction/gradient/real/product",),
@@ -639,14 +645,46 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=0.34,
     ),
     Mutation(
+        name="contraction-sum-replaced-by-max",
+        defect_class="aggregation",
+        provenance="the sum that eliminates a letter keeps only the largest term",
+        target=f"{ELIMINATION}:_sum",
+        rewrites=(
+            Rewrite(
+                old="result = algebra.join(terms, axes)",
+                new="result = terms.amax(dim=axes)",
+            ),
+        ),
+        rejected_by=(
+            "contraction/value/real/chain/positive",
+            "contraction/value/markov/random_8/positive",
+        ),
+        min_effect=0.44,
+    ),
+    Mutation(
+        name="contraction-eliminated-without-its-laws",
+        defect_class="aggregation",
+        provenance="an algebra without distributivity is contracted by elimination",
+        target=f"{ELIMINATION}:plan_contraction",
+        also_in=("quivers.core.wiring", "quivers.core.algebras"),
+        rewrites=(
+            Rewrite(
+                old="algebra.establishes(*ELIMINATION_LAWS),",
+                new="True,",
+            ),
+        ),
+        rejected_by=("contraction/value/product_fuzzy/chain/positive",),
+        min_effect=0.065,
+    ),
+    Mutation(
         name="premise-order-permuted",
         defect_class="order",
         provenance="a contraction folds its inputs from the right",
-        target=f"{WIRING}:EinsumWiring.apply",
+        target=f"{ELIMINATION}:_product",
         rewrites=(
             Rewrite(
-                old="acc = self._rule.tensor_op(acc, nxt)",
-                new="acc = self._rule.tensor_op(nxt, acc)",
+                old="result = algebra.tensor_op(total, _aligned(factor, target, rank))",
+                new="result = algebra.tensor_op(_aligned(factor, target, rank), total)",
             ),
         ),
         rejected_by=("contraction/order",),

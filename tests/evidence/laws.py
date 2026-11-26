@@ -4074,11 +4074,11 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
         name="composition-factors-exchanged",
         defect_class="order",
         provenance="a contraction that multiplies the right factor first",
-        target=f"{ALGEBRAS}:OrderPreservingSemiring.compose",
+        target="quivers.core.elimination:_product",
         rewrites=(
             Rewrite(
-                old="product = self.tensor_op(m_expanded, n_expanded)",
-                new="product = self.tensor_op(n_expanded, m_expanded)",
+                old="result = algebra.tensor_op(total, _aligned(factor, target, rank))",
+                new="result = algebra.tensor_op(_aligned(factor, target, rank), total)",
             ),
         ),
         rejected_by=("matrix/Counting/declared operations",),

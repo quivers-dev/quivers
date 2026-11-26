@@ -61,13 +61,12 @@ from scipy.optimize import linprog
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring
+from quivers.core.elimination import ELIMINATION_LAWS
+from quivers.core.elimination import elimination_order as greedy_order
 from quivers.core.laws import (
-    DISTRIBUTIVE,
     PLUS_ASSOCIATIVE,
     PLUS_COMMUTATIVE,
     TIMES_ASSOCIATIVE,
-    TIMES_COMMUTATIVE,
-    TIMES_UNIT,
     Citation,
     Law,
 )
@@ -675,17 +674,6 @@ def _descend(
 # aggregates
 
 
-ELIMINATION_LAWS: tuple[Law, ...] = (
-    PLUS_ASSOCIATIVE,
-    PLUS_COMMUTATIVE,
-    TIMES_ASSOCIATIVE,
-    TIMES_COMMUTATIVE,
-    TIMES_UNIT,
-    DISTRIBUTIVE,
-)
-"""The laws elimination reorders by: a commutative semiring on one domain."""
-
-
 class EliminationStep(QiecModel):
     """One variable summed out.
 
@@ -766,10 +754,11 @@ def _require_laws(algebra: OrderPreservingSemiring, laws: Sequence[Law]) -> None
 def elimination_order(query: BodyQuery) -> tuple[str, ...]:
     """A greedy order of the variables to sum out: fewest neighbours first.
 
-    At each step the variable whose bag (the variables sharing an atom
-    or the side condition with it, among those left) is smallest is
-    removed, ties in the query's order. Finding an order of least width
-    is NP-hard, so this order's widths are recorded, not claimed least.
+    The order is `quivers.core.elimination.elimination_order` over the
+    atoms' variables and the side condition's, by the number of
+    variables of each bag, ties in the query's order. Finding an order
+    of least width is NP-hard, so this order's widths are recorded, not
+    claimed least.
 
     Parameters
     ----------
@@ -784,31 +773,7 @@ def elimination_order(query: BodyQuery) -> tuple[str, ...]:
     edges = [set(atom.variables) for atom in query.atoms]
     if query.filtered:
         edges.append(set(query.filtered))
-    left = [name for name in query.variables if name not in query.free]
-    chosen: list[str] = []
-    while left:
-
-        def bag(name: str) -> int:
-            """The size of a variable's bag among the remaining edges.
-
-            Parameters
-            ----------
-            name : str
-                The variable.
-
-            Returns
-            -------
-            int
-                The bag's size.
-            """
-            return len(set().union(*(edge for edge in edges if name in edge)))
-
-        best = min(left, key=lambda name: (bag(name), query.variables.index(name)))
-        joined = set().union(*(edge for edge in edges if best in edge))
-        edges = [edge for edge in edges if best not in edge] + [joined - {best}]
-        left.remove(best)
-        chosen.append(best)
-    return tuple(chosen)
+    return greedy_order(query.variables, edges, set(query.free))
 
 
 class _Factor(ValueModel):

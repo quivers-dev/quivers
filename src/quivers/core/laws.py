@@ -838,10 +838,22 @@ class Lawful(ABC):
         Returns
         -------
         bool
-            True when each law is claimed with a proved or decided status.
+            True when each law is claimed with a proved or decided status,
+            read from its evidence as `LawClaim.status` reads it. The
+            evidence of a structure is fixed by its class and its parts, so
+            the answer is kept on the structure for the laws' names.
         """
-        claimed = self.laws()
-        return all(law in claimed and self.claim(law).established for law in laws)
+        memo: dict[tuple[str, ...], bool] = vars(self).setdefault("_established", {})
+        key = tuple(law.name for law in laws)
+        found = memo.get(key)
+        if found is None:
+            claimed = self.laws()
+            found = all(
+                law in claimed and isinstance(self.evidence(law), (Proved, Decided))
+                for law in laws
+            )
+            memo[key] = found
+        return found
 
 
 __all__ = [

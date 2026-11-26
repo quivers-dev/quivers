@@ -9,6 +9,7 @@ The package re-exports every public name of its modules:
 - `morphism_transformations`: shape-aware transformations such as `softmax`;
 - `trans`: sequences of transformations built by `compose_trans`;
 - `morphisms`: the `Morphism` hierarchy and its factory functions;
+- `elimination`: plans of contractions by variable elimination;
 - `wiring`: einsum wiring rules for contractions;
 - `tensor_ops`: noisy-OR contraction and componentwise lifting.
 """
@@ -201,10 +202,24 @@ from quivers.core.morphisms import (
     cup,
     cap,
 )
+from quivers.core.elimination import (
+    ELIMINATION_LAWS,
+    ContractionAlgebra,
+    ContractionCounts,
+    ContractionPlan,
+    ContractionStep,
+    elimination_order,
+    plan_contraction,
+    run_contraction,
+)
 from quivers.core.wiring import (
+    CONTRACTION_MEASURES,
+    CONTRACTION_WORK,
     EinsumWiring,
+    WRITTEN_ORDER_WORK,
     WiringRule,
     contract,
+    contraction_report,
     einsum_wiring,
 )
 from quivers.core.tensor_ops import (
@@ -408,10 +423,23 @@ __all__ = [
     "extract_morphism",
     "cup",
     "cap",
+    # elimination
+    "ELIMINATION_LAWS",
+    "ContractionAlgebra",
+    "ContractionCounts",
+    "ContractionPlan",
+    "ContractionStep",
+    "elimination_order",
+    "plan_contraction",
+    "run_contraction",
     # wiring
+    "CONTRACTION_MEASURES",
+    "CONTRACTION_WORK",
     "EinsumWiring",
+    "WRITTEN_ORDER_WORK",
     "WiringRule",
     "contract",
+    "contraction_report",
     "einsum_wiring",
     # tensor_ops
     "noisy_or_contract",
