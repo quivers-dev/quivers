@@ -52,7 +52,7 @@ from quivers.core.laws import (
 )
 from quivers._positions import demand
 from quivers.qiec._models import QiecModel
-from quivers.qiec.numbers import NumberDomain
+from quivers.qiec.numbers import NumberDomain, machine_value
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.types import BOOL, INT, REAL as REAL_TYPE, TypeExpr
 
@@ -75,6 +75,9 @@ KERNEL_ALGEBRAS: Mapping[str, Semiring] = MappingProxyType(
 
 KERNEL_CARRIERS: tuple[TypeExpr, ...] = (LOG_WEIGHT, REAL_TYPE, BOOL, INT)
 """The kernel types that hold the element of a kernel semiring."""
+
+type KernelValue = bool | int | float
+"""A literal element of a kernel scalar type, as elaboration writes it."""
 
 EXACT_COUNT = 2.0 / torch.finfo(torch.float64).eps
 """The bound below which every natural number is exact in ``float64``."""
@@ -306,39 +309,41 @@ class KernelSemiring(QiecModel):
             return found.to(torch.int64)
         return found.to(numbers.real_dtype)
 
-    def zero(self, numbers: NumberDomain) -> torch.Tensor:
-        """The additive identity.
-
-        Parameters
-        ----------
-        numbers : NumberDomain
-            The run's numbers.
+    def zero(self) -> KernelValue:
+        """The additive identity, as a literal of the carrier.
 
         Returns
         -------
-        torch.Tensor
-            The semiring's zero in the carrier.
+        KernelValue
+            The semiring's zero.
         """
-        return self.value(
-            torch.tensor(self.member.zero, dtype=torch.float64), numbers
-        )
+        return self._literal(self.member.zero)
 
-    def unit(self, numbers: NumberDomain) -> torch.Tensor:
-        """The multiplicative identity.
-
-        Parameters
-        ----------
-        numbers : NumberDomain
-            The run's numbers.
+    def unit(self) -> KernelValue:
+        """The multiplicative identity, as a literal of the carrier.
 
         Returns
         -------
-        torch.Tensor
-            The semiring's unit in the carrier.
+        KernelValue
+            The semiring's unit.
         """
-        return self.value(
-            torch.tensor(self.member.unit, dtype=torch.float64), numbers
-        )
+        return self._literal(self.member.unit)
+
+    def _literal(self, element: float) -> KernelValue:
+        """A constant of the member as a literal of the carrier.
+
+        Parameters
+        ----------
+        element : float
+            The constant.
+
+        Returns
+        -------
+        KernelValue
+            The literal.
+        """
+        found = self.value(torch.tensor(element, dtype=torch.float64), NumberDomain())
+        return found.item()
 
     def plus(
         self, values: Sequence[torch.Tensor], numbers: NumberDomain
@@ -358,7 +363,9 @@ class KernelSemiring(QiecModel):
             Their sum, by the member's ``join``; the zero for none.
         """
         if not values:
-            return self.zero(numbers)
+            zero = machine_value(self.carrier, self.zero(), numbers)
+            assert isinstance(zero, torch.Tensor)
+            return zero
         stacked = torch.stack([self.tensor(value) for value in values])
         return self.value(self.member.join(stacked, 0), numbers)
 
@@ -522,6 +529,7 @@ __all__ = [
     "InexactKernelValue",
     "KERNEL_ALGEBRAS",
     "KERNEL_CARRIERS",
+    "KernelValue",
     "KernelSemiring",
     "MissingLaw",
     "PRODUCT_LAWS",

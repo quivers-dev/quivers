@@ -2531,6 +2531,7 @@ class Evaluator:
             batch = tuple(_extent(axis) for axis in distribution_axes(value)[0])
             return RuntimeDistribution(
                 backend=self.distributions,
+                numbers=self.numbers,
                 family=value.name,
                 arguments=arguments,
                 batch=batch,

@@ -650,7 +650,7 @@ class CoreRuntimeProvider(QiecModel):
             return self._prelude(
                 definition,
                 lambda **_: weight_handler(
-                    semiring.unit(numbers),
+                    machine_value(semiring.carrier, semiring.unit(), numbers),
                     lambda left, right: semiring.times(left, right, numbers),  # type: ignore[arg-type]
                     _kernel_validator(weight_type),
                     weight_type=weight_type,
