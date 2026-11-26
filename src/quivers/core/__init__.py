@@ -52,6 +52,7 @@ from quivers.core.laws import (
     NO_ZERO_DIVISORS,
     SEMIMODULE_ACTION,
     OMEGA_CONTINUOUS,
+    REAL_EMBEDDING,
     FOLD_LINEAR,
     OPERATIONS_CLOSED,
     JOIN_ITERATED,
@@ -80,6 +81,7 @@ from quivers.core.laws import (
     Lawful,
 )
 from quivers.core.algebras import (
+    RealEmbedding,
     Carrier,
     UnitalCarrier,
     CompositionRule,
@@ -267,6 +269,7 @@ __all__ = [
     "NO_ZERO_DIVISORS",
     "SEMIMODULE_ACTION",
     "OMEGA_CONTINUOUS",
+    "REAL_EMBEDDING",
     "FOLD_LINEAR",
     "OPERATIONS_CLOSED",
     "JOIN_ITERATED",
@@ -424,6 +427,7 @@ __all__ = [
     "extract_morphism",
     "cup",
     "cap",
+    "RealEmbedding",
     # elimination
     "ELIMINATION_LAWS",
     "ContractionAlgebra",

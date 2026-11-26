@@ -233,6 +233,27 @@ $> 0$. Valiant (1975) recognizes in $O(\mathrm{BM}(n))$ for a fixed grammar, bel
 schedule, so its claim [`SPAN_RECOGNITION_WORK`][quivers.stochastic.planning.SPAN_RECOGNITION_WORK]
 is not called optimal.
 
+## Monotone polynomial plans
+
+Under [`MonotonePolynomial`][quivers.qiec.contracts.MonotonePolynomial] the plan selects
+[`NEWTON_ALGORITHM`][quivers.stochastic.planning.NEWTON_ALGORITHM]: the components of the derived
+hypergraph are solved by decomposed Newton with certified intervals, as
+[Cyclic systems](recursion.md#monotone-polynomial-systems) describes. The contract needs the
+algebra's claim of a [`RealEmbedding`][quivers.core.algebras.RealEmbedding] and of a commutative
+product, and its guarantee is at best certified, since no finite method computes the solution
+exactly. Each run carries an [`AccuracyReport`][quivers.qiec.contracts.AccuracyReport]: the
+certified bound of its widest interval in the contract's metric with that interval as the
+certificate, or no guarantee with the conditioning where an upper end did not certify, why it
+stopped (completed, or the iteration budget spent), and the implicit derivative when the spectral
+radius at the solution is certified below one. [`Plan.settled`][quivers.stochastic.planning.Plan.settled]
+and [`Plan.settled_gradient`][quivers.stochastic.planning.Plan.settled_gradient] settle the report
+by the contract: they return the result when it meets the contract, refuse otherwise, or return it
+as [`Unestablished`][quivers.qiec.contracts.Unestablished] when the contract says so.
+[`Plan.run`][quivers.stochastic.planning.Plan.run] and
+[`Plan.gradient`][quivers.stochastic.planning.Plan.gradient] return only established results, so
+under a contract that returns unestablished values they refuse and name the settled methods. The cost claim
+is [`NEWTON_WORK`][quivers.stochastic.planning.NEWTON_WORK].
+
 ## Refusals
 
 | [`PlanRefusal`][quivers.stochastic.planning.PlanRefusal] | when |
@@ -243,6 +264,7 @@ is not called optimal.
 | `observable-without-executor` | the observable does not survive aggregation, such as a fold that does not commute with sums: for alternatives $-1$ and $1$ the square of the sum is $0$ and the sum of the squares $2$ |
 | `retention-without-executor` | the retention asks for more than parent counts |
 | `algebra` | a best derivation is asked of an algebra in which no term attains an item's value |
+| `divergent` | a closure diverges, or a monotone polynomial component's least fixed point is certified infinite |
 | `cycle` | the inputs make the derived hypergraph cyclic, or the unary rules of a span plan have a cycle under the acyclic contract |
 
 ## References

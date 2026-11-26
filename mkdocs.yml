@@ -358,7 +358,7 @@ nav:
       - Tries: api/stochastic/tries.md
       - Plans: api/stochastic/planning.md
       - Packed Forests: api/stochastic/forest.md
-      - Linear Cyclic Systems: api/stochastic/recursion.md
+      - Cyclic Systems: api/stochastic/recursion.md
       - Productions: api/stochastic/productions.md
       - Deduction Library: api/stochastic/stdlib.md
       - Deduction Systems:

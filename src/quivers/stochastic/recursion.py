@@ -1,4 +1,5 @@
-"""Linear cyclic systems, solved component by component through the algebra's closure.
+"""Cyclic systems, solved component by component: linear ones by the
+algebra's closure, monotone polynomial ones by decomposed Newton.
 
 The derived hypergraph of a run is split into strongly connected
 components, visited so that every premise outside a component is final
@@ -18,8 +19,25 @@ Whether a coefficient is the unit is decided by the rule, not by the
 numbers: ``a`` is the unit when the premise is the first, ``c`` when it
 is the last and the rule has no weight.
 
+A monotone polynomial system, whose components may have edges with
+several premises inside them, is solved in the reals of the algebra's
+`quivers.core.algebras.RealEmbedding` by `solve_polynomial`: Newton's
+method from zero on each component keeps a certified lower bound, a
+pre-fixed point bounds it from above, both in outward rounded arithmetic,
+and the value carries the implicit derivative of the fixed point.
+
 References
 ----------
+Etessami, K., and Yannakakis, M. (2009). Recursive Markov chains,
+stochastic grammars, and monotone systems of nonlinear equations.
+*Journal of the ACM* 56(1), 1-66.
+[doi:10.1145/1462153.1462154](https://doi.org/10.1145/1462153.1462154)
+
+Esparza, J., Kiefer, S., and Luttenberger, M. (2010). Computing the least
+fixed point of positive polynomial systems. *SIAM Journal on Computing*
+39(6), 2282-2335.
+[doi:10.1137/090749591](https://doi.org/10.1137/090749591)
+
 Lehmann, D. J. (1977). Algebraic structures for transitive closure.
 *Theoretical Computer Science*, 4(1), 59-76.
 [doi:10.1016/0304-3975(77)90056-1](https://doi.org/10.1016/0304-3975(77)90056-1)
@@ -29,16 +47,18 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from fractions import Fraction
 from enum import Enum
 from typing import Literal
 
 import didactic.api as dx
 import torch
 
-from quivers._values import OPAQUE_BY_VALUE
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import (
     DivergentClosureError,
     OrderPreservingSemiring,
+    RealEmbedding,
     Star,
     UndecidedClosureError,
 )
@@ -49,6 +69,10 @@ from quivers.qiec.rules import Item, Rule, RulePresentation
 from quivers.stochastic.forest import DerivationForest, ForestEdge, edge_weight
 
 __all__ = [
+    "Divergent",
+    "NewtonComponent",
+    "PolynomialSolution",
+    "solve_polynomial",
     "Component",
     "CyclicRefusal",
     "CyclicRefused",
@@ -541,3 +565,991 @@ def _side(
         f"the right and {_name(presentation, right)} on the left, and the product "
         "is not established to commute",
     )
+
+
+# ---------------------------------------------------------------------------
+# monotone polynomial systems
+
+
+class Divergent(ValueError):
+    """A monotone polynomial system whose least fixed point is infinite.
+
+    Parameters
+    ----------
+    reason : str
+        The certificate of divergence.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class NewtonComponent(QiecModel):
+    """One strongly connected component solved by Newton's method.
+
+    Parameters
+    ----------
+    items : tuple of Item
+        Its items.
+    iterations : int
+        Newton steps taken.
+    spectral : float or None
+        An estimate of the spectral radius of the Jacobian at the solution,
+        ``max_x (J s)_x / s_x`` for ``s = (I - J)^-1 1``; ``None`` when it
+        has no inverse there.
+    condition : float or None
+        ``||(I - J)^-1||`` in the maximum norm at the solution, ``max_x s_x``.
+    certified : bool
+        Whether both ends of every item's interval were certified.
+    implicit : bool
+        Whether the spectral radius at the upper end is certified below
+        one, so that the implicit derivative exists.
+    """
+
+    items: tuple[Item, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    iterations: int = 0
+    spectral: float | None = None
+    condition: float | None = None
+    certified: bool = False
+    implicit: bool = False
+
+
+class PolynomialSolution(ValueModel):
+    """The least fixed point of a monotone polynomial system, with its enclosure.
+
+    Parameters
+    ----------
+    values : dict of Item to torch.Tensor
+        The value of every item in the algebra, with the implicit
+        derivative in its inputs.
+    lower : dict of Item to float
+        A certified lower bound of every item's real value.
+    upper : dict of Item to float
+        A certified upper bound, ``inf`` where none was certified.
+    components : tuple of NewtonComponent
+        The components, premises' components first.
+    iterations : int
+        Newton steps over all components.
+    sums : int
+        Sums of reals in point arithmetic.
+    products : int
+        Products of reals in point arithmetic.
+    exact : int
+        Operations in outward rounded arithmetic.
+    stopped : str
+        ``"completed"`` when every component's iteration stopped making
+        progress, ``"budget"`` when the iteration budget ended it.
+    """
+
+    values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    lower: dict[Item, float] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    upper: dict[Item, float] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    components: tuple[NewtonComponent, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    iterations: int = 0
+    sums: int = 0
+    products: int = 0
+    exact: int = 0
+    stopped: Literal["completed", "budget"] = "completed"
+
+
+def _down(value: float) -> float:
+    """A lower bound of the exact result of the operation that rounded to ``value``.
+
+    Parameters
+    ----------
+    value : float
+        A result of one rounded operation on nonnegative operands.
+
+    Returns
+    -------
+    float
+        The float below it, and never below zero.
+
+    """
+    return max(math.nextafter(value, -math.inf), 0.0)
+
+
+def _up(value: float) -> float:
+    """An upper bound of the exact result of the operation that rounded to ``value``.
+
+    Parameters
+    ----------
+    value : float
+        A result of one rounded operation.
+
+    Returns
+    -------
+    float
+        The float above it.
+    """
+    return math.nextafter(value, math.inf)
+
+
+class _Term:
+    """One monomial: a coefficient and the members it multiplies.
+
+    Parameters
+    ----------
+    coefficient : torch.Tensor
+        The real coefficient, on the autograd graph.
+    lower : float
+        A certified lower bound of it.
+    upper : float
+        A certified upper bound of it.
+    inside : tuple of int
+        The positions of the members it multiplies, with repeats.
+    """
+
+    def __init__(
+        self,
+        coefficient: torch.Tensor,
+        lower: float,
+        upper: float,
+        inside: tuple[int, ...],
+    ) -> None:
+        self.coefficient = coefficient
+        self.point = float(coefficient.detach())
+        self.lower = lower
+        self.upper = upper
+        self.inside = inside
+
+
+class _Count:
+    """Counts of the Newton solver."""
+
+    def __init__(self) -> None:
+        self.sums = 0
+        self.products = 0
+        self.exact = 0
+        self.iterations = 0
+
+
+def _evaluate(
+    terms: Sequence[Sequence[_Term]], point: Sequence[float], count: _Count
+) -> list[float]:
+    """The polynomials at a point, in floating point.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The monomials of each member.
+    point : Sequence of float
+        The members' values.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    list of float
+        Each member's polynomial.
+    """
+    found: list[float] = []
+    for monomials in terms:
+        total = 0.0
+        for term in monomials:
+            value = term.point
+            for position in term.inside:
+                value *= point[position]
+                count.products += 1
+            total += value
+            count.sums += 1
+        found.append(total)
+    return found
+
+
+def _bound(
+    terms: Sequence[Sequence[_Term]],
+    point: Sequence[float],
+    count: _Count,
+    *,
+    upper: bool,
+) -> list[float]:
+    """The polynomials at a point, rounded outward.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The monomials.
+    point : Sequence of float
+        The members' values, nonnegative and exact.
+    count : _Count
+        The counts.
+    upper : bool
+        Whether upper bounds are computed, from the coefficients' upper
+        bounds; else lower ones from their lower bounds.
+
+    Returns
+    -------
+    list of float
+        A bound of each member's polynomial.
+    """
+    step = _up if upper else _down
+    found: list[float] = []
+    for monomials in terms:
+        total = 0.0
+        for term in monomials:
+            value = term.upper if upper else term.lower
+            for position in term.inside:
+                value = step(value * point[position])
+                count.exact += 1
+            total = step(total + value)
+            count.exact += 1
+        found.append(total)
+    return found
+
+
+def _jacobian(
+    terms: Sequence[Sequence[_Term]],
+    point: Sequence[float],
+    count: _Count,
+    *,
+    bound: Literal["point", "lower", "upper"],
+) -> list[list[float]]:
+    """The Jacobian of the polynomials at a point.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The monomials.
+    point : Sequence of float
+        The members' values.
+    count : _Count
+        The counts.
+    bound : {"point", "lower", "upper"}
+        Floating point, or outward rounded from the coefficients' lower or
+        upper bounds.
+
+    Returns
+    -------
+    list of list of float
+        ``J[x][y]``, the derivative of member ``x``'s polynomial in member
+        ``y``.
+    """
+    size = len(point)
+    matrix = [[0.0] * size for _ in range(size)]
+    step = _up if bound == "upper" else _down
+    for row, monomials in enumerate(terms):
+        for term in monomials:
+            for place, position in enumerate(term.inside):
+                value = (
+                    term.point
+                    if bound == "point"
+                    else term.upper
+                    if bound == "upper"
+                    else term.lower
+                )
+                for other, factor in enumerate(term.inside):
+                    if other == place:
+                        continue
+                    value = value * point[factor]
+                    if bound != "point":
+                        value = step(value)
+                        count.exact += 1
+                    else:
+                        count.products += 1
+                total = matrix[row][position] + value
+                matrix[row][position] = total if bound == "point" else step(total)
+                count.exact += bound != "point"
+                count.sums += bound == "point"
+    return matrix
+
+
+def _star_ones(matrix: Sequence[Sequence[float]], count: _Count) -> list[float] | None:
+    """``(I - J)^-1 1`` in floating point, when it is positive.
+
+    Parameters
+    ----------
+    matrix : Sequence of Sequence of float
+        ``J``.
+    count : _Count
+        The counts: a dense solve of order ``S`` as ``S^3`` products and
+        ``S^3`` sums.
+
+    Returns
+    -------
+    list of float or None
+        The vector, or ``None`` when ``I - J`` is singular or the solution
+        is not positive.
+    """
+    size = len(matrix)
+    count.products += size**3
+    count.sums += size**3
+    system = torch.eye(size, dtype=torch.float64) - torch.tensor(
+        matrix, dtype=torch.float64
+    ).reshape(size, size)
+    try:
+        solution = torch.linalg.solve(system, torch.ones(size, dtype=torch.float64))
+    except RuntimeError:
+        return None
+    if not bool(torch.isfinite(solution).all()) or not bool((solution > 0).all()):
+        return None
+    return [float(value) for value in solution]
+
+
+def _contracts(
+    matrix: Sequence[Sequence[float]], vector: Sequence[float], count: _Count
+) -> bool:
+    """Whether ``J v < v`` holds in outward rounded arithmetic, ``v`` positive.
+
+    For a nonnegative matrix it shows the spectral radius below one
+    (Collatz and Wielandt: ``rho(J) <= max_x (J v)_x / v_x``).
+
+    Parameters
+    ----------
+    matrix : Sequence of Sequence of float
+        Upper bounds of ``J``.
+    vector : Sequence of float
+        ``v``, positive.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    bool
+        Whether every row's upper bound is below ``v``'s entry.
+    """
+    for row, value in zip(matrix, vector, strict=True):
+        total = 0.0
+        for entry, factor in zip(row, vector, strict=True):
+            total = _up(total + _up(entry * factor))
+            count.exact += 2
+        if not total < value:
+            return False
+    return True
+
+
+def _expands(
+    matrix: Sequence[Sequence[float]], vector: Sequence[float], count: _Count
+) -> bool:
+    """Whether ``J v >= v`` holds in outward rounded arithmetic, ``v`` positive.
+
+    For a nonnegative matrix it shows the spectral radius at least one
+    (Collatz and Wielandt: ``rho(J) >= min_x (J v)_x / v_x``).
+
+    Parameters
+    ----------
+    matrix : Sequence of Sequence of float
+        Lower bounds of ``J``.
+    vector : Sequence of float
+        ``v``, positive.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    bool
+        Whether every row's lower bound is at least ``v``'s entry.
+    """
+    for row, value in zip(matrix, vector, strict=True):
+        total = 0.0
+        for entry, factor in zip(row, vector, strict=True):
+            total = _down(total + _down(entry * factor))
+            count.exact += 2
+        if total < value:
+            return False
+    return True
+
+
+def _perron(matrix: Sequence[Sequence[float]]) -> list[float] | None:
+    """A positive estimate of the Perron vector of a nonnegative matrix.
+
+    Parameters
+    ----------
+    matrix : Sequence of Sequence of float
+        The matrix.
+
+    Returns
+    -------
+    list of float or None
+        The eigenvector of the eigenvalue of largest real part, scaled to
+        be positive, or ``None`` when it has a nonpositive entry.
+    """
+    size = len(matrix)
+    values, vectors = torch.linalg.eig(
+        torch.tensor(matrix, dtype=torch.float64).reshape(size, size)
+    )
+    vector = vectors[:, int(torch.argmax(values.real))].real
+    vector = vector if float(vector.sum()) >= 0 else -vector
+    if not bool((vector > 0).all()):
+        return None
+    return [float(value) for value in vector]
+
+
+_SHRINK = (2.0**-40, 2.0**-20, 2.0**-10, 0.5)
+"""The fractions a Newton step is shortened by until it certifies."""
+
+
+def _newton(
+    terms: Sequence[Sequence[_Term]],
+    count: _Count,
+    budget: int | None,
+) -> tuple[list[float], list[float], int, bool]:
+    """Certified Newton iteration from zero on one component.
+
+    From a certified lower bound ``l`` of the least fixed point ``m`` and
+    the Jacobian ``J`` at ``l``: Taylor's expansion of a polynomial with
+    nonnegative coefficients gives ``(I - J)(m - l) >= f(l) - l``; when
+    ``rho(J) < 1``, ``(I - J)^-1`` is nonnegative, so any ``d`` with
+    ``(I - J) d <= f(l) - l`` has ``l + d <= m``. The floating Newton step
+    is shortened until both hypotheses hold in outward rounded arithmetic,
+    and ``l`` moves to ``l + d`` rounded down.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The component's polynomials.
+    count : _Count
+        The counts.
+    budget : int or None
+        The most steps.
+
+    Returns
+    -------
+    tuple
+        The certified lower bound, the last floating iterate, the steps
+        taken, and whether the budget ended the iteration.
+
+    Raises
+    ------
+    Divergent
+        If the spectral radius at a lower bound strictly below every
+        component's value is certified at least one, so the least fixed
+        point is infinite.
+    """
+    size = len(terms)
+    lower = [0.0] * size
+    steps = 0
+    while True:
+        if budget is not None and steps >= budget:
+            return lower, _estimate(terms, lower, count, 1), steps, True
+        lowest = _bound(terms, lower, count, upper=False)
+        lower_jacobian = _jacobian(terms, lower, count, bound="lower")
+        direction = _solve(
+            lower_jacobian,
+            [low - here for low, here in zip(lowest, lower, strict=True)],
+            count,
+        )
+        ones = _star_ones(_jacobian(terms, lower, count, bound="point"), count)
+        upper_jacobian = _jacobian(terms, lower, count, bound="upper")
+        if ones is None or not _contracts(upper_jacobian, ones, count):
+            _diverges(terms, lower, count)
+            return (
+                lower,
+                _estimate(terms, lower, count, _remaining(budget, steps)),
+                steps,
+                False,
+            )
+        if direction is None:
+            return (
+                lower,
+                _estimate(terms, lower, count, _remaining(budget, steps)),
+                steps,
+                False,
+            )
+        moved = False
+        for shrink in _SHRINK:
+            candidate = _valid_step(
+                lower_jacobian,
+                [max(value, 0.0) * (1.0 - shrink) for value in direction],
+                lowest,
+                lower,
+                count,
+            )
+            advanced = [
+                max(here, _down(here + step))
+                for here, step in zip(lower, candidate, strict=True)
+            ]
+            if advanced != lower:
+                moved = True
+                lower = advanced
+                break
+        steps += 1
+        count.iterations += 1
+        if not moved:
+            return (
+                lower,
+                _estimate(terms, lower, count, _remaining(budget, steps)),
+                steps,
+                False,
+            )
+
+
+def _remaining(budget: int | None, steps: int) -> int:
+    """The floating steps left for the estimate.
+
+    Parameters
+    ----------
+    budget : int or None
+        The most steps.
+    steps : int
+        The steps taken.
+
+    Returns
+    -------
+    int
+        At most sixty-four, and no more than the budget leaves.
+    """
+    return 64 if budget is None else max(min(64, budget - steps), 0)
+
+
+def _estimate(
+    terms: Sequence[Sequence[_Term]],
+    start: Sequence[float],
+    count: _Count,
+    limit: int,
+) -> list[float]:
+    """Floating Newton steps from a certified lower bound until they stall.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The polynomials.
+    start : Sequence of float
+        The lower bound.
+    count : _Count
+        The counts.
+    limit : int
+        The most steps.
+
+    Returns
+    -------
+    list of float
+        The last iterate.
+    """
+    point = list(start)
+    for _ in range(limit):
+        following = _step(terms, point, count)
+        count.iterations += 1
+        if following is None or following == point:
+            break
+        point = following
+    return point
+
+
+def _valid_step(
+    lower_jacobian: Sequence[Sequence[float]],
+    step: Sequence[float],
+    lowest: Sequence[float],
+    lower: Sequence[float],
+    count: _Count,
+) -> list[float]:
+    """Lower a step until ``(I - J) d <= f(l) - l`` holds exactly in each row.
+
+    Each row is required as ``d_x <= (f(l)_x - l_x) + (J d)_x`` with the
+    right side a lower bound computed in outward rounded arithmetic and
+    compared in exact rational arithmetic, and ``d_x`` is lowered to the
+    largest float that satisfies it. Lowering one entry can only lower
+    the right side of the others, so the sweeps repeat until none lowers
+    anything; when ``2 S + 2`` sweeps do not settle, the step is zero,
+    which always holds, and the caller shortens the proposal instead.
+
+    Parameters
+    ----------
+    lower_jacobian : Sequence of Sequence of float
+        Lower bounds of the Jacobian of the lower system at ``l``.
+    step : Sequence of float
+        The proposed step, nonnegative.
+    lowest : Sequence of float
+        Lower bounds of the lower system at ``l``.
+    lower : Sequence of float
+        ``l``.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    list of float
+        A step every row of which holds, zero when the sweeps do not
+        settle.
+    """
+    current = list(step)
+    for _ in range(2 * len(current) + 2):
+        changed = False
+        for row, (entries, low, here) in enumerate(
+            zip(lower_jacobian, lowest, lower, strict=True)
+        ):
+            total = 0.0
+            for entry, factor in zip(entries, current, strict=True):
+                total = _down(total + _down(entry * factor))
+                count.exact += 2
+            allowed = Fraction(low) - Fraction(here) + Fraction(total)
+            count.exact += 1
+            if Fraction(current[row]) <= allowed:
+                continue
+            value = max(float(allowed), 0.0)
+            while value > 0 and Fraction(value) > allowed:
+                value = math.nextafter(value, -math.inf)
+            current[row] = max(value, 0.0) if allowed >= 0 else 0.0
+            changed = True
+        if not changed:
+            return current
+    return [0.0] * len(current)
+
+
+def _step(
+    terms: Sequence[Sequence[_Term]], point: Sequence[float], count: _Count
+) -> list[float] | None:
+    """One floating Newton step from a point.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The polynomials.
+    point : Sequence of float
+        The point.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    list of float or None
+        The next iterate, or ``None`` when ``I - J`` is singular.
+    """
+    values = _evaluate(terms, point, count)
+    direction = _solve(
+        _jacobian(terms, point, count, bound="point"),
+        [value - here for value, here in zip(values, point, strict=True)],
+        count,
+    )
+    if direction is None:
+        return None
+    return [here + max(step, 0.0) for here, step in zip(point, direction, strict=True)]
+
+
+def _solve(
+    matrix: Sequence[Sequence[float]], right: Sequence[float], count: _Count
+) -> list[float] | None:
+    """``(I - J)^-1 r`` in floating point.
+
+    Parameters
+    ----------
+    matrix : Sequence of Sequence of float
+        ``J``.
+    right : Sequence of float
+        ``r``.
+    count : _Count
+        The counts: a dense solve of order ``S`` as ``S^3`` products and
+        ``S^3`` sums.
+
+    Returns
+    -------
+    list of float or None
+        The solution, or ``None`` when it is singular or not finite.
+    """
+    size = len(matrix)
+    count.products += size**3
+    count.sums += size**3
+    system = torch.eye(size, dtype=torch.float64) - torch.tensor(
+        matrix, dtype=torch.float64
+    ).reshape(size, size)
+    try:
+        solution = torch.linalg.solve(
+            system, torch.tensor(list(right), dtype=torch.float64)
+        )
+    except RuntimeError:
+        return None
+    if not bool(torch.isfinite(solution).all()):
+        return None
+    return [float(value) for value in solution]
+
+
+def _diverges(
+    terms: Sequence[Sequence[_Term]], lower: Sequence[float], count: _Count
+) -> None:
+    """Refuse a component whose least fixed point is certified infinite.
+
+    If ``f(l) > l`` in every member, then ``l`` lies strictly below the
+    least fixed point ``m``, as ``m = f(m) >= f(l) > l``. Below a finite
+    least fixed point of a strongly connected clean system the spectral
+    radius of the Jacobian is below one (Esparza, Kiefer and Luttenberger
+    2010, section 4). So a spectral radius certified at least one there
+    shows ``m`` infinite.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The polynomials.
+    lower : Sequence of float
+        A certified lower bound.
+    count : _Count
+        The counts.
+
+    Raises
+    ------
+    Divergent
+        If divergence is certified.
+    """
+    gaps = [
+        math.nextafter(low - here, -math.inf)
+        for low, here in zip(
+            _bound(terms, lower, count, upper=False), lower, strict=True
+        )
+    ]
+    if min(gaps, default=0.0) <= 0:
+        return
+    jacobian = _jacobian(terms, lower, count, bound="lower")
+    vector = _perron(_jacobian(terms, lower, count, bound="point"))
+    if vector is not None and _expands(jacobian, vector, count):
+        raise Divergent(
+            "the Jacobian's spectral radius is certified at least one below the "
+            "least fixed point, so the system's least fixed point is infinite"
+        )
+
+
+def _upper(
+    terms: Sequence[Sequence[_Term]],
+    estimate: Sequence[float],
+    lower: Sequence[float],
+    count: _Count,
+) -> tuple[list[float] | None, float | None, float | None, bool]:
+    """A certified pre-fixed point above an estimate, and the conditioning there.
+
+    ``u = e + t s`` for ``s = (I - J(e))^-1 1`` and growing ``t``: when
+    ``f(u) <= u`` in outward rounded arithmetic, ``u`` is a pre-fixed
+    point and bounds the least fixed point from above.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The polynomials.
+    estimate : Sequence of float
+        The estimate ``e``.
+    lower : Sequence of float
+        The certified lower bound.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    tuple
+        The upper bound or ``None``; the spectral radius estimate and the
+        condition number at the estimate, or ``None`` when ``I - J`` has no
+        positive inverse there; and whether the spectral radius at the
+        upper bound is certified below one.
+    """
+    base = [max(value, low) for value, low in zip(estimate, lower, strict=True)]
+    point = _jacobian(terms, base, count, bound="point")
+    ones = _star_ones(point, count)
+    if ones is None:
+        return None, None, None, False
+    spectral = max(
+        sum(entry * factor for entry, factor in zip(row, ones, strict=True)) / own
+        for row, own in zip(point, ones, strict=True)
+    )
+    condition = max(ones)
+    values = _evaluate(terms, base, count)
+    residual = max(
+        (abs(value - here) for value, here in zip(values, base, strict=True)),
+        default=0.0,
+    )
+    scale = max(max(base, default=0.0), 1e-300)
+    width = max(2.0 * residual, scale * 2.0**-45)
+    for _ in range(96):
+        candidate = [
+            _up(here + width * own) for here, own in zip(base, ones, strict=True)
+        ]
+        images = _bound(terms, candidate, count, upper=True)
+        if all(image <= own for image, own in zip(images, candidate, strict=True)):
+            implicit = _contracts(
+                _jacobian(terms, candidate, count, bound="upper"), ones, count
+            )
+            return candidate, spectral, condition, implicit
+        width *= 2.0
+    return None, spectral, condition, False
+
+
+def solve_polynomial(
+    forest: DerivationForest,
+    algebra: OrderPreservingSemiring,
+    inputs: Mapping[InputId, torch.Tensor],
+    *,
+    like: torch.Tensor,
+    budget: int | None = None,
+) -> PolynomialSolution:
+    """The least fixed point of a monotone polynomial system, by decomposed Newton.
+
+    The derived hypergraph's strongly connected components are solved one
+    after another, premises' components first (Etessami and Yannakakis
+    2009, decomposed Newton's method; Esparza, Kiefer and Luttenberger
+    2010 for its convergence). In the reals of the algebra's embedding,
+    each item's value is the sum over its edges of the edge's weight times
+    its premises' values: a polynomial with nonnegative coefficients in
+    the component's items, whose coefficients carry the values of the
+    components below. Each component's Newton iteration starts at zero
+    and keeps a certified lower bound (`_newton`); a certified pre-fixed
+    point bounds it from above (`_upper`). The bounds of a component's
+    coefficients come from the bounds of the components below, so every
+    interval holds the exact least fixed point. The value returned is the
+    last iterate, inside its interval, and carries the implicit
+    derivative ``(I - J)^-1 dF`` of the fixed point in the inputs.
+
+    Parameters
+    ----------
+    forest : DerivationForest
+        The derived hypergraph, every instance and input an edge.
+    algebra : OrderPreservingSemiring
+        The algebra: a `RealEmbedding` whose product commutes.
+    inputs : Mapping of InputId to torch.Tensor
+        The weights.
+    like : torch.Tensor
+        The dtype and device of units and zeros.
+    budget : int or None
+        The most Newton steps over all components; ``None`` for no limit.
+
+    Returns
+    -------
+    PolynomialSolution
+        The values, their intervals, and the work.
+
+    Raises
+    ------
+    CyclicRefused
+        If the algebra has no real embedding or its product is not
+        established to commute, or a component's least fixed point is
+        certified infinite.
+    """
+    if not isinstance(algebra, RealEmbedding):
+        raise CyclicRefused(
+            CyclicRefusal.NONLINEAR,
+            f"{algebra.subject.name} has no embedding in the nonnegative reals",
+        )
+    if not algebra.establishes(TIMES_COMMUTATIVE):
+        raise CyclicRefused(
+            CyclicRefusal.SIDES,
+            "a polynomial's monomials multiply premises in any order, and the "
+            "product is not established to commute",
+        )
+    rounding = algebra.embedding_rounding
+    count = _Count()
+    reals: dict[Item, torch.Tensor] = {}
+    lower: dict[Item, float] = {}
+    upper: dict[Item, float] = {}
+    solved: list[NewtonComponent] = []
+    stopped: Literal["completed", "budget"] = "completed"
+    for members in components(forest):
+        position = {item: index for index, item in enumerate(members)}
+        terms: list[list[_Term]] = []
+        for item in members:
+            monomials: list[_Term] = []
+            for edge in forest.edges.get(item, ()):
+                weight = algebra.to_reals(
+                    edge_weight(forest, edge, algebra, inputs, like=like)
+                )
+                low = high = float(weight.detach())
+                for _ in range(rounding):
+                    low, high = _down(low), _up(high)
+                coefficient = weight
+                inside: list[int] = []
+                for premise in edge.premises:
+                    if premise in position:
+                        inside.append(position[premise])
+                        continue
+                    coefficient = coefficient * reals[premise]
+                    low = _down(low * lower[premise])
+                    high = _up(high * upper[premise])
+                monomials.append(_Term(coefficient, low, high, tuple(inside)))
+            terms.append(monomials)
+        remaining = None if budget is None else max(budget - count.iterations, 0)
+        try:
+            floor, estimate, steps, exhausted = _newton(terms, count, remaining)
+        except Divergent as error:
+            raise CyclicRefused(CyclicRefusal.DIVERGENT, error.reason) from error
+        if exhausted:
+            stopped = "budget"
+        ceiling, spectral, condition, implicit = _upper(terms, estimate, floor, count)
+        top = ceiling if ceiling is not None else [math.inf] * len(members)
+        point = [
+            min(max(value, low), high)
+            for value, low, high in zip(estimate, floor, top, strict=True)
+        ]
+        values = _implicit(terms, point)
+        for index, item in enumerate(members):
+            reals[item] = values[index]
+            lower[item] = floor[index]
+            upper[item] = top[index]
+        solved.append(
+            NewtonComponent(
+                items=tuple(members),
+                iterations=steps,
+                spectral=spectral,
+                condition=condition,
+                certified=ceiling is not None,
+                implicit=implicit,
+            )
+        )
+    found: dict[Item, torch.Tensor] = {}
+    for item, value in reals.items():
+        absent = value.detach() == 0
+        safe = torch.where(absent, torch.ones_like(value), value)
+        found[item] = torch.where(
+            absent, algebra.zero_like((), like), algebra.from_reals(safe).to(like.dtype)
+        )
+    return PolynomialSolution(
+        values=found,
+        lower=lower,
+        upper=upper,
+        components=tuple(solved),
+        iterations=count.iterations,
+        sums=count.sums,
+        products=count.products,
+        exact=count.exact,
+        stopped=stopped,
+    )
+
+
+def _implicit(
+    terms: Sequence[Sequence[_Term]], point: Sequence[float]
+) -> list[torch.Tensor]:
+    """The fixed point's values, carrying the implicit derivative.
+
+    At the fixed point ``x = F(x, w)``, ``dx = (I - J)^-1 dF``. The value
+    ``x + (I - J)^-1 (F - F_detached)`` is ``x`` and has that derivative.
+
+    Parameters
+    ----------
+    terms : Sequence of Sequence of _Term
+        The polynomials, with coefficients on the autograd graph.
+    point : Sequence of float
+        The fixed point.
+
+    Returns
+    -------
+    list of torch.Tensor
+        One real value per member; without a derivative when no input is
+        differentiated or ``I - J`` has no inverse at the point, where the
+        implicit derivative does not exist.
+    """
+    size = len(point)
+    fixed = torch.tensor(list(point), dtype=torch.float64)
+    images: list[torch.Tensor] = []
+    for monomials in terms:
+        total = torch.zeros((), dtype=torch.float64)
+        for term in monomials:
+            factor = term.coefficient.to(torch.float64)
+            for position in term.inside:
+                factor = factor * fixed[position]
+            total = total + factor
+        images.append(total)
+    image = torch.stack(images) if images else fixed
+    if not image.requires_grad:
+        return [fixed[index] for index in range(size)]
+    jacobian = torch.zeros((size, size), dtype=torch.float64)
+    for row, monomials in enumerate(terms):
+        for term in monomials:
+            for place, column in enumerate(term.inside):
+                value = term.point
+                for other, factor in enumerate(term.inside):
+                    if other != place:
+                        value *= point[factor]
+                jacobian[row, column] += value
+    try:
+        inverse = torch.linalg.inv(torch.eye(size, dtype=torch.float64) - jacobian)
+    except RuntimeError:
+        return [fixed[index] for index in range(size)]
+    if not bool(torch.isfinite(inverse).all()):
+        return [fixed[index] for index in range(size)]
+    values = fixed + inverse @ (image - image.detach())
+    return [values[index] for index in range(size)]

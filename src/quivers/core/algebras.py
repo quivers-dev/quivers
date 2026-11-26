@@ -74,6 +74,7 @@ from quivers.core.laws import (
     PLUS_IDEMPOTENT,
     PLUS_SELECTIVE,
     PLUS_UNIT,
+    REAL_EMBEDDING,
     SEMIMODULE_ACTION,
     STAR_DECIDED,
     STAR_LEAST_SOLUTION,
@@ -1291,6 +1292,73 @@ class ClosureWork(dx.Model):
     sums: int
     products: int
     exact: int = 0
+
+
+class RealEmbedding(Carrier):
+    """A carrier embedded in the nonnegative reals.
+
+    ``to_reals`` maps each element to a nonnegative real so that sums and
+    products are those of the reals and the natural order is that of the
+    reals, and ``from_reals`` maps a real of the image back. A monotone
+    polynomial system over such a carrier is one over ``[0, ∞)``, whose
+    least fixed point lies in ``[0, ∞]^n`` [Etessami and Yannakakis
+    (2009)]; it can be bounded from both sides in interval arithmetic,
+    which certifies it, and the solution is in the carrier exactly when
+    it is finite.
+
+    References
+    ----------
+    Etessami, K., and Yannakakis, M. (2009). Recursive Markov chains,
+    stochastic grammars, and monotone systems of nonlinear equations.
+    *Journal of the ACM* 56(1), 1-66.
+    [doi:10.1145/1462153.1462154](https://doi.org/10.1145/1462153.1462154)
+    """
+
+    introduces = (REAL_EMBEDDING,)
+
+    @abstractmethod
+    def to_reals(self, t: torch.Tensor) -> torch.Tensor:
+        """The nonnegative reals of elements.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Elements.
+
+        Returns
+        -------
+        torch.Tensor
+            Their images, in the dtype of ``t``.
+        """
+        ...
+
+    @abstractmethod
+    def from_reals(self, t: torch.Tensor) -> torch.Tensor:
+        """The elements of nonnegative reals of the image.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Nonnegative reals.
+
+        Returns
+        -------
+        torch.Tensor
+            The elements they are the images of.
+        """
+        ...
+
+    @property
+    @abstractmethod
+    def embedding_rounding(self) -> int:
+        """Units in the last place each map may be off by in float arithmetic.
+
+        Returns
+        -------
+        int
+            Zero for a map computed exactly.
+        """
+        ...
 
 
 class Star(UnitalCarrier):
@@ -4517,7 +4585,7 @@ class _LogSumPair(torch.autograd.Function):
         return grad * torch.exp(a - total), grad * torch.exp(b - total)
 
 
-class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
+class LogProbAlgebra(Semifield, ZeroSumFree, Star, RealEmbedding, Semiring):
     """Log-space sum-product semifield on [-∞, ∞).
 
     Tensor is real addition (probability multiplication in log-
@@ -4542,6 +4610,48 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
 
     proof = _proved_with_star("log-prob")
     tested = _tests(unital=True, star=10)
+
+    def to_reals(self, t: torch.Tensor) -> torch.Tensor:
+        """The probabilities of log weights.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Log weights.
+
+        Returns
+        -------
+        torch.Tensor
+            ``exp(t)``, zero at ``-∞``.
+        """
+        return torch.exp(t)
+
+    def from_reals(self, t: torch.Tensor) -> torch.Tensor:
+        """The log weights of probabilities.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Nonnegative reals.
+
+        Returns
+        -------
+        torch.Tensor
+            ``log(t)``, ``-∞`` at zero.
+        """
+        return torch.log(t)
+
+    @property
+    def embedding_rounding(self) -> int:
+        """The rounding of ``exp`` and ``log`` that the certificates assume.
+
+        Returns
+        -------
+        int
+            Two units in the last place; the law grid checks it on its
+            samples against arithmetic in fifty digits.
+        """
+        return 2
 
     @property
     def star_domain(self) -> str:
@@ -5327,7 +5437,7 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Star, Semiring):
         return 0.0
 
 
-class MarkovAlgebra(Semifield, ZeroSumFree, Star, Semiring):
+class MarkovAlgebra(Semifield, ZeroSumFree, Star, RealEmbedding, Semiring):
     """Sum-product composition for stochastic matrices.
 
     Implements the composition rule of FinStoch:
@@ -5349,6 +5459,47 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Star, Semiring):
 
     proof = _proved_with_star("markov")
     tested = _tests(unital=True, star=10)
+
+    def to_reals(self, t: torch.Tensor) -> torch.Tensor:
+        """The reals of elements, which are reals.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Elements.
+
+        Returns
+        -------
+        torch.Tensor
+            ``t``.
+        """
+        return t
+
+    def from_reals(self, t: torch.Tensor) -> torch.Tensor:
+        """The elements of reals, which are themselves.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Nonnegative reals.
+
+        Returns
+        -------
+        torch.Tensor
+            ``t``.
+        """
+        return t
+
+    @property
+    def embedding_rounding(self) -> int:
+        """The rounding of the identity.
+
+        Returns
+        -------
+        int
+            Zero.
+        """
+        return 0
 
     @property
     def star_domain(self) -> str:
@@ -6150,6 +6301,7 @@ __all__ = [
     "DivergentClosureError",
     "UndecidedClosureError",
     "ClosureWork",
+    "RealEmbedding",
     "Star",
     "DualAlgebra",
     "DualIdempotentSemiring",

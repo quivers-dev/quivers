@@ -314,7 +314,9 @@ $\log$ is a bijection from $[0, \infty)$ onto $[-\infty, \infty)$ that sends $+$
 $\log(e^a + e^b)$, $\cdot$ to $+$, $0$ to $-\infty$ and $1$ to $0$, so it is an isomorphism of
 semirings from the nonnegative reals, and every law of those transfers along it: a sum of
 nonnegative reals is $0$ only when every term is, a product only when a factor is, and every
-positive real has an inverse, which is $a - b$ in the log domain for $b > -\infty$. The closure is the logarithm of $(I - A)^{-1}$ of the probabilities, which exists exactly when their spectral radius is below one: elimination of states [@lehmann1977algebraic] meets loop weights below one exactly then, the pivots of the M-matrix $I - A$ being positive. A loop weight within the rounding bound of one refuses as undecided.
+positive real has an inverse, which is $a - b$ in the log domain for $b > -\infty$. The closure is the logarithm of $(I - A)^{-1}$ of the probabilities, which exists exactly when their spectral radius is below one: elimination of states [@lehmann1977algebraic] meets loop weights below one exactly then, the pivots of the M-matrix $I - A$ being positive. A loop weight within the rounding bound of one refuses as undecided. The
+inverse isomorphism $\exp$ embeds the log weights in the nonnegative reals, preserving the order,
+which `to_reals` computes and `from_reals` inverts.
 
 ### Real {#proof-real}
 
@@ -330,7 +332,8 @@ term is, and a product only when a factor is. The closure counts the paths, whic
 
 $([0, \infty), +, \cdot, 0, 1)$ is the semifield of nonnegative reals: every positive element has a
 positive inverse, a sum of nonnegative reals is $0$ only when every term is, and a product only
-when a factor is. The closure is $(I - A)^{-1}$, which exists for a nonnegative matrix exactly when its spectral radius is below one; elimination of states [@lehmann1977algebraic] meets loop weights below one exactly then, and it computes no difference other than $1 - a_{kk}$, so every entry has a small relative error and an unreachable entry is an exact zero.
+when a factor is. The closure is $(I - A)^{-1}$, which exists for a nonnegative matrix exactly when its spectral radius is below one; elimination of states [@lehmann1977algebraic] meets loop weights below one exactly then, and it computes no difference other than $1 - a_{kk}$, so every entry has a small relative error and an unreachable entry is an exact zero. The identity
+embeds it in the nonnegative reals.
 
 ### Product t-norm with probabilistic sum {#proof-product-fuzzy}
 

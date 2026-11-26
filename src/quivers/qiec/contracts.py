@@ -40,7 +40,7 @@ from quivers.core.laws import (
     DIVISION,
     FOLD_LINEAR,
     NO_ZERO_DIVISORS,
-    OMEGA_CONTINUOUS,
+    REAL_EMBEDDING,
     PLUS_SELECTIVE,
     SEMIMODULE_ACTION,
     SEMIRING_LAWS,
@@ -1693,9 +1693,11 @@ class MonotonePolynomial(QiecModel):
         Returns
         -------
         tuple of Law
-            Continuity, which gives the least fixed point.
+            The embedding into the nonnegative reals, whose completion
+            ``[0, inf]`` holds the least fixed point and whose order bounds
+            it from both sides.
         """
-        return (OMEGA_CONTINUOUS,)
+        return (REAL_EMBEDDING,)
 
     def admits(self, gradient: DerivativeSemantics) -> bool:
         """Whether a requested derivative is available.
