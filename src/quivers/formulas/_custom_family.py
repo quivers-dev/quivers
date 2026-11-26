@@ -108,12 +108,12 @@ def custom_family(
         **{native: value.name for native, value in auxiliary_map.items()},
         **data_roots,
     }
-    bindings = tuple(
-        (parameter, binding_names[parameter]) for parameter in record.parameter_names
-    )
     return Family(
         name=name,
         observe_family=name,
+        observe_args=tuple(
+            binding_names[parameter] for parameter in record.parameter_names
+        ),
         location_link=link,
         # The native law constrains its own parameters and recorded events.
         location_links=tuple(links),
@@ -124,7 +124,6 @@ def custom_family(
         ),
         custom=CustomFamilySpec(
             catalog=catalog,
-            bindings=bindings,
             data=tuple((data_roots[name], column) for name, column in extra.items()),
         ),
     )
