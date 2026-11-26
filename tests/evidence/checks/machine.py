@@ -6,6 +6,9 @@ import math
 from fractions import Fraction
 from functools import lru_cache, partial
 
+import torch
+from quivers.dsl.compiler.deductions import BASE_WEIGHT_KEY
+
 from quivers.qiec.contracts import (
     ContractField,
     ContractNotMet,
@@ -21,7 +24,8 @@ from tests.evidence.compare import ELEMENTARY, Accuracy, Mismatch, compare_numbe
 from tests.evidence.oracles import closed_forms, derivations
 from tests.evidence.oracles.derivations import RuleRow, Tree, Variable
 from tests.evidence.problems import logarithm
-from tests.evidence.sources import deduction, program
+from quivers.dsl import loads
+from tests.evidence.sources import SOURCES, deduction, program
 
 JOIN = Fraction(2, 5)
 """The weight of the binary rule."""
@@ -474,6 +478,134 @@ def check_renamed_handlers() -> None:
             )
 
 
+#: The weights of the rules of the deduction with a judgment beside spans.
+JUDGMENT_WEIGHTS = {
+    "found": Fraction(1, 2),
+    "after": Fraction(2, 3),
+    "lift": Fraction(1, 5),
+    "join": Fraction(3, 4),
+}
+
+#: Sentences of that deduction, with and without the ``b`` its spans rest on.
+JUDGMENT_SENTENCES = (("a", "b"), ("b", "a", "a"), ("a", "a", "b", "b"), ("a",), ("b",))
+
+
+def judgment_trees(sentence: tuple[str, ...]) -> tuple[Tree, ...]:
+    """Every derivation of the sentence's ``S`` span.
+
+    Parameters
+    ----------
+    sentence : tuple of str
+        The words.
+
+    Returns
+    -------
+    tuple of Tree
+        The derivations.
+    """
+    categories = {"a": "A", "b": "B"}
+    axioms = [
+        (f"{i}:{categories[word]}", ("span", i, i + 1, categories[word]))
+        for i, word in enumerate(sentence)
+    ]
+    i, k, j = Variable("I"), Variable("K"), Variable("J")
+    rules: list[RuleRow] = [
+        ("found", (("span", i, j, "B"),), "seen", "found"),
+        ("after", ("seen", ("span", i, j, "A")), ("span", i, j, "S"), "after"),
+        ("lift", (("span", i, j, "B"),), ("span", i, j, "S"), "lift"),
+        (
+            "join",
+            (("span", i, k, "S"), ("span", k, j, "S")),
+            ("span", i, j, "S"),
+            "join",
+        ),
+    ]
+    return tuple(
+        derivations.derivations(axioms, rules, ("span", 0, len(sentence), "S"))
+    )
+
+
+def check_judgments(semiring: str, fresh: bool = False) -> None:
+    """Compare both engines with the derivations of a deduction beyond spans.
+
+    The item ``seen`` holds no position, so no search by spans or by
+    yields bounds the deduction; its chart computes it.
+
+    Parameters
+    ----------
+    semiring : str
+        The semiring's name.
+    fresh : bool
+        Whether to compile the source again rather than reuse its compiled
+        program, so that a change of the elaboration is seen.
+
+    Raises
+    ------
+    Mismatch
+        If the machine refuses, or the machine or the agenda differs from
+        the derivations.
+    """
+    compiled = (
+        loads(SOURCES["judgments"].replace("SEMIRING", semiring))
+        if fresh
+        else program("judgments", SEMIRING=semiring)
+    )
+    module = compiled.qiec
+    assert module is not None
+    system = deduction(compiled, "J")
+    parameters = {
+        f"J.rule.{name}:": logarithm(weight)
+        for name, weight in JUDGMENT_WEIGHTS.items()
+    }
+    for name, weight in JUDGMENT_WEIGHTS.items():
+        for key, value in system.modules["_rule_module"].named_parameters():
+            if key == f"rule_{name}.{BASE_WEIGHT_KEY}":
+                with torch.no_grad():
+                    value.fill_(logarithm(weight))
+    for sentence in JUDGMENT_SENTENCES:
+        trees = judgment_trees(sentence)
+        weights = {**JUDGMENT_WEIGHTS}
+        weights |= {f"{i}:{c}": Fraction(1) for i in range(len(sentence)) for c in "AB"}
+        if semiring == "Counting":
+            wanted = float(len(trees))
+        elif semiring == "Boolean":
+            wanted = float(bool(trees))
+        elif semiring == "Viterbi":
+            wanted = logarithm(derivations.best(trees, weights)) if trees else -math.inf
+        else:
+            wanted = logarithm(
+                derivations.total(trees, weights, Fraction(0), Fraction(1))
+            )
+        try:
+            machine = run_deduction(
+                module, "J", tokens=sentence, parameters=parameters, fuel=2_000_000
+            ).weight
+        except ContractNotMet as refusal:
+            raise Mismatch(
+                "refusal", math.inf, f"machine {semiring} {sentence}: {refusal}"
+            ) from refusal
+        assert isinstance(machine, (bool, int, float))
+        agenda = float(system(list(sentence)).goal_weight().detach())
+        accuracy = Accuracy(
+            domain="log", operations=ROUNDINGS * max(1, len(trees)), magnitude=8.0
+        )
+        compare_number(
+            float(machine), wanted, accuracy, f"machine {semiring} {sentence}"
+        )
+        compare_number(
+            agenda,
+            wanted,
+            # The agenda's rule weights are stored in float32.
+            Accuracy(
+                domain="log",
+                operations=ROUNDINGS * max(1, len(trees)),
+                magnitude=8.0,
+                dtype="float32",
+            ),
+            f"agenda {semiring} {sentence}",
+        )
+
+
 def check_wrong_input(name: str) -> None:
     """Require an input of the wrong kind to be refused by name.
 
@@ -574,6 +706,19 @@ def _register() -> None:
     ):
         add(f"machine/wrong_input/{name}", row, "Q24", partial(check_wrong_input, name))
     add("machine/normalized", "machine-lexical", "Q14", check_normalized)
+    for semiring in SEMIRINGS:
+        add(
+            f"machine/judgments/{semiring}",
+            "machine-lexical",
+            "Q1",
+            partial(check_judgments, semiring),
+        )
+    add(
+        "machine/judgments/compiled",
+        "machine-lexical",
+        "Q4",
+        partial(check_judgments, "Viterbi", fresh=True),
+    )
     add("machine/renamed_handlers", "machine-lexical", "Q3", check_renamed_handlers)
 
 

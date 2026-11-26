@@ -568,13 +568,6 @@ def test_gallery_grammars_agree_with_the_agenda(
         (("semiring=SEMIRING", "semiring=Tropical"), "the semirings are"),
         (
             (
-                "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y))",
-                "rule bwd_app : span(I, J, Y), span(K, J, Bwd(X, Y))",
-            ),
-            "over its conclusion's whole span beside other premises",
-        ),
-        (
-            (
                 "|- span(I, J, X) #[learnable]\n    rule bwd_app",
                 "|- span(I, J, Z) #[learnable]\n    rule bwd_app",
             ),
@@ -589,6 +582,23 @@ def test_forms_outside_the_elaboration_are_reported(
     with pytest.raises(QiecDiagnosticError) as captured:
         _module(source)
     assert fragment in captured.value.message
+
+
+@pytest.mark.parametrize("semiring", ["Counting", "Boolean", "LogProb", "Viterbi"])
+def test_a_premise_over_the_whole_span_is_computed_by_the_chart(semiring: str) -> None:
+    # The search by spans would derive the premise over the span it is
+    # deriving, so the chart computes the deduction from its axioms up.
+    source = AB.replace(
+        "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y))",
+        "rule bwd_app : span(I, J, Y), span(K, J, Bwd(X, Y))",
+    )
+    module = _module(source, semiring)
+    assert any(item.name == "AB__chart_lexicon" for item in module.computations)
+    for sentence in ("the dog runs", "the dog", "runs"):
+        tokens = sentence.split()
+        classic = float(_classic(source, "AB", semiring)(tokens).goal_weight())
+        found = run_deduction(module, "AB", tokens=tokens).weight
+        assert float(found) == pytest.approx(classic, rel=1e-6)
 
 
 def test_an_axiom_source_morphism_leaves_the_axioms_to_the_caller() -> None:

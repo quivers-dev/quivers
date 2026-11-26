@@ -39,13 +39,16 @@ conclusion category, as the agenda engine's side condition does, and
 never the number of rules a derivation applies. A system with a lexicon whose items are not all
 spans, such as a multiple context-free grammar, derives an item from its
 head symbol and the positions of its yield, read in pairs as the
-components the item covers: its rules must be linear, each conclusion
+components the item covers, when its rules are linear (each conclusion
 component a concatenation of premise components, so a rule with several
-premises derives each over fewer tokens, and its unary rules must form
-no cycle. Any other system takes its axioms and their weights as input and
-iterates a finite weighted chart. Each round adds the axioms to the rule
-contributions from the preceding chart, until every item weight converges.
-Constructor depth does not impose a proof-height limit.
+premises derives each over fewer tokens), every item has a head, and
+neither its unary rules nor its rules among items without positions form
+a cycle. Every other system iterates a finite weighted chart: one without a
+lexicon takes its axioms and their weights as input, and one whose
+derivations no search bounds reads its axioms off the sentence through
+its lexicon. Each round adds the axioms to the rule contributions from the
+preceding chart, until the chart settles. Constructor depth does not
+impose a proof-height limit.
 """
 
 from __future__ import annotations
@@ -566,6 +569,10 @@ class _System(QiecModel):
     presentation_cell
         Owned one-element cell.
         The deduction's rule presentation, which its rules are read from.
+    unsearchable_cell
+        Owned one-element cell.
+        Why a lexical system's derivations cannot be searched for by span
+        or by yield, so its chart computes them; ``None`` when they can.
     fresh_cell
         Owned one-element cell.
         The count of fresh locals minted so far.
@@ -653,6 +660,9 @@ class _System(QiecModel):
     presentation_cell: list[DeductionPresentation | None] = dx.field(
         default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    unsearchable_cell: list[str | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     fresh_cell: list[int] = dx.field(
         default_factory=lambda: [0], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -667,7 +677,24 @@ class _System(QiecModel):
             ``True`` for a system with a lexicon whose rules do not all
             relate spans, such as a multiple context-free grammar.
         """
-        return bool(self.entries) and not self.span_shaped_cell[0]
+        return (
+            bool(self.entries)
+            and not self.span_shaped_cell[0]
+            and self.unsearchable_cell[0] is None
+        )
+
+    @property
+    def searched(self) -> bool:
+        """Whether derivations are searched for, rather than computed by a chart.
+
+        Returns
+        -------
+        bool
+            ``True`` for a system with a lexicon whose derivations a
+            search by span or by yield bounds; a system without a lexicon,
+            or one whose derivations no search bounds, iterates a chart.
+        """
+        return bool(self.entries) and self.unsearchable_cell[0] is None
 
     @property
     def closes(self) -> bool:
@@ -680,6 +707,7 @@ class _System(QiecModel):
         """
         return (
             self.span_shaped_cell[0]
+            and self.unsearchable_cell[0] is None
             and not self.schema_categories_cell[0]
             and bool(self.closure)
         )
@@ -961,6 +989,39 @@ def _has_positions(system: _System, pattern: Pattern) -> bool:
         ``True`` for an applied symbol with an ``Int`` slot.
     """
     return isinstance(pattern, _App) and "int" in system.symbols[pattern.symbol]
+
+
+def _unbounded_span_search(system: _System) -> str | None:
+    """Why the search by spans cannot bound a span-shaped system, if it cannot.
+
+    The search derives an item over a span from premises over smaller
+    spans; a premise over the conclusion's whole span beside other
+    premises would be derived over the span being derived.
+
+    Parameters
+    ----------
+    system : _System
+        A system whose rules all relate span items.
+
+    Returns
+    -------
+    str or None
+        The first such rule, or ``None`` when every derivation shrinks.
+    """
+    for rule in system.rules:
+        conclusion = rule.conclusion
+        assert isinstance(conclusion, _App)
+        whole = (conclusion.args[0], conclusion.args[1])
+        if len(rule.premises) > 1 and any(
+            isinstance(premise, _App) and (premise.args[0], premise.args[1]) == whole
+            for premise in rule.premises
+        ):
+            return (
+                f"rule {rule.source.name!r} has a premise over its conclusion's "
+                "whole span beside other premises, which the search by spans "
+                "would derive over the span it is deriving"
+            )
+    return None
 
 
 def _head(pattern: Pattern) -> str:
@@ -1335,7 +1396,7 @@ class _DeductionElaboration:
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
-            if not system.entries:
+            if not system.searched:
                 declare_chart(self, system)
             if system.chained:
                 self._declare_chain_family(system)
@@ -1875,30 +1936,21 @@ class _DeductionElaboration:
             index for index, rule in enumerate(system.rules) if len(rule.premises) == 1
         ]
         system.cyclic_cell[0] = _may_cycle(system)
-        if system.by_yield:
-            self._read_heads(system)
-        if system.span_shaped_cell[0]:
-            for rule in system.rules:
-                conclusion = rule.conclusion
-                assert isinstance(conclusion, _App)
-                whole = (conclusion.args[0], conclusion.args[1])
-                if len(rule.premises) > 1 and any(
-                    isinstance(premise, _App)
-                    and (premise.args[0], premise.args[1]) == whole
-                    for premise in rule.premises
-                ):
-                    self._fail(
-                        rule.source,
-                        f"rule {rule.source.name!r} has a premise over its "
-                        "conclusion's whole span beside other premises; the "
-                        "search derives such a premise over the same span it "
-                        "is deriving, which nothing bounds",
-                        code="qiec-program",
-                    )
+        if system.entries and not system.schema_categories_cell[0]:
+            # A search derives an item from the items it needs, so it
+            # applies when that recursion is bounded: by spans that shrink,
+            # or by yields that a linear rule splits. Otherwise the chart
+            # computes every item from the axioms upward, which needs no
+            # such bound.
+            system.unsearchable_cell[0] = (
+                _unbounded_span_search(system)
+                if system.span_shaped_cell[0]
+                else self._read_heads(system)
+            )
         return system
 
-    def _read_heads(self: _Elaborator, system: _System) -> None:
-        """Number the heads of a yield-directed system and check its rules.
+    def _read_heads(self: _Elaborator, system: _System) -> str | None:
+        """Number the heads of a yield-directed system, or say why no search applies.
 
         A rule with a positional conclusion must be linear. A rule whose
         conclusion has no positions erases its premises' positions, as a
@@ -1914,15 +1966,16 @@ class _DeductionElaboration:
         system : _System
             A system with a lexicon whose rules do not all relate spans.
 
-        Raises
-        ------
-        QiecDiagnosticError
-            If a rule is not linear in the multiple context-free sense,
-            a positional rule has a premise without positions that an
-            erasing rule could derive, the rules among items without
-            positions may form a cycle, or the unary rules may form a
-            cycle, none of which the derivation by heads and components
-            bounds.
+        Returns
+        -------
+        str or None
+            ``None`` when the search by heads and components bounds every
+            derivation; otherwise why it does not: an item without a head,
+            a rule that is not linear in the multiple context-free sense,
+            a positional rule with a premise without positions that an
+            erasing rule could derive, rules among items without positions
+            that may form a cycle, or unary rules that may form a cycle.
+            The chart computes such a system.
         """
         heads: list[str] = [SPAN]
         erasing = any(
@@ -1932,13 +1985,11 @@ class _DeductionElaboration:
         for index, rule in enumerate(system.rules):
             for pattern in (*rule.premises, rule.conclusion):
                 if not isinstance(pattern, (_Atom, _App)):
-                    self._fail(
-                        rule.source,
+                    return (
                         f"rule {rule.source.name!r} has a premise or conclusion "
                         "that is not an item with a head symbol; a lexical "
                         "deduction whose items are not all spans derives each "
-                        "item by its head",
-                        code="qiec-program",
+                        "item by its head"
                     )
             free = [
                 premise
@@ -1954,23 +2005,19 @@ class _DeductionElaboration:
                     # and the rule never fires, in either evaluator.
                     continue
                 if free:
-                    self._fail(
-                        rule.source,
+                    return (
                         f"rule {rule.source.name!r} derives an item with "
                         "positions from an item without them, which an erasing "
                         "rule derives from items with positions; the search by "
-                        "yields cannot bound that recursion",
-                        code="qiec-program",
+                        "yields cannot bound that recursion"
                     )
                 plan = _yield_plan(system, rule)
                 if isinstance(plan, str):
-                    self._fail(
-                        rule.source,
+                    return (
                         f"rule {rule.source.name!r}: {plan}; a lexical deduction "
                         "whose items are not all spans derives items by their "
                         "yields, which needs every rule to concatenate its "
-                        "premises' position pairs into its conclusion's",
-                        code="qiec-program",
+                        "premises' position pairs into its conclusion's"
                     )
             else:
                 unpositioned.setdefault(_head(rule.conclusion), set()).update(
@@ -2007,23 +2054,20 @@ class _DeductionElaboration:
             return found
 
         if any(cycles(node) for node in list(unpositioned)):
-            self._fail(
-                system.decl,
+            return (
                 f"deduction {system.decl.name!r} has rules among items without "
                 "positions that may form a cycle, which the search by yields "
-                "cannot bound",
-                code="qiec-program",
+                "cannot bound"
             )
         if system.cyclic_cell[0]:
-            self._fail(
-                system.decl,
+            return (
                 f"deduction {system.decl.name!r} has unary rules that may form a "
                 "cycle; a lexical deduction whose items are not all spans "
                 "derives items by their yields, which a cycle of unary rules "
-                "does not shrink",
-                code="qiec-program",
+                "does not shrink"
             )
         system.heads[:] = heads
+        return None
 
     def _judgment_pattern(
         self: _Elaborator, judgment: Judgment, system: _System
@@ -2667,9 +2711,10 @@ class _DeductionElaboration:
             else {}
         )
 
-        if weighted and not system.entries:
+        if weighted and not system.searched:
             for suffix in (
                 "chart_step",
+                *(("chart_lexicon",) if system.entries else ()),
                 *(
                     f"chart_rule{i}_{p}"
                     for i, rule in enumerate(system.rules)
@@ -2773,8 +2818,8 @@ class _DeductionElaboration:
             item,
             EffectRow(entries=(system.choice_cell[0].entry,)),
         )
-        if system.entries:
-            tokens_type = tensor_type(STRING, (n,))
+        tokens_type = tensor_type(STRING, (n,))
+        if system.searched:
             axiom = declare(
                 system.name("axiom"),
                 (extent,),
@@ -2825,8 +2870,13 @@ class _DeductionElaboration:
                 system.name("run"), (extent,), (tokens_type,), carrier, outer
             )
         else:
-            axioms_type = tensor_type(item, (n,))
-            weights_type = tensor_type(carrier, (n,))
+            # A chart takes its axioms and their weights, or, for a system
+            # with a lexicon, the sentence its lexicon reads them off.
+            inputs: tuple[TypeExpr, ...] = (
+                (tokens_type,)
+                if system.entries
+                else (tensor_type(item, (n,)), tensor_type(carrier, (n,)))
+            )
             axiom = None
             chart = TypeApplication(
                 constructor=self.families[system.name("Chart")].type_constructor,
@@ -2835,7 +2885,7 @@ class _DeductionElaboration:
             derive = declare(
                 system.name("derive"),
                 (extent,),
-                (chart, axioms_type, weights_type),
+                (chart, INT, *inputs),
                 carrier,
                 stopping,
             )
@@ -2845,9 +2895,14 @@ class _DeductionElaboration:
                 ("chart_equal", (chart, chart), BOOL, pure),
                 ("chart_settled", (chart, chart), BOOL, pure),
                 ("chart_residual", (chart, chart), REAL, pure),
+                ("chart_size", (chart,), INT, pure),
                 ("chart_goal", (chart,), carrier, pure),
-                ("chart_axioms", (INT, chart, axioms_type, weights_type), chart, pure),
-                ("chart_step", (chart, axioms_type, weights_type), chart, outer),
+                (
+                    ("chart_lexicon", (INT, chart, *inputs), chart, outer)
+                    if system.entries
+                    else ("chart_axioms", (INT, chart, *inputs), chart, pure)
+                ),
+                ("chart_step", (chart, *inputs), chart, outer),
                 ("chart_plus", (carrier, carrier), carrier, pure),
                 ("chart_times", (carrier, carrier), carrier, pure),
             ):
@@ -2864,7 +2919,7 @@ class _DeductionElaboration:
             entry = declare(
                 system.name("run"),
                 (extent,),
-                (axioms_type, weights_type),
+                inputs,
                 carrier,
                 outer,
             )
@@ -2911,7 +2966,7 @@ class _DeductionElaboration:
                 )
         if axiom is not None:
             computations.append(context.axiom(axiom))
-        if system.entries:
+        if system.searched:
             computations.append(context.derivation(derive))
         if system.closes:
             computations.append(context.closure(signatures[system.name("close")]))
@@ -2925,7 +2980,7 @@ class _DeductionElaboration:
             computations.append(
                 context.convergence(signatures[system.name("converge")])
             )
-        if system.entries:
+        if system.searched:
             computations.append(context.entry(entry, handlers))
         else:
             computations.extend(elaborate_chart(context))
@@ -3779,6 +3834,70 @@ class _Context:
 
     # -- axioms ---------------------------------------------------------
 
+    def lexical_item(self, index: int, position: Value) -> ConstructorValue:
+        """The span a lexicon entry yields at a position.
+
+        Parameters
+        ----------
+        index : int
+            The entry's index.
+        position : Value
+            The token's position, an ``Int``.
+
+        Returns
+        -------
+        ConstructorValue
+            ``span(position, position + 1, category)``, with the entry's
+            logical form when the system's spans carry one.
+        """
+        entry = self.system.entries[index]
+        fields: list[Value] = [
+            position,
+            self.primitive("add_int", position, _int(1)),
+            self.ground(entry.category),
+        ]
+        if self.system.uses_forms_cell[0]:
+            assert entry.form is not None
+            fields.append(self.ground(entry.form))
+        return self.constructor(SPAN, tuple(fields))
+
+    def entry_weight(
+        self, index: int, entry: _Entry, then: Callable[[Value], Computation]
+    ) -> Computation:
+        """Read a lexicon entry's weight, then continue with it.
+
+        Parameters
+        ----------
+        index : int
+            The entry's index.
+        entry : _Entry
+            The entry.
+        then : Callable[[Value], Computation]
+            What to run with the weight, an element of the carrier.
+
+        Returns
+        -------
+        Computation
+            The reads: the production's weight of a normalized system, the
+            learned log weight of a learnable entry under a log semiring,
+            or the unit.
+        """
+        if self.system.normalized_cell[0]:
+            return self.production_weight(("lexicon", index), then)
+        if entry.learnable and self.system.semiring.log_weights:
+            return self.bind(
+                "weight",
+                REAL,
+                self.parameter(
+                    _string(f"{self.system.decl.name}.lex.{index}"),
+                    "lexicon",
+                    index,
+                    "parameter",
+                ),
+                lambda real: then(self.weight_of(Var(local=real))),
+            )
+        return then(self.weight_of(None))
+
     def axiom(self, signature: ComputationSignature) -> NamedComputation:
         """The lexical items a token yields at a position.
 
@@ -3819,16 +3938,7 @@ class _Context:
             Computation
                 Add the entry's weight and return its span.
             """
-            fields: list[Value] = [
-                Var(local=position),
-                self.primitive("add_int", Var(local=position), _int(1)),
-                self.ground(entry.category),
-            ]
-            if self.system.uses_forms_cell[0]:
-                assert entry.form is not None
-                fields.append(self.ground(entry.form))
-            span = self.constructor(SPAN, tuple(fields))
-            result = Return(value=span)
+            result = Return(value=self.lexical_item(index, Var(local=position)))
 
             def weighted(weight: Value) -> Computation:
                 """Add a weight, then answer the span.
@@ -3849,21 +3959,7 @@ class _Context:
                     then=result,
                 )
 
-            if self.system.normalized_cell[0]:
-                return self.production_weight(("lexicon", index), weighted)
-            if entry.learnable and self.system.semiring.log_weights:
-                return self.bind(
-                    "weight",
-                    REAL,
-                    self.parameter(
-                        _string(f"{self.system.decl.name}.lex.{index}"),
-                        "lexicon",
-                        index,
-                        "parameter",
-                    ),
-                    lambda real: weighted(self.weight_of(Var(local=real))),
-                )
-            return weighted(self.weight_of(None))
+            return self.entry_weight(index, entry, weighted)
 
         def dispatch(chosen: Local, index: int) -> Computation:
             """Select the chosen entry by index.

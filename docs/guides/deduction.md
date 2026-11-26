@@ -393,7 +393,11 @@ alternatives with the semiring's addition, so it expresses rule choices and weig
 as effects. In both, `depth` bounds the constructor depth of the categories in rule
 conclusions, never the length of a derivation. The search recurs on smaller spans,
 or on smaller yields for items of a
-multiple context-free grammar [@seki1991mcfg]. A cycle of unary rules raises the number of
+multiple context-free grammar [@seki1991mcfg]. A lexical deduction whose derivations no such
+search bounds, such as one with an item that holds no position or a rule that is not linear,
+iterates the chart instead, reading its axioms off the sentence through its lexicon. In rounded
+arithmetic the chart stops on agreeing weights only once a cycle is shown, so an acyclic
+deduction always settles with equal counts. A cycle of unary rules raises the number of
 times a chain may repeat an item until two weights agree or the number of derivations stops
 growing, and its stop is judged as the chart's is. The searches, collectors, and settlements a
 deduction declares state the semiring they compute in as data, a
