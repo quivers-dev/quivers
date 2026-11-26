@@ -353,6 +353,7 @@ nav:
       - Inside Algorithm: api/stochastic/inside.md
       - Agenda: api/stochastic/agenda.md
       - Indexed Charts: api/stochastic/indexed.md
+      - Joins: api/stochastic/joins.md
       - Plans: api/stochastic/planning.md
       - Productions: api/stochastic/productions.md
       - Deduction Library: api/stochastic/stdlib.md
