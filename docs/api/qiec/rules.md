@@ -61,6 +61,68 @@ are values, and a binder is a rule whose scoped arguments are premises with the 
 hypotheses. A signature builds each of its name-keyed tables once, so folding a term costs the size
 of the term.
 
+## Contexts and open derivations
+
+An [`OpenDerivation`][quivers.qiec.rules.OpenDerivation] derives an item from a context of
+hypotheses. Its [`Hole`][quivers.qiec.rules.Hole]s refer to the context by de Bruijn index,
+counted from the innermost hypothesis, and inside a premise that has hypotheses the context is
+extended by them. Open derivations are the arrows of the free colored nonsymmetric
+[multicategory](https://ncatlab.org/nlab/show/multicategory) of the presentation:
+[`identity_derivation`][quivers.qiec.rules.identity_derivation] is the identity, and
+[`compose_derivations`][quivers.qiec.rules.compose_derivations] plugs a derivation into each
+hypothesis in order and concatenates their contexts. Composition is associative and unital, and
+an interpretation is a functor out of the multicategory: folding a composite equals folding the
+outer derivation at the folds of its arguments. Both laws are checked.
+
+A [`ContextStructure`][quivers.qiec.rules.ContextStructure] declares which structural rules a
+presentation's contexts admit: exchange (uses out of order), weakening (a hypothesis unused) and
+contraction (one used twice). [`ORDERED`][quivers.qiec.rules.ORDERED] admits none and is the
+default, so nothing is inferred from how a context is stored;
+[`LINEAR`][quivers.qiec.rules.LINEAR], [`AFFINE`][quivers.qiec.rules.AFFINE],
+[`RELEVANT`][quivers.qiec.rules.RELEVANT] and [`CARTESIAN`][quivers.qiec.rules.CARTESIAN] admit
+more. [`required_structure`][quivers.qiec.rules.required_structure] reads which rules a derivation
+uses, scope by scope, and [`check_structure`][quivers.qiec.rules.check_structure] refuses a use the
+presentation does not admit, such as a permutation in an ordered context.
+[`rename_hypotheses`][quivers.qiec.rules.rename_hypotheses] moves hypotheses to new positions,
+which is how exchange, weakening and contraction are written, and
+[`substitute_hypotheses`][quivers.qiec.rules.substitute_hypotheses] replaces every hypothesis by a
+derivation in one shared context.
+
+An interpretation is context indexed: a premise with hypotheses reaches its rule's operation as a
+[`Scoped`][quivers.qiec.rules.Scoped] function of the hypotheses' values, so a binder decides what
+its variables stand for, and [`fold_open`][quivers.qiec.rules.HostInterpretation.fold_open] folds an
+open derivation at values of its context.
+
+## Binding
+
+Terms of a structural signature use de Bruijn indices.
+[`Substitution`][quivers.structural.Substitution] is a simultaneous substitution: the innermost
+variables go to replacements and the rest are shifted. [`substitute`][quivers.structural.substitute]
+applies it under binders by lifting it, so no replacement is captured, and
+[`then`][quivers.structural.Substitution.then] composes two of them. The identity, composition and
+renaming laws are checked, and substitution agrees with textbook capture-avoiding substitution on
+named terms. [`term_derivation`][quivers.qiec.rules.term_derivation] reads a term as an open
+derivation whose holes are its free variables, and substitution of terms corresponds to
+substitution of derivations.
+
+## Checking derivations
+
+[`check_derivation`][quivers.qiec.rules.check_derivation] checks a derivation with the QIEC checker:
+each node becomes a constructor value of its rule with the rule's telescope instantiated at the
+node's binding, and each hypothesis a local of its item's type. A premise with hypotheses is
+checked in the context extended by them, since QIEC has no function values; in its parent it
+stands for a local of its type.
+
+## Equations
+
+A presentation states the [`Equation`][quivers.qiec.rules.Equation]s between open derivations it
+intends an interpretation to preserve. [`check_equation`][quivers.qiec.rules.check_equation] folds
+both sides at given values of the context. It returns a [tested](contracts.md#law-claims) claim,
+since finitely many cases can refute preservation and cannot establish it, and raises
+[`EquationFails`][quivers.qiec.rules.EquationFails] at a counterexample. A proved or decided claim
+needs an argument or a decision procedure. Storing contexts as tuples licenses no equation:
+exchange, weakening and contraction hold only when the structure declares them.
+
 ## Cost
 
 [`PRESENTATION_WORK`][quivers.qiec.rules.PRESENTATION_WORK] states the bounds: construction in
