@@ -17,6 +17,23 @@ mapping holds learned parameters under their parameter-name prefixes; `item_sign
 `item_encoder` describe structured items. An agenda result retains its chart and differentiable
 weights, and `with_` attaches an encoder or loss without mutating the result record.
 
+## Finding rule instances
+
+Each premise of each rule is filed under the form its pattern requires, its head and length, or
+among the premises any item may fill when its head is a wildcard. An item that arrives is matched
+only against the premises of its form, once each, and the bindings of each match become a tuple
+of that premise's relation. For each rule and the premise an arriving item fills, every other
+premise keeps a trie of its relation keyed in the order that binds the arriving premise's
+variables first, and the instances the item completes are found by
+[Generic Join](joins.md) over those tries, which shares its intersection step with
+[rule-body joins](joins.md) and the [indexed chart](indexed.md). Over a run a rule's
+comparisons are within the AGM bound of its body, as on the [indexed chart](indexed.md).
+
+A run reports its work in `AgendaResult.work`: its pops, matches, trie accesses and recorded
+applications, and, through [`ReportsWork`][quivers.stochastic.agenda.ReportsWork], the sums,
+dictionary accesses and comparisons of its chart and queue. A counter is measured only when every
+part that could contribute to it counted it.
+
 ## Items, patterns, and bindings
 
 Items, patterns, and bindings are plain tuples and dictionaries, and these

@@ -35,6 +35,7 @@ joins : Worst-case optimal joins and variable elimination for rule bodies
 planning : Plans for queries over rule presentations
 forest : Packed forests of derivations and folds over them
 recursion : Linear cyclic systems solved through the algebra's closure
+tries : Tries of relations and the intersection step of Generic Join
 productions : A grammar's productions grouped by left-hand side
 effect_lifts : Effect-lifted rule schemas for deduction systems
 deduction : Abstract weighted deductive system framework and its operations
@@ -291,6 +292,13 @@ if TYPE_CHECKING:
         SpanGoal,
         UnarySpanDeduction,
     )
+    from quivers.stochastic.tries import (
+        Trie,
+        TrieCounter,
+        descend,
+        insert,
+        intersect,
+    )
     from quivers.stochastic.transforms import (
         ConditionedMorphism,
         FactoredMorphism,
@@ -507,6 +515,11 @@ _LAZY_EXPORTS: dict[str, str] = {
     "Side": "quivers.stochastic.recursion",
     "components": "quivers.stochastic.recursion",
     "solve": "quivers.stochastic.recursion",
+    "Trie": "quivers.stochastic.tries",
+    "TrieCounter": "quivers.stochastic.tries",
+    "descend": "quivers.stochastic.tries",
+    "insert": "quivers.stochastic.tries",
+    "intersect": "quivers.stochastic.tries",
     "class_directed_lifts": "quivers.stochastic.effect_lifts",
     "make_swap_schema": "quivers.stochastic.effect_lifts",
     "swap_rule_set": "quivers.stochastic.effect_lifts",
@@ -795,6 +808,12 @@ __all__ = [
     "Side",
     "components",
     "solve",
+    # tries
+    "Trie",
+    "TrieCounter",
+    "descend",
+    "insert",
+    "intersect",
     # effect_lifts
     "class_directed_lifts",
     "make_swap_schema",

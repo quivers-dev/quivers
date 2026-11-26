@@ -97,6 +97,7 @@ from quivers.qiec.rules import (
     match_index,
 )
 from quivers.qiec.types import IndexTerm
+from quivers.stochastic.tries import Trie, TrieCounter, insert, intersect
 from quivers.stochastic.indexed import (
     flat_pattern,
     index_variables,
@@ -514,13 +515,11 @@ class JoinWork(ValueModel):
         )
 
 
-class JoinCounter:
+class JoinCounter(TrieCounter):
     """Mutable counters of a join, read out as a `JoinWork`."""
 
     def __init__(self) -> None:
-        self.iterated = 0
-        self.probes = 0
-        self.tuples = 0
+        super().__init__()
         self.outputs = 0
         self.conditions = 0
         self.products = 0
@@ -545,13 +544,9 @@ class JoinCounter:
         )
 
 
-type Trie = dict[Ground, Trie] | Item
-"""A trie of a relation's tuples in the query's variable order; its leaves are items."""
-
-
 def _trie(
     relation: Relation, position: Mapping[str, int]
-) -> tuple[tuple[str, ...], Trie]:
+) -> tuple[tuple[str, ...], Trie[Ground, Item] | Item]:
     """The trie of a relation, keyed in the global order of its variables.
 
     Parameters
@@ -572,17 +567,9 @@ def _trie(
     permutation = [atom.variables.index(name) for name in ordered]
     if not ordered:
         return ordered, next(iter(relation.tuples.values()), {})
-    root: dict[Ground, Trie] = {}
+    root: Trie[Ground, Item] = {}
     for values, item in relation.tuples.items():
-        node = root
-        for depth, index in enumerate(permutation):
-            value = values[index]
-            if depth == len(permutation) - 1:
-                node[value] = item
-            else:
-                child = node.setdefault(value, {})
-                assert isinstance(child, dict)
-                node = child
+        insert(root, [values[index] for index in permutation], item)
     return ordered, root
 
 
@@ -637,14 +624,7 @@ def generic_join(
         for name in chosen
     ]
     yield from _descend(
-        query,
-        presentation,
-        chosen,
-        containing,
-        [node for _, node in tries],
-        {},
-        0,
-        counters,
+        query, presentation, chosen, containing, [node for _, node in tries], counters
     )
 
 
@@ -653,12 +633,10 @@ def _descend(
     presentation: RulePresentation,
     order: tuple[str, ...],
     containing: list[list[int]],
-    nodes: list[Trie],
-    binding: Binding,
-    depth: int,
+    nodes: list[Trie[Ground, Item] | Item],
     work: JoinCounter,
 ) -> Iterator[tuple[Binding, tuple[Item, ...]]]:
-    """Bind the variable at ``depth`` and recurse.
+    """The instances of the body, by the intersection step, filtered by the side condition.
 
     Parameters
     ----------
@@ -670,12 +648,8 @@ def _descend(
         The variable order.
     containing : list of list of int
         The atoms containing each variable.
-    nodes : list of Trie
-        Each atom's trie below the variables bound so far.
-    binding : Binding
-        The variables bound so far.
-    depth : int
-        The next variable.
+    nodes : list
+        Each atom's trie.
     work : JoinCounter
         The counters.
 
@@ -684,55 +658,17 @@ def _descend(
     tuple of Binding and tuple of Item
         Complete instances.
     """
-    work.tuples += 1
-    if depth == len(order):
+    for binding, leaves in intersect(order, containing, nodes, {}, work):
         if query.rule.side_condition is not None:
             work.conditions += 1
             if not side_condition_holds(presentation, query.rule, binding):
-                return
-        premises: list[Item] = []
-        for node in nodes:
-            assert isinstance(node, Item)
-            premises.append(node)
-        work.outputs += 1
-        yield dict(binding), tuple(premises)
-        return
-    name = order[depth]
-    atoms = containing[depth]
-    sets: list[dict[Ground, Trie]] = []
-    for index in atoms:
-        node = nodes[index]
-        assert isinstance(node, dict)
-        sets.append(node)
-    smallest = min(range(len(sets)), key=lambda index: len(sets[index]))
-    for value in list(sets[smallest]):
-        work.iterated += 1
-        children: list[Trie] = []
-        for index, table in enumerate(sets):
-            if index == smallest:
-                children.append(table[value])
                 continue
-            work.probes += 1
-            child = table.get(value)
-            if child is None:
-                break
-            children.append(child)
-        else:
-            advanced = list(nodes)
-            for index, child in zip(atoms, children, strict=True):
-                advanced[index] = child
-            binding[name] = value
-            yield from _descend(
-                query,
-                presentation,
-                order,
-                containing,
-                advanced,
-                binding,
-                depth + 1,
-                work,
-            )
-            del binding[name]
+        premises: list[Item] = []
+        for leaf in leaves:
+            assert isinstance(leaf, Item)
+            premises.append(leaf)
+        work.outputs += 1
+        yield binding, tuple(premises)
 
 
 # ---------------------------------------------------------------------------
@@ -919,108 +855,35 @@ def _join_factors(
         A binding and the product of the factors' weights at it.
     """
     position = {name: index for index, name in enumerate(variables)}
-    tries: list[tuple[tuple[str, ...], dict[Ground, object] | torch.Tensor]] = []
+    built: list[tuple[tuple[str, ...], Trie[Ground, torch.Tensor] | torch.Tensor]] = []
     for factor in factors:
         ordered = tuple(sorted(factor.variables, key=lambda name: position[name]))
         permutation = [factor.variables.index(name) for name in ordered]
         if not ordered:
             if () not in factor.table:
                 return
-            tries.append(((), factor.table[()]))
+            built.append(((), factor.table[()]))
             continue
-        root: dict[Ground, object] = {}
+        root: Trie[Ground, torch.Tensor] = {}
         for values, weight in factor.table.items():
-            node = root
-            for depth, index in enumerate(permutation):
-                if depth == len(permutation) - 1:
-                    node[values[index]] = weight
-                else:
-                    child = node.setdefault(values[index], {})
-                    assert isinstance(child, dict)
-                    node = child
-        tries.append((ordered, root))
+            insert(root, [values[index] for index in permutation], weight)
+        built.append((ordered, root))
     containing = [
-        [index for index, (names, _) in enumerate(tries) if name in names]
+        [index for index, (names, _) in enumerate(built) if name in names]
         for name in variables
     ]
-    yield from _descend_factors(
-        variables, containing, [node for _, node in tries], {}, 0, algebra, work
-    )
-
-
-def _descend_factors(
-    order: tuple[str, ...],
-    containing: list[list[int]],
-    nodes: list[dict[Ground, object] | torch.Tensor],
-    binding: Binding,
-    depth: int,
-    algebra: OrderPreservingSemiring,
-    work: JoinCounter,
-) -> Iterator[tuple[Binding, torch.Tensor]]:
-    """Bind the variable at ``depth`` of a join of factors and recurse.
-
-    Parameters
-    ----------
-    order : tuple of str
-        The variable order.
-    containing : list of list of int
-        The factors containing each variable.
-    nodes : list
-        Each factor's trie below the bound variables, or its weight.
-    binding : Binding
-        The variables bound so far.
-    depth : int
-        The next variable.
-    algebra : OrderPreservingSemiring
-        The algebra.
-    work : JoinCounter
-        The counters.
-
-    Yields
-    ------
-    tuple of Binding and torch.Tensor
-        Complete bindings and products.
-    """
-    work.tuples += 1
-    if depth == len(order):
+    for binding, leaves in intersect(
+        variables, containing, [node for _, node in built], {}, work
+    ):
         weights: list[torch.Tensor] = []
-        for node in nodes:
-            assert isinstance(node, torch.Tensor)
-            weights.append(node)
+        for leaf in leaves:
+            assert isinstance(leaf, torch.Tensor)
+            weights.append(leaf)
         total = weights[0]
         for weight in weights[1:]:
             work.products += 1
             total = algebra.tensor_op(total, weight)
-        yield dict(binding), total
-        return
-    name = order[depth]
-    atoms = containing[depth]
-    sets: list[dict[Ground, object]] = []
-    for index in atoms:
-        node = nodes[index]
-        assert isinstance(node, dict)
-        sets.append(node)
-    smallest = min(range(len(sets)), key=lambda index: len(sets[index]))
-    for value in list(sets[smallest]):
-        work.iterated += 1
-        children: list[dict[Ground, object] | torch.Tensor] = []
-        for index, table in enumerate(sets):
-            if index != smallest:
-                work.probes += 1
-            child = table.get(value)
-            if child is None:
-                break
-            assert isinstance(child, (dict, torch.Tensor))
-            children.append(child)
-        else:
-            advanced = list(nodes)
-            for index, child in zip(atoms, children, strict=True):
-                advanced[index] = child
-            binding[name] = value
-            yield from _descend_factors(
-                order, containing, advanced, binding, depth + 1, algebra, work
-            )
-            del binding[name]
+        yield binding, total
 
 
 def _unit(algebra: OrderPreservingSemiring, like: torch.Tensor) -> torch.Tensor:

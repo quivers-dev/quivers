@@ -513,12 +513,13 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         name="first-item-omitted",
         defect_class="omitted alternative",
-        provenance="a scan of the chart skips its first item",
-        target=f"{AGENDA}:HashChart.lookup",
+        provenance="the join of a rule's other premises skips its first candidate",
+        target="quivers.stochastic.tries:intersect",
+        also_in=(AGENDA,),
         rewrites=(
             Rewrite(
-                old="for item, w in self._store.items():",
-                new="for item, w in list(self._store.items())[1:]:",
+                old="for value in list(sets[smallest]):",
+                new="for value in list(sets[smallest])[1:]:",
             ),
         ),
         rejected_by=(

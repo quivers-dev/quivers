@@ -354,6 +354,7 @@ nav:
       - Agenda: api/stochastic/agenda.md
       - Indexed Charts: api/stochastic/indexed.md
       - Joins: api/stochastic/joins.md
+      - Tries: api/stochastic/tries.md
       - Plans: api/stochastic/planning.md
       - Packed Forests: api/stochastic/forest.md
       - Linear Cyclic Systems: api/stochastic/recursion.md

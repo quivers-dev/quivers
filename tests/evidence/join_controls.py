@@ -693,27 +693,30 @@ CHECKS: dict[str, Check] = {
 """Every check of joins by name."""
 
 JOINS = "quivers.stochastic.joins"
+TRIES = "quivers.stochastic.tries"
 
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
-        name="join-last-value-omitted",
+        name="intersection-last-value-omitted",
         defect_class="omitted alternative",
         provenance="the last value of an intersection is not tried",
-        target=f"{JOINS}:_descend",
+        target=f"{TRIES}:intersect",
+        also_in=(JOINS, "quivers.stochastic.indexed"),
         rewrites=(
             Rewrite(
                 old="for value in list(sets[smallest]):",
                 new="for value in list(sets[smallest])[:-1]:",
             ),
         ),
-        rejected_by=("joins/instances",),
+        rejected_by=("joins/instances", "joins/aggregates"),
         min_effect=1.0,
     ),
     Mutation(
-        name="join-first-value-omitted",
+        name="intersection-first-value-omitted",
         defect_class="omitted alternative",
         provenance="the first value of an intersection is not tried",
-        target=f"{JOINS}:_descend",
+        target=f"{TRIES}:intersect",
+        also_in=(JOINS, "quivers.stochastic.indexed"),
         rewrites=(
             Rewrite(
                 old="for value in list(sets[smallest]):",
@@ -721,20 +724,6 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("joins/instances",),
-        min_effect=1.0,
-    ),
-    Mutation(
-        name="elimination-last-value-omitted",
-        defect_class="omitted alternative",
-        provenance="the last value of a factor join is not summed",
-        target=f"{JOINS}:_descend_factors",
-        rewrites=(
-            Rewrite(
-                old="for value in list(sets[smallest]):",
-                new="for value in list(sets[smallest])[:-1]:",
-            ),
-        ),
-        rejected_by=("joins/aggregates",),
         min_effect=1.0,
     ),
     Mutation(
