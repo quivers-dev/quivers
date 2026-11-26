@@ -8,13 +8,17 @@ proportions ``theta_k`` either share one Dirichlet simplex, are fixed, or are
 predicted through a softmax over component linear predictors with one
 reference component held at zero.
 
-Emission reuses the ordinary single-family compiler once per component and
-once per predicted mixing proportion: each sub-emission is renamed into the
-component's ``dpar_<parameter><k>_`` namespace (the namespace of the
-mixture's distributional parameter of the same name) and its observation
-kernel becomes one component of a native QVR ``Mixture``. Every component
-thus inherits the complete single-family predictor surface, priors,
-censoring checks and parameter conversions.
+The likelihood is a response kernel (`mixture_kernel`) whose parts emit
+every component and every predicted mixing proportion as a nested response
+block (`quivers.formulas._blocks.ResponseBlock`): the ordinary single-family
+compiler emits the block, which is placed in the component's
+``dpar_<parameter><k>_`` namespace (the namespace of the mixture's
+distributional parameter of the same name), and the component's observation
+becomes one component of a native QVR ``Mixture``. Every component thus
+inherits the complete single-family predictor surface, priors, censoring
+checks and parameter conversions. A correlation that crosses the
+components' predictors, ``(1 | p | g)``, is a group block the model plans
+and emits with its own group blocks, and the components read it.
 
 Ordering (``order = "mu"``) identifies the components by strictly increasing
 location intercepts. The first intercept keeps its prior; later intercepts
@@ -31,44 +35,23 @@ component, and leaves each component its own thresholds under
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
-from copy import copy
 import math
 import re
-from typing import TYPE_CHECKING, Literal, TypeVar
+from typing import Literal, TypeVar
 
 import didactic.api as dx
-from functools import reduce
-
 import numpy as np
 
-from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_VALUE
 from quivers.dsl.ast_nodes import (
     LetExprLiteral,
     LetExprNode,
     LetStep,
-    Module,
-    ObjectDecl,
-    ProgramDecl,
     ProgramStep,
-    QiecIndexName,
-    QiecShapeIndex,
-    QiecTypeApplication,
-    QiecTypeName,
-    QiecValueParameter,
     SampleStep,
-    Statement,
-    TypeFromExpr,
-    TypeName,
-    DiscreteConstructor,
-    ExportDecl,
-    ExprIdent,
 )
-from quivers.dsl.program_templates import (
-    _bound_names,
-)
+from quivers.dsl.program_templates import _bound_names
 from quivers.dsl.step_resolution import _step_value_names
-from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._blocks import Namespace, rename_program
 from quivers.formulas._ast import (
     _add,
     _call,
@@ -79,30 +62,26 @@ from quivers.formulas._ast import (
     row_zero,
     stack_rows,
 )
-from quivers.formulas._group_law import (
-    GroupBlockLaw,
-    law_inputs,
-    level_names,
-    renamed_law,
+from quivers.formulas._blocks import NestedBlocks, ResponseBlock
+from quivers.formulas._design import SymbolicColumn
+from quivers.formulas._kernel import (
+    KernelEmission,
+    KernelInputs,
+    KernelPart,
+    ResponseKernel,
 )
-from quivers.formulas._group_plan import check_names
-from quivers.formulas._prior_emission import build_prior_targets
-from quivers.formulas._term import ColumnName, ProgramNames, declare_inputs
+from quivers.formulas._modifiers import response_modifiers
+from quivers.formulas._observation import Observation
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._response_modifiers import response_input_name
+from quivers.formulas._term import AxisDecl, InputDecl, SiteDecl
 from quivers.formulas._threshold_groups import (
     LOCATION_SITE,
     MATRIX_SITE,
     THRESHOLD_GROUP_NAMES,
 )
-from quivers.formulas._modifiers import response_modifiers
-from quivers.formulas._observation import Observation
 from quivers.formulas.family import AuxParam, Family, MixtureSpec, families, links
-from quivers.formulas._design import SymbolicColumn
-from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
-
-if TYPE_CHECKING:
-    from quivers.formulas.compile import FormulaToQVRModule
+from quivers.formulas.formula import Formula, _qvr_name
 
 
 _Value = TypeVar("_Value")
@@ -117,6 +96,8 @@ SPACING_SITE = "mixture_intercept_spacing"
 SPACING_PRIOR = "HalfNormal(5.0)"
 #: Let binding of the mixing proportions passed to the native mixture.
 WEIGHTS = "mixture_weights"
+#: Name, among an emission's names, of the first ordered intercept.
+FIRST_INTERCEPT = "mixture_first_intercept"
 
 
 def _component_family(value: str | Family) -> Family:
@@ -571,160 +552,6 @@ def validate_mixture_options(
             )
 
 
-class MixtureEmission(ValueModel):
-    """One mixture program with its prior catalogue and group-block laws.
-
-    Parameters
-    ----------
-    module : Module
-        The emitted QVR module.
-    prior_targets : tuple[PriorTarget, ...]
-        Every overrideable latent site with mixture parameter scopes.
-    group_laws : tuple[GroupBlockLaw, ...]
-        Group-block laws renamed into component namespaces.
-    families : FamilyCatalog or None
-        Laws the terms of the sub-emissions draw from.
-    names : ProgramNames
-        Names of the sub-emissions' columns and bindings.
-    """
-
-    module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    prior_targets: tuple[PriorTarget, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    group_laws: tuple[GroupBlockLaw, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    families: FamilyCatalog | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    names: ProgramNames = dx.field(
-        default_factory=ProgramNames, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-
-
-class _Component(ValueModel):
-    """One mixture parameter emitted as its own program.
-
-    Parameters
-    ----------
-    location : str
-        Mixture parameter class of the program's location, ``mu`` for a
-        component and ``theta`` for a predicted mixing proportion.
-    index : int
-        One-based component number.
-    auxiliaries : tuple[str, ...]
-        Auxiliary parameter names of the component family, renamed with the
-        component number; empty for a mixing-proportion predictor.
-    """
-
-    location: str
-    index: int
-    auxiliaries: tuple[str, ...] = ()
-
-    def namespace(self, shared: frozenset[str]) -> Namespace:
-        """Return the renaming of the program into the mixture.
-
-        The location becomes ``<location><k>``, an auxiliary ``<aux><k>``, a
-        name of an auxiliary's predictor ``dpar_<aux><k>_...``, and any other
-        name ``dpar_<location><k>_...``.
-
-        Parameters
-        ----------
-        shared : frozenset[str]
-            Inputs, bindings and objects shared by every component.
-
-        Returns
-        -------
-        Namespace
-            The renaming.
-        """
-        return Namespace(
-            prefix=f"dpar_{self.location}{self.index}_",
-            renamed={
-                "mu": f"{self.location}{self.index}",
-                **{aux: f"{aux}{self.index}" for aux in self.auxiliaries},
-            },
-            stems={
-                f"dpar_{aux}_": f"dpar_{aux}{self.index}_" for aux in self.auxiliaries
-            },
-            shared=shared,
-            shared_objects={name: name for name in shared},
-        )
-
-    def dpar(self, value: str | None) -> str | None:
-        """Rename a predictor scope.
-
-        Parameters
-        ----------
-        value : str or None
-            Local distributional parameter.
-
-        Returns
-        -------
-        str or None
-            The suffixed mixture parameter.
-        """
-        if value is None:
-            return None
-        if value == "mu":
-            return f"{self.location}{self.index}"
-        return f"{value}{self.index}"
-
-
-class _SubEmission(ValueModel):
-    """One renamed sub-emission.
-
-    Parameters
-    ----------
-    objects : tuple[Statement, ...]
-        Renamed object declarations.
-    steps : tuple[ProgramStep, ...]
-        Renamed program steps without the observation.
-    observation : Observation or None
-        The renamed observation of a component, without the response terms
-        of the mixture; None for a proportion.
-    parameters : tuple[QiecValueParameter, ...]
-        Renamed runtime parameters.
-    prior_targets : tuple[PriorTarget, ...]
-        Renamed prior catalogue entries with mixture scopes.
-    group_laws : tuple[GroupBlockLaw, ...]
-        Renamed group-block laws.
-    correlation_ids : frozenset[str]
-        Group-level correlation identifiers used by the sub-emission.
-    families : FamilyCatalog or None
-        Laws its terms draw from, under namespaced names.
-    names : ProgramNames
-        Names of its columns and bindings, under namespaced names.
-    """
-
-    objects: tuple[Statement, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    steps: tuple[ProgramStep, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    observation: Observation | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    parameters: tuple[QiecValueParameter, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    prior_targets: tuple[PriorTarget, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    group_laws: tuple[GroupBlockLaw, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    correlation_ids: frozenset[str] = frozenset()
-    families: FamilyCatalog | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    names: ProgramNames = dx.field(
-        default_factory=ProgramNames, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-
-
 def _shared_names(formula: Formula, trials: int | str | None) -> frozenset[str]:
     """Collect inputs and objects shared by every component of one response.
 
@@ -756,290 +583,6 @@ def _shared_names(formula: Formula, trials: int | str | None) -> frozenset[str]:
     return frozenset(names)
 
 
-def _local_priors(
-    lens: FormulaToQVRModule, namespace: Namespace, sites: Sequence[str]
-) -> dict[str, str]:
-    """Map composite exact-site priors into one sub-emission.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        The mixture lens with its current site priors.
-    namespace : Namespace
-        The sub-emission namespace.
-    sites : Sequence[str]
-        Local sample sites of the sub-emission.
-
-    Returns
-    -------
-    dict[str, str]
-        Local site names and their prior sources.
-    """
-    priors = dict(lens._user_priors)
-    return {
-        site: priors[namespace.name(site)]
-        for site in sites
-        if namespace.name(site) in priors
-    }
-
-
-def _sample_sites(module: Module) -> tuple[str, ...]:
-    """Read every sampled latent site of an emitted module.
-
-    Parameters
-    ----------
-    module : Module
-        Emitted single-program module.
-
-    Returns
-    -------
-    tuple[str, ...]
-        Sampled site names.
-    """
-    return tuple(
-        step.vars[0]
-        for statement in module.statements
-        if isinstance(statement, ProgramDecl)
-        for step in statement.draws
-        if isinstance(step, SampleStep)
-    )
-
-
-def _sub_emission(
-    lens: FormulaToQVRModule,
-    family: Family,
-    formula: Formula,
-    component: _Component,
-    shared: frozenset[str],
-    *,
-    distributional: Mapping[str, Formula],
-    fixed_parameters: Mapping[str, float],
-    binomial_trials: int | str | None,
-    default_priors: Mapping[str, str] | None = None,
-    supplied: Mapping[tuple[str, str, str], LetExprNode] | None = None,
-    supplied_sites: Collection[str] = (),
-) -> _SubEmission:
-    """Emit one component or proportion predictor through the ordinary compiler.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        The mixture lens, whose options and priors the sub-emission inherits.
-    family : Family
-        Component family; Gaussian with unit scale for a proportion predictor.
-    formula : Formula
-        Location design with the shared response and modifiers.
-    component : _Component
-        Mixture parameter the sub-emission computes.
-    shared : frozenset[str]
-        Inputs, bindings and objects shared by every component.
-    distributional : Mapping[str, Formula]
-        Component auxiliary formulas under their local names.
-    fixed_parameters : Mapping[str, float]
-        Component fixed values under their local names.
-    binomial_trials : int or str or None
-        Trials of a finite-trial component.
-    default_priors : Mapping[str, str] or None
-        Local default priors replacing the compiler defaults when the user
-        gave none.
-    supplied : Mapping or None
-        Group coefficients of blocks shared with other mixture parameters,
-        keyed by local predictor prefix, group, and slope.
-    supplied_sites : Collection[str]
-        Level hyperparameters of grouping factors drawn for other mixture
-        parameters.
-
-    Returns
-    -------
-    _SubEmission
-        The renamed program parts.
-
-    Raises
-    ------
-    ValueError
-        If the component rejects its formula, modifiers or options.
-    """
-    groups = {
-        group
-        for predictor in (formula, *distributional.values())
-        for group in predictor.group_levels
-    }
-    covariances = {
-        group: covariance
-        for group, covariance in lens._group_covariances.items()
-        if group in groups
-    }
-
-    namespace = component.namespace(shared)
-
-    def build(priors: Mapping[str, str]) -> tuple[FormulaToQVRModule, Module]:
-        sub = type(lens)(
-            family,
-            fixed_prior=lens._fixed_prior,
-            random_scale_prior=lens._random_scale_prior,
-            correlation_prior=lens._correlation_prior,
-            user_priors=dict(priors) or None,
-            reparameterize=lens._reparameterize,
-            default_priors=lens._default_priors,
-            center=lens._center,
-            decomp=lens._decomp,
-            binomial_trials=binomial_trials
-            if family.trials_parameter is not None
-            else None,
-            distributional=distributional,
-            fixed_parameters=fixed_parameters,
-            group_covariances=covariances or None,
-        )
-        module, _ = sub._forward(
-            formula,
-            supplied_groups=supplied,
-            supplied_sites=supplied_sites,
-            check=False,
-            rows=lens._rows.within(namespace.predictor)
-            if lens._rows is not None
-            else None,
-        )
-        return sub, module
-
-    sub, module = build(dict(default_priors or {}))
-    # The components of a response share the levels of a grouping factor.
-    namespace = component.namespace(
-        shared | level_names(sub.group_laws) | set(supplied_sites)
-    )
-    priors = dict(default_priors or {}) | _local_priors(
-        lens, namespace, _sample_sites(module)
-    )
-    if priors != dict(default_priors or {}):
-        sub, module = build(priors)
-    group_names = {_qvr_name(group) for group in groups}
-    namespace = namespace.with_(
-        shared=namespace.shared | {f"{name}_idx" for name in group_names},
-        shared_objects=namespace.shared_objects | {name: name for name in group_names},
-    )
-    renamed = rename_program(
-        module,
-        namespace,
-        sites=(
-            law.support_site for law in sub.group_laws if law.support_site is not None
-        ),
-        # Two components may draw from one law over different coordinates.
-        laws=sub.term_laws,
-    )
-    names, objects, morphisms = (
-        renamed.names,
-        renamed.object_names,
-        renamed.morphisms,
-    )
-    steps = list(renamed.program.draws)
-    observed = sub._observation
-    if observed is None:
-        raise ValueError("a mixture component emitted no observation")
-    observation = observed.renamed(names, morphisms, objects)
-    # The component's own observation is the last step it writes; the
-    # mixture scores the component law instead.
-    written = steps.pop()
-    if written != observation.step():
-        raise ValueError("a mixture component wrote a step after its observation")
-    observation = observation.with_events(()).with_(weights=None)
-    parameters = renamed.program.value_parameters
-    targets = tuple(
-        target.with_(
-            site=names.get(target.site, namespace.name(target.site)),
-            axes=tuple(objects.get(axis, axis) for axis in target.axes),
-            class_=f"{target.class_}{component.index}"
-            if target.class_ in component.auxiliaries
-            else target.class_,
-            dpar=component.dpar(target.dpar),
-        )
-        for target in sub.prior_targets
-    )
-    laws = tuple(
-        renamed_law(
-            law, names, objects, namespace.predictor, namespace.prefix + law.identity
-        )
-        for law in sub.group_laws
-    )
-    correlation_ids = frozenset(
-        term.correlation_id
-        for predictor in (formula, *distributional.values())
-        for term in predictor.random_terms
-        if term.correlation_id is not None and term.shared
-    )
-    return _SubEmission(
-        objects=renamed.objects,
-        steps=tuple(steps),
-        observation=observation,
-        parameters=parameters,
-        prior_targets=targets,
-        group_laws=laws,
-        correlation_ids=correlation_ids,
-        families=renamed.families,
-        names=ProgramNames(
-            inputs={
-                ColumnName(
-                    prefix=namespace.predictor(key.partition(":")[0]),
-                    column=key.partition(":")[2],
-                ).key: namespace.name(value)
-                for key, value in sub._names.inputs.items()
-            },
-            bindings={
-                f"{_namespaced_owner(namespace, owner)}:{name}": namespace.name(value)
-                for key, value in sub._names.bindings.items()
-                for owner, _, name in (key.rpartition(":"),)
-            },
-        ),
-    )
-
-
-def _namespaced_owner(namespace: Namespace, owner: str) -> str:
-    """Rename the owner of a private binding into a mixture parameter.
-
-    Parameters
-    ----------
-    namespace : Namespace
-        Names of the mixture parameter.
-    owner : str
-        Predictor namespace, followed by the parts of a group coefficient.
-
-    Returns
-    -------
-    str
-        The owner in the mixture program.
-    """
-    prefix, separator, rest = owner.partition("|")
-    return namespace.predictor(prefix) + separator + rest
-
-
-def _component_formula(main: Formula, location: Formula) -> Formula:
-    """Attach the shared response and modifiers to a component location design.
-
-    Parameters
-    ----------
-    main : Formula
-        Main formula carrying the response and its modifiers.
-    location : Formula
-        Evaluated ``mu<k>`` design.
-
-    Returns
-    -------
-    Formula
-        The component's location formula over the shared response.
-
-    Raises
-    ------
-    ValueError
-        If the design carries latent-dependent inputs.
-    """
-    if any(isinstance(column, SymbolicColumn) for column in location.fixed_columns):
-        raise ValueError("mixture components do not support latent-dependent inputs")
-    return location.with_(
-        response_name=main.response_name,
-        response_values=main.response_values,
-        response_layout=main.response_layout,
-        modifiers=main.modifiers,
-    )
-
-
 def _row_stack(
     name: str, values: Sequence[LetExprNode], steps: list[ProgramStep]
 ) -> None:
@@ -1065,188 +608,6 @@ def _row_stack(
             stem=f"{name}_by_component",
         )
     )
-
-
-def row_count(lens: FormulaToQVRModule, formula: Formula) -> int:
-    """Count the rows the program covers.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        The mixture lens.
-    formula : Formula
-        Main formula.
-
-    Returns
-    -------
-    int
-        Fresh rows of the request, or the training rows.
-    """
-    fresh = lens._rows.size if lens._rows is not None else None
-    return int(formula.response_values.shape[0]) if fresh is None else fresh
-
-
-def _row_inputs(
-    lens: FormulaToQVRModule,
-    formula: Formula,
-    steps: Sequence[ProgramStep],
-    declared: Mapping[str, QiecValueParameter],
-) -> tuple[QiecValueParameter, ...]:
-    """Declare the row-aligned data inputs read inside mixture components.
-
-    Inputs read only as component arguments carry no plate context for type
-    inference, so every row-aligned numeric input is declared explicitly as a
-    ``Resp``-indexed tensor.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        The mixture lens, whose bound inputs are listed.
-    formula : Formula
-        Main formula.
-    steps : Sequence[ProgramStep]
-        The composed program steps.
-    declared : Mapping[str, QiecValueParameter]
-        Runtime parameters already declared by the components.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        One ``Tensor[Real; Resp]`` or ``Tensor[Int; Resp]`` per free input.
-    """
-    rows = int(formula.response_values.shape[0])
-    bound = set(_bound_names(tuple(steps))) | set(declared)
-    free = {name for step in steps for name in _step_value_names(step)} - bound
-    inputs = lens.fixed_column_observations(formula)
-    result = []
-    for name in sorted(free):
-        value = inputs.get(name)
-        if value is None or value.ndim != 1 or value.shape[0] != rows:
-            continue
-        element = "Real" if value.is_floating_point() else "Int"
-        result.append(
-            QiecValueParameter(
-                name=name,
-                type_expr=QiecTypeApplication(
-                    constructor="Tensor",
-                    static_arguments=(QiecTypeName(name=element),),
-                    indices=(QiecShapeIndex(dimensions=(QiecIndexName(name="Resp"),)),),
-                ),
-            )
-        )
-    return tuple(result)
-
-
-def _shared_blocks(
-    lens: FormulaToQVRModule,
-    formula: Formula,
-    statements: list[Statement],
-    steps: list[ProgramStep],
-    targets: list[PriorTarget],
-    laws: list[GroupBlockLaw],
-    external: Mapping[tuple[str, str, str], LetExprNode],
-) -> dict[tuple[str, str, str], LetExprNode]:
-    """Emit one group block for each identifier shared by mixture parameters.
-
-    brms correlates group effects with the same identifier, ``(1 | p | g)``,
-    across every distributional parameter, including different mixture
-    components. Such blocks are emitted once by the ordinary correlation
-    pass over the mixture parameters and supplied to the component
-    emissions, which then reuse them.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        The mixture lens.
-    formula : Formula
-        Main formula.
-    statements, steps : list
-        Declarations and program steps receiving the blocks.
-    targets : list[PriorTarget]
-        Prior catalogue receiving the blocks' scale and correlation sites.
-    laws : list[GroupBlockLaw]
-        Group-block laws receiving the blocks.
-    external : Mapping
-        Coefficients a joint multivariate program already supplies; their
-        terms are not emitted again.
-
-    Returns
-    -------
-    dict[tuple[str, str, str], LetExprNode]
-        Coefficients keyed by mixture predictor prefix, group, and slope.
-    """
-    owners: dict[str, set[str]] = {}
-
-    def pending(name: str, term: RandomTerm) -> bool:
-        return (
-            term.shared
-            and term.correlation_id is not None
-            and (f"dpar_{name}_", term.group, term.slope) not in external
-        )
-
-    for name, predictor in lens._distributional.items():
-        for term in predictor.random_terms:
-            if pending(name, term) and term.correlation_id is not None:
-                owners.setdefault(term.correlation_id, set()).add(name)
-    cross = {identifier for identifier, names in owners.items() if len(names) > 1}
-    if not cross:
-        return {}
-    helper = copy(lens)
-    helper._emitted_groups = []
-    helper._distributional = {
-        name: predictor.with_(
-            fixed_columns=(),
-            design_terms=(),
-            offsets=(),
-            monotonic_terms=(),
-            random_terms=tuple(
-                term
-                for term in predictor.random_terms
-                if pending(name, term) and term.correlation_id in cross
-            ),
-        )
-        for name, predictor in lens._distributional.items()
-    }
-    bare = formula.with_(
-        fixed_columns=(),
-        design_terms=(),
-        offsets=(),
-        monotonic_terms=(),
-        random_terms=(),
-    )
-    block_steps: list[ProgramStep] = []
-    supplied = helper._append_correlations(
-        helper._plan_groups(bare, ()), statements, block_steps, {}
-    )
-    steps.extend(block_steps)
-    laws.extend(helper.group_laws)
-    module = Module(
-        statements=(
-            *statements,
-            ProgramDecl(
-                name="model",
-                params=None,
-                value_parameters=(),
-                domain=TypeName(name="Resp"),
-                codomain=TypeName(name="Resp"),
-                draws=tuple(block_steps),
-                return_vars=(),
-            ),
-        )
-    )
-    targets.extend(
-        target
-        for target in build_prior_targets(
-            module,
-            bare,
-            lens._family,
-            helper._plan(bare, helper._group_plan, None),
-            helper.group_laws,
-            draw=lens._parse_prior,
-        )
-        if target.group is not None
-    )
-    return dict(supplied)
 
 
 def _shared_thresholds(
@@ -1357,210 +718,280 @@ def _shared_thresholds(
     return result
 
 
-def emit_mixture(
-    lens: FormulaToQVRModule,
+def response_blocks(
+    family: Family,
     formula: Formula,
-    supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
-) -> MixtureEmission:
-    """Emit a finite mixture by composing ordinary component emissions.
+    distributional: Mapping[str, Formula],
+    fixed: Mapping[str, float],
+    trials: int | str | None,
+) -> NestedBlocks:
+    """State the response laws a family emits as nested blocks.
 
-    Every component and every predicted mixing proportion is compiled by the
-    ordinary single-family emitter and renamed into its ``dpar_<name><k>_``
-    namespace. The observation is ``Mixture(weights, components)`` with
-    per-row or shared weights. Scoring costs O(n K) beyond the component
-    predictors.
+    A mixture emits one block per component, reading ``mu<k>`` and the
+    component's auxiliaries ``<aux><k>`` over the shared response, and one
+    per predicted mixing proportion ``theta<k>``, a Gaussian location of unit
+    scale. The component locations replace the main design, whose
+    right-hand side brms copies into every ``mu<k>`` without a formula. Any
+    other family emits no block.
 
     Parameters
     ----------
-    lens : FormulaToQVRModule
-        Mixture lens with its formulas, fixed values, options and priors.
+    family : Family
+        Response family.
     formula : Formula
-        Main formula with the response and modifiers.
-    supplied_groups : Mapping or None
-        Group coefficients supplied by a joint multivariate program, keyed by
-        mixture predictor prefix, group, and slope.
+        Main formula with the response and its modifiers.
+    distributional : Mapping[str, Formula]
+        Distributional formulas by model parameter.
+    fixed : Mapping[str, float]
+        Fixed parameter values by model parameter.
+    trials : int or str or None
+        Trial count or trial column of finite-trial components.
 
     Returns
     -------
-    MixtureEmission
-        Module, prior catalogue and group-block laws.
-
-    Raises
-    ------
-    ValueError
-        If a location formula is missing, a component rejects its formula, a
-        group-level identifier is shared across mixture parameters, or
-        ordering is requested without location intercepts.
+    NestedBlocks
+        The blocks, components first and in component order.
     """
-    family = lens._family
     spec = family.mixture
-    assert spec is not None
-    count = len(spec.components)
-    trials = lens._binomial_trials
-    if spec.components[0].native.discrete:
-        values = np.asarray(formula.response_values, dtype=np.float64)
-        if (
-            not np.isfinite(values).all()
-            or np.any(values < 0)
-            or not np.equal(values, np.round(values)).all()
-        ):
-            raise ValueError(
-                "a mixture of integer-support families requires nonnegative "
-                f"integer responses ({', '.join(c.name for c in spec.components)})"
+    if spec is None:
+        return NestedBlocks()
+    blocks: list[ResponseBlock] = []
+    for index, component in enumerate(spec.components, start=1):
+        auxiliaries = tuple(aux.name for aux in component.aux_params)
+        location = distributional.get(f"mu{index}")
+        blocks.append(
+            ResponseBlock(
+                location="mu",
+                index=index,
+                auxiliaries=auxiliaries,
+                family=component,
+                formula=None
+                if location is None
+                else location.with_(
+                    response_name=formula.response_name,
+                    response_values=formula.response_values,
+                    response_layout=formula.response_layout,
+                    modifiers=formula.modifiers,
+                ),
+                distributional={
+                    aux: distributional[f"{aux}{index}"]
+                    for aux in auxiliaries
+                    if f"{aux}{index}" in distributional
+                },
+                fixed={
+                    aux: fixed[f"{aux}{index}"]
+                    for aux in auxiliaries
+                    if f"{aux}{index}" in fixed
+                },
+                trials=trials,
             )
-    shared = _shared_names(formula, trials)
-    statements: list[Statement] = [
-        ObjectDecl(
-            names=("Resp",),
-            init=TypeFromExpr(
-                expr=DiscreteConstructor(
-                    constructor="FinSet",
-                    args=(str(row_count(lens, formula)),),
-                )
-            ),
         )
-    ]
-    groups = {
-        _qvr_name(group): len(levels)
-        for _, _, predictor in lens._predictor_items(formula)
-        for group, levels in predictor.group_levels.items()
+    for index in range(1, len(spec.components) + 1):
+        predictor = distributional.get(f"theta{index}")
+        if predictor is None:
+            continue
+        blocks.append(
+            ResponseBlock(
+                location="theta",
+                index=index,
+                family=families["gaussian"],
+                # The proportion predictor reads no response categories.
+                formula=predictor.with_(
+                    response_layout=predictor.response_layout.with_(category_levels=())
+                ),
+                fixed={"sigma": 1.0},
+            )
+        )
+    return NestedBlocks(blocks=tuple(blocks), replaces_location=True)
+
+
+def _model_drawn(emission: KernelEmission) -> frozenset[str]:
+    """List the level hyperparameters the model's blocks draw or read.
+
+    Parameters
+    ----------
+    emission : KernelEmission
+        Program being emitted.
+
+    Returns
+    -------
+    frozenset[str]
+        Sites drawn by the model and the Student-t degrees of freedom of the
+        nested blocks' laws.
+    """
+    return emission.host.drawn_sites | {
+        law.level.mixing.df_site
+        for law in emission.laws
+        if law.level.mixing is not None
     }
-    for name, size in groups.items():
-        lens._append_finite_object(statements, name, size)
-    lens._append_finite_object(statements, COMPONENT_AXIS, count)
-    steps: list[ProgramStep] = []
-    parameters: dict[str, QiecValueParameter] = {}
-    targets: list[PriorTarget] = []
-    laws: list[GroupBlockLaw] = []
-    term_laws: list[FamilyCatalog] = []
-    inputs: dict[str, str] = {}
-    bindings: dict[str, str] = {}
-    ordinal = spec.components[0].ordinal is not None
-    # brms: an ordered ordinal mixture shares one threshold vector, ordered
-    # when any component has ordered thresholds.
-    fixed_thresholds = ordinal and spec.order == "mu"
-    ordered = spec.order == "mu" and not ordinal
-    threshold_source = next(
-        (
-            index
-            for index, component in enumerate(spec.components, start=1)
-            if component.ordinal is not None and component.ordinal.kind == "cumulative"
-        ),
-        1,
-    )
-    equal = dict(spec.equal)
 
-    def absorb(emission: _SubEmission) -> None:
-        for item in emission.objects:
-            assert isinstance(item, ObjectDecl)
-            # The components declare the axes they share once.
-            if any(
-                isinstance(declared, ObjectDecl) and declared.names == item.names
-                for declared in statements
-            ):
-                continue
-            statements.append(item)
-        for parameter in emission.parameters:
-            parameters.setdefault(parameter.name, parameter)
-        targets.extend(emission.prior_targets)
-        laws.extend(emission.group_laws)
-        inputs.update(emission.names.inputs)
-        bindings.update(emission.names.bindings)
-        if emission.families is not None:
-            term_laws.append(emission.families)
 
-    external = dict(supplied_groups or {})
-    supplied = _shared_blocks(lens, formula, statements, steps, targets, laws, external)
-    supplied.update(external)
-    shared = (
-        shared
-        | {name for step in steps for name in _bound_names((step,))}
-        | {
-            name
-            for value in external.values()
-            for name in _step_value_names(LetStep(name="supplied", value=value))
-        }
-    )
+class ModelNames(KernelPart):
+    """Fix the names the nested blocks keep: those the model already owns.
 
-    def drawn() -> frozenset[str]:
-        return lens._drawn_sites | {
-            law.level.mixing.df_site for law in laws if law.level.mixing is not None
-        }
+    Parameters
+    ----------
+    names : frozenset[str]
+        Response, modifier, trial, weight and threshold-group names every
+        component reads.
+    """
 
-    def local(prefixes: Mapping[str, str]) -> dict[tuple[str, str, str], LetExprNode]:
-        return {
-            (prefixes[prefix], group, slope): value
-            for (prefix, group, slope), value in supplied.items()
-            if prefix in prefixes
-        }
+    kind: Literal["mixture_model_names"] = "mixture_model_names"
+    names: frozenset[str] = frozenset()
 
-    if ordered:
-        lens._append_finite_object(statements, SPACING_AXIS, count - 1)
-        steps.append(
-            lens._prior_draw(
-                SPACING_SITE, SPACING_PRIOR, index=TypeName(name=SPACING_AXIS)
+    def emit(self, emission: KernelEmission) -> None:
+        """Record the shared names: the declared ones, the model's bindings,
+        and the inputs of the group coefficients another program emits.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+        """
+        emission.shared = (
+            self.names
+            | {name for step in emission.steps for name in _bound_names((step,))}
+            | {
+                name
+                for value in emission.host.supplied.values()
+                for name in _step_value_names(LetStep(name="supplied", value=value))
+            }
+        )
+
+
+class InterceptSpacing(KernelPart):
+    """Draw the positive gaps between ordered component intercepts.
+
+    Parameters
+    ----------
+    gaps : int
+        Number of gaps, one fewer than the components.
+    """
+
+    kind: Literal["mixture_intercept_spacing"] = "mixture_intercept_spacing"
+    gaps: int
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Declare the gap axis and draw the gaps.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+        """
+        emission.declare(AxisDecl(name=SPACING_AXIS, size=self.gaps))
+        emission.steps.append(
+            emission.host.draw_site(
+                SiteDecl(
+                    name=SPACING_SITE,
+                    class_=SPACING_SITE,
+                    default=SPACING_PRIOR,
+                    axes=(SPACING_AXIS,),
+                ),
+                None,
             )
         )
-        targets.append(
+        emission.targets.append(
             PriorTarget(
                 site=SPACING_SITE,
                 class_=SPACING_SITE,
                 axes=(SPACING_AXIS,),
-                shape=(count - 1,),
+                shape=(self.gaps,),
                 lower=0.0,
             )
         )
-    first = "dpar_mu1_intercept"
-    emitted: dict[int, list[ProgramStep]] = {}
-    observations: list[Observation] = []
-    etas: list[LetExprNode] = []
-    means: list[LetExprNode] = []
-    for index, component in enumerate(spec.components, start=1):
-        location = lens._distributional.get(f"mu{index}")
+
+
+def _drop_targets(emission: KernelEmission, sites: Collection[str]) -> None:
+    """Remove the prior targets of sites a part binds deterministically.
+
+    Parameters
+    ----------
+    emission : KernelEmission
+        Program being emitted.
+    sites : Collection[str]
+        Sites no longer drawn.
+    """
+    emission.targets[:] = [
+        target for target in emission.targets if target.site not in sites
+    ]
+
+
+class ComponentBlock(KernelPart):
+    """Emit one mixture component and identify it.
+
+    The component is emitted as a nested block. Under ordering its sampled
+    location intercept becomes the first component's plus cumulative
+    positive gaps; under shared ordinal thresholds it reads the threshold
+    source's thresholds and intercept; an equated parameter reads its
+    source. The steps are kept for `PlaceComponents`.
+
+    Parameters
+    ----------
+    block : ResponseBlock
+        The component.
+    ordered : bool
+        Whether the components are identified by ordered intercepts.
+    thresholds_from : int or None
+        Component whose thresholds this one reads; None for its own.
+    shared_thresholds : bool
+        Whether the components share one threshold vector.
+    intercepts : frozenset[bool]
+        Whether each component location formula keeps its intercept.
+    equal : tuple[tuple[str, str], ...]
+        Parameters of this component equated to another, with their sources.
+    """
+
+    kind: Literal["mixture_component"] = "mixture_component"
+    block: ResponseBlock = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    ordered: bool = False
+    thresholds_from: int | None = None
+    shared_thresholds: bool = False
+    intercepts: frozenset[bool] = frozenset()
+    equal: tuple[tuple[str, str], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Emit the component and keep its identified steps.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+
+        Raises
+        ------
+        ValueError
+            If the location has no formula or reads latent-dependent inputs,
+            ordering lacks a location intercept, or the location formulas
+            disagree on their intercepts under shared thresholds.
+        """
+        block = self.block
+        index = block.index
+        location = block.formula
         if location is None:
             raise ValueError(
-                f"mixture component {index} requires its location formula 'mu{index}'"
+                f"mixture component {index} requires its location formula "
+                f"'{block.label}'"
             )
-        auxiliaries = tuple(aux.name for aux in component.aux_params)
-        parameter = _Component(location="mu", index=index, auxiliaries=auxiliaries)
-        local_formulas = {
-            aux: lens._distributional[f"{aux}{index}"]
-            for aux in auxiliaries
-            if f"{aux}{index}" in lens._distributional
-        }
-        local_fixed = {
-            aux: lens._fixed_parameters[f"{aux}{index}"]
-            for aux in auxiliaries
-            if f"{aux}{index}" in lens._fixed_parameters
-        }
-        component_formula = _component_formula(formula, location)
-        if ordered and not any(
+        if any(isinstance(column, SymbolicColumn) for column in location.fixed_columns):
+            raise ValueError(
+                "mixture components do not support latent-dependent inputs"
+            )
+        if self.ordered and not any(
             column.is_intercept for column in location.fixed_columns
         ):
             raise ValueError(
                 "identifying mixture components via ordering requires population-level "
                 "intercepts to be present; try order = 'none'"
             )
-        emission = _sub_emission(
-            lens,
-            component,
-            component_formula,
-            parameter,
-            shared,
-            distributional=local_formulas,
-            fixed_parameters=local_fixed,
-            binomial_trials=trials,
-            supplied_sites=drawn(),
-            supplied=local(
-                {f"dpar_mu{index}_": ""}
-                | {f"dpar_{aux}{index}_": f"dpar_{aux}_" for aux in auxiliaries}
-            ),
+        placed = emission.host.emit_block(
+            block, emission.shared, emission.gathered, _model_drawn(emission)
         )
-        absorb(emission)
-        component_steps = list(emission.steps)
-        sampled = {
-            step.vars[0] for step in component_steps if isinstance(step, SampleStep)
-        }
+        emission.absorb(block.label, placed)
+        steps = list(placed.steps)
+        sampled = {step.vars[0] for step in steps if isinstance(step, SampleStep)}
         # The sampled intercept: brms's centered one when the component centers.
         intercept = next(
             (
@@ -1573,10 +1004,11 @@ def emit_mixture(
             ),
             None,
         )
-        if ordered and intercept is not None:
+        if self.ordered and intercept is not None:
             if index == 1:
-                first = intercept
+                emission.names[FIRST_INTERCEPT] = intercept
             else:
+                first = emission.names.get(FIRST_INTERCEPT, "dpar_mu1_intercept")
                 # Cumulative positive gaps, written as an affine sum so that
                 # derived coefficient draws evaluate it like the program does.
                 gaps = [
@@ -1585,28 +1017,23 @@ def emit_mixture(
                     )
                     for gap in range(index - 1)
                 ]
-                component_steps = [
+                steps = [
                     _let(intercept, _add(_var(first), *gaps))
                     if isinstance(step, SampleStep) and step.vars == (intercept,)
                     else step
-                    for step in component_steps
+                    for step in steps
                 ]
-                targets[:] = [target for target in targets if target.site != intercept]
-        if fixed_thresholds:
-            intercepts = {
-                any(column.is_intercept for column in predictor.fixed_columns)
-                for name, predictor in lens._distributional.items()
-                if _dpar_class(name) == "mu"
-            }
-            if len(intercepts) > 1:
+                _drop_targets(emission, (intercept,))
+        if self.shared_thresholds:
+            if len(self.intercepts) > 1:
                 raise ValueError(
                     "mixture: thresholds shared across ordinal components require "
                     "every location formula to keep or drop its intercept alike"
                 )
-            if index != threshold_source:
+            if self.thresholds_from is not None:
                 dropped = {
                     step.vars[0]
-                    for step in component_steps
+                    for step in steps
                     if isinstance(step, SampleStep)
                     and (
                         step.vars[0].startswith(f"dpar_mu{index}_cutpoint")
@@ -1614,169 +1041,418 @@ def emit_mixture(
                         or step.vars[0] == f"dpar_mu{index}_{LOCATION_SITE}"
                     )
                 }
-                component_steps = _shared_thresholds(
-                    component_steps,
+                steps = _shared_thresholds(
+                    steps,
                     index,
-                    threshold_source,
-                    lens._category_count(formula, family=component.name) - 1,
-                    intercept if intercepts == {True} else None,
-                    grouped=formula.modifiers.threshold_groups is not None,
+                    self.thresholds_from,
+                    emission.host.category_count(emission.formula, block.family) - 1,
+                    intercept if self.intercepts == {True} else None,
+                    grouped=emission.formula.modifiers.threshold_groups is not None,
                 )
-                targets[:] = [
-                    target for target in targets if target.site not in dropped
-                ]
-        for target_name, source in equal.items():
-            if _dpar_id(target_name) != index:
-                continue
-            component_steps = [
-                _let(target_name, _var(source))
-                if isinstance(step, SampleStep) and step.vars == (target_name,)
+                _drop_targets(emission, dropped)
+        for target, source in self.equal:
+            steps = [
+                _let(target, _var(source))
+                if isinstance(step, SampleStep) and step.vars == (target,)
                 else step
-                for step in component_steps
+                for step in steps
             ]
-            targets[:] = [target for target in targets if target.site != target_name]
-        emitted[index] = component_steps
-        assert emission.observation is not None
-        observations.append(emission.observation)
-        etas.append(_var(f"dpar_mu{index}_eta"))
-        bound = {step.name for step in component_steps if isinstance(step, LetStep)}
-        means.append(
-            _var(f"mu{index}")
-            if f"mu{index}" in bound
-            else _call("exp", _var(f"dpar_mu{index}_eta"))
-        )
-    # The component whose thresholds are shared precedes its readers.
-    for index in sorted(
-        emitted, key=lambda item: not fixed_thresholds or item != threshold_source
-    ):
-        steps.extend(emitted[index])
-    for target_name, source in equal.items():
-        if not any(
-            isinstance(step, (SampleStep, LetStep))
-            and (step.vars[0] if isinstance(step, SampleStep) else step.name) == source
-            for step in steps
-        ):
-            raise ValueError(
-                f"mixture: {target_name!r} is equated to {source!r}, which is not a "
-                "parameter of this model"
+            _drop_targets(emission, (target,))
+        emission.buffers[block.label] = steps
+
+
+class PlaceComponents(KernelPart):
+    """Place the components' steps and stack their predictors over the rows.
+
+    Parameters
+    ----------
+    labels : tuple[str, ...]
+        Component locations, in component order.
+    order : tuple[str, ...]
+        Component locations in placement order: a component whose
+        thresholds others read precedes them.
+    equal : tuple[tuple[str, str], ...]
+        Equated parameters and their sources.
+    """
+
+    kind: Literal["mixture_place_components"] = "mixture_place_components"
+    labels: tuple[str, ...]
+    order: tuple[str, ...]
+    equal: tuple[tuple[str, str], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Append the steps and bind ``eta`` and ``mu`` by row and component.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+
+        Raises
+        ------
+        ValueError
+            If an equated parameter's source is not a parameter of the model.
+        """
+        etas: list[LetExprNode] = []
+        means: list[LetExprNode] = []
+        for label in self.labels:
+            bound = {
+                step.name
+                for step in emission.buffers[label]
+                if isinstance(step, LetStep)
+            }
+            etas.append(_var(f"dpar_{label}_eta"))
+            means.append(
+                _var(label)
+                if label in bound
+                else _call("exp", _var(f"dpar_{label}_eta"))
             )
-    _row_stack("eta", etas, steps)
-    _row_stack("mu", means, steps)
-    predicted = {
-        name: value
-        for name, value in lens._distributional.items()
-        if _dpar_class(name) == "theta"
-    }
-    fixed = {
-        name: value
-        for name, value in lens._fixed_parameters.items()
-        if _dpar_class(name) == "theta"
-    }
-    if predicted:
+        for label in self.order:
+            emission.steps.extend(emission.buffers.pop(label))
+        for target, source in self.equal:
+            if not any(
+                isinstance(step, (SampleStep, LetStep))
+                and (step.vars[0] if isinstance(step, SampleStep) else step.name)
+                == source
+                for step in emission.steps
+            ):
+                raise ValueError(
+                    f"mixture: {target!r} is equated to {source!r}, which is not a "
+                    "parameter of this model"
+                )
+        _row_stack("eta", etas, emission.steps)
+        _row_stack("mu", means, emission.steps)
+
+
+class PredictedWeights(KernelPart):
+    """Mixing proportions as the softmax of component predictors.
+
+    Parameters
+    ----------
+    count : int
+        Number of components.
+    blocks : tuple[ResponseBlock, ...]
+        Predictors of the proportions that have one; the others have a zero
+        logit.
+    """
+
+    kind: Literal["mixture_predicted_weights"] = "mixture_predicted_weights"
+    count: int
+    blocks: tuple[ResponseBlock, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Emit the predictors and bind the weights.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+        """
+        predicted = {block.index: block for block in self.blocks}
         logits: list[LetExprNode] = []
-        for index in range(1, count + 1):
-            predictor = predicted.get(f"theta{index}")
-            if predictor is None:
+        for index in range(1, self.count + 1):
+            block = predicted.get(index)
+            if block is None:
                 logits.append(LetExprLiteral(value=0.0))
                 continue
-            emission = _sub_emission(
-                lens,
-                families["gaussian"],
-                # The proportion predictor reads no response categories.
-                predictor.with_(
-                    response_layout=predictor.response_layout.with_(category_levels=())
-                ),
-                _Component(location="theta", index=index),
-                shared,
-                distributional={},
-                fixed_parameters={"sigma": 1.0},
-                binomial_trials=None,
-                supplied_sites=drawn(),
-                supplied=local({f"dpar_theta{index}_": ""}),
+            placed = emission.host.emit_block(
+                block, emission.shared, emission.gathered, _model_drawn(emission)
             )
-            absorb(emission)
-            steps.extend(emission.steps)
-            logits.append(_var(f"dpar_theta{index}_eta"))
-        _row_stack("mixture_logits", logits, steps)
-        steps.append(_let(WEIGHTS, _call("softmax", _var("mixture_logits"))))
-    elif fixed:
-        total = sum(float(value) for value in fixed.values())
-        steps.append(
+            emission.absorb(block.label, placed)
+            emission.steps.extend(placed.steps)
+            logits.append(_var(f"dpar_{block.label}_eta"))
+        _row_stack("mixture_logits", logits, emission.steps)
+        emission.steps.append(_let(WEIGHTS, _call("softmax", _var("mixture_logits"))))
+
+
+class FixedWeights(KernelPart):
+    """Fixed mixing proportions, normalized to sum to one.
+
+    Parameters
+    ----------
+    values : tuple[float, ...]
+        Fixed proportions in component order.
+    total : float
+        Their sum.
+    """
+
+    kind: Literal["mixture_fixed_weights"] = "mixture_fixed_weights"
+    values: tuple[float, ...]
+    total: float
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Bind the weights.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+        """
+        emission.steps.append(
             _let(
                 WEIGHTS,
                 _factor(
                     (("component", COMPONENT_AXIS),),
                     cases=tuple(
-                        (
-                            index - 1,
-                            LetExprLiteral(value=float(fixed[f"theta{index}"]) / total),
-                        )
-                        for index in range(1, count + 1)
+                        (index, LetExprLiteral(value=value / self.total))
+                        for index, value in enumerate(self.values)
                     ),
                 ),
             )
         )
-    else:
-        concentration = ", ".join("1.0" for _ in range(count))
-        steps.append(
-            lens._prior_draw("theta", f"Dirichlet(concentration=[{concentration}])")
-        )
-        steps.append(_let(WEIGHTS, _var("theta")))
-        targets.append(PriorTarget(site="theta", class_="theta", event_rank=1))
-    assert lens._family.mixture is not None
-    native = {family.mixture_law for family in lens._family.mixture.components}
-    mixture_law = native.pop() if len(native) == 1 else None
-    site = _qvr_name(formula.response_name)
-    if mixture_law is not None:
-        # The native law of the mixture takes the stacked component arguments.
-        stacked = observations[0].parameters
-        for parameter in stacked:
-            _row_stack(
-                f"mixture_{parameter}",
-                [component.argument(parameter) for component in observations],
-                steps,
+
+
+class DirichletWeights(KernelPart):
+    """Mixing proportions drawn from a uniform Dirichlet.
+
+    Parameters
+    ----------
+    count : int
+        Number of components.
+    """
+
+    kind: Literal["mixture_dirichlet_weights"] = "mixture_dirichlet_weights"
+    count: int
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Draw the simplex and bind the weights.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+        """
+        concentration = ", ".join("1.0" for _ in range(self.count))
+        emission.steps.append(
+            emission.host.draw_site(
+                SiteDecl(
+                    name="theta",
+                    class_="theta",
+                    default=f"Dirichlet(concentration=[{concentration}])",
+                ),
+                None,
             )
-        mixed = Observation(
-            site=site,
-            kernel=mixture_law,
-            parameters=("weights", *stacked),
-            values=(WEIGHTS, *(f"mixture_{parameter}" for parameter in stacked)),
         )
-    else:
-        mixed = Observation(
-            site=site,
-            kernel="Mixture",
-            parameters=("weights",),
-            values=(WEIGHTS,),
-            components=tuple(observations),
+        emission.steps.append(_let(WEIGHTS, _var("theta")))
+        emission.targets.append(PriorTarget(site="theta", class_="theta", event_rank=1))
+
+
+class ObserveMixture(KernelPart):
+    """Observe the response under the mixture of the components' laws.
+
+    The components' arguments are stacked by component for a native mixture
+    law the components share, and otherwise their observations become the
+    components of ``Mixture``. The response's modifiers are folded over the
+    observation. Inputs read only as component arguments carry no plate
+    context for type inference, so each row-aligned numeric one is declared
+    as a ``Resp``-indexed tensor.
+
+    Parameters
+    ----------
+    labels : tuple[str, ...]
+        Component locations, in component order.
+    native : str or None
+        Native mixture law of the components' family; None for ``Mixture``.
+    """
+
+    kind: Literal["mixture_observe"] = "mixture_observe"
+    labels: tuple[str, ...]
+    native: str | None = None
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Write the observation and declare the inputs it reads.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+        """
+        steps = emission.steps
+        formula = emission.formula
+        observations = [emission.placed[label].observation for label in self.labels]
+        site = _qvr_name(formula.response_name)
+        if self.native is not None:
+            # The native law of the mixture takes the stacked component arguments.
+            stacked = observations[0].parameters
+            for parameter in stacked:
+                _row_stack(
+                    f"mixture_{parameter}",
+                    [component.argument(parameter) for component in observations],
+                    steps,
+                )
+            mixed = Observation(
+                site=site,
+                kernel=self.native,
+                parameters=("weights", *stacked),
+                values=(WEIGHTS, *(f"mixture_{parameter}" for parameter in stacked)),
+            )
+        else:
+            mixed = Observation(
+                site=site,
+                kernel="Mixture",
+                parameters=("weights",),
+                values=(WEIGHTS,),
+                components=tuple(observations),
+            )
+        for modifier in response_modifiers(formula.modifiers, emission.inputs.residual):
+            mixed = modifier.observe(mixed)
+        emission.host.observed(mixed)
+        steps.append(mixed.step())
+        rows = int(formula.response_values.shape[0])
+        bound = set(_bound_names(tuple(steps))) | set(emission.parameters)
+        free = {name for step in steps for name in _step_value_names(step)} - bound
+        values = emission.host.column_values(formula)
+        for name in sorted(free):
+            value = values.get(name)
+            if value is None or value.ndim != 1 or value.shape[0] != rows:
+                continue
+            emission.data.append(
+                InputDecl(
+                    name=name,
+                    element="Real" if value.is_floating_point() else "Int",
+                    axes=("Resp",),
+                    declared=True,
+                )
+            )
+
+
+def mixture_kernel(inputs: KernelInputs, formula: Formula) -> ResponseKernel:
+    """State the kernel of a finite mixture.
+
+    The body emits every component as a nested block, identifies the
+    components (ordered intercepts, shared ordinal thresholds, equated
+    parameters), binds the mixing proportions (predicted, fixed, or a
+    Dirichlet simplex), and observes ``Mixture(weights, components)`` or the
+    components' native mixture law. Scoring costs O(n K) beyond the
+    component predictors.
+
+    Parameters
+    ----------
+    inputs : KernelInputs
+        The mixture family, its nested blocks and fixed values.
+    formula : Formula
+        Main formula with the response and modifiers.
+
+    Returns
+    -------
+    ResponseKernel
+        The kernel; it has no slot of its own.
+
+    Raises
+    ------
+    ValueError
+        If integer-support components receive a response that is not a
+        nonnegative integer.
+    """
+    family = inputs.family
+    spec = family.mixture
+    assert spec is not None and inputs.blocks is not None
+    count = len(spec.components)
+    if spec.components[0].native.discrete:
+        values = np.asarray(formula.response_values, dtype=np.float64)
+        if (
+            not np.isfinite(values).all()
+            or np.any(values < 0)
+            or not np.equal(values, np.round(values)).all()
+        ):
+            raise ValueError(
+                "a mixture of integer-support families requires nonnegative "
+                f"integer responses ({', '.join(c.name for c in spec.components)})"
+            )
+    components = tuple(
+        block for block in inputs.blocks.blocks if block.location == "mu"
+    )
+    proportions = tuple(
+        block for block in inputs.blocks.blocks if block.location == "theta"
+    )
+    ordinal = spec.components[0].ordinal is not None
+    # brms: an ordered ordinal mixture shares one threshold vector, ordered
+    # when any component has ordered thresholds.
+    shared_thresholds = ordinal and spec.order == "mu"
+    ordered = spec.order == "mu" and not ordinal
+    threshold_source = next(
+        (
+            index
+            for index, component in enumerate(spec.components, start=1)
+            if component.ordinal is not None and component.ordinal.kind == "cumulative"
+        ),
+        1,
+    )
+    intercepts = frozenset(
+        any(column.is_intercept for column in block.formula.fixed_columns)
+        for block in components
+        if block.formula is not None
+    )
+    labels = tuple(block.label for block in components)
+    body: list[KernelPart] = [
+        ModelNames(
+            names=_shared_names(formula, components[0].trials if components else None)
         )
-    for modifier in response_modifiers(formula.modifiers, None):
-        mixed = modifier.observe(mixed)
-    lens._observation = mixed
-    steps.append(mixed.step())
-    lens._names = ProgramNames(inputs=inputs, bindings=bindings)
-    check_names(laws)
-    for parameter in declare_inputs(law_inputs(laws)):
-        parameters.setdefault(parameter.name, parameter)
-    statements.append(
-        ProgramDecl(
-            name="model",
-            params=None,
-            value_parameters=tuple(parameters.values())
-            + _row_inputs(lens, formula, steps, parameters),
-            domain=TypeName(name="Resp"),
-            codomain=TypeName(name="Resp"),
-            draws=tuple(steps),
-            return_vars=(_qvr_name(formula.response_name),),
+    ]
+    if ordered:
+        body.append(InterceptSpacing(gaps=count - 1))
+    body.extend(
+        ComponentBlock(
+            block=block,
+            ordered=ordered,
+            thresholds_from=threshold_source
+            if shared_thresholds and block.index != threshold_source
+            else None,
+            shared_thresholds=shared_thresholds,
+            intercepts=intercepts,
+            equal=tuple(
+                (target, source)
+                for target, source in spec.equal
+                if _dpar_id(target) == block.index
+            ),
+        )
+        for block in components
+    )
+    body.append(
+        PlaceComponents(
+            labels=labels,
+            # The component whose thresholds are shared precedes its readers.
+            order=tuple(
+                sorted(
+                    labels,
+                    key=lambda label: (
+                        not shared_thresholds or label != f"mu{threshold_source}"
+                    ),
+                )
+            ),
+            equal=spec.equal,
         )
     )
-    statements.append(ExportDecl(expr=ExprIdent(name="model")))
-    return MixtureEmission(
-        module=Module(statements=tuple(statements)),
-        prior_targets=tuple(targets),
-        group_laws=tuple(laws),
-        families=reduce(FamilyCatalog.with_catalog, term_laws) if term_laws else None,
-        names=lens._names,
+    fixed = {
+        name: value
+        for name, value in inputs.fixed.items()
+        if _dpar_class(name) == "theta"
+    }
+    if proportions:
+        body.append(PredictedWeights(count=count, blocks=proportions))
+    elif fixed:
+        body.append(
+            FixedWeights(
+                values=tuple(
+                    float(fixed[f"theta{index}"]) for index in range(1, count + 1)
+                ),
+                total=sum(float(value) for value in fixed.values()),
+            )
+        )
+    else:
+        body.append(DirichletWeights(count=count))
+    native = {component.mixture_law for component in spec.components}
+    body.append(
+        ObserveMixture(labels=labels, native=native.pop() if len(native) == 1 else None)
+    )
+    return ResponseKernel(
+        objects=(AxisDecl(name=COMPONENT_AXIS, size=count),),
+        body=tuple(body),
+        response=_qvr_name(formula.response_name),
     )
 
 
@@ -1798,11 +1474,11 @@ def mixture_component_count(family: Family) -> int:
 
 __all__ = [
     "COMPONENT_AXIS",
-    "MixtureEmission",
-    "emit_mixture",
     "expand_mixture",
     "mixture",
     "mixture_component_count",
     "mixture_distributional",
+    "mixture_kernel",
+    "response_blocks",
     "validate_mixture_options",
 ]

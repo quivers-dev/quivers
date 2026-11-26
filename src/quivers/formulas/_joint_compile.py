@@ -33,7 +33,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.program_templates import (
     _bound_names,
 )
-from quivers.formulas._blocks import Namespace, rename_program
+from quivers.formulas._blocks import Namespace, emit_block, place_block
 from quivers.formulas._ast import (
     _add,
     _call,
@@ -449,11 +449,11 @@ def _namespace(
     TypeError
         If a formula object lacks its finite declaration.
     """
-    module, complement = lens._forward(
+    module, complement = emit_block(
+        lens,
         formula,
         supplied_groups=supplied_groups,
         supplied_sites=supplied_sites,
-        check=False,
         rows=rows,
     )
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
@@ -480,20 +480,16 @@ def _namespace(
         for value, expression in supplied_inputs.items()
         if value in known_inputs
     }
-    renamed = rename_program(
+    renamed = place_block(
+        lens,
         module,
         Namespace(
             prefix=prefix,
             shared=frozenset(global_names),
             shared_objects=dict(shared_objects),
         ),
-        sites=(
-            law.support_site for law in lens.group_laws if law.support_site is not None
-        ),
         inputs=supplied_inputs,
         omitted=supplied_inputs.keys() | global_names,
-        # Two responses may draw from one law over different coordinates.
-        laws=lens.term_laws,
     )
     names = renamed.names
     families = lens.response_laws

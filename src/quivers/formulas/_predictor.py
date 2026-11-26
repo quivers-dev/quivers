@@ -1186,6 +1186,7 @@ def plan_predictors(
     outputs: Mapping[str, OutputAxis],
     transitions: OutputAxis | None,
     laws: Mapping[tuple[str, str, str], GroupBlockLaw],
+    location: bool = True,
 ) -> tuple[Predictor, ...]:
     """Plan every linear predictor of a model.
 
@@ -1207,6 +1208,10 @@ def plan_predictors(
         Axis of category-specific coefficients.
     laws : Mapping[tuple[str, str, str], GroupBlockLaw]
         Laws of the group blocks the program emits, by coefficient.
+    location : bool
+        Whether to plan the location from ``formula``; False when nested
+        blocks plan the location designs, and ``formula`` carries only the
+        response.
 
     Returns
     -------
@@ -1216,7 +1221,7 @@ def plan_predictors(
     """
     roots = {} if graph is None else graph.roots
     entries: list[tuple[str, Literal["dpar", "nlpar"], str, Formula]] = [
-        ("mu", "dpar", "", formula),
+        *((("mu", "dpar", "", formula),) if location else ()),
         *(
             (name, "dpar", f"dpar_{name}_", value)
             for name, value in distributional.items()

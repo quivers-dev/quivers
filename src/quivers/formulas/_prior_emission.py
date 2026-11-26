@@ -412,6 +412,7 @@ def build_prior_targets(
     predictor_scopes=None,
     separated=frozenset(),
     residual=None,
+    auxiliaries=None,
 ):
     """Combine explicit formula roles, group-block laws, and actual sample axes.
 
@@ -439,6 +440,10 @@ def build_prior_targets(
     residual : ResidualLaw or None
         Residual law of the response, whose structural sites take brms's
         classes (``ar``, ``ma``, ``cosy``, ``lagsar``, ``Lcortime``, ...).
+    auxiliaries : Sequence[AuxParam] or None
+        Auxiliary parameters the program draws under their own names; None
+        for every auxiliary of ``family``. Those of nested blocks are left
+        out: each block catalogues its own.
 
     Returns
     -------
@@ -527,7 +532,7 @@ def build_prior_targets(
         scope = dict(next(iter(common))) if len(common) == 1 else {}
         for site in drawn:
             add(site, "cor", group=law.group, **scope)
-    for auxiliary in family.aux_params:
+    for auxiliary in family.aux_params if auxiliaries is None else auxiliaries:
         default = draw(auxiliary.name, auxiliary.prior)
         support = semantic_family(default.morphism).support
         lower = 0.0 if support in {"positive", "nonnegative", "unit_interval"} else None

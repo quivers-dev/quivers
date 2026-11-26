@@ -45,8 +45,9 @@ Emitted structure (one named scalar coefficient per design-matrix
 * Categorical responses use category zero as an identified reference
   and lift every fixed and random term over the remaining ``K - 1``
   logits before applying softmax.
-* Finite mixtures compose one ordinary emission per component into a
-  native ``Mixture`` observation (`quivers.formulas._mixture`).
+* Finite mixtures emit each component as a nested response block and
+  observe the components' laws under one native ``Mixture``
+  (`quivers.formulas._mixture`).
 
 GetPut holds for every `Formula` ``f``: ``backward(*forward(f)) == f``.
 """
@@ -57,7 +58,6 @@ from __future__ import annotations
 from quivers._count_capacity import _MAX_EXACT_COUNT
 
 import math
-import re
 from collections.abc import Collection, Iterable, Sequence
 from typing import Literal, Mapping
 
@@ -121,16 +121,17 @@ from quivers.formulas._threshold_groups import (
     threshold_kinds,
 )
 
-# mixtures: brms mixture() families compose ordinary component emissions.
+# mixtures: brms mixture() families emit their components as nested blocks.
 from quivers.formulas._mixture import (
-    emit_mixture,
     expand_mixture,
+    response_blocks,
     validate_mixture_options,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
 from quivers.formulas._group_emission import emit_group_block
 from quivers.formulas._group_plan import (
+    check_names,
     coefficient_owner,
     plan_group_blocks,
     plan_threshold_block,
@@ -139,7 +140,14 @@ from quivers.formulas._group_covariance import (
     GroupCovariance,
     GroupCovarianceBasis,
 )
-from quivers.formulas._blocks import ResponseData, response_data
+from quivers.formulas._blocks import (
+    NestedBlocks,
+    PlacedBlock,
+    ResponseBlock,
+    ResponseData,
+    emit_nested_block,
+    response_data,
+)
 from quivers.formulas._ast import (
     _let,
     _var,
@@ -672,7 +680,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     ) -> None:
         # mixtures: the registered "mixture" family is mixture(gaussian, nmix=K).
         family = expand_mixture(family, mixture_components)
-        self._mixture_targets: tuple[PriorTarget, ...] = ()
         self._family = family
         self._residual: ResidualLaw | None = None
         self._observation: Observation | None = None
@@ -783,6 +790,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._random_scale_prior = random_scale_prior
         self._set_prior_configuration(user_priors)
         self._emitted_groups: list[GroupBlockLaw] = []
+        # The response laws the kernel emits as nested blocks, and what the
+        # latest forward pass took from them.
+        self._nested = NestedBlocks()
+        self._block_laws: tuple[GroupBlockLaw, ...] = ()
+        self._block_targets: tuple[PriorTarget, ...] = ()
+        self._grouping: tuple[Formula, dict[str, Formula]] | None = None
         self._baseline_level_sites: tuple[LevelSite, ...] = ()
         # Level hyperparameters another program draws, and those drawn so far.
         self._supplied_sites: frozenset[str] = frozenset()
@@ -915,7 +928,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         tuple[GroupBlockLayout, ...]
             Immutable group blocks shared with retained prediction plans.
         """
-        return tuple(law.layout for law in self._emitted_groups)
+        return tuple(law.layout for law in self.group_laws)
 
     @property
     def level_sites(self) -> tuple[LevelSite, ...]:
@@ -927,9 +940,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Every level-indexed site once, of the group blocks and of a
             grouped baseline hazard.
         """
-        sites = {
-            site.site: site for law in self._emitted_groups for site in law.level_sites
-        }
+        sites = {site.site: site for law in self.group_laws for site in law.level_sites}
         return (*sites.values(), *self._baseline_level_sites)
 
     @property
@@ -967,9 +978,94 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Returns
         -------
         tuple[GroupBlockLaw, ...]
-            Laws in emission order.
+            Laws in emission order: the program's own, then those of its
+            nested blocks.
         """
-        return tuple(self._emitted_groups)
+        return (*self._emitted_groups, *self._block_laws)
+
+    @property
+    def rows(self) -> RowSource | None:
+        """Return the rows the latest forward pass covers.
+
+        Returns
+        -------
+        RowSource or None
+            Fresh rows of a request, or None for the training rows.
+        """
+        return self._rows
+
+    @property
+    def site_priors(self) -> Mapping[str, str]:
+        """Return the priors configured for exact sites.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Prior source by site name.
+        """
+        return dict(self._user_priors)
+
+    @property
+    def observation(self) -> Observation | None:
+        """Return the observation of the latest forward pass.
+
+        Returns
+        -------
+        Observation or None
+            The observation of the response, or None before a pass.
+        """
+        return self._observation
+
+    @property
+    def names(self) -> ProgramNames:
+        """Return the names the latest forward pass gives columns and bindings.
+
+        Returns
+        -------
+        ProgramNames
+            The names that differ from the terms' own.
+        """
+        return self._names
+
+    def block_compiler(
+        self,
+        block: ResponseBlock,
+        priors: Mapping[str, str],
+        covariances: Mapping[str, GroupCovariance],
+    ) -> FormulaToQVRModule:
+        """Build the compiler of a nested block with this compiler's options.
+
+        Parameters
+        ----------
+        block : ResponseBlock
+            The block.
+        priors : Mapping[str, str]
+            Exact-site priors under the block's local names.
+        covariances : Mapping[str, GroupCovariance]
+            Known level covariances of the block's grouping factors.
+
+        Returns
+        -------
+        FormulaToQVRModule
+            The block's compiler.
+        """
+        return type(self)(
+            block.family,
+            fixed_prior=self._fixed_prior,
+            random_scale_prior=self._random_scale_prior,
+            correlation_prior=self._correlation_prior,
+            user_priors=dict(priors) or None,
+            reparameterize=self._reparameterize,
+            default_priors=self._default_priors,
+            center=self._center,
+            decomp=self._decomp,
+            binomial_trials=block.trials
+            if block.family.trials_parameter is not None
+            else None,
+            distributional=block.distributional,
+            fixed_parameters=block.fixed,
+            group_covariances=dict(covariances) or None,
+        )
 
     @property
     def term_laws(self) -> FamilyCatalog | None:
@@ -1201,6 +1297,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._rows = rows
         self._supplied_sites = frozenset(supplied_sites)
         self._drawn_sites = self._supplied_sites
+        self._nested = response_blocks(
+            self._family,
+            formula,
+            self._distributional,
+            self._fixed_parameters,
+            self._binomial_trials,
+        )
         known_groups = {
             group
             for _, _, predictor in self._predictor_items(formula)
@@ -1301,12 +1404,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     "cs terms require at least two positive ordinal categories"
                 )
         for name, predictor in self._distributional.items():
-            # An ordinal mixture component checks its own location formula.
-            if (
-                self._family.mixture is not None
-                and self._family.response_ordinal() is not None
-                and re.fullmatch(r"mu\d+", name)
-            ):
+            # A nested block with ordinal thresholds checks its own location.
+            if self._nested.admits_category_specific(name):
                 continue
             if predictor.category_specific:
                 raise ValueError(f"cs terms are only valid for mu, not {name!r}")
@@ -1605,20 +1704,41 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     def _catalogue_prior_targets(
         self, formula: Formula, module: Module
     ) -> tuple[PriorTarget, ...]:
-        # mixtures: the composed component catalogue.
-        if self._family.mixture is not None:
-            return self._mixture_targets
+        """Catalogue the overrideable sites of an emitted program.
+
+        The program's own sites are read from its predictors, the predictors
+        of the correlations it plans across its nested blocks, its group
+        blocks, and the auxiliaries it draws; the nested blocks' sites follow,
+        as their kernel recorded them.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula of the latest forward pass.
+        module : Module
+            The emitted program.
+
+        Returns
+        -------
+        tuple[PriorTarget, ...]
+            Every overrideable latent site.
+        """
         value = self._threshold_location_formula(formula)
         targets = build_prior_targets(
             module,
             value,
             self._family,
-            self._predictors,
-            self.group_laws,
+            (*self._predictors, *self._crossing_predictors()),
+            self._emitted_groups,
             draw=self._parse_prior,
             thresholds_by=self._thresholds_by,
             separated=frozenset(target.site for target in self._separated),
             residual=self._residual,
+            auxiliaries=tuple(
+                auxiliary
+                for auxiliary in self._family.aux_params
+                if not self._nested.reads(auxiliary.name)
+            ),
         )
         # brms center = FALSE puts the location intercept in class b.
         if self._center is False:
@@ -1630,7 +1750,35 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 else target
                 for target in targets
             )
-        return targets
+        return (*targets, *self._block_targets)
+
+    def _crossing_predictors(self) -> tuple[Predictor, ...]:
+        """Plan the predictors of the correlations across nested blocks.
+
+        Their terms are the group terms of an identifier shared by
+        predictors that nested blocks own; the program emits their group
+        blocks and catalogues those blocks' sites.
+
+        Returns
+        -------
+        tuple[Predictor, ...]
+            The predictors of the latest grouping plan that nested blocks
+            own; empty without nested blocks.
+        """
+        if self._grouping is None or not self._nested.blocks:
+            return ()
+        main, distributional = self._grouping
+        return self._plan(
+            main,
+            self._group_plan,
+            None,
+            distributional={
+                name: value
+                for name, value in distributional.items()
+                if self._nested.reads(name)
+            },
+            location=self._nested.reads("mu"),
+        )
 
     def get_prior(self, formula: Formula, /) -> dict[str, str]:
         """Inspect the effective priors without compiling or fitting a model.
@@ -3100,23 +3248,38 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         return axes
 
-    def _transition_axis(self, formula: Formula) -> OutputAxis | None:
+    def _transition_axis(
+        self,
+        formula: Formula,
+        distributional: Mapping[str, Formula] | None = None,
+        location: bool = True,
+    ) -> OutputAxis | None:
         """Read the axis of category-specific coefficients.
 
         Parameters
         ----------
         formula : Formula
             Response categories and predictors.
+        distributional : Mapping[str, Formula] or None
+            Distributional designs read; None for every one.
+        location : bool
+            Whether the location design of ``formula`` is read.
 
         Returns
         -------
         OutputAxis or None
-            The transition axis, or None when no predictor has a
+            The transition axis, or None when no predictor read has a
             category-specific coefficient.
         """
+        items = predictor_items(
+            formula,
+            self._distributional if distributional is None else distributional,
+            self._predictor_graph,
+        )
         if not any(
             predictor.category_specific
-            for _, _, predictor in self._predictor_items(formula)
+            for _, prefix, predictor in items
+            if location or prefix
         ):
             return None
         return transition_axis(
@@ -3128,8 +3291,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         formula: Formula,
         laws: Mapping[tuple[str, str, str], GroupBlockLaw],
         rows: RowSource | None,
+        *,
+        distributional: Mapping[str, Formula] | None = None,
+        location: bool = True,
     ) -> tuple[Predictor, ...]:
-        """Plan every linear predictor of the model.
+        """Plan the linear predictors of the model.
 
         Parameters
         ----------
@@ -3139,16 +3305,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Laws of the group blocks the program emits, by coefficient.
         rows : RowSource or None
             Rows of the terms; None for the training rows.
+        distributional : Mapping[str, Formula] or None
+            Distributional designs planned; None for every one.
+        location : bool
+            Whether to plan the location from ``formula``.
 
         Returns
         -------
         tuple[Predictor, ...]
             The planned predictors.
         """
+        if distributional is None:
+            distributional = self._distributional
         predictors = plan_predictors(
             formula,
             self._family,
-            distributional=self._distributional,
+            distributional=distributional,
             graph=self._predictor_graph,
             options=PredictorOptions(
                 coefficient_prior=self._fixed_prior,
@@ -3161,8 +3333,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 names=self._names,
             ),
             outputs=self._output_axes(formula),
-            transitions=self._transition_axis(formula),
+            transitions=self._transition_axis(formula, distributional, location),
             laws=laws,
+            location=location,
         )
         if rows is None:
             return predictors
@@ -3188,12 +3361,19 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         # brms mu<c>: per-category formulas replace the main predictor terms.
         if self._category_parameters:
             formula = main_without_terms(formula)
-        transitions = self._transition_axis(formula)
+        # The group blocks of the program's own designs and of correlations
+        # that cross the designs of its nested blocks.
+        formula, distributional = self._nested.grouping(
+            formula, self._distributional, supplied
+        )
+        self._grouping = (formula, distributional)
+        items = predictor_items(formula, distributional, self._predictor_graph)
+        transitions = self._transition_axis(formula, distributional)
         laws = plan_group_blocks(
-            self._predictor_items(formula),
+            items,
             levels={
                 group: levels
-                for _, _, predictor in self._predictor_items(formula)
+                for _, _, predictor in items
                 for group, levels in predictor.group_levels.items()
             },
             covariances=self._group_covariances,
@@ -3298,9 +3478,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         tuple[QiecValueParameter, ...]
             Checked integer group indices and an optional Real row-weight tensor.
         """
+        # The group indices of the designs the program plans; nested blocks
+        # declare those of their own.
         groups = dict.fromkeys(
             group
-            for _, _, predictor in self._predictor_items(formula)
+            for _, prefix, predictor in predictor_items(
+                formula, self._nested.own(self._distributional), self._predictor_graph
+            )
+            if prefix or not self._nested.reads("mu")
             for group in predictor.group_indices
         )
         index_type = QiecTypeApplication(
@@ -3536,14 +3721,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         self._names = ProgramNames()
         module = self._build_module(formula, supplied_groups=supplied_groups)
-        # The components of a mixture name their own columns.
-        if self._family.mixture is None:
-            names = self._resolved_names(formula, module)
-            if names != ProgramNames():
-                self._names = names
-                self._emitted_groups = []
-                self._drawn_sites = self._supplied_sites
-                module = self._build_module(formula, supplied_groups=supplied_groups)
+        names = self._resolved_names(formula, module)
+        if names != ProgramNames():
+            self._names = names
+            self._emitted_groups = []
+            self._drawn_sites = self._supplied_sites
+            module = self._build_module(formula, supplied_groups=supplied_groups)
         return module
 
     def _resolved_names(self, formula: Formula, module: Module) -> ProgramNames:
@@ -3668,6 +3851,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if trials is not None
             else None,
             response_values=np.asarray(formula.response_values),
+            blocks=self._nested,
         )
 
     def _append_baseline(
@@ -3686,9 +3870,19 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Declarations receiving the basis axes.
         steps : list[ProgramStep]
             Steps receiving the baseline draws.
+
+        Raises
+        ------
+        ValueError
+            If the baseline is stratified by a group without retained coding.
         """
         baseline = self._family.baseline
         assert baseline is not None
+        if baseline.by is not None and baseline.by not in formula.group_levels:
+            raise ValueError(
+                f"baseline group {baseline.by!r} requires retained group coding; "
+                "supply formula_from_data(..., groups=(group,))"
+            )
         basis = baseline.resolve(formula)
         self._baseline_level_sites = baseline_level_sites(basis, baseline.by)
         objects, draws = baseline_steps(
@@ -3707,14 +3901,35 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         *,
         supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
     ) -> Module:
-        # mixtures: one ordinary emission per component inside Mixture(...).
-        if self._family.mixture is not None:
-            emission = emit_mixture(self, formula, supplied_groups)
-            self._mixture_targets = emission.prior_targets
-            self._emitted_groups.extend(emission.group_laws)
-            self._term_laws = emission.families
-            self._names = emission.names
-            return emission.module
+        """Emit the program of one response.
+
+        The program declares the rows and the grouping factors, plans the
+        group blocks and the predictors it owns, emits the head of the
+        response kernel, the group blocks, and the kernel's body. A predictor
+        belongs to the block whose kernel reads it: nested blocks plan and
+        emit their own, and the program takes their runtime parameters,
+        laws, prior targets and names.
+
+        Parameters
+        ----------
+        formula : Formula
+            Location predictor and response.
+        supplied_groups : Mapping or None
+            Group coefficients another program emits.
+
+        Returns
+        -------
+        Module
+            The emitted module.
+
+        Raises
+        ------
+        ValueError
+            If the grouping or the kernel rejects the formula, or two group
+            blocks would own one name.
+        """
+        self._block_laws = ()
+        self._block_targets = ()
         formula = self._threshold_location_formula(formula)
         statements: list[Statement] = []
         n_obs = formula.response_values.shape[0]
@@ -3731,13 +3946,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ),
             )
         )
-        if self._family.baseline is not None and self._family.baseline.by is not None:
-            group = self._family.baseline.by
-            if group not in formula.group_levels:
-                raise ValueError(
-                    f"baseline group {group!r} requires retained group coding; "
-                    "supply formula_from_data(..., groups=(group,))"
-                )
         group_sizes = {
             _qvr_name(group): len(levels)
             for _, _, predictor in self._predictor_items(formula)
@@ -3754,6 +3962,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 for member in law.members
             },
             self._rows,
+            distributional=self._nested.own(self._distributional),
+            location=not self._nested.reads("mu"),
         )
         terms = tuple(
             term for predictor in self._predictors for term in predictor.terms
@@ -3774,7 +3984,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
 
         program_steps: list[ProgramStep] = []
         inputs = self._kernel_inputs(formula)
-        host = _LensHost(self)
+        host = _LensHost(self, supplied_groups or {})
         kernel, sources = family_kernel(inputs, formula)
         emit_head(host, inputs, kernel, statements, program_steps, formula)
         for predictor in self._predictors:
@@ -3785,7 +3995,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         correlated = self._append_correlations(
             laws, statements, program_steps, supplied_groups or {}
         )
-        compose(
+        emission = compose(
             host,
             inputs,
             kernel,
@@ -3795,11 +4005,33 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             correlated,
             formula,
         )
+        # The nested blocks' laws, prior targets, term laws and names.
+        self._block_laws = tuple(emission.laws)
+        self._block_targets = tuple(emission.targets)
+        for catalog in emission.catalogs:
+            self._term_laws = (
+                catalog
+                if self._term_laws is None
+                else self._term_laws.with_catalog(catalog)
+            )
+        self._names = ProgramNames(
+            inputs=self._names.inputs | emission.program_names.inputs,
+            bindings=self._names.bindings | emission.program_names.bindings,
+        )
+        check_names(self.group_laws)
+        # A runtime parameter is declared once, by its first declaration.
+        parameters = {
+            parameter.name: parameter for parameter in emission.parameters.values()
+        }
+        for parameter in self._runtime_parameters(
+            formula, (*kernel.data, *emission.data)
+        ):
+            parameters.setdefault(parameter.name, parameter)
         statements.append(
             ProgramDecl(
                 name="model",
                 params=None,
-                value_parameters=self._runtime_parameters(formula, kernel.data),
+                value_parameters=tuple(parameters.values()),
                 domain=TypeName(name="Resp"),
                 codomain=TypeName(name="Resp"),
                 draws=tuple(program_steps),
@@ -3817,10 +4049,17 @@ class _LensHost:
     ----------
     lens : FormulaToQVRModule
         Compiler carrying the prior configuration.
+    supplied : Mapping[tuple[str, str, str], LetExprNode]
+        Group coefficients another program emits.
     """
 
-    def __init__(self, lens: FormulaToQVRModule) -> None:
+    def __init__(
+        self,
+        lens: FormulaToQVRModule,
+        supplied: Mapping[tuple[str, str, str], LetExprNode],
+    ) -> None:
         self._lens = lens
+        self._supplied = dict(supplied)
 
     def terms(
         self,
@@ -4012,6 +4251,94 @@ class _LensHost:
             The catalog, or None when the law is built in.
         """
         return self._lens.response_laws
+
+    @property
+    def supplied(self) -> Mapping[tuple[str, str, str], LetExprNode]:
+        """The group coefficients another program emits.
+
+        Returns
+        -------
+        Mapping[tuple[str, str, str], LetExprNode]
+            Coefficients keyed by predictor prefix, group, and slope.
+        """
+        return self._supplied
+
+    def emit_block(
+        self,
+        block: ResponseBlock,
+        shared: frozenset[str],
+        supplied: Mapping[tuple[str, str, str], LetExprNode],
+        supplied_sites: Collection[str],
+    ) -> PlacedBlock:
+        """Emit a nested response block and place it in the model.
+
+        Parameters
+        ----------
+        block : ResponseBlock
+            The block.
+        shared : frozenset[str]
+            Inputs, bindings and objects the model owns.
+        supplied : Mapping[tuple[str, str, str], LetExprNode]
+            Group coefficients the model emits, by the model's predictor
+            prefix, group, and slope.
+        supplied_sites : Collection[str]
+            Level hyperparameters the model draws.
+
+        Returns
+        -------
+        PlacedBlock
+            The block in the model's names.
+        """
+        return emit_nested_block(
+            self._lens,
+            block,
+            shared=shared,
+            supplied=supplied,
+            supplied_sites=supplied_sites,
+        )
+
+    @property
+    def drawn_sites(self) -> frozenset[str]:
+        """The level hyperparameters the model has drawn so far.
+
+        Returns
+        -------
+        frozenset[str]
+            Site names.
+        """
+        return self._lens._drawn_sites
+
+    def column_values(self, formula: Formula) -> Mapping[str, torch.Tensor]:
+        """Return the values of the data columns the model reads.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response.
+
+        Returns
+        -------
+        Mapping[str, torch.Tensor]
+            Column values by input name.
+        """
+        return self._lens.fixed_column_observations(formula)
+
+    def category_count(self, formula: Formula, family: Family) -> int:
+        """Count the response categories of a family.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response.
+        family : Family
+            Family reading the categories.
+
+        Returns
+        -------
+        int
+            Number of categories.
+        """
+        return self._lens._category_count(formula, family=family.name)
 
 
 __all__ = [

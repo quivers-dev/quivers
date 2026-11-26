@@ -4,7 +4,8 @@
 the slots of its location and auxiliary parameters, the parts that compute
 the arguments of its native law (ordinal thresholds and masses, category
 completion, vector concentration, the map from the formula parameterization
-to the native one), and the observation. `slot_sources` gives each slot the
+to the native one), and the observation. A mixture declares its components,
+which its kernel emits as nested blocks (`quivers.formulas._mixture`). `slot_sources` gives each slot the
 source the formula, the fixed values, or the priors choose, and
 `precompose_graph` folds the nonlinear predictor graph into the kernel.
 """
@@ -57,6 +58,7 @@ from quivers.formulas._kernel import (
     Steps,
     ValueShape,
 )
+from quivers.formulas._mixture import mixture_kernel
 from quivers.formulas._observation import observation
 from quivers.formulas._predictor import response_axis
 from quivers.formulas._predictor_graph import ComponentExpression, PredictorGraph
@@ -968,9 +970,12 @@ def family_kernel(
     Returns
     -------
     tuple[ResponseKernel, dict[str, ParameterSource]]
-        The kernel and the source of each slot a source feeds.
+        The kernel and the source of each slot a source feeds. A mixture's
+        kernel emits its components as nested blocks and has no slot.
     """
     family = inputs.family
+    if family.mixture is not None:
+        return mixture_kernel(inputs, formula), {}
     location = inputs.predictor("")
     graph = inputs.graph
     roots = {} if graph is None else graph.roots

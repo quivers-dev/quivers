@@ -15,13 +15,16 @@ The body is a sequence of `KernelPart` values. One composer, `compose`, emits
 every kernel by emitting its parts in order; it never asks which family the
 kernel was built from. Each part states one construction as data: emit or bind
 a slot, literal steps, or a family construction (ordinal thresholds,
-category masses, the native arguments of the observation).
+category masses, the native arguments of the observation). A part may emit a
+nested response block (`quivers.formulas._blocks.ResponseBlock`), such as a
+mixture component; the emission takes the block's runtime parameters, group
+laws, prior targets and names (`KernelEmission.absorb`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol
+from collections.abc import Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import didactic.api as dx
 import numpy as np
@@ -30,7 +33,9 @@ from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
     LetExprLiteral,
     LetExprNode,
+    ObjectDecl,
     ProgramStep,
+    QiecValueParameter,
     SampleStep,
     Statement,
 )
@@ -51,8 +56,16 @@ from quivers.formulas._predictor_graph import PredictorGraph
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._term import AxisDecl, InputDecl, OutputAxis, SiteDecl
 from quivers.formulas._term_emission import ProgramEmission, emit_axis_part, emit_terms
+from quivers.formulas._group_law import GroupBlockLaw
+from quivers.formulas._priors import PriorTarget
+from quivers.formulas._term import ProgramNames
 from quivers.formulas.family import Family, Link
 from quivers.formulas.formula import Formula
+
+if TYPE_CHECKING:
+    import torch
+
+    from quivers.formulas._blocks import NestedBlocks, PlacedBlock, ResponseBlock
 
 __all__: list[str] = []
 
@@ -751,6 +764,8 @@ class KernelInputs(ValueModel):
         Binding or constant of the trial counts.
     response_values : np.ndarray
         Training responses.
+    blocks : NestedBlocks or None
+        Response laws the kernel emits as nested programs; None for none.
     """
 
     family: Family = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -777,6 +792,9 @@ class KernelInputs(ValueModel):
     category_parameters: frozenset[str] = frozenset()
     trials: str | float | None = None
     response_values: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    blocks: NestedBlocks | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     def predictor(self, prefix: str) -> Predictor:
         """Return the planned predictor of one namespace.
@@ -994,6 +1012,88 @@ class KernelHost(Protocol):
         """
         ...
 
+    def emit_block(
+        self,
+        block: ResponseBlock,
+        shared: frozenset[str],
+        supplied: Mapping[tuple[str, str, str], LetExprNode],
+        supplied_sites: Collection[str],
+    ) -> PlacedBlock:
+        """Emit a nested response block and place it in the model.
+
+        Parameters
+        ----------
+        block : ResponseBlock
+            The block.
+        shared : frozenset[str]
+            Inputs, bindings and objects the model owns.
+        supplied : Mapping[tuple[str, str, str], LetExprNode]
+            Group coefficients the model emits, by the model's predictor
+            prefix, group, and slope.
+        supplied_sites : Collection[str]
+            Level hyperparameters the model draws.
+
+        Returns
+        -------
+        PlacedBlock
+            The block in the model's names.
+        """
+        ...
+
+    @property
+    def drawn_sites(self) -> frozenset[str]:
+        """The level hyperparameters the model has drawn so far.
+
+        Returns
+        -------
+        frozenset[str]
+            Site names.
+        """
+        ...
+
+    @property
+    def supplied(self) -> Mapping[tuple[str, str, str], LetExprNode]:
+        """The group coefficients another program emits.
+
+        Returns
+        -------
+        Mapping[tuple[str, str, str], LetExprNode]
+            Coefficients keyed by predictor prefix, group, and slope.
+        """
+        ...
+
+    def column_values(self, formula: Formula) -> Mapping[str, torch.Tensor]:
+        """Return the values of the data columns the model reads.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response.
+
+        Returns
+        -------
+        Mapping[str, torch.Tensor]
+            Column values by input name.
+        """
+        ...
+
+    def category_count(self, formula: Formula, family: Family) -> int:
+        """Count the response categories of a family.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response.
+        family : Family
+            Family reading the categories.
+
+        Returns
+        -------
+        int
+            Number of categories.
+        """
+        ...
+
 
 class KernelEmission:
     """The program a kernel is emitted into.
@@ -1016,6 +1116,26 @@ class KernelEmission:
         Group-level coefficients emitted ahead of the body.
     formula : Formula
         Response, its rows, and its modifiers.
+
+    Attributes
+    ----------
+    parameters : dict[str, QiecValueParameter]
+        Runtime parameters of the nested blocks, first declaration first.
+    data : list[InputDecl]
+        Columns the body reads that no other part declares.
+    targets : list[PriorTarget]
+        Prior catalogue entries of the nested blocks and the body's sites.
+    laws : list[GroupBlockLaw]
+        Group-block laws of the nested blocks, in the model's names.
+    catalogs : list[FamilyCatalog]
+        Laws the terms of the nested blocks draw from.
+    program_names : ProgramNames
+        Names of the nested blocks' columns and bindings.
+    placed : dict[str, PlacedBlock]
+        Nested blocks emitted, by the model parameter of their location.
+    shared : frozenset[str]
+        Inputs, bindings and objects the model owns, which nested blocks
+        keep under their names.
     """
 
     def __init__(
@@ -1040,9 +1160,53 @@ class KernelEmission:
         self._emitted: set[str] = set()
         self._values: dict[str, LetExprNode | None] = {}
         self._shapes: dict[str, ValueShape] = {}
+        self.gathered = dict(gathered)
         self.buffers: dict[str, list[ProgramStep]] = {}
         self.names: dict[str, str] = {}
         self.arguments: KernelArguments | None = None
+        self.parameters: dict[str, QiecValueParameter] = {}
+        self.data: list[InputDecl] = []
+        self.targets: list[PriorTarget] = []
+        self.laws: list[GroupBlockLaw] = []
+        self.catalogs: list[FamilyCatalog] = []
+        self.program_names = ProgramNames()
+        self.placed: dict[str, PlacedBlock] = {}
+        self.shared: frozenset[str] = frozenset()
+
+    def absorb(self, label: str, block: PlacedBlock) -> None:
+        """Take a placed nested block into the model.
+
+        The block's declarations of axes the model already declares are
+        left out, its runtime parameters are kept after any of the same
+        name, and its prior targets, laws, term laws and names are joined.
+
+        Parameters
+        ----------
+        label : str
+            Model parameter of the block's location.
+        block : PlacedBlock
+            The block in the model's names.
+        """
+        for item in block.objects:
+            if any(
+                isinstance(declared, ObjectDecl)
+                and isinstance(item, ObjectDecl)
+                and declared.names == item.names
+                for declared in self.statements
+            ):
+                continue
+            self.statements.append(item)
+        for parameter in block.parameters:
+            self.parameters.setdefault(parameter.name, parameter)
+        self.targets.extend(block.prior_targets)
+        self.laws.extend(block.group_laws)
+        self.program_names = ProgramNames(
+            inputs=self.program_names.inputs | block.names.inputs,
+            bindings=self.program_names.bindings | block.names.bindings,
+        )
+        if block.families is not None:
+            self.catalogs.append(block.families)
+        self.placed[label] = block
 
     def declare(self, axis: AxisDecl) -> None:
         """Declare a finite axis once.
