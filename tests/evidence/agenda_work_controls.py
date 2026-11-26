@@ -2,30 +2,37 @@
 
 Each measured counter of a run's report is compared with an independent
 count: pops with an agenda that counts its own, products with a
-semiring that counts its own, the tape with a hook on the autograd graph,
-and provenance with the recorded applications. A run with a rule weight
-function does not claim its products, and one without the tape measured
-does not claim it. The agenda's own work on chains, diamonds and skip
+semiring that counts its own (the chart's and the queue's sums included),
+the tape with a hook on the autograd graph, and provenance with the
+recorded applications. A run with a rule weight
+function does not claim its products, one without the tape measured
+does not claim it, and a chart or queue that reports no work leaves its
+counters unmeasured. The agenda's own work on chains, diamonds and skip
 graphs is recorded by the ledger entry ``agenda-work-quadratic``.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 import torch
 
 from quivers.qiec.contracts import WorkField
 from quivers.stochastic.agenda import (
     AgendaResult,
+    Chart,
     FIFOAgenda,
     InferenceRule,
     Item,
+    LIFOAgenda,
+    Pattern,
+    PriorityQueueAgenda,
     make_wildcard,
+    match,
     run_agenda,
 )
-from quivers.stochastic.semiring import LOG_PROB
+from quivers.stochastic.semiring import LOG_PROB, ChartSemiring
 from tests.evidence import graphs, scaling
 from tests.evidence.checks._registry import Check
 from tests.evidence.compare import Mismatch
@@ -78,6 +85,84 @@ class _CountingAgenda(FIFOAgenda):
         """
         self.pops += 1
         return super().pop()
+
+
+class _PlainChart(Chart):
+    """A chart that keeps its items in a dictionary and reports no work."""
+
+    def __init__(self) -> None:
+        self._store: dict[Item, torch.Tensor] = {}
+
+    def lookup(self, pattern: Pattern) -> Iterable[tuple[Item, torch.Tensor]]:
+        """The stored items that match a pattern.
+
+        Parameters
+        ----------
+        pattern : Pattern
+            The pattern.
+
+        Returns
+        -------
+        Iterable of tuple of Item and torch.Tensor
+            The matches.
+        """
+        return [
+            (item, weight)
+            for item, weight in self._store.items()
+            if match(pattern, item) is not None
+        ]
+
+    def insert_or_aggregate(
+        self, item: Item, weight: torch.Tensor, semiring: ChartSemiring
+    ) -> bool:
+        """Aggregate a weight into an item.
+
+        Parameters
+        ----------
+        item : Item
+            The item.
+        weight : torch.Tensor
+            The weight.
+        semiring : ChartSemiring
+            The semiring.
+
+        Returns
+        -------
+        bool
+            Whether the stored weight changed.
+        """
+        existing = self._store.get(item)
+        if existing is None:
+            self._store[item] = weight
+            return True
+        merged = semiring.plus(torch.stack([existing, weight]), dim=0)
+        self._store[item] = merged
+        return bool((merged != existing).any())
+
+    def get(self, item: Item) -> torch.Tensor | None:
+        """The stored weight of an item.
+
+        Parameters
+        ----------
+        item : Item
+            The item.
+
+        Returns
+        -------
+        torch.Tensor or None
+            Its weight, if stored.
+        """
+        return self._store.get(item)
+
+    def items(self) -> Iterable[tuple[Item, torch.Tensor]]:
+        """Every stored item and weight.
+
+        Returns
+        -------
+        Iterable of tuple of Item and torch.Tensor
+            The items.
+        """
+        return self._store.items()
 
 
 def _axioms(
@@ -180,10 +265,37 @@ def check_counts() -> None:
         "provenance",
     )
     _require(sum(sizes) > 0, "the run saved nothing")
+    _equal(report.scalar_sums, counted["sums"], "sums")
+    _require(counted["sums"] > 0, "the run summed nothing")
+    stacked, stack_counted = forwarding(LOG_PROB)
+    lifo = run_agenda(
+        _axioms(edges), [STEP], semiring=stacked, agenda=LIFOAgenda()
+    ).work
+    _equal(lifo.scalar_sums, stack_counted["sums"], "sums in the chart")
+    _require(stack_counted["sums"] > 0, "the chart aggregated nothing")
+    plain_chart = run_agenda(
+        _axioms(edges), [STEP], semiring=LOG_PROB, chart=_PlainChart()
+    ).work
+    for field in (
+        WorkField.SCALAR_SUMS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+    ):
+        _require(
+            field not in plain_chart.measured,
+            f"{field.value} is claimed with a chart that reports no work",
+        )
+    heap = run_agenda(
+        _axioms(edges),
+        [STEP],
+        semiring=LOG_PROB,
+        agenda=PriorityQueueAgenda(lambda item, weight: 0.0),
+    ).work
     _require(
-        WorkField.SCALAR_SUMS not in report.measured,
-        "the agenda claims the chart's sums",
+        WorkField.KEY_COMPARISONS not in heap.measured,
+        "a heap's comparisons are claimed",
     )
+    _require(WorkField.SCALAR_SUMS in heap.measured, "a heap's sums are not claimed")
     plain = run_agenda(_axioms(edges), [STEP], semiring=LOG_PROB).work
     _require(
         WorkField.ELEMENTS_SAVED_FOR_BACKWARD not in plain.measured,
@@ -197,7 +309,7 @@ def check_counts() -> None:
 
 
 def _work(edges: Sequence[tuple[int, int]]) -> float:
-    """The agenda's own work on a graph: pops, chart calls and matches.
+    """The work of an agenda run on a graph: pops, hashing and comparisons.
 
     Parameters
     ----------
@@ -309,6 +421,20 @@ MUTATIONS: tuple[Mutation, ...] = (
             Rewrite(
                 old="work.products += acc.numel()",
                 new="work.products += 2 * acc.numel()",
+            ),
+        ),
+        rejected_by=("agenda/work-counts",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="agenda-chart-sums-under-reported",
+        defect_class="evidence",
+        provenance="the chart does not count the sums of its aggregation",
+        target=f"{AGENDA}:HashChart.insert_or_aggregate",
+        rewrites=(
+            Rewrite(
+                old="self._work.sums += merged.numel()",
+                new="self._work.sums += 0",
             ),
         ),
         rejected_by=("agenda/work-counts",),

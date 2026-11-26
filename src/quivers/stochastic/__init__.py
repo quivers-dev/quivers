@@ -53,6 +53,8 @@ if TYPE_CHECKING:
     from quivers.qiec.contracts import ComplexityClaim
     from quivers.stochastic.agenda import (
         Agenda,
+        ReportsWork,
+        COMPONENT_FIELDS,
         AgendaResult,
         Bindings,
         Chart,
@@ -412,6 +414,8 @@ _LAZY_EXPORTS: dict[str, str] = {
     "ChartView": "quivers.stochastic.agenda",
     "CorpusChart": "quivers.stochastic.agenda",
     "Agenda": "quivers.stochastic.agenda",
+    "ReportsWork": "quivers.stochastic.agenda",
+    "COMPONENT_FIELDS": "quivers.stochastic.agenda",
     "FIFOAgenda": "quivers.stochastic.agenda",
     "LIFOAgenda": "quivers.stochastic.agenda",
     "PriorityQueueAgenda": "quivers.stochastic.agenda",
@@ -692,6 +696,8 @@ __all__ = [
     "ChartView",
     "CorpusChart",
     "Agenda",
+    "ReportsWork",
+    "COMPONENT_FIELDS",
     "FIFOAgenda",
     "LIFOAgenda",
     "PriorityQueueAgenda",

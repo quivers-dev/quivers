@@ -529,13 +529,14 @@ def _hub_instances(size: int) -> int:
 record(
     "agenda-work-quadratic",
     "stochastic/agenda.py: HashChart.lookup, _fire_remaining_premises",
-    "the agenda's own work, measured by its work report (pops, chart calls and "
-    "matches), grows faster than the edges on chains, diamonds and skip graphs, "
-    "since each premise looks up its whole form",
+    "the work of an agenda run, measured by its work report (its pops and "
+    "matches, and the chart's and queue's hashing and comparisons), grows faster "
+    "than the edges on chains, diamonds and skip graphs, since each premise "
+    "looks up its whole form and the chart compares every item of it",
     {
-        "chains, work per edge": "18.33 26.65 42.82 74.91 138.95",
-        "diamonds, work per edge": "15.44 21.71 33.85 57.92 105.96",
-        "skip graphs, work per edge": "12.75 16.88 24.94 40.97 72.98",
+        "chains, work per edge": "40.89 65.41 113.70 209.85 401.92",
+        "diamonds, work per edge": "33.89 52.59 89.33 162.46 308.53",
+        "skip graphs, work per edge": "27.25 40.50 66.62 118.69 222.72",
     },
     {
         "chains, work per edge": agenda_work.WITHIN,
