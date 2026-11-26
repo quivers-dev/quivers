@@ -34,7 +34,7 @@ from collections.abc import Collection, Mapping, Sequence
 from copy import copy
 import math
 import re
-from typing import TYPE_CHECKING, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 import didactic.api as dx
 from functools import reduce
@@ -64,13 +64,11 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
 )
 from quivers.dsl.program_templates import (
-    TemplateBindings,
     _bound_names,
-    _rename_step,
-    substitute_program_object,
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._blocks import Namespace, rename_program
 from quivers.formulas._ast import (
     _add,
     _call,
@@ -605,69 +603,54 @@ class MixtureEmission(ValueModel):
     )
 
 
-class _Namespace(ValueModel):
-    """Rename one sub-emission into its mixture parameter namespace.
+class _Component(ValueModel):
+    """One mixture parameter emitted as its own program.
 
     Parameters
     ----------
     location : str
-        Mixture parameter class of the sub-emission's location, ``mu`` for a
+        Mixture parameter class of the program's location, ``mu`` for a
         component and ``theta`` for a predicted mixing proportion.
     index : int
         One-based component number.
     auxiliaries : tuple[str, ...]
         Auxiliary parameter names of the component family, renamed with the
         component number; empty for a mixing-proportion predictor.
-    shared : frozenset[str]
-        Data inputs and objects shared by every component.
     """
 
     location: str
     index: int
     auxiliaries: tuple[str, ...] = ()
-    shared: frozenset[str] = frozenset()
 
-    def name(self, value: str) -> str:
-        """Rename one value or object name.
+    def namespace(self, shared: frozenset[str]) -> Namespace:
+        """Return the renaming of the program into the mixture.
 
-        Parameters
-        ----------
-        value : str
-            Local name in the sub-emission.
-
-        Returns
-        -------
-        str
-            The mixture name; shared names are unchanged.
-        """
-        if value in self.shared:
-            return value
-        for auxiliary in self.auxiliaries:
-            if value == auxiliary:
-                return f"{auxiliary}{self.index}"
-            stem = f"dpar_{auxiliary}_"
-            if value.startswith(stem):
-                return f"dpar_{auxiliary}{self.index}_" + value[len(stem) :]
-        if value == "mu":
-            return f"{self.location}{self.index}"
-        return f"dpar_{self.location}{self.index}_{value}"
-
-    def prefix(self, value: str) -> str:
-        """Rename a predictor coefficient prefix.
+        The location becomes ``<location><k>``, an auxiliary ``<aux><k>``, a
+        name of an auxiliary's predictor ``dpar_<aux><k>_...``, and any other
+        name ``dpar_<location><k>_...``.
 
         Parameters
         ----------
-        value : str
-            Local prefix: empty for the location, ``dpar_<aux>_`` otherwise.
+        shared : frozenset[str]
+            Inputs, bindings and objects shared by every component.
 
         Returns
         -------
-        str
-            The mixture parameter's prefix.
+        Namespace
+            The renaming.
         """
-        if not value:
-            return f"dpar_{self.location}{self.index}_"
-        return self.name(value)
+        return Namespace(
+            prefix=f"dpar_{self.location}{self.index}_",
+            renamed={
+                "mu": f"{self.location}{self.index}",
+                **{aux: f"{aux}{self.index}" for aux in self.auxiliaries},
+            },
+            stems={
+                f"dpar_{aux}_": f"dpar_{aux}{self.index}_" for aux in self.auxiliaries
+            },
+            shared=shared,
+            shared_objects={name: name for name in shared},
+        )
 
     def dpar(self, value: str | None) -> str | None:
         """Rename a predictor scope.
@@ -687,38 +670,6 @@ class _Namespace(ValueModel):
         if value == "mu":
             return f"{self.location}{self.index}"
         return f"{value}{self.index}"
-
-
-def _indices(value: _Value, objects: Mapping[str, str]) -> _Value:
-    """Rename nominal indices throughout a runtime parameter type.
-
-    Parameters
-    ----------
-    value : _Value
-        A type expression, a tuple of them, or a leaf field value.
-    objects : Mapping[str, str]
-        Local object names and their mixture names.
-
-    Returns
-    -------
-    _Value
-        The value with every nominal index renamed.
-    """
-    if isinstance(value, QiecIndexName):
-        return cast(_Value, value.with_(name=objects.get(value.name, value.name)))
-    if isinstance(value, tuple):
-        return cast(_Value, tuple(_indices(item, objects) for item in value))
-    if isinstance(value, dx.Model):
-        return cast(
-            _Value,
-            value.with_(
-                **{
-                    key: _indices(getattr(value, key), objects)
-                    for key in type(value).__field_specs__
-                }
-            ),
-        )
-    return value
 
 
 class _SubEmission(ValueModel):
@@ -806,7 +757,7 @@ def _shared_names(formula: Formula, trials: int | str | None) -> frozenset[str]:
 
 
 def _local_priors(
-    lens: FormulaToQVRModule, namespace: _Namespace, sites: Sequence[str]
+    lens: FormulaToQVRModule, namespace: Namespace, sites: Sequence[str]
 ) -> dict[str, str]:
     """Map composite exact-site priors into one sub-emission.
 
@@ -814,7 +765,7 @@ def _local_priors(
     ----------
     lens : FormulaToQVRModule
         The mixture lens with its current site priors.
-    namespace : _Namespace
+    namespace : Namespace
         The sub-emission namespace.
     sites : Sequence[str]
         Local sample sites of the sub-emission.
@@ -858,7 +809,8 @@ def _sub_emission(
     lens: FormulaToQVRModule,
     family: Family,
     formula: Formula,
-    namespace: _Namespace,
+    component: _Component,
+    shared: frozenset[str],
     *,
     distributional: Mapping[str, Formula],
     fixed_parameters: Mapping[str, float],
@@ -877,8 +829,10 @@ def _sub_emission(
         Component family; Gaussian with unit scale for a proportion predictor.
     formula : Formula
         Location design with the shared response and modifiers.
-    namespace : _Namespace
-        Renaming into the mixture parameter namespace.
+    component : _Component
+        Mixture parameter the sub-emission computes.
+    shared : frozenset[str]
+        Inputs, bindings and objects shared by every component.
     distributional : Mapping[str, Formula]
         Component auxiliary formulas under their local names.
     fixed_parameters : Mapping[str, float]
@@ -916,6 +870,8 @@ def _sub_emission(
         if group in groups
     }
 
+    namespace = component.namespace(shared)
+
     def build(priors: Mapping[str, str]) -> tuple[FormulaToQVRModule, Module]:
         sub = type(lens)(
             family,
@@ -939,7 +895,7 @@ def _sub_emission(
             supplied_groups=supplied,
             supplied_sites=supplied_sites,
             check=False,
-            rows=lens._rows.within(namespace.prefix)
+            rows=lens._rows.within(namespace.predictor)
             if lens._rows is not None
             else None,
         )
@@ -947,60 +903,34 @@ def _sub_emission(
 
     sub, module = build(dict(default_priors or {}))
     # The components of a response share the levels of a grouping factor.
-    namespace = namespace.with_(
-        shared=namespace.shared | level_names(sub.group_laws) | set(supplied_sites)
+    namespace = component.namespace(
+        shared | level_names(sub.group_laws) | set(supplied_sites)
     )
     priors = dict(default_priors or {}) | _local_priors(
         lens, namespace, _sample_sites(module)
     )
     if priors != dict(default_priors or {}):
         sub, module = build(priors)
-    program = next(item for item in module.statements if isinstance(item, ProgramDecl))
-    objects = {
-        name: namespace.name(name)
-        for item in module.statements
-        if isinstance(item, ObjectDecl)
-        for name in item.names
-    }
-    for group in groups:
-        objects[_qvr_name(group)] = _qvr_name(group)
-    variables = set(_bound_names(program.draws)) | {
-        parameter.name for parameter in program.value_parameters
-    }
-    variables.update(
-        value for step in program.draws for value in _step_value_names(step)
+    group_names = {_qvr_name(group) for group in groups}
+    namespace = namespace.with_(
+        shared=namespace.shared | {f"{name}_idx" for name in group_names},
+        shared_objects=namespace.shared_objects | {name: name for name in group_names},
     )
-    variables.update(
-        law.support_site for law in sub.group_laws if law.support_site is not None
+    renamed = rename_program(
+        module,
+        namespace,
+        sites=(
+            law.support_site for law in sub.group_laws if law.support_site is not None
+        ),
+        # Two components may draw from one law over different coordinates.
+        laws=sub.term_laws,
     )
-    names = {value: namespace.name(value) for value in variables}
-    for group in groups:
-        names[f"{_qvr_name(group)}_idx"] = f"{_qvr_name(group)}_idx"
-    # Two components may draw from one law over different coordinates.
-    term_laws = sub.term_laws
-    morphisms = (
-        {}
-        if term_laws is None
-        else {
-            record.name: namespace.prefix("") + record.name
-            for record in term_laws.definitions
-        }
+    names, objects, morphisms = (
+        renamed.names,
+        renamed.object_names,
+        renamed.morphisms,
     )
-    bindings = TemplateBindings(objects=objects, values={}, morphisms=morphisms)
-    renamed_objects = tuple(
-        item.with_(
-            names=tuple(objects[value] for value in item.names),
-            init=item.init.with_(
-                expr=substitute_program_object(
-                    item.init.expr,
-                    {key: TypeName(name=value) for key, value in objects.items()},
-                )
-            ),
-        )
-        for item in module.statements
-        if isinstance(item, ObjectDecl) and isinstance(item.init, TypeFromExpr)
-    )
-    steps = [_rename_step(step, bindings, names) for step in program.draws]
+    steps = list(renamed.program.draws)
     observed = sub._observation
     if observed is None:
         raise ValueError("a mixture component emitted no observation")
@@ -1011,27 +941,21 @@ def _sub_emission(
     if written != observation.step():
         raise ValueError("a mixture component wrote a step after its observation")
     observation = observation.with_events(()).with_(weights=None)
-    parameters = tuple(
-        parameter.with_(
-            name=names.get(parameter.name, parameter.name),
-            type_expr=_indices(parameter.type_expr, objects),
-        )
-        for parameter in program.value_parameters
-    )
+    parameters = renamed.program.value_parameters
     targets = tuple(
         target.with_(
             site=names.get(target.site, namespace.name(target.site)),
             axes=tuple(objects.get(axis, axis) for axis in target.axes),
-            class_=f"{target.class_}{namespace.index}"
-            if target.class_ in namespace.auxiliaries
+            class_=f"{target.class_}{component.index}"
+            if target.class_ in component.auxiliaries
             else target.class_,
-            dpar=namespace.dpar(target.dpar),
+            dpar=component.dpar(target.dpar),
         )
         for target in sub.prior_targets
     )
     laws = tuple(
         renamed_law(
-            law, names, objects, namespace.prefix, namespace.prefix("") + law.identity
+            law, names, objects, namespace.predictor, namespace.prefix + law.identity
         )
         for law in sub.group_laws
     )
@@ -1042,18 +966,18 @@ def _sub_emission(
         if term.correlation_id is not None and term.shared
     )
     return _SubEmission(
-        objects=renamed_objects,
+        objects=renamed.objects,
         steps=tuple(steps),
         observation=observation,
         parameters=parameters,
         prior_targets=targets,
         group_laws=laws,
         correlation_ids=correlation_ids,
-        families=term_laws.renamed(morphisms) if term_laws is not None else None,
+        families=renamed.families,
         names=ProgramNames(
             inputs={
                 ColumnName(
-                    prefix=namespace.prefix(key.partition(":")[0]),
+                    prefix=namespace.predictor(key.partition(":")[0]),
                     column=key.partition(":")[2],
                 ).key: namespace.name(value)
                 for key, value in sub._names.inputs.items()
@@ -1067,12 +991,12 @@ def _sub_emission(
     )
 
 
-def _namespaced_owner(namespace: _Namespace, owner: str) -> str:
+def _namespaced_owner(namespace: Namespace, owner: str) -> str:
     """Rename the owner of a private binding into a mixture parameter.
 
     Parameters
     ----------
-    namespace : _Namespace
+    namespace : Namespace
         Names of the mixture parameter.
     owner : str
         Predictor namespace, followed by the parts of a group coefficient.
@@ -1083,7 +1007,7 @@ def _namespaced_owner(namespace: _Namespace, owner: str) -> str:
         The owner in the mixture program.
     """
     prefix, separator, rest = owner.partition("|")
-    return namespace.prefix(prefix) + separator + rest
+    return namespace.predictor(prefix) + separator + rest
 
 
 def _component_formula(main: Formula, location: Formula) -> Formula:
@@ -1598,9 +1522,7 @@ def emit_mixture(
                 f"mixture component {index} requires its location formula 'mu{index}'"
             )
         auxiliaries = tuple(aux.name for aux in component.aux_params)
-        namespace = _Namespace(
-            location="mu", index=index, auxiliaries=auxiliaries, shared=shared
-        )
+        parameter = _Component(location="mu", index=index, auxiliaries=auxiliaries)
         local_formulas = {
             aux: lens._distributional[f"{aux}{index}"]
             for aux in auxiliaries
@@ -1623,7 +1545,8 @@ def emit_mixture(
             lens,
             component,
             component_formula,
-            namespace,
+            parameter,
+            shared,
             distributional=local_formulas,
             fixed_parameters=local_fixed,
             binomial_trials=trials,
@@ -1756,7 +1679,6 @@ def emit_mixture(
             if predictor is None:
                 logits.append(LetExprLiteral(value=0.0))
                 continue
-            namespace = _Namespace(location="theta", index=index, shared=shared)
             emission = _sub_emission(
                 lens,
                 families["gaussian"],
@@ -1764,7 +1686,8 @@ def emit_mixture(
                 predictor.with_(
                     response_layout=predictor.response_layout.with_(category_levels=())
                 ),
-                namespace,
+                _Component(location="theta", index=index),
+                shared,
                 distributional={},
                 fixed_parameters={"sigma": 1.0},
                 binomial_trials=None,

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
-from typing import TypeVar, cast
 
 import didactic.api as dx
 import torch
@@ -23,23 +22,18 @@ from quivers.dsl.ast_nodes import (
     ObjectDecl,
     ProgramDecl,
     ProgramStep,
-    QiecIndexName,
     QiecValueParameter,
     SampleStep,
     ScoreStep,
     Statement,
-    TypeFromExpr,
     LetStep,
     ObserveStep,
     TypeName,
 )
 from quivers.dsl.program_templates import (
-    TemplateBindings,
     _bound_names,
-    _rename_step,
-    substitute_program_object,
 )
-from quivers.dsl.step_resolution import _step_value_names
+from quivers.formulas._blocks import Namespace, rename_program
 from quivers.formulas._ast import (
     _add,
     _call,
@@ -101,8 +95,6 @@ from quivers.formulas._joint_residual import (
     recursive_residual_record,
 )
 from quivers.formulas.formula import Formula, FormulaData, RandomTerm, _qvr_name
-
-_Value = TypeVar("_Value")
 
 #: Response label to its prepared lens and formula.
 type _Components = Mapping[str, tuple[FormulaToQVRModule, Formula]]
@@ -407,35 +399,6 @@ def _normalized_components(
     return result, levels
 
 
-def _indices(value: _Value, objects: Mapping[str, str]) -> _Value:
-    """Rename nominal indices throughout a generated runtime parameter type.
-
-    Parameters
-    ----------
-    value : _Value
-        A type expression, a tuple of them, or a leaf field value.
-    objects : Mapping[str, str]
-        Local object names and their namespaced names.
-
-    Returns
-    -------
-    _Value
-        The value with every nominal index renamed, of the same type.
-    """
-    if isinstance(value, QiecIndexName):
-        return value.with_(name=objects.get(value.name, value.name))
-    if isinstance(value, tuple):
-        return cast(_Value, tuple(_indices(item, objects) for item in value))
-    if isinstance(value, dx.Model):
-        return value.with_(
-            **{
-                key: _indices(getattr(value, key), objects)
-                for key in type(value).__field_specs__
-            }
-        )
-    return value
-
-
 def _namespace(
     name: str,
     lens: FormulaToQVRModule,
@@ -495,22 +458,6 @@ def _namespace(
     )
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     prefix = "response_" + _qvr_name(name) + "__"
-    objects = {
-        value: shared_objects.get(value, prefix + value)
-        for item in module.statements
-        if isinstance(item, ObjectDecl)
-        for value in item.names
-    }
-    variables = set(_bound_names(program.draws)) | {
-        parameter.name for parameter in program.value_parameters
-    }
-    variables.update(
-        value for step in program.draws for value in _step_value_names(step)
-    )
-    variables.update(
-        law.support_site for law in lens.group_laws if law.support_site is not None
-    )
-    names = {value: prefix + value for value in variables - global_names}
     explicit_inputs = supplied_inputs or {}
     supplied_inputs = lens.symbolic_column_expressions(formula)
     symbolic = set(supplied_inputs)
@@ -533,74 +480,42 @@ def _namespace(
         for value, expression in supplied_inputs.items()
         if value in known_inputs
     }
-    for value in supplied_inputs:
-        names.setdefault(value, prefix + value)
-    # Two responses may draw from one law over different coordinates.
-    laws = lens.term_laws
-    morphisms = (
-        {}
-        if laws is None
-        else {record.name: prefix + record.name for record in laws.definitions}
+    renamed = rename_program(
+        module,
+        Namespace(
+            prefix=prefix,
+            shared=frozenset(global_names),
+            shared_objects=dict(shared_objects),
+        ),
+        sites=(
+            law.support_site for law in lens.group_laws if law.support_site is not None
+        ),
+        inputs=supplied_inputs,
+        omitted=supplied_inputs.keys() | global_names,
+        # Two responses may draw from one law over different coordinates.
+        laws=lens.term_laws,
     )
+    names = renamed.names
     families = lens.response_laws
-    if laws is not None:
-        laws = laws.renamed(morphisms)
-        families = laws if families is None else families.with_catalog(laws)
-    bindings = TemplateBindings(objects=objects, values={}, morphisms=morphisms)
-    parameters = tuple(
-        parameter.with_(
-            name=names.get(parameter.name, parameter.name),
-            type_expr=_indices(parameter.type_expr, objects),
+    if renamed.families is not None:
+        families = (
+            renamed.families
+            if families is None
+            else families.with_catalog(renamed.families)
         )
-        for parameter in program.value_parameters
-        if parameter.name not in supplied_inputs and parameter.name not in global_names
+    statements = (
+        *renamed.objects,
+        renamed.program.with_(
+            draws=(
+                *(
+                    LetStep(name=names[value], value=expression)
+                    for value, expression in supplied_inputs.items()
+                ),
+                *renamed.program.draws,
+            )
+        ),
     )
-    statements = []
-    for item in module.statements:
-        if isinstance(item, ObjectDecl):
-            if not isinstance(item.init, TypeFromExpr):
-                raise TypeError(
-                    "formula objects require their retained finite declaration"
-                )
-            statements.append(
-                item.with_(
-                    names=tuple(objects[value] for value in item.names),
-                    init=item.init.with_(
-                        expr=substitute_program_object(
-                            item.init.expr,
-                            {
-                                key: TypeName(name=value)
-                                for key, value in objects.items()
-                            },
-                        )
-                    ),
-                )
-            )
-        elif isinstance(item, ProgramDecl):
-            statements.append(
-                item.with_(
-                    name=prefix + "model",
-                    value_parameters=parameters,
-                    domain=substitute_program_object(
-                        item.domain,
-                        {key: TypeName(name=value) for key, value in objects.items()},
-                    ),
-                    codomain=substitute_program_object(
-                        item.codomain,
-                        {key: TypeName(name=value) for key, value in objects.items()},
-                    ),
-                    draws=(
-                        *(
-                            LetStep(name=names[value], value=expression)
-                            for value, expression in supplied_inputs.items()
-                        ),
-                        *(_rename_step(step, bindings, names) for step in item.draws),
-                    ),
-                    return_vars=tuple(
-                        names.get(value, value) for value in item.return_vars
-                    ),
-                )
-            )
+    objects = renamed.object_names
     return _ResponseEmission(
         name,
         prefix,
@@ -612,24 +527,6 @@ def _namespace(
         objects,
         families,
     )
-
-
-def _renamed(names: Mapping[str, str], value: str | None) -> str | None:
-    """Rename an optional binding, keeping names outside the namespace.
-
-    Parameters
-    ----------
-    names : Mapping[str, str]
-        Local names and their namespaced names.
-    value : str or None
-        Optional local name.
-
-    Returns
-    -------
-    str or None
-        The namespaced name, the name itself when it is not renamed, or None.
-    """
-    return None if value is None else names.get(value, value)
 
 
 def _law(
