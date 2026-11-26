@@ -48,6 +48,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _add, _factor, _index, _mul, _var
 from quivers.formulas._design import SymbolicColumn
+from quivers.formulas.formula_parts import FormulaPart
 
 if TYPE_CHECKING:
     from quivers.formulas._name_scope import NameScope
@@ -490,32 +491,6 @@ def resolve_names(
             name = inputs[column.key] = fresh("data_" + name)
         used.add(name)
     return ProgramNames(inputs=inputs, bindings=renamed)
-
-
-type FormulaField = Literal[
-    "fixed_columns",
-    "design_terms",
-    "random_terms",
-    "latent_terms",
-    "monotonic_terms",
-    "offsets",
-]
-"""A field of `Formula` whose elements terms contribute."""
-
-
-class FormulaPart(ValueModel):
-    """One authored element of a formula.
-
-    Parameters
-    ----------
-    field : str
-        Field of `Formula` that holds the element.
-    key : str
-        Name of the element within the field.
-    """
-
-    field: FormulaField
-    key: str
 
 
 class Contribution(ValueModel):

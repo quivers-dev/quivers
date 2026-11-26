@@ -3816,7 +3816,7 @@ def _assemble_fit(
             group_laws=prepared.complement.group_laws,
             level_sites=prepared.complement.level_sites,
             prior_targets=prepared.complement.prior_targets,
-            predictors=prepared.formula.lens.planned(prepared.formula.formula),
+            predictors=prepared.formula.lens._planned(prepared.formula.formula),
         ),
     )
 

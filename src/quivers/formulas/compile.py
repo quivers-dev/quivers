@@ -216,7 +216,6 @@ from quivers.formulas._term_emission import (
     emit_predictor,
 )
 from quivers.formulas._term import (
-    FormulaPart,
     OutputAxis,
     ProgramNames,
     SiteDecl,
@@ -227,6 +226,7 @@ from quivers.formulas._term import (
     join_catalogs,
     resolve_names,
 )
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.formulas.formula import (
     Formula,
     FormulaData,
@@ -1038,7 +1038,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             return response if response is not None else self._term_laws
         return response.with_catalog(self._term_laws)
 
-    def planned(self, formula: Formula) -> tuple[Predictor, ...]:
+    def _planned(self, formula: Formula) -> tuple[Predictor, ...]:
         """Return the predictors of the latest forward pass.
 
         Parameters
@@ -1064,7 +1064,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             None,
         )
 
-    def terms(
+    def _terms(
         self, formula: Formula, rows: RowSource | None = None
     ) -> tuple[Term, ...]:
         """List the terms of every linear predictor.
@@ -1926,7 +1926,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             )
         obs.update(
-            bind_inputs(item for term in self.terms(formula) for item in term.inputs())
+            bind_inputs(item for term in self._terms(formula) for item in term.inputs())
         )
         if self._predictor_graph is not None:
             from quivers.formulas._predictor_graph import graph_input_bindings
@@ -3091,7 +3091,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         return _prior_lower_bound(result, lower).with_(index=index)
 
-    def draw_site(self, site: SiteDecl) -> SampleStep:
+    def _draw_site(self, site: SiteDecl) -> SampleStep:
         """Draw a declared site from its configured or default prior.
 
         A default prior is scaled to the design column its coefficient

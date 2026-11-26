@@ -44,7 +44,6 @@ from quivers.formulas._smooth import BasisTerm
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
-    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -60,6 +59,7 @@ from quivers.formulas._term import (
     Term,
     column_rms,
 )
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.formulas.family import Family, Link, links
 from quivers.formulas.formula import FixedColumn, Formula, RandomTerm
 

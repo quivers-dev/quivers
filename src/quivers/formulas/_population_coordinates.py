@@ -45,7 +45,6 @@ from quivers.formulas._variable_catalogue import brms_rename
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
-    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -62,6 +61,7 @@ from quivers.formulas._term import (
     column_inputs,
     column_rms,
 )
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.formulas.formula import FixedColumn, Formula
 
 INTERCEPT = "intercept"

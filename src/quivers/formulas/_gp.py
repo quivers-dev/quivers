@@ -80,7 +80,6 @@ from quivers.formulas._term import (
     COORDINATE,
     AxisDecl,
     EffectSource,
-    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     coordinate_scopes,
@@ -96,6 +95,7 @@ from quivers.formulas._term import (
     over_output,
     read_only,
 )
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 

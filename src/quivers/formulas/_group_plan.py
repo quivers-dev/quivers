@@ -65,7 +65,6 @@ from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
-    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -77,6 +76,7 @@ from quivers.formulas._term import (
     SiteDecl,
     column_inputs,
 )
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.formulas.formula import FixedColumn, Formula, RandomTerm, _qvr_name
 
 if TYPE_CHECKING:

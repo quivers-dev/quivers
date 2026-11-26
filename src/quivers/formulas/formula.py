@@ -75,7 +75,7 @@ from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._latent_effects import LatentTerm
 from quivers.formulas._priors import PriorTarget
-from quivers.formulas._term import FormulaField, FormulaPart
+from quivers.formulas.formula_parts import FormulaField, FormulaPart
 from quivers.formulas._ordered_contrasts import apply_ordered_contrasts
 from quivers.formulas._ordinal_coding import (
     CategoryCoding,

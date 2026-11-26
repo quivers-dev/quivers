@@ -510,7 +510,7 @@ def prepare_joint_prediction(
     fresh_sites = tuple(
         emission.responses[name].names.get(site.name, site.name)
         for name, (lens, formula) in components.items()
-        for term in lens.terms(formula, sources[name])
+        for term in lens._terms(formula, sources[name])
         for site in term.sites()
         if site.fresh
     )
@@ -594,7 +594,7 @@ def prepare_joint_prediction(
                             *law_inputs(lens.group_laws),
                             *(
                                 item
-                                for term in lens.terms(formula, sources[name])
+                                for term in lens._terms(formula, sources[name])
                                 for item in term.inputs()
                             ),
                         )

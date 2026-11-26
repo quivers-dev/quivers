@@ -71,7 +71,6 @@ from quivers.formulas._monotonic import modified_call
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
-    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -88,6 +87,7 @@ from quivers.formulas._term import (
     SiteDecl,
     design_declarations,
 )
+from quivers.formulas.formula_parts import FormulaPart
 
 if TYPE_CHECKING:
     from quivers.formulas._name_scope import NameScope

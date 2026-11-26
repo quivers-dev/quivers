@@ -465,7 +465,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 group_laws=complement.group_laws,
                 level_sites=complement.level_sites,
                 prior_targets=complement.prior_targets,
-                predictors=lens.planned(response.formula),
+                predictors=lens._planned(response.formula),
             ),
         )
         self.response_fits[name] = view

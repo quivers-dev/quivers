@@ -69,7 +69,7 @@ class ProgramEmission:
         SampleStep
             The draw over the site's axis.
         """
-        return self._lens.draw_site(site)
+        return self._lens._draw_site(site)
 
     def gathered(
         self, key: tuple[str, str, str], law: GroupBlockLaw | None

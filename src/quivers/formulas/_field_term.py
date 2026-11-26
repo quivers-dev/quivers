@@ -39,7 +39,6 @@ from quivers.formulas._term import (
     coordinate_scopes,
     AxisDecl,
     EffectSource,
-    FormulaPart,
     PopulationCoefficient,
     VariableDecl,
     SmoothPart,
@@ -50,6 +49,7 @@ from quivers.formulas._term import (
     OutputAxis,
     SiteDecl,
 )
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.formulas._variable_catalogue import CHOLESKY_CLASSES, time_label
 from quivers.formulas.formula import Formula
 

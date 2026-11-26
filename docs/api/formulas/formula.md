@@ -121,3 +121,11 @@ states the syntax and the model.
 ::: quivers.formulas._grouping.GroupOptions
 
 ::: quivers.formulas._grouping.GroupLevelOptions
+
+## Formula parts
+
+`FormulaPart` names one authored element of a formula: the `Formula` field
+that holds it and its name there. `Formula.without` removes elements by
+part, and each element of `FormulaData` records the part it comes from.
+
+::: quivers.formulas.formula_parts

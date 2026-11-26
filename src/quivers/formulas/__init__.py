@@ -43,6 +43,7 @@ from quivers.formulas.formula import (
     RowSelection,
     formula_from_data,
 )
+from quivers.formulas.formula_parts import FormulaField, FormulaPart
 from quivers.formulas.family import (
     Link,
     AuxParam,
@@ -177,6 +178,8 @@ __all__ = [
     "RandomTerm",
     "Formula",
     "FormulaData",
+    "FormulaField",
+    "FormulaPart",
     "ResponseLayout",
     "ResponseModifiers",
     "CensoringSpec",

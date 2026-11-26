@@ -418,7 +418,7 @@ def prepare_prediction(
             observations=dict(retained_observations)
             | bind_inputs(
                 item
-                for term in lens.terms(fit.formula, source)
+                for term in lens._terms(fit.formula, source)
                 for item in term.inputs()
             ),
             rows=len(fit.formula.response_values),
@@ -519,7 +519,7 @@ def prepare_prediction(
         },
     )
     module, _ = specialized_lens._forward(specialized["mu"], rows=source)
-    terms = specialized_lens.terms(specialized["mu"], source)
+    terms = specialized_lens._terms(specialized["mu"], source)
     observations = finite_inputs(
         bind_inputs(item for term in terms for item in term.inputs())
     )
