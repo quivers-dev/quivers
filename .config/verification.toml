@@ -101,6 +101,16 @@ tests = [
 reads = ["docs/examples/source/*"]
 jobs = 1
 
+# The slow cells of the evidence harness: the long runs of the inference
+# consumers against their exact posteriors. The fast cells, the ledger and the
+# pins run in the library bucket.
+[[gate]]
+name = "evidence grid"
+marker = "slow"
+tests = ["tests/evidence"]
+reads = ["tests/evidence/*"]
+jobs = 1
+
 [[gate]]
 name = "documentation blocks"
 tests = ["tests/test_doc_blocks.py"]
