@@ -234,3 +234,21 @@ def run(fitted: BayesianFit, latents: Mapping[str, torch.Tensor]) -> Trace:
             torch.zeros(1, 1, dtype=torch.long),
             dict(fitted.observations) | dict(latents),
         )
+
+
+def log_joint(recorded: Trace) -> float:
+    """Return the log joint density of a trace.
+
+    Parameters
+    ----------
+    recorded : Trace
+        A trace.
+
+    Returns
+    -------
+    float
+        The sum of its scores.
+    """
+    value = recorded.log_joint
+    assert value is not None
+    return float(value.sum())

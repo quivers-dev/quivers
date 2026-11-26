@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from quivers.formulas import bf, fit, formula_to_qvr, set_rescor
+from quivers.formulas import MultivariateFit, bf, fit, formula_to_qvr, set_rescor
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.registry import LatentRegistry
 
@@ -48,6 +48,8 @@ def test_readers_key_each_block_by_its_response() -> None:
         num_steps=1,
         seed=0,
     )
+    assert isinstance(program, MultivariateFit)
+    assert isinstance(formula, MultivariateFit)
     names = LatentRegistry.from_model(
         program.program, observed_names=set(program.observations)
     ).names

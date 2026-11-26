@@ -19,7 +19,14 @@ from torch.distributions import constraints
 from quivers.formulas import fit, get_prior
 from quivers.formulas._program_kernel import support_law
 
-from tests.formulas._program_cases import BOUNDED, GAUSS, frame, latent_names, run
+from tests.formulas._program_cases import (
+    log_joint,
+    BOUNDED,
+    GAUSS,
+    frame,
+    latent_names,
+    run,
+)
 
 
 def _inverse(text: str, eta: float) -> float:
@@ -102,9 +109,7 @@ def test_a_replaced_site_adds_no_density_term() -> None:
     assert set(latent_names(fitted)) == {"dpar_lapse_intercept", "theta"}
     intercept = torch.tensor(0.7, dtype=torch.float64)
     theta = torch.tensor(-0.3, dtype=torch.float64)
-    joint = float(
-        run(fitted, {"dpar_lapse_intercept": intercept, "theta": theta}).log_joint.sum()
-    )
+    joint = log_joint(run(fitted, {"dpar_lapse_intercept": intercept, "theta": theta}))
     lapse = 0.5 * torch.sigmoid(intercept)
     p = lapse + (1.0 - 2.0 * lapse) * torch.sigmoid(theta)
     accept = torch.as_tensor(frame()["accept"].to_numpy(), dtype=torch.float64)

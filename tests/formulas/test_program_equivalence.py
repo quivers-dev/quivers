@@ -18,6 +18,7 @@ import torch
 from quivers.formulas import fit, mixture
 
 from tests.formulas._program_cases import (
+    log_joint,
     DECAY,
     GAUSS,
     MIX2,
@@ -57,12 +58,10 @@ def test_the_gaussian_program_is_the_gaussian_family() -> None:
     names = latent_names(program)
     assert set(names) == set(latent_names(family))
     values = _values(names, seed=1)
-    joint = float(run(program, values).log_joint.sum())
-    assert joint == pytest.approx(
-        float(run(family, values).log_joint.sum()), rel=TOLERANCE
-    )
+    joint = log_joint(run(program, values))
+    assert joint == pytest.approx(log_joint(run(family, values)), rel=TOLERANCE)
     other = _svi("y ~ x + (1 | g)", distributional={"sigma": "~ x"})
-    assert abs(joint - float(run(other, values).log_joint.sum())) > 1e-3
+    assert abs(joint - log_joint(run(other, values))) > 1e-3
 
 
 def test_the_decay_program_is_the_nonlinear_formula() -> None:
@@ -83,17 +82,15 @@ def test_the_decay_program_is_the_nonlinear_formula() -> None:
     tensors = {
         name: torch.tensor(value, dtype=torch.float64) for name, value in values.items()
     }
-    joint = float(run(program, tensors).log_joint.sum())
+    joint = log_joint(run(program, tensors))
     renamed = {pairs[name]: value for name, value in tensors.items()}
-    assert joint == pytest.approx(
-        float(run(formula, renamed).log_joint.sum()), rel=TOLERANCE
-    )
+    assert joint == pytest.approx(log_joint(run(formula, renamed)), rel=TOLERANCE)
     growth = _svi(
         "y ~ a * exp(b * x)",
         nonlinear={"a": "~ 1", "b": "~ 1"},
         priors={"sigma": "HalfNormal(1.0)"},
     )
-    assert abs(joint - float(run(growth, renamed).log_joint.sum())) > 1e-3
+    assert abs(joint - log_joint(run(growth, renamed))) > 1e-3
 
 
 def test_the_two_class_program_is_the_gaussian_mixture_row_by_row() -> None:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from quivers.formulas import fit
+from quivers.formulas import BayesianFit, fit
 from quivers.formulas._program_kernel import ProgramKernelSpec
 from quivers.modeling.artifact import load_fit, save_fit
 
@@ -37,6 +37,7 @@ def test_a_saved_fit_loads_without_its_program_file(tmp_path: Path) -> None:
     save_fit(fitted, target)
     program.unlink()
     loaded = load_fit(target)
+    assert isinstance(loaded, BayesianFit)
     after = loaded.log_likelihood(num_samples=5)["accept"]
     torch.testing.assert_close(after, before, rtol=0.0, atol=0.0)
     law = loaded.family.kernel_law

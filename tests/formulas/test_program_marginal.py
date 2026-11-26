@@ -22,7 +22,14 @@ import torch
 from quivers.effects.units import UnfactoredObservationError
 from quivers.formulas import fit, formula_to_qvr
 
-from tests.formulas._program_cases import AROUND, AROUND_ROWS, HALFWIDTH, pin, run
+from tests.formulas._program_cases import (
+    log_joint,
+    AROUND,
+    AROUND_ROWS,
+    HALFWIDTH,
+    pin,
+    run,
+)
 
 RES_LOGITS = torch.tensor([0.2, -0.1, 0.4], dtype=torch.float64)
 NOISE = torch.tensor(0.1, dtype=torch.float64)
@@ -83,7 +90,7 @@ def test_the_issue_program_shares_one_reading() -> None:
     fitted = _fit(AROUND)
     recorded = run(fitted, {"res_logits": RES_LOGITS, "noise": NOISE})
     shared = torch.logsumexp(_weights() + _row_terms().sum(0), -1) + _prior()
-    assert float(recorded.log_joint.sum()) == pytest.approx(float(shared), rel=1e-10)
+    assert log_joint(recorded) == pytest.approx(float(shared), rel=1e-10)
 
 
 def test_the_grouped_program_reads_once_per_row() -> None:
@@ -91,7 +98,7 @@ def test_the_grouped_program_reads_once_per_row() -> None:
     recorded = run(fitted, {"res_logits": RES_LOGITS, "noise": NOISE})
     per_row = torch.logsumexp(_weights() + _row_terms(), -1)
     expected = per_row.sum() + _prior()
-    assert float(recorded.log_joint.sum()) == pytest.approx(float(expected), rel=1e-10)
+    assert log_joint(recorded) == pytest.approx(float(expected), rel=1e-10)
     pinned = pin(
         fitted,
         {
@@ -103,7 +110,7 @@ def test_the_grouped_program_reads_once_per_row() -> None:
     torch.testing.assert_close(scores, per_row, rtol=1e-10, atol=1e-12)
     # The rows' scores sum to the marginal score of the block.
     assert float(scores.sum()) == pytest.approx(
-        float(recorded.log_joint.sum() - _prior()), rel=1e-10
+        float(log_joint(recorded) - float(_prior())), rel=1e-10
     )
 
 

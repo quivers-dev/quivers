@@ -84,6 +84,7 @@ class FormulaFitOptions(JointFitOptions, total=False):
     """
 
     family: str | Family
+    parameters: Mapping[str, str] | None
     weights: str | None
     decision: str | None
     distributional: Mapping[str, str | NonlinearExpression] | None

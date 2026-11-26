@@ -1063,7 +1063,7 @@ def bf(
         strict=family is not None,
     )
 
-    def response(text: str) -> ResponseModel:
+    def response_model(text: str) -> ResponseModel:
         """Build one response with this call's shared options.
 
         Parameters
@@ -1099,7 +1099,7 @@ def bf(
 
     bound = _MVBIND.match(formula)
     if bound is None:
-        single = response(formula)
+        single = response_model(formula)
         # mi() and me() terms compile through the joint program, so one
         # response with them is a one-response joint formula.
         if uses_missing_syntax(formula, *formulas):
@@ -1108,7 +1108,7 @@ def bf(
     names = [name.strip() for name in bound.group("names").split(",") if name.strip()]
     if len(names) < 2:
         raise ValueError("mvbind() requires at least two response variables")
-    return mvbf(*(response(name + " " + bound.group("rest")) for name in names))
+    return mvbf(*(response_model(name + " " + bound.group("rest")) for name in names))
 
 
 def uses_missing_syntax(*formulas: str) -> bool:
