@@ -1481,6 +1481,7 @@ def condition_handler(
     extra: ExtraValuePolicy = ExtraValuePolicy.ERROR,
     answer_type: TypeExpr = ANSWER,
     key: str = "condition",
+    at_run: Callable[[object, object], object] | None = None,
 ) -> RuntimeHandler:
     """Supply likelihood observations and emit their densities as Score.
 
@@ -1510,6 +1511,10 @@ def condition_handler(
     key
         Distinguishes this handler from others of the same name,
         entering its derived identity.
+    at_run
+        Given an observation and the site's sampleable, the value of the
+        run being executed, for observations given once for every run of
+        a call; ``None`` takes each observation as it is.
 
     Returns
     -------
@@ -1582,6 +1587,8 @@ def condition_handler(
                     raise InvalidHandlerError(f"missing observation for site {site!r}")
                 return Forward()
             value = observations[key]
+            if at_run is not None:
+                value = at_run(value, sampleable)
             _require(
                 value,
                 result_validator,

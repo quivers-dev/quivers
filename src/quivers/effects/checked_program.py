@@ -28,6 +28,7 @@ them.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 import math
 
 import torch
@@ -44,9 +45,10 @@ from quivers.effects.base import (
     _handler_stack,
     handle_chain,
 )
-from quivers.effects.program_module import ProgramKernel
+from quivers.effects.program_module import PARAM_INSTANCE, ProgramKernel
 from quivers.effects.trace_handler import TraceHandler
 from quivers.qiec.builtins import (
+    PARAM,
     ExtraValuePolicy,
     MissingValuePolicy,
     condition_handler,
@@ -55,8 +57,9 @@ from quivers.qiec.builtins import (
     score_handler,
 )
 from quivers.qiec.checking import KernelRegistry
-from quivers.qiec.effects import ComputationType, EffectRow
+from quivers.qiec.effects import ComputationType, EffectRow, instantiate_effect
 from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.distributions import RuntimeDistribution
 from quivers.qiec.evaluator import Evaluator, RuntimeAttachments, RuntimeRequest
 from quivers.qiec.execution import CoreRuntimeProvider
 from quivers.qiec.identifiers import ComputationId, SourceOrigin
@@ -120,6 +123,40 @@ def _run_axis(value: torch.Tensor, runs: int) -> bool:
         Whether it leads with an axis of length ``runs``.
     """
     return value.dim() >= 1 and int(value.shape[0]) == runs
+
+
+def _at_run(value: object, sampleable: object, *, row: int, runs: int) -> object:
+    """A given site value's entry for one run of a call.
+
+    A value has one axis more than a draw of the site, leading with the
+    run axis, when it is given once per run; otherwise it is one value
+    every run shares. A draw's shape is the plate's axes followed by the
+    family's own, which the site's distribution states.
+
+    Parameters
+    ----------
+    value : object
+        The value as the call gives it.
+    sampleable : object
+        The site's distribution.
+    row : int
+        The run.
+    runs : int
+        The number of runs of the call.
+
+    Returns
+    -------
+    object
+        The run's value.
+    """
+    if not isinstance(value, torch.Tensor) or not isinstance(
+        sampleable, RuntimeDistribution
+    ):
+        return value
+    rank = len(sampleable.batch) + len(sampleable.event) + len(sampleable.natural)
+    if value.dim() == rank + 1 and int(value.shape[0]) == runs:
+        return value[row]
+    return value
 
 
 def _computation(module: QiecModule, entry: ProgramEntry) -> NamedComputation:
@@ -223,6 +260,21 @@ class CheckedProgram(MonadicProgram):
         self._random = random
         self._score = score
         self._param = _instance(module, "Param")
+        # A program that reads no learned weight performs no Param
+        # instance; the kernel's is then one the program never performs,
+        # so nothing installed on it reaches the run.
+        param = self._param or NamedEffectInstance(
+            name=PARAM_INSTANCE,
+            entry=instantiate_effect(
+                PARAM, module=module.module, lexical_path=("instances", PARAM_INSTANCE)
+            ),
+            origin=SourceOrigin(
+                module=module.module,
+                structural_path=("instances", PARAM_INSTANCE),
+                role="effect-instance",
+                source_protocol=module.source_protocol,
+            ),
+        )
         self._kernel = ProgramKernel(
             module=module,
             program=self,
@@ -232,7 +284,7 @@ class CheckedProgram(MonadicProgram):
             data=tuple(parameter.name for parameter in self._entry.parameters),
             random=random,
             score=score,
-            param=self._param if self._param is not None else random,
+            param=param,
             result_type=self._computation.type.result,
         )
         self._run_modules: dict[
@@ -256,6 +308,18 @@ class CheckedProgram(MonadicProgram):
             f"program {self._name!r} has no compiled steps; it runs on the "
             f"reference machine"
         )
+
+    @property
+    def steps_list_sites(self) -> bool:
+        """No: the sites are those a run of the checked computation reaches.
+
+        Returns
+        -------
+        bool
+            ``False``; how many sites a run reaches, and which, may depend
+            on the values it draws.
+        """
+        return False
 
     @property
     def module(self) -> QiecModule:
@@ -309,9 +373,8 @@ class CheckedProgram(MonadicProgram):
         """One run's data and its given sites.
 
         A datum is given once per run when it leads with the run axis and
-        has one axis more than its checked type; a site's value when it
-        leads with the run axis. Every other value is one value every run
-        shares.
+        has one axis more than its checked type, and is one value every
+        run shares otherwise.
 
         Parameters
         ----------
@@ -330,8 +393,9 @@ class CheckedProgram(MonadicProgram):
         Returns
         -------
         tuple[dict[str, object], dict[str, torch.Tensor]]
-            The entry's arguments by parameter name, and the run's values
-            of its given sites.
+            The entry's arguments by parameter name, and the values of the
+            given sites as the call gives them; which entry of a site's
+            value is the run's is read when the run reaches the site.
         """
         data: dict[str, object] = {}
         domain = [p for p in self._entry.parameters if p.role == "domain"]
@@ -365,7 +429,7 @@ class CheckedProgram(MonadicProgram):
                     types[name], value[row] if per_run else value, numbers
                 )
             elif name not in types:
-                sites[name] = value[row] if _run_axis(value, runs) else value
+                sites[name] = value
         return data, sites
 
     def _run_module(
@@ -514,6 +578,7 @@ class CheckedProgram(MonadicProgram):
                     extra=ExtraValuePolicy.ERROR,
                     answer_type=result_type,
                     key="checked-given",
+                    at_run=partial(_at_run, row=run.run_index, runs=run.runs),
                 ),
             ),
         ]
@@ -628,6 +693,13 @@ class CheckedProgram(MonadicProgram):
         evaluator = Evaluator(
             attachments, module=module, type_validator=self._provider.validator_for
         )
+        missing = [p.name for p in wrapper.parameters if p.name not in data]
+        if missing:
+            raise ValueError(
+                f"program {self._name!r} is not given its parameter(s) "
+                f"{', '.join(repr(name) for name in missing)}: a checked program "
+                "scores an observation of a datum it is given and does not draw it"
+            )
         environment = {
             parameter: machine_value(parameter.type, data[parameter.name], numbers)
             for parameter in wrapper.parameters

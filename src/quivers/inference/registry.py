@@ -780,8 +780,11 @@ def _input_dependent_sites(program: MonadicProgram) -> bool:
     Returns
     -------
     bool
-        ``True`` when it calls or scans a program that draws.
+        ``True`` when its steps do not list its sites, or it calls or
+        scans a program that draws.
     """
+    if not program.steps_list_sites:
+        return True
     for spec in program.steps:
         if isinstance(spec, Call | Scan):
             inner = spec.program if isinstance(spec, Call) else spec.step
@@ -913,9 +916,10 @@ class LatentRegistry:
         observed: frozenset[str] = frozenset(observed_names)
         if _input_dependent_sites(model):
             raise ValueError(
-                "LatentRegistry.from_model: the program scans or calls a program "
-                "that draws, so how many latent sites it has depends on its "
-                "input; build the registry from a run with "
+                "LatentRegistry.from_model: the program's steps do not list its "
+                "sites (it runs a checked computation, or scans or calls a "
+                "program that draws), so how many latent sites it has depends "
+                "on its input; build the registry from a run with "
                 "LatentRegistry.from_trace(model, trace(model, x, observations))"
             )
         sites: dict[str, LatentSite] = {}

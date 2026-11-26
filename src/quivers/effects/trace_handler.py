@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 
 from quivers.continuous.program_steps import Let, Score
+from quivers.continuous.plate import PlateDraw
 from quivers.continuous.tensor_backend import site_morphism
 from quivers.effects.base import EffectHandler, Installation, RunContext
 from quivers.effects.program_module import HostStep
@@ -313,16 +314,24 @@ class TraceHandler(EffectHandler):
         """
         label, drawn_from = event.arguments
         assert isinstance(label, str)
-        sampleable = (
-            TorchSampleable(
-                morphism=site_morphism(drawn_from),
+        value = event.result
+        assert isinstance(value, torch.Tensor)
+        carries_run_axis = run.site_carries_run_axis(label)
+        if isinstance(drawn_from, RuntimeDistribution):
+            # A machine run draws one run's value, which has no run axis.
+            # A site not drawn over a plate leads with the run axis in a
+            # trace, as a compiled program's does.
+            morphism = site_morphism(drawn_from)
+            sampleable = TorchSampleable(
+                morphism=morphism,
                 input=torch.zeros(0, dtype=drawn_from.numbers.real_dtype),
             )
-            if isinstance(drawn_from, RuntimeDistribution)
-            else drawn_from
-        )
+            if not isinstance(morphism, PlateDraw):
+                value = value.unsqueeze(0)
+                carries_run_axis = True
+        else:
+            sampleable = drawn_from
         assert isinstance(sampleable, TorchSampleable)
-        value = event.result
         assert isinstance(value, torch.Tensor)
         contributions = [
             item for item in run.contributions if item.key == event.address
@@ -337,7 +346,7 @@ class TraceHandler(EffectHandler):
             log_prob = torch.zeros(
                 value.shape[:1] if value.dim() > 0 else (1,), device=value.device
             )
-        self._run_axes[label] = run.site_carries_run_axis(label)
+        self._run_axes[label] = carries_run_axis
         return SampleSite(
             name=label,
             morphism=sampleable.declared,
