@@ -6,6 +6,11 @@ operational meaning against which lowerings and backend runtimes can be tested.
 Core terms remain serializable: host values and executable handler clauses live
 only in :class:`RuntimeAttachments` and are addressed by stable QIEC IDs.
 
+Every number the machine computes is a tensor of the run's
+`quivers.qiec.numbers.NumberDomain`, so a value keeps the gradient of everything it was computed
+from, through calls, recursion and handler clauses; a number is read as a host value only where a
+branch, an index into structured values, or an item key needs a discrete one.
+
 Handlers are lexical and deep.  A resumption reinstalls the matched handler and
 every inner continuation frame, whereas a handler clause is evaluated only in
 the outer context.  This distinction is easiest to make explicit with the CEK
@@ -81,6 +86,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
 )
+from quivers.qiec._distribution_axes import distribution_axes
 from quivers.qiec.canonical import sampled_element, tensor_shape
 from quivers.core.algebras import LOG_PROB
 from quivers.qiec.distributions import (
@@ -2526,8 +2532,6 @@ class Evaluator:
                 name: self._value(argument, environment)
                 for name, argument in value.arguments
             }
-            from quivers.qiec._distribution_axes import distribution_axes
-
             batch = tuple(_extent(axis) for axis in distribution_axes(value)[0])
             return RuntimeDistribution(
                 backend=self.distributions,
