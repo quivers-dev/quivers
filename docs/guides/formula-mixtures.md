@@ -260,7 +260,7 @@ probabilities = per_category.posterior_epred(new_data=choices.head(4), num_sampl
 assert probabilities.shape == (1, 5, 4, 3)
 ```
 
-A main formula without per-category formulas accepts every term of an
+The main formula and every per-category formula accept every term of an
 ordinary predictor. Each free category has its own coefficients, smooths,
 monotonic simplexes, Gaussian process hyperparameters, spatial fields, and
 group standard deviations (`simo_muB_mok1`, `lscale_muC_gpz`,
@@ -275,7 +275,7 @@ A prior with `dpar="muB"` governs the parameters of one category and leaves
 the others at their own priors.
 
 A category may also have a nonlinear expression of its own, given as a
-`NonlinearExpression` under its name. With a nonlinear main formula, every
+[`NonlinearExpression`](../api/formulas/fit.md#quivers.formulas.NonlinearExpression) under its name. With a nonlinear main formula, every
 category without a formula or expression of its own reads the main
 expression.
 
@@ -364,7 +364,10 @@ combined with a `sigma<c>` formula or fixed value.
 ## Count denominators, thresholds, and row subsets
 
 `y | rate(denom) ~ x` models a count over `denom` units of exposure for
-the poisson, negative_binomial, negbinomial2, and geometric families.
+the poisson, negative_binomial, negbinomial2, and geometric families, and
+for mixtures whose components all belong to them. Any other family,
+including a categorical or vector response, refuses `rate()` with a
+`ValueError`.
 The mean becomes `mu * denom` for every link, and the negative binomial
 shape is multiplied by `denom` as well, so a count over `denom` units is
 the sum of `denom` independent unit counts. The geometric family thus

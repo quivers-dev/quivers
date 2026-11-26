@@ -31,9 +31,12 @@ available through the `fit`, `get_prior`, and `default_prior` keyword
 
 Explicit rules win under either policy. The brms policy also centers the
 location and distributional intercepts, so the intercept prior means what it
-means in brms. Ordinal thresholds, mixture weights, baseline hazards, and
-structured latent terms keep their quivers defaults, because their
-coordinates differ from brms's.
+means in brms. The policy applies to categorical, simplex, ordinal, and
+mixture models too: each free category's centered intercept receives
+`StudentT(df=3.0, loc=0.0, scale=2.5)`, brms's `student_t(3, 0, 2.5)`, and a rule with `dpar="muB"` governs the
+parameters of one category. Ordinal thresholds, mixture weights, baseline
+hazards, and structured latent terms keep their quivers defaults, because
+their coordinates differ from brms's.
 
 <!-- python: run -->
 ```python
@@ -202,7 +205,7 @@ assert table.row("beta_z").prior == "constant(-3.0)"
 
 The regularized horseshoe [@piironen2017sparsity; @piironen2016hyperprior]
 and the R2D2 prior [@zhang2022r2d2] may cover several classes of one
-predictor. A rule marked `main=True` supplies the arguments, and every
+predictor. A rule marked `main=True` gives the arguments, and every
 shrinkage rule of the same response and parameter joins its hierarchy, as
 brms's `main = TRUE` does. A shrunken standard deviation is the shrinkage
 scale itself, as in brms, so its rule takes no bounds.
@@ -244,6 +247,11 @@ With `decomp="QR"`, the coefficients are sampled in scaled QR coordinates of
 the (centered) design, `bQ = XR b`, with class `b` priors on `bQ`, as brms
 does [@stanRegression]. Both maps are linear, so the reported coefficients,
 predictions on new rows, refits, and saved fits use the original scale.
+Both options apply to categorical, simplex, ordinal, and mixture models as
+well. A categorical predictor gives each free category its own centered
+intercept on the same transformed design, an ordinal predictor centers its
+location intercept and keeps its thresholds in place, and category-specific
+`cs()` columns stay outside the transformed design, as in brms.
 
 <!-- python: run -->
 ```python

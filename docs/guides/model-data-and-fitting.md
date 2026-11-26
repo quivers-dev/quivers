@@ -2,7 +2,7 @@
 
 A model has one input contract: the external symbols and types inferred by the
 Quivers Indexed Effect Core (QIEC). The Python interface uses this contract to
-(i) infer finite dimensions from supplied values; (ii) validate the binding; and
+(i) infer finite dimensions from given values; (ii) validate the binding; and
 (iii) distinguish observations from covariates when predicting.
 
 The following sections declare a model, inspect and bind its inputs, fit it with
@@ -48,7 +48,7 @@ A reusable program can bind its row object in a static telescope instead of
 using a module-level object, as in
 `program regression[Row : FinSet](x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out`.
 The dependency of both tensor types on `Row` states that their lengths must
-agree. Inference of an omitted extent uses the supplied values as evidence;
+agree. Inference of an omitted extent uses the given values as evidence;
 it does not turn the extent into a latent variable or a runtime array.
 
 If a count is instead a value read by the model, declare it in the runtime
@@ -141,7 +141,7 @@ Prediction releases `y` and retains `x`. `fit.samples` preserves separate chain
 and draw axes. These methods reuse the package's existing samplers, predictive
 execution, and convergence estimators.
 
-For variational inference, choose a step budget and optionally supply a guide
+For variational inference, choose a step budget and optionally give a guide
 factory, objective, optimizer factory, or callback:
 
 ```python
@@ -154,7 +154,7 @@ losses = variational.losses
 ```
 
 The default guide is built from a trace, including a scan's individual sites.
-Variational draws have one pseudo-chain; they do not supply MCMC convergence
+Variational draws have one pseudo-chain; they give no MCMC convergence
 evidence. `summary()` thus requires an MCMC result.
 For formula-generated fits, the [posterior workflow](analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
 describes labeled coefficients, retained group levels, linear predictors, and
@@ -166,7 +166,7 @@ instance when several methods should use the same initialized model. A method's
 `run(bound)` can also return its own result type: messages, optimization bounds,
 and certificates need not be converted into posterior draws.
 
-`SMCMethod` supplies a concrete instance of this result contract. It runs the
+`SMCMethod` is a concrete instance of this result contract. It runs the
 existing likelihood-tempered sampler and returns `SMCResult` directly:
 
 <!-- python: skip -->
@@ -185,7 +185,7 @@ print(particles.temperatures, particles.ess, particles.acceptance)
 
 The result retains particles and the sampler's normalizing-constant estimate,
 temperature ladder, weight ESS, acceptance, and evaluation count. These are
-SMC diagnostics; the particles do not supply recorded-chain convergence
+SMC diagnostics; the particles give no recorded-chain convergence
 diagnostics. A data-evidence interpretation requires the declared prior and
 likelihood to define that comparison. Observation weights define likelihood
 powers, so their normalizing constant need not be an ordinary data probability.
@@ -263,6 +263,11 @@ the rows with an identity index map. When rows share a value, the method raises
 whose message names the rows and the program that gives each row its own
 value. That program is another model, so the choice is the modeler's.
 
+A response under `marginalize` is a site like any other response. Prediction
+draws an unbound marginalized response from its collapsed law: the class of
+each unit given the responses already bound, then the rows. Posterior
+expectations of such a response are the exact class-weighted means.
+
 `unit_log_likelihood` returns the log likelihood of each
 [unit](../semantics/programs.md#271-units-and-row-scores) instead: one per group
 of a grouped block, one per row of an ordinary observation, and one for a block
@@ -299,7 +304,7 @@ while reusing an analysis.
 
 A checked input shape can state an exact relation such as
 `Tensor[Real]([nat_add(n, 1)])`. Binding a vector of length four then
-fixes the static extent `n` at three. Multiple checked shapes may supply
+fixes the static extent `n` at three. Multiple checked shapes may give
 coupled affine equations; binding solves them together and refuses
 conflicting or nonintegral evidence. An underdetermined relation requires
 further data or explicit static arguments. These relations concern
@@ -310,7 +315,7 @@ gives an executable typed computation and the distinction from runtime
 
 ## Infer only dimensions determined by data
 
-A supplied tensor's checked shape provides exact extent evidence. If `x` and `y`
+A given tensor's checked shape provides exact extent evidence. If `x` and `y`
 share `Row`, they must fix it at the same length. A shared scalar parameter of a
 plated family does not determine the plate's size.
 
@@ -329,7 +334,7 @@ Pass scalar hyperparameters with the other runtime inputs, as in
 Their annotations belong in the runtime telescope, as in
 `program lda(alpha : Real, beta : Real, ...) : Word -> Word`.
 Object and morphism parameters belong in the static telescope instead.
-The Python `parameters=` mapping supplies static arguments, such as a known
+The Python `parameters=` mapping holds static arguments, such as a known
 extent; runtime scalar values belong in `data`. Rebinding for prediction must
 retain these scalar inputs along with the other covariates.
 Explicit type actuals use the same mapping, as in
@@ -348,8 +353,7 @@ silently selecting a fallback size.
 `qvr check` checks the symbolic QIEC program before data are available; binding
 then specializes its dimensions and runs the tensor compiler's checks. A
 `CheckedProgram` retains its checked schema and can be passed to a custom method,
-but the tensor fitting components refuse it pending
-[enhancement #232](https://github.com/quivers-dev/quivers/issues/232).
+but the tensor fitting components refuse it.
 
 Formula fits retain factor coding and support checked new-group prediction
 policies. Portable fitted artifacts and the wider regression interface still

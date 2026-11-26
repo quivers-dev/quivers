@@ -92,7 +92,7 @@ assert comparison.complete
 assert comparison.log_predictive_density.shape == (4,)
 ```
 
-For another data backend or partition geometry, supply an explicit nonmutating
+For another data backend or partition geometry, pass an explicit nonmutating
 partitioner to the source adapter, or use the shared
 [`refit_callback`](../api/modeling.md#quivers.modeling.refit.refit_callback)
 with a recipe and raw held-out likelihood accessor. The callback snapshots its
@@ -135,7 +135,7 @@ multiplies held-out densities by training likelihood weights.
 `fit` arguments, including the formula, family, priors, method, and budgets.
 The recipe captures every argument through that fitting signature. Unknown
 overrides fail before model preparation. A method change clears inherited
-budgets belonging to the previous method; explicitly supplied incompatible
+budgets belonging to the previous method; explicitly given incompatible
 budgets still raise the usual fitting error.
 
 <!-- python: run -->
@@ -177,7 +177,7 @@ With `subset(keep)`, the callback maps each included-row position back to its
 original raw row before partitioning. It preserves dataframe backends and
 selects by position, independent of dataframe index labels. Retained neural
 `predictor_data` is an explicit row attachment: the same original-row selection
-supplies fitting inputs and held-out inputs. Neural parameters remain part of
+gives fitting inputs and held-out inputs. Neural parameters remain part of
 the retained initial predictor state, even when a parameter dimension happens
 to equal the row count. The method factory chooses the fitting seed and budget;
 the split seed separately controls held-out posterior replay.

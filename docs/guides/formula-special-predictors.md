@@ -398,9 +398,15 @@ inverse, and square-root links. QVR uses one configured prior for every
 group and smoothing scale, so `sds` and `sd` stay on the same default, and
 that default does not depend on the response values. The brms default is
 available as `PriorSpec(distribution="HalfStudentT(3.0, s)", class_="sds")`
-with $s$ computed as above. Smooths enter
-location and distributional formulas, and component-valued responses keep a
-separate block and scale per free response component.
+with $s$ computed as above.
+
+Smooths, monotonic effects, and Gaussian processes enter every predictor:
+location, distributional, and nonlinear-parameter formulas, and the
+locations of mixture components. A categorical or other component-valued
+response keeps a separate block and scale per free response component. In
+an ordinal model, `cs(s(x))`, `cs(mo(x))`, and `cs(gp(x))` give one effect
+per transition between adjacent categories. An `offset()` term combines
+with each of these terms.
 
 ### Prediction
 
@@ -727,6 +733,11 @@ Every argument of brms's `gp()` is accepted.
   level of a factor. With `cmc = FALSE` a factor gives one GP on every row
   plus one per treatment contrast. Each of these GPs has its own scaling,
   centering, boundary, `sdgp`, and `lscale`.
+
+Several `gp()` terms of one covariate, such as
+`gp(x, k = 4) + gp(x, k = 3)`, are separate processes, each with its own
+`sdgp` and `lscale`. As in brms, the later terms take repaired labels
+(`sdgp_gpx__1`, `lscale_gpx__1`).
 
 R's `TRUE`, `FALSE`, and `NA` are recognized in formulas, so brms formulas
 can be written unchanged.

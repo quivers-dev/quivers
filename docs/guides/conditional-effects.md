@@ -5,7 +5,7 @@ predictors and holding the remaining predictors at explicit values. This
 workflow has two parts: (i) construct a bounded prediction grid; and (ii) retain
 the joint predictions before summarizing their uncertainty. The
 [brms conditional-effects interface](https://search.r-project.org/CRAN/refmans/brms/html/conditional_effects.brmsfit.html)
-likewise supplies conditioning rows for predictor effects. QVR makes those rows
+likewise builds conditioning rows for predictor effects. QVR makes those rows
 explicit, so selecting a reference category or a numeric mean remains visible.
 
 ## Condition on selected predictor values
@@ -15,7 +15,7 @@ explicit, so selecting a reference category or a numeric mean remains visible.
 the conditioning rows retain their original order within each point. Grid
 coordinates replace matching columns in the conditioning frame.
 
-Core source workflows can supply `conditions={"z": [-2., 2.]}` instead of a
+Core source workflows can pass `conditions={"z": [-2., 2.]}` instead of a
 dataframe; `conditions={}` specifies one empty row for a single-predictor grid.
 This mapping interface and `grid.to_mapping()` need only the core dependencies.
 Dataframe inputs use the selected Narwhals backend without conversion to pandas.
@@ -45,7 +45,7 @@ assert uncertainty.mean.shape == (3, 2)
 ```
 
 The axes are `(chain, draw, point, condition, *event)`. The singleton leading
-axis of a variational fit is a layout axis; it does not supply MCMC convergence
+axis of a variational fit is a layout axis; it gives no MCMC convergence
 diagnostics. Categorical or ordinal expected responses retain a final category
 axis and its `effects.labels`.
 
@@ -58,7 +58,7 @@ trial-count, and finite-moment checks.
 
 ## Average over an empirical reference population
 
-Empirical marginalization evaluates each point at every supplied reference
+Empirical marginalization evaluates each point at every given reference
 row, then averages those predictions within each posterior draw. It thus
 retains the joint uncertainty of the average. This generally differs from
 conditioning on mean predictor values when the model includes a nonlinear link
@@ -79,7 +79,7 @@ assert covariance.covariance.shape == (3, 3)
 ```
 
 The reference-row axis disappears after averaging. Optional
-`weights=[...]` in `prediction_grid` supplies finite, nonnegative empirical
+`weights=[...]` in `prediction_grid` gives finite, nonnegative empirical
 weights with positive total; the grid normalizes them for this average. These
 weights describe the reference population and do not alter the fitted
 likelihood. Averaging interval endpoints or independently resampling each grid
@@ -94,9 +94,9 @@ trial counts, and grouping encodings follow the ordinary new-data contract.
 meanings. Repeated group identities across points share each joint group draw.
 Setting `re_formula="~0"` excludes varying effects; it does not integrate over
 their distribution. Empirical averaging integrates only over the reference
-rows that were explicitly supplied.
+rows that were explicitly given.
 
-Supply any retained sampling-law columns needed by the prediction, including
+Include any retained sampling-law columns needed by the prediction, including
 exposures, truncation bounds, measurement errors, or trial columns. Neural
 predictors require `predictor_data` aligned with the entire generated grid.
 Fresh groups follow the fitted prediction policy, including its order-support
@@ -154,13 +154,13 @@ Source grid binding uses the selected observation's nominal leading axis.
 For instance, equally sized `Row` and `Other` objects remain distinct: changing
 `Row` predictors retains a fitted tensor indexed by `Other`. Every required
 row predictor needs an explicit grid or conditioning column. Scalar inputs may
-be supplied as constant conditioning columns; varying them requires a declared
+be given as constant conditioning columns; varying them requires a declared
 row tensor. Explicit finite cardinalities remain fixed, while open extents may
 specialize to the grid size. Source grouping inputs retain their checked numeric
 index maps and fitted latent dimensions.
 
 With several observations, select one through `site="response_name"`. These
-are conditional response expectations: supplied upstream observations and
+are conditional response expectations: given upstream observations and
 lexically computed values retain their conditioning semantics. They are not an
 analytic integration over other responses. Recording-event likelihood weights
 and censoring do not change the response law; truncation does. If a native

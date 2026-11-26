@@ -98,7 +98,11 @@ of a multivariate Normal or a multivariate Student law. brms allows this
 only when every response uses the same Gaussian or Student family, and so
 does QVR. A heterogeneous family set, a censored or truncated response,
 and responses with different `subset()` rows are refused with a located
-error. Student responses share one degree of freedom `nu`, as in brms.
+error. Student responses share one degree of freedom `nu`, as in brms. A
+response may carry a conditional ARMA term beside the residual correlation,
+while a covariance term over rows (`cov = TRUE`, `cosy`, `unstr`, `sar`,
+`fcor`) is refused there, as in brms (see
+[residual correlations across responses](formula-dependence.md#residual-correlations-across-responses)).
 When `set_rescor` is absent, the brms default applies: residual
 correlation is estimated exactly when every response uses one common
 Gaussian or Student family and no response is an `mi()` response.
@@ -157,7 +161,10 @@ keyed by the selected labels joined with `"__"`. `analysis`,
 these units. `fixed_effects`, `random_effects`, and `coefficients` take
 `resp=` and return the structure of the corresponding `BayesianFit` methods.
 `variables` returns draws under brms names, and `hypothesis` evaluates a
-contrast over those names.
+contrast over those names. A response with a
+[residual dependence term](formula-dependence.md) is read as in a single
+fit: the prediction methods and `log_likelihood` take `incl_autocor`, `unstr`
+predicts new rows, and `bayes_r2` takes `method` and `observed`.
 
 <!-- python: run -->
 ```python

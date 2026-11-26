@@ -22,10 +22,14 @@ values receive exactly the density of the model for `x`. Missing values of
 `x` are thus imputed from that model and from their role in the model for
 `y`, jointly in each posterior draw. An `mi()` term enters the predictor
 linearly, also in interactions such as `mi(x):z`. A nonlinear use such as
-`I(mi(x)^2)` is refused. Only continuous families admit `mi()` responses,
-as in brms (Gaussian, Student, skew Normal, log-Normal, ex-Gaussian, Gamma,
+`I(mi(x)^2)` is refused. A family admits `mi()` responses when its response
+is one continuous value whose law has a density and no point masses, as in
+brms: Gaussian, Student, skew Normal, log-Normal, ex-Gaussian, Gamma,
 Weibull, Fréchet, exponential, inverse Gaussian, Beta, von Mises,
-asymmetric Laplace, and generalized extreme value).
+asymmetric Laplace, generalized extreme value, and any custom family with
+such a law. Discrete, categorical, and vector responses, laws with point
+masses (the hurdle and inflated families), mixtures, and the Wiener, Cox,
+and shifted log-Normal families refuse them, each with the reason.
 
 <!-- python: run -->
 ```python
@@ -69,6 +73,10 @@ by the recorded responses of its row through the residual correlation. As
 in brms, the missing values have no prior of their own, so they carry the
 improper flat law. Operations that need a proper prior on every site
 (`sample_prior`, prior draws, and SMC evidence) thus refuse such a model.
+A response of such a model may also carry a conditional ARMA term. The
+recursion then reads the completed responses of earlier rows, and the
+density is the exact joint law of the recorded and missing responses (see
+[residual correlations across responses](formula-dependence.md#residual-correlations-across-responses)).
 
 <!-- python: run -->
 ```python

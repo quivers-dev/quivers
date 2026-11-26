@@ -30,7 +30,7 @@ labels name the levels of `g`, and it may include levels absent from the
 training rows. As in brms, the coefficients of level $j$ become
 $\sigma \, (L z)_j$ with $L$ the Cholesky factor of `M` and standard-normal
 $z$, the model a
-[`GroupCovariance`](../api/formulas/fit.md) for `g` defines. The covariance
+[`GroupCovariance`](../api/formulas/compile.md#quivers.formulas.GroupCovariance) for `g` defines. The covariance
 belongs to the term that names it, while a `group_covariances` entry gives
 every term of the factor one covariance. The fit retains
 the covariance, so new levels covered by `M` are predicted from their
@@ -124,7 +124,9 @@ The terms of a factor with `dist = "student"` share one degrees-of-freedom
 parameter and one mixing scale per level.
 
 In a categorical or other per-category response model each free category takes
-its own group coefficients with these options (see
+its own group coefficients with these options. The coefficients of different
+categories are independent unless the term carries an identifier, as in
+brms (see
 [category-specific formulas](formula-mixtures.md#category-specific-formulas)).
 
 <!-- python: run -->
