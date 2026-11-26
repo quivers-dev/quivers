@@ -214,6 +214,12 @@ from quivers.core.tensor_ops import (
     noisy_and_reduce,
     componentwise_lift,
 )
+from quivers.core.carriers import (
+    ExpectationSemiring,
+    ProductSemiring,
+    SecondOrderExpectationSemiring,
+    Star,
+)
 from quivers.core.spanning import (
     DirectedTrees,
     directed_tree,
@@ -413,6 +419,11 @@ __all__ = [
     "noisy_or_reduce",
     "noisy_and_reduce",
     "componentwise_lift",
+    # carriers
+    "ExpectationSemiring",
+    "ProductSemiring",
+    "SecondOrderExpectationSemiring",
+    "Star",
     # spanning trees
     "DirectedTrees",
     "directed_tree",
