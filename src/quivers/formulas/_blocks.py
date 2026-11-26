@@ -971,7 +971,7 @@ def emit_nested_block(
     def build(
         priors: Mapping[str, str], namespace: Namespace
     ) -> tuple[FormulaToQVRModule, Module]:
-        sub = lens.block_compiler(block, priors, covariances)
+        sub = lens._block_compiler(block, priors, covariances)
         module, _ = emit_block(
             sub,
             formula,

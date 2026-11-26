@@ -1027,7 +1027,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         return self._names
 
-    def block_compiler(
+    def _block_compiler(
         self,
         block: ResponseBlock,
         priors: Mapping[str, str],
