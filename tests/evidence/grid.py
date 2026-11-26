@@ -119,21 +119,16 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         f"agenda-{discipline}": {
             "Q1": (
                 "nullary-rule-never-fires",
-                "none-is-unbound",
                 "rule-matching-scans",
                 "repeated-propagation",
-                "default-precision",
                 "parameters-created-by-runs",
-                "names-decide-semantics",
                 "chart-view-promises",
             ),
-            "Q1g": ("zero-update-stops",),
-            "Q5": ("occurrences-merge", "provenance-always-kept"),
+            "Q5": ("provenance-always-kept",),
             "Q6": ("rule-matching-scans",),
             "Q8": ("residual-is-the-value",),
             "Q10": ("repeated-propagation", "corpus-enumerates-strings"),
             "Q24": (
-                "chart-argument-dropped",
                 "composition-has-no-map",
                 "lifts-ignore-the-rule",
             ),
@@ -142,7 +137,7 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "chart-parser": {
         "Q2": ("linear-semiring-reads-logarithms",),
-        "Q3": ("default-precision", "row-rebuilt-per-category"),
+        "Q3": ("row-rebuilt-per-category",),
         "Q10": ("linear-semiring-reads-logarithms",),
     },
     "inside": {
@@ -177,10 +172,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     "decoder": {
         "Q14": ("depth-bound-shifts-choices",),
         "Q24": ("signature-rebuilt-per-node",),
-    },
-    **{
-        kernel: {"R1": ("default-precision",)}
-        for kernel in ("hmc", "nuts", "metropolis")
     },
     **{
         f"svi-{guide}": {"R1": ("guide-scores-first-row",)}

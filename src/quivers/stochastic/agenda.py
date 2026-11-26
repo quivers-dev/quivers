@@ -44,6 +44,7 @@ import torch
 
 from quivers._positions import anywhere, depends_on_position
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.core.laws import PLUS_IDEMPOTENT, PLUS_SELECTIVE
 from quivers.qiec._models import QiecModel
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
 from quivers.stochastic.semiring import ChartSemiring, LOG_PROB
@@ -199,7 +200,8 @@ def match(
 
     Wildcards bind the values at their positions; a wildcard
     already bound in ``bindings`` (or earlier in the pattern) must
-    see an equal value. Tuples match slot by slot when their
+    see an equal value, whatever value it is bound to, ``None``
+    included. Tuples match slot by slot when their
     lengths agree, and other values match by equality.
 
     Parameters
@@ -220,10 +222,9 @@ def match(
     if bindings is None:
         bindings = {}
     if isinstance(pattern, Wildcard):
-        existing = bindings.get(pattern.name)
-        if existing is None:
+        if pattern.name not in bindings:
             return {**bindings, pattern.name: item}
-        if existing == item:
+        if bindings[pattern.name] == item:
             return bindings
         return None
     if not isinstance(pattern, tuple) or not isinstance(item, tuple):
@@ -235,10 +236,9 @@ def match(
     out = dict(bindings)
     for p, v in zip(pattern, item):
         if isinstance(p, Wildcard):
-            existing = out.get(p.name)
-            if existing is None:
+            if p.name not in out:
                 out[p.name] = v
-            elif existing != v:
+            elif out[p.name] != v:
                 return None
         elif isinstance(p, tuple) and isinstance(v, tuple):
             sub = match(p, v, out)
@@ -456,7 +456,10 @@ class HashChart(Chart):
         -------
         bool
             ``True`` if the stored weight changed by more than the
-            tolerance (or the item is new).
+            tolerance, the item is new, or the update is the zero and
+            carries a derivative in an algebra that is not declared
+            idempotent: such an update leaves the number unchanged and
+            moves its derivative, which its consequences need.
         """
         if item not in self._store:
             self._store[item] = weight
@@ -465,7 +468,7 @@ class HashChart(Chart):
         stacked = torch.stack([existing, weight])
         merged = semiring.plus(stacked, dim=0)
         self._store[item] = merged
-        return anywhere(self._changed(existing, merged))
+        return anywhere(self._changed(existing, merged) | _carries(weight, semiring))
 
     def _changed(self, before: torch.Tensor, after: torch.Tensor) -> torch.Tensor:
         """Whether a stored weight changed by more than the tolerance.
@@ -513,10 +516,10 @@ class HashChart(Chart):
             values where the stored weight did not change, whose agenda
             would not have gone on from here.
         """
-        changed = self._changed(before, self._store[item])
+        changed = self._changed(before, self._store[item]) | _carries(weight, semiring)
         if not depends_on_position(changed):
             return weight
-        return torch.where(changed, weight, float(semiring.zero))
+        return torch.where(changed, weight, semiring.zero_like((), weight))
 
     def get(self, item: Item) -> torch.Tensor | None:
         """Return the stored weight at an item.
@@ -542,6 +545,37 @@ class HashChart(Chart):
             Every stored item with its weight.
         """
         return self._store.items()
+
+
+def _carries(weight: torch.Tensor, semiring: ChartSemiring) -> torch.Tensor:
+    """Whether an update is the zero and still carries a derivative.
+
+    An update equal to the semiring's zero leaves the number unchanged,
+    but at a parameter value where a weight is zero its derivative need
+    not be: ``3 (1 + 2 t)`` at ``t = 0`` has derivative 6. Such an update
+    has to reach the conclusions. In an algebra that establishes an
+    idempotent, selective sum the zero is never selected over a stored
+    weight, so its derivative is zero by the tie rule and it may stop.
+    A zero that does not require a derivative is absent for every
+    parameter value and stops.
+
+    Parameters
+    ----------
+    weight : torch.Tensor
+        The update.
+    semiring : ChartSemiring
+        The semiring.
+
+    Returns
+    -------
+    torch.Tensor
+        A Boolean of the update's shape.
+    """
+    if not weight.requires_grad or semiring.establishes(
+        PLUS_IDEMPOTENT, PLUS_SELECTIVE
+    ):
+        return torch.zeros_like(weight, dtype=torch.bool)
+    return semiring.is_zero(weight)
 
 
 # ---------------------------------------------------------------------------
@@ -632,19 +666,15 @@ class ChartView:
         Returns
         -------
         torch.Tensor
-            The item's weight, ``default``, or the semiring's zero.
+            The item's weight, ``default``, or the semiring's zero in the
+            dtype and device of the run's weights.
         """
         w = self._result.chart.get(item)
         if w is not None:
             return w
         if default is not None:
             return default
-        return torch.tensor(
-            float(self.semiring.zero)
-            if hasattr(self.semiring.zero, "__float__")
-            else 0.0,
-            dtype=torch.get_default_dtype(),
-        )
+        return self.semiring.zero_like((), self._result.like)
 
     def enumerate(self, pattern: Pattern) -> list[tuple[Item, torch.Tensor]]:
         """Enumerate (item, weight) pairs matching ``pattern``.
@@ -696,7 +726,7 @@ class ChartView:
             )
         return encoder(item)
 
-    def derivations(self, item: Item) -> list[tuple[str, tuple[Item, ...]]]:
+    def derivations(self, item: Item) -> list[tuple[int, str, tuple[Item, ...]]]:
         """The rule applications that derive ``item``.
 
         These are the item's incoming hyperedges in the derivation
@@ -711,13 +741,15 @@ class ChartView:
 
         Returns
         -------
-        list of (str, tuple of Item)
-            Each application's rule name and antecedent items, in
-            premise order; empty when no rule derives ``item``.
+        list of (int, str, tuple of Item)
+            Each application's rule position, rule name and antecedent
+            items, in premise order; empty when no rule derives ``item``.
+            The axiom occurrences of ``item`` are in
+            ``AgendaResult.axiom_occurrences``.
         """
         return [
-            (rule_name, antecedents)
-            for rule_name, antecedents, conclusion in self._result.applications
+            (index, rule_name, antecedents)
+            for index, rule_name, antecedents, conclusion in self._result.applications
             if conclusion == item
         ]
 
@@ -732,16 +764,12 @@ class ChartView:
         Returns
         -------
         torch.Tensor
-            The aggregated goal weight, or the semiring's zero when
-            no goal item was derived.
+            The aggregated goal weight, or the semiring's zero in the
+            dtype and device of the run's weights when no goal item was
+            derived.
         """
         if not self._result.goal_items:
-            return torch.tensor(
-                float(self.semiring.zero)
-                if hasattr(self.semiring.zero, "__float__")
-                else 0.0,
-                dtype=torch.get_default_dtype(),
-            )
+            return self.semiring.zero_like((), self._result.like)
         if len(self._result.goal_items) == 1:
             return self._result.goal_items[0][1]
         weights = torch.stack([w for _, w in self._result.goal_items])
@@ -1075,9 +1103,17 @@ class AgendaResult(QiecModel):
         their final aggregated weights.
     iterations : int
         Number of agenda steps consumed (diagnostic).
-    applications : list of (str, tuple of Item, Item)
-        Every rule application of the run: the rule's name, its
-        antecedent items in premise order, and its conclusion.
+    applications : list of (int, str, tuple of Item, Item)
+        Every rule application of the run: the rule's position in the
+        system, its name, its antecedent items in premise order, and its
+        conclusion. Two rules of one name are told apart by position.
+    axiom_occurrences : list of Item
+        The item of every axiom occurrence, in the order given, so equal
+        axioms are two occurrences.
+    like : torch.Tensor
+        An empty tensor of the dtype and device of the run's axiom
+        weights, which the zeros and units the result makes take; the
+        default dtype when the run had no axiom.
     """
 
     chart: Chart = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1087,8 +1123,14 @@ class AgendaResult(QiecModel):
     )
     iterations: int = 0
     applications: list[
-        tuple[str, tuple[tuple[HeldValue, ...], ...], tuple[HeldValue, ...]]
+        tuple[int, str, tuple[tuple[HeldValue, ...], ...], tuple[HeldValue, ...]]
     ] = dx.field(default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY)
+    axiom_occurrences: list[tuple[HeldValue, ...]] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    like: torch.Tensor = dx.field(
+        default_factory=lambda: torch.empty(0), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     encoder: Encoder | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -1190,12 +1232,22 @@ def run_agenda(
     semiring = semiring or LOG_PROB
     agenda = agenda or FIFOAgenda()
     agenda.bind_semiring(semiring)
-    chart = chart or HashChart()
+    if chart is None:
+        chart = HashChart()
     rules = tuple(rules)
     applications: dict[tuple[int, tuple[Item, ...]], _Application] = {}
 
+    occurrences: list[Item] = []
+    weights_seen: list[torch.Tensor] = []
     for item, w in axioms:
+        occurrences.append(item)
+        weights_seen.append(w)
         agenda.push(item, w)
+    like = (
+        torch.empty(0, dtype=weights_seen[0].dtype, device=weights_seen[0].device)
+        if weights_seen
+        else torch.empty(0)
+    )
 
     iterations = 0
     while not agenda.empty():
@@ -1242,7 +1294,7 @@ def run_agenda(
                 list(zip(application.antecedents, weights)),
                 application.conclusion,
                 _conclusion_weight(
-                    application.rule, application.bindings, weights, semiring
+                    application.rule, application.bindings, weights, semiring, like
                 ),
             )
 
@@ -1260,8 +1312,11 @@ def run_agenda(
         goal_items=goal_items,
         iterations=iterations,
         applications=[
-            (a.rule.name, a.antecedents, a.conclusion) for a in applications.values()
+            (index, a.rule.name, a.antecedents, a.conclusion)
+            for (index, _), a in applications.items()
         ],
+        axiom_occurrences=occurrences,
+        like=like,
     )
 
 
@@ -1426,6 +1481,7 @@ def _conclusion_weight(
     bindings: Bindings,
     premise_weights: tuple[torch.Tensor, ...],
     semiring: ChartSemiring,
+    like: torch.Tensor,
 ) -> torch.Tensor:
     """The weight a rule application contributes to its conclusion.
 
@@ -1439,6 +1495,9 @@ def _conclusion_weight(
         One weight per premise, in premise order.
     semiring : ChartSemiring
         The semiring of the run.
+    like : torch.Tensor
+        A tensor of the run's dtype and device, which the unit of an
+        application without premises takes.
 
     Returns
     -------
@@ -1449,10 +1508,7 @@ def _conclusion_weight(
     if rule.weight_fn is not None:
         return rule.weight_fn(bindings, premise_weights, semiring)
     if not premise_weights:
-        return torch.tensor(
-            float(semiring.one) if hasattr(semiring.one, "__float__") else 0.0,
-            dtype=torch.get_default_dtype(),
-        )
+        return semiring.unit_like((), like)
     acc = premise_weights[0]
     for w in premise_weights[1:]:
         acc = semiring.times(acc, w)
@@ -1534,71 +1590,13 @@ def _fire(
         return
     agenda.push(
         conclusion_item,
-        _conclusion_weight(rule, bindings, tuple(factors), semiring),
+        _conclusion_weight(rule, bindings, tuple(factors), semiring, update.delta),
     )
 
 
 # ---------------------------------------------------------------------------
 # Public deduction-system entry
 # ---------------------------------------------------------------------------
-
-
-def _full_extent_goal(
-    goal: Callable[[Item], bool], input_value: object
-) -> Callable[[Item], bool]:
-    """Restrict a goal predicate to spans covering the whole input.
-
-    A span-shaped chart holds an item for every substring the rules
-    derive, and the goal category may head several of them; the system's
-    answer is the weight of the derivations of the *whole* input, so a
-    goal span must run from position zero to the input's length. An item
-    that is not a span, and an input that is not a sequence, are judged
-    by the predicate alone.
-
-    Parameters
-    ----------
-    goal : Callable[[Item], bool]
-        The declared goal predicate.
-    input_value : object
-        The input the system is run on.
-
-    Returns
-    -------
-    Callable[[Item], bool]
-        The predicate, narrowed to full-extent spans when the input is a
-        sequence.
-    """
-    if not isinstance(input_value, (list, tuple)):
-        return goal
-    extent = len(input_value)
-
-    def full_extent(item: Item) -> bool:
-        """Whether an item is a goal covering the whole input.
-
-        Parameters
-        ----------
-        item : Item
-            The chart item.
-
-        Returns
-        -------
-        bool
-            The declared predicate's answer, and for a span item also
-            that it runs from zero to the input's length.
-        """
-        if not goal(item):
-            return False
-        if (
-            isinstance(item, tuple)
-            and len(item) >= 4
-            and item[0] == "span"
-            and isinstance(item[1], int)
-            and isinstance(item[2], int)
-        ):
-            return item[1] == 0 and item[2] == extent
-        return True
-
-    return full_extent
 
 
 class DeductionSystem(QiecModel):
@@ -1635,6 +1633,12 @@ class DeductionSystem(QiecModel):
     losses : dict[str, LossRegistry]
         Shared loss registries keyed by deduction name. Compilation can attach
         a registry after another program has captured this system.
+    goal_extent : Callable or None
+        The positions of the input an item covers, declared for an item
+        type whose items cover stretches of the input, ``None`` for an
+        item that covers none. A goal of such a type has to cover the
+        whole input. Without a declaration the goal is the predicate
+        alone.
     mappable : bool
         Whether the chart can be filled at many parameter values in one
         pass: the order of the agenda, the rules that fire, and the axioms
@@ -1661,6 +1665,9 @@ class DeductionSystem(QiecModel):
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     production_refusal: str | None = None
+    goal_extent: Callable[[Item], tuple[int, int] | None] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     name: str = ""
     modules: dict[str, torch.nn.Module] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -1795,6 +1802,47 @@ class DeductionSystem(QiecModel):
         with scope:
             return self._run(input_value)
 
+    def _goal_for(self, input_value: HeldValue) -> Callable[[Item], bool]:
+        """The goal predicate of one run.
+
+        Parameters
+        ----------
+        input_value : HeldValue
+            The input the system is run on.
+
+        Returns
+        -------
+        Callable[[Item], bool]
+            The declared goal, narrowed by the declared extent to items
+            covering the whole input when the input is a sequence.
+        """
+        extent = self.goal_extent
+        goal = self.goal
+        if extent is None or not isinstance(input_value, (list, tuple)):
+            return goal
+        whole = (0, len(input_value))
+
+        def covering(item: Item) -> bool:
+            """Whether an item is a goal covering the whole input.
+
+            Parameters
+            ----------
+            item : Item
+                The chart item.
+
+            Returns
+            -------
+            bool
+                The declared predicate's answer, and, for an item that
+                covers a stretch of the input, that it covers all of it.
+            """
+            if not goal(item):
+                return False
+            covered = extent(item)
+            return covered is None or covered == whole
+
+        return covering
+
     def _run(self, input_value: Any) -> AgendaResult:
         """Run the deduction under the weights already in scope.
 
@@ -1837,21 +1885,13 @@ class DeductionSystem(QiecModel):
             )
             rule_loss_acc.append(val)
 
-        # If the user supplied a positive ``tolerance``, propagate
-        # it to the chart so its aggregation step terminates on
-        # convergence. The default chart_factory is ``HashChart``,
-        # whose constructor accepts the tolerance; user-supplied
-        # alternative chart factories can ignore the argument.
-        try:
-            chart_inst = self.chart_factory(tolerance=self.tolerance)
-        except TypeError:
-            chart_inst = self.chart_factory()
+        chart_inst = self.chart_factory(tolerance=self.tolerance)
         result = run_agenda(
             axioms=axioms,
             rules=self.rules,
             semiring=self.semiring,
             agenda=self.agenda_factory(),
-            goal=_full_extent_goal(self.goal, input_value),
+            goal=self._goal_for(input_value),
             max_iterations=self.max_iterations,
             chart=chart_inst,
             rule_callback=(_rule_callback if registry is not None else None),

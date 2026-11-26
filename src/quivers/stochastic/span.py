@@ -151,10 +151,9 @@ class SpanChart:
         torch.Tensor
             Shape ``(batch, n_categories, seq_len, seq_len+1)``.
         """
-        chart = torch.full(
-            (self.batch, self.n_categories, self.seq_len, self.seq_len + 1),
-            self.semiring.zero,
-            device=self.device,
+        like = next(iter(self.cells.values()), torch.empty(0, device=self.device))
+        chart = self.semiring.zero_like(
+            (self.batch, self.n_categories, self.seq_len, self.seq_len + 1), like
         )
 
         for (i, j), cell in self.cells.items():
@@ -177,11 +176,7 @@ def _scatter_semiring(
     semiring: ChartSemiring,
 ) -> torch.Tensor:
     """Scatter rule scores into category bins via semiring plus."""
-    result = torch.full(
-        (batch, n_categories),
-        semiring.zero,
-        device=device,
-    )
+    result = semiring.zero_like((batch, n_categories), scores.to(device=device))
 
     for cat_idx in range(n_categories):
         mask = indices == cat_idx

@@ -1705,7 +1705,7 @@ class MCMC:
                     per_chain.append(self._empty_draws(setup, record, name))
             samples[name] = torch.stack(per_chain)
         log_densities = torch.tensor(
-            [record.log_densities[:kept] for record in records], dtype=torch.float32
+            [record.log_densities[:kept] for record in records], dtype=torch.float64
         ).reshape(len(records), kept)
         keys = sorted(
             {key for record in records for entry in record.stats for key in entry}

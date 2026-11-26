@@ -35,8 +35,7 @@ from quivers.dsl.ast_nodes import LetExprCall, LetExprVar, SchemaDecl, TypeName
 from quivers.dsl.compiler.programs import LetValue, _ProgramsMixin
 from quivers.effects.checked_program import CheckedProgram
 from quivers.enriched.kan_extensions import Projection, left_kan
-from quivers.inference import MCMC, AutoLaplaceApproximation, MetropolisKernel
-from quivers.inference import RandomWalkProposal
+from quivers.inference import AutoLaplaceApproximation
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import (
     deduction_item,
@@ -82,7 +81,7 @@ from tests.evidence.checks.span import (
 from tests.evidence.checks.terms import asymmetric, encoder, node, leaf, parameters
 from tests.evidence.compare import Mismatch
 from tests.evidence.counters import CallCounter, TensorCounter
-from tests.evidence.oracles import closed_forms, derivations, exact, gradients
+from tests.evidence.oracles import closed_forms, derivations, exact
 from tests.evidence.oracles.derivations import Variable
 from tests.evidence.problems import logarithm
 from tests.evidence.sources import LEXICAL as LEXICAL_SOURCE
@@ -297,65 +296,6 @@ def record(
 # -- the agenda engine ---------------------------------------------------
 
 
-def _zero_update() -> Facts:
-    """The derivative of ``3 (1 + 2 t)`` at ``t = 0`` on the agenda.
-
-    Returns
-    -------
-    Facts
-        The derivative, or ``"none"`` without a gradient path.
-    """
-    t = scalar(0.0, requires_grad=True)
-    result = run_agenda(
-        [(("X",), scalar(1.0)), (("A",), t)],
-        [rule("add", (("A",),), ("X",), 2.0), rule("scale", (("X",),), ("Y",), 3.0)],
-        semiring=COUNTING,
-    )
-    value = result.chart.get(("Y",))
-    assert value is not None
-    if not value.requires_grad:
-        return {"derivative at zero": "none"}
-    (found,) = torch.autograd.grad(value, t)
-    return {"derivative at zero": number(found)}
-
-
-def _zero_update_required() -> Facts:
-    """The derivative from the trees of the same system.
-
-    Returns
-    -------
-    Facts
-        The derivative, which is constant in ``t``.
-    """
-    trees = derivations.derivations(
-        [("x", ("X",)), ("t", ("A",))],
-        [
-            ("add", (("A",),), ("X",), "two"),
-            ("scale", (("X",),), ("Y",), "three"),
-        ],
-        ("Y",),
-    )
-    fixed = {"two": Fraction(2), "three": Fraction(3), "x": Fraction(1)}
-    at = [
-        derivations.total(trees, {**fixed, "t": t}, Fraction(0), Fraction(1))
-        for t in (Fraction(0), Fraction(1))
-    ]
-    assert float(at[1] - at[0]) == gradients.BOUNDARY_CASES[1].gradient[0]
-    return {"derivative at zero": number(float(at[1] - at[0]))}
-
-
-record(
-    "zero-update-stops",
-    "stochastic/agenda.py: HashChart.insert_or_aggregate, run_agenda",
-    "an update that leaves a number unchanged stops propagating, so a "
-    "parameter whose current weight is zero loses its gradient",
-    {"derivative at zero": "none"},
-    {"derivative at zero": "6"},
-    _zero_update,
-    _zero_update_required,
-)
-
-
 #: The turns of the cycles whose sums stop on a residual.
 RESIDUAL_TURNS = ("9/10", "99/100", "999/1000")
 
@@ -441,28 +381,6 @@ record(
     },
     _residual,
     _residual_required,
-)
-
-
-record(
-    "none-is-unbound",
-    "stochastic/agenda.py: match",
-    "a variable bound to None counts as unbound, so two premises with different "
-    "values match",
-    {"p(x, x) matches p(None, 3)": "True"},
-    {"p(x, x) matches p(None, 3)": "False"},
-    lambda: {
-        "p(x, x) matches p(None, 3)": str(
-            match(("p", make_wildcard("x"), make_wildcard("x")), ("p", None, 3))
-            is not None
-        )
-    },
-    lambda: {
-        "p(x, x) matches p(None, 3)": str(
-            derivations.bind(("p", Variable("x"), Variable("x")), ("p", None, 3), {})
-            is not None
-        )
-    },
 )
 
 
@@ -620,66 +538,6 @@ record(
 )
 
 
-def _merged_occurrences() -> Facts:
-    """The provenance of two equal axioms and of two rules with one name.
-
-    Returns
-    -------
-    Facts
-        The numbers of proofs that can be told apart.
-    """
-    twice = run_agenda(
-        [(("A",), scalar(1.0)), (("A",), scalar(1.0))],
-        [rule("r", (("A",),), ("X",))],
-        semiring=COUNTING,
-    )
-    named = run_agenda(
-        [(("A",), scalar(1.0))],
-        [rule("r", (("A",),), ("X",)), rule("r", (("A",),), ("X",))],
-        semiring=COUNTING,
-    )
-    return {
-        "proofs from two equal axioms": str(len(twice.applications)),
-        "proofs by two rules of one name": str(
-            len(set(ChartView(named).derivations(("X",))))
-        ),
-    }
-
-
-def _merged_occurrences_required() -> Facts:
-    """The same numbers from enumerated derivations.
-
-    Returns
-    -------
-    Facts
-        The numbers of trees.
-    """
-    twice = derivations.derivations(
-        [("one", ("A",)), ("two", ("A",))], [("r", (("A",),), ("X",), None)], ("X",)
-    )
-    named = derivations.derivations(
-        [("one", ("A",))],
-        [("r", (("A",),), ("X",), "first"), ("r", (("A",),), ("X",), "second")],
-        ("X",),
-    )
-    return {
-        "proofs from two equal axioms": str(len(set(twice))),
-        "proofs by two rules of one name": str(len(set(named))),
-    }
-
-
-record(
-    "occurrences-merge",
-    "stochastic/agenda.py: run_agenda, ChartView.derivations",
-    "equal axioms are one antecedent of one application, and applications of "
-    "two rules with one name are equal",
-    {"proofs from two equal axioms": "1", "proofs by two rules of one name": "1"},
-    {"proofs from two equal axioms": "2", "proofs by two rules of one name": "2"},
-    _merged_occurrences,
-    _merged_occurrences_required,
-)
-
-
 def _steps(shape: str, size: int, discipline: str) -> int:
     """The number of items an agenda pops on an acyclic graph.
 
@@ -776,70 +634,6 @@ record(
 )
 
 
-def _default_precision() -> Facts:
-    """The precisions of results of float64 computations.
-
-    Returns
-    -------
-    Facts
-        The type of each result.
-    """
-    empty = ChartView(
-        run_agenda(
-            [(("A",), scalar(1.0))],
-            [],
-            semiring=LOG_PROB,
-            goal=lambda item: item == ("Z",),
-        )
-    )
-    parser = chart_parser(LOG_PROB, {})
-    problem = PROBLEMS["beta"]
-    with double_precision():
-        x, data = problem.data()
-        result = MCMC(
-            MetropolisKernel(RandomWalkProposal(0.5)),
-            num_warmup=1,
-            num_samples=1,
-            num_chains=1,
-            seed=0,
-        ).run(problem.model(), x, data)
-        assert result.samples["theta"].dtype == torch.float64
-    return {
-        "goal weight of no goal": str(empty.goal_weight().dtype),
-        "weight of an absent item": str(empty.try_weight(("Z",)).dtype),
-        "chart parser score": str(parser(torch.tensor((0, 1))).dtype),
-        "recorded log density of a chain": str(result.log_densities.dtype),
-    }
-
-
-record(
-    "default-precision",
-    "stochastic/agenda.py: goal_weight, try_weight; stochastic/span.py: "
-    "SpanChart.to_tensor; inference/mcmc/driver.py: log_densities",
-    "zeros and charts take the default type, and recorded log densities are "
-    "single precision, so a double-precision run returns single precision",
-    dict.fromkeys(
-        (
-            "goal weight of no goal",
-            "weight of an absent item",
-            "chart parser score",
-            "recorded log density of a chain",
-        ),
-        "torch.float32",
-    ),
-    dict.fromkeys(
-        (
-            "goal weight of no goal",
-            "weight of an absent item",
-            "chart parser score",
-            "recorded log density of a chain",
-        ),
-        "torch.float64",
-    ),
-    _default_precision,
-)
-
-
 def _nullary() -> Facts:
     """The weight of an item derived by a rule without premises.
 
@@ -884,87 +678,6 @@ record(
     },
 )
 
-
-class _SizedChart(HashChart):
-    """A chart with a length."""
-
-    def __len__(self) -> int:
-        """The number of items.
-
-        Returns
-        -------
-        int
-            The number.
-        """
-        return len(self._store)
-
-
-def _chart_choice() -> Facts:
-    """Which chart and which tolerance a run uses.
-
-    Returns
-    -------
-    Facts
-        Whether the given chart is used, and the tolerance that reaches it.
-    """
-    given = _SizedChart()
-    result = run_agenda([(("A",), scalar(1.0))], [], semiring=COUNTING, chart=given)
-    built: list[HashChart] = []
-
-    def factory(tolerance: float = 0.0) -> HashChart:
-        """Build a chart, failing on its first call.
-
-        Parameters
-        ----------
-        tolerance : float
-            The tolerance.
-
-        Returns
-        -------
-        HashChart
-            The chart.
-
-
-        Raises
-        ------
-        TypeError
-            On the first call, for a reason of its own.
-        """
-        if not built:
-            built.append(HashChart())
-            raise TypeError("an error inside the factory")
-        return HashChart(tolerance)
-
-    run = DeductionSystem(
-        rules=(),
-        semiring=COUNTING,
-        axiom_injector=lambda value: [(("A",), scalar(1.0))],
-        goal=lambda item: True,
-        chart_factory=factory,
-        tolerance=1e-3,
-    ).run((1,))
-    assert isinstance(run.chart, HashChart)
-    return {
-        "the given empty chart is used": str(result.chart is given),
-        "tolerance after an error in the factory": number(run.chart._tolerance),
-    }
-
-
-record(
-    "chart-argument-dropped",
-    "stochastic/agenda.py: run_agenda, DeductionSystem._run",
-    "an empty chart with a length is replaced, and a type error inside a chart "
-    "factory drops the tolerance and is lost",
-    {
-        "the given empty chart is used": "False",
-        "tolerance after an error in the factory": "0",
-    },
-    {
-        "the given empty chart is used": "True",
-        "tolerance after an error in the factory": "TypeError",
-    },
-    _chart_choice,
-)
 
 #: A rule whose weight is keyed by the categories it binds.
 BINDING_WEIGHTS = """
@@ -1031,31 +744,6 @@ record(
 )
 
 
-def _named_goal(head: str) -> str:
-    """The weight of a goal read off a chart whose items have a given head.
-
-    Parameters
-    ----------
-    head : str
-        The items' first slot.
-
-    Returns
-    -------
-    str
-        The weight.
-    """
-    system = DeductionSystem(
-        rules=(),
-        semiring=COUNTING,
-        axiom_injector=lambda value: [
-            ((head, 0, 1, "S"), scalar(1.0)),
-            ((head, 0, 2, "S"), scalar(3.0)),
-        ],
-        goal=lambda item: item[-1] == "S",
-    )
-    return number(ChartView(system.run(("a", "b"))).goal_weight())
-
-
 def _renamed_handlers() -> str:
     """How many handlers of a deduction keep their meaning under renaming.
 
@@ -1077,24 +765,12 @@ def _renamed_handlers() -> str:
 
 record(
     "names-decide-semantics",
-    "stochastic/agenda.py: _full_extent_goal; qiec/program_runtime.py: "
-    "_deduction_handler",
-    "the first slot of an item restricts its goal, and the name of a handler "
-    "decides what it computes",
-    {
-        "goal weight of items headed span": "3",
-        "configured handlers after renaming": "0",
-    },
-    {
-        "goal weight of items headed span": "4",
-        "configured handlers after renaming": "2",
-    },
+    "qiec/program_runtime.py: _deduction_handler",
+    "the name of a handler decides what it computes",
+    {"configured handlers after renaming": "0"},
+    {"configured handlers after renaming": "2"},
+    lambda: {"configured handlers after renaming": _renamed_handlers()},
     lambda: {
-        "goal weight of items headed span": _named_goal("span"),
-        "configured handlers after renaming": _renamed_handlers(),
-    },
-    lambda: {
-        "goal weight of items headed span": _named_goal("part"),
         "configured handlers after renaming": str(
             len(
                 foreign_handler_configuration(module_of("lexical", SEMIRING="Counting"))
