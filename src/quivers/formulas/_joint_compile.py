@@ -28,9 +28,6 @@ from quivers.dsl.ast_nodes import (
     TypeFromExpr,
     LetStep,
     ObserveStep,
-    OptionEntry,
-    OptionName,
-    DrawArgNamed,
     TypeName,
 )
 from quivers.dsl.program_templates import (
@@ -38,7 +35,6 @@ from quivers.dsl.program_templates import (
     _bound_names,
     _rename_step,
     substitute_program_object,
-    draw_argument_expression,
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._ast import (
@@ -92,7 +88,8 @@ from quivers.formulas._priors import (
     resolve_priors,
 )
 from quivers.formulas._response import response_tensor
-from quivers.formulas.compile import FormulaToQVRModule, _draw
+from quivers.formulas.compile import FormulaToQVRModule
+from quivers.formulas._observation import Observation, observation
 from quivers.formulas._joint_residual import (
     RecursiveResidualFactory,
     recursive_residual_record,
@@ -907,20 +904,17 @@ def _correlated_residual(
         response.names[_qvr_name(response.formula.response_name)]
         for response in responses.values()
     }
-    arguments_by_response = {}
-    for name, response in responses.items():
-        observation = next(
-            step
-            for step in program.draws
-            if isinstance(step, ObserveStep)
-            and step.vars[0]
-            == response.names[_qvr_name(response.formula.response_name)]
-        )
-        arguments_by_response[name] = {
-            argument.parameter: draw_argument_expression(argument.value)
-            for argument in observation.args or ()
-            if isinstance(argument, DrawArgNamed)
+    # Each response's own observation, in the joint program's names.
+    observations = {
+        name: response_observation(response) for name, response in responses.items()
+    }
+    arguments_by_response = {
+        name: {
+            parameter: observed.argument(parameter)
+            for parameter, _ in observed.arguments
         }
+        for name, observed in observations.items()
+    }
     shared = next(iter(responses.values())).lens
     elliptical = shared._family.elliptical
     assert elliptical is not None
@@ -1008,44 +1002,33 @@ def _correlated_residual(
             ),
         )
     )
-    first = next(iter(responses.values()))
-    weights = (
-        first.names.get("formula_weights")
-        if first.formula.modifiers.weights is not None
-        else None
-    )
+    weights = next(iter(observations.values())).weights
     location = ("formula_joint_mu", "formula_joint_scale")
     recursions = recursion_kernel(
         responses, arguments_by_response, student=df is not None
     )
-    observation = (
-        _draw(
+    joint = (
+        observation(
             "formula_joint_response",
             elliptical.kernel,
             location if df is None else (df, *location),
-            index=TypeName(name=row),
-            mode="score",
-            weights=weights,
+            None,
+            plate=row,
+            event=axis,
             parameterization=elliptical.parameterization,
         )
         if recursions is None
-        else _draw(
+        else observation(
             "formula_joint_response",
             recursions[0].definitions[0].name,
             (*((df,) if df is not None else ()), *location, *recursions[1]),
-            index=TypeName(name=row),
-            mode="score",
-            weights=weights,
-            family_catalog=recursions[0],
+            None,
+            plate=row,
+            event=axis,
+            catalog=recursions[0],
         )
-    )
-    observation = observation.with_(
-        options=(
-            *observation.options,
-            OptionEntry(key="over", value=OptionName(value=axis)),
-        )
-    )
-    steps.append(observation)
+    ).with_(weights=weights)
+    steps.append(joint.step())
     fixed_inputs = dict(fixed_inputs) | {
         "formula_joint_response": torch.stack(
             tuple(
@@ -1060,6 +1043,47 @@ def _correlated_residual(
         targets,
         fixed_inputs,
         None if recursions is None else recursions[0],
+    )
+
+
+def response_observation(response: _ResponseEmission) -> Observation:
+    """Return the observation of one response in the joint program's names.
+
+    Parameters
+    ----------
+    response : _ResponseEmission
+        Namespaced response.
+
+    Returns
+    -------
+    Observation
+        The response's observation with namespaced bindings.
+
+    Raises
+    ------
+    ValueError
+        If the response's lens has emitted no observation.
+    """
+    observed = response.lens._observation
+    if observed is None:
+        raise ValueError(
+            f"response {response.formula.response_name!r} has no observation"
+        )
+
+    def named(value: str | float) -> str | float:
+        return response.names.get(value, value) if isinstance(value, str) else value
+
+    return (
+        observed.with_(
+            site=response.names.get(observed.site, observed.site),
+            weights=None if observed.weights is None else str(named(observed.weights)),
+        )
+        .with_arguments(
+            tuple((parameter, named(bound)) for parameter, bound in observed.arguments)
+        )
+        .with_events(
+            tuple((key, str(named(column))) for key, column in observed.events)
+        )
     )
 
 

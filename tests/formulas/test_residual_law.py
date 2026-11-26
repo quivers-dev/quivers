@@ -337,3 +337,11 @@ def test_conditional_arma_beside_residual_correlations_scores_each_rows_vector()
     torch.testing.assert_close(
         fitted.posterior_epred(num_samples=3, seed=0)["y1"], means1.reshape(1, 3, ROWS)
     )
+
+
+def test_missing_responses_beside_a_recursion_and_residual_correlations_are_refused():
+    frame = _frame()
+    frame.loc[3, "y2"] = np.nan
+    spec = bf("y1 ~ x + ar(time = t, gr = g)") + bf("y2 | mi() ~ x") + set_rescor(True)
+    with pytest.raises(ValueError, match="conditional ARMA"):
+        formula_to_qvr(spec, data=frame)

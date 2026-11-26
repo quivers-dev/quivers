@@ -90,7 +90,6 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     ProgramStep,
     SampleStep,
-    atom_to_draw_arg as _to_draw_arg,
     Statement,
     ObjectDecl,
     TypeFromExpr,
@@ -149,7 +148,6 @@ from quivers.formulas._group_covariance import (
 )
 from quivers.formulas._ast import (
     _bind,
-    _draw,
     _let,
     _var,
     _add,
@@ -201,6 +199,7 @@ from quivers.formulas._population_coordinates import (
     CENTERED_SUFFIX,
 )
 
+from quivers.formulas._observation import Observation, observation
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._predictor import (
     Predictor,
@@ -713,6 +712,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._mixture_targets: tuple[PriorTarget, ...] = ()
         self._family = family
         self._residual: ResidualLaw | None = None
+        self._observation: Observation | None = None
         # brms default prior policy and population-coordinate options.
         if default_priors not in ("quivers", "brms"):
             raise ValueError("default_priors must be 'quivers' or 'brms'")
@@ -3694,32 +3694,20 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             assert reference is not None
             args = ("mu", "formula_alr_scale", reference)
-        observation = _draw(
+        observed = observation(
             _qvr_name(formula.response_name),
             self._family.observe_family,
             args,
-            index=TypeName(name="Resp"),
-            mode="score",
-            weights="formula_weights"
-            if formula.modifiers.weights is not None
-            else None,
+            formula.modifiers,
+            event="FormulaCategory",
+            events=False,
         )
         if kind == "multinomial":
-            observation = observation.with_(
-                args=(
-                    DrawArgNamed(
-                        parameter="total_count", value=_to_draw_arg("formula_trials")
-                    ),
-                    DrawArgNamed(parameter="logits", value=_to_draw_arg("eta")),
-                )
+            observed = observed.with_arguments(
+                (("total_count", "formula_trials"), ("logits", "eta"))
             )
-        observation = observation.with_(
-            options=(
-                *observation.options,
-                OptionEntry(key="over", value=OptionName(value="FormulaCategory")),
-            )
-        )
-        program_steps.append(observation)
+        self._observation = observed
+        program_steps.append(observed.step())
 
     def _append_residual_correlation(
         self,
@@ -4381,18 +4369,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self._append_auxiliaries(formula, statements, program_steps, correlated)
                 self._append_vector_observation(formula, statements, program_steps)
             else:
-                program_steps.append(
-                    _draw(
-                        _qvr_name(formula.response_name),
-                        "Categorical",
-                        ("mu",),
-                        index=TypeName(name="Resp"),
-                        mode="score",
-                        weights="formula_weights"
-                        if formula.modifiers.weights is not None
-                        else None,
-                    )
+                self._observation = observation(
+                    _qvr_name(formula.response_name),
+                    "Categorical",
+                    ("mu",),
+                    formula.modifiers,
+                    events=False,
                 )
+                program_steps.append(self._observation.step())
             statements.append(
                 ProgramDecl(
                     name="model",
@@ -4538,51 +4522,28 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             program_steps,
             formula.modifiers,
         )
-        observation = _draw(
+        observed = observation(
             _qvr_name(formula.response_name),
             observe_family,
             obs_args,
-            index=TypeName(name="Resp"),
-            mode="score",
-            family_catalog=self.response_laws,
-            weights="formula_weights"
-            if formula.modifiers.weights is not None
-            else None,
+            formula.modifiers,
+            catalog=self.response_laws,
         )
         if retained_log_location:
             assert self._family.log_location_argument is not None
-            location = _to_draw_arg("mu")
-            observation = observation.with_(
-                args=tuple(
-                    DrawArgNamed(
-                        parameter=self._family.log_location_argument,
-                        value=_to_draw_arg("eta"),
-                    )
-                    if isinstance(argument, DrawArgNamed) and argument.value == location
-                    else argument
-                    for argument in observation.args or ()
+            # The kernel takes the linear predictor on the log scale.
+            observed = observed.with_arguments(
+                tuple(
+                    (self._family.log_location_argument, "eta")
+                    if bound == "mu"
+                    else (parameter, bound)
+                    for parameter, bound in observed.arguments
                 )
             )
         if self._family.ordinal is not None and not self._family.scores_cutpoints:
-            observation = observation.with_(
-                args=(
-                    DrawArgNamed(
-                        parameter="logits", value=_to_draw_arg("ordinal_logits")
-                    ),
-                )
-            )
-        from quivers.formulas._response_roles import event_option_columns
-
-        observation = observation.with_(
-            options=(
-                *observation.options,
-                *(
-                    OptionEntry(key=key, value=OptionName(value=column.qvr_name))
-                    for key, column in event_option_columns(formula.modifiers)
-                ),
-            )
-        )
-        program_steps.append(observation)
+            observed = observed.with_arguments((("logits", "ordinal_logits"),))
+        self._observation = observed
+        program_steps.append(observed.step())
 
         program_decl = ProgramDecl(
             name="model",
