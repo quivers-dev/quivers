@@ -46,7 +46,6 @@ from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     DrawArgScalar,
     ExportDecl,
-    LetExprIndex,
     LetExprLiteral,
     LetExprNode,
     ObserveStep,
@@ -58,19 +57,16 @@ from quivers.dsl.ast_nodes import (
     QiecTypeName,
     QiecValueParameter,
     SampleStep,
-    ScoreStep,
     Statement,
     TypeName,
 )
 from quivers.formulas._ast import (
     _add,
     _call,
-    _div,
     _factor,
     _index,
     _let,
     _mul,
-    _sub,
     _var,
 )
 from quivers.formulas._brms_priors import flat_prior_step
@@ -81,7 +77,6 @@ from quivers.formulas._joint_compile import (
     _ResponseEmission,
     response_observation,
 )
-from quivers.formulas._observation import Observation
 from quivers.formulas._missing import (
     LatentResponseSpec,
     bind_latent_input,
@@ -970,9 +965,6 @@ def _object(statements: list[Statement], name: str, size: int) -> None:
 #: `quivers.formulas._joint_compile` names it.
 JOINT_SITE = "formula_joint_response"
 
-_LOG_TWO_PI = 1.8378770664093453
-_LOG_PI = 1.1447298858494002
-
 
 def _declare_row_inputs(
     parameters: list[QiecValueParameter], response: _ResponseEmission, axis: str
@@ -1126,139 +1118,6 @@ def _joint_completion(
             ),
         ),
     ]
-
-
-def _joint_score(joint: Observation, values: tuple[str, ...]) -> list[ProgramStep]:
-    """Score completed response vectors under the joint residual law.
-
-    The multivariate Normal or Student density of each row is written by
-    forward substitution through the row's lower-triangular scale factor,
-    so the factor is never inverted or multiplied out. Cost:
-    O(rows * responses^2).
-
-    Parameters
-    ----------
-    joint : Observation
-        The vector observation the score replaces, naming the location, the
-        scale factor, the Student degrees of freedom, and the weights.
-    values : tuple[str, ...]
-        Row vector of each response in component order.
-
-    Returns
-    -------
-    list[ProgramStep]
-        The standardized residuals and one log-density factor.
-
-    Raises
-    ------
-    ValueError
-        If the observation is not a multivariate Normal or Student law with
-        named arguments.
-    """
-    if joint.kernel not in {"MultivariateNormal", "MultivariateStudentT"}:
-        raise ValueError(
-            "mi() responses beside estimated residual correlations need a Normal "
-            "or Student row law written in the program; a conditional ARMA "
-            "recursion moves the locations outside it, so use set_rescor(False) "
-            "or remove the recursion"
-        )
-    arguments = {parameter: joint.argument(parameter) for parameter in joint.parameters}
-    row = joint.plate
-    width = len(values)
-    at = _var("row")
-
-    def entry(parameter: str, *components: int) -> LetExprNode:
-        """Select one row's coordinate of a joint argument.
-
-        Parameters
-        ----------
-        parameter : str
-            ``loc`` or ``scale_tril``.
-        *components : int
-            Response coordinates.
-
-        Returns
-        -------
-        LetExprNode
-            The indexed expression at the scoped row.
-        """
-        return LetExprIndex(
-            array=arguments[parameter],
-            indices=(
-                at,
-                *(LetExprLiteral(value=index, integral=True) for index in components),
-            ),
-        )
-
-    steps: list[ProgramStep] = []
-    innovations = tuple(f"formula_joint_innovation_{index}" for index in range(width))
-    for index, value in enumerate(values):
-        residual = _sub(_index(value, at), entry("loc", index))
-        for earlier in range(index):
-            residual = _sub(
-                residual,
-                _mul(
-                    entry("scale_tril", index, earlier),
-                    _index(innovations[earlier], at),
-                ),
-            )
-        steps.append(
-            _let(
-                innovations[index],
-                _factor(
-                    (("row", row),),
-                    body=_div(residual, entry("scale_tril", index, index)),
-                ),
-            )
-        )
-    log_scale = _add(
-        *(_call("log", entry("scale_tril", index, index)) for index in range(width))
-    )
-    squares = _add(
-        *(
-            _mul(_index(innovation, at), _index(innovation, at))
-            for innovation in innovations
-        )
-    )
-    if joint.kernel == "MultivariateNormal":
-        density = _sub(
-            _sub(LetExprLiteral(value=-0.5 * width * _LOG_TWO_PI), log_scale),
-            _mul(LetExprLiteral(value=0.5), squares),
-        )
-    else:
-        nu = arguments["df"]
-        half = _mul(
-            LetExprLiteral(value=0.5), _add(nu, LetExprLiteral(value=float(width)))
-        )
-        steps.append(
-            _let(
-                "formula_joint_normalizer",
-                _sub(
-                    _sub(
-                        _call("lgamma", half),
-                        _call("lgamma", _mul(LetExprLiteral(value=0.5), nu)),
-                    ),
-                    _mul(
-                        LetExprLiteral(value=0.5 * width),
-                        _add(_call("log", nu), LetExprLiteral(value=_LOG_PI)),
-                    ),
-                ),
-            )
-        )
-        density = _sub(
-            _sub(_var("formula_joint_normalizer"), log_scale),
-            _mul(half, _call("log1p", _div(squares, nu))),
-        )
-    weights = joint.weights
-    if weights is not None:
-        density = _mul(_index(weights, at), density)
-    steps.append(
-        ScoreStep(
-            name="formula_joint_score",
-            value=_call("sum", _factor((("row", row),), body=density)),
-        )
-    )
-    return steps
 
 
 def apply_missing(
@@ -1503,15 +1362,20 @@ def apply_missing(
         recorded = emission.fixed_inputs[JOINT_SITE]
         values: dict[str, str] = {}
         for position, (label, response) in enumerate(emission.responses.items()):
-            _declare_row_inputs(parameters, response, joint.plate)
+            _declare_row_inputs(parameters, response, joint.observation.plate)
             if label in plan.responses:
                 values[label] = f"mi_{label}__completed"
             else:
                 values[label] = f"mi_joint__{label}"
                 inputs[values[label]] = recorded[..., position].clone()
-        steps = [step for step in steps if step != joint.step()]
-        steps.extend(_joint_score(joint, tuple(values.values())))
-        removed.add(JOINT_SITE)
+        steps = [step for step in steps if step != joint.observation.step()]
+        steps.extend(joint.score(tuple(values.values())))
+        if joint.observes_recorded:
+            # The recorded responses are observed at their own rows; a
+            # missing coordinate is read from the completion instead.
+            inputs[JOINT_SITE] = torch.nan_to_num(recorded, nan=0.0)
+        else:
+            removed.add(JOINT_SITE)
         returns = [f"mi_{label}__completed" for label in plan.responses]
     for item in plan.inputs:
         consumer = emission.responses[item.consumer]

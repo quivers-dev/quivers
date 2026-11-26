@@ -17,6 +17,8 @@ from quivers.continuous._multivariate_student_t import MultivariateStudentT
 from quivers.diagnostics.regression import bayesian_r2
 from quivers.formulas import bf, fit, formula_to_qvr, lf, nlf, set_rescor
 from quivers.formulas._joint_residual import coordinate, marginal
+from quivers.inference.mcmc import PotentialFn
+from quivers.inference.registry import LatentRegistry
 
 ROWS = 24
 SVI = {"method": "svi", "num_steps": 2, "seed": 0}
@@ -352,12 +354,72 @@ def test_conditional_arma_beside_residual_correlations_scores_each_rows_vector()
     )
 
 
-def test_missing_responses_beside_a_recursion_and_residual_correlations_are_refused():
+@pytest.mark.parametrize("recursion", [True, False])
+def test_missing_responses_beside_residual_correlations_score_the_completed_vectors(
+    recursion,
+):
+    """The program's density is the joint law of the completed responses.
+
+    The missing responses have a flat prior, so moving them changes the log
+    density by the change of the joint law of the completed vectors, whose
+    recursion reads the completed responses of earlier rows.
+    """
     frame = _frame()
-    frame.loc[3, "y2"] = np.nan
-    spec = bf("y1 ~ x + ar(time = t, gr = g)") + bf("y2 | mi() ~ x") + set_rescor(True)
-    with pytest.raises(ValueError, match="conditional ARMA"):
-        formula_to_qvr(spec, data=frame)
+    frame.loc[[3, 15], "y1"] = np.nan
+    term = " + ar(time = t, gr = g)" if recursion else ""
+    spec = bf(f"y1 | mi() ~ x{term}") + bf("y2 ~ x") + set_rescor(True)
+    fitted = fit(spec, data=frame, **SVI)
+    registry = LatentRegistry.from_model(
+        fitted.program, observed_names=set(fitted.observations)
+    )
+    potential = PotentialFn(
+        fitted.program, registry, torch.zeros(1, 1), dict(fitted.observations)
+    )
+    generator = torch.Generator().manual_seed(3)
+    base = {
+        name: 0.3 * torch.randn(part.shape, generator=generator, dtype=torch.float64)
+        for name, part in registry.unflatten_unconstrained(
+            torch.zeros(registry.total_unconstrained_dim, dtype=torch.float64)
+        ).items()
+    }
+    shifted = dict(base)
+    shifted["mi_y1__missing"] = base["mi_y1__missing"] + torch.tensor(
+        [0.7, -0.4], dtype=torch.float64
+    ).reshape(base["mi_y1__missing"].shape)
+    x = torch.as_tensor(frame["x"].to_numpy())
+    order = sorted(range(ROWS), key=lambda row: (frame["g"][row], frame["t"][row]))
+
+    def joint(values):
+        natural, _ = registry.to_constrained(values)
+        y = torch.as_tensor(frame[["y1", "y2"]].to_numpy()).clone()
+        y[[3, 15], 0] = natural["mi_y1__missing"].reshape(-1)
+        eta1 = natural["response_y1__intercept"] + natural["response_y1__beta_x"] * x
+        eta2 = natural["response_y2__intercept"] + natural["response_y2__beta_x"] * x
+        means1 = (
+            _ar1_means(
+                eta1, y[:, 0], natural["response_y1__ar_1"], list(frame["g"]), order
+            )
+            if recursion
+            else eta1
+        )
+        scales = torch.stack(
+            (natural["response_y1__sigma"], natural["response_y2__sigma"])
+        )
+        law = torch.distributions.MultivariateNormal(
+            torch.stack((means1, eta2), -1),
+            scale_tril=scales[:, None] * natural["rescor"],
+        )
+        return law.log_prob(y).sum()
+
+    def density(values):
+        return potential.log_density(registry.flatten_unconstrained(values))
+
+    torch.testing.assert_close(
+        (density(shifted) - density(base)).double(),
+        (joint(shifted) - joint(base)).double(),
+        rtol=1e-6,
+        atol=1e-6,
+    )
 
 
 def test_a_refused_model_r_squared_leaves_gradients_enabled():
