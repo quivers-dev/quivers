@@ -46,11 +46,9 @@ from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     DrawArgScalar,
     ExportDecl,
-    LetExprIndex,
     LetExprLiteral,
     LetExprNode,
     ObserveStep,
-    OptionName,
     ProgramDecl,
     ProgramStep,
     QiecIndexName,
@@ -59,26 +57,26 @@ from quivers.dsl.ast_nodes import (
     QiecTypeName,
     QiecValueParameter,
     SampleStep,
-    ScoreStep,
     Statement,
     TypeName,
 )
-from quivers.dsl.program_templates import draw_argument_expression
 from quivers.formulas._ast import (
     _add,
     _call,
-    _div,
     _factor,
     _index,
     _let,
     _mul,
-    _sub,
     _var,
 )
 from quivers.formulas._brms_priors import flat_prior_step
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._fit import _PreparedFormula
-from quivers.formulas._joint_compile import _JointEmission, _ResponseEmission
+from quivers.formulas._joint_compile import (
+    _JointEmission,
+    _ResponseEmission,
+    response_observation,
+)
 from quivers.formulas._missing import (
     LatentResponseSpec,
     bind_latent_input,
@@ -967,32 +965,6 @@ def _object(statements: list[Statement], name: str, size: int) -> None:
 #: `quivers.formulas._joint_compile` names it.
 JOINT_SITE = "formula_joint_response"
 
-_LOG_TWO_PI = 1.8378770664093453
-_LOG_PI = 1.1447298858494002
-
-
-def joint_axis(joint: ObserveStep) -> str:
-    """Return the row axis of a joint residual observation.
-
-    Parameters
-    ----------
-    joint : ObserveStep
-        The vector observation of the joint residual event.
-
-    Returns
-    -------
-    str
-        Name of its nominal row axis.
-
-    Raises
-    ------
-    ValueError
-        If the observation carries no named row axis.
-    """
-    if not isinstance(joint.index, TypeName):
-        raise ValueError("a joint residual event requires a named row axis")
-    return joint.index.name
-
 
 def _declare_row_inputs(
     parameters: list[QiecValueParameter], response: _ResponseEmission, axis: str
@@ -1148,150 +1120,6 @@ def _joint_completion(
     ]
 
 
-def _joint_score(joint: ObserveStep, values: tuple[str, ...]) -> list[ProgramStep]:
-    """Score completed response vectors under the joint residual law.
-
-    The multivariate Normal or Student density of each row is written by
-    forward substitution through the row's lower-triangular scale factor,
-    so the factor is never inverted or multiplied out. Cost:
-    O(rows * responses^2).
-
-    Parameters
-    ----------
-    joint : ObserveStep
-        The vector observation the score replaces, naming the location, the
-        scale factor, the Student degrees of freedom, and the weights.
-    values : tuple[str, ...]
-        Row vector of each response in component order.
-
-    Returns
-    -------
-    list[ProgramStep]
-        The standardized residuals and one log-density factor.
-
-    Raises
-    ------
-    ValueError
-        If the observation is not a multivariate Normal or Student law with
-        named arguments.
-    """
-    if joint.morphism not in {"MultivariateNormal", "MultivariateStudentT"}:
-        raise ValueError(
-            "mi() responses beside estimated residual correlations need a Normal "
-            "or Student row law written in the program; a conditional ARMA "
-            "recursion moves the locations outside it, so use set_rescor(False) "
-            "or remove the recursion"
-        )
-    arguments: dict[str, LetExprNode] = {}
-    for argument in joint.args or ():
-        if not isinstance(argument, DrawArgNamed):
-            raise ValueError("a joint residual event requires named arguments")
-        arguments[argument.parameter] = draw_argument_expression(argument.value)
-    row = joint_axis(joint)
-    width = len(values)
-    at = _var("row")
-
-    def entry(parameter: str, *components: int) -> LetExprNode:
-        """Select one row's coordinate of a joint argument.
-
-        Parameters
-        ----------
-        parameter : str
-            ``loc`` or ``scale_tril``.
-        *components : int
-            Response coordinates.
-
-        Returns
-        -------
-        LetExprNode
-            The indexed expression at the scoped row.
-        """
-        return LetExprIndex(
-            array=arguments[parameter],
-            indices=(
-                at,
-                *(LetExprLiteral(value=index, integral=True) for index in components),
-            ),
-        )
-
-    steps: list[ProgramStep] = []
-    innovations = tuple(f"formula_joint_innovation_{index}" for index in range(width))
-    for index, value in enumerate(values):
-        residual = _sub(_index(value, at), entry("loc", index))
-        for earlier in range(index):
-            residual = _sub(
-                residual,
-                _mul(
-                    entry("scale_tril", index, earlier),
-                    _index(innovations[earlier], at),
-                ),
-            )
-        steps.append(
-            _let(
-                innovations[index],
-                _factor(
-                    (("row", row),),
-                    body=_div(residual, entry("scale_tril", index, index)),
-                ),
-            )
-        )
-    log_scale = _add(
-        *(_call("log", entry("scale_tril", index, index)) for index in range(width))
-    )
-    squares = _add(
-        *(
-            _mul(_index(innovation, at), _index(innovation, at))
-            for innovation in innovations
-        )
-    )
-    if joint.morphism == "MultivariateNormal":
-        density = _sub(
-            _sub(LetExprLiteral(value=-0.5 * width * _LOG_TWO_PI), log_scale),
-            _mul(LetExprLiteral(value=0.5), squares),
-        )
-    else:
-        nu = arguments["df"]
-        half = _mul(
-            LetExprLiteral(value=0.5), _add(nu, LetExprLiteral(value=float(width)))
-        )
-        steps.append(
-            _let(
-                "formula_joint_normalizer",
-                _sub(
-                    _sub(
-                        _call("lgamma", half),
-                        _call("lgamma", _mul(LetExprLiteral(value=0.5), nu)),
-                    ),
-                    _mul(
-                        LetExprLiteral(value=0.5 * width),
-                        _add(_call("log", nu), LetExprLiteral(value=_LOG_PI)),
-                    ),
-                ),
-            )
-        )
-        density = _sub(
-            _sub(_var("formula_joint_normalizer"), log_scale),
-            _mul(half, _call("log1p", _div(squares, nu))),
-        )
-    weights = next(
-        (
-            option.value.value
-            for option in joint.options
-            if option.key == "weights" and isinstance(option.value, OptionName)
-        ),
-        None,
-    )
-    if weights is not None:
-        density = _mul(_index(weights, at), density)
-    steps.append(
-        ScoreStep(
-            name="formula_joint_score",
-            value=_call("sum", _factor((("row", row),), body=density)),
-        )
-    )
-    return steps
-
-
 def apply_missing(
     emission: _JointEmission,
     plan: MissingPlan,
@@ -1367,14 +1195,7 @@ def apply_missing(
     for key in plan.measurements:
         if fresh is not None:
             inputs[f"me_{key}__values"] = fresh[key]
-    joint = next(
-        (
-            step
-            for step in steps
-            if isinstance(step, ObserveStep) and step.vars[0] == JOINT_SITE
-        ),
-        None,
-    )
+    joint = emission.joint
     for label in plan.responses:
         response = emission.responses[label]
         axis = response.objects.get("Resp", response.prefix + "Resp")
@@ -1387,15 +1208,9 @@ def apply_missing(
         if joint is not None:
             steps.extend(_joint_completion(statements, inputs, label, axis, spec))
             continue
-        observation = next(
-            (
-                step
-                for step in steps
-                if isinstance(step, ObserveStep) and step.vars[0] == site
-            ),
-            None,
-        )
-        if observation is None:
+        observation = response_observation(response)
+        written = observation.step()
+        if written not in steps:
             raise ValueError(f"mi() response {label!r} has no ordinary observation")
         # The removed observation typed the response's row inputs; declare
         # them on the response's own row axis instead.
@@ -1409,10 +1224,9 @@ def apply_missing(
             new.append(
                 SampleStep(
                     vars=(truth,),
-                    morphism=observation.morphism,
-                    args=observation.args,
-                    static_args=observation.static_args,
-                    index=observation.index,
+                    morphism=observation.kernel,
+                    args=observation.law().args,
+                    index=TypeName(name=observation.plate),
                 )
             )
             new.append(
@@ -1456,19 +1270,11 @@ def apply_missing(
                 _let(zero, _factor((("i", axis),), body=LetExprLiteral(value=0.0)))
             )
             observed_args, latent_args = [], []
-            for argument in observation.args or ():
-                if not isinstance(argument, DrawArgNamed):
-                    raise ValueError(
-                        f"mi() response {label!r} requires named family arguments"
-                    )
-                row = f"mi_{label}__{argument.parameter}"
+            for parameter in observation.parameters:
+                row = f"mi_{label}__{parameter}"
                 # The typed binary operation broadcasts scalar arguments to
                 # the row axis; row arguments keep their values.
-                new.append(
-                    _let(
-                        row, _add(draw_argument_expression(argument.value), _var(zero))
-                    )
-                )
+                new.append(_let(row, _add(observation.argument(parameter), _var(zero))))
                 for name, target, index in (
                     (row + "_observed", seen, f"mi_{label}__observed_index"),
                     (row + "_missing", missing, f"mi_{label}__missing_index"),
@@ -1483,26 +1289,28 @@ def apply_missing(
                         )
                     )
                 observed_args.append(
-                    argument.with_(value=DrawArgName(text=row + "_observed"))
+                    DrawArgNamed(
+                        parameter=parameter, value=DrawArgName(text=row + "_observed")
+                    )
                 )
                 latent_args.append(
-                    argument.with_(value=DrawArgName(text=row + "_missing"))
+                    DrawArgNamed(
+                        parameter=parameter, value=DrawArgName(text=row + "_missing")
+                    )
                 )
             new.append(
                 ObserveStep(
                     vars=(f"mi_{label}__observed",),
-                    morphism=observation.morphism,
+                    morphism=observation.kernel,
                     args=tuple(observed_args),
-                    static_args=observation.static_args,
                     index=TypeName(name=seen),
                 )
             )
             new.append(
                 SampleStep(
                     vars=(f"mi_{label}__missing",),
-                    morphism=observation.morphism,
+                    morphism=observation.kernel,
                     args=tuple(latent_args),
-                    static_args=observation.static_args,
                     index=TypeName(name=missing),
                 )
             )
@@ -1545,7 +1353,7 @@ def apply_missing(
         if keep_observation:
             steps.extend(new)
         else:
-            steps = [step for step in steps if step != observation] + new
+            steps = [step for step in steps if step != written] + new
             removed.add(site)
             returns = [completed if value == site else value for value in returns]
     if joint is not None and fresh is None and plan.responses and not keep_observation:
@@ -1554,15 +1362,20 @@ def apply_missing(
         recorded = emission.fixed_inputs[JOINT_SITE]
         values: dict[str, str] = {}
         for position, (label, response) in enumerate(emission.responses.items()):
-            _declare_row_inputs(parameters, response, joint_axis(joint))
+            _declare_row_inputs(parameters, response, joint.observation.plate)
             if label in plan.responses:
                 values[label] = f"mi_{label}__completed"
             else:
                 values[label] = f"mi_joint__{label}"
                 inputs[values[label]] = recorded[..., position].clone()
-        steps = [step for step in steps if step != joint]
-        steps.extend(_joint_score(joint, tuple(values.values())))
-        removed.add(JOINT_SITE)
+        steps = [step for step in steps if step != joint.observation.step()]
+        steps.extend(joint.score(tuple(values.values())))
+        if joint.observes_recorded:
+            # The recorded responses are observed at their own rows; a
+            # missing coordinate is read from the completion instead.
+            inputs[JOINT_SITE] = torch.nan_to_num(recorded, nan=0.0)
+        else:
+            removed.add(JOINT_SITE)
         returns = [f"mi_{label}__completed" for label in plan.responses]
     for item in plan.inputs:
         consumer = emission.responses[item.consumer]
@@ -1572,12 +1385,12 @@ def apply_missing(
             zip(item.sources, item.indices, strict=True)
         ):
             gather = f"{item.binding}__source_{position}"
-            values = (
+            completed_source = (
                 f"me_{source}__values"
                 if source in plan.measurements
                 else f"mi_{source}__completed"
             )
-            body = _mul(body, _index(values, _index(gather, _var("i"))))
+            body = _mul(body, _index(completed_source, _index(gather, _var("i"))))
             if fresh is not None:
                 rows = len(fresh[source])
                 inputs[gather] = torch.arange(rows, dtype=torch.long)

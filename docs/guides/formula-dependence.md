@@ -134,8 +134,10 @@ innovation that the prediction draws. A covariance term (`cov = TRUE`,
 `cosy`, `unstr`, `sar`, `fcor`) beside estimated residual correlations stays
 refused, as in brms: a covariance across rows and one across responses could
 be combined as a Kronecker product, a sum, or a nesting, and the syntax does
-not choose one. An `mi()` response of such a model is refused, because its
-joint density is then written in the program, where the recursion is not.
+not choose one. An `mi()` response of such a model is scored exactly:
+the recursion reads the completed responses of earlier rows, and each
+row's completed vector has the law of the residual correlation, so the
+density is the joint law of the recorded and the missing responses.
 
 ## Combining terms
 

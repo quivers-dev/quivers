@@ -50,6 +50,13 @@ class RecursiveResiduals(Distribution):
         responses, or None for a response without one.
     df : torch.Tensor or None
         Shared Student degrees of freedom, or None for a Normal vector.
+    completion : torch.Tensor or None
+        Responses of every row with the missing ones completed,
+        ``(..., rows, responses)``; None scores the value given. With a
+        completion the law is the joint law of the recorded and the missing
+        responses, written over the recorded rows: the recursions read the
+        completed responses of earlier rows, and each row's factor is the
+        density of its completed vector.
     """
 
     has_rsample = False
@@ -82,12 +89,14 @@ class RecursiveResiduals(Distribution):
         scale_tril: torch.Tensor,
         coordinates: Sequence[ResidualResponse | None],
         df: torch.Tensor | None = None,
+        completion: torch.Tensor | None = None,
     ) -> None:
         if loc.ndim < 2 or loc.shape[-1] != len(coordinates):
             raise ValueError("one location per row and response is required")
         self.loc = loc
         self.scale_tril = scale_tril.expand(*loc.shape, loc.shape[-1])
         self.df = df
+        self.completion = completion
         self.coordinates = tuple(coordinates)
         super().__init__(loc.shape[:-1], loc.shape[-1:], validate_args=False)
 
@@ -194,14 +203,16 @@ class RecursiveResiduals(Distribution):
         Parameters
         ----------
         value : torch.Tensor
-            Responses, ``(..., rows, responses)``.
+            Responses, ``(..., rows, responses)``; with a completion, only
+            their shape is read.
 
         Returns
         -------
         torch.Tensor
             Log density of each row's innovation vector.
         """
-        return self._row_law(self.conditional_means(value)).log_prob(value)
+        values = value if self.completion is None else self.completion.expand_as(value)
+        return self._row_law(self.conditional_means(values)).log_prob(values)
 
     @property
     def mean(self) -> torch.Tensor:
@@ -280,8 +291,8 @@ class RecursiveResidualFactory(ValueModel):
         Parameters
         ----------
         parameters : Mapping[str, torch.Tensor]
-            ``loc``, ``scale_tril``, optional ``df``, and each response's
-            structural parameters.
+            ``loc``, ``scale_tril``, optional ``df`` and ``completion``, and
+            each response's structural parameters.
 
         Returns
         -------
@@ -305,11 +316,13 @@ class RecursiveResidualFactory(ValueModel):
                 zip(self.layouts, self.coefficients, strict=True)
             )
         )
-        return RecursiveResiduals(loc, factor, coordinates, df)
+        return RecursiveResiduals(
+            loc, factor, coordinates, df, parameters.get("completion")
+        )
 
 
 def recursive_residual_record(
-    name: str, coefficients: Sequence[str], *, student: bool
+    name: str, coefficients: Sequence[str], *, student: bool, completion: bool = False
 ) -> DistributionFamily:
     """Declare the checked signature of correlated residuals with recursions.
 
@@ -321,6 +334,9 @@ def recursive_residual_record(
         Kernel names of the responses' structural parameters.
     student : bool
         Include the shared Student degrees of freedom.
+    completion : bool
+        Include the completed responses of every row, so missing responses
+        are scored as coordinates of the law.
 
     Returns
     -------
@@ -340,6 +356,15 @@ def recursive_residual_record(
         *(
             FamilyParameter(name=coefficient, constraint="real", rank=0)
             for coefficient in coefficients
+        ),
+        *(
+            (
+                FamilyParameter(
+                    name="completion", constraint="real", rank=1, event_dims=(0,)
+                ),
+            )
+            if completion
+            else ()
         ),
     ]
     return DistributionFamily(

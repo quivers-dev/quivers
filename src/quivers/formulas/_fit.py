@@ -106,7 +106,7 @@ from quivers.formulas._brms_hypothesis import (
 )
 from quivers.formulas._threshold_groups import (
     absent_thresholds,
-    threshold_family,
+    check_threshold_groups,
     threshold_kinds,
 )
 
@@ -4327,7 +4327,7 @@ def _prepare_formula(
     from quivers.formulas._response_roles import included_data, retained_trials
 
     # brms thres(n, gr): group thresholds are scored on category log masses.
-    family_obj = threshold_family(family_obj, parsed)
+    check_threshold_groups(family_obj, parsed)
     if retained is not None:
         # Retained rows keep their positions in the caller's frame.
         selection = parsed.modifiers.subset

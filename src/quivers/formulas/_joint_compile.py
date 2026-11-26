@@ -11,9 +11,11 @@ import didactic.api as dx
 import torch
 from quivers.family_catalog import FamilyCatalog
 
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
     ExportDecl,
     ExprIdent,
+    LetExprIndex,
     LetExprLiteral,
     LetExprNode,
     LetExprVar,
@@ -24,6 +26,7 @@ from quivers.dsl.ast_nodes import (
     QiecIndexName,
     QiecValueParameter,
     SampleStep,
+    ScoreStep,
     Statement,
     TypeFromExpr,
     LetStep,
@@ -39,10 +42,13 @@ from quivers.dsl.program_templates import (
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._ast import (
     _add,
+    _call,
+    _div,
     _factor,
     _index,
     _let,
     _mul,
+    _sub,
     _var,
     row_zero,
     stack_rows,
@@ -162,6 +168,9 @@ class _JointEmission:
         Runtime inputs bound by the joint program itself.
     families : FamilyCatalog
         Catalog extended with every custom response family.
+    joint : JointElliptical or None
+        The law of responses with correlated residuals; None when each
+        response is observed on its own.
     """
 
     module: Module
@@ -171,6 +180,7 @@ class _JointEmission:
     prior_targets: tuple[PriorTarget, ...]
     fixed_inputs: Mapping[str, torch.Tensor]
     families: FamilyCatalog
+    joint: JointElliptical | None = None
 
     @property
     def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
@@ -866,7 +876,11 @@ def _correlated_residual(
     targets: Sequence[PriorTarget],
     fixed_inputs: Mapping[str, torch.Tensor],
 ) -> tuple[
-    ProgramDecl, list[PriorTarget], dict[str, torch.Tensor], FamilyCatalog | None
+    ProgramDecl,
+    list[PriorTarget],
+    dict[str, torch.Tensor],
+    FamilyCatalog | None,
+    JointElliptical,
 ]:
     """Join existing scalar location/scale bindings under one vector residual law.
 
@@ -893,8 +907,8 @@ def _correlated_residual(
     tuple
         The program with one multivariate observation, its prior targets
         with the residual correlation and shared ``nu``, the inputs with the
-        stacked joint response, and the catalog of a recursive joint law or
-        None.
+        stacked joint response, the catalog of a recursive joint law or
+        None, and the joint law.
     """
     names = tuple(responses)
     width = len(names)
@@ -1012,7 +1026,6 @@ def _correlated_residual(
             "formula_joint_response",
             elliptical.kernel,
             location if df is None else (df, *location),
-            None,
             plate=row,
             event=axis,
             parameterization=elliptical.parameterization,
@@ -1022,12 +1035,28 @@ def _correlated_residual(
             "formula_joint_response",
             recursions[0].definitions[0].name,
             (*((df,) if df is not None else ()), *location, *recursions[1]),
-            None,
             plate=row,
             event=axis,
             catalog=recursions[0],
         )
     ).with_(weights=weights)
+    completed = (
+        None
+        if recursions is None
+        else observation(
+            "formula_joint_response",
+            recursions[0].definitions[1].name,
+            (
+                *((df,) if df is not None else ()),
+                *location,
+                *recursions[1],
+                COMPLETION,
+            ),
+            plate=row,
+            event=axis,
+            catalog=recursions[0],
+        ).with_(weights=weights)
+    )
     steps.append(joint.step())
     fixed_inputs = dict(fixed_inputs) | {
         "formula_joint_response": torch.stack(
@@ -1043,7 +1072,202 @@ def _correlated_residual(
         targets,
         fixed_inputs,
         None if recursions is None else recursions[0],
+        JointElliptical(responses=names, observation=joint, completed=completed),
     )
+
+
+COMPLETION = "formula_joint_completion"
+"""Binding of the completed response vectors of a joint law."""
+
+
+_LOG_TWO_PI = 1.8378770664093453
+_LOG_PI = 1.1447298858494002
+
+
+class JointElliptical(ValueModel):
+    """Residuals correlated across the responses of each row.
+
+    The vector of one row's residuals has a multivariate Normal or Student
+    law; with conditional recursions the locations follow the responses'
+    own past and the law of each row's innovation vector is unchanged. One
+    value states the observation of the recorded responses and the score of
+    completed responses, so both read the same stacks of locations, scales
+    and recursion coefficients.
+
+    Parameters
+    ----------
+    responses : tuple[str, ...]
+        Responses in coordinate order.
+    observation : Observation
+        Observation of the recorded response vectors.
+    completed : Observation or None
+        Observation of the recorded response vectors by the recursive law
+        over completed responses, which it takes as its ``completion``
+        argument; None for a law without recursions.
+    """
+
+    responses: tuple[str, ...]
+    observation: Observation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    completed: Observation | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    @property
+    def observes_recorded(self) -> bool:
+        """Whether completed responses are scored by observing the recorded ones.
+
+        Returns
+        -------
+        bool
+            True for the recursive law, whose observation takes the completed
+            responses as an argument; False when the score of the completed
+            vectors replaces the observation.
+        """
+        return self.completed is not None
+
+    def score(self, values: tuple[str, ...]) -> tuple[ProgramStep, ...]:
+        """Score completed response vectors under the joint law.
+
+        Without recursions, the multivariate Normal or Student density of
+        each row is written by forward substitution through the row's
+        lower-triangular scale factor, so the factor is never inverted or
+        multiplied out; cost O(rows * responses^2). With recursions the
+        recorded vectors are observed by the recursive law over the
+        completed responses: the map from the completed responses to the
+        innovations is unit lower triangular in each series' order, so the
+        joint density of the recorded and missing responses is the product
+        of each row's innovation density, which the law evaluates.
+
+        Parameters
+        ----------
+        values : tuple[str, ...]
+            Row vector of each response in coordinate order, completed where
+            a response is missing.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The steps of the score.
+        """
+        observation = self.observation
+        if self.completed is not None:
+            row, axis = observation.plate, observation.event
+            assert axis is not None
+            return (
+                *stack_rows(
+                    COMPLETION,
+                    enumerate(_var(value) for value in values),
+                    ("component", axis),
+                    stem=f"{COMPLETION}_by_response",
+                    row=("row", row),
+                ),
+                self.completed.step(),
+            )
+        arguments = {
+            parameter: observation.argument(parameter)
+            for parameter in observation.parameters
+        }
+        row = observation.plate
+        width = len(values)
+        at = _var("row")
+
+        def entry(parameter: str, *components: int) -> LetExprNode:
+            """Select one row's coordinate of a joint argument.
+
+            Parameters
+            ----------
+            parameter : str
+                ``loc`` or ``scale_tril``.
+            *components : int
+                Response coordinates.
+
+            Returns
+            -------
+            LetExprNode
+                The indexed expression at the scoped row.
+            """
+            return LetExprIndex(
+                array=arguments[parameter],
+                indices=(
+                    at,
+                    *(
+                        LetExprLiteral(value=index, integral=True)
+                        for index in components
+                    ),
+                ),
+            )
+
+        steps: list[ProgramStep] = []
+        innovations = tuple(
+            f"formula_joint_innovation_{index}" for index in range(width)
+        )
+        for index, value in enumerate(values):
+            residual = _sub(_index(value, at), entry("loc", index))
+            for earlier in range(index):
+                residual = _sub(
+                    residual,
+                    _mul(
+                        entry("scale_tril", index, earlier),
+                        _index(innovations[earlier], at),
+                    ),
+                )
+            steps.append(
+                _let(
+                    innovations[index],
+                    _factor(
+                        (("row", row),),
+                        body=_div(residual, entry("scale_tril", index, index)),
+                    ),
+                )
+            )
+        log_scale = _add(
+            *(_call("log", entry("scale_tril", index, index)) for index in range(width))
+        )
+        squares = _add(
+            *(
+                _mul(_index(innovation, at), _index(innovation, at))
+                for innovation in innovations
+            )
+        )
+        if observation.kernel == "MultivariateNormal":
+            density = _sub(
+                _sub(LetExprLiteral(value=-0.5 * width * _LOG_TWO_PI), log_scale),
+                _mul(LetExprLiteral(value=0.5), squares),
+            )
+        else:
+            nu = arguments["df"]
+            half = _mul(
+                LetExprLiteral(value=0.5), _add(nu, LetExprLiteral(value=float(width)))
+            )
+            steps.append(
+                _let(
+                    "formula_joint_normalizer",
+                    _sub(
+                        _sub(
+                            _call("lgamma", half),
+                            _call("lgamma", _mul(LetExprLiteral(value=0.5), nu)),
+                        ),
+                        _mul(
+                            LetExprLiteral(value=0.5 * width),
+                            _add(_call("log", nu), LetExprLiteral(value=_LOG_PI)),
+                        ),
+                    ),
+                )
+            )
+            density = _sub(
+                _sub(_var("formula_joint_normalizer"), log_scale),
+                _mul(half, _call("log1p", _div(squares, nu))),
+            )
+        weights = observation.weights
+        if weights is not None:
+            density = _mul(_index(weights, at), density)
+        steps.append(
+            ScoreStep(
+                name="formula_joint_score",
+                value=_call("sum", _factor((("row", row),), body=density)),
+            )
+        )
+        return tuple(steps)
 
 
 def response_observation(response: _ResponseEmission) -> Observation:
@@ -1069,22 +1293,7 @@ def response_observation(response: _ResponseEmission) -> Observation:
         raise ValueError(
             f"response {response.formula.response_name!r} has no observation"
         )
-
-    def named(value: str | float) -> str | float:
-        return response.names.get(value, value) if isinstance(value, str) else value
-
-    return (
-        observed.with_(
-            site=response.names.get(observed.site, observed.site),
-            weights=None if observed.weights is None else str(named(observed.weights)),
-        )
-        .with_arguments(
-            tuple((parameter, named(bound)) for parameter, bound in observed.arguments)
-        )
-        .with_events(
-            tuple((key, str(named(column))) for key, column in observed.events)
-        )
-    )
+    return observed.renamed(response.names, objects=response.objects)
 
 
 def recursion_kernel(
@@ -1107,9 +1316,9 @@ def recursion_kernel(
     Returns
     -------
     tuple[FamilyCatalog, tuple[str, ...]] or None
-        The catalog registering the law, and the bindings of the responses'
-        structural parameters in signature order; None when no response has
-        a residual law.
+        The catalog registering the law, first, and the law over completed
+        responses, and the bindings of the responses' structural parameters
+        in signature order; None when no response has a residual law.
     """
     laws = {name: response.lens._residual for name, response in responses.items()}
     if all(law is None for law in laws.values()):
@@ -1128,17 +1337,21 @@ def recursion_kernel(
             bindings.append(value.name)
             pairs.append((kernel, coefficient))
         coefficients.append(tuple(pairs))
-    record = recursive_residual_record(
-        "JointResidualStudentT" if student else "JointResidualNormal",
-        names,
-        student=student,
-    )
+    name = "JointResidualStudentT" if student else "JointResidualNormal"
     factory = RecursiveResidualFactory(
         layouts=tuple(None if law is None else law.layout for law in laws.values()),
         coefficients=tuple(coefficients),
         student=student,
     )
-    return FamilyCatalog().with_family(record, factory), tuple(bindings)
+    catalog = FamilyCatalog()
+    for record in (
+        recursive_residual_record(name, names, student=student),
+        recursive_residual_record(
+            f"{name}Completed", names, student=student, completion=True
+        ),
+    ):
+        catalog = catalog.with_family(record, factory)
+    return catalog, tuple(bindings)
 
 
 def _shared_groups(
@@ -1497,8 +1710,9 @@ def emit_joint(
         return_vars=tuple(returned),
     )
     joint_laws = None
+    joint: JointElliptical | None = None
     if rescor:
-        program, targets, fixed_inputs, joint_laws = _correlated_residual(
+        program, targets, fixed_inputs, joint_laws, joint = _correlated_residual(
             program, responses, emitter, statements, targets, fixed_inputs
         )
     module = Module(
@@ -1558,7 +1772,7 @@ def emit_joint(
             return_vars=tuple(returned),
         )
         if rescor:
-            program, _, fixed_inputs, joint_laws = _correlated_residual(
+            program, _, fixed_inputs, joint_laws, joint = _correlated_residual(
                 program, responses, emitter, statements, targets, fixed_inputs
             )
         replacements = {
@@ -1635,6 +1849,7 @@ def emit_joint(
         tuple(targets),
         fixed_inputs,
         catalog,
+        joint,
     )
 
 

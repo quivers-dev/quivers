@@ -2,19 +2,24 @@
 
 An `Observation` is the site a response is scored at: its kernel, the binding
 passed to each kernel parameter, the plate of its rows, the event axis of a
-vector response, and the recorded roles that modify how it is scored (row
-weights, censoring and truncation columns). Every emitter of a response builds
-one through `observation`, so the roles are read from the response modifiers
-in one place; readers that compose responses (residual correlation across
+vector response, the component laws of a mixture of laws, and the recorded
+roles that modify how it is scored (row weights, censoring and truncation
+columns), which the modifiers of the response attach. Readers that compose
+responses (mixtures, residual correlation across responses, missing
 responses) take the arguments from the value rather than from emitted source.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import didactic.api as dx
 
-from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
+    DrawArgDist,
+    DrawArgList,
+    DrawArgName,
     DrawArgNamed,
     LetExprNode,
     ObserveStep,
@@ -26,11 +31,12 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.program_templates import draw_argument_expression
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _draw
-from quivers.formulas._response_roles import event_option_columns
-from quivers.formulas.formula import ResponseModifiers
 
 WEIGHTS = "formula_weights"
 """Binding of the row weights of a response."""
+
+_TRUNCATION = frozenset({"trunc_lower", "trunc_upper"})
+"""Recorded-event options that truncate the law rather than censor a row."""
 
 
 class Observation(ValueModel):
@@ -58,6 +64,12 @@ class Observation(ValueModel):
         The binding of each recorded-event option.
     catalog : FamilyCatalog or None
         Compilation-local laws the kernel is registered in.
+    components : tuple[Observation, ...]
+        Component laws of a mixture of laws, passed as the list argument
+        ``components``; empty for any other law.
+    factorized : bool
+        Whether the rows are independent given the parameters, so each has a
+        likelihood factor of its own.
     """
 
     site: str
@@ -72,6 +84,10 @@ class Observation(ValueModel):
     catalog: FamilyCatalog | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    components: tuple[Observation, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    factorized: bool = True
 
     @property
     def arguments(self) -> tuple[tuple[str, str | int | float], ...]:
@@ -178,6 +194,145 @@ class Observation(ValueModel):
             )
         )
 
+    def law(self) -> DrawArgDist:
+        """Write the law of the site as a distribution argument.
+
+        A truncated component is written normalized on its own interval,
+        ``Normalize(Restrict(law, low, high))``, which is how brms mixes
+        truncated components.
+
+        Returns
+        -------
+        DrawArgDist
+            The kernel over its arguments.
+        """
+        law = DrawArgDist(family=self.kernel, args=self._arguments())
+        bounds = dict(self.events)
+        restriction = tuple(
+            DrawArgNamed(parameter=parameter, value=DrawArgName(text=bounds[option]))
+            for option, parameter in (("trunc_lower", "low"), ("trunc_upper", "high"))
+            if option in bounds
+        )
+        if not restriction:
+            return law
+        return DrawArgDist(
+            family="Normalize",
+            args=(
+                DrawArgNamed(
+                    parameter="base",
+                    value=DrawArgDist(
+                        family="Restrict",
+                        args=(DrawArgNamed(parameter="base", value=law), *restriction),
+                    ),
+                ),
+            ),
+        )
+
+    def renamed(
+        self,
+        names: Mapping[str, str],
+        kernels: Mapping[str, str] | None = None,
+        objects: Mapping[str, str] | None = None,
+    ) -> Observation:
+        """Return the observation in another program's names.
+
+        Parameters
+        ----------
+        names : Mapping[str, str]
+            New name of each binding; others are kept.
+        kernels : Mapping[str, str] or None
+            New name of each compilation-local law; others are kept.
+        objects : Mapping[str, str] or None
+            New name of each finite axis; others are kept.
+
+        Returns
+        -------
+        Observation
+            The observation with renamed site, bindings, laws, and axes.
+        """
+        axes = objects or {}
+
+        def named(value: str | int | float) -> str | int | float:
+            return names.get(value, value) if isinstance(value, str) else value
+
+        return self.with_(
+            site=names.get(self.site, self.site),
+            kernel=(kernels or {}).get(self.kernel, self.kernel),
+            plate=axes.get(self.plate, self.plate),
+            event=None if self.event is None else axes.get(self.event, self.event),
+            values=tuple(named(value) for value in self.values),
+            weights=None
+            if self.weights is None
+            else names.get(self.weights, self.weights),
+            event_columns=tuple(
+                names.get(column, column) for column in self.event_columns
+            ),
+            components=tuple(
+                component.renamed(names, kernels, objects)
+                for component in self.components
+            ),
+        )
+
+    def with_recorded_events(self, events: tuple[tuple[str, str], ...]) -> Observation:
+        """Return the observation recording responses as bounds or truncated.
+
+        A mixture of laws truncates each component on its own interval and
+        keeps the censoring on the site; any other law takes every option on
+        the site.
+
+        Parameters
+        ----------
+        events : tuple[tuple[str, str], ...]
+            ``(option, binding)`` of each recorded-event column.
+
+        Returns
+        -------
+        Observation
+            The observation with the events.
+        """
+        if not self.components:
+            return self.with_events(events)
+        truncation = tuple(
+            (key, column) for key, column in events if key in _TRUNCATION
+        )
+        return self.with_events(
+            tuple((key, column) for key, column in events if key not in _TRUNCATION)
+        ).with_(
+            components=tuple(
+                component.with_events(truncation) for component in self.components
+            )
+        )
+
+    def _arguments(self) -> tuple[DrawArgNamed, ...]:
+        """Write the arguments of the kernel.
+
+        Returns
+        -------
+        tuple[DrawArgNamed, ...]
+            One named argument per parameter, then the component laws of a
+            mixture of laws.
+        """
+        return (
+            *(
+                DrawArgNamed(parameter=name, value=atom_to_draw_arg(bound))
+                for name, bound in self.arguments
+            ),
+            *(
+                ()
+                if not self.components
+                else (
+                    DrawArgNamed(
+                        parameter="components",
+                        value=DrawArgList(
+                            items=tuple(
+                                component.law() for component in self.components
+                            )
+                        ),
+                    ),
+                )
+            ),
+        )
+
     def step(self) -> ObserveStep:
         """Write the observation as a program step.
 
@@ -206,10 +361,7 @@ class Observation(ValueModel):
         return ObserveStep(
             vars=(self.site,),
             morphism=self.kernel,
-            args=tuple(
-                DrawArgNamed(parameter=name, value=atom_to_draw_arg(bound))
-                for name, bound in self.arguments
-            ),
+            args=self._arguments(),
             index=TypeName(name=self.plate),
             options=options,
         )
@@ -219,15 +371,16 @@ def observation(
     site: str,
     kernel: str,
     arguments: tuple[str | int | float, ...],
-    modifiers: ResponseModifiers | None,
     *,
     plate: str = "Resp",
     event: str | None = None,
-    events: bool = True,
     parameterization: tuple[str, ...] | None = None,
     catalog: FamilyCatalog | None = None,
 ) -> Observation:
-    """Build the observation of a response from its modifiers.
+    """Build the observation of a native law over its arguments.
+
+    The response terms that change how the site is scored (weights,
+    recorded events) are attached by the modifiers of the response.
 
     Parameters
     ----------
@@ -237,15 +390,10 @@ def observation(
         Native or compilation-local law.
     arguments : tuple[str or int or float, ...]
         Bindings in the order of the kernel's parameters.
-    modifiers : ResponseModifiers or None
-        Recorded roles of the response; None for none.
     plate : str
         Finite axis of the rows.
     event : str or None
         Event axis of a vector response.
-    events : bool
-        Whether recorded-event columns are options of this site; False when
-        the kernel takes them otherwise.
     parameterization : tuple[str, ...] or None
         Parameter names of an explicit schema of the kernel.
     catalog : FamilyCatalog or None
@@ -254,7 +402,7 @@ def observation(
     Returns
     -------
     Observation
-        The observation with the response's weights and recorded events.
+        The observation, with its parameters in schema order.
     """
     written = _draw(
         site,
@@ -265,30 +413,17 @@ def observation(
         parameterization=parameterization,
         family_catalog=catalog,
     )
-    parameters = tuple(
-        argument.parameter
-        for argument in written.args or ()
-        if isinstance(argument, DrawArgNamed)
-    )
-    recorded = (
-        ()
-        if modifiers is None or not events
-        else tuple(
-            (key, column.qvr_name) for key, column in event_option_columns(modifiers)
-        )
-    )
     return Observation(
         site=site,
         kernel=kernel,
-        parameters=parameters,
+        parameters=tuple(
+            argument.parameter
+            for argument in written.args or ()
+            if isinstance(argument, DrawArgNamed)
+        ),
         values=arguments,
         plate=plate,
         event=event,
-        weights=WEIGHTS
-        if modifiers is not None and modifiers.weights is not None
-        else None,
-        event_options=tuple(key for key, _ in recorded),
-        event_columns=tuple(column for _, column in recorded),
         catalog=catalog,
     )
 

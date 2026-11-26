@@ -217,6 +217,7 @@ def test_threshold_counts_and_numeric_subset_match_brms():
     ("formula", "family", "message"),
     [
         ("y | rate(t) ~ x", "gaussian", "not supported for the gaussian"),
+        ("y | rate(t) ~ x", "categorical", "not supported for the categorical"),
         ("y | rate(z) ~ x", "poisson", "positive"),
         ("y | thres(1) ~ x", "cumulative", "response codes"),
         ("y | thres(2) + cat(3) ~ x", "cumulative", "both declare"),

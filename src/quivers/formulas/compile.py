@@ -105,22 +105,15 @@ from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
-from quivers.formulas.family import Domain, Family, Link, families, links
-from quivers.formulas._recorded_event_families import check_recorded_event_family
+from quivers.formulas.family import Domain, Family
+from quivers.formulas._modifiers import Admission, admit_modifiers, response_modifiers
 
-# brms mu<c>: category-specific predictors of categorical and simplex families.
-from quivers.formulas._category_emission import (
-    append_category_predictors,
-    append_scale_predictors,
-)
 from quivers.formulas._category_formulas import (
     is_category_parameter,
     is_scale_parameter,
     main_without_terms,
 )
 
-# brms rate() response denominators.
-from quivers.formulas._rate import rate_arguments
 from quivers.formulas._threshold_groups import (
     append_group_log_masses,
     append_group_thresholds,
@@ -147,7 +140,6 @@ from quivers.formulas._group_covariance import (
     GroupCovarianceBasis,
 )
 from quivers.formulas._ast import (
-    _bind,
     _let,
     _var,
     _add,
@@ -158,17 +150,14 @@ from quivers.formulas._ast import (
     _index,
     _factor,
     finite_object_sizes,
-    row_zero,
     stack_rows,
 )
 from quivers.formulas._predictor_graph import (
     PredictorGraph,
-    ComponentExpression,
     predictor_items,
 )
 from quivers.dsl.let_expr_traversal import (
     free_let_names,
-    substitute_let_expr,
     walk_let_expr,
 )
 from quivers.dsl.program_templates import _bound_names
@@ -199,7 +188,10 @@ from quivers.formulas._population_coordinates import (
     CENTERED_SUFFIX,
 )
 
-from quivers.formulas._observation import Observation, observation
+from quivers.formulas._family_kernel import family_kernel
+from quivers.formulas._kernel import KernelEmission, KernelInputs, compose, emit_head
+from quivers.formulas._survival import baseline_level_sites, baseline_steps
+from quivers.formulas._observation import Observation
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._predictor import (
     Predictor,
@@ -209,12 +201,10 @@ from quivers.formulas._predictor import (
     transition_axis,
 )
 from quivers.formulas._row_source import RowSource
-from quivers.formulas._term_emission import (
-    ProgramEmission,
-    emit_axis_part,
-    emit_predictor,
-)
+from quivers.formulas._term_emission import ProgramEmission
 from quivers.formulas._term import (
+    AxisDecl,
+    InputDecl,
     OutputAxis,
     ProgramNames,
     SiteDecl,
@@ -552,34 +542,6 @@ def _prior_lower_bound(step: SampleStep, lower: float | None) -> SampleStep:
                 ),
             )
     return step
-
-
-def _append_link(
-    steps: list[ProgramStep], name: str, eta: LetExprNode, link: Link
-) -> None:
-    """Bind a parameter to its declared inverse link of a linear predictor.
-
-    Parameters
-    ----------
-    steps : list[ProgramStep]
-        Program body receiving the link's intermediates and the parameter.
-    name : str
-        Parameter being defined.
-    eta : LetExprNode
-        Linear predictor.
-    link : Link
-        Inverse link, emitted exactly as it declares itself.
-    """
-    for binding in link.intermediates:
-        steps.append(
-            _let(
-                binding.name.format(name=name),
-                _bind(binding.expr.format(eta="eta", name=name), eta=eta),
-            )
-        )
-    steps.append(
-        _let(name, _bind(link.inverse_expr.format(eta="eta", name=name), eta=eta))
-    )
 
 
 def _program_names(module: Module) -> frozenset[str]:
@@ -1088,36 +1050,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for term in predictor.terms
         )
 
-    def _observe_argument(
-        self, argument: str | float, scale: Mapping[str, LetExprNode]
-    ) -> str | float:
-        """Resolve one declared native constructor argument.
-
-        Parameters
-        ----------
-        argument : str or float
-            A declared `Family.observe_args` entry.
-        scale : Mapping[str, LetExprNode]
-            Names standing in for formula parameters under known errors.
-
-        Returns
-        -------
-        str or float
-            The bound program name or literal constant.
-        """
-        if argument == "trials":
-            if isinstance(self._binomial_trials, str):
-                return _qvr_name(self._binomial_trials)
-            assert self._binomial_trials is not None
-            return float(self._binomial_trials)
-        if isinstance(argument, str) and argument in scale:
-            replacement = scale[argument]
-            assert isinstance(replacement, LetExprVar)
-            return replacement.name
-        return argument
-
     def _append_known_error_scale(
-        self, formula: Formula, program_steps: list[ProgramStep]
+        self,
+        formula: Formula,
+        program_steps: list[ProgramStep],
+        emission: KernelEmission,
     ) -> None:
         """Bind ``formula_sigma``, the response scale under known errors.
 
@@ -1131,6 +1068,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Formula whose response roles include known standard errors.
         program_steps : list[ProgramStep]
             Program body receiving the scale bindings.
+        emission : KernelEmission
+            Kernel being emitted, with the bound residual scale.
 
         Raises
         ------
@@ -1149,7 +1088,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         else:
             row = _var("response")
             se = _index("formula_standard_error", row)
-            sigma = self._row_value(residual, residual, row)
+            sigma = emission.value_at(residual, row)
             program_steps.append(
                 _let(
                     "formula_error_reference",
@@ -1415,32 +1354,21 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     "decisions must be checked integer 0/1 values aligned with response rows"
                 )
-        if formula.modifiers.standard_error is not None:
-            error = formula.modifiers.standard_error
-            residual = self._family.error_scale
-            if residual is None:
-                admitted = sorted(
-                    name
-                    for name, entry in families.items()
-                    if entry.error_scale is not None
-                )
-                raise ValueError(
-                    f"response term se() is not supported for family "
-                    f"{self._family.name!r}, which declares no error scale "
-                    f"(Family.error_scale); families admitting se() are {admitted}"
-                )
-            if not error.sigma and (
-                residual in self._distributional
-                or residual in self._fixed_parameters
-                or residual in self._user_priors
-            ):
-                raise ValueError(
-                    f"se() without sigma=True excludes a separate residual {residual}; remove its formula, fixed value, or prior, or write se(error, sigma=True)"
-                )
-        check_recorded_event_family(
-            self._family,
-            censoring=formula.modifiers.censoring,
-            truncation=formula.modifiers.truncation,
+        admit_modifiers(
+            response_modifiers(formula.modifiers, self._residual),
+            Admission(
+                family=self._family,
+                modifiers=formula.modifiers,
+                residual=self._residual,
+                scale_sources=frozenset(
+                    (
+                        *self._distributional,
+                        *self._fixed_parameters,
+                        *self._user_priors,
+                    )
+                ),
+                rows=int(formula.response_values.shape[0]),
+            ),
         )
         if (
             formula.modifiers.trials is not None
@@ -1449,16 +1377,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise ValueError(
                 "trials requires a response family with finite trial counts"
             )
-        if formula.modifiers.weights is not None:
-            weights = formula.modifiers.weights.data
-            if weights.shape != formula.response_values.shape[:1]:
-                raise ValueError("weights must align with every evaluated response row")
-            if (
-                weights.dtype.kind not in "iuf"
-                or not np.isfinite(weights).all()
-                or np.any(weights < 0)
-            ):
-                raise ValueError("weights must be finite nonnegative real values")
         reserved = {column.qvr_name for _, column in formula.modifiers.columns()}
         if formula.modifiers.decision is not None:
             reserved.add("formula_response")
@@ -2620,33 +2538,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         )
 
-    def _row_value(self, parameter: str, name: str, row: LetExprNode) -> LetExprNode:
-        """Read the value of one parameter of the response law at a row.
-
-        Parameters
-        ----------
-        parameter : str
-            Parameter of the response law.
-        name : str
-            Binding of its value.
-        row : LetExprNode
-            Row index.
-
-        Returns
-        -------
-        LetExprNode
-            The binding at the row when its predictor varies over the rows,
-            otherwise the scalar binding.
-        """
-        rowwise = any(
-            predictor.rowwise
-            for predictor in self._predictors
-            if predictor.role == "dpar" and predictor.parameter == parameter
-        )
-        return _index(name, row) if rowwise else _var(name)
-
     def _append_ordinal_contrasts(
-        self, formula: Formula, cutpoints: str, program_steps: list[ProgramStep]
+        self,
+        formula: Formula,
+        cutpoints: str,
+        program_steps: list[ProgramStep],
+        emission: KernelEmission,
     ) -> None:
         """Materialize and validate each row/transition contrast once.
 
@@ -2659,9 +2556,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         program_steps : list[ProgramStep]
             Steps receiving checked discrimination, contrasts and cumulative
             row-order validation.
+        emission : KernelEmission
+            Kernel being emitted, with the bound location and discrimination.
         """
         row, transition = _var("ordinal_row"), _var("ordinal_transition")
-        eta = self._row_value("mu", "mu", row)
+        eta = emission.value_at("mu", row)
         location = self._predictor("")
         specific = any(output != location.output for output, _ in location.parts())
         if specific:
@@ -2669,7 +2568,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         program_steps.append(
             _let("ordinal_disc", _call("positive_parameter", _var("disc")))
         )
-        disc = self._row_value("disc", "ordinal_disc", row)
+        disc = emission.shape("disc").at("ordinal_disc", row)
         cuts = (
             _index(cutpoints, row, transition)
             if self._thresholds_by is not None
@@ -2876,6 +2775,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         cutpoints: str,
         statements: list[Statement],
         program_steps: list[ProgramStep],
+        emission: KernelEmission,
     ) -> None:
         """Lower ordinal log masses with shared transitions and one prefix scan.
 
@@ -2889,6 +2789,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Declarations receiving the response-category axis.
         program_steps : list[ProgramStep]
             Steps receiving normalized category log masses.
+        emission : KernelEmission
+            Kernel being emitted, with the bound location and hurdle.
         """
         spec = self._family.ordinal
         assert spec is not None
@@ -2900,7 +2802,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         cdf_name: str | None = None
         sf_name: str | None = None
         if base_categories > 1:
-            self._append_ordinal_contrasts(formula, cutpoints, program_steps)
+            self._append_ordinal_contrasts(formula, cutpoints, program_steps, emission)
             argument = _var("ordinal_contrasts")
             if spec.kind in {"acat", "cratio"}:
                 argument = _mul(LetExprLiteral(value=-1.0), argument)
@@ -3000,7 +2902,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
 
         hu: LetExprNode | None = None
         if hurdle:
-            hu = self._row_value("hu", "hu", row)
+            hu = emission.value_at("hu", row)
         cases: list[tuple[int, LetExprNode]] = []
         for category in range(categories):
             if hurdle:
@@ -3093,7 +2995,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         return _prior_lower_bound(result, lower).with_(index=index)
 
-    def _draw_site(self, site: SiteDecl) -> SampleStep:
+    def _draw_site(self, site: SiteDecl, floor: float | None = None) -> SampleStep:
         """Draw a declared site from its configured or default prior.
 
         A default prior is scaled to the design column its coefficient
@@ -3103,6 +3005,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         ----------
         site : SiteDecl
             Declared site with a default prior.
+        floor : float or None
+            Lower bound the prior is restricted to unless it already is.
 
         Returns
         -------
@@ -3110,7 +3014,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             The draw over the site's axis.
         """
         index = TypeName(name=site.index) if site.index is not None else None
-        result = self._prior_draw(site.name, site.default, index=index)
+        result = self._prior_draw(site.name, site.default, index=index, lower=floor)
         if site.over is not None:
             result = result.with_(
                 axes=AxisSpec(over=(site.over,)),
@@ -3123,129 +3027,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if site.divisor is not None:
             result = _autoscaled_prior_step(result, site.divisor)
         return result
-
-    def _append_categorical_predictor(
-        self,
-        formula: Formula,
-        predictor: Predictor,
-        statements: list[Statement],
-        steps: list[ProgramStep],
-        correlated: Mapping[tuple[str, str, str], LetExprNode],
-    ) -> None:
-        """Emit a predictor with one coefficient vector over the components.
-
-        The location has every category, with the reference at zero; another
-        parameter has only the free coordinates.
-
-        Parameters
-        ----------
-        formula : Formula
-            Response layout and categories.
-        predictor : Predictor
-            Planned predictor with an output axis.
-        statements : list[Statement]
-            Module objects receiving component and innovation axes.
-        steps : list[ProgramStep]
-            Priors, deterministic predictors, and group transformations.
-        correlated : Mapping
-            Coefficients already transformed by joint correlation blocks.
-        """
-        output = predictor.output
-        assert output is not None and self._family.response is not None
-        labels = self._component_labels(formula)
-        location = predictor.parameter == "mu"
-        reference = self._family.response.reference_index(labels) if location else None
-        components = len(labels) if location else output.size
-        category_index = f"{predictor.prefix}FormulaCategory"
-        self._append_finite_object(statements, category_index, components)
-        self._append_finite_object(statements, output.name, output.size)
-        emit_axis_part(
-            predictor,
-            output,
-            ProgramEmission(self, statements, correlated),
-            steps,
-            f"{predictor.prefix}eta_nonbaseline",
-        )
-        self._append_component_response(
-            steps,
-            parameter=predictor.parameter,
-            prefix=predictor.prefix,
-            reference=reference,
-            coordinates=tuple(
-                index for index in range(components) if index != reference
-            ),
-            category_index=category_index,
-        )
-
-    def _append_component_response(
-        self,
-        program_steps,
-        *,
-        parameter,
-        prefix,
-        reference,
-        coordinates,
-        category_index,
-    ):
-        """Complete shared labelled predictors with the retained reference and family link.
-
-        Parameters
-        ----------
-        program_steps : list
-            Steps already binding the free coordinate predictor matrix.
-        parameter, prefix : str
-            Family output and its established namespace.
-        reference : int or None
-            Identified reference index, or all-coordinate parameterization.
-        coordinates : tuple[int, ...]
-            Free response coordinates in retained order.
-        category_index : str
-            Full response component axis.
-        """
-        response_var = _var("response")
-        if (
-            self._family.response is not None
-            and self._family.response.kind == "logistic_normal"
-            and parameter == "mu"
-        ):
-            program_steps.append(_let("eta", _var(f"{prefix}eta_nonbaseline")))
-            program_steps.append(_let("mu", _var("eta")))
-            return
-        program_steps.append(row_zero(f"{prefix}categorical_zero_logit"))
-        category_cases: tuple[tuple[int, LetExprNode], ...] = (
-            ()
-            if reference is None
-            else ((reference, _var(f"{prefix}categorical_zero_logit")),)
-        ) + tuple(
-            (
-                category,
-                _factor(
-                    (("response", "Resp"),),
-                    body=_index(
-                        f"{prefix}eta_nonbaseline",
-                        response_var,
-                        LetExprLiteral(value=float(coordinate), integral=True),
-                    ),
-                ),
-            )
-            for coordinate, category in enumerate(coordinates)
-        )
-        program_steps.extend(
-            stack_rows(
-                f"{prefix}eta",
-                category_cases,
-                ("category", category_index),
-                stem=f"{prefix}categorical_logits_by_category",
-            )
-        )
-        link = (
-            self._family.location_link
-            if parameter == "mu"
-            else next(
-                aux.link for aux in self._family.aux_params if aux.name == parameter
-            )
-        )
-        _append_link(program_steps, parameter, _var(f"{prefix}eta"), link)
 
     def _level_basis(
         self, group: str, levels: Mapping[str, Sequence[str]]
@@ -3482,13 +3263,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         return next(item for item in self._predictors if item.prefix == prefix)
 
-    def _runtime_parameters(self, formula: Formula) -> tuple[QiecValueParameter, ...]:
+    def _runtime_parameters(
+        self, formula: Formula, data: Sequence[InputDecl]
+    ) -> tuple[QiecValueParameter, ...]:
         """Declare checked group-index and response-weight input tensors.
 
         Parameters
         ----------
         formula : Formula
             Primary predictor, combined with configured auxiliary predictors.
+        data : Sequence[InputDecl]
+            Row columns the response kernel reads by name.
 
         Returns
         -------
@@ -3572,23 +3357,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             parameters += (
                 QiecValueParameter(name="formula_weights", type_expr=weight_type),
             )
-        if self._predictor_graph is not None:
-            for column in self._predictor_graph.inputs.values():
-                carrier = (
-                    "Bool"
-                    if column.data.dtype.kind == "b"
-                    else "Int"
-                    if column.data.dtype.kind in "iu"
-                    else "Real"
-                )
-                parameters += (
-                    QiecValueParameter(
-                        name=column.qvr_name,
-                        type_expr=index_type.with_(
-                            static_arguments=(QiecTypeName(name=carrier),)
-                        ),
-                    ),
-                )
+        parameters += tuple(
+            QiecValueParameter(
+                name=column.name,
+                type_expr=index_type.with_(
+                    static_arguments=(QiecTypeName(name=column.element),)
+                ),
+            )
+            for column in data
+        )
         existing = {parameter.name for parameter in parameters}
         for role, column in formula.modifiers.columns():
             if column.qvr_name in existing:
@@ -3602,112 +3379,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             existing.add(column.qvr_name)
         return parameters
-
-    def _append_vector_observation(
-        self,
-        formula: Formula,
-        statements: list[Statement],
-        program_steps: list[ProgramStep],
-    ) -> None:
-        """Lower one named response event using shared component predictors.
-
-        Parameters
-        ----------
-        formula : Formula
-            Vector response layout and evaluated predictors.
-        statements : list[Statement]
-            Module objects receiving covariance coordinates.
-        program_steps : list[ProgramStep]
-            Shared priors, predictors, and final response factor.
-
-        Raises
-        ------
-        ValueError
-            If a residual-correlation prior is not an LKJ Cholesky law.
-        """
-        assert self._family.response is not None
-        kind = self._family.response.kind
-        if kind == "multinomial":
-            args = ("formula_trials", "eta")
-        elif kind in {"dirichlet", "dirichlet_multinomial"}:
-            phi = self._row_value("phi", "phi", _var("response"))
-            concentration = _factor(
-                (("response", "Resp"), ("component", "FormulaCategory")),
-                body=_mul(_index("mu", _var("response"), _var("component")), phi),
-            )
-            program_steps.append(_let("formula_concentration", concentration))
-            args = (
-                ("formula_trials", "formula_concentration")
-                if kind == "dirichlet_multinomial"
-                else ("formula_concentration",)
-            )
-        elif kind == "dirichlet2":
-            args = ("mu",)
-        else:
-            width = len(self._component_labels(formula)) - 1
-            self._append_residual_correlation(
-                program_steps,
-                "FormulaCategoryLogit",
-                width,
-                result="formula_alr_correlation",
-            )
-            component = self._family.component_scale
-            assert component is not None
-            name = component.name
-            sigma = (
-                _index(name, _var("response"), _var("i"))
-                if name in self._distributional
-                or any(
-                    is_scale_parameter(self._family, parameter)
-                    for parameter in self._distributional.keys()
-                    | self._fixed_parameters.keys()
-                )
-                or self._predictor_graph is not None
-                and isinstance(
-                    self._predictor_graph.roots.get(name), ComponentExpression
-                )
-                else _index(name, _var("response"))
-                if self._predictor_graph is not None
-                and name in self._predictor_graph.roots
-                else _var(name)
-                if name in self._fixed_parameters
-                else _index(name, _var("i"))
-            )
-            program_steps.append(
-                _let(
-                    "formula_alr_scale",
-                    _factor(
-                        (
-                            ("response", "Resp"),
-                            ("i", "FormulaCategoryLogit"),
-                            ("j", "FormulaCategoryLogit"),
-                        ),
-                        body=_mul(
-                            sigma,
-                            _index("formula_alr_correlation", _var("i"), _var("j")),
-                        ),
-                    ),
-                )
-            )
-            reference = self._family.response.reference_index(
-                self._component_labels(formula)
-            )
-            assert reference is not None
-            args = ("mu", "formula_alr_scale", reference)
-        observed = observation(
-            _qvr_name(formula.response_name),
-            self._family.observe_family,
-            args,
-            formula.modifiers,
-            event="FormulaCategory",
-            events=False,
-        )
-        if kind == "multinomial":
-            observed = observed.with_arguments(
-                (("total_count", "formula_trials"), ("logits", "eta"))
-            )
-        self._observation = observed
-        program_steps.append(observed.step())
 
     def _append_residual_correlation(
         self,
@@ -3763,295 +3434,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Parameter labels, stable prefixes, and evaluated formulas.
         """
         return predictor_items(formula, self._distributional, self._predictor_graph)
-
-    def _graph_expression_at(self, expression, row, component=None):
-        """Project nominal graph inputs to one row and explicitly labelled coordinate.
-
-        Parameters
-        ----------
-        expression : LetExprNode
-            Canonical scalar expression at one result coordinate.
-        row : LetExprNode
-            Observation-row index.
-        component : str or None
-            Requested coordinate label, required for vector dependencies.
-
-        Returns
-        -------
-        LetExprNode
-            Capture-safe row expression over existing QVR bindings.
-
-        Raises
-        ------
-        ValueError
-            If a vector dependency has no compatible labelled coordinate.
-        """
-        graph = self._predictor_graph
-        assert graph is not None
-        substitution = {
-            column.qvr_name: _index(column.qvr_name, row)
-            for column in graph.inputs.values()
-        }
-        for name in (*graph.leaves, *graph.expressions):
-            value = graph.expressions.get(name)
-            if isinstance(value, ComponentExpression):
-                if component is None:
-                    # Only reject an actually used vector, not unrelated nodes.
-                    if f"nlpar_{name}" in free_let_names(expression):
-                        raise ValueError(
-                            f"nonlinear vector {name!r} requires explicit component expressions"
-                        )
-                    continue
-                if component not in value.components:
-                    if f"nlpar_{name}" in free_let_names(expression):
-                        raise ValueError(
-                            f"nonlinear vector {name!r} has no component {component!r}"
-                        )
-                    continue
-                substitution[f"nlpar_{name}"] = _index(
-                    f"nlpar_{name}",
-                    row,
-                    LetExprLiteral(
-                        value=value.components.index(component), integral=True
-                    ),
-                )
-            else:
-                substitution[f"nlpar_{name}"] = _index(f"nlpar_{name}", row)
-        return substitute_let_expr(expression, substitution)
-
-    def _append_graph_value(
-        self, name, value, statements, steps, *, axis=None, components=None
-    ):
-        """Materialize a graph node with explicit row and optional nominal component axes.
-
-        Parameters
-        ----------
-        name : str
-            Existing QVR binding name.
-        value : LetExprNode or ComponentExpression
-            Scalar-row or explicitly labelled expression.
-        statements, steps : list
-            Module axes and deterministic program statements.
-        axis : str or None
-            Shared coordinate axis for a family root, otherwise node-local.
-        components : tuple[str, ...] or None
-            Required family coordinate labels in canonical retained order.
-
-        Raises
-        ------
-        ValueError
-            If result labels or scalar/vector carriers do not match the root.
-        """
-        row = _var("graph_row")
-        if not isinstance(value, ComponentExpression):
-            if components is not None:
-                raise ValueError(
-                    f"nonlinear {name!r} requires explicit component expressions for {components}"
-                )
-            steps.append(
-                _let(
-                    name,
-                    _factor(
-                        (("graph_row", "Resp"),),
-                        body=self._graph_expression_at(value, row),
-                    ),
-                )
-            )
-            return
-        labels = value.components if components is None else components
-        if set(labels) != set(value.components):
-            raise ValueError(
-                f"nonlinear {name!r} component labels {value.components} do not match expected {labels}"
-            )
-        axis = axis or f"FormulaGraphCoordinate_{name}"
-        self._append_finite_object(statements, axis, len(labels))
-        steps.extend(
-            stack_rows(
-                name,
-                (
-                    (
-                        index,
-                        _factor(
-                            (("graph_row", "Resp"),),
-                            body=self._graph_expression_at(
-                                value.values[value.components.index(label)], row, label
-                            ),
-                        ),
-                    )
-                    for index, label in enumerate(labels)
-                ),
-                ("graph_coordinate", axis),
-                stem=f"{name}_by_coordinate",
-                row=("graph_row", "Resp"),
-            )
-        )
-
-    def _append_graph_parameters(self, formula, statements, steps, correlated):
-        """Emit nonlinear leaves through existing coefficient and correlation paths.
-
-        Parameters
-        ----------
-        formula : Formula
-            Primary response metadata.
-        statements, steps : list
-            Existing axes and program statements.
-        correlated : Mapping
-            Shared group coefficients across all additive parameter leaves.
-        """
-        graph = self._predictor_graph
-        if graph is None:
-            return
-        for name in graph.leaves:
-            planned = self._predictor(f"nlpar_{name}_")
-            value = emit_predictor(
-                planned,
-                ProgramEmission(self, statements, correlated),
-                steps,
-            )
-            raw = f"nlpar_{name}_raw"
-            steps.append(_let(raw, value))
-            steps.append(
-                _let(
-                    f"nlpar_{name}",
-                    _factor(
-                        (("graph_row", "Resp"),),
-                        body=_index(raw, _var("graph_row"))
-                        if planned.rowwise
-                        else _var(raw),
-                    ),
-                )
-            )
-        for name, expression in graph.expressions.items():
-            self._append_graph_value(f"nlpar_{name}", expression, statements, steps)
-
-    def _append_auxiliaries(
-        self,
-        formula: Formula,
-        statements: list[Statement],
-        program_steps: list[ProgramStep],
-        correlated: Mapping[tuple[str, str, str], LetExprNode],
-    ) -> None:
-        """Lower shared scalar or coordinate-valued auxiliary parameters.
-
-        Parameters
-        ----------
-        formula : Formula
-            Response metadata and primary design.
-        statements : list[Statement]
-            Module objects receiving coordinate axes.
-        program_steps : list[ProgramStep]
-            Program steps receiving priors and predictors.
-        correlated : Mapping[tuple[str,str,str],LetExprNode]
-            Shared correlated group contributions.
-        """
-        for aux in self._family.aux_params:
-            if (
-                aux.name == self._family.error_scale
-                and formula.modifiers.standard_error is not None
-                and not formula.modifiers.standard_error.sigma
-            ):
-                continue
-            if aux.name in self._fixed_parameters:
-                program_steps.append(
-                    _let(
-                        aux.name,
-                        LetExprLiteral(value=float(self._fixed_parameters[aux.name])),
-                    )
-                )
-                continue
-            if (
-                self._predictor_graph is not None
-                and aux.name in self._predictor_graph.roots
-            ):
-                eta_name = f"dpar_{aux.name}_eta"
-                value = self._predictor_graph.roots[aux.name]
-                labels = None
-                if isinstance(value, ComponentExpression):
-                    if not aux.per_component:
-                        raise ValueError(
-                            f"family parameter {aux.name!r} requires a scalar nonlinear root"
-                        )
-                    assert self._family.response is not None
-                    labels = tuple(
-                        self._component_labels(formula)[index]
-                        for index in self._family.response.coordinate_indices(
-                            self._component_labels(formula)
-                        )
-                    )
-                self._append_graph_value(
-                    eta_name,
-                    value,
-                    statements,
-                    program_steps,
-                    axis=f"dpar_{aux.name}_FormulaCategoryLogit",
-                    components=labels,
-                )
-                _append_link(program_steps, aux.name, _var(eta_name), aux.link)
-                continue
-            predictor = self._distributional.get(aux.name)
-            # brms sigma<c>: one scale formula or scalar scale per free category.
-            if aux.per_component and append_scale_predictors(
-                self,
-                formula,
-                statements,
-                program_steps,
-                correlated,
-                aux.prior,
-                lambda steps, name, eta, link=aux.link: _append_link(
-                    steps, name, eta, link
-                ),
-            ):
-                continue
-            if aux.per_component and predictor is not None:
-                self._append_categorical_predictor(
-                    formula,
-                    self._predictor(f"dpar_{aux.name}_"),
-                    statements,
-                    program_steps,
-                    correlated,
-                )
-                continue
-            if predictor is None:
-                if aux.fixed_default is not None and aux.name not in self._user_priors:
-                    program_steps.append(
-                        _let(aux.name, LetExprLiteral(value=aux.fixed_default))
-                    )
-                    continue
-                prior = (
-                    self._user_priors[aux.name]
-                    if aux.name in self._user_priors
-                    else aux.with_response_minimum(
-                        aux.prior, np.asarray(formula.response_values)
-                    )
-                )
-                draw = self._prior_draw(
-                    aux.name,
-                    prior,
-                    lower=aux.domain.lower if aux.domain.lower else None,
-                )
-                if aux.per_component:
-                    draw = draw.with_(index=TypeName(name="FormulaCategoryLogit"))
-                program_steps.append(draw)
-            else:
-                planned = self._predictor(f"dpar_{aux.name}_")
-                linear_predictor = emit_predictor(
-                    planned,
-                    ProgramEmission(self, statements, correlated),
-                    program_steps,
-                )
-                eta_name = f"dpar_{aux.name}_eta"
-                program_steps.append(_let(eta_name, linear_predictor))
-                _append_link(program_steps, aux.name, _var(eta_name), planned.link)
-        for site in self._residual.sites if self._residual is not None else ():
-            if site.name in self._fixed_parameters:
-                program_steps.append(
-                    _let(
-                        site.name,
-                        LetExprLiteral(value=float(self._fixed_parameters[site.name])),
-                    )
-                )
-                continue
-            program_steps.append(self._draw_site(site))
 
     def _bind_residual(
         self, law: ResidualLaw | None, fixed: Mapping[str, float]
@@ -4225,6 +3607,79 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             {*_bound_names(program.draws), *binders, *finite_object_sizes(module)},
         )
 
+    def _kernel_inputs(self, formula: Formula) -> KernelInputs:
+        """Gather what the family kernel is built from.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response.
+
+        Returns
+        -------
+        KernelInputs
+            The family, the planned predictors, the formulas, fixed values,
+            priors, nonlinear graph, residual law, and trial counts.
+        """
+        family = self._family
+        categorical = family.response is not None
+        trials = self._binomial_trials
+        return KernelInputs(
+            family=family,
+            response=_qvr_name(formula.response_name),
+            labels=self._component_labels(formula) if categorical else (),
+            categories=self._category_count(formula, family=family.name)
+            if categorical
+            else 0,
+            predictors=self._predictors,
+            distributional=frozenset(self._distributional),
+            fixed={
+                name: float(value) for name, value in self._fixed_parameters.items()
+            },
+            priors=dict(self._user_priors),
+            graph=self._predictor_graph,
+            residual=self._residual,
+            host=self._predictor_name,
+            category_parameters=self._category_parameters,
+            trials=_qvr_name(trials)
+            if isinstance(trials, str)
+            else float(trials)
+            if trials is not None
+            else None,
+            response_values=np.asarray(formula.response_values),
+        )
+
+    def _append_baseline(
+        self,
+        formula: Formula,
+        statements: list[Statement],
+        steps: list[ProgramStep],
+    ) -> None:
+        """Emit the normalized spline baseline of a proportional-hazards family.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the event times.
+        statements : list[Statement]
+            Declarations receiving the basis axes.
+        steps : list[ProgramStep]
+            Steps receiving the baseline draws.
+        """
+        baseline = self._family.baseline
+        assert baseline is not None
+        basis = baseline.resolve(formula)
+        self._baseline_level_sites = baseline_level_sites(basis, baseline.by)
+        objects, draws = baseline_steps(
+            basis,
+            prior=self._prior_draw("sbhaz", self._user_priors["sbhaz"])
+            if "sbhaz" in self._user_priors
+            else None,
+            group=_qvr_name(baseline.by) if baseline.by is not None else None,
+        )
+        statements.extend(objects)
+        steps.extend(draws)
+
     def _build_module(
         self,
         formula: Formula,
@@ -4297,266 +3752,245 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     )
 
         program_steps: list[ProgramStep] = []
-        if self._family.baseline is not None:
-            from quivers.formulas._survival import baseline_level_sites, baseline_steps
-
-            basis = self._family.baseline.resolve(formula)
-            self._baseline_level_sites = baseline_level_sites(
-                basis, self._family.baseline.by
-            )
-            baseline_objects, baseline_draws = baseline_steps(
-                basis,
-                prior=self._prior_draw("sbhaz", self._user_priors["sbhaz"])
-                if "sbhaz" in self._user_priors
-                else None,
-                group=_qvr_name(self._family.baseline.by)
-                if self._family.baseline.by is not None
-                else None,
-            )
-            statements.extend(baseline_objects)
-            program_steps.extend(baseline_draws)
-        if self._family.response is not None:
-            count = self._category_count(formula, family=self._family.name)
-            axis = response_axis(self._family, self._component_labels(formula))
-            assert axis is not None
-            self._append_finite_object(statements, "FormulaCategory", count)
-            self._append_finite_object(statements, axis.name, axis.size)
-            for predictor in self._predictors:
-                if predictor.output is not None:
-                    self._append_finite_object(
-                        statements, predictor.output.name, predictor.output.size
-                    )
-            correlated = self._append_correlations(
-                laws, statements, program_steps, supplied_groups or {}
-            )
-            self._append_graph_parameters(
-                formula, statements, program_steps, correlated
-            )
-            root = (
-                self._predictor_graph.roots.get("mu")
-                if self._predictor_graph is not None
-                else None
-            )
-            if isinstance(root, ComponentExpression) and not self._category_parameters:
-                labels = self._component_labels(formula)
-                response = self._family.response
-                assert response is not None
-                coordinates = response.coordinate_indices(labels)
-                expected = tuple(labels[index] for index in coordinates)
-                self._append_graph_value(
-                    "eta_nonbaseline",
-                    root,
-                    statements,
-                    program_steps,
-                    axis="FormulaCategoryLogit",
-                    components=expected,
+        inputs = self._kernel_inputs(formula)
+        host = _LensHost(self)
+        kernel, sources = family_kernel(inputs, formula)
+        emit_head(host, inputs, kernel, statements, program_steps, formula)
+        for predictor in self._predictors:
+            if predictor.output is not None:
+                self._append_finite_object(
+                    statements, predictor.output.name, predictor.output.size
                 )
-                self._append_component_response(
-                    program_steps,
-                    parameter="mu",
-                    prefix="",
-                    reference=response.reference_index(labels),
-                    coordinates=coordinates,
-                    category_index="FormulaCategory",
-                )
-            elif not append_category_predictors(
-                self, formula, statements, program_steps, correlated
-            ):
-                self._append_categorical_predictor(
-                    formula, self._predictor(""), statements, program_steps, correlated
-                )
-            if self._family.vector_response:
-                self._append_auxiliaries(formula, statements, program_steps, correlated)
-                self._append_vector_observation(formula, statements, program_steps)
-            else:
-                self._observation = observation(
-                    _qvr_name(formula.response_name),
-                    "Categorical",
-                    ("mu",),
-                    formula.modifiers,
-                    events=False,
-                )
-                program_steps.append(self._observation.step())
-            statements.append(
-                ProgramDecl(
-                    name="model",
-                    params=None,
-                    value_parameters=self._runtime_parameters(formula),
-                    domain=TypeName(name="Resp"),
-                    codomain=TypeName(name="Resp"),
-                    draws=tuple(program_steps),
-                    return_vars=(_qvr_name(formula.response_name),),
-                )
-            )
-            statements.append(ExportDecl(expr=ExprIdent(name="model")))
-            return Module(statements=tuple(statements))
-
         correlated = self._append_correlations(
             laws, statements, program_steps, supplied_groups or {}
         )
-        self._append_graph_parameters(formula, statements, program_steps, correlated)
-        location = self._predictor("")
-        emission = ProgramEmission(self, statements, correlated)
-        eta_expr = emit_predictor(location, emission, program_steps)
-
-        if self._predictor_graph is not None and "mu" in self._predictor_graph.roots:
-            root = self._predictor_graph.roots["mu"]
-            if isinstance(root, ComponentExpression):
-                raise ValueError(
-                    "a scalar response requires a scalar nonlinear mu expression"
-                )
-            self._append_graph_value("graph_mu_eta", root, statements, program_steps)
-            eta_expr = _var("graph_mu_eta")
-            if self._predictor_name is not None:
-                eta_expr = _add(eta_expr, _var(self._predictor_name))
-        self._append_auxiliaries(formula, statements, program_steps, correlated)
-
-        cutpoints_name: str | None = None
-        cutpoint_steps: list[ProgramStep] = []
-        if self._family.ordinal is not None:
-            cutpoints_name = self._append_ordinal_cutpoints(
-                formula, statements, cutpoint_steps
-            )
-
-        transitions = tuple(
-            output for output, _ in location.parts() if output != location.output
-        )
-        for output in transitions:
-            assert output is not None
-            emit_axis_part(location, output, emission, program_steps, "eta_nonbaseline")
-
-        program_steps.extend(cutpoint_steps)
-
-        program_steps.append(_let("eta", eta_expr))
-        # A log-scale location remains useful even when exp(eta) overflows.
-        # Its inverse-link prediction is evaluated on request, not as an
-        # unused part of every density or native response-mean computation.
-        retained_log_location = self._family.retains_log_location
-        if not retained_log_location:
-            _append_link(
-                program_steps,
-                "mu",
-                _var("eta"),
-                links["identity"]
-                if self._family.ordinal is not None
-                else self._family.location_link,
-            )
-
-        scale: dict[str, LetExprNode] = {}
-        if self._family.ordinal is not None:
-            assert cutpoints_name is not None
-            if self._family.scores_cutpoints:
-                # Preserve the existing cumulative source and constructor when
-                # discrimination is its fixed unit default.
-                disc_is_unit = (
-                    self._fixed_parameters.get("disc", 1.0) == 1.0
-                    and "disc" not in self._distributional
-                    and "disc" not in self._user_priors
-                    and not transitions
-                )
-                if not disc_is_unit:
-                    self._append_ordinal_contrasts(
-                        formula, cutpoints_name, program_steps
-                    )
-                    program_steps.append(
-                        _let("ordinal_scaled_eta", LetExprLiteral(value=0.0))
-                    )
-                    obs_args: tuple[str | float, ...] = (
-                        "ordinal_scaled_eta",
-                        "ordinal_contrasts",
-                    )
-                else:
-                    obs_args = ("mu", cutpoints_name)
-            else:
-                self._append_ordinal_logits(
-                    formula, cutpoints_name, statements, program_steps
-                )
-                obs_args = ("ordinal_logits",)
-        else:
-            # The family states its own map to the native constructor. Under
-            # known errors the total scale stands wherever it names its own.
-            if formula.modifiers.standard_error is not None:
-                assert self._family.error_scale is not None
-                self._append_known_error_scale(formula, program_steps)
-                scale[self._family.error_scale] = _var("formula_sigma")
-            if self._family.decision_event is not None:
-                program_steps.append(
-                    _let(
-                        _qvr_name(formula.response_name),
-                        _bind(self._family.decision_event),
-                    )
-                )
-            program_steps.extend(
-                _let(binding.name, _bind(binding.expr, **scale))
-                for binding in self._family.observe_lets
-            )
-            obs_args = tuple(
-                self._observe_argument(argument, scale)
-                for argument in self._family.observe_args
-            )
-        observe_family = self._family.observe_family
-        if self._family.custom is not None:
-            obs_args = tuple(
-                "formula_sigma" if binding in scale else binding
-                for _, binding in self._family.custom.bindings
-            )
-        if self._residual is not None:
-            # Natural residuals correlated across rows: the law gives the
-            # kernel, its structural sites, and their order.
-            for axis in self._residual.axes():
-                self._append_finite_object(statements, axis.name, axis.size)
-            program_steps.extend(
-                self._residual.steps(ProgramEmission(self, statements, {}))
-            )
-            observe_family = self._residual.name
-            elliptical = self._residual.elliptical
-            obs_args = self._residual.arguments(
-                "mu",
-                "formula_sigma" if elliptical.scale in scale else elliptical.scale,
-            )
-        # brms rate(): count denominators scale the mean and NB shape.
-        observe_family, obs_args = rate_arguments(
-            self._family,
-            observe_family,
-            obs_args,
+        compose(
+            host,
+            inputs,
+            kernel,
+            sources,
+            statements,
             program_steps,
-            formula.modifiers,
+            correlated,
+            formula,
         )
-        observed = observation(
-            _qvr_name(formula.response_name),
-            observe_family,
-            obs_args,
-            formula.modifiers,
-            catalog=self.response_laws,
-        )
-        if retained_log_location:
-            assert self._family.log_location_argument is not None
-            # The kernel takes the linear predictor on the log scale.
-            observed = observed.with_arguments(
-                tuple(
-                    (self._family.log_location_argument, "eta")
-                    if bound == "mu"
-                    else (parameter, bound)
-                    for parameter, bound in observed.arguments
-                )
+        statements.append(
+            ProgramDecl(
+                name="model",
+                params=None,
+                value_parameters=self._runtime_parameters(formula, kernel.data),
+                domain=TypeName(name="Resp"),
+                codomain=TypeName(name="Resp"),
+                draws=tuple(program_steps),
+                return_vars=(kernel.response,),
             )
-        if self._family.ordinal is not None and not self._family.scores_cutpoints:
-            observed = observed.with_arguments((("logits", "ordinal_logits"),))
-        self._observation = observed
-        program_steps.append(observed.step())
-
-        program_decl = ProgramDecl(
-            name="model",
-            params=None,
-            value_parameters=self._runtime_parameters(formula),
-            domain=TypeName(name="Resp"),
-            codomain=TypeName(name="Resp"),
-            draws=tuple(program_steps),
-            return_vars=(_qvr_name(formula.response_name),),
         )
-        statements.append(program_decl)
         statements.append(ExportDecl(expr=ExprIdent(name="model")))
         return Module(statements=tuple(statements))
+
+
+class _LensHost:
+    """The compiler as the parts of a response kernel see it.
+
+    Parameters
+    ----------
+    lens : FormulaToQVRModule
+        Compiler carrying the prior configuration.
+    """
+
+    def __init__(self, lens: FormulaToQVRModule) -> None:
+        self._lens = lens
+
+    def terms(
+        self,
+        statements: list[Statement],
+        gathered: Mapping[tuple[str, str, str], LetExprNode],
+    ) -> ProgramEmission:
+        """Return the program the terms of the predictors are emitted into.
+
+        Parameters
+        ----------
+        statements : list[Statement]
+            Module declarations receiving axes.
+        gathered : Mapping[tuple[str, str, str], LetExprNode]
+            Group-level coefficients emitted ahead of the body.
+
+        Returns
+        -------
+        ProgramEmission
+            The program as the terms see it.
+        """
+        return ProgramEmission(self._lens, statements, gathered)
+
+    def declare(self, statements: list[Statement], axis: AxisDecl) -> None:
+        """Declare a finite axis once.
+
+        Parameters
+        ----------
+        statements : list[Statement]
+            Module declarations.
+        axis : AxisDecl
+            Axis and its size.
+        """
+        self._lens._append_finite_object(statements, axis.name, axis.size)
+
+    def draw_site(self, site: SiteDecl, floor: float | None) -> SampleStep:
+        """Draw a site from its configured or default prior.
+
+        Parameters
+        ----------
+        site : SiteDecl
+            Site with a default prior.
+        floor : float or None
+            Lower bound the prior is restricted to unless it already is.
+
+        Returns
+        -------
+        SampleStep
+            The draw.
+        """
+        return self._lens._draw_site(site, floor=floor)
+
+    def ordinal_thresholds(
+        self, formula: Formula, statements: list[Statement], steps: list[ProgramStep]
+    ) -> str:
+        """Emit the ordinal thresholds.
+
+        Parameters
+        ----------
+        formula : Formula
+            Response categories and group coding.
+        statements : list[Statement]
+            Declarations receiving the threshold axes.
+        steps : list[ProgramStep]
+            Steps receiving the threshold draws and transformations.
+
+        Returns
+        -------
+        str
+            Binding of the thresholds; empty without a boundary.
+        """
+        return self._lens._append_ordinal_cutpoints(formula, statements, steps)
+
+    def ordinal_contrasts(
+        self,
+        formula: Formula,
+        cutpoints: str,
+        steps: list[ProgramStep],
+        emission: KernelEmission,
+    ) -> None:
+        """Bind the contrasts of each row and transition.
+
+        Parameters
+        ----------
+        formula : Formula
+            Response and predictors.
+        cutpoints : str
+            Binding of the thresholds.
+        steps : list[ProgramStep]
+            Steps receiving the contrasts.
+        emission : KernelEmission
+            Kernel being emitted.
+        """
+        self._lens._append_ordinal_contrasts(formula, cutpoints, steps, emission)
+
+    def ordinal_logits(
+        self,
+        formula: Formula,
+        cutpoints: str,
+        statements: list[Statement],
+        steps: list[ProgramStep],
+        emission: KernelEmission,
+    ) -> None:
+        """Bind the category log masses of an ordinal law.
+
+        Parameters
+        ----------
+        formula : Formula
+            Response and predictors.
+        cutpoints : str
+            Binding of the thresholds.
+        statements : list[Statement]
+            Declarations receiving the category axis.
+        steps : list[ProgramStep]
+            Steps receiving the log masses.
+        emission : KernelEmission
+            Kernel being emitted.
+        """
+        self._lens._append_ordinal_logits(
+            formula, cutpoints, statements, steps, emission
+        )
+
+    def known_error_scale(
+        self, formula: Formula, steps: list[ProgramStep], emission: KernelEmission
+    ) -> None:
+        """Bind the response scale under known errors.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with an ``se()`` term.
+        steps : list[ProgramStep]
+            Steps receiving the scale.
+        emission : KernelEmission
+            Kernel being emitted.
+        """
+        self._lens._append_known_error_scale(formula, steps, emission)
+
+    def residual_correlation(
+        self, steps: list[ProgramStep], axis: str, width: int, result: str
+    ) -> None:
+        """Draw a correlation factor over an event axis.
+
+        Parameters
+        ----------
+        steps : list[ProgramStep]
+            Steps receiving the draw and binding.
+        axis : str
+            Axis of the factor.
+        width : int
+            Number of coordinates.
+        result : str
+            Binding of the factor.
+        """
+        self._lens._append_residual_correlation(steps, axis, width, result=result)
+
+    def baseline(
+        self, formula: Formula, statements: list[Statement], steps: list[ProgramStep]
+    ) -> None:
+        """Emit the baseline hazard of a proportional-hazards family.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the event times.
+        statements : list[Statement]
+            Declarations receiving the basis axes.
+        steps : list[ProgramStep]
+            Steps receiving the baseline draws.
+        """
+        self._lens._append_baseline(formula, statements, steps)
+
+    def observed(self, observation: Observation) -> None:
+        """Record the observation of the response.
+
+        Parameters
+        ----------
+        observation : Observation
+            The observation written.
+        """
+        self._lens._observation = observation
+
+    @property
+    def response_laws(self) -> FamilyCatalog | None:
+        """The compilation-local laws of the response.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            The catalog, or None when the law is built in.
+        """
+        return self._lens.response_laws
 
 
 __all__ = [

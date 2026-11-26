@@ -844,16 +844,13 @@ class Family(ValueModel):
         ValueError
             If the quantity is not itself a native constructor argument.
         """
-        if self.custom is not None:
-            arguments = {bound: native for native, bound in self.custom.bindings}
-        else:
-            arguments = {
-                argument: native
-                for argument, native in zip(
-                    self.observe_args, self.native.parameter_names, strict=False
-                )
-                if isinstance(argument, str)
-            }
+        arguments = {
+            argument: native
+            for argument, native in zip(
+                self.observe_args, self.native.parameter_names, strict=False
+            )
+            if isinstance(argument, str)
+        }
         if name not in arguments:
             raise ValueError(
                 f"family {self.name!r} does not pass {name!r} to its native "

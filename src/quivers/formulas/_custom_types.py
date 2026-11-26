@@ -1,4 +1,4 @@
-"""Retained custom-law constructor bindings over ordinary formula predictors."""
+"""The compilation-local law and data columns of a custom family."""
 
 from __future__ import annotations
 
@@ -9,22 +9,20 @@ from quivers.family_catalog import FamilyCatalog
 
 
 class CustomFamilySpec(ValueModel):
-    """One immutable custom-law binding, with a compilation-local implementation.
+    """The compilation-local law of a custom family and its data parameters.
+
+    The family's `Family.observe_args` name the formula binding passed to
+    each native parameter.
 
     Parameters
     ----------
     catalog : FamilyCatalog
         Checked semantic contracts and native implementations, held by identity.
-    bindings : tuple[tuple[str, str], ...]
-        Native constructor parameters paired with formula predictor bindings.
     data : tuple[tuple[str, str], ...]
         Deterministic distributional parameters paired with source data columns.
     """
 
     catalog: FamilyCatalog = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    bindings: tuple[tuple[str, str], ...] = dx.field(
-        opaque=True, extras=OPAQUE_BY_VALUE
-    )
     data: tuple[tuple[str, str], ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )

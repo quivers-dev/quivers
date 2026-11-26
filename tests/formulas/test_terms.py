@@ -426,7 +426,8 @@ PLANNED = (
     "_predictor.py",
     "_prior_emission.py",
     "_term_emission.py",
-    "_category_emission.py",
+    "_kernel.py",
+    "_family_kernel.py",
     "compile.py",
 )
 
