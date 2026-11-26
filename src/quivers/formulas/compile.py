@@ -1478,7 +1478,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 "trials requires a response family with finite trial counts"
             )
         reserved = {
-            column.qvr_name for _, column in self.response_data(formula).column_items()
+            column.qvr_name for _, column in self._response_data(formula).column_items()
         }
         if formula.modifiers.decision is not None:
             reserved.add("formula_response")
@@ -1952,7 +1952,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 column.validate_rows("Resp", len(predictor.response_values))
         return tuple(columns)
 
-    def response_data(self, formula: Formula) -> ResponseData:
+    def _response_data(self, formula: Formula) -> ResponseData:
         """Return the response data of a formula.
 
         Parameters
@@ -2000,7 +2000,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             obs["formula_decision"] = torch.as_tensor(
                 formula.modifiers.decision.data.copy(), dtype=torch.bool
             )
-        for role, column in self.response_data(formula).column_items():
+        for role, column in self._response_data(formula).column_items():
             if role not in {"weights", "decision"}:
                 obs[column.qvr_name] = torch.as_tensor(column.data.copy())
         if formula.modifiers.threshold_groups is not None and threshold_kinds(
@@ -3570,7 +3570,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for column in data
         )
         existing = {parameter.name for parameter in parameters}
-        for role, column in self.response_data(formula).column_items():
+        for role, column in self._response_data(formula).column_items():
             if column.qvr_name in existing:
                 continue
             carrier = (
@@ -3769,7 +3769,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             ),
             *(
                 column.qvr_name
-                for _, column in self.response_data(formula).column_items()
+                for _, column in self._response_data(formula).column_items()
             ),
             *(
                 f"{_qvr_name(group)}_idx"

@@ -1874,7 +1874,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             ``mi()`` response is recorded at its observed rows only.
         """
         response = self.emission.responses[name]
-        data = response.lens.response_data(response.formula)
+        data = response.lens._response_data(response.formula)
         spec = self.missing_specs.get(name)
         if spec is None:
             return data
