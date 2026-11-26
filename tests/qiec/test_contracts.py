@@ -523,11 +523,39 @@ def test_metrics_that_fail_the_triangle_inequality() -> None:
     """Require the counterexamples stated for the relative error and KL."""
 
     def relative(a: float, b: float) -> float:
+        """The relative error of a computed value against a target.
+
+        Parameters
+        ----------
+        a : float
+            The computed value.
+        b : float
+            The target.
+
+        Returns
+        -------
+        float
+            ``|a - b| / |b|``.
+        """
         return abs(a - b) / abs(b)
 
     assert relative(101, 1) > relative(101, 100) + relative(100, 1)
 
     def kl(p: float, q: float) -> float:
+        """The divergence between two Bernoulli laws.
+
+        Parameters
+        ----------
+        p : float
+            The mean of the first law.
+        q : float
+            The mean of the second law.
+
+        Returns
+        -------
+        float
+            ``D(Bernoulli(p) || Bernoulli(q))``.
+        """
         return p * math.log(p / q) + (1 - p) * math.log((1 - p) / (1 - q))
 
     assert round(kl(0.1, 0.9), 3) == 1.758
@@ -811,6 +839,18 @@ def test_missing_constants_and_other_metrics_give_a_heuristic() -> None:
         c.compose((bounded,), operation(ONE, ONE))
 
 
+def test_a_small_residual_is_not_a_small_error() -> None:
+    """Require the iteration stated in the documentation to stop far from its value."""
+    weight, total, steps = 0.999, 1.0, 1
+    while math.log(total + weight**steps) - math.log(total) >= 1e-3:
+        total += weight**steps
+        steps += 1
+    stopped = math.log(total + weight**steps)
+    assert steps == 693
+    assert round(stopped, 4) == 6.2158
+    assert round(math.log(1000), 4) == 6.9078
+
+
 def test_the_bound_holds_for_log_sum_exp() -> None:
     """Require the composed bound to cover the error of log-sum-exp.
 
@@ -826,6 +866,18 @@ def test_the_bound_holds_for_log_sum_exp() -> None:
     limit = float(bound.bound.fraction)
 
     def lse(a: float, b: float) -> float:
+        """The log of the sum of two exponentials.
+
+        Parameters
+        ----------
+        a, b : float
+            The log weights.
+
+        Returns
+        -------
+        float
+            ``log(exp(a) + exp(b))``, computed stably.
+        """
         top = max(a, b)
         return top + math.log(math.exp(a - top) + math.exp(b - top))
 

@@ -494,6 +494,7 @@ nav:
       - Effects: api/qiec/effects.md
       - Terms: api/qiec/terms.md
       - Evidence: api/qiec/evidence.md
+      - Contracts: api/qiec/contracts.md
       - Substitution: api/qiec/substitution.md
       - Discharge: api/qiec/discharge.md
       - Coverage: api/qiec/coverage.md
