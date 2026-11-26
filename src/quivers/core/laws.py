@@ -281,6 +281,17 @@ TIE_FIRST_MAXIMIZER = Law(
 )
 """The one tie rule of a selective sum, as its implementation keeps it."""
 
+STAR_DECIDED = Law(
+    name="star-decided",
+    statement=(
+        "star returns a value exactly on its declared domain: for a matrix outside "
+        "it raises DivergentClosureError, and when rounding cannot decide which "
+        "side of the boundary a cycle lies on it raises UndecidedClosureError"
+    ),
+    scope="implementation",
+)
+"""The closure refuses where it has no value and where rounding cannot decide."""
+
 SEMIRING_LAWS: tuple[Law, ...] = (
     PLUS_ASSOCIATIVE,
     PLUS_COMMUTATIVE,
@@ -302,6 +313,7 @@ LAWS: Mapping[str, Law] = MappingProxyType(
             PLUS_SELECTIVE,
             SUPERIOR,
             STAR_LEAST_SOLUTION,
+            STAR_DECIDED,
             DIVISION,
             ADDITIVE_INVERSE,
             ZERO_SUM_FREE,
@@ -667,6 +679,10 @@ TEST_DOMAINS: Mapping[str, str] = MappingProxyType(
             "six index shapes with an axis of size zero, reduced over one or two "
             "axes, in float64 and float32"
         ),
+        STAR_DECIDED.name: (
+            "every matrix of the row's closure cases inside and outside the domain, "
+            "of orders zero to three, in float64 and float32"
+        ),
         TIE_FIRST_MAXIMIZER.name: (
             "every pair, triple and four-tuple of the row's samples, ties included, "
             "in float64 and float32"
@@ -844,6 +860,7 @@ __all__ = [
     "PLUS_SELECTIVE",
     "SUPERIOR",
     "STAR_LEAST_SOLUTION",
+    "STAR_DECIDED",
     "DIVISION",
     "ADDITIVE_INVERSE",
     "ZERO_SUM_FREE",

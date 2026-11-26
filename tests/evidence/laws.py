@@ -67,6 +67,7 @@ from quivers.core.algebras import (
     Semifield,
     Star,
     DivergentClosureError,
+    UndecidedClosureError,
     Semimodule,
     StandardMVAlgebra,
     TropicalAlgebra,
@@ -2322,6 +2323,8 @@ class ClosureCases(ValueModel):
         Square matrices inside the closure's domain, one of order zero.
     divergent : tuple of Element
         Square matrices outside it.
+    undecided : tuple of Element
+        Square matrices whose cycle weight rounding cannot place.
     exhaustive : bool
         Whether the samples are the whole carrier, so leastness is
         decided over every matrix of order two.
@@ -2330,6 +2333,9 @@ class ClosureCases(ValueModel):
     kind: Literal["idempotent", "linear", "log"]
     convergent: tuple[Element, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     divergent: tuple[Element, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    undecided: tuple[Element, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     exhaustive: bool = False
@@ -2365,6 +2371,12 @@ _LOG_CLOSURES = ClosureCases(
         [[_NONE, _LOG(0.5)], [_LOG(0.5), _NONE]],
     ),
     divergent=([[_LOG(1.5)]],),
+    # Eliminating state 0 rounds the partial sum 1 - 2^-60 of the cycle
+    # 2, 0, 1 to 1, so its computed log weight is 0 and its exact one
+    # is -2^-60.
+    undecided=(
+        [[_NONE, -(2.0**-60), _NONE], [_NONE, _NONE, -1.0], [1.0, _NONE, _NONE]],
+    ),
 )
 _COUNT_CLOSURES = ClosureCases(
     kind="linear",
@@ -2397,6 +2409,7 @@ CLOSURE_CASES: dict[str, ClosureCases] = {
     "core/MaxPlus": _SCORE_CLOSURES,
     "chart/Viterbi": _SCORE_CLOSURES,
     "lawless/no-loops": _SCORE_CLOSURES,
+    "lawless/unrefusing": _SCORE_CLOSURES,
     "core/LogProb": _LOG_CLOSURES,
     "chart/LogProb": _LOG_CLOSURES,
     "core/Counting": _COUNT_CLOSURES,
@@ -2498,8 +2511,8 @@ def check_star(member: Member, dtype: torch.dtype) -> None:
     Raises
     ------
     Mismatch
-        If a closure differs from the least solution, is not a solution
-        on either side, or a divergent closure is not refused.
+        If a closure differs from the least solution or is not a
+        solution on either side.
     """
     structure = member.structure
     assert isinstance(structure, Star) and isinstance(structure, CompositionRule)
@@ -2525,16 +2538,60 @@ def check_star(member: Member, dtype: torch.dtype) -> None:
         )
         if cases.exhaustive and n == 2:
             _check_least(member, a, found, dtype)
-    for rows in cases.divergent:
+
+
+def check_star_decided(member: Member, dtype: torch.dtype) -> int:
+    """The closure has a value exactly where it converges, and refuses elsewhere.
+
+    Parameters
+    ----------
+    member : Member
+        A row with a closure.
+    dtype : torch.dtype
+        The precision.
+
+    Returns
+    -------
+    int
+        The number of matrices asked for.
+
+    Raises
+    ------
+    Mismatch
+        If a matrix inside the domain is refused, or one outside it or
+        undecided returns a number or the other refusal.
+    """
+    structure = member.structure
+    assert isinstance(structure, Star)
+    cases = CLOSURE_CASES[member.name]
+    for rows in cases.convergent:
         try:
-            value = structure.star(_matrix(rows, dtype))
-        except DivergentClosureError:
-            continue
-        raise Mismatch(
-            "refusal",
-            math.inf,
-            f"{member.name}: the closure of {rows} gave {value.tolist()}",
-        )
+            structure.star(_matrix(rows, dtype))
+        except (DivergentClosureError, UndecidedClosureError) as refusal:
+            raise Mismatch(
+                "refusal", math.inf, f"{member.name}: {rows} refused with {refusal!r}"
+            ) from refusal
+    for wanted, group in (
+        (DivergentClosureError, cases.divergent),
+        (UndecidedClosureError, cases.undecided),
+    ):
+        for rows in group:
+            try:
+                value = structure.star(_matrix(rows, dtype))
+            except (DivergentClosureError, UndecidedClosureError) as refusal:
+                if type(refusal) is wanted:
+                    continue
+                raise Mismatch(
+                    "refusal",
+                    math.inf,
+                    f"{member.name}: {rows} refused with {refusal!r}",
+                ) from refusal
+            raise Mismatch(
+                "refusal",
+                math.inf,
+                f"{member.name}: the closure of {rows} gave {value.tolist()}",
+            )
+    return len(cases.convergent) + len(cases.divergent) + len(cases.undecided)
 
 
 def _check_least(
@@ -2593,6 +2650,7 @@ LAW_CHECKS: dict[str, Callable[[Member, torch.dtype], int | None]] = {
     "additive-inverse": check_additive_inverse,
     "semimodule-action": check_semimodule_action,
     "star-least-solution": check_star,
+    "star-decided": check_star_decided,
     "zero-form": check_zero_form,
     "unit-form": check_unit_form,
     "empty-join": check_empty_join,
@@ -3383,6 +3441,7 @@ LAWLESS: dict[str, Member] = {
     "unit-form": _lawless("scalar-unit", _ScalarUnit(), "core/Real"),
     "empty-join": _lawless("raw-tropical", _RawTropical(), "core/Tropical"),
     "star-least-solution": _lawless("no-loops", _NoLoops(), "core/MaxPlus"),
+    "star-decided": _lawless("unrefusing", _NoLoops(), "core/MaxPlus"),
 }
 """A member that claims each law and breaks it."""
 

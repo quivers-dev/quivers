@@ -74,6 +74,7 @@ from quivers.core.laws import (
     PLUS_SELECTIVE,
     PLUS_UNIT,
     SEMIMODULE_ACTION,
+    STAR_DECIDED,
     STAR_LEAST_SOLUTION,
     TIE_FIRST_MAXIMIZER,
     TIMES_ASSOCIATIVE,
@@ -1251,7 +1252,7 @@ class Star(UnitalCarrier):
     [doi:10.1016/0304-3975(77)90056-1](https://doi.org/10.1016/0304-3975(77)90056-1)
     """
 
-    introduces = (STAR_LEAST_SOLUTION,)
+    introduces = (STAR_LEAST_SOLUTION, STAR_DECIDED)
 
     @property
     @abstractmethod
@@ -1544,7 +1545,9 @@ def _proved(anchor: str) -> Proved:
     return Proved(argument=f"{_PROOFS}#proof-{anchor}", sources=(_GOLAN,))
 
 
-def _tests(*, unital: bool, tie: int | None = None) -> Mapping[str, int]:
+def _tests(
+    *, unital: bool, tie: int | None = None, star: int | None = None
+) -> Mapping[str, int]:
     """The cases the law grid evaluates for the laws about the implementation.
 
     Parameters
@@ -1553,6 +1556,8 @@ def _tests(*, unital: bool, tie: int | None = None) -> Mapping[str, int]:
         Whether the class has a unit.
     tie : int or None
         The cases of the tie rule, for a selective class.
+    star : int or None
+        The cases of the closure's refusals, for a class with a closure.
 
     Returns
     -------
@@ -1564,12 +1569,12 @@ def _tests(*, unital: bool, tie: int | None = None) -> Mapping[str, int]:
         cases[UNIT_FORM.name] = 20
     if tie is not None:
         cases[TIE_FIRST_MAXIMIZER.name] = tie
+    if star is not None:
+        cases[STAR_DECIDED.name] = star
     return MappingProxyType(cases)
 
 
 _UNITAL_TESTS = _tests(unital=True)
-_TWO_ELEMENT_SELECTIVE_TESTS = _tests(unital=True, tie=56)
-_SELECTIVE_TESTS = _tests(unital=True, tie=672)
 
 
 _LEHMANN = Citation(
@@ -3259,7 +3264,7 @@ class BooleanAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
     """
 
     proof = _proved_with_star("boolean")
-    tested = _TWO_ELEMENT_SELECTIVE_TESTS
+    tested = _tests(unital=True, tie=56, star=8)
 
     @property
     def star_domain(self) -> str:
@@ -3651,7 +3656,7 @@ class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSemir
     """
 
     proof = _proved_with_star("godel")
-    tested = _SELECTIVE_TESTS
+    tested = _tests(unital=True, tie=672, star=6)
 
     @property
     def star_domain(self) -> str:
@@ -3856,7 +3861,7 @@ class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSe
     """
 
     proof = _proved_with_star("tropical")
-    tested = _SELECTIVE_TESTS
+    tested = _tests(unital=True, tie=672, star=6)
 
     @property
     def star_domain(self) -> str:
@@ -4064,7 +4069,7 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
     """
 
     proof = _proved_with_star("max-plus")
-    tested = _SELECTIVE_TESTS
+    tested = _tests(unital=True, tie=672, star=12)
 
     @property
     def star_domain(self) -> str:
@@ -4415,7 +4420,7 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
     """
 
     proof = _proved_with_star("log-prob")
-    tested = _UNITAL_TESTS
+    tested = _tests(unital=True, star=10)
 
     @property
     def star_domain(self) -> str:
@@ -5015,7 +5020,7 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Star, Semiring):
     """
 
     proof = _proved_with_star("counting")
-    tested = _UNITAL_TESTS
+    tested = _tests(unital=True, star=10)
 
     @property
     def star_domain(self) -> str:
@@ -5219,7 +5224,7 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Star, Semiring):
     """
 
     proof = _proved_with_star("markov")
-    tested = _UNITAL_TESTS
+    tested = _tests(unital=True, star=10)
 
     @property
     def star_domain(self) -> str:
