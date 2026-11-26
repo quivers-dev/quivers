@@ -79,7 +79,8 @@ from quivers.formulas._postprocess_summary import (
     varcorr_block,
     vcov_table,
 )
-from quivers.formulas._r_squared import _responses
+from quivers.formulas._autocor import AutocorMatrix
+from quivers.formulas._r_squared import _responses, formula_r2
 from quivers.formulas._fit_controls import SamplerControl, mcmc_kernel, sampler_control
 from quivers.formulas._initial_values import chain_initial_values
 from quivers.inference.mcmc.hmc import _HamiltonianKernel
@@ -129,6 +130,8 @@ class JointPredictionOptions(TypedDict, total=False):
     sample_new_levels: NewLevelPolicy
     num_samples: int | None
     seed: int
+    data2: Mapping[str, AutocorMatrix] | None
+    incl_autocor: bool
 
 
 class SinglePredictionOptions(TypedDict, total=False):
@@ -3218,25 +3221,33 @@ class JointPostprocess(_PostprocessCore):
         self,
         *,
         resp: ResponseSelection = None,
-        num_samples: int | None = None,
-        seed: int = 0,
+        method: Literal["auto", "model", "residual"] = "auto",
+        observed: Mapping[str, torch.Tensor] | None = None,
+        mc_samples: int | None = None,
+        **options: Unpack[JointPredictionOptions],
     ) -> dict[str, torch.Tensor]:
         """Compute the Bayesian R-squared of each response, as brms ``bayes_R2``.
 
-        Each draw's ratio is the variance of the response's conditional means
-        over the training rows divided by that variance plus the variance of
-        the residuals (observed minus conditional mean) [@gelman2019rsquared],
-        which is brms's definition for every response of a multivariate
-        model. An ordinal response is scored by its category codes.
+        Each response is read as the single-response fit reads it
+        (`BayesianFit.bayes_r2`): the residual form divides the variance of
+        the conditional means over the rows by itself plus the variance of
+        the residuals [@gelman2019rsquared]; the model form uses the mean
+        conditional variance of each row's law instead, under residual
+        correlation the marginal law of the response's coordinate. An
+        ordinal response is scored by its category codes.
 
         Parameters
         ----------
         resp : str or Sequence[str] or None
             Selected responses, or None for every response.
-        num_samples : int or None
-            Draws per chain.
-        seed : int
-            Seed for variational draws.
+        method : {"auto", "model", "residual"}
+            Requested form; ``auto`` is each response's own default.
+        observed : Mapping[str, torch.Tensor] or None
+            Explicit observed responses by label, for the residual form.
+        mc_samples : int or None
+            Monte Carlo budget of conditional means without a closed form.
+        **options
+            Prediction keywords of `MultivariateFit.posterior_epred`.
 
         Returns
         -------
@@ -3246,34 +3257,39 @@ class JointPostprocess(_PostprocessCore):
         Raises
         ------
         ValueError
-            If a selected response is unordered categorical or has several
-            columns, for which the ratio is undefined.
+            If a selected response is unordered categorical, has several
+            columns, or is censored without explicit observations under the
+            residual form.
 
         Notes
         -----
-        Cost is one posterior replay per draw for the conditional means.
+        Cost is one posterior replay per draw for the conditional means, and
+        one more for the model form.
         """
         fit = self._pp_fit()
         values: dict[str, torch.Tensor] = {}
         for name in fit._selection(resp):
             view = fit._response_fit(name)
-            if view.family.unordered_categories:
-                raise ValueError(
-                    "bayes_R2 is not defined for unordered categorical models"
-                )
-            expected = fit.posterior_epred(
-                resp=name, num_samples=num_samples, seed=seed
-            )[name]
-            if view.family.response_ordinal() is not None and expected.ndim == 4:
-                scores = torch.arange(expected.shape[-1], dtype=torch.float64)
-                expected = (expected.to(torch.float64) * scores).sum(-1)
-            if expected.ndim != 3:
-                raise ValueError(
-                    f"bayes_R2 is defined for one value per row; response {name!r} "
-                    f"has conditional means of shape {tuple(expected.shape[2:])}"
-                )
-            values[f"R2{name}"] = bayesian_r2(
-                expected, observed=_responses(view, ExpectationOptions())
+
+            def expected(name: str = name, view: BayesianFit = view) -> torch.Tensor:
+                means = fit.posterior_epred(
+                    resp=name, mc_samples=mc_samples, **options
+                )[name]
+                if view.family.response_ordinal() is None and means.ndim != 3:
+                    raise ValueError(
+                        f"bayes_R2 is defined for one value per row; response {name!r} "
+                        f"has conditional means of shape {tuple(means.shape[2:])}"
+                    )
+                return means
+
+            values[f"R2{name}"] = formula_r2(
+                view,
+                method,
+                None if observed is None else observed.get(name),
+                new_data=options.get("new_data"),
+                mc_samples=mc_samples,
+                expected=expected,
+                laws=lambda name=name: fit._response_laws(name, options),
             )
         return values
 

@@ -21,10 +21,10 @@ import didactic.api as dx
 import numpy as np
 import narwhals as nw
 import torch
+from torch.distributions import Distribution
 from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
-from quivers.continuous._multivariate_student_t import MultivariateStudentT
 from quivers.continuous.programs import MonadicProgram
 from quivers.diagnostics.conditional import ConditionalEffects, PredictionGrid
 from quivers.diagnostics.contrast import ContrastExpression, _contrast_hypothesis
@@ -45,6 +45,7 @@ from quivers.formulas._fit import (
     fit,
 )
 from quivers.formulas._autocor import AutocorMatrix
+from quivers.formulas._joint_residual import coordinate, marginal
 from quivers.formulas._residual_law import pointwise_scores
 
 # brms fitting controls, flat priors, and derived sites.
@@ -132,7 +133,10 @@ from quivers.modeling.refit import RefitRecipe, refit_callback
 
 # brms post-processing methods (summaries, accessors, LOO family) and stored criteria.
 from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
-from quivers.formulas._postprocess_methods import JointPostprocess
+from quivers.formulas._postprocess_methods import (
+    JointPostprocess,
+    JointPredictionOptions,
+)
 
 # brms coefficient renaming shared with single fits.
 from quivers.formulas._postprocess_names import (
@@ -391,6 +395,52 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 f"unknown responses {unknown!r}; expected {self.response_names!r}"
             )
         return tuple(name for name in self.response_names if name in names)
+
+    def _response_laws(
+        self, name: str, options: JointPredictionOptions
+    ) -> tuple[Iterator[Distribution], tuple[int, int], int]:
+        """Replay the law of one response at each retained draw.
+
+        Parameters
+        ----------
+        name : str
+            Response label.
+        options : JointPredictionOptions
+            Rows and draws of the request.
+
+        Returns
+        -------
+        tuple[Iterator[Distribution], tuple[int, int], int]
+            The response's law at each draw (under residual correlation the
+            marginal law of its coordinate), the chain and draw counts, and
+            the number of rows.
+        """
+        prepared = self._prepare(
+            options.get("new_data"),
+            re_formula=options.get("re_formula"),
+            allow_new_levels=options.get("allow_new_levels", False),
+            sample_new_levels=options.get("sample_new_levels", "uncertainty"),
+            seed=options.get("seed", 0),
+            data2=options.get("data2"),
+            incl_autocor=options.get("incl_autocor", True),
+        )
+        shape = draw_count(self.posterior, options.get("num_samples"))
+        draws = self.draws(
+            num_samples=options.get("num_samples"), seed=options.get("seed", 0)
+        )
+        response = self.emission.responses[name]
+        site = response.names[_qvr_name(response.formula.response_name)]
+        index = self.response_names.index(name)
+        traces = replay(cast(BayesianFit, self), draws, shape, context=prepared.context)
+        laws = (
+            (
+                coordinate(response_distribution(recorded, JOINT_RESPONSE), index)
+                for recorded in traces
+            )
+            if self.rescor
+            else (response_distribution(recorded, site) for recorded in traces)
+        )
+        return laws, shape, prepared.rows[name]
 
     def _response_fit(self, name: str) -> BayesianFit:
         """Build the response view used by the ordinary row preparation.
@@ -1704,7 +1754,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             indices = [self.response_names.index(name) for name in names]
             outcome = prepared.context.observations[JOINT_RESPONSE][..., indices]
 
-            def marginal(recorded: Trace) -> dict[str, torch.Tensor]:
+            def selected(recorded: Trace) -> dict[str, torch.Tensor]:
                 """Score the selected components by their exact marginal law.
 
                 Parameters
@@ -1717,39 +1767,16 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 dict[str, torch.Tensor]
                     Marginal pointwise scores.
                 """
-                distribution = response_distribution(recorded, JOINT_RESPONSE)
-                if not isinstance(
-                    distribution,
-                    torch.distributions.MultivariateNormal | MultivariateStudentT,
-                ):
-                    raise TypeError("a residual-correlation event must be elliptical")
-                selector = torch.tensor(indices, device=outcome.device)
-                loc = distribution.loc.index_select(-1, selector)
-                factor = distribution.scale_tril
-                # The marginal of a Normal or Student vector over selected
-                # coordinates keeps its location and scale submatrix.
-                shape = (
-                    (factor @ factor.transpose(-1, -2))
-                    .index_select(-1, selector)
-                    .index_select(-2, selector)
-                )
-                law: torch.distributions.Distribution = (
-                    MultivariateStudentT(
-                        distribution.df, loc, scale_tril=torch.linalg.cholesky(shape)
-                    )
-                    if isinstance(distribution, MultivariateStudentT)
-                    else torch.distributions.MultivariateNormal(
-                        loc, scale_tril=torch.linalg.cholesky(shape)
-                    )
-                )
+                law = marginal(response_distribution(recorded, JOINT_RESPONSE), indices)
                 return {
                     key: row_binding(
-                        law.log_prob(outcome.to(loc.dtype)), prepared.rows[names[0]]
+                        law.log_prob(outcome.to(law.loc.dtype)),
+                        prepared.rows[names[0]],
                     )
                 }
 
             scores = self._replay(
-                prepared, marginal, num_samples=num_samples, seed=seed, stream=2
+                prepared, selected, num_samples=num_samples, seed=seed, stream=2
             )
             return {key: recorded_rows(scores[key])}
         training = new_data is None and re_formula is None

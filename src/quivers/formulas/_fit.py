@@ -22,6 +22,7 @@ import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
 from quivers.formulas._count_data import checked_integer_data
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Callable, Literal, Mapping, Sequence, Unpack, cast
 
 import didactic.api as dx
@@ -29,6 +30,7 @@ from formulae.matrices import DesignMatrices
 import narwhals as nw
 import torch
 from torch import nn
+from torch.distributions import Distribution
 from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
@@ -68,7 +70,8 @@ from quivers.formulas._predictor_graph import (
     predictor_items,
 )
 
-from quivers.formulas._prediction import FormulaPredictionPlan
+from quivers.formulas._prediction import FormulaPredictionPlan, prepare_prediction
+from quivers.formulas._r_squared import formula_r2
 from quivers.formulas._autocor import (
     AutocorMatrix,
     fields_and_design,
@@ -1446,9 +1449,41 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             use ordered integer scores. Unordered categories require a
             separately specified response metric. Zero total variance is NaN.
         """
-        from quivers.formulas._r_squared import formula_r2
 
-        return formula_r2(self, method, observed, options)
+        def laws() -> tuple[Iterator[Distribution], tuple[int, int], int]:
+            context = prepare_prediction(
+                self,
+                options.get("new_data"),
+                options.get("predictor_data"),
+                re_formula=options.get("re_formula"),
+                allow_new_levels=options.get("allow_new_levels", False),
+                sample_new_levels=options.get("sample_new_levels", "uncertainty"),
+                seed=options.get("seed", 0),
+                trials=options.get("trials"),
+            )
+            shape = draw_count(self.posterior, options.get("num_samples"))
+            draws = self.draws(
+                num_samples=options.get("num_samples"), seed=options.get("seed", 0)
+            )
+            response = _qvr_name(self.formula.response_name)
+            return (
+                (
+                    response_distribution(recorded, response)
+                    for recorded in replay(self, draws, shape, context=context)
+                ),
+                shape,
+                context.rows,
+            )
+
+        return formula_r2(
+            self,
+            method,
+            observed,
+            new_data=options.get("new_data"),
+            mc_samples=options.get("mc_samples"),
+            expected=lambda: self.posterior_epred(**options),
+            laws=laws,
+        )
 
     def posterior_choice_probs(
         self, **options: Unpack[ExpectationOptions]
@@ -2159,6 +2194,33 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             ):
                 return predictor, output.parameters.index(parameter)
         return None
+
+    @property
+    def _separable_rows(self) -> bool:
+        """Whether each training row scores as a new row of the same data.
+
+        A row's pointwise score on new data equals its training score when
+        its law is independent of the other rows given the parameters and
+        every term's value at the row is fixed by the parameters and the
+        row's data. A residual law correlates rows or conditions on earlier
+        recorded responses, and a latent drawn per training row is drawn
+        again for new rows, so neither holds there.
+
+        Returns
+        -------
+        bool
+            True when no residual law and only separable terms enter.
+        """
+        plan = self.prediction_plan
+        return (
+            self.residual is None
+            and plan is not None
+            and all(
+                term.separable
+                for predictor in plan.predictors
+                for term in predictor.terms
+            )
+        )
 
     def _row_reader(
         self,

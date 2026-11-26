@@ -801,21 +801,16 @@ def loo_subsample_estimate(
     Raises
     ------
     ValueError
-        If the subsample is not smaller than the number of units, or the
-        fit models residual dependence between rows.
+        If the subsample is not smaller than the number of units.
 
     Notes
     -----
     With ``plpd`` the cost is one replay of all N rows plus S replays of
     the m subsampled rows, O(N + S m), instead of O(S N) for full PSIS-LOO.
+    The subsampled rows are scored as new rows only where that is their
+    training score (`BayesianFit._separable_rows`); under a residual law or
+    a latent drawn per row they are scored on the training rows, at O(S N).
     """
-    if (joint and cast("MultivariateFit", fit).data2) or (
-        not joint and (cast("BayesianFit", fit).residual is not None)
-    ):
-        raise ValueError(
-            "loo_subsample requires conditionally independent rows; this fit "
-            "models residual dependence between rows"
-        )
     frame, positions = training_rows(fit, joint=joint)
     total = len(positions)
     if isinstance(observations, bool):
@@ -853,17 +848,46 @@ def loo_subsample_estimate(
     rows = nw.from_native(frame, eager_only=True)[
         [positions[u] for u in units], :
     ].to_native()
+    selected = torch.tensor(units, dtype=torch.long)
     if joint:
         joint_fit = cast("MultivariateFit", fit)
-        subsample = joint_fit.log_likelihood(
-            resp=resp, new_data=rows, num_samples=num_samples, seed=seed
+        separable = all(
+            joint_fit._response_fit(name)._separable_rows
+            for name in joint_fit._selection(resp)
+        )
+        subsample = (
+            joint_fit.log_likelihood(
+                resp=resp, new_data=rows, num_samples=num_samples, seed=seed
+            )
+            if separable
+            else {
+                key: value.index_select(-1, selected.to(value.device))
+                for key, value in joint_fit.log_likelihood(
+                    resp=resp, num_samples=num_samples, seed=seed
+                ).items()
+            }
         )
         analysis_kind_fit: Fit = joint_fit
     else:
         single = cast("BayesianFit", fit)
-        subsample = single.log_likelihood(
-            new_data=rows, num_samples=num_samples, seed=seed
-        )
+        if single._separable_rows:
+            subsample = single.log_likelihood(
+                new_data=rows,
+                predictor_data=None
+                if single.predictor_data is None
+                else single.predictor_data.index_select(
+                    0, selected.to(single.predictor_data.device)
+                ),
+                num_samples=num_samples,
+                seed=seed,
+            )
+        else:
+            subsample = {
+                key: value.index_select(-1, selected.to(value.device))
+                for key, value in single.log_likelihood(
+                    num_samples=num_samples, seed=seed
+                ).items()
+            }
         analysis_kind_fit = single
     (scores,) = subsample.values()
     draws = analysis_kind_fit.draws(num_samples=num_samples, seed=seed)
