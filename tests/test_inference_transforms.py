@@ -280,41 +280,97 @@ def test_lu_linear_log_det_matches_numerical_jacobian() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_batchnorm_inverse_roundtrip_in_eval_mode() -> None:
-    """In eval mode the running stats are used for both directions,
-    so the round-trip is exact."""
-    dim = 5
-    layer = BatchNormTransform(dim)
-    x = torch.randn(20, dim)
-    # Run a few training-mode forward passes to populate running
-    # stats.
-    layer.train(True)
-    for _ in range(5):
-        _ = layer(torch.randn(20, dim))
-    layer.eval()
-    y = layer(x)
-    x_back = layer.inv(y)
-    assert torch.allclose(x, x_back, atol=1e-4)
+def _batchnorm_at_random_parameters(dim: int, seed: int) -> BatchNormTransform:
+    """A batch-norm layer with random scale, shift, and moments.
+
+    Parameters
+    ----------
+    dim : int
+        Number of coordinates.
+    seed : int
+        The seed.
+
+    Returns
+    -------
+    BatchNormTransform
+        The layer, its moments folded in from two random batches.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    layer = BatchNormTransform(dim, momentum=0.5)
+    with torch.no_grad():
+        layer._gamma.copy_(0.5 * torch.randn(dim, generator=generator))
+        layer._beta.copy_(torch.randn(dim, generator=generator))
+    for _ in range(2):
+        batch = 3.0 * torch.randn(16, dim, generator=generator) + 1.5
+        layer.update_statistics(batch.to(torch.get_default_dtype()))
+    return layer
 
 
-def test_batchnorm_log_det_matches_numerical_jacobian() -> None:
-    """In eval mode the BatchNorm transform is a per-coordinate
-    affine map, so the log-det is the sum of per-coordinate
-    log scales. Match against the numerical Jacobian."""
-    dim = 4
-    layer = BatchNormTransform(dim)
-    layer.train(True)
-    for _ in range(5):
-        _ = layer(torch.randn(10, dim))
-    layer.eval()
-    x = torch.randn(3, dim)
-    y = layer(x)
-    analytic = layer.log_abs_det_jacobian(x, y)
-    numeric = _numeric_log_abs_det(layer, x)
-    assert torch.allclose(analytic, numeric, atol=1e-4), (
-        f"BatchNorm log-det mismatch: analytic={analytic.tolist()}, "
-        f"numeric={numeric.tolist()}"
-    )
+def test_batchnorm_update_statistics_folds_the_batch_moments_in() -> None:
+    dim = 3
+    layer = BatchNormTransform(dim, momentum=0.25)
+    batch = torch.randn(10, dim)
+    layer.update_statistics(batch)
+    mean = layer.get_buffer("_running_mean")
+    var = layer.get_buffer("_running_var")
+    torch.testing.assert_close(mean, 0.25 * batch.mean(0))
+    torch.testing.assert_close(var, 0.75 + 0.25 * batch.var(0, unbiased=False))
+    for bad in (torch.randn(1, dim), torch.randn(dim), torch.randn(4, dim + 1)):
+        with pytest.raises(ValueError, match="update_statistics"):
+            layer.update_statistics(bad)
+    with pytest.raises(ValueError, match="momentum"):
+        BatchNormTransform(dim, momentum=0.0)
+    with pytest.raises(ValueError, match="eps"):
+        BatchNormTransform(dim, eps=0.0)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_batchnorm_is_the_written_out_affine_bijection(seed: int) -> None:
+    """Forward, inverse, and log-det are one affine map of each row.
+
+    The map is checked against its formula at random parameters, the
+    inverse against the forward, the inverse log-det against minus the
+    forward one, the log-det against the Jacobian by autograd, and the
+    batch against its rows one at a time; training mode does not
+    change the map.
+    """
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        dim = 4
+        layer = _batchnorm_at_random_parameters(dim, seed)
+        mean = layer.get_buffer("_running_mean").clone()
+        var = layer.get_buffer("_running_var").clone()
+        gamma, beta = layer._gamma.detach(), layer._beta.detach()
+        x = torch.randn(7, dim, generator=torch.Generator().manual_seed(seed + 10))
+        expected = (x - mean) / torch.sqrt(var + 1e-5) * gamma.exp() + beta
+        expected_log_det = (gamma - 0.5 * torch.log(var + 1e-5)).sum().expand(7)
+        for mode in (True, False):
+            layer.train(mode)
+            y = layer(x)
+            torch.testing.assert_close(y, expected, rtol=1e-12, atol=1e-12)
+            torch.testing.assert_close(layer.inv(y), x, rtol=1e-12, atol=1e-12)
+            torch.testing.assert_close(
+                layer.log_abs_det_jacobian(x, y), expected_log_det, rtol=0, atol=1e-12
+            )
+            torch.testing.assert_close(
+                layer.inv.log_abs_det_jacobian(y, x),
+                -expected_log_det,
+                rtol=0,
+                atol=1e-12,
+            )
+            rows = torch.stack([layer(x[i]) for i in range(7)])
+            torch.testing.assert_close(rows, y, rtol=0, atol=0)
+            torch.testing.assert_close(
+                layer.log_abs_det_jacobian(x, y),
+                _numeric_log_abs_det(layer, x),
+                rtol=0,
+                atol=1e-10,
+            )
+        torch.testing.assert_close(layer.get_buffer("_running_mean"), mean)
+        torch.testing.assert_close(layer.get_buffer("_running_var"), var)
+    finally:
+        torch.set_default_dtype(previous)
 
 
 # ---------------------------------------------------------------------------

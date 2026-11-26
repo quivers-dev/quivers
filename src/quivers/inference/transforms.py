@@ -38,9 +38,10 @@ Coverage
   `doi:10.48550/arXiv.1807.03039 <https://doi.org/10.48550/arXiv.1807.03039>`_).
   Cheap learnable invertible linear layer; the standard inter-
   coupling-layer mixer.
-* `BatchNormTransform`: running-statistics-based BN as a
-  normalizing-flow transform (Dinh, Sohl-Dickstein, Bengio 2017,
-  same paper as RealNVP).
+* `BatchNormTransform`: normalization by running moments as a
+  normalizing-flow transform, after Dinh, Sohl-Dickstein, Bengio
+  (2017, the RealNVP paper); the moments are updated explicitly,
+  so the layer is one bijection between updates.
 
 Every primitive is fully implemented (forward, inverse,
 ``log_abs_det_jacobian``). No primitive raises ``NotImplementedError``
@@ -87,6 +88,23 @@ class TransformModule(Transform, nn.Module):
     # Restore identity-based hashing so the module machinery
     # works.
     __hash__ = object.__hash__  # type: ignore[assignment]
+
+    def update_statistics(self, inputs: torch.Tensor) -> None:
+        """Fold a batch of this layer's inputs into its data-dependent state.
+
+        A layer whose map is fixed by statistics of its inputs (a
+        `BatchNormTransform`) overrides this; the layer's map is the
+        same bijection before and after every call of its forward,
+        inverse, and log-determinant, and changes only here. A layer
+        without such state has nothing to update, which this default
+        states.
+
+        Parameters
+        ----------
+        inputs : torch.Tensor
+            Points of the layer's domain, shape ``(n, dim)``.
+        """
+        del inputs
 
 
 # ---------------------------------------------------------------------------
@@ -785,14 +803,52 @@ class LULinearTransform(TransformModule):
 
 
 class BatchNormTransform(TransformModule):
-    """Batch-normalisation as a normalizing-flow layer
-    (Dinh, Sohl-Dickstein, Bengio 2017).
+    """Normalization by running moments as a normalizing-flow layer.
 
-    In ``training`` mode uses the batch statistics; in
-    ``eval`` mode uses the cached running statistics. This module
-    is an `torch.nn.Module` to register the running buffers,
-    and a `torch.distributions.transforms.Transform` so it
-    composes with the rest of the flow stack.
+    The layer is the coordinatewise affine bijection
+
+    .. math::
+
+        T(x) = \\frac{x - m}{\\sqrt{v + \\epsilon}}\\, e^{\\gamma} + \\beta,
+        \\qquad
+        \\log|\\det J_T(x)| = \\sum_i \\bigl(\\gamma_i
+            - \\tfrac12 \\log(v_i + \\epsilon)\\bigr),
+
+    with learned :math:`\\gamma, \\beta` and the running moments
+    :math:`m, v` (buffers). Forward, inverse, and log-determinant use the
+    same :math:`m, v`, so they are one bijection, and each row of a
+    ``(..., dim)`` input is mapped alone: a flow guide built on the layer
+    has a density for each run that does not depend on the other runs.
+
+    The normalization of Dinh, Sohl-Dickstein, and Bengio (2017),
+    [Density estimation using Real NVP](https://doi.org/10.48550/arXiv.1605.08803),
+    uses the moments of the current minibatch in training. That map
+    changes with the minibatch, so its "density" of one point depends on
+    the other points scored with it and is not the density of any law
+    over one run; an objective built from it is not the objective of a
+    guide. The layer does not compute it, and `torch.nn.Module.train`
+    does not change the map. The moments are instead data-dependent
+    state, folded in by `update_statistics` from a batch of the layer's
+    inputs, between objective evaluations
+    (`AutoNormalizingFlow.update_statistics` does this for every layer
+    of a flow guide). Each evaluation is then the objective of the guide
+    at the current moments, and an update moves the guide as a parameter
+    update outside the gradient does.
+
+    Parameters
+    ----------
+    dim : int
+        Number of coordinates.
+    momentum : float
+        Weight of a new batch's moments in the running moments, in
+        ``(0, 1]``.
+    eps : float
+        The constant :math:`\\epsilon` added to the variance.
+
+    Raises
+    ------
+    ValueError
+        If ``momentum`` is outside ``(0, 1]`` or ``eps`` is not positive.
     """
 
     domain = _constraints.real_vector
@@ -806,7 +862,13 @@ class BatchNormTransform(TransformModule):
         momentum: float = 0.1,
         eps: float = 1e-5,
     ) -> None:
-        super().__init__(cache_size=1)
+        if not 0.0 < momentum <= 1.0:
+            raise ValueError(
+                f"BatchNormTransform: momentum must be in (0, 1], got {momentum}"
+            )
+        if not eps > 0.0:
+            raise ValueError(f"BatchNormTransform: eps must be positive, got {eps}")
+        super().__init__(cache_size=0)
         self._dim = dim
         self._momentum = momentum
         self._eps = eps
@@ -814,44 +876,63 @@ class BatchNormTransform(TransformModule):
         self._beta = nn.Parameter(torch.zeros(dim))
         self.register_buffer("_running_mean", torch.zeros(dim), persistent=True)
         self.register_buffer("_running_var", torch.ones(dim), persistent=True)
-        self._training = True
 
-    def train(self, mode: bool = True) -> "BatchNormTransform":
-        self._training = mode
-        return self
+    def _moments(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """The running moments the bijection is defined by.
 
-    def eval(self) -> "BatchNormTransform":
-        return self.train(False)
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The mean and variance, each of shape ``(dim,)``.
+        """
+        return self.get_buffer("_running_mean"), self.get_buffer("_running_var")
 
-    def _stats(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if self._training:
-            # Compute over every axis except the last (event) axis.
-            reduce_dims = tuple(range(x.dim() - 1))
-            mean = x.mean(dim=reduce_dims)
-            var = x.var(dim=reduce_dims, unbiased=False)
-            with torch.no_grad():
-                self._running_mean.mul_(1 - self._momentum).add_(mean * self._momentum)
-                self._running_var.mul_(1 - self._momentum).add_(var * self._momentum)
-            return mean, var
-        return self._running_mean, self._running_var
+    def update_statistics(self, inputs: torch.Tensor) -> None:
+        """Fold the moments of a batch of inputs into the running moments.
+
+        :math:`m \\leftarrow (1 - \\mu) m + \\mu \\bar x` and
+        :math:`v \\leftarrow (1 - \\mu) v + \\mu s^2`, with
+        :math:`\\bar x` and :math:`s^2` the mean and the (biased)
+        variance of the batch per coordinate and :math:`\\mu` the
+        momentum, outside the gradient.
+
+        Parameters
+        ----------
+        inputs : torch.Tensor
+            Points of the layer's domain, shape ``(n, dim)`` with
+            ``n >= 2``.
+
+        Raises
+        ------
+        ValueError
+            If ``inputs`` is not ``(n, dim)`` with at least two rows.
+        """
+        if inputs.dim() != 2 or inputs.shape[1] != self._dim or inputs.shape[0] < 2:
+            raise ValueError(
+                f"BatchNormTransform.update_statistics: inputs must have shape "
+                f"(n, {self._dim}) with n >= 2, got {tuple(inputs.shape)}"
+            )
+        mean, var = self._moments()
+        with torch.no_grad():
+            batch = inputs.detach().to(mean)
+            mean.mul_(1 - self._momentum).add_(batch.mean(dim=0) * self._momentum)
+            var.mul_(1 - self._momentum).add_(
+                batch.var(dim=0, unbiased=False) * self._momentum
+            )
 
     def _call(self, x: torch.Tensor) -> torch.Tensor:
-        mean, var = self._stats(x)
+        mean, var = self._moments()
         x_hat = (x - mean) / torch.sqrt(var + self._eps)
         return x_hat * self._gamma.exp() + self._beta
 
     def _inverse(self, y: torch.Tensor) -> torch.Tensor:
-        # Inverse uses the running stats (the batch stats from the
-        # forward pass are stale by inverse time).
-        mean = self._running_mean
-        var = self._running_var
+        mean, var = self._moments()
         x_hat = (y - self._beta) * (-self._gamma).exp()
         return x_hat * torch.sqrt(var + self._eps) + mean
 
     def log_abs_det_jacobian(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         del y
-        _, var = self._stats(x)
-        # Each coordinate contributes gamma - 0.5 * log(var + eps).
+        _, var = self._moments()
         per_coord = self._gamma - 0.5 * torch.log(var + self._eps)
         return per_coord.sum().expand(x.shape[:-1])
 

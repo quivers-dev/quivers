@@ -60,6 +60,7 @@ from quivers.inference.guides.base import Guide
 from quivers.inference.registry import LatentSite
 from quivers.inference.transforms import (
     MADE,
+    BatchNormTransform,
     InverseAutoregressiveTransform,
     LULinearTransform,
     TransformModule,
@@ -304,8 +305,15 @@ def _custom_flow(model: MonadicProgram) -> AutoNormalizingFlow:
     """
     dimension = 1 + 2 + _SUBJECTS
     made = MADE(dim=dimension, n_per_dim=2, hidden=12, n_hidden_layers=1)
-    stack = [LULinearTransform(dimension), InverseAutoregressiveTransform(made)]
-    return AutoNormalizingFlow(model, {"r"}, list(stack))
+    stack: list[TransformModule] = [
+        LULinearTransform(dimension),
+        BatchNormTransform(dimension, momentum=0.5),
+        InverseAutoregressiveTransform(made),
+    ]
+    guide = AutoNormalizingFlow(model, {"r"}, stack)
+    _perturbed(guide, 8)
+    guide.update_statistics(64)
+    return guide
 
 
 _BUILDERS: dict[str, Callable[[MonadicProgram, _Runs], Guide]] = {
@@ -1162,6 +1170,100 @@ def test_the_check_rejects_each_mutation(
     monkeypatch.setattr(LatentSite, method, replacement)
     with pytest.raises(AssertionError):
         _check_runs(guide, runs)
+
+
+def _batch_moments(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The moments of a batch over its leading axes.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        The batch, shape ``(..., dim)``.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        Mean and biased variance over every axis but the last; over
+        every axis for a single point.
+    """
+    axes = tuple(range(x.dim() - 1)) or tuple(range(x.dim()))
+    return x.mean(dim=axes), x.var(dim=axes, unbiased=False)
+
+
+def _batch_log_det(
+    layer: BatchNormTransform, x: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
+    del y
+    _, var = _batch_moments(x)
+    per_coord = layer._gamma - 0.5 * torch.log(var + 1e-5)
+    return per_coord.sum().expand(x.shape[:-1])
+
+
+def _batch_inverse(layer: BatchNormTransform, y: torch.Tensor) -> torch.Tensor:
+    mean, var = _batch_moments(y)
+    return (y - layer._beta) * (-layer._gamma).exp() * torch.sqrt(var + 1e-5) + mean
+
+
+@pytest.mark.parametrize("count", (2, 5))
+@pytest.mark.parametrize(
+    ("method", "replacement"),
+    [("log_abs_det_jacobian", _batch_log_det), ("_inverse", _batch_inverse)],
+)
+def test_the_check_rejects_batch_statistics_in_a_flow_density(
+    method: str,
+    replacement: Callable[..., torch.Tensor],
+    count: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs = _runs(count)
+    guide = _guide("flow", runs)
+    _check_runs(guide, runs)
+    monkeypatch.setattr(BatchNormTransform, method, replacement)
+    with pytest.raises(AssertionError):
+        _check_runs(guide, runs)
+
+
+def test_flow_statistics_update_from_the_inputs_each_layer_sees() -> None:
+    """The flow folds each layer's inputs into its moments, in order.
+
+    The density does not change with training mode, and only an
+    explicit update moves the moments.
+    """
+    runs = _runs(3)
+    guide = _guide("flow", runs)
+    assert isinstance(guide, AutoNormalizingFlow)
+    before = guide.log_prob(runs.input(), runs.sites)
+    guide.train(False)
+    torch.testing.assert_close(
+        guide.log_prob(runs.input(), runs.sites), before, rtol=0, atol=0
+    )
+    guide.train(True)
+    linear, norm, _ = guide.get_submodule("flow").children()
+    assert isinstance(linear, LULinearTransform)
+    assert isinstance(norm, BatchNormTransform)
+    mean = norm.get_buffer("_running_mean").clone()
+    var = norm.get_buffer("_running_var").clone()
+    torch.manual_seed(21)
+    base = torch.randn(32, 1 + 2 + _SUBJECTS)
+    with torch.no_grad():
+        inputs = linear(base)
+    torch.manual_seed(21)
+    guide.update_statistics(32)
+    torch.testing.assert_close(
+        norm.get_buffer("_running_mean"),
+        0.5 * mean + 0.5 * inputs.mean(0),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    torch.testing.assert_close(
+        norm.get_buffer("_running_var"),
+        0.5 * var + 0.5 * inputs.var(0, unbiased=False),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    assert not torch.allclose(guide.log_prob(runs.input(), runs.sites), before)
+    with pytest.raises(ValueError, match="num_draws"):
+        guide.update_statistics(1)
 
 
 # ---------------------------------------------------------------------------

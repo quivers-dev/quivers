@@ -145,9 +145,23 @@ class AutoNormalizingFlow(Guide):
     # Flow forward / inverse
     # ------------------------------------------------------------------
 
-    def _forward(self, z0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Push ``z0`` through the flow; return ``(z_K, sum log|det|)``."""
-        log_det_total = torch.zeros(z0.shape[:-1], device=z0.device)
+    def push_forward(self, z0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Push base points through the flow.
+
+        Parameters
+        ----------
+        z0 : torch.Tensor
+            Points of the base space, shape ``(..., D)``; each row is
+            mapped alone.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The images :math:`z_K = T_K \\circ \\dots \\circ T_1(z_0)`
+            and :math:`\\sum_k \\log|\\det J_{T_k}|` along the way,
+            shape ``z0.shape[:-1]``.
+        """
+        log_det_total = torch.zeros(z0.shape[:-1], device=z0.device, dtype=z0.dtype)
         z = z0
         for layer in self._layers:
             z_next = _tensor(layer(z), layer)
@@ -155,17 +169,60 @@ class AutoNormalizingFlow(Guide):
             z = z_next
         return z, log_det_total
 
-    def _inverse(self, z_K: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Reverse the flow; return ``(z_0, sum log|det|)`` where the
-        log-det is accumulated in the *forward* direction so adding
-        it to ``log p_0(z_0)`` produces the correct ``log q(z_K)``."""
-        log_det_total = torch.zeros(z_K.shape[:-1], device=z_K.device)
+    def pull_back(self, z_K: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pull points of the flow's codomain back to the base space.
+
+        Parameters
+        ----------
+        z_K : torch.Tensor
+            Points of the codomain, shape ``(..., D)``; each row is
+            mapped alone.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The base points :math:`z_0` and the forward
+            :math:`\\sum_k \\log|\\det J_{T_k}|` at them, so that
+            :math:`\\log q(z_K) = \\log p_0(z_0) - \\sum_k
+            \\log|\\det J_{T_k}|`.
+        """
+        log_det_total = torch.zeros(z_K.shape[:-1], device=z_K.device, dtype=z_K.dtype)
         z = z_K
         for layer in reversed(self._layers):
             z_prev = _tensor(layer.inv(z), layer)
             log_det_total = log_det_total + layer.log_abs_det_jacobian(z_prev, z)
             z = z_prev
         return z, log_det_total
+
+    def update_statistics(self, num_draws: int) -> None:
+        """Refresh every layer's data-dependent state from base draws.
+
+        Draws ``num_draws`` base points, and walks the stack: each layer
+        folds the batch of its inputs into its state
+        (`TransformModule.update_statistics`) and then maps the batch
+        on, so a later layer sees the inputs the updated earlier layers
+        give it. Objectives never call this; call it between steps.
+
+        Parameters
+        ----------
+        num_draws : int
+            Number of base draws, at least two.
+
+        Raises
+        ------
+        ValueError
+            If ``num_draws`` is less than two.
+        """
+        if num_draws < 2:
+            raise ValueError(
+                f"{type(self).__name__}.update_statistics: num_draws must be >= 2, "
+                f"got {num_draws}"
+            )
+        with torch.no_grad():
+            z = self._base_dist().sample((num_draws,))
+            for layer in self._layers:
+                layer.update_statistics(z)
+                z = _tensor(layer(z), layer)
 
     def _base_dist(self) -> D.Distribution:
         return D.Independent(
@@ -180,7 +237,7 @@ class AutoNormalizingFlow(Guide):
         """One flow draw, unflattened and bijected to constrained space."""
         batch = x.shape[0]
         z0 = self._base_dist().rsample()
-        z_K, _ = self._forward(z0)
+        z_K, _ = self.push_forward(z0)
         per_site = self._registry.unflatten_unconstrained(z_K)
         result: dict[str, torch.Tensor] = {}
         for site in self._registry.sites.values():
@@ -203,10 +260,9 @@ class AutoNormalizingFlow(Guide):
         through the flow, and
         :math:`\\log q(v_b) = \\log p_0(z_{0,b}) - \\sum_k \\log|\\det J_{T_k}|
         + \\sum_i \\log|\\det J_{T_i^{-1}}(v_{b,i})|`, the last sum over
-        the per-site bijectors. The flow acts on each row of the
-        ``(B, D)`` matrix of points separately, as every transform in
+        the per-site bijectors. Every transform in
         [`quivers.inference.transforms`][quivers.inference.transforms]
-        does outside a `BatchNormTransform` in training mode.
+        maps each row of the ``(B, D)`` matrix of points alone.
 
         Parameters
         ----------
@@ -230,7 +286,7 @@ class AutoNormalizingFlow(Guide):
         """
         coordinates = self._registry.unconstrain_runs(sites, int(x.shape[0]))
         z_K = self._registry.flatten_unconstrained(coordinates.unconstrained)
-        z_0, flow_log_det = self._inverse(z_K)
+        z_0, flow_log_det = self.pull_back(z_K)
         log_q_z = self._base_dist().log_prob(z_0) - flow_log_det
         return log_q_z + coordinates.total_log_abs_det()
 
