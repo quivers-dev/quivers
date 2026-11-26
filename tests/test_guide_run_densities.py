@@ -6,20 +6,51 @@ density of run ``b``'s values alone. The tests check, for every guide
 class, at ``B`` in ``{1, 2, 5}`` and at runs that all hold different
 values:
 
-1. The batch densities equal the densities of the runs scored one at a
-   time, and equal a density written here by hand from torch
-   primitives at the guide's current parameters, one run at a time.
-2. The gradients of a weighted sum of the batch densities, with respect
-   to the guide's parameters and to the site values, equal those of
-   the same sum of the hand-written densities.
+1. Entry ``b`` of the batch densities, and its gradients with respect
+   to the guide's parameters and to the site values, are bit for bit
+   those of the batch in which every run holds run ``b``'s values and
+   data; and its gradients with respect to the other runs' values are
+   exactly zero. So entry ``b`` depends on run ``b`` alone.
+2. The batch densities, and the gradients of a weighted sum of them,
+   equal a density written here by hand from torch primitives at the
+   guide's current parameters, row by row over the same run axis.
 3. Values that the runs share (no run axis) enter every run's density
    in full, and a run axis of the wrong length is refused.
 4. Mutations of the shared per-run operation are each rejected by the
-   check of item 1: the first run repeated, the runs permuted, the
-   bijector terms summed over the runs, the first run's bijector term
-   given to every run, and a plate's terms read across runs.
+   exact check of item 1, by a deviation far from zero: the first run
+   repeated, the runs permuted, the bijector terms summed over the runs,
+   the first run's bijector term given to every run, a plate's terms
+   read across runs, and batch statistics in a flow's density.
 5. Every concrete guide class in `quivers.inference` is covered, so a
    new guide cannot skip these checks.
+
+How the comparisons are made exact
+==================================
+
+Every comparison that involves the run axis is exact (bit for bit). A
+batch of ``B`` rows and a batch of one call different BLAS kernels,
+whose summation orders differ, so a density scored with ``B`` rows and
+the same density scored with one row differ by rounding. The density
+itself is well conditioned, but its gradient with respect to the
+weights of a spline flow's conditioner sums terms of a thousand or more
+that cancel to less than one, and the rounding difference of the two
+kernel shapes reaches about ``1e-8`` there. The check of item 1 never
+compares two kernel shapes: it compares row ``b`` of the batch with row
+``b`` of a batch of the same ``B`` rows that all hold run ``b``. Every
+operation the guides perform acts on each row alone (no reduction runs
+over the run axis), so row ``b`` meets the same kernel on the same
+numbers in both batches; and a gradient seeded at row ``b`` alone
+carries exact zeros through every other row, so the reductions over
+rows in the backward pass add exact zeros. The two results are thus
+equal in floating point, and any difference is a dependence on the
+other runs.
+
+The hand-written densities of item 2 are evaluated over the same run
+axis as the guide, row by row, so the guide and the hand-written law
+also meet the same kernel shapes; what is left between them is the
+difference between two formulas of one law, which `_RTOL` and `_ATOL`
+bound. That a batch of one scores a run as a batch of ``B`` does is
+then the case ``B = 1`` of item 2.
 """
 
 from __future__ import annotations
@@ -66,9 +97,14 @@ from quivers.inference.transforms import (
     TransformModule,
 )
 
-# Tolerances of the float64 comparisons, fixed before the tests were run.
+# Tolerances between a guide and its hand-written law on the same run
+# axis (two formulas of one law), fixed before the tests were run.
 _RTOL = 1e-9
 _ATOL = 1e-9
+
+# The exact check of item 1 allows no deviation; a mutation must deviate
+# by more than this, far from rounding of densities of order one.
+_MUTATION_MARGIN = 1e-6
 
 _RUN_COUNTS = (1, 2, 5)
 _SUBJECTS = 3
@@ -198,6 +234,33 @@ class _Runs(dx.Model):
                 "r": self.data["r"],
                 "y": self.data["y"][b : b + 1],
                 "u": self.data["u"][b : b + 1],
+            },
+        )
+
+    def copies(self, b: int) -> _Runs:
+        """The batch of the same ``B`` runs, every one holding run ``b``.
+
+        Parameters
+        ----------
+        b : int
+            The run.
+
+        Returns
+        -------
+        _Runs
+            ``B`` copies of run ``b``'s values and data.
+        """
+
+        def repeat(value: torch.Tensor) -> torch.Tensor:
+            return value[b : b + 1].expand(self.count, *value.shape[1:]).clone()
+
+        return _Runs(
+            count=self.count,
+            sites={name: repeat(value) for name, value in self.sites.items()},
+            data={
+                "r": self.data["r"],
+                "y": repeat(self.data["y"]),
+                "u": repeat(self.data["u"]),
             },
         )
 
@@ -390,73 +453,74 @@ def _guide(kind: str, runs: _Runs) -> Guide:
 
 
 # ---------------------------------------------------------------------------
-# Hand-written densities, one run at a time
+# Hand-written densities, row by row over the run axis
 # ---------------------------------------------------------------------------
 
 
 def _unconstrain(name: str, value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Invert one run's value of a site by hand.
+    """Invert each run's value of a site by hand.
 
     Parameters
     ----------
     name : str
         The site.
     value : torch.Tensor
-        One run's value: ``()`` for ``theta``, ``(3,)`` for ``w`` and
-        ``tau``.
+        The runs' values: ``(R,)`` for ``theta``, ``(R, 3)`` for ``w``
+        and ``tau``.
 
     Returns
     -------
     tuple[torch.Tensor, torch.Tensor]
-        The flat coordinates of the value, and the log absolute
-        Jacobian determinant of the inverse map at it, one entry per
-        plate element (one entry for a site that is not plated).
+        Each run's flat coordinates, ``(R, k)``, and the log absolute
+        Jacobian determinant of the inverse map at its value, ``(R,)``.
     """
     if name == "theta":
         z = torch.log(value) - torch.log1p(-value)
-        return z.reshape(1), (-torch.log(value) - torch.log1p(-value)).reshape(1)
+        return z.unsqueeze(-1), -torch.log(value) - torch.log1p(-value)
     if name == "w":
         inverse = StickBreakingTransform().inv
         z = inverse(value)
         assert isinstance(z, torch.Tensor)
-        return z, inverse.log_abs_det_jacobian(value, z).reshape(1)
-    return torch.log(value), -torch.log(value)
+        return z, inverse.log_abs_det_jacobian(value, z)
+    return torch.log(value), -torch.log(value).sum(-1)
 
 
 def _coordinates(
     run: dict[str, torch.Tensor], names: tuple[str, ...]
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    """One run's flat coordinates per site and its total Jacobian term.
+    """Each run's flat coordinates per site and its total Jacobian term.
 
     Parameters
     ----------
     run : dict[str, torch.Tensor]
-        One run's values, without a run axis.
+        The runs' values, with a leading run axis of ``R``.
     names : tuple[str, ...]
         The sites, in declaration order.
 
     Returns
     -------
     tuple[dict[str, torch.Tensor], torch.Tensor]
-        The coordinates by site and the summed log Jacobian term.
+        The coordinates by site, ``(R, k)``, and the summed log Jacobian
+        term of each run, ``(R,)``.
     """
     coordinates: dict[str, torch.Tensor] = {}
-    total = torch.zeros(())
+    total: torch.Tensor | None = None
     for name in names:
         coordinates[name], log_det = _unconstrain(name, run[name])
-        total = total + log_det.sum()
+        total = log_det if total is None else total + log_det
+    assert total is not None
     return coordinates, total
 
 
 def _gaussian(z: torch.Tensor, loc: torch.Tensor, cov: torch.Tensor) -> torch.Tensor:
-    """The log density of a Gaussian, written out.
+    """The log density of a Gaussian at each run's point, written out.
 
     Parameters
     ----------
     z : torch.Tensor
-        The point, shape ``(D,)``.
+        The points, shape ``(R, D)``.
     loc : torch.Tensor
-        The mean, shape ``(D,)``.
+        The mean, shape ``(D,)`` or ``(R, D)``.
     cov : torch.Tensor
         The covariance, shape ``(D, D)``.
 
@@ -464,32 +528,32 @@ def _gaussian(z: torch.Tensor, loc: torch.Tensor, cov: torch.Tensor) -> torch.Te
     -------
     torch.Tensor
         :math:`-\\tfrac12 (D \\log 2\\pi + \\log|\\Sigma| + r^\\top
-        \\Sigma^{-1} r)` with :math:`r = z - \\mu`.
+        \\Sigma^{-1} r)` with :math:`r = z - \\mu`, shape ``(R,)``.
     """
     chol = torch.linalg.cholesky(cov)
     solved = torch.linalg.solve_triangular(
         chol, (z - loc).unsqueeze(-1), upper=False
     ).squeeze(-1)
     log_det = 2.0 * torch.log(torch.diagonal(chol)).sum()
-    return -0.5 * (z.shape[0] * math.log(2 * math.pi) + log_det + (solved**2).sum())
+    return -0.5 * (z.shape[-1] * math.log(2 * math.pi) + log_det + (solved**2).sum(-1))
 
 
 def _normal(z: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """The log density of independent Normals, written out and summed.
+    """The log density of independent Normals, written out, per run.
 
     Parameters
     ----------
     z, loc, scale : torch.Tensor
-        Points, means, and scales of one shape.
+        Points ``(R, k)``, and means and scales broadcasting against them.
 
     Returns
     -------
     torch.Tensor
-        The summed log density.
+        The log density summed over the last axis, ``(R,)``.
     """
     return (
         -0.5 * ((z - loc) / scale) ** 2 - torch.log(scale) - 0.5 * math.log(2 * math.pi)
-    ).sum()
+    ).sum(-1)
 
 
 def _cholesky(off: torch.Tensor, diag_raw: torch.Tensor) -> torch.Tensor:
@@ -511,21 +575,23 @@ def _cholesky(off: torch.Tensor, diag_raw: torch.Tensor) -> torch.Tensor:
 
 
 def _oracle(guide: Guide, run: dict[str, torch.Tensor], data: _Runs) -> torch.Tensor:
-    """The log density of one run under a guide, written by hand.
+    """The log density of each run under a guide, written by hand.
+
+    Every operation acts on each run's row alone.
 
     Parameters
     ----------
     guide : Guide
         The guide, at its current parameters.
     run : dict[str, torch.Tensor]
-        One run's values, without a run axis.
+        The runs' values, with a leading run axis of ``R``.
     data : _Runs
-        The run alone, whose data an amortized guide reads.
+        The runs, whose data an amortized guide reads.
 
     Returns
     -------
     torch.Tensor
-        A scalar log density.
+        One log density per run, ``(R,)``.
     """
     return _ORACLES[type(guide)](guide, run, data)
 
@@ -560,14 +626,14 @@ def _oracle_normal(
     guide : Guide
         An `AutoNormalGuide`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
         Unused.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     del data
     names = tuple(guide.latent_names)
@@ -576,7 +642,8 @@ def _oracle_normal(
         loc = _parameter(guide, f"loc_{name}").reshape(-1)
         log_scale = _parameter(guide, f"log_scale_{name}").reshape(-1)
         scale = log_scale.exp().clamp(min=1e-6)
-        total = total + _normal(coordinates[name].reshape(-1), loc, scale)
+        rows = coordinates[name].reshape(coordinates[name].shape[0], -1)
+        total = total + _normal(rows, loc, scale)
     return total
 
 
@@ -590,39 +657,42 @@ def _oracle_zero(
     guide : Guide
         An `AutoDeltaGuide`.
     run : dict[str, torch.Tensor]
-        Unused.
+        The runs' values, read for their number.
     data : _Runs
         Unused.
 
     Returns
     -------
     torch.Tensor
-        Zero.
+        Zeros.
     """
-    del guide, run, data
-    return torch.zeros(())
+    del guide, data
+    return torch.zeros(run["theta"].shape[0])
 
 
 def _flat(
     guide: Guide, run: dict[str, torch.Tensor]
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """One run's flat point over a guide's sites and its Jacobian term.
+    """Each run's flat point over a guide's sites and its Jacobian term.
 
     Parameters
     ----------
     guide : Guide
         The guide.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
 
     Returns
     -------
     tuple[torch.Tensor, torch.Tensor]
-        The flat point and the summed log Jacobian term.
+        The flat points ``(R, D)`` and the summed log Jacobian terms.
     """
     names = tuple(guide.latent_names)
     coordinates, total = _coordinates(run, names)
-    return torch.cat([coordinates[name].reshape(-1) for name in names]), total
+    points = torch.cat(
+        [coordinates[n].reshape(coordinates[n].shape[0], -1) for n in names], dim=-1
+    )
+    return points, total
 
 
 def _oracle_mvn(
@@ -635,14 +705,14 @@ def _oracle_mvn(
     guide : Guide
         An `AutoMultivariateNormalGuide`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
         Unused.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     del data
     z, total = _flat(guide, run)
@@ -662,14 +732,14 @@ def _oracle_low_rank(
     guide : Guide
         An `AutoLowRankMultivariateNormalGuide`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
         Unused.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     del data
     z, total = _flat(guide, run)
@@ -689,18 +759,18 @@ def _oracle_laplace(
     guide : Guide
         An `AutoLaplaceApproximation`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
         Unused.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     del data
     if not bool(_parameter(guide, "_hessian_fitted")):
-        return torch.zeros(())
+        return torch.zeros(run["theta"].shape[0])
     z, total = _flat(guide, run)
     chol = _parameter(guide, "_scale_tril")
     return total + _gaussian(z, _parameter(guide, "map_z"), chol @ chol.T)
@@ -709,21 +779,21 @@ def _oracle_laplace(
 def _oracle_flow(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
-    """The flow's density, pulling one run's point back layer by layer.
+    """The flow's density, pulling each run's point back layer by layer.
 
     Parameters
     ----------
     guide : Guide
         An `AutoNormalizingFlow` or a subclass.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
         Unused.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     del data
     z, total = _flat(guide, run)
@@ -732,7 +802,7 @@ def _oracle_flow(
         for layer in guide.get_submodule("flow").children()
         if isinstance(layer, TransformModule)
     ]
-    flow_log_det = torch.zeros(())
+    flow_log_det = torch.zeros(z.shape[0])
     for layer in reversed(layers):
         previous = layer.inv(z)
         assert isinstance(previous, torch.Tensor)
@@ -747,51 +817,54 @@ def _oracle_structured(
 ) -> torch.Tensor:
     """The structured guide's directed law over its sites.
 
+    A callable dependency is applied to each run's parent draw in turn,
+    as its contract states.
+
     Parameters
     ----------
     guide : Guide
         An `AutoStructured`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
         Unused.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     del data
     assert isinstance(guide, AutoStructured)
     names = tuple(guide.latent_names)
     coordinates, total = _coordinates(run, names)
-    flats = {name: coordinates[name].reshape(-1) for name in names}
+    flats = {n: coordinates[n].reshape(coordinates[n].shape[0], -1) for n in names}
     joint_z: list[torch.Tensor] = []
     joint_loc: list[torch.Tensor] = []
     for name in names:
         kind = guide.conditionals[name]
         if kind == "delta":
             continue
-        loc = _parameter(guide, f"loc_{name}").reshape(-1)
+        loc = _parameter(guide, f"loc_{name}").reshape(1, -1)
         for parent, dependency in guide.dependencies.get(name, {}).items():
             if isinstance(dependency, str):
                 weight = _parameter(guide, f"deps.{name}.{parent}.weight")
-                loc = loc + weight @ flats[parent]
+                loc = loc + flats[parent] @ weight.T
             else:
-                loc = loc + dependency(flats[parent])
+                loc = loc + torch.stack([dependency(row) for row in flats[parent]])
         if kind == "normal":
             log_scale = _parameter(guide, f"log_scale_{name}").reshape(-1)
             total = total + _normal(flats[name], loc, log_scale.exp().clamp(min=1e-6))
         else:
             joint_z.append(flats[name])
-            joint_loc.append(loc)
+            joint_loc.append(loc.expand_as(flats[name]))
     if joint_z:
         chol = _cholesky(
             _parameter(guide, "mvn_scale_offdiag"),
             _parameter(guide, "mvn_scale_diag_raw"),
         )
         total = total + _gaussian(
-            torch.cat(joint_z), torch.cat(joint_loc), chol @ chol.T
+            torch.cat(joint_z, dim=-1), torch.cat(joint_loc, dim=-1), chol @ chol.T
         )
     return total
 
@@ -826,19 +899,19 @@ def _oracle_mixture(
     guide : Guide
         An `AutoMixtureGuide`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
-        The run alone.
+        The runs.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     assert isinstance(guide, AutoMixtureGuide)
     log_pi = torch.log_softmax(_parameter(guide, "mixture_logits"), dim=-1)
     components = torch.stack([_oracle(c, run, data) for c in _components(guide)])
-    return torch.logsumexp(log_pi + components, dim=0)
+    return torch.logsumexp(log_pi.unsqueeze(-1) + components, dim=0)
 
 
 def _oracle_list(
@@ -851,51 +924,55 @@ def _oracle_list(
     guide : Guide
         An `AutoGuideList`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
-        The run alone.
+        The runs.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     assert isinstance(guide, AutoGuideList)
-    total = torch.zeros(())
+    total: torch.Tensor | None = None
     for label in guide.part_labels:
-        total = total + _oracle(guide.part(label), run, data)
+        part = _oracle(guide.part(label), run, data)
+        total = part if total is None else total + part
+    assert total is not None
     return total
 
 
 def _oracle_amortized(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
-    """The encoders' densities at the run's own data rows.
+    """The encoders' densities at each run's own data rows.
 
     Parameters
     ----------
     guide : Guide
         The `AmortizedGuide` of `_BUILDERS`.
     run : dict[str, torch.Tensor]
-        One run's values.
+        The runs' values.
     data : _Runs
-        The run alone, whose ``y`` and ``u`` the encoders read.
+        The runs, whose ``y`` and ``u`` the encoders read.
 
     Returns
     -------
     torch.Tensor
-        The log density.
+        The log densities.
     """
     theta_encoder, tau_encoder = guide.get_submodule("encoders").children()
     assert isinstance(theta_encoder, ConditionalNormal)
     assert isinstance(tau_encoder, ConditionalNormal)
-    total = torch.zeros(())
+    count = run["theta"].shape[0]
     mean, scale = theta_encoder._get_params(data.data["y"])
     z, log_det = _unconstrain("theta", run["theta"])
-    total = total + _normal(z, mean[0], scale[0]) + log_det.sum()
-    mean, scale = tau_encoder._get_params(data.data["u"][0])
+    total = _normal(z, mean, scale) + log_det
+    rows = data.data["u"].reshape(count * _SUBJECTS, _DATUM_WIDTH)
+    mean, scale = tau_encoder._get_params(rows)
     z, log_det = _unconstrain("tau", run["tau"])
-    return total + _normal(z, mean[:, 0], scale[:, 0]) + log_det.sum()
+    shape = (count, _SUBJECTS)
+    return total + _normal(z, mean.reshape(shape), scale.reshape(shape)) + log_det
 
 
 _ORACLES: dict[
@@ -941,16 +1018,107 @@ def _gradients(
     """
     if not total.requires_grad:
         return tuple(None for _ in leaves)
-    return torch.autograd.grad(total, leaves, allow_unused=True)
+    return torch.autograd.grad(total, leaves, allow_unused=True, retain_graph=True)
+
+
+def _filled(gradient: torch.Tensor | None, leaf: torch.Tensor) -> torch.Tensor:
+    """A gradient, with zeros for a leaf the scalar does not depend on.
+
+    Parameters
+    ----------
+    gradient : torch.Tensor | None
+        The gradient.
+    leaf : torch.Tensor
+        The leaf.
+
+    Returns
+    -------
+    torch.Tensor
+        The gradient, or zeros of the leaf's shape.
+    """
+    return torch.zeros_like(leaf) if gradient is None else gradient
+
+
+def _deviation(found: torch.Tensor, wanted: torch.Tensor) -> float:
+    """The largest absolute difference of two tensors of one shape.
+
+    Parameters
+    ----------
+    found, wanted : torch.Tensor
+        The tensors.
+
+    Returns
+    -------
+    float
+        ``max |found - wanted|``; infinite when the shapes differ or a
+        difference is not a number.
+    """
+    if found.shape != wanted.shape:
+        return math.inf
+    if found.numel() == 0:
+        return 0.0
+    difference = (found.detach() - wanted.detach()).abs().max()
+    return math.inf if bool(difference.isnan()) else float(difference)
+
+
+def _run_deviation(guide: Guide, runs: _Runs) -> float:
+    """How far entry ``b`` of a batch depends on the runs other than ``b``.
+
+    For every run ``b``, the density of row ``b`` and its gradients
+    (seeded at row ``b`` alone) are compared with those of row ``b`` of
+    the batch whose runs all hold run ``b``, and the gradient with
+    respect to the other runs' values is compared with zero. Both
+    batches have ``B`` rows, so the comparison involves no rounding and
+    the deviation of a guide that keeps runs apart is exactly zero.
+
+    Parameters
+    ----------
+    guide : Guide
+        The guide.
+    runs : _Runs
+        The runs, every run's values different.
+
+    Returns
+    -------
+    float
+        The largest deviation over the runs, densities, and gradients.
+    """
+    parameters = [p for p in guide.parameters() if p.requires_grad]
+    sites = {name: v.clone().requires_grad_(True) for name, v in runs.sites.items()}
+    guide.observe(runs.data)
+    batch = guide.log_prob(runs.input(), sites)
+    worst = 0.0 if batch.shape == (runs.count,) else math.inf
+    for b in range(runs.count):
+        copies = runs.copies(b)
+        alike = {
+            name: v.clone().requires_grad_(True) for name, v in copies.sites.items()
+        }
+        guide.observe(copies.data)
+        same = guide.log_prob(copies.input(), alike)
+        worst = max(worst, _deviation(batch[b], same[b]))
+        found = _gradients(batch[b], [*parameters, *sites.values()])
+        wanted = _gradients(same[b], [*parameters, *alike.values()])
+        for leaf, got, want in zip(parameters, found, wanted, strict=False):
+            worst = max(worst, _deviation(_filled(got, leaf), _filled(want, leaf)))
+        values = found[len(parameters) :]
+        alike_values = wanted[len(parameters) :]
+        for leaf, got, want in zip(sites.values(), values, alike_values, strict=True):
+            got = _filled(got, leaf)
+            want = _filled(want, leaf)
+            worst = max(worst, _deviation(got[b], want[b]))
+            others = torch.cat([got[:b], got[b + 1 :]])
+            worst = max(worst, _deviation(others, torch.zeros_like(others)))
+    return worst
 
 
 def _check_runs(guide: Guide, runs: _Runs) -> None:
     """Check a guide's batch densities run by run.
 
-    The batch densities must equal the densities of the runs scored one
-    at a time and the hand-written densities, and the gradients of a
-    weighted sum of them, with respect to the parameters and the site
-    values, must equal those of the hand-written sum.
+    Entry ``b`` must depend on run ``b`` alone, bit for bit
+    (`_run_deviation`), and the batch densities, and the gradients of a
+    weighted sum of them with respect to the parameters and the site
+    values, must equal those of the hand-written law over the same run
+    axis.
 
     Parameters
     ----------
@@ -962,39 +1130,26 @@ def _check_runs(guide: Guide, runs: _Runs) -> None:
     Raises
     ------
     AssertionError
-        If a density or gradient differs.
+        If an entry depends on another run, or a density or gradient
+        differs from the hand-written law.
     """
+    deviation = _run_deviation(guide, runs)
+    assert deviation == 0.0, f"entries depend on other runs by {deviation:.3g}"
     sites = {
         name: value.clone().requires_grad_(True) for name, value in runs.sites.items()
     }
     guide.observe(runs.data)
     batch = guide.log_prob(runs.input(), sites)
-    assert batch.shape == (runs.count,)
-    singles = []
-    oracles = []
-    for b in range(runs.count):
-        alone = runs.row(b)
-        guide.observe(alone.data)
-        singles.append(guide.log_prob(alone.input(), alone.sites)[0])
-        oracles.append(
-            _oracle(guide, {name: value[b] for name, value in sites.items()}, alone)
-        )
-    torch.testing.assert_close(batch, torch.stack(singles), rtol=_RTOL, atol=_ATOL)
-    expected = torch.stack(oracles)
+    expected = _oracle(guide, sites, runs)
     torch.testing.assert_close(batch, expected, rtol=_RTOL, atol=_ATOL)
-
     weights = torch.arange(1, runs.count + 1, dtype=batch.dtype)
     parameters = [p for p in guide.parameters() if p.requires_grad]
     leaves = [*parameters, *sites.values()]
-    guide.observe(runs.data)
-    found = _gradients((weights * guide.log_prob(runs.input(), sites)).sum(), leaves)
+    found = _gradients((weights * batch).sum(), leaves)
     reference = _gradients((weights * expected).sum(), leaves)
     for leaf, got, want in zip(leaves, found, reference, strict=True):
         torch.testing.assert_close(
-            torch.zeros_like(leaf) if got is None else got,
-            torch.zeros_like(leaf) if want is None else want,
-            rtol=_RTOL,
-            atol=_ATOL,
+            _filled(got, leaf), _filled(want, leaf), rtol=_RTOL, atol=_ATOL
         )
 
 
@@ -1014,6 +1169,7 @@ def test_batch_densities_are_the_densities_of_each_run_alone(
 
 @pytest.mark.parametrize("kind", sorted(_BUILDERS))
 def test_a_shared_value_enters_every_run_in_full(kind: str) -> None:
+    """A value without a run axis scores as that value given to every run."""
     runs = _runs(4)
     guide = _guide(kind, runs)
     guide.observe(runs.data)
@@ -1022,22 +1178,14 @@ def test_a_shared_value_enters_every_run_in_full(kind: str) -> None:
         "w": runs.sites["w"],
         "tau": runs.sites["tau"][2],
     }
-    batch = guide.log_prob(runs.input(), shared)
-    expected = []
-    for b in range(runs.count):
-        alone = runs.row(b)
-        guide.observe(alone.data)
-        expected.append(
-            guide.log_prob(
-                alone.input(),
-                {
-                    "theta": shared["theta"].reshape(1),
-                    "w": alone.sites["w"],
-                    "tau": shared["tau"].reshape(1, _SUBJECTS),
-                },
-            )[0]
-        )
-    torch.testing.assert_close(batch, torch.stack(expected), rtol=_RTOL, atol=_ATOL)
+    given = {
+        "theta": shared["theta"].expand(runs.count).clone(),
+        "w": runs.sites["w"],
+        "tau": shared["tau"].expand(runs.count, _SUBJECTS).clone(),
+    }
+    found = guide.log_prob(runs.input(), shared)
+    wanted = guide.log_prob(runs.input(), given)
+    assert torch.equal(found, wanted)
 
 
 @pytest.mark.parametrize("kind", sorted(_BUILDERS))
@@ -1069,7 +1217,9 @@ def test_mixture_strata_score_a_mean_field_component_run_by_run(count: int) -> N
     """The strata of a mixture carry each run's own mixture density.
 
     The mean-field component draws every run separately, so the joint
-    components score values that differ across the runs.
+    components score values that differ across the runs; each entry is
+    compared, bit for bit, with the batch whose runs all hold that
+    entry's run.
     """
     model = _model()
     torch.manual_seed(4)
@@ -1086,19 +1236,18 @@ def test_mixture_strata_score_a_mean_field_component_run_by_run(count: int) -> N
     for draw in draws:
         for b in range(count):
             alone = {
-                name: (value[b : b + 1] if name != "tau" else value)
+                name: (
+                    value[b : b + 1].expand(count, *value.shape[1:]).clone()
+                    if name != "tau"
+                    else value
+                )
                 for name, value in draw.sites.items()
             }
-            single = guide.log_prob(torch.zeros(1, 1), alone)[0]
-            torch.testing.assert_close(
-                draw.log_density[b], single, rtol=_RTOL, atol=_ATOL
-            )
+            assert torch.equal(draw.log_density[b], guide.log_prob(x, alone)[b])
             for component in _components(guide):
-                torch.testing.assert_close(
+                assert torch.equal(
                     component.log_prob(x, draw.sites)[b],
-                    component.log_prob(torch.zeros(1, 1), alone)[0],
-                    rtol=_RTOL,
-                    atol=_ATOL,
+                    component.log_prob(x, alone)[b],
                 )
 
 
@@ -1168,6 +1317,7 @@ def test_the_check_rejects_each_mutation(
     _check_runs(guide, runs)
     method, replacement = _MUTANTS[mutant]
     monkeypatch.setattr(LatentSite, method, replacement)
+    assert _run_deviation(guide, runs) > _MUTATION_MARGIN
     with pytest.raises(AssertionError):
         _check_runs(guide, runs)
 
@@ -1219,6 +1369,7 @@ def test_the_check_rejects_batch_statistics_in_a_flow_density(
     guide = _guide("flow", runs)
     _check_runs(guide, runs)
     monkeypatch.setattr(BatchNormTransform, method, replacement)
+    assert _run_deviation(guide, runs) > _MUTATION_MARGIN
     with pytest.raises(AssertionError):
         _check_runs(guide, runs)
 
