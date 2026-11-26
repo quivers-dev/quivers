@@ -40,11 +40,12 @@ __all__ = [
     "IndexedChart",
     "JoinStep",
     "RuleJoinPlan",
+    "index_variables",
     "join_plans",
 ]
 
 
-def _variables(term: IndexTerm) -> set[str]:
+def index_variables(term: IndexTerm) -> set[str]:
     """The variable names of an index term.
 
     Parameters
@@ -62,7 +63,7 @@ def _variables(term: IndexTerm) -> set[str]:
     if isinstance(term, IndexConstructor):
         found: set[str] = set()
         for item in term.arguments:
-            found |= _variables(item)
+            found |= index_variables(item)
         return found
     if isinstance(term, IndexSum):
         return {item.name for item in term.terms}
@@ -147,14 +148,14 @@ def _plan(
             return tuple(
                 position
                 for position, argument in enumerate(arguments)
-                if _variables(argument) <= known
+                if index_variables(argument) <= known
             )
 
         best = max(left, key=lambda index: (len(keyed(index)), -index))
         steps.append(JoinStep(premise=best, keyed=keyed(best)))
         left.remove(best)
         for argument in rule.premises[best].judgment.arguments:
-            known |= _variables(argument)
+            known |= index_variables(argument)
     return RuleJoinPlan(rule=rule.id, trigger=trigger, steps=tuple(steps))
 
 
@@ -180,12 +181,12 @@ def join_plans(
         for trigger in positions:
             bound: set[str] = set()
             for argument in rule.premises[trigger].judgment.arguments:
-                bound |= _variables(argument)
+                bound |= index_variables(argument)
             others = [index for index in positions if index != trigger]
             plans[(rule.id, trigger)] = _plan(rule, bound, others, trigger)
         conclusion: set[str] = set()
         for argument in rule.conclusion.arguments:
-            conclusion |= _variables(argument)
+            conclusion |= index_variables(argument)
         plans[(rule.id, -1)] = _plan(rule, conclusion, list(positions), -1)
     return plans
 
@@ -466,7 +467,7 @@ class IndexedChart:
             self.work["candidates"] += 1
             if not admitted(candidate):
                 continue
-            if trigger >= 0 and step.premise < trigger and candidate is item:
+            if trigger >= 0 and step.premise < trigger and candidate == item:
                 continue
             extended = dict(binding)
             if not all(

@@ -1,4 +1,4 @@
-"""Every wrong version of directed the statistics carriers is rejected by its checks."""
+"""Every wrong version of the statistics carriers is rejected by its checks."""
 
 from __future__ import annotations
 

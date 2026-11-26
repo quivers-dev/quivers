@@ -792,6 +792,8 @@ class Plan(ValueModel):
             }
             evaluation = _evaluate(self, axioms, leaves, like)
             value = evaluation.value(goal)
+            if not value.requires_grad:
+                return {key: torch.zeros_like(leaf) for key, leaf in leaves.items()}
             cotangent = torch.ones_like(value) if adjoint is None else adjoint
             keys = list(leaves)
             grads = torch.autograd.grad(
@@ -986,6 +988,33 @@ def plan(
     return Plan(record=record, presentation=presentation, algebra=algebra)
 
 
+def _constants(plan: Plan, chart: IndexedChart) -> list[tuple[Rule, Item]]:
+    """The instances of rules without premises, and their conclusions.
+
+    Validation makes the conclusion of such a rule ground, so each has at
+    most one instance, used when its side condition holds.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+    chart : IndexedChart
+        The chart, whose table interns the conclusions.
+
+    Returns
+    -------
+    list of tuple of Rule and Item
+        Each rule without premises whose condition holds, with its item.
+    """
+    found: list[tuple[Rule, Item]] = []
+    for rule in plan.presentation.rules:
+        if rule.premises or not chart.holds(rule, {}):
+            continue
+        arguments = tuple(evaluate_index(a, {}) for a in rule.conclusion.arguments)
+        found.append((rule, chart.items.intern(rule.conclusion.family, arguments)))
+    return found
+
+
 # ---------------------------------------------------------------------------
 # the two passes
 
@@ -1161,6 +1190,12 @@ def _discover(
             discovered.append(item)
             counts[item] = 0
             queue.append(item)
+    for _, item in _constants(plan, chart):
+        counts[item] = counts.get(item, 0) + 1
+        if item not in seen:
+            seen.add(item)
+            discovered.append(item)
+            queue.append(item)
     popped: set[Item] = set()
     by_premise = plan.presentation.rules_by_premise
     while queue:
@@ -1228,6 +1263,11 @@ def _evaluate(
             )
         sums[item] = total
     remaining = dict(counts)
+    for rule, item in _constants(plan, chart):
+        sums[item] = _accumulate(
+            algebra, sums.get(item), _weight(plan, rule.weight, inputs, like)
+        )
+        remaining[item] -= 1
     ready: deque[Item] = deque(item for item in discovered if remaining[item] == 0)
     final: set[Item] = set()
     order: list[Item] = []
@@ -1441,6 +1481,8 @@ def _recompute(
         for piece in pieces[1:]:
             total = _accumulate(algebra, total, piece)
         sources = [*premise_leaves.values(), *input_leaves.values()]
+        if not sources:
+            continue
         grads = torch.autograd.grad(total, sources, cotangent, allow_unused=True)
         for premise, grad in zip(
             premise_leaves, grads[: len(premise_leaves)], strict=True
