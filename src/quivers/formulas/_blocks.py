@@ -807,12 +807,13 @@ def _group_terms(formula: Formula, terms: tuple[RandomTerm, ...]) -> Formula:
     -------
     Formula
         The design with its response and groupings, no population-level,
-        smooth, offset or monotonic terms, and only ``terms``.
+        smooth, offset, latent or monotonic terms, and only ``terms``.
     """
     return formula.with_(
         fixed_columns=(),
         design_terms=(),
         offsets=(),
+        latent_terms=(),
         monotonic_terms=(),
         random_terms=terms,
     )
