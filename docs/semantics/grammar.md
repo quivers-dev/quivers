@@ -586,7 +586,7 @@ morphism_call       := IDENT [ '[' program_static_arg (',' program_static_arg)* 
 
 A program's static telescope uses the QIEC binders for types, effects, and
 indices, with additional object and morphism kinds. Its runtime telescope
-supplies values at the resulting types. A bare runtime
+provides values at the resulting types. A bare runtime
 parameter names a component of the domain; a typed parameter declares an
 external input. A typed runtime parameter alone does not make a program a
 static template. The compiler expands a static template at a specialized call site

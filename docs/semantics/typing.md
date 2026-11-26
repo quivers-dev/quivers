@@ -145,7 +145,7 @@ finite-set object. The
 distinguishes this arithmetic from user-defined index constructors.
 
 A distribution construction first selects one complete parameter schema.
-Its supplied parameter names must equal one declared alternative, with no
+Its given parameter names must equal one declared alternative, with no
 repeated names. This check rules out missing parameters and simultaneous
 exclusive alternatives before the constructor's result is accepted. Named
 source draws and positional computation calls resolve to these same semantic
@@ -191,7 +191,7 @@ In `family Vec[A : Type](n : Nat) : Type`, both `A` and `n` belong to
 static information: `n` is an index that constructors and case analysis
 may refine. Constructor fields are values. Likewise, an effect interface's
 type and index parameters are static, while operation arguments and resumed
-values are runtime terms. Contraction inputs and encoder attachments supply
+values are runtime terms. Contraction inputs and encoder attachments provide
 components under their own elaboration rules; they do not quantify new
 index variables merely because their names occur in a header.
 
@@ -294,7 +294,7 @@ joint log density is formed. An otherwise unbound weight name is inferred as
 a tensor over the batch axes, or a scalar `Real` when no batch axis is present.
 
 The shape and element type are checked before execution; finiteness and
-nonnegativity are checked on the supplied or computed values when the program
+nonnegativity are checked on the given or computed values when the program
 runs. Booleans are refused. The checked pure primitive `observation_weight`
 retains the value after validation, and `scale_weight` applies it to the
 observation's `LogWeight` before `WeightSum` or `SegmentSum`.

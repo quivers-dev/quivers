@@ -38,7 +38,7 @@ The result retains event dimension names and labels, chain and draw labels,
 and original sample counts. Prior draws may have different chain and draw
 counts, but must have exactly the same event shape and device. Construct the
 prior contrast jointly as well; independently permuting its parameter draws
-would change a dependent prior. The caller supplies `kind`; this records
+would change a dependent prior. The caller passes `kind`; this records
 provenance without adding convergence diagnostics or correcting an approximate
 posterior.
 
@@ -75,7 +75,7 @@ $$
 This is an empirical encompassing-prior comparison. Its Bayes-factor
 interpretation requires a common proper prior restricted and renormalized
 to $R$ and $R^c$, with the same likelihood under both models. Both regions
-must have positive prior mass. Supplied draws must represent that prior and
+must have positive prior mass. The given draws must represent that prior and
 its corresponding posterior, including their hierarchical dependence.
 A variational posterior may introduce approximation error into the estimate.
 Posterior region odds alone are not a prior-corrected Bayes factor.
@@ -89,7 +89,7 @@ mass to both regions. Without prior draws, prior fields are `None`.
 
 Exact equality is descriptive. Neither a continuous point null nor a
 comparison between an atom and a continuous alternative is inferred from
-an equality count. This API supplies no point-null density estimate,
+an equality count. This API provides no point-null density estimate,
 Savage–Dickey ratio, or posterior model probability; those require additional
 null-model and prior-compatibility assumptions.
 
@@ -123,7 +123,7 @@ assert contrast.dimension_names == ()
 
 Use `dims={"a": ("Item",), "b": ("Item",)}` to declare a shared event
 axis explicitly. Omitting `dims` assigns distinct site-specific axes;
-subtracting vectors on distinct axes fails at checking. `coords` supplies
+subtracting vectors on distinct axes fails at checking. `coords` gives
 their original labels and optional chain/draw labels. A corresponding
 `prior=other_analysis` evaluates the same checked expression on its joint
 draw stream, with no parameter permutation. Different sample counts are

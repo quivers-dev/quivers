@@ -2,8 +2,8 @@
 
 A **custom family** binds a checked distribution contract to a native
 distribution factory. The contract states parameter types, intrinsic dimensions,
-sample support, and sampling capabilities; the factory supplies the corresponding
-PyTorch distribution. The same law then supplies fitting densities, raw held-out
+sample support, and sampling capabilities; the factory builds the corresponding
+PyTorch distribution. The same law then serves fitting densities, raw held-out
 likelihoods, response expectations, and predictive draws through the existing
 formula workflow.
 
@@ -15,8 +15,8 @@ checked caches and fitted recipes retain the appropriate catalog identity.
 ## Constructor parameters and predictor parameters
 
 `custom_family` maps native constructor parameters onto existing formula roles:
-(i) `location` receives the linked main predictor `mu`; (ii) `auxiliary` supplies
-ordinary scalar priors or distributional regressions; and (iii) `data` supplies
+(i) `location` receives the linked main predictor `mu`; (ii) `auxiliary` gives
+ordinary scalar priors or distributional regressions; and (iii) `data` gives
 deterministic parameters from typed numeric columns. An auxiliary mapping can
 separate the constructor name from the regression name. For instance, native
 `scale` can receive formula parameter `sigma`.
@@ -106,7 +106,7 @@ and declared reparameterization at the native boundary. These checks cannot
 prove that a user-written `log_prob` integrates to one or that its sampler has
 the claimed law; those mathematical properties require independent tests.
 
-A custom `torch.distributions.Distribution` subclass can supply an arbitrary
+A custom `torch.distributions.Distribution` subclass can provide an arbitrary
 `log_prob`, `sample` or `rsample`, and `mean`. Existing response helpers use those
 operations directly. Censoring and truncation additionally require the existing
 interval-mass or CDF capabilities and a truthful atomicity contract. The
@@ -117,7 +117,7 @@ through a name alone; unsupported source targets report their capabilities.
 Catalogs retain live native factories by identity. Updates and cross-validation
 reuse that binding, while [durable fitted artifacts](../modeling.md#durable-fitted-artifacts)
 require an explicit factory key and configuration when restoring it. The stored
-semantic contract is checked against the supplied implementation catalog.
+semantic contract is checked against the given implementation catalog.
 
 ::: quivers.formulas._custom_family.custom_family
 

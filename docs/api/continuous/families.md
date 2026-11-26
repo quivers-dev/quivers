@@ -13,7 +13,7 @@ computes its parameters from its input through a learned parameter map, while a 
 
 `AsymmetricLaplace(loc, scale, quantile)` models a selected response quantile;
 `ConditionalAsymmetricLaplace` learns all three parameters from its input. The
-native distribution supplies differentiable sampling, density, CDF, inverse CDF,
+native distribution provides differentiable sampling, density, CDF, inverse CDF,
 mean, variance, and entropy. Its scale follows the check-loss convention used in
 [brms quantile regression](https://paulbuerkner.com/brms/articles/brms_families.html#quantile-regression):
 at quantile `0.5`, it equals `Laplace(loc, 2 * scale)`.
@@ -27,7 +27,7 @@ positive `dispersion`. `ConditionalCOMPoisson` learns native rate and
 dispersion. The family has mass proportional to
 `rate**k / factorial(k)**dispersion`; zero rate is a point mass at zero.
 Parameters, log scores, and moments use float64; samples use int64 and
-supply no pathwise gradient.
+provide no pathwise gradient.
 
 Centered sums certify omitted mass and weighted moments with default
 `normalization_rtol=1e-12` and `max_terms=262144` candidate cells.
@@ -56,7 +56,7 @@ Parameters, scores, means, and variances use float64; discrete samples use
 int64 without pathwise reparameterization. Dirichlet-multinomial concentration
 sums must remain finite. `ConditionalMultinomial` learns category logits and
 `ConditionalDirichletMultinomial` learns positive concentrations, with fixed
-trials supplied to each conditional constructor.
+trials passed to each conditional constructor.
 
 Native and checked-reference execution support both kernels. The
 [source example](../../guides/continuous-families.md#vector-count-events)
@@ -77,7 +77,7 @@ simplex tolerance, fixing baseline scale separately from the rate.
 
 After the final boundary, the endpoint hazard continues constantly and
 positively. Survival thus tends to zero; the kernel retains all tail mass.
-Supply exactly one of `rate` and `log_rate`. The latter avoids forming an
+Pass exactly one of `rate` and `log_rate`. The latter avoids forming an
 unnecessary exponential. The native implementation evaluates parameters and
 scores in float64, preserving gradients to original learned tensors.
 
@@ -89,7 +89,7 @@ new observations reuse the resulting basis. Explicit knots are required
 when the requested distinct event quantiles are unavailable.
 
 `ConditionalBernsteinHazard` learns only the log rate over explicitly
-supplied fixed baseline tables. It validates and copies those tables;
+given fixed baseline tables. It validates and copies those tables;
 neural heads do not construct unconstrained knots or coefficients. Source
 programs can pass differentiable controls explicitly instead.
 
@@ -203,7 +203,7 @@ specifies the mixed dominating measure and response mean.
 
 `ConditionalZeroInflatedAsymmetricLaplace` learns the native parameters.
 The mixture sampler selects its branch before drawing a continuous
-response and supplies no pathwise sampling gradient. Native and
+response and provides no pathwise sampling gradient. Native and
 checked-reference execution support this family and DiscreteWeibull;
 all 11 external renderers explicitly refuse both.
 

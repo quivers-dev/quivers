@@ -8,11 +8,11 @@ through [`BayesianFit.bayes_r2`](../formulas/fit.md), using their retained
 prediction and response transforms. It preserves chain, draw, and event
 coordinates while reducing the observation-row axis.
 
-Supply either `observed` responses or conditional `residual_variance`. With
+Pass either `observed` responses or conditional `residual_variance`. With
 observations, the unexplained component is the sample variance of observed
 minus predicted responses, matching the
 [released brms implementation](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/bayes_R2.R).
-With conditional variances, their row average supplies the unexplained
+With conditional variances, their row average gives the unexplained
 component, as in the model-based method described in the
 [brms development reference](https://paulbuerkner.com/brms/reference/bayes_R2.brmsfit.html).
 The two definitions can differ at the same parameter draw.

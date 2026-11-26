@@ -10,8 +10,8 @@ while `Family.with_links(sigma="softplus")` changes a distributional scale link;
 [link selection](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
 gives the supported names and parameterizations.
 
-`squareplus` supplies the positive inverse link
-`(eta + sqrt(eta**2 + 4)) / 2`; `softit` supplies the probability inverse
+`squareplus` gives the positive inverse link
+`(eta + sqrt(eta**2 + 4)) / 2`; `softit` gives the probability inverse
 link `softplus(eta) / (1 + softplus(eta))`. The compiler uses stable
 equivalent forms and stages shared intermediates. The
 [link guide](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
@@ -100,7 +100,7 @@ stopping-ratio, continuation-ratio, or hurdle-cumulative probabilities.
 `families["acat"].with_links(mu="probit").with_thresholds("equidistant")`
 returns a configured value. Discrimination defaults to the constant one;
 explicit scalar or distributional estimates must be finite and positive.
-`cs(expr)` supplies transition-specific effects. Cumulative and
+`cs(expr)` adds transition-specific effects. Cumulative and
 hurdle-cumulative effects use training-domain spacing bounds plus positive
 slack to keep effective row cutpoints ordered. Their proper conditional
 slack priors differ from independent brms threshold priors.
@@ -153,7 +153,7 @@ retains the actual coefficient table for prediction on fresh rows.
 
 `with_baseline(..., by="site")` retains separate normalized simplex profiles
 for a grouping column on the same basis. Fitting retains its level coding
-without inserting a varying intercept. Direct lens users supply the column
+without inserting a varying intercept. Direct lens users pass the column
 through `formula_from_data(..., groups=("site",))`. New-data group policies
 share donor identities across baseline and coefficient sites; `gaussian`
 draws a new baseline from the actual Dirichlet law. Baseline conditioning

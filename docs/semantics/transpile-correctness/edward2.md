@@ -32,7 +32,7 @@ Edward2's families are the `Distribution` classes of
 [TensorFlow Probability](https://www.tensorflow.org/probability/api_docs/python/tfp/distributions).
 When the parameterizations agree, the map is the identity:
 $\pi_{F, \mathsf{Edward2}} = \mathrm{id}$ and $c_{F, \mathsf{Edward2}} = 0$.
-For HalfCauchy and HalfStudentT, the renderer additionally supplies their
+For HalfCauchy and HalfStudentT, the renderer additionally sets their
 fixed zero location.
 
 In particular, `HalfStudentT(df, scale)` becomes

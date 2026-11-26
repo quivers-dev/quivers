@@ -14,7 +14,7 @@ different quantities, and each contribution is scored against its own measure, d
 continuous.
 
 Discrimination defaults to one and must be finite and strictly positive.
-The formula frontend additionally supplies cumulative, adjacent-category,
+The formula frontend additionally provides cumulative, adjacent-category,
 stopping-ratio, continuation-ratio, and hurdle-cumulative constructions
 through a shared log-probability kernel. Their
 [ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)

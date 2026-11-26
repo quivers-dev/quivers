@@ -12,7 +12,7 @@ posterior, with isolated initial neural state and explicit clone/reference data
 ownership. Method changes clear inherited inactive budgets; explicit invalid
 overrides still fail. See [updating and refitting](../../guides/model-refits.md)
 for data ownership and adapters to the shared cross-validation runner.
-`BayesianFit.refit_callback(method_factory=..., num_samples=...)` supplies that
+`BayesianFit.refit_callback(method_factory=..., num_samples=...)` gives that
 runner with fresh formula fits and raw held-out likelihoods. Fold coordinates
 address retained included rows; the adapter maps them to original rows and
 partitions retained neural inputs by the same positions. Its method factory
@@ -80,7 +80,7 @@ optional declared-assumption point Bayes factor, bandwidths, and numerical
 limits follow the [shared density interface](../diagnostics/density.md).
 
 `posterior_linpred`, `posterior_epred`, and `posterior_predict` replay native
-fitted bindings on the training rows or on a supplied `new_data` frame. The first two expose predictors and
+fitted bindings on the training rows or on a given `new_data` frame. The first two expose predictors and
 response expectations; `posterior_predict` independently samples responses
 conditional on each posterior draw. Its tensor has shape `(chain, draw, row)`
 followed by any response event dimensions; categorical and ordinal responses
@@ -106,7 +106,7 @@ effects, `"~0"` sets them to zero, and a one-sided group formula selects
 fitted terms. Unsupported selectors fail explicitly. Response and
 likelihood-weight columns are unnecessary, but retained covariates,
 offsets, exposures, auxiliary predictors, and per-row trials must be
-supplied, together with retained measurement-error and truncation columns
+given, together with retained measurement-error and truncation columns
 when those sampling-law roles use data columns. Censoring and training
 subset columns are unnecessary. Neural fits require explicit new `predictor_data`.
 Training predictions reuse the compiled program; new rows specialize one
@@ -149,7 +149,7 @@ without executing unrelated downstream response computations.
 
 `nonlinear` maps parameter names to one-sided additive formulas or
 `NonlinearExpression` values. With the argument present, the main right
-side is a deterministic QVR expression; `distributional` expressions supply
+side is a deterministic QVR expression; `distributional` expressions give
 other family outputs on their link scales. The graph is dependency-checked,
 retains each additive leaf's fitted design, and applies each output's
 inverse link once. Component mappings use explicit free-coordinate labels.
@@ -214,7 +214,7 @@ QVR names, which are visible in `formula_to_qvr` output and `get_prior` results.
 Values use each site's natural scale; scalars broadcast and tensors must match
 the site's full declared shape. Unknown names, observed sites, Boolean or
 nonfinite values, incompatible shapes, and support boundaries are refused.
-The inference object detaches and copies the supplied values.
+The inference object detaches and copies the given values.
 
 ```python
 import pandas as pd
@@ -234,7 +234,7 @@ assert set(result.draws(num_samples=2)) == {"intercept", "beta_x", "sigma"}
 
 For `method="svi"`, the default `AutoNormalGuide` maps these values into its
 [initial unconstrained centers](../../guides/inference-svi.md#named-initial-centers).
-A custom guide must accept `initial_values` when a nonempty mapping is supplied.
+A custom guide must accept `initial_values` when a nonempty mapping is passed.
 For `"hmc"` and `"nuts"`, named values replace the corresponding coordinates
 after seeded initialization, as in the
 [MCMC interface](../../guides/inference-mcmc.md#named-initial-values).

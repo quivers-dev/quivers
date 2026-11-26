@@ -99,7 +99,7 @@ named-kernel draw: this example requires `base_param_weight` and
 kernel weights when comparing the reference and native executions. In the native
 `Model` interface, those parameters remain owned by the registered kernel and
 are excluded from external-data requirements. An optional typed declaration of
-a parameter-map input checks its type while retaining that ownership; supplying
+a parameter-map input checks its type while retaining that ownership; passing
 it as external data is an error. A lexical binding takes precedence over a
 module-level name, and cyclic aliases receive a source-located diagnostic.
 
@@ -154,8 +154,8 @@ at a sampling or scoring boundary divides by the resulting total mass once.
 
 Checked source reserves the trailing base batch axes before consuming the
 explicit enclosing observation axes. Thus a parameter declared
-`Tensor[Real]([Row, Coordinate])` can supply one vector per `Row`, while
-`Tensor[Real]([Coordinate])` supplies a vector shared across rows. Equal extents
+`Tensor[Real]([Row, Coordinate])` can give one vector per `Row`, while
+`Tensor[Real]([Coordinate])` gives a vector shared across rows. Equal extents
 leave these roles distinct. The runtime `(...)` telescope declares the values
 and their shapes; static `[...]` binders specialize dimensions under the same
 rules as other program parameters. Neither declaration creates a random effect.
@@ -230,7 +230,7 @@ in these mathematical expressions.
 A **distribution catalog** $\mathcal C$ extends the checking environment with
 family contracts. Each contract specifies (i) a typed parameter space $\Theta_F$
 and dependent event dimensions; (ii) an outcome space $Y_F$ and reference measure;
-and (iii) a normalized kernel $K_F:\Theta_F\rightsquigarrow Y_F$ supplied by its
+and (iii) a normalized kernel $K_F:\Theta_F\rightsquigarrow Y_F$ provided by its
 native implementation. The constructor judgment uses the same argument and
 shape rules as a built-in family:
 
@@ -247,11 +247,11 @@ integer or mixed laws retain their atomicity rather than acquiring a continuous
 interpretation from a host tensor's floating dtype. Recorded-event scoring uses
 the same interval and atom operations as built-in laws.
 
-`FamilyCatalog` supplies these contracts explicitly to a compilation; native
+`FamilyCatalog` provides these contracts explicitly to a compilation; native
 factories are held by identity. A catalog extension does not mutate another
 compilation's environment. Checked wire metadata records the contract, while
 executing it additionally requires the corresponding implementation. A native
-factory alone supplies no implementation in another target language. Checking
+factory alone provides no implementation in another target language. Checking
 parameter names, carriers, and dimensions cannot prove that user-written density,
 sampling, and moment operations describe the declared kernel; that agreement
 remains an obligation of the custom implementation.
@@ -360,7 +360,7 @@ insert a zero at coordinate $r$ into the predictor vector and apply
 softmax. In the mean/precision Dirichlet parameterization,
 $\alpha_c=\phi p_c$. `dirichlet2` instead sets every
 $\alpha_c=\exp(\eta_c)$, without a reference coordinate. A
-`logistic_normal` formula supplies Gaussian log-ratio locations against
+`logistic_normal` formula gives Gaussian log-ratio locations against
 $r$, coordinate-specific scales, and a correlation factor. References
 thus select predictor coordinates; they do not permute the observed event.
 
@@ -386,7 +386,7 @@ $\sigma_{ic}$ from their own predictors.
 
 For count events, the training row total $n_i=\sum_c y_{ic}$ is runtime
 data, not a static category extent or a fitted random variable. New-row
-counts require supplied totals independently of their predictors. The
+counts require given totals independently of their predictors. The
 joint log density reduces the event axis once, before any observation
 weight or row reduction. Raw pointwise likelihoods retain one score per
 observation, so model comparison uses the same event units as fitting.
@@ -424,7 +424,7 @@ $$
 Since the endpoint hazard is positive, $S(t)\to0$; no probability mass
 is discarded beyond the fitted interval. `log_rate` denotes
 $\log\lambda$, a runtime value rather than a static extent. Normalized
-M-splines with simplex weights supply one reusable construction of the
+M-splines with simplex weights give one reusable construction of the
 coefficient table. The spline basis retains its knots, degree, and tail
 policy; it introduces no second probability law or likelihood reduction.
 
@@ -433,7 +433,7 @@ They invert the cumulative hazard by a bounded safeguarded solve on the
 retained interval and an analytic tail inverse. Ordinary floating-point
 capacity and convergence limits remain executor obligations, separate
 from this normalized denotation. Arbitrary polynomial pieces can have
-hazard jumps at knots; a spline construction supplies its own continuity.
+hazard jumps at knots; a spline construction provides its own continuity.
 
 The formula translation uses simplex weights $w_j>0$, $\sum_jw_j=1$,
 and normalized M-spline basis functions $M_j$ to construct
@@ -560,7 +560,7 @@ $K-2$ centered shape coordinates and one varying location. Equidistant
 profiles constrain the shape to a common spacing; flexible and sum-to-zero
 profiles use the same centered positive-gap representation. For a grouped
 equidistant profile, $\delta_g=\max_j B_{gj}+\exp(s_g)$ is shared
-across all adjacent gaps. The compiler reuses or supplies exactly one
+across all adjacent gaps. The compiler reuses or adds exactly one
 ordinary group intercept; binary profiles have only the location coordinate. A duplicate same-group
 category-specific intercept is refused. Likewise, a fixed transition
 intercept with freely estimated cumulative thresholds and a proportional
@@ -697,7 +697,7 @@ $\log p_B(B)+G\log|DL|=\log p_Z(Z)$, conditional on the same scales
 and correlation. Posterior replay uses the retained block layout in either
 coordinate system.
 
-A supplied labeled level covariance $A$ changes this iid row law to
+A given labeled level covariance $A$ changes this iid row law to
 $B\sim\operatorname{MatrixNormal}(M,A,\Sigma)$, with
 $\Sigma=DLL^\mathsf{T}D$. For declared PSD support, write
 $A=QCQ^\mathsf{T}$ with $Q^\mathsf{T}Q=I_r$ and $C$ positive definite.
@@ -715,7 +715,7 @@ lower Cholesky factor independently: `row_covariance` / `row_scale_tril` and
 `col_covariance` / `col_scale_tril`. These four parameterizations denote the
 same matrix-valued law. They preserve the two intrinsic event axes and introduce
 no change-of-variables term, because their parameters differ while the random
-matrix carrier remains fixed. Supplying a factor avoids both its covariance
+matrix carrier remains fixed. Passing a factor avoids both its covariance
 product and another Cholesky factorization. Covariance-aware group emission uses
 prepared row factors and the existing learned coefficient factors directly.
 
@@ -726,7 +726,7 @@ The pseudoinverse is restricted to the declared positive support. Label order,
 coefficient axes and support coordinates are explicit metadata, never inferred
 from equal cardinalities. Empirical donor policies instead resample joint
 standardized fitted support-coordinate vectors before applying this conditional
-mean and Schur factor; they do not discard the supplied covariance. Fitted
+mean and Schur factor; they do not discard the given covariance. Fitted
 principal submatrices must remain unchanged in a covariance extension.
 
 For a constrained category-specific new-group profile, the explicit
@@ -762,7 +762,7 @@ backreferences have no accepted elaboration.
 #### Scalar response kernels and regression parameters
 
 A regression parameter need not occupy the same slot as a native family
-parameter. The formula compiler supplies a deterministic parameter map
+parameter. The formula compiler provides a deterministic parameter map
 $\theta_F$ before the draw or observation; this map adds no random
 variable or likelihood factor. The following four scalar kernels use
 Lebesgue measure.
@@ -856,7 +856,7 @@ separations use the positive derivative integral, with agreement checked
 between fixed eight- and 32-node rules; numerical-capacity failures are
 explicit. Interval events use the same paired tails or the shared local
 density rule when a bound on log-density variation permits it. Thus a
-numerical tail calculation supplies the existing kernel's probability;
+numerical tail calculation gives the existing kernel's probability;
 it does not introduce a different response law or censoring convention.
 
 #### Truncation as normalized restriction
@@ -893,7 +893,7 @@ only atomic component masses contribute. Adding an atomless component's
 Lebesgue density there would change the point mass and thus the law.
 Integer-valued scalar components instead share counting measure on all
 integers. Coupled mixed vector components require their joint stratum
-reference; a scalar carrier calculation cannot supply that information.
+reference; a scalar carrier calculation cannot provide that information.
 
 For a recorded response $y_i$, censoring selects an event
 $E_i$: $(-\infty,y_i]$ for a left observation,
@@ -943,17 +943,17 @@ whose own estimate of $Z_\theta$ must agree with the event mass.
 For independent scalar coordinates truncated to a rectangle,
 $Z_\theta=\prod_j Z_{\theta,j}$, so log normalizers add over the
 event coordinates. A coupled vector event requires its joint rectangle
-mass; marginal CDF differences cannot supply that mass. An executor
+mass; marginal CDF differences cannot provide that mass. An executor
 without the needed CDF or rectangle-mass operation must refuse this
 kernel, rather than replace its normalizer with a random estimate.
 
 The native `Truncated` wrapper implements this deterministic normalizer
-for independent scalar-coordinate distributions supplied by its base.
-Normal tails use a stable specialized normalizer; supplied log-tail
+for independent scalar-coordinate distributions provided by its base.
+Normal tails use a stable specialized normalizer; provided log-tail
 methods are preferred over CDF subtraction. A zero or nonfinite
 computed mass is an error. Normal sampling uses inverse transformation;
 other bases use bounded rejection and explicitly fail when its attempt
-limit is exhausted. This rejection path supplies no general pathwise
+limit is exhausted. This rejection path provides no general pathwise
 derivative for parameter-dependent acceptance.
 
 The conditional wrapper constructs the same `Normalize(Restrict(...))`
@@ -983,7 +983,7 @@ $$
 p(k)=q^{k^b}-q^{(k+1)^b},\qquad k=0,1,\ldots.
 $$
 
-At $q=0$ this is a point mass at zero; $q=1$ supplies no proper
+At $q=0$ this is a point mass at zero; $q=1$ gives no proper
 probability law on finite counts. For $q>0$, the CDF at $y\geq0$
 is $1-q^{(\lfloor y\rfloor+1)^b}$, and its strict survival probability
 is $q^{(\lfloor y\rfloor+1)^b}$. Its moments satisfy
@@ -1052,7 +1052,7 @@ An alternate parameterization does not require a different native
 kernel. For a negative-binomial response with mean $\mu>0$ and
 shape $r>0$, the variance is $\mu+\mu^2/r$. The
 `negbinomial2` parameterization sets $\sigma=1/r$, giving
-$\operatorname{Var}(Y)=\mu+\sigma\mu^2$. It thus supplies
+$\operatorname{Var}(Y)=\mu+\sigma\mu^2$. It thus passes
 `total_count=1/sigma` and `probs=mu/(mu + 1/sigma)` to the existing
 native `NegativeBinomial` constructor. This is the
 [pinned brms transformation](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/stan-likelihood.R).
@@ -1100,7 +1100,7 @@ event of positive probability.
 
 A binomial or beta-binomial component with zero trials is the point mass
 at zero. Its zero-inflated extension is also the point mass at zero for
-every $\omega$. Trial counts are supplied integer values; declaring them
+every $\omega$. Trial counts are given integer values; declaring them
 does not add a latent variable or an effect. The count samplers are not
 reparameterized, though their likelihood parameters remain differentiable.
 
@@ -1190,7 +1190,7 @@ score steps retain their original factors. The powered factor need not
 integrate to one as a response density; sampling at fixed parameters continues
 to use the original distribution. Its fitted posterior, and thus posterior
 predictive distribution, may change. An input annotation adds no factor:
-`w : Real` or `w : Tensor[Real]([Row])` supplies an admissible value, and the
+`w : Real` or `w : Tensor[Real]([Row])` provides an admissible value, and the
 observation option applies it to a likelihood.
 
 ### 2.3 Deterministic bindings
@@ -1494,7 +1494,7 @@ object names differ. A block may hold several inner blocks and observations
 of its own; each is one contribution to the block's units. An inner product of groups may instead refine the outer
 group by a projection, as $G\times H\to G$; reducing its additional group
 coordinates preserves all enclosing class axes. This group aggregation does
-not supply arbitrary missing axes to likelihood parameters. Each parameter
+not add arbitrary missing axes to likelihood parameters. Each parameter
 must still satisfy the inner block's checked shape: an outer-group vector
 cannot be passed directly where an inner product-group tensor is required.
 Such an incompatible use receives a located diagnostic.
@@ -1727,7 +1727,7 @@ $\llbracket \tau_2 \rrbracket$ of §1.
 
 ### 3.1 Static and runtime telescopes
 
-A typed program separates static specialization from values supplied to the
+A typed program separates static specialization from values passed to the
 specialized program:
 
 ```text
@@ -1751,7 +1751,7 @@ parameter instead ranges over index valuations in $\Delta$.
 Static shape dependencies may also use Nat addition. For instance,
 `Tensor[Real]([nat_add(n, 1)])` denotes vectors whose length is exactly
 one more than the extent selected by `n`. This relation remains symbolic
-until specialization and can supply exact binding evidence. It does not
+until specialization and can provide exact binding evidence. It does not
 introduce a runtime count, identify independently named axes, or add a
 probabilistic factor. A zero shape-only index is admissible without
 creating a categorical finite object.
@@ -1761,7 +1761,7 @@ or a support endpoint. It does not determine a tensor's index extent.
 A static index is not implicitly converted into a runtime integer term.
 In particular, a distribution argument `total_count=n` requires a
 runtime value, such as a parameter `(n : Nat)`; a static binder
-`[n : Nat]` supplies an extent and cannot fill that argument directly.
+`[n : Nat]` provides an extent and cannot fill that argument directly.
 The source checker rejects this stage mismatch rather than changing the
 parameter's role during specialization.
 
@@ -1794,7 +1794,7 @@ The distinction between stages is independent of explicitness. Elaboration may
 infer an input's type from its uses, and binding may recover an omitted static
 extent from exact shape evidence. The resulting checked program still has both
 telescopes. An ambiguous type must be annotated, and an extent without adequate
-evidence must be supplied before execution.
+evidence must be given before execution.
 
 ### 3.2 Calls of programs
 
@@ -1823,7 +1823,7 @@ an arbitrary computed or sampled `Int`, whose nonnegativity it cannot prove.
 
 A program with no runtime parameters may still have static parameters. Here
 the expression specializes both the finite domain and the result dimension
-at three; its empty `()` supplies no runtime values:
+at three; its empty `()` passes no runtime values:
 
 <!-- compile: qiec -->
 ```qvr
@@ -1953,7 +1953,7 @@ have a joint score and no score each ([§2.7.1](#271-units-and-row-scores)).
 `ModelFit.analysis` and `BayesianFit.analysis` retain draws and these raw scores
 for reuse. An MCMC analysis retains recorded chains and their sampler statistics.
 A variational analysis draws once from the fitted guide and uses one array
-pseudo-chain, which supplies no MCMC convergence evidence. Neither operation
+pseudo-chain, which gives no MCMC convergence evidence. Neither operation
 changes the program's denotation or introduces a language effect.
 
 For $S\geq2$ pooled draws with finite scores, the empirical WAIC estimator uses
@@ -1981,7 +1981,7 @@ does not repair approximation error. Exact leave-one-out refits and K-fold valid
 $\log\int p(y_i\mid\theta,x_i)\,p(d\theta\mid y_{-i})$ or its
 explicit fold analogue. The shared [refit interface](../guides/model-refits.md)
 retains these original row identities and sums joint response-event scores
-within each posterior draw before averaging densities. ArviZ supplies PSIS
+within each posterior draw before averaging densities. ArviZ provides PSIS
 and its selected-row refit replacement. Alternative marginalization policies
 remain distinct prediction questions.
 Multiple response variables require explicit selection before comparison.
@@ -2007,7 +2007,7 @@ $$
 and zero elsewhere. On each decision component, this change of coordinates
 has absolute Jacobian one. Thus observing a signed time preserves the joint
 choice probability. Observations derived by a preceding `let` follow the
-ordinary lexical observation rule; the encoded value need not be supplied as
+ordinary lexical observation rule; the encoded value need not be passed as
 an additional external input.
 
 The formula response modifier `dec(choice)` retains $T$ and $D$ as separate
@@ -2330,24 +2330,24 @@ inhabits the declared type, and `observe` contributes its log density.
 
 An object `object A : FinSet _` introduces a natural-number extent variable $a$.
 Binding data first solves the extent constraints, then specializes the checked
-program at that solution. A tensor with checked dimension $a$ and supplied
+program at that solution. A tensor with checked dimension $a$ and given
 length $n$ contributes the equation $a=n$. A directly read external gather index
-$i$ into that axis contributes $0\leq i_j<a$ for each supplied entry.
+$i$ into that axis contributes $0\leq i_j<a$ for each given entry.
 
 Exact extent equations must agree. When only gather indices constrain a finite
-axis and at least one index is supplied, binding uses the least admissible
+axis and at least one index is given, binding uses the least admissible
 cardinality, $a=1+\max_j i_j$. This choice is an explicit interpretation of the
 underscore: positions absent from the observations need an explicit cardinality
-or additional shape evidence. An empty index array supplies no such choice.
+or additional shape evidence. An empty index array gives no such choice.
 
 For a resulting cardinality $n$, specialization substitutes $n$ into every
 occurrence of $a$ in the checked types and executes the ordinary finite program.
 It introduces no posterior distribution over cardinalities. Runtime validation
-checks supplied tensor shapes and dtypes, and rejects external gather indices
+checks given tensor shapes and dtypes, and rejects external gather indices
 outside their checked axes. The compiler's input contract and the runtime's
 checks thus describe the same specialized program.
 
-A leading execution axis supplies one runtime-context valuation per run. The tensor
+A leading execution axis gives one runtime-context valuation per run. The tensor
 executor applies the same checked kernel to each valuation, separating runs
 before a grouped marginal is evaluated. Observation plates stay inside each
 execution.
@@ -2407,7 +2407,7 @@ design-dependent conditional bounds are retained. A stable dependency order plac
 before its consumers without changing latent names.
 
 These are joint prior laws over explicit latent sites, so the same program
-supplies fitting, independent prior draws, and prediction replay. Bounds on
+serves fitting, independent prior draws, and prediction replay. Bounds on
 any selected prior use normalized measure restriction. For hierarchical
 priors, each conditional coefficient density is divided by its interval
 mass at the sampled heads; the hyperprior marginals remain unchanged.
@@ -2538,7 +2538,7 @@ distinct event axes cannot become equal through a shape coincidence.
 
 The contrast uses the existing QVR parser, QIEC checker, and native value
 compiler. One checked callable is lifted across the two sample axes. A
-formula adapter supplies values from actual parameter-role and Gaussian-block
+formula adapter provides values from actual parameter-role and Gaussian-block
 metadata, retaining authored coefficient, component, and grouping labels.
 Centered blocks read their coefficient coordinates; noncentered blocks apply
 the retained scales and Cholesky factors once. This same reconstruction

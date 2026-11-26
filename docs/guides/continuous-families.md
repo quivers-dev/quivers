@@ -612,7 +612,7 @@ cancellation at large counts. Gradients still reach the original learned
 heads, including float32 heads. Finite trial counts are checked before
 conversion and must lie between zero and `2**53`, inclusive. This bound
 preserves their exact integer representation in float64; `Int` remains a
-signed 64-bit carrier. Supply large counts as integer tensors or integer
+signed 64-bit carrier. Pass large counts as integer tensors or integer
 source literals. Converting an already-rounded float32 count to float64
 does not restore the original integer.
 Arithmetic count observations use the same exact-integer limit. Native and
@@ -876,9 +876,9 @@ the first axis in `over` takes the row covariance and the second the column
 covariance ([Latent morphism prior](dsl-declarations.md#latent-morphism-prior)).
 
 MatrixNormal also accepts `row_scale_tril` and `col_scale_tril` independently
-of one another. Supply exactly one covariance or lower Cholesky factor for
+of one another. Pass exactly one covariance or lower Cholesky factor for
 each axis. The same triangular-solve density and reparameterized sampler serve
-all four combinations. Supplied factors avoid forming covariance products or
+all four combinations. Given factors avoid forming covariance products or
 performing Cholesky factorization; `expand` and batch selection retain those
 factor coordinates. `ConditionalMatrixNormal` passes its learned factors
 directly through this constructor. Its row and column dimensions remain
