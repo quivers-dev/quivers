@@ -82,6 +82,9 @@ from quivers.qiec.contracts import (
     PhaseInapplicable,
     ProvedOptimal,
     Rational,
+    WorkField,
+    WorkReport,
+    measuring,
 )
 from quivers.qiec.identifiers import FamilyId
 from quivers.qiec.rules import (
@@ -480,6 +483,35 @@ class JoinWork(ValueModel):
     conditions: int = 0
     products: int = 0
     sums: int = 0
+
+    def report(self, phase: Phase) -> WorkReport:
+        """The counters as a work report.
+
+        Parameters
+        ----------
+        phase : Phase
+            The phase they counted.
+
+        Returns
+        -------
+        WorkReport
+            Values iterated and probes as key comparisons, the algebra's
+            sums and products, each measured; a join divides nothing.
+        """
+        return WorkReport(
+            phase=phase,
+            key_comparisons=self.iterated + self.probes,
+            scalar_sums=self.sums,
+            scalar_products=self.products,
+            measured=measuring(
+                {
+                    WorkField.KEY_COMPARISONS,
+                    WorkField.SCALAR_SUMS,
+                    WorkField.SCALAR_PRODUCTS,
+                    WorkField.SCALAR_DIVISIONS,
+                }
+            ),
+        )
 
 
 class JoinCounter:

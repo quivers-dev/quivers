@@ -101,6 +101,7 @@ from quivers.qiec.contracts import (
     Rational,
     Refusal,
     RefusalCode,
+    WorkField,
     RelativeError,
     RequestedEvidence,
     ResourceBudget,
@@ -315,6 +316,7 @@ _ENUM_CLASSES = (
     Phase,
     ContractField,
     RefusalCode,
+    WorkField,
 )
 
 _NODE_CLASSES = (

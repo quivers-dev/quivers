@@ -21,6 +21,7 @@ from typing import Literal
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.qiec.contracts import Phase, WorkField, WorkReport, measuring
 from quivers.qiec.evaluator import Evaluator
 from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.rules import (
@@ -377,6 +378,27 @@ class ChartWork(ValueModel):
     instances: int = 0
     conditions: int = 0
     index_entries: int = 0
+
+    def report(self, phase: Phase) -> WorkReport:
+        """The counters as a work report.
+
+        Parameters
+        ----------
+        phase : Phase
+            The phase they counted.
+
+        Returns
+        -------
+        WorkReport
+            Lookups as hash operations and candidates as key
+            comparisons, the two measured.
+        """
+        return WorkReport(
+            phase=phase,
+            hash_operations=self.lookups,
+            key_comparisons=self.candidates,
+            measured=measuring({WorkField.HASH_OPERATIONS, WorkField.KEY_COMPARISONS}),
+        )
 
 
 class IndexedChart:

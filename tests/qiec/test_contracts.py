@@ -235,7 +235,10 @@ def _examples() -> list[dx.Model]:
         conditions=("x",),
     )
     work = c.WorkReport(
-        phase=c.Phase.EXECUTION, scalar_sums=4, seconds=c.Rational.of(0.5)
+        phase=c.Phase.EXECUTION,
+        scalar_sums=4,
+        seconds=c.Rational.of(0.5),
+        measured=c.measuring({c.WorkField.SCALAR_SUMS}),
     )
     report = c.AccuracyReport(
         attainment=c.Attainment(
@@ -479,6 +482,7 @@ def test_rationals_are_exact() -> None:
         lambda: c.Heuristic(reason=" "),
         lambda: c.ResourceBudget(iterations=-1),
         lambda: c.WorkReport(phase=c.Phase.EXECUTION, scalar_sums=-1),
+        lambda: c.WorkReport(phase=c.Phase.EXECUTION, scalar_sums=3),
         lambda: c.RequestedEvidence(patterns=()),
         lambda: query(differentiate_with_respect_to=(P1, P1)),
         lambda: c.ComplexityParameter(name="log", meaning="m"),
@@ -1145,8 +1149,18 @@ def test_work_beyond_the_budget_is_unmet() -> None:
     """Require exceeded limits to be reported, never read as a bound."""
     accuracy = contract(budget=c.ResourceBudget(iterations=5, scalar_work=10))
     work = (
-        c.WorkReport(phase=c.Phase.CONSTRUCTION, iterations=3, scalar_sums=4),
-        c.WorkReport(phase=c.Phase.EXECUTION, iterations=3, scalar_products=4),
+        c.WorkReport(
+            phase=c.Phase.CONSTRUCTION,
+            iterations=3,
+            scalar_sums=4,
+            measured=c.measuring({c.WorkField.ITERATIONS, c.WorkField.SCALAR_SUMS}),
+        ),
+        c.WorkReport(
+            phase=c.Phase.EXECUTION,
+            iterations=3,
+            scalar_products=4,
+            measured=c.measuring({c.WorkField.ITERATIONS, c.WorkField.SCALAR_PRODUCTS}),
+        ),
     )
     assert report(c.Exact(), accuracy, work=work).unmet == (c.ContractField.BUDGET,)
     within = contract(budget=c.ResourceBudget(iterations=6, scalar_work=8))
@@ -1240,3 +1254,37 @@ def test_a_shipped_algebra_licenses_its_queries() -> None:
     )
     assert found == ()
     assert LOG_PROB.subject.name == "quivers.core.algebras.LogProbAlgebra"
+
+
+def test_a_cost_claim_is_checked_only_against_measured_counters() -> None:
+    """A bound over an unmeasured counter is refused by name; measured ones add up."""
+    time = c.ComplexityBound(
+        phase=c.Phase.EXECUTION,
+        resource="time",
+        expression="N",
+        status=c.Unresolved(obligation="o"),
+    )
+    space = time.with_(resource="space")
+    report = c.WorkReport(
+        phase=c.Phase.EXECUTION,
+        scalar_sums=2,
+        scalar_products=3,
+        key_comparisons=5,
+        measured=c.measuring(c.TIME_FIELDS),
+    )
+    assert c.measured_total(time, report) == 10
+    with pytest.raises(c.UnmeasuredWork) as caught:
+        c.measured_total(space, report)
+    assert caught.value.field is c.WorkField.PEAK_LIVE_ELEMENTS
+    partial = c.WorkReport(
+        phase=c.Phase.EXECUTION,
+        scalar_sums=2,
+        measured=c.measuring({c.WorkField.SCALAR_SUMS}),
+    )
+    with pytest.raises(c.UnmeasuredWork):
+        c.measured_total(time, partial)
+    with pytest.raises(ValueError):
+        c.measured_total(time.with_(phase=c.Phase.REFIT), report)
+    assert c.bounded_fields(space.with_(phase=c.Phase.DIFFERENTIATION)) >= {
+        c.WorkField.ELEMENTS_SAVED_FOR_BACKWARD
+    }

@@ -36,7 +36,14 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring
 from quivers.qiec._models import QiecModel
-from quivers.qiec.contracts import OccurrenceId, ParameterId
+from quivers.qiec.contracts import (
+    OccurrenceId,
+    ParameterId,
+    Phase,
+    WorkField,
+    WorkReport,
+    measuring,
+)
 from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.rules import (
     AxiomOccurrence,
@@ -179,6 +186,21 @@ class DerivationForest(ValueModel):
         """
         return sum(
             1 + len(edge.premises) for edges in self.edges.values() for edge in edges
+        )
+
+    def report(self) -> WorkReport:
+        """The work of building the forest.
+
+        Returns
+        -------
+        WorkReport
+            The chart's lookups and candidates, and the forest's size as
+            its provenance, each measured.
+        """
+        chart = self.work.report(Phase.CONSTRUCTION)
+        return chart.with_(
+            provenance_records=self.size,
+            measured=measuring((*chart.measured, WorkField.PROVENANCE_RECORDS)),
         )
 
     def count(self, goal: Item, *, height: int | None = None) -> int:

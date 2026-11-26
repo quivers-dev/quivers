@@ -82,8 +82,10 @@ from quivers.qiec.contracts import (
     Statistic,
     Support,
     Weight,
+    WorkField,
     WorkReport,
     check_admissible,
+    measuring,
 )
 from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.kinds import IndexBinder, NatSort
@@ -106,6 +108,8 @@ from quivers.stochastic.joins import agm_bound, body_query
 
 __all__ = [
     "Alternative",
+    "CYCLIC_MEASURES",
+    "EVALUATION_MEASURES",
     "Evaluation",
     "MeasureCertificate",
     "MeasureComponent",
@@ -990,6 +994,25 @@ type InputId = ParameterId | OccurrenceId
 """A rule weight's parameter, or an input occurrence."""
 
 
+EVALUATION_MEASURES: tuple[WorkField, ...] = measuring(
+    {
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.SCALAR_DIVISIONS,
+        WorkField.STAR_PIVOTS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+        WorkField.PROVENANCE_RECORDS,
+    }
+)
+"""The counters a two-pass evaluation counts: it divides and closes nothing."""
+
+CYCLIC_MEASURES: tuple[WorkField, ...] = measuring(
+    {WorkField.HASH_OPERATIONS, WorkField.KEY_COMPARISONS}
+)
+"""The counters a cyclic run counts: its chart's lookups and candidates."""
+
+
 class Evaluation(ValueModel):
     """The values of a run, in the order they became final.
 
@@ -1018,6 +1041,10 @@ class Evaluation(ValueModel):
     components : tuple of Component
         Under linear cyclic recursion, each strongly connected component
         and the side it was solved on; none otherwise.
+    measures : tuple of WorkField
+        The counters the run counted: `EVALUATION_MEASURES` for two-pass
+        runs, the chart's lookups and candidates for cyclic ones, whose
+        closures are not counted here.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1032,6 +1059,9 @@ class Evaluation(ValueModel):
     )
     components: tuple[Component, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    measures: tuple[WorkField, ...] = dx.field(
+        default=EVALUATION_MEASURES, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     @property
@@ -1055,7 +1085,8 @@ class Evaluation(ValueModel):
 
         Algebra operations are counted once each, whatever the size of an
         element; lookups are hash operations and candidates key
-        comparisons.
+        comparisons. Only the counters in `measures` are declared
+        measured.
 
         Returns
         -------
@@ -1069,6 +1100,7 @@ class Evaluation(ValueModel):
             hash_operations=self.work.lookups,
             key_comparisons=self.work.candidates,
             provenance_records=self.counts + self.retained,
+            measured=self.measures,
         )
 
     def value(self, item: Item) -> torch.Tensor:
@@ -1986,6 +2018,7 @@ def _solve_cyclic(
         work=forest.work,
         counts=0,
         components=parts,
+        measures=CYCLIC_MEASURES,
         evidence=None
         if not requested
         else {

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
+from typing import ClassVar
 from fractions import Fraction
 
 import torch
@@ -20,6 +21,7 @@ from quivers.core.algebras import (
     MAX_PLUS,
     REAL,
     MatrixSemiring,
+    RealAlgebra,
     OrderPreservingSemiring,
 )
 from quivers.qiec.contracts import (
@@ -33,8 +35,12 @@ from quivers.qiec.contracts import (
     Outcome,
     OccurrenceId,
     ParameterId,
+    Phase,
     QuerySpec,
     RequestedEvidence,
+    UnmeasuredWork,
+    WorkField,
+    measured_total,
 )
 from quivers.qiec.identifiers import ComputationId, FamilyId
 from quivers.qiec.rules import Ground, Item, RulePresentation
@@ -45,6 +51,7 @@ from tests.evidence import graphs, scaling
 from tests.evidence import presentations as fixture
 from tests.evidence.checks._registry import Check
 from tests.evidence.compare import Accuracy, Mismatch, compare_number
+from tests.evidence.counters import saved_elements
 from tests.evidence.counters import measure
 from tests.evidence.mutations import Mutation, Rewrite
 from tests.evidence.oracles import derivations as oracle
@@ -480,6 +487,121 @@ def check_requested_memory() -> None:
         _require(forest.size > size, "the forest does not grow")
 
 
+class _CountingReals(RealAlgebra):
+    """The reals, counting the products and sums a plan asks of them."""
+
+    proof = RealAlgebra.proof
+    tested = RealAlgebra.tested
+    counted: ClassVar[dict[str, int]] = {"products": 0, "sums": 0}
+
+    def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Count and forward a product.
+
+        Parameters
+        ----------
+        a, b : torch.Tensor
+            The factors.
+
+        Returns
+        -------
+        torch.Tensor
+            Their product.
+        """
+        self.counted["products"] += 1
+        return super().tensor_op(a, b)
+
+    def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Count and forward a sum of two terms.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The stacked terms.
+        dim : int or tuple of int
+            The axis.
+
+        Returns
+        -------
+        torch.Tensor
+            Their sum.
+        """
+        self.counted["sums"] += 1
+        return super().join(t, dim)
+
+
+def check_measured_counts() -> None:
+    """Require every measured counter of a plan's report to be an independent count.
+
+    On diamonds, the algebra counts its own products and sums, the items
+    are the parent counts, and saved tensors are counted by a hook on
+    the autograd graph. A counter the report does not measure is not
+    compared, and a space bound, which no counter here measures, is
+    refused by name.
+
+    Raises
+    ------
+    Mismatch
+        If a measured counter differs from its independent count, or the
+        space bound is checked against an unmeasured counter.
+    """
+    algebra = _CountingReals()
+    _CountingReals.counted.update(products=0, sums=0)
+    edges = graphs.diamonds(3)
+    inputs: Inputs = {
+        key: value.requires_grad_()
+        for key, value in graphs.edge_weights(edges, [0.5] * len(edges)).items()
+    }
+    current = _graph_plan(algebra)
+    with saved_elements() as sizes:
+        evaluation = current.run(graphs.occurrences(edges), inputs, like=LIKE)
+    report = evaluation.report()
+    independent = {
+        WorkField.SCALAR_PRODUCTS: _CountingReals.counted["products"],
+        WorkField.SCALAR_SUMS: _CountingReals.counted["sums"],
+        WorkField.PROVENANCE_RECORDS: len(evaluation.order),
+        WorkField.ELEMENTS_SAVED_FOR_BACKWARD: sum(sizes),
+        WorkField.SCALAR_DIVISIONS: 0,
+        WorkField.STAR_PIVOTS: 0,
+    }
+    _require(sum(sizes) > 0, "the run saved nothing for its gradient")
+    for field, count in independent.items():
+        if field not in report.measured:
+            continue
+        found = getattr(report, field.value)
+        if found != count:
+            raise Mismatch(
+                "value",
+                float(abs(found - count)) or 1.0,
+                f"{field.value}: reported {found}, counted {count}",
+            )
+    space = next(
+        bound
+        for bound in current.record.complexity.bounds
+        if bound.phase is Phase.EXECUTION and bound.resource == "space"
+    )
+    try:
+        measured_total(space, report)
+    except UnmeasuredWork as unmeasured:
+        _require(
+            unmeasured.field is WorkField.PEAK_LIVE_ELEMENTS,
+            f"refused for {unmeasured.field.value}",
+        )
+    else:
+        raise Mismatch(
+            "refusal", math.inf, "a space bound was checked against no count"
+        )
+    time = next(
+        bound
+        for bound in current.record.complexity.bounds
+        if bound.phase is Phase.EXECUTION and bound.resource == "time"
+    )
+    _require(
+        measured_total(time, report)
+        == report.scalar_work + report.hash_operations + report.key_comparisons,
+        "the time total is not the sum of the time counters",
+    )
+
+
 def check_constant_rule() -> None:
     """Require a rule without premises to be an instance, summed with the input.
 
@@ -840,6 +962,7 @@ CHECKS: dict[str, Check] = {
         ("plan/constant-rule", check_constant_rule),
         ("plan/requested-evidence", check_requested_evidence),
         ("plan/requested-memory", check_requested_memory),
+        ("plan/measured-counts", check_measured_counts),
         ("plan/alternatives", check_alternatives_are_summed),
         ("plan/zero-gradient", check_zero_weight_gradient),
         ("plan/premise-order", check_premise_order),
@@ -880,6 +1003,23 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("plan/repeated-premise-keyed",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="plan-tape-marked-measured",
+        defect_class="evidence",
+        provenance="a report declares the tape measured without counting it",
+        target=f"{PLAN}:Evaluation.report",
+        rewrites=(
+            Rewrite(
+                old="measured=self.measures,",
+                new=(
+                    "measured=measuring((*self.measures, "
+                    "WorkField.ELEMENTS_SAVED_FOR_BACKWARD)),"
+                ),
+            ),
+        ),
+        rejected_by=("plan/measured-counts",),
         min_effect=1.0,
     ),
     Mutation(

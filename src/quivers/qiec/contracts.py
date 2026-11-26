@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import Enum
+from types import MappingProxyType
 from fractions import Fraction
 from math import gcd, isfinite
 from typing import Literal
@@ -2943,6 +2944,46 @@ class ComplexityClaim(QiecModel):
 # work
 
 
+class WorkField(str, Enum):
+    """A counter of a work report."""
+
+    ITERATIONS = "iterations"
+    SCALAR_SUMS = "scalar_sums"
+    SCALAR_PRODUCTS = "scalar_products"
+    SCALAR_DIVISIONS = "scalar_divisions"
+    STAR_PIVOTS = "star_pivots"
+    KEY_COMPARISONS = "key_comparisons"
+    HASH_OPERATIONS = "hash_operations"
+    PRODUCT_STATES = "product_states"
+    ARCS_VISITED = "arcs_visited"
+    ELEMENTS_ALLOCATED = "elements_allocated"
+    PEAK_LIVE_ELEMENTS = "peak_live_elements"
+    PEAK_BYTES = "peak_bytes"
+    ELEMENTS_SAVED_FOR_BACKWARD = "elements_saved_for_backward"
+    PROVENANCE_RECORDS = "provenance_records"
+    NODES_VALIDATED = "nodes_validated"
+    NODES_INSTANTIATED = "nodes_instantiated"
+    CACHE_HITS = "cache_hits"
+    CACHE_INVALIDATIONS = "cache_invalidations"
+
+
+def measuring(fields: Iterable[WorkField]) -> tuple[WorkField, ...]:
+    """Counters as a work report lists them: in the order of `WorkField`, each once.
+
+    Parameters
+    ----------
+    fields : Iterable of WorkField
+        The counters.
+
+    Returns
+    -------
+    tuple of WorkField
+        The listing.
+    """
+    chosen = set(fields)
+    return tuple(field for field in WorkField if field in chosen)
+
+
 class WorkReport(QiecModel):
     """Counters of the work of one phase of a run.
 
@@ -2990,6 +3031,11 @@ class WorkReport(QiecModel):
         Cache invalidations.
     seconds : Rational or None
         Wall time, when measured.
+    measured : tuple of WorkField
+        The counters the producer counted, in the order of `WorkField`,
+        each once; `measuring` builds it. A counter outside it is not a
+        count of zero but no count at all, so a cost claim is never
+        checked against it.
     """
 
     phase: Phase = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -3014,19 +3060,28 @@ class WorkReport(QiecModel):
     seconds: Rational | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    measured: tuple[WorkField, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @dx.model_validator()
     def _validate_record(self) -> None:
-        """Require nonnegative counters.
+        """Require nonnegative counters, each nonzero one measured.
 
         Raises
         ------
         ValueError
-            If a counter or the time is negative.
+            If a counter or the time is negative, a counter is nonzero
+            without being measured, or the measured counters are not in
+            order or repeat.
         """
+        if self.measured != measuring(self.measured):
+            raise ValueError("measured counters are listed once each, in order")
         for name in _COUNTERS:
             if getattr(self, name) < 0:
                 raise ValueError(f"the counter {name} must not be negative")
+            if getattr(self, name) and WorkField(name) not in self.measured:
+                raise ValueError(f"the counter {name} is nonzero but not measured")
         if self.seconds is not None:
             _nonnegative(self.seconds, "a measured time")
 
@@ -3063,6 +3118,104 @@ _COUNTERS = (
     "cache_invalidations",
 )
 """The integer counters of a work report."""
+
+
+class UnmeasuredWork(ValueError):
+    """A cost claim bounds a counter the work report did not count.
+
+    Parameters
+    ----------
+    field : WorkField
+        The counter.
+    reason : str
+        What was being checked.
+    """
+
+    def __init__(self, field: WorkField, reason: str) -> None:
+        super().__init__(f"{field.value} is not measured: {reason}")
+        self.field = field
+        self.reason = reason
+
+
+TIME_FIELDS: frozenset[WorkField] = frozenset(
+    {
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.SCALAR_DIVISIONS,
+        WorkField.STAR_PIVOTS,
+        WorkField.KEY_COMPARISONS,
+        WorkField.HASH_OPERATIONS,
+    }
+)
+"""The counters whose sum is the time of the algebra-operations model."""
+
+SPACE_FIELDS: Mapping[Phase, frozenset[WorkField]] = MappingProxyType(
+    {
+        Phase.CONSTRUCTION: frozenset({WorkField.PEAK_LIVE_ELEMENTS}),
+        Phase.EXECUTION: frozenset({WorkField.PEAK_LIVE_ELEMENTS}),
+        Phase.DIFFERENTIATION: frozenset(
+            {WorkField.PEAK_LIVE_ELEMENTS, WorkField.ELEMENTS_SAVED_FOR_BACKWARD}
+        ),
+        Phase.REFIT: frozenset({WorkField.PEAK_LIVE_ELEMENTS}),
+    }
+)
+"""The counters whose largest is the space of a phase in the model."""
+
+
+def bounded_fields(bound: ComplexityBound) -> frozenset[WorkField]:
+    """The counters a bound of the algebra-operations model bounds.
+
+    Parameters
+    ----------
+    bound : ComplexityBound
+        The bound.
+
+    Returns
+    -------
+    frozenset of WorkField
+        The time counters for a time bound, the space counters of its
+        phase for a space bound.
+    """
+    if bound.resource == "time":
+        return TIME_FIELDS
+    return SPACE_FIELDS[bound.phase]
+
+
+def measured_total(bound: ComplexityBound, report: WorkReport) -> int:
+    """The measured quantity a bound bounds: the time spent, or the space held.
+
+    Parameters
+    ----------
+    bound : ComplexityBound
+        The bound.
+    report : WorkReport
+        The work of the bound's phase.
+
+    Returns
+    -------
+    int
+        The sum of the time counters, or the largest space counter.
+
+    Raises
+    ------
+    UnmeasuredWork
+        If a counter the bound bounds is not measured.
+    ValueError
+        If the report is of another phase.
+    """
+    if report.phase is not bound.phase:
+        raise ValueError(
+            f"a {bound.phase.value} bound is checked against {report.phase.value} work"
+        )
+    fields = bounded_fields(bound)
+    for field in sorted(fields, key=lambda item: item.value):
+        if field not in report.measured:
+            raise UnmeasuredWork(
+                field,
+                f"the {bound.phase.value} {bound.resource} bound {bound.expression}",
+            )
+    values = [getattr(report, field.value) for field in fields]
+    return sum(values) if bound.resource == "time" else max(values)
 
 
 def _exceeded(budget: ResourceBudget, work: tuple[WorkReport, ...]) -> tuple[str, ...]:
@@ -4510,7 +4663,14 @@ __all__ = [
     "Unrolled",
     "WORD_RAM_EXPECTED_HASHING",
     "Weight",
+    "SPACE_FIELDS",
+    "TIME_FIELDS",
+    "UnmeasuredWork",
+    "WorkField",
     "WorkReport",
+    "bounded_fields",
+    "measured_total",
+    "measuring",
     "ZERO",
     "admissibility",
     "attained_guarantee",

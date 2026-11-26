@@ -380,7 +380,14 @@ def _report(
         attainment=c.Attainment(guarantee=guarantee, metric=metric, rounding=c.ZERO),
         stop=stop,
         unmet=unmet,
-        work=(c.WorkReport(phase=c.Phase.EXECUTION, iterations=3, scalar_sums=40),),
+        work=(
+            c.WorkReport(
+                phase=c.Phase.EXECUTION,
+                iterations=3,
+                scalar_sums=40,
+                measured=c.measuring({c.WorkField.ITERATIONS, c.WorkField.SCALAR_SUMS}),
+            ),
+        ),
         claims=claims,
     )
 
@@ -652,7 +659,13 @@ def check_status(stop: c.StopReason) -> None:
     attainment = c.Attainment(
         guarantee=guarantee, metric=c.AbsoluteLogError(), rounding=c.ZERO
     )
-    work = (c.WorkReport(phase=c.Phase.EXECUTION, iterations=100),)
+    work = (
+        c.WorkReport(
+            phase=c.Phase.EXECUTION,
+            iterations=100,
+            measured=c.measuring({c.WorkField.ITERATIONS}),
+        ),
+    )
     report = c.AccuracyReport(
         attainment=attainment,
         stop=stop,
