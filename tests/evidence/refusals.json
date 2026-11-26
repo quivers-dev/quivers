@@ -256,7 +256,6 @@
  "machine-chained/Q6": "ExecutionFailure at execution.py:_fail: argument 0 (tokens) does not inhabit Tensor[String, Shape[2]]: ('ij,jk->ik', {'i': 2, 'j': 2, 'k': 2})",
  "machine-chained/Q7": "ExecutionFailure at execution.py:_fail: argument 0 (tokens) does not inhabit Tensor[String, Shape[2]]: (('1/2', '1/3'), ('1/4', '1/5'))",
  "machine-chained/Q9": "ExecutionFailure at execution.py:_fail: argument 0 (tokens) does not inhabit Tensor[String, Shape[2]]: (('x', ('1/5', ('x', 'x'))), ('x', ('4/5', ())))",
- "machine-lexical/Q1": "TypeError at program_runtime.py:run_deduction in `arguments: tuple[object, ...] = (tuple(tokens),)`",
  "machine-lexical/Q11": "ExecutionFailure at execution.py:_fail: argument 0 (tokens) does not inhabit Tensor[String, Shape[2]]: (Machine(arcs=(Arc(name='a', source=0, target=1, labels=(",
  "machine-lexical/Q12": "ExecutionFailure at execution.py:_fail: argument 0 (tokens) does not inhabit Tensor[String, Shape[2]]: (Machine(arcs=(Arc(name='a', source=0, target=1, labels=(",
  "machine-lexical/Q13": "ExecutionFailure at execution.py:_fail: argument 0 (tokens) does not inhabit Tensor[String, Shape[2]]: (('a', 'b'), ('a', 'b', 'a'))",
