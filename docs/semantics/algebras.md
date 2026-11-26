@@ -198,6 +198,7 @@ instance. Each is a class with the operation it adds and the law it claims:
 | `NoZeroDivisors` | none | $a \otimes b = 0$ implies $a = 0$ or $b = 0$ | Boolean, Gödel, tropical, max-plus, log, Markov, real, counting, ProductFuzzy, Probability |
 | `Semifield` | `divide` | $(a \otimes b) \oslash b = a$ for $b \ne 0$ | Boolean, max-plus, log, Markov, real |
 | `Ring` | `subtract` | $a \oplus (0 \ominus a) = 0$ | real |
+| `Star` | `star`, `star_domain` | `star(A)` is the least solution of $X = I \oplus A X$ on the declared domain | Boolean, Gödel, tropical, max-plus, log, Markov, counting |
 | `Semimodule` | `act`, `scalars` | the action is associative, unital, distributes over both sums and is annihilated by either zero | `FreeSemimodule` |
 
 A semifield has no zero divisors, so `Semifield` is a refinement of `NoZeroDivisors`. The
@@ -284,13 +285,13 @@ $(\{0, 1\}, \vee, \wedge, 0, 1)$ is the two-element Boolean algebra, a bounded d
 lattice, hence a commutative semiring whose sum is idempotent and returns one of its operands
 [@golan1999semirings]. A disjunction is $0$ only when both operands are, a conjunction only when a
 factor is, and $1$, the only element other than $0$, is its own inverse, so the algebra is a
-semifield.
+semifield. Every loop weight is at most $1$, so $a^* = 1$ and the closure of every matrix is the reflexive, transitive closure of its relation [@lehmann1977algebraic].
 
 ### Gödel {#proof-godel}
 
 $([0, 1], \max, \min, 0, 1)$ is a bounded chain, hence a bounded distributive lattice and a
 commutative semiring whose sum returns one of its operands. $\max(a, b) = 0$ forces $a = b = 0$,
-and $\min(a, b) = 0$ forces $a = 0$ or $b = 0$.
+and $\min(a, b) = 0$ forces $a = 0$ or $b = 0$. Every loop weight is at most $1$, so $a^* = 1$ and every matrix has a closure, computed by elimination of states [@lehmann1977algebraic].
 
 ### Tropical {#proof-tropical}
 
@@ -298,14 +299,14 @@ $([0, \infty], \min, +, \infty, 0)$, with $\infty + a = \infty$, is the min-plus
 extended nonnegative reals: $+$ distributes over $\min$ since $a + \min(b, c) = \min(a + b, a + c)$,
 and $\infty$ is the unit of $\min$ and absorbs $+$. $\min$ returns one of its operands.
 $\min(a, b) = \infty$ forces $a = b = \infty$, and $a + b = \infty$ forces $a = \infty$ or
-$b = \infty$. It is not a semifield, since the inverse of $1$ would be $-1$.
+$b = \infty$. It is not a semifield, since the inverse of $1$ would be $-1$. No distance is below $0$, so $a^* = 0$ for every loop and every matrix has a closure, the matrix of shortest distances [@lehmann1977algebraic].
 
 ### Max-plus {#proof-max-plus}
 
 $(\mathbb R \cup \{-\infty\}, \max, +, -\infty, 0)$ is the image of the min-plus semifield on
 $\mathbb R \cup \{\infty\}$ under $a \mapsto -a$, which exchanges $\min$ and $\max$ and preserves
 $+$. $\max$ returns one of its operands, every finite $a$ has the inverse $-a$, $\max(a, b) = -\infty$
-forces $a = b = -\infty$, and $a + b = -\infty$ forces $a = -\infty$ or $b = -\infty$.
+forces $a = b = -\infty$, and $a + b = -\infty$ forces $a = -\infty$ or $b = -\infty$. A loop of score at most $0$ has $a^* = 0$; one of positive score has no closure. Elimination of states [@lehmann1977algebraic] finds the best loop through each state once, so the closure exists exactly when no cycle has positive score, which `star` decides from the exact rational values of the weights when rounding cannot.
 
 ### Log {#proof-log-prob}
 
@@ -313,7 +314,7 @@ $\log$ is a bijection from $[0, \infty)$ onto $[-\infty, \infty)$ that sends $+$
 $\log(e^a + e^b)$, $\cdot$ to $+$, $0$ to $-\infty$ and $1$ to $0$, so it is an isomorphism of
 semirings from the nonnegative reals, and every law of those transfers along it: a sum of
 nonnegative reals is $0$ only when every term is, a product only when a factor is, and every
-positive real has an inverse, which is $a - b$ in the log domain for $b > -\infty$.
+positive real has an inverse, which is $a - b$ in the log domain for $b > -\infty$. The closure is the logarithm of $(I - A)^{-1}$ of the probabilities, which exists exactly when their spectral radius is below one: elimination of states [@lehmann1977algebraic] meets loop weights below one exactly then, the pivots of the M-matrix $I - A$ being positive. A loop weight within the rounding bound of one refuses as undecided.
 
 ### Real {#proof-real}
 
@@ -323,13 +324,13 @@ element other than $0$ has an inverse, hence a semifield without zero divisors.
 ### Counting {#proof-counting}
 
 $(\mathbb N, +, \cdot, 0, 1)$ is a commutative semiring. A sum of naturals is $0$ only when every
-term is, and a product only when a factor is.
+term is, and a product only when a factor is. The closure counts the paths, which are finite in number exactly when no cycle has a nonzero count; elimination of states [@lehmann1977algebraic] meets a loop count of zero exactly then, and adds and multiplies counts exactly below $2/\varepsilon$ of the dtype.
 
 ### Markov {#proof-markov}
 
 $([0, \infty), +, \cdot, 0, 1)$ is the semifield of nonnegative reals: every positive element has a
 positive inverse, a sum of nonnegative reals is $0$ only when every term is, and a product only
-when a factor is.
+when a factor is. The closure is $(I - A)^{-1}$, which exists for a nonnegative matrix exactly when its spectral radius is below one; elimination of states [@lehmann1977algebraic] meets loop weights below one exactly then, and it computes no difference other than $1 - a_{kk}$, so every entry has a small relative error and an unreachable entry is an exact zero.
 
 ### Product t-norm with probabilistic sum {#proof-product-fuzzy}
 

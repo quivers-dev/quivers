@@ -45,7 +45,6 @@ from quivers.qiec.program_runtime import (
     run_program,
 )
 from quivers.monadic.instances import Identity
-from quivers.stochastic._kleene import kleene_star
 from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.agenda import (
     AgendaResult,
@@ -68,8 +67,6 @@ from quivers.stochastic.semiring import (
     BOOLEAN,
     COUNTING,
     LOG_PROB,
-    VITERBI,
-    ChartSemiring,
 )
 from quivers.structural.decoder import Decoder
 from quivers.structural.signature import Signature
@@ -447,49 +444,6 @@ record(
 )
 
 
-def _rounded_cycle(weights: tuple[float, ...]) -> torch.Tensor:
-    """A max-plus matrix with one cycle.
-
-    Parameters
-    ----------
-    weights : tuple of float
-        The weights along the cycle.
-
-    Returns
-    -------
-    torch.Tensor
-        The matrix.
-    """
-    size = len(weights)
-    matrix = torch.full((size, size), -math.inf, dtype=torch.float64)
-    for state, weight in enumerate(weights):
-        matrix[state, (state + 1) % size] = weight
-    return matrix
-
-
-#: A cycle whose weights, as exact numbers of float64, sum to zero, while
-#: their sum from left to right is the spacing of float64 near two fifths.
-ROUNDED = (0.2, 0.4, -0.2, -0.4)
-
-record(
-    "rounded-cycle-diverges",
-    "stochastic/_kleene.py: _max_plus_star",
-    "a cycle of exact weight zero is reported as divergent because the sum of "
-    "its weights in one order rounds up",
-    {"closure of a zero cycle": "DivergentClosureError"},
-    {"closure of a zero cycle": "0"},
-    lambda: {
-        "closure of a zero cycle": raised(
-            lambda: kleene_star(_rounded_cycle(ROUNDED), VITERBI)[0, 0]
-        )
-    },
-    lambda: {
-        "closure of a zero cycle": number(
-            max(0.0, float(sum((Fraction(w) for w in ROUNDED), Fraction(0))))
-        )
-    },
-)
-
 record(
     "none-is-unbound",
     "stochastic/agenda.py: match",
@@ -839,7 +793,6 @@ def _default_precision() -> Facts:
         )
     )
     parser = chart_parser(LOG_PROB, {})
-    algorithm, _ = inside_algorithm({})
     problem = PROBLEMS["beta"]
     with double_precision():
         x, data = problem.data()
@@ -855,7 +808,6 @@ def _default_precision() -> Facts:
         "goal weight of no goal": str(empty.goal_weight().dtype),
         "weight of an absent item": str(empty.try_weight(("Z",)).dtype),
         "chart parser score": str(parser(torch.tensor((0, 1))).dtype),
-        "inside score": str(algorithm(torch.tensor((0, 1))).dtype),
         "recorded log density of a chain": str(result.log_densities.dtype),
     }
 
@@ -863,8 +815,7 @@ def _default_precision() -> Facts:
 record(
     "default-precision",
     "stochastic/agenda.py: goal_weight, try_weight; stochastic/span.py: "
-    "SpanChart.to_tensor; stochastic/inside.py: _fill_chart; "
-    "inference/mcmc/driver.py: log_densities",
+    "SpanChart.to_tensor; inference/mcmc/driver.py: log_densities",
     "zeros and charts take the default type, and recorded log densities are "
     "single precision, so a double-precision run returns single precision",
     dict.fromkeys(
@@ -872,7 +823,6 @@ record(
             "goal weight of no goal",
             "weight of an absent item",
             "chart parser score",
-            "inside score",
             "recorded log density of a chain",
         ),
         "torch.float32",
@@ -882,7 +832,6 @@ record(
             "goal weight of no goal",
             "weight of an absent item",
             "chart parser score",
-            "inside score",
             "recorded log density of a chain",
         ),
         "torch.float64",
@@ -1107,141 +1056,6 @@ def _named_goal(head: str) -> str:
     return number(ChartView(system.run(("a", "b"))).goal_weight())
 
 
-class _Forwarded(ChartSemiring):
-    """A semiring that forwards every operation to the log semiring."""
-
-    @property
-    def name(self) -> str:
-        """A name of its own.
-
-        Returns
-        -------
-        str
-            The name.
-        """
-        return "ForwardedLogProb"
-
-    def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Forward a product.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            The first factor.
-        b : torch.Tensor
-            The second factor.
-
-        Returns
-        -------
-        torch.Tensor
-            The product.
-        """
-        return LOG_PROB.tensor_op(a, b)
-
-    def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
-        """Forward a reduction.
-
-        Parameters
-        ----------
-        t : torch.Tensor
-            The terms.
-        dim : int or tuple of int
-            The axes.
-
-        Returns
-        -------
-        torch.Tensor
-            The sum.
-        """
-        return LOG_PROB.join(t, dim)
-
-    def join_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Forward a binary sum.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            The first term.
-        b : torch.Tensor
-            The second term.
-
-        Returns
-        -------
-        torch.Tensor
-            The sum.
-        """
-        return LOG_PROB.join_pair(a, b)
-
-    def meet(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
-        """Forward a meet.
-
-        Parameters
-        ----------
-        t : torch.Tensor
-            The terms.
-        dim : int or tuple of int
-            The axes.
-
-        Returns
-        -------
-        torch.Tensor
-            The meet.
-        """
-        return LOG_PROB.meet(t, dim)
-
-    def negate(self, t: torch.Tensor) -> torch.Tensor:
-        """Forward a negation.
-
-        Parameters
-        ----------
-        t : torch.Tensor
-            The values.
-
-        Returns
-        -------
-        torch.Tensor
-            The negation.
-        """
-        return LOG_PROB.negate(t)
-
-    def contains(self, t: torch.Tensor) -> torch.Tensor:
-        """Forward membership.
-
-        Parameters
-        ----------
-        t : torch.Tensor
-            The values.
-
-        Returns
-        -------
-        torch.Tensor
-            Membership in the log carrier.
-        """
-        return LOG_PROB.contains(t)
-
-    @property
-    def zero(self) -> float:
-        """The forwarded zero.
-
-        Returns
-        -------
-        float
-            The zero.
-        """
-        return LOG_PROB.zero
-
-    @property
-    def unit(self) -> float:
-        """The forwarded unit.
-
-        Returns
-        -------
-        float
-            The unit.
-        """
-        return LOG_PROB.unit
-
-
 def _renamed_handlers() -> str:
     """How many handlers of a deduction keep their meaning under renaming.
 
@@ -1263,33 +1077,24 @@ def _renamed_handlers() -> str:
 
 record(
     "names-decide-semantics",
-    "stochastic/agenda.py: _full_extent_goal; stochastic/_kleene.py: kleene_star; "
-    "qiec/program_runtime.py: _deduction_handler",
-    "the first slot of an item restricts its goal, the class of a semiring "
-    "decides whether it has a closure, and the name of a handler decides what "
-    "it computes",
+    "stochastic/agenda.py: _full_extent_goal; qiec/program_runtime.py: "
+    "_deduction_handler",
+    "the first slot of an item restricts its goal, and the name of a handler "
+    "decides what it computes",
     {
         "goal weight of items headed span": "3",
-        "closure in a forwarding semiring": "TypeError",
         "configured handlers after renaming": "0",
     },
     {
         "goal weight of items headed span": "4",
-        "closure in a forwarding semiring": "0.458675",
         "configured handlers after renaming": "2",
     },
     lambda: {
         "goal weight of items headed span": _named_goal("span"),
-        "closure in a forwarding semiring": raised(
-            lambda: kleene_star(
-                torch.tensor([[-1.0]], dtype=torch.float64), _Forwarded()
-            )
-        ),
         "configured handlers after renaming": _renamed_handlers(),
     },
     lambda: {
         "goal weight of items headed span": _named_goal("part"),
-        "closure in a forwarding semiring": number(-math.log(1 - math.exp(-1))),
         "configured handlers after renaming": str(
             len(
                 foreign_handler_configuration(module_of("lexical", SEMIRING="Counting"))
@@ -1299,111 +1104,6 @@ record(
 )
 
 # -- closures, algebras, and contractions --------------------------------
-
-
-def _zero_entry() -> Facts:
-    """The derivative of a closure at a zero entry.
-
-    Returns
-    -------
-    Facts
-        The derivative of the entry from 0 to 1 in its own weight.
-    """
-    matrix = torch.zeros(2, 2, dtype=torch.float64, requires_grad=True)
-    (found,) = torch.autograd.grad(kleene_star(matrix, COUNTING)[0, 1], matrix)
-    return {"derivative at a zero entry": number(found[0, 1])}
-
-
-def _zero_entry_required() -> Facts:
-    """The same derivative from ``A* dA A*`` in exact arithmetic.
-
-    Returns
-    -------
-    Facts
-        The derivative.
-    """
-    star = exact.linear_star([[Fraction(0), Fraction(0)], [Fraction(0), Fraction(0)]])
-    value = star[0][0] * star[1][1]
-    assert float(value) == gradients.BOUNDARY_CASES[0].gradient[1]
-    return {"derivative at a zero entry": number(float(value))}
-
-
-record(
-    "zero-entry-gradient",
-    "stochastic/_kleene.py: _linear_star",
-    "the support is read from the current numbers, so an entry that is zero now "
-    "has no gradient",
-    {"derivative at a zero entry": "0"},
-    {"derivative at a zero entry": "1"},
-    _zero_entry,
-    _zero_entry_required,
-)
-
-record(
-    "max-plus-rounds",
-    "stochastic/_kleene.py: _max_plus_star",
-    "the best-path closure repeats a cubic product once per edge of the longest "
-    "best path, so it is quartic",
-    {
-        "scalar work at 8": "8704",
-        "scalar work at 16": "135168",
-        "scalar work at 32": "2129920",
-    },
-    {
-        "scalar work at 8": "1024",
-        "scalar work at 16": "8192",
-        "scalar work at 32": "65536",
-    },
-    lambda: {f"scalar work at {n}": str(_max_plus_work(n)) for n in (8, 16, 32)},
-    # Elimination multiplies and compares once per pair and per state.
-    lambda: {f"scalar work at {n}": str(2 * n**3) for n in (8, 16, 32)},
-)
-
-
-def _max_plus_work(size: int) -> int:
-    """The scalar work of a best-path closure on a line.
-
-    Parameters
-    ----------
-    size : int
-        The number of states.
-
-    Returns
-    -------
-    int
-        Sums and products.
-    """
-    matrix = torch.full((size, size), -math.inf, dtype=torch.float64)
-    for state in range(size - 1):
-        matrix[state, state + 1] = -1.0
-    with TensorCounter() as counter:
-        kleene_star(matrix, VITERBI)
-    return counter.counts["sums"] + counter.counts["products"]
-
-
-def _empty() -> Facts:
-    """The result of a best-path closure over no states.
-
-    Returns
-    -------
-    Facts
-        The result or the exception.
-    """
-    return {
-        "best-path closure": raised(
-            lambda: kleene_star(torch.zeros(0, 0, dtype=torch.float64), VITERBI)
-        ),
-    }
-
-
-record(
-    "empty-reduction-raises",
-    "stochastic/_kleene.py: _max_plus_star",
-    "a best-path closure over no states raises instead of returning the empty closure",
-    {"best-path closure": "IndexError"},
-    {"best-path closure": "empty"},
-    _empty,
-)
 
 
 def _join_peak(length: int, size: int = 6) -> int:

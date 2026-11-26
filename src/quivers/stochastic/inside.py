@@ -213,7 +213,10 @@ class InsideAlgorithm(nn.Module):
                     cell = _apply_unary_closure(cell, log_star)
                 cells[i][j] = cell
         chart = torch.full(
-            (batch, N, seq_len, seq_len + 1), float("-inf"), device=tokens.device
+            (batch, N, seq_len, seq_len + 1),
+            float("-inf"),
+            dtype=log_lexical.dtype,
+            device=log_lexical.device,
         )
         for i in range(seq_len):
             for j in range(i + 1, seq_len + 1):

@@ -641,6 +641,26 @@ def check_underivable_category_gradient() -> None:
             )
 
 
+def check_inside_precision() -> None:
+    """Require a float64 grammar to score and chart in float64.
+
+    Raises
+    ------
+    Mismatch
+        If the score or the chart has another dtype.
+    """
+    with double_precision():
+        algorithm, _ = inside_algorithm({})
+        tokens = torch.tensor((0, 1))
+        score = algorithm(tokens)
+        chart = algorithm.inside_chart(tokens)
+    for what, value in (("score", score), ("chart", chart)):
+        if value.dtype != torch.float64:
+            raise Mismatch(
+                "dtype", math.inf, f"inside {what} in {value.dtype} for torch.float64"
+            )
+
+
 def check_divergent_unary(executor: str) -> None:
     """Require a refusal for unary rules whose chains do not sum.
 
@@ -760,6 +780,7 @@ def _register() -> None:
         check_impossible_cell_gradient,
     )
     add("span/inside/counts", "inside", "Q11", check_inside_gradient)
+    add("span/inside/precision", "inside", "Q3", check_inside_precision)
     for executor in ("chart-parser", "inside"):
         add(
             f"span/{executor}/divergent_unary",

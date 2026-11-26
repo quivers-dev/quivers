@@ -147,7 +147,7 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "inside": {
         "Q2": ("zero-probability-clamped",),
-        "Q3": ("zero-probability-clamped", "default-precision"),
+        "Q3": ("zero-probability-clamped",),
     },
     "machine-lexical": {
         "Q1g": ("machine-values-are-numbers",),
@@ -163,19 +163,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         "Q1g": ("machine-values-are-numbers",),
         "Q8": ("residual-is-the-value",),
         "Q24": ("module-traversed-per-run",),
-    },
-    "kleene-star": {
-        "Q1g": ("zero-entry-gradient",),
-        "Q7": (
-            "max-plus-rounds",
-            "empty-reduction-raises",
-            "names-decide-semantics",
-        ),
-        "Q8": ("rounded-cycle-diverges",),
-    },
-    "kleene-star-trace": {
-        "Q1g": ("zero-entry-gradient",),
-        "Q8": ("rounded-cycle-diverges",),
     },
     "einsum-wiring": {
         "Q6": (

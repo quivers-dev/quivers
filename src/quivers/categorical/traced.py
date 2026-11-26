@@ -52,13 +52,11 @@ from quivers.core.morphisms import Morphism, ObservedMorphism, observed, identit
 from quivers.core.algebras import (
     Algebra,
     CompositionRule,
+    DivergentClosureError,
     Semiring,
-    BooleanAlgebra,
-    CountingAlgebra,
-    MarkovAlgebra,
-    LogProbAlgebra,
-    MaxPlusAlgebra,
+    Star,
 )
+from quivers.core.laws import STAR_LEAST_SOLUTION
 from quivers.core._carriers import validate_carrier
 from quivers.core.tensor_ops import diagonal_reduce
 from quivers.categorical.monoidal import (
@@ -66,23 +64,6 @@ from quivers.categorical.monoidal import (
     CartesianProductMonoidal,
     CoproductMonoidal,
 )
-from quivers.stochastic._kleene import DivergentClosureError, kleene_star
-from quivers.stochastic.semiring import (
-    ChartSemiring,
-    BooleanSemiring,
-    CountingSemiring,
-    LogProbSemiring,
-    ViterbiSemiring,
-)
-
-
-_STAR_SEMIRINGS: dict[type[Semiring], ChartSemiring] = {
-    BooleanAlgebra: BooleanSemiring(),
-    CountingAlgebra: CountingSemiring(),
-    MarkovAlgebra: CountingSemiring(),
-    LogProbAlgebra: LogProbSemiring(),
-    MaxPlusAlgebra: ViterbiSemiring(),
-}
 
 
 class KleeneStarTrace:
@@ -93,7 +74,7 @@ class KleeneStarTrace:
     multiplication taken in the declared semiring. The star includes
     paths of every finite length, including the empty path.
 
-    Boolean closure is always finite. Counting closure is finite on
+    Boolean, Gödel and tropical closures are always finite. Counting closure is finite on
     acyclic feedback graphs. Markov and log-probability closure require
     spectral radius below one in the nonnegative representation.
     Max-plus closure excludes positive cycles. Divergent feedback is
@@ -106,16 +87,22 @@ class KleeneStarTrace:
     the signed matrix category. This partial operator is independent of
     the total cartesian `TracedMonoidal` interface.
 
+    The algebra is accepted by its capability: it must be a `Semiring`
+    with a `Star` whose least-solution law it establishes (see
+    `quivers.core.laws.Lawful.establishes`), so a subclass that replaces
+    an operation without its own argument is refused. The shipped
+    members are the Boolean, Gödel, tropical, max-plus, log, counting
+    and Markov semirings.
+
     Parameters
     ----------
     algebra : Semiring
-        Exactly a built-in Boolean, Counting, Markov, LogProb, or MaxPlus
-        algebra. Custom subclasses are not accepted.
+        A semiring that establishes the closure law.
 
     Raises
     ------
     TypeError
-        If the source algebra is not one of the declared semirings.
+        If the algebra has no established closure.
 
     References
     ----------
@@ -127,12 +114,17 @@ class KleeneStarTrace:
     """
 
     def __init__(self, algebra: Semiring) -> None:
-        if type(algebra) not in _STAR_SEMIRINGS:
+        if not (
+            isinstance(algebra, Semiring)
+            and isinstance(algebra, Star)
+            and algebra.establishes(STAR_LEAST_SOLUTION)
+        ):
             raise TypeError(
-                f"no coproduct Kleene-star trace is declared for {algebra!r}"
+                f"no coproduct Kleene-star trace is declared for {algebra!r}: it "
+                "does not establish a closure"
             )
         self._algebra = algebra
-        self._semiring = _STAR_SEMIRINGS[type(algebra)]
+        self._star: Star = algebra
         self._monoidal = CoproductMonoidal(algebra)
 
     @property
@@ -210,7 +202,7 @@ class KleeneStarTrace:
             entrance = matrix[: domain.size, codomain.size :]
             exit_weights = matrix[domain.size :, : codomain.size]
             loop = matrix[domain.size :, codomain.size :]
-            closure = kleene_star(loop, self._semiring)
+            closure = self._star.star(loop)
             through = q.compose(q.compose(entrance, closure, 1), exit_weights, 1)
             result = q.join(torch.stack((direct, through)), dim=0)
         validate_carrier(result, q)

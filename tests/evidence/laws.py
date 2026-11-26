@@ -21,7 +21,9 @@ fails as clearly as one that returns a wrong type.
 
 from __future__ import annotations
 
+import itertools
 import math
+from fractions import Fraction
 from collections.abc import Callable, Sequence
 from typing import Literal
 
@@ -63,6 +65,8 @@ from quivers.core.algebras import (
     Ring,
     Selective,
     Semifield,
+    Star,
+    DivergentClosureError,
     Semimodule,
     StandardMVAlgebra,
     TropicalAlgebra,
@@ -71,6 +75,7 @@ from quivers.core.algebras import (
 )
 from quivers.stochastic import semiring as chart
 from tests.evidence.compare import Accuracy, Mismatch, compare_tensor
+from tests.evidence.oracles import exact
 from tests.evidence.mutations import Mutation, Rewrite
 
 type Element = float | list[Element]
@@ -2248,6 +2253,272 @@ def check_empty_join(member: Member, dtype: torch.dtype) -> int:
     return len(cases)
 
 
+# -- closures ---------------------------------------------------------------
+
+
+class ClosureCases(ValueModel):
+    """The matrices whose closure a row is checked on.
+
+    Parameters
+    ----------
+    kind : str
+        ``"idempotent"`` when the least solution is the sum of the first
+        ``n + 1`` powers, ``"linear"`` when it is ``(I - A)⁻¹``, ``"log"``
+        when it is the logarithm of that of the exponentiated matrix.
+    convergent : tuple of Element
+        Square matrices inside the closure's domain, one of order zero.
+    divergent : tuple of Element
+        Square matrices outside it.
+    exhaustive : bool
+        Whether the samples are the whole carrier, so leastness is
+        decided over every matrix of order two.
+    """
+
+    kind: Literal["idempotent", "linear", "log"]
+    convergent: tuple[Element, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    divergent: tuple[Element, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    exhaustive: bool = False
+
+
+_LOG = math.log
+_NONE = -INFINITY
+_BOOLEAN_CLOSURES = ClosureCases(
+    kind="idempotent",
+    convergent=(
+        [],
+        [[0.0, 1.0], [0.0, 0.0]],
+        [[1.0, 1.0], [1.0, 0.0]],
+        [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+    ),
+    exhaustive=True,
+)
+_SCORE_CLOSURES = ClosureCases(
+    kind="idempotent",
+    convergent=(
+        [],
+        [[-1.0, 0.0], [_NONE, _NONE]],
+        [[0.0, -1.0], [-1.0, _NONE]],
+        [[_NONE, 2.0, _NONE], [_NONE, _NONE, -1.0], [-1.5, _NONE, _NONE]],
+    ),
+    divergent=([[1.0]], [[_NONE, 2.0], [-1.0, _NONE]]),
+)
+_LOG_CLOSURES = ClosureCases(
+    kind="log",
+    convergent=(
+        [],
+        [[_LOG(0.5), _LOG(0.25)], [_NONE, _LOG(0.25)]],
+        [[_NONE, _LOG(0.5)], [_LOG(0.5), _NONE]],
+    ),
+    divergent=([[_LOG(1.5)]],),
+)
+_COUNT_CLOSURES = ClosureCases(
+    kind="linear",
+    convergent=(
+        [],
+        [[0.0, 1.0], [0.0, 0.0]],
+        [[0.0, 2.0, 1.0], [0.0, 0.0, 3.0], [0.0, 0.0, 0.0]],
+    ),
+    divergent=([[1.0]], [[0.0, 1.0], [1.0, 0.0]]),
+)
+CLOSURE_CASES: dict[str, ClosureCases] = {
+    "core/Boolean": _BOOLEAN_CLOSURES,
+    "chart/Boolean": _BOOLEAN_CLOSURES,
+    "core/Godel": ClosureCases(
+        kind="idempotent",
+        convergent=([], [[0.5, 0.25], [1.0, 0.0]], [[0.0, 1.0], [0.25, 0.5]]),
+    ),
+    "core/Tropical": ClosureCases(
+        kind="idempotent",
+        convergent=(
+            [],
+            [[0.0, 1.0], [2.5, INFINITY]],
+            [
+                [INFINITY, 1.0, INFINITY],
+                [INFINITY, INFINITY, 2.5],
+                [1.0, 0.0, INFINITY],
+            ],
+        ),
+    ),
+    "core/MaxPlus": _SCORE_CLOSURES,
+    "chart/Viterbi": _SCORE_CLOSURES,
+    "lawless/no-loops": _SCORE_CLOSURES,
+    "core/LogProb": _LOG_CLOSURES,
+    "chart/LogProb": _LOG_CLOSURES,
+    "core/Counting": _COUNT_CLOSURES,
+    "chart/Counting": _COUNT_CLOSURES,
+    "core/Markov": ClosureCases(
+        kind="linear",
+        convergent=([], [[0.5, 0.25], [0.0, 0.5]], [[0.0, 0.5], [0.5, 0.0]]),
+        divergent=([[1.5]], [[0.0, 2.0], [0.5, 0.0]]),
+    ),
+}
+"""The closure cases of every row with a closure."""
+
+
+def _matrix(rows: Element, dtype: torch.dtype) -> torch.Tensor:
+    """A square matrix of plain numbers as a tensor.
+
+    Parameters
+    ----------
+    rows : Element
+        Rows of numbers, or ``[]`` for the matrix of order zero.
+    dtype : torch.dtype
+        The precision.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(n, n)``.
+    """
+    assert isinstance(rows, list)
+    if not rows:
+        return torch.zeros(0, 0, dtype=dtype)
+    return torch.tensor(rows, dtype=dtype)
+
+
+def reference_star(member: Member, rows: Element, kind: str) -> list[list[float]]:
+    """The least solution of ``X = I + A X``, from the reference operations.
+
+    Parameters
+    ----------
+    member : Member
+        The row.
+    rows : Element
+        The matrix.
+    kind : str
+        How the least solution is computed.
+
+    Returns
+    -------
+    list of list of float
+        The closure.
+    """
+    assert isinstance(rows, list)
+    n = len(rows)
+    entry: list[list[float]] = [[_number(x) for x in row] for row in rows]  # type: ignore[union-attr]
+    if kind == "linear":
+        star = exact.linear_star([[Fraction(x) for x in row] for row in entry])
+        return [[float(x) for x in row] for row in star]
+    if kind == "log":
+        weights = [
+            [Fraction(math.exp(x)) if x != -INFINITY else Fraction(0) for x in row]
+            for row in entry
+        ]
+        star = exact.linear_star(weights)
+        return [[math.log(x) if x > 0 else -INFINITY for x in row] for row in star]
+    reference = member.reference
+    assert reference.times is not None and reference.zero is not None
+    assert reference.unit is not None
+    times = reference.times
+    zero, unit = _number(reference.zero), _number(reference.unit)
+    power = [[unit if i == j else zero for j in range(n)] for i in range(n)]
+    total = [row[:] for row in power]
+    for _ in range(n):
+        power = [
+            [
+                _number(
+                    reference.plus([times(power[i][k], entry[k][j]) for k in range(n)])
+                )
+                for j in range(n)
+            ]
+            for i in range(n)
+        ]
+        total = [
+            [_number(reference.plus([total[i][j], power[i][j]])) for j in range(n)]
+            for i in range(n)
+        ]
+    return total
+
+
+def check_star(member: Member, dtype: torch.dtype) -> None:
+    """The closure is the least solution of ``X = I ⊕ A X``, and refuses outside.
+
+    Parameters
+    ----------
+    member : Member
+        A row with a closure.
+    dtype : torch.dtype
+        The precision.
+
+    Raises
+    ------
+    Mismatch
+        If a closure differs from the least solution, is not a solution
+        on either side, or a divergent closure is not refused.
+    """
+    structure = member.structure
+    assert isinstance(structure, Star)
+    cases = CLOSURE_CASES[member.name]
+    for rows in cases.convergent:
+        a = _matrix(rows, dtype)
+        n = a.shape[0]
+        found = structure.star(a)
+        wanted = torch.tensor(reference_star(member, rows, cases.kind), dtype=dtype)
+        agree(found, wanted.reshape(n, n), member, f"closure of {rows}")
+        unit = structure.identity_tensor((n,), dtype=dtype)
+        agree(
+            found,
+            structure.join_pair(unit, structure.compose(a, found, 1)),
+            member,
+            f"left fixed point of the closure of {rows}",
+        )
+        agree(
+            found,
+            structure.join_pair(unit, structure.compose(found, a, 1)),
+            member,
+            f"right fixed point of the closure of {rows}",
+        )
+        if cases.exhaustive and n == 2:
+            _check_least(member, a, found, dtype)
+    for rows in cases.divergent:
+        try:
+            value = structure.star(_matrix(rows, dtype))
+        except DivergentClosureError:
+            continue
+        raise Mismatch(
+            "refusal",
+            math.inf,
+            f"{member.name}: the closure of {rows} gave {value.tolist()}",
+        )
+
+
+def _check_least(
+    member: Member, a: torch.Tensor, found: torch.Tensor, dtype: torch.dtype
+) -> None:
+    """Decide leastness over every matrix of order two of a finite carrier.
+
+    Parameters
+    ----------
+    member : Member
+        The row, whose samples are its whole carrier.
+    a : torch.Tensor
+        The matrix.
+    found : torch.Tensor
+        Its closure.
+    dtype : torch.dtype
+        The precision.
+
+    Raises
+    ------
+    Mismatch
+        If some solution is not above the closure.
+    """
+    structure = member.structure
+    assert isinstance(structure, Star)
+    unit = structure.identity_tensor((2,), dtype=dtype)
+    for entries in itertools.product(member.samples, repeat=4):
+        x = torch.tensor(entries, dtype=dtype).reshape(2, 2)
+        if torch.equal(x, structure.join_pair(unit, structure.compose(a, x, 1))):
+            if not torch.equal(structure.join_pair(found, x), x):
+                raise Mismatch(
+                    "value",
+                    math.inf,
+                    f"{member.name}: the solution {x.tolist()} lies below the closure",
+                )
+
+
 LAW_CHECKS: dict[str, Callable[[Member, torch.dtype], int | None]] = {
     "operations-closed": check_closure,
     "join-iterated": check_iterated_join,
@@ -2268,6 +2539,7 @@ LAW_CHECKS: dict[str, Callable[[Member, torch.dtype], int | None]] = {
     "division": check_division,
     "additive-inverse": check_additive_inverse,
     "semimodule-action": check_semimodule_action,
+    "star-least-solution": check_star,
     "zero-form": check_zero_form,
     "unit-form": check_unit_form,
     "empty-join": check_empty_join,
@@ -2935,6 +3207,25 @@ class _RawTropical(TropicalAlgebra):
         return result
 
 
+class _NoLoops(MaxPlusAlgebra):
+    """A closure that keeps only the empty path."""
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The identity matrix.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            The matrix.
+
+        Returns
+        -------
+        torch.Tensor
+            The identity, whatever the matrix.
+        """
+        return self.identity_tensor((matrix.shape[0],), dtype=matrix.dtype)
+
+
 def _lawless(name: str, structure: Lawful, like: str) -> Member:
     """A lawless member with the samples and reference of a shipped row.
 
@@ -2988,6 +3279,7 @@ LAWLESS: dict[str, Member] = {
     "zero-form": _lawless("default-zero", _DefaultZero(), "core/Real"),
     "unit-form": _lawless("scalar-unit", _ScalarUnit(), "core/Real"),
     "empty-join": _lawless("raw-tropical", _RawTropical(), "core/Tropical"),
+    "star-least-solution": _lawless("no-loops", _NoLoops(), "core/MaxPlus"),
 }
 """A member that claims each law and breaks it."""
 

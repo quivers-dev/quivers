@@ -37,6 +37,7 @@ Golan, J. S. (1999). *Semirings and their Applications*. Springer.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from abc import abstractmethod
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -45,6 +46,7 @@ from typing import ClassVar
 import didactic.api as dx
 import torch
 
+from quivers._positions import demand, depends_on_position
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core._carriers import (
     constant,
@@ -72,6 +74,7 @@ from quivers.core.laws import (
     PLUS_SELECTIVE,
     PLUS_UNIT,
     SEMIMODULE_ACTION,
+    STAR_LEAST_SOLUTION,
     TIE_FIRST_MAXIMIZER,
     TIMES_ASSOCIATIVE,
     TIMES_COMMUTATIVE,
@@ -1216,6 +1219,76 @@ class Semimodule(Carrier):
         ...
 
 
+class DivergentClosureError(ValueError):
+    """A path closure has no value in the declared carrier."""
+
+
+class UndecidedClosureError(ValueError):
+    """Rounding leaves open whether a path closure converges.
+
+    The weight of a cycle lies within the bound on rounding of the value
+    at which its series stops converging, so the computed numbers cannot
+    tell a convergent closure from a divergent one. No value is returned.
+    """
+
+
+class Star(UnitalCarrier):
+    """A carrier whose square matrices have a closure.
+
+    ``star(A)`` is the least solution ``X`` of ``X = I ⊕ A X`` on the
+    declared domain, the sum ``I ⊕ A ⊕ A² ⊕ ...`` of the weights of all
+    paths, including the empty one [Lehmann (1977)]. Outside the domain
+    the series has no value and ``star`` raises `DivergentClosureError`;
+    when rounding cannot decide which side of the boundary a cycle lies
+    on it raises `UndecidedClosureError`. The shipped closures eliminate
+    one state after another, so they cost ``n³`` operations of the
+    algebra and keep every entry on the autograd graph.
+
+    References
+    ----------
+    Lehmann, D. J. (1977). Algebraic structures for transitive closure.
+    *Theoretical Computer Science*, 4(1), 59-76.
+    [doi:10.1016/0304-3975(77)90056-1](https://doi.org/10.1016/0304-3975(77)90056-1)
+    """
+
+    introduces = (STAR_LEAST_SOLUTION,)
+
+    @property
+    @abstractmethod
+    def star_domain(self) -> str:
+        """The matrices whose closure has a value.
+
+        Returns
+        -------
+        str
+            The domain in words.
+        """
+        ...
+
+    @abstractmethod
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The closure ``A* = I ⊕ A ⊕ A² ⊕ ...`` of a square matrix.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n, *element_shape)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The closure, of the same shape.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the matrix lies outside `star_domain`.
+        UndecidedClosureError
+            If rounding cannot decide whether it lies inside.
+        """
+        ...
+
+
 # ============================================================================
 # Reductions shared by the concrete algebras
 # ============================================================================
@@ -1497,6 +1570,584 @@ def _tests(*, unital: bool, tie: int | None = None) -> Mapping[str, int]:
 _UNITAL_TESTS = _tests(unital=True)
 _TWO_ELEMENT_SELECTIVE_TESTS = _tests(unital=True, tie=56)
 _SELECTIVE_TESTS = _tests(unital=True, tie=672)
+
+
+_LEHMANN = Citation(
+    reference=(
+        "Lehmann, D. J. (1977). Algebraic structures for transitive closure. "
+        "Theoretical Computer Science 4(1)"
+    ),
+    locator="the closure of a matrix by elimination of one state after another",
+    doi="10.1016/0304-3975(77)90056-1",
+)
+
+
+def _proved_with_star(anchor: str) -> Proved:
+    """The argument for a shipped class with a closure.
+
+    Parameters
+    ----------
+    anchor : str
+        The anchor of the argument, after ``proof-``.
+
+    Returns
+    -------
+    Proved
+        The evidence, citing the elimination of states as well.
+    """
+    return Proved(argument=f"{_PROOFS}#proof-{anchor}", sources=(_GOLAN, _LEHMANN))
+
+
+def _square(matrix: torch.Tensor) -> int:
+    """The order of a square matrix of scalars.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        The matrix.
+
+    Returns
+    -------
+    int
+        Its number of rows.
+
+    Raises
+    ------
+    ValueError
+        If the tensor is not a square matrix.
+    """
+    if matrix.dim() != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError(
+            f"a closure needs a square matrix; got shape {tuple(matrix.shape)}"
+        )
+    return int(matrix.shape[0])
+
+
+def _rounding(dtype: torch.dtype, operations: int) -> float:
+    """Higham's bound ``m u / (1 - m u)`` on the relative error of ``m`` roundings.
+
+    Parameters
+    ----------
+    dtype : torch.dtype
+        The floating dtype.
+    operations : int
+        The number of roundings.
+
+    Returns
+    -------
+    float
+        The bound.
+
+    Raises
+    ------
+    UndecidedClosureError
+        If the dtype has too few digits for the number of roundings.
+    """
+    roundoff = torch.finfo(dtype).eps / 2
+    product = operations * roundoff
+    if product >= 1:
+        raise UndecidedClosureError(
+            f"{operations} roundings in {dtype} leave no bound on the error"
+        )
+    return product / (1 - product)
+
+
+def _largest_finite(matrix: torch.Tensor) -> float:
+    """The largest magnitude among the finite entries of a matrix.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        The matrix.
+
+    Returns
+    -------
+    float
+        The magnitude; ``0`` when no entry is finite.
+    """
+    finite = matrix.detach()[torch.isfinite(matrix.detach())]
+    return float(finite.abs().max()) if finite.numel() else 0.0
+
+
+def _eliminate(
+    algebra: UnitalCarrier,
+    matrix: torch.Tensor,
+    repeat: Callable[[torch.Tensor, int], torch.Tensor],
+    *,
+    unit_diagonal: bool = False,
+) -> torch.Tensor:
+    """The closure of a matrix by eliminating one state after another.
+
+    At state ``k`` the loop weight ``a_kk`` gives the weight of going
+    round it any number of times, ``r = a_kk*``; every entry adds the
+    paths through ``k``, ``a_ij ⊕ a_ik ⊗ r ⊗ a_kj``, the row and column of
+    ``k`` take ``r`` on their side, and ``a_kk`` becomes ``r``. After the
+    last state the matrix is ``A*`` [Lehmann (1977)]. The work is ``n``
+    rounds of ``n²`` products and sums.
+
+    Parameters
+    ----------
+    algebra : UnitalCarrier
+        The scalar algebra of the entries.
+    matrix : torch.Tensor
+        Shape ``(n, n)``.
+    repeat : Callable
+        The closure of one loop weight and the number of states eliminated
+        before it, which bounds the roundings it carries; it raises
+        outside the domain.
+    unit_diagonal : bool
+        Whether no cycle is better than the unit, as in an idempotent
+        semiring whose loops all close to the unit. Then ``A*_ii`` is the
+        unit exactly, and the diagonal is set to it rather than to a
+        rounded cycle weight.
+
+    Returns
+    -------
+    torch.Tensor
+        ``A*``.
+    """
+    n = _square(matrix)
+    star = matrix
+    indices = torch.arange(n, device=matrix.device)
+    for k in range(n):
+        loop_star = repeat(star[k, k], k)
+        right = algebra.tensor_op(loop_star, star[None, k, :])
+        left = algebra.tensor_op(star[:, k, None], loop_star)
+        through = algebra.tensor_op(star[:, k, None], right)
+        combined = algebra.join_pair(star, through)
+        row = indices[:, None] == k
+        column = indices[None, :] == k
+        star = torch.where(
+            row & column,
+            loop_star,
+            torch.where(row, right, torch.where(column, left, combined)),
+        )
+    if unit_diagonal and n:
+        diagonal = torch.eye(n, dtype=torch.bool, device=matrix.device)
+        star = torch.where(diagonal, algebra.unit_like((n, n), star), star)
+    return star
+
+
+def _positive_cycle(matrix: torch.Tensor) -> bool:
+    """Whether some cycle has positive score, in exact rational arithmetic.
+
+    Floyd and Warshall's best paths over the exact rational values of the
+    floating point weights; a positive cycle exists exactly when some
+    state reaches itself with positive score.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Shape ``(n, n)`` scores, ``-∞`` for absent edges.
+
+    Returns
+    -------
+    bool
+        Whether a cycle of positive exact score exists.
+    """
+    rows = matrix.detach().cpu().tolist()
+    best: list[list[Fraction | None]] = [
+        [None if value == -math.inf else Fraction(value) for value in row]
+        for row in rows
+    ]
+    n = len(best)
+    for k in range(n):
+        for i in range(n):
+            left = best[i][k]
+            if left is None:
+                continue
+            for j in range(n):
+                right = best[k][j]
+                if right is None:
+                    continue
+                candidate = left + right
+                current = best[i][j]
+                if current is None or candidate > current:
+                    best[i][j] = candidate
+    return any((best[i][i] or 0) > 0 for i in range(n))
+
+
+def _decide(
+    loop: torch.Tensor,
+    step: int,
+    divergent: torch.Tensor,
+    convergent: torch.Tensor,
+    verdicts: Callable[[], list[str]],
+    message: str,
+) -> None:
+    """Decide whether a loop weight lets the closure converge.
+
+    ``divergent`` and ``convergent`` are the cheap tests against an a
+    priori bound on rounding. When neither holds, ``verdicts`` decides
+    with a finer procedure (exact arithmetic or an enclosure), unless the
+    loop differs between the positions of an evaluation at many, where
+    only the cheap tests run.
+
+    Parameters
+    ----------
+    loop : torch.Tensor
+        The loop weight.
+    step : int
+        The states eliminated before it.
+    divergent : torch.Tensor
+        Whether the loop surely makes the series diverge.
+    convergent : torch.Tensor
+        Whether it surely lets the series converge.
+    verdicts : Callable
+        The finer decision at every step: ``"convergent"``,
+        ``"divergent"`` or ``"undecided"``.
+    message : str
+        What diverges, for the diagnostics.
+
+    Raises
+    ------
+    DivergentClosureError
+        If the loop makes the series diverge.
+    UndecidedClosureError
+        If no procedure decides.
+    """
+    diverges = lambda: DivergentClosureError(  # noqa: E731
+        f"the closure diverges: {message}, so the series I + A + A² + ... has no value"
+    )
+    undecided = lambda: UndecidedClosureError(  # noqa: E731
+        "a cycle weight is within the rounding bound of the boundary, so the "
+        "computed numbers cannot decide whether the closure converges"
+    )
+    if depends_on_position(loop):
+        demand(~divergent, diverges)
+        demand(convergent, undecided)
+        return
+    if bool(divergent):
+        raise diverges()
+    if bool(convergent):
+        return
+    verdict = verdicts()
+    found = verdict[step] if step < len(verdict) else "undecided"
+    if found == "divergent":
+        raise diverges()
+    if found != "convergent":
+        raise undecided()
+
+
+def _cached(compute: Callable[[], list[str]]) -> Callable[[], list[str]]:
+    """Compute a list of verdicts once, when it is first asked for.
+
+    Parameters
+    ----------
+    compute : Callable
+        The computation.
+
+    Returns
+    -------
+    Callable
+        The cached computation.
+    """
+    kept: list[list[str]] = []
+
+    def verdicts() -> list[str]:
+        """The verdicts.
+
+        Returns
+        -------
+        list of str
+            One per eliminated state.
+        """
+        if not kept:
+            kept.append(compute())
+        return kept[0]
+
+    return verdicts
+
+
+def _linear_verdicts(matrix: torch.Tensor) -> list[str]:
+    """Decide every loop of the elimination of a nonnegative matrix exactly.
+
+    The elimination of `_linear_star` is repeated in rational arithmetic
+    on the exact values of the floating point entries.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Shape ``(n, n)``.
+
+    Returns
+    -------
+    list of str
+        ``"convergent"`` for each state until one whose loop weight is at
+        least one, which is ``"divergent"``.
+    """
+    star: list[list[Fraction]] = [
+        [Fraction(value) for value in row] for row in matrix.detach().cpu().tolist()
+    ]
+    n = len(star)
+    verdicts: list[str] = []
+    for k in range(n):
+        loop = star[k][k]
+        if loop >= 1:
+            verdicts.append("divergent")
+            return verdicts
+        verdicts.append("convergent")
+        repeat = 1 / (1 - loop)
+        new = [row[:] for row in star]
+        for i in range(n):
+            for j in range(n):
+                if i == k and j == k:
+                    new[i][j] = repeat
+                elif i == k:
+                    new[i][j] = repeat * star[k][j]
+                elif j == k:
+                    new[i][j] = star[i][k] * repeat
+                else:
+                    new[i][j] = star[i][j] + star[i][k] * repeat * star[k][j]
+        star = new
+    return verdicts
+
+
+def _step(t: torch.Tensor, steps: int, toward: float) -> torch.Tensor:
+    """Move every entry by units in the last place.
+
+    Parameters
+    ----------
+    t : torch.Tensor
+        The entries.
+    steps : int
+        How many units.
+    toward : float
+        ``-inf`` to move down, ``inf`` to move up.
+
+    Returns
+    -------
+    torch.Tensor
+        The moved entries.
+    """
+    target = torch.full_like(t, toward)
+    for _ in range(steps):
+        t = torch.nextafter(t, target)
+    return t
+
+
+def _interval_sum(
+    a: tuple[torch.Tensor, torch.Tensor], b: tuple[torch.Tensor, torch.Tensor]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """An enclosure of ``a + b``, widened only where the sum is inexact.
+
+    An error-free transformation (Knuth's two-sum) tells an exact sum
+    from a rounded one.
+
+    Parameters
+    ----------
+    a : tuple of torch.Tensor
+        Lower and upper bounds.
+    b : tuple of torch.Tensor
+        Lower and upper bounds.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        Lower and upper bounds of the sum.
+    """
+
+    def exact(x: torch.Tensor, y: torch.Tensor, total: torch.Tensor) -> torch.Tensor:
+        """Whether a rounded sum is exact.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            A term.
+        y : torch.Tensor
+            A term.
+        total : torch.Tensor
+            Their rounded sum.
+
+        Returns
+        -------
+        torch.Tensor
+            Whether the sum is exact.
+        """
+        finite = torch.isfinite(x) & torch.isfinite(y)
+        back = torch.where(finite, total - x, torch.zeros_like(total))
+        error = torch.where(
+            finite, (x - (total - back)) + (y - back), torch.zeros_like(total)
+        )
+        return ~finite | (error == 0)
+
+    low = a[0] + b[0]
+    high = a[1] + b[1]
+    return (
+        torch.where(exact(a[0], b[0], low), low, _step(low, 1, -math.inf)),
+        torch.where(exact(a[1], b[1], high), high, _step(high, 1, math.inf)),
+    )
+
+
+def _interval_logaddexp(
+    a: tuple[torch.Tensor, torch.Tensor], b: tuple[torch.Tensor, torch.Tensor]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """An enclosure of ``log(e^a + e^b)``, which is monotone in both terms.
+
+    The library function is taken to err by at most two units in the
+    last place, and to be exact when a term is ``-∞``.
+
+    Parameters
+    ----------
+    a : tuple of torch.Tensor
+        Lower and upper bounds.
+    b : tuple of torch.Tensor
+        Lower and upper bounds.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        Lower and upper bounds of the log-sum.
+    """
+    low = torch.logaddexp(a[0], b[0])
+    high = torch.logaddexp(a[1], b[1])
+    exact_low = torch.isneginf(a[0]) | torch.isneginf(b[0])
+    exact_high = torch.isneginf(a[1]) | torch.isneginf(b[1])
+    return (
+        torch.where(exact_low, low, _step(low, 2, -math.inf)),
+        torch.where(exact_high, high, _step(high, 2, math.inf)),
+    )
+
+
+def _log_verdicts(matrix: torch.Tensor) -> list[str]:
+    """Decide every loop of the log elimination with outward rounded enclosures.
+
+    The elimination of `LogProbAlgebra.star` is repeated on intervals that
+    contain the exact values: sums are widened by one unit where two-sum
+    shows rounding, and each library function by two units unless its
+    result is exact. A loop enclosure below zero lets the closure
+    converge, one at or above zero makes it diverge, and one that
+    contains zero leaves it undecided.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Shape ``(n, n)`` log weights.
+
+    Returns
+    -------
+    list of str
+        One verdict per state, up to the first that is not convergent.
+    """
+    base = matrix.detach().to(torch.float64)
+    low, high = base, base
+    n = base.shape[0]
+    indices = torch.arange(n, device=base.device)
+    verdicts: list[str] = []
+    for k in range(n):
+        loop_low, loop_high = low[k, k], high[k, k]
+        if float(loop_low) >= 0:
+            verdicts.append("divergent")
+            return verdicts
+        if not float(loop_high) < 0:
+            verdicts.append("undecided")
+            return verdicts
+        verdicts.append("convergent")
+        # r(x) = -log(-expm1(x)) increases on (-inf, 0).
+        if torch.isneginf(loop_low):
+            repeat_low = torch.zeros_like(loop_low)
+        else:
+            repeat_low = _step(
+                -torch.log(_step(-torch.expm1(loop_low), 2, math.inf)), 2, -math.inf
+            )
+        lower_mass = _step(-torch.expm1(loop_high), 2, -math.inf)
+        if torch.isneginf(loop_high):
+            repeat_high = torch.zeros_like(loop_high)
+        elif float(lower_mass) > 0:
+            repeat_high = _step(-torch.log(lower_mass), 2, math.inf)
+        else:
+            repeat_high = torch.full_like(loop_high, math.inf)
+        repeat = (repeat_low, repeat_high)
+        column = (low[:, k, None], high[:, k, None])
+        row = (low[None, k, :], high[None, k, :])
+        right = _interval_sum(repeat, row)
+        left = _interval_sum(column, repeat)
+        through = _interval_sum(column, right)
+        combined = _interval_logaddexp((low, high), through)
+        is_row = indices[:, None] == k
+        is_column = indices[None, :] == k
+        bounds = []
+        for side in range(2):
+            bounds.append(
+                torch.where(
+                    is_row & is_column,
+                    repeat[side],
+                    torch.where(
+                        is_row,
+                        right[side],
+                        torch.where(is_column, left[side], combined[side]),
+                    ),
+                )
+            )
+        low, high = bounds[0], bounds[1]
+    return verdicts
+
+
+def _linear_star(
+    algebra: UnitalCarrier, matrix: torch.Tensor, roundings: int
+) -> torch.Tensor:
+    """The closure ``(I - A)⁻¹`` of a nonnegative matrix, without subtraction.
+
+    Elimination computes ``r = 1 / (1 - a_kk)`` and otherwise only sums
+    and products of nonnegative numbers, so every entry is accurate to
+    a small relative error and an entry that no path reaches is an exact
+    zero whose derivative is kept. The closure exists exactly when every
+    loop weight met in the elimination is below one (the pivots of the
+    M-matrix ``I - A`` are positive). A loop weight within the relative
+    rounding bound of one refuses as undecided.
+
+    Parameters
+    ----------
+    algebra : UnitalCarrier
+        The nonnegative algebra of the entries.
+    matrix : torch.Tensor
+        Shape ``(n, n)``.
+    roundings : int
+        Roundings each eliminated state adds to a loop weight; zero when
+        the arithmetic is exact.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(I - A)⁻¹``.
+
+    Raises
+    ------
+    DivergentClosureError
+        If a loop weight is at least one.
+    UndecidedClosureError
+        If a loop weight is within the rounding bound of one.
+    """
+
+    verdicts = _cached(lambda: _linear_verdicts(matrix))
+
+    def repeat(loop: torch.Tensor, step: int) -> torch.Tensor:
+        """The closure of one nonnegative loop weight.
+
+        Parameters
+        ----------
+        loop : torch.Tensor
+            The loop weight.
+        step : int
+            The states eliminated before it.
+
+        Returns
+        -------
+        torch.Tensor
+            ``1 / (1 - loop)``.
+        """
+        relative_error = _rounding(loop.dtype, roundings * step)
+        _decide(
+            loop,
+            step,
+            loop * (1 - relative_error) >= 1,
+            loop * (1 + relative_error) < 1,
+            verdicts,
+            "a cycle has weight at least one",
+        )
+        return 1 / (1 - loop)
+
+    return _eliminate(algebra, matrix, repeat)
 
 
 # ============================================================================
@@ -2590,7 +3241,7 @@ class ProductFuzzyAlgebra(ZeroSumFree, NoZeroDivisors, Algebra):
         )
 
 
-class BooleanAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
+class BooleanAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring):
     """{0, 1} with logical AND and OR.
 
     The enrichment for the category Rel of crisp binary relations:
@@ -2607,8 +3258,39 @@ class BooleanAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
     Boolean semiring is a selective semifield.
     """
 
-    proof = _proved("boolean")
+    proof = _proved_with_star("boolean")
     tested = _TWO_ELEMENT_SELECTIVE_TESTS
+
+    @property
+    def star_domain(self) -> str:
+        """Every matrix: no loop is better than the unit.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        return "every square matrix over the carrier"
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The closure by elimination; every loop weight closes to the unit.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n)``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``A*``.
+        """
+        return _eliminate(
+            self,
+            matrix,
+            lambda loop, step: self.unit_like((), loop),
+            unit_diagonal=True,
+        )
 
     @property
     def name(self) -> str:
@@ -2958,7 +3640,7 @@ class StandardMVAlgebra(ZeroSumFree, Algebra):
         )
 
 
-class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring):
+class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSemiring):
     """[0,1] with Gödel (min) t-norm.
 
     ⊗ = min,   ⋁ = max,   ⋀ = min,
@@ -2968,8 +3650,39 @@ class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring):
     The join selects the larger operand.
     """
 
-    proof = _proved("godel")
+    proof = _proved_with_star("godel")
     tested = _SELECTIVE_TESTS
+
+    @property
+    def star_domain(self) -> str:
+        """Every matrix: no loop is better than the unit.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        return "every square matrix over the carrier"
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The closure by elimination; every loop weight closes to the unit.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n)``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``A*``.
+        """
+        return _eliminate(
+            self,
+            matrix,
+            lambda loop, step: self.unit_like((), loop),
+            unit_diagonal=True,
+        )
 
     @property
     def name(self) -> str:
@@ -3128,7 +3841,7 @@ class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring):
         return torch.where(w <= x, torch.ones_like(x), x)
 
 
-class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring):
+class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSemiring):
     """[0, ∞] with (+, min), the enrichment of Lawvere metric spaces.
 
         ⊗ = addition (distances compose),
@@ -3142,8 +3855,39 @@ class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring
     the algebra is not a semifield.
     """
 
-    proof = _proved("tropical")
+    proof = _proved_with_star("tropical")
     tested = _SELECTIVE_TESTS
+
+    @property
+    def star_domain(self) -> str:
+        """Every matrix: no distance is shorter than zero.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        return "every square matrix over the carrier"
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The closure by elimination; every loop weight closes to the unit.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n)``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``A*``.
+        """
+        return _eliminate(
+            self,
+            matrix,
+            lambda loop, step: self.unit_like((), loop),
+            unit_diagonal=True,
+        )
 
     @property
     def name(self) -> str:
@@ -3302,7 +4046,7 @@ class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring
         return diff.clamp(min=0.0)
 
 
-class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
+class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring):
     """Max-plus (Viterbi) semifield on ℝ ∪ {-∞}.
 
     Distinct from `TropicalAlgebra` (which is min-plus,
@@ -3319,8 +4063,84 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
     where ``-∞`` must annihilate.
     """
 
-    proof = _proved("max-plus")
+    proof = _proved_with_star("max-plus")
     tested = _SELECTIVE_TESTS
+
+    @property
+    def star_domain(self) -> str:
+        """The matrices without a cycle of positive score.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        return "square matrices without a cycle of positive score"
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The best path scores, by elimination with a decided loop test.
+
+        A computed loop score above the rounding bound of its path proves
+        a positive cycle, and one below minus the bound proves the loop is
+        not positive. In between, the sign of the exact sum of the
+        float64 or float32 weights decides: the cycles are tested in
+        exact rational arithmetic on the given weights.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n)``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``A*``.
+
+        Raises
+        ------
+        DivergentClosureError
+            If a cycle has positive score.
+        """
+        _square(matrix)
+        largest = _largest_finite(matrix)
+        verdict: list[bool] = []
+
+        def repeat(loop: torch.Tensor, step: int) -> torch.Tensor:
+            """The closure of one loop score.
+
+            Parameters
+            ----------
+            loop : torch.Tensor
+                The loop score.
+            step : int
+                The states eliminated before it.
+
+            Returns
+            -------
+            torch.Tensor
+                The unit, when the loop does not gain.
+
+            Raises
+            ------
+            DivergentClosureError
+                If a cycle has positive score.
+            """
+            # A loop met after ``step`` eliminations is a sum of at most
+            # ``2 step + 1`` entries, rounded at most ``2 step`` times.
+            bound = _rounding(loop.dtype, 2 * step) * (2 * step + 1) * largest
+            gains = float(loop) > bound
+            if not gains and float(loop) >= -bound:
+                if not verdict:
+                    verdict.append(_positive_cycle(matrix))
+                gains = verdict[0]
+            if gains:
+                raise DivergentClosureError(
+                    "the best-path closure diverges: a cycle has positive score, "
+                    "so a path around it can be made arbitrarily heavy"
+                )
+            return self.unit_like((), loop)
+
+        return _eliminate(self, matrix, repeat, unit_diagonal=True)
 
     @property
     def name(self) -> str:
@@ -3498,7 +4318,7 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
         return torch.where(torch.isposinf(x), inf, out)
 
 
-class LogProbAlgebra(Semifield, ZeroSumFree, Semiring):
+class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
     """Log-space sum-product semifield on [-∞, ∞).
 
     Tensor is real addition (probability multiplication in log-
@@ -3518,8 +4338,84 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Semiring):
     has no greatest element.
     """
 
-    proof = _proved("log-prob")
+    proof = _proved_with_star("log-prob")
     tested = _UNITAL_TESTS
+
+    @property
+    def star_domain(self) -> str:
+        """The matrices of probabilities whose spectral radius is below one.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        return "square log-weight matrices whose weights have spectral radius below one"
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The log of ``(I - A)⁻¹``, by elimination of states in log space.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n)``, ``-∞`` for absent edges.
+
+        Returns
+        -------
+        torch.Tensor
+            Log weights of all paths, including empty paths.
+
+        Raises
+        ------
+        DivergentClosureError
+            If an effective return weight is at least one.
+        UndecidedClosureError
+            If an effective return weight is within the rounding bound of one.
+        ValueError
+            If the matrix contains NaN or positive infinity.
+        """
+        _square(matrix)
+        demand(
+            ~(torch.isnan(matrix) | torch.isposinf(matrix)),
+            lambda: ValueError(
+                "log closure requires finite weights or negative infinity"
+            ),
+        )
+        largest = _largest_finite(matrix)
+        verdicts = _cached(lambda: _log_verdicts(matrix))
+
+        def repeat(loop: torch.Tensor, step: int) -> torch.Tensor:
+            """The log of ``1 / (1 - e^loop)``.
+
+            Parameters
+            ----------
+            loop : torch.Tensor
+                The log loop weight.
+            step : int
+                The states eliminated before it.
+
+            Returns
+            -------
+            torch.Tensor
+                The log closure of the loop.
+            """
+            # Each eliminated state rounds a log-sum and the log of a
+            # geometric series, at most sixteen roundings of a log weight no
+            # larger than the sum of ``2 step + 1`` entries.
+            bound = _rounding(loop.dtype, 16 * step) * max(
+                1.0, (2 * step + 1) * largest
+            )
+            _decide(
+                loop,
+                step,
+                loop >= bound,
+                loop < -bound,
+                verdicts,
+                "an effective return weight is at least one",
+            )
+            return -torch.log(-torch.expm1(loop))
+
+        return _eliminate(self, matrix, repeat)
 
     @property
     def name(self) -> str:
@@ -4030,7 +4926,7 @@ class BoundedSumProductAlgebra(ZeroSumFree, NoZeroDivisors, Algebra):
         return 0.0
 
 
-class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Semiring):
+class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Star, Semiring):
     """Sum-product semiring on the non-negative integers (ℕ, +, ·).
 
     Counting algebra: composition counts the number of distinct paths
@@ -4040,8 +4936,54 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Semiring):
     nonnegative reals are `MarkovAlgebra`.
     """
 
-    proof = _proved("counting")
+    proof = _proved_with_star("counting")
     tested = _UNITAL_TESTS
+
+    @property
+    def star_domain(self) -> str:
+        """The matrices of counts without a cycle.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        return "square matrices of counts whose graph has no cycle of nonzero count"
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The number of paths, by elimination of states.
+
+        Counts below ``2 / eps`` of the dtype are exact in floating point and elimination only adds and multiplies them, so
+        a loop count is decided exactly.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n)``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``A*``.
+
+        Raises
+        ------
+        DivergentClosureError
+            If a cycle has a nonzero count.
+        UndecidedClosureError
+            If a count reaches ``2 / eps``, beyond which it is not exact.
+        """
+        star = _linear_star(self, matrix, 0)
+        if star.is_floating_point():
+            limit = 2.0 / torch.finfo(star.dtype).eps
+            demand(
+                star.detach() < limit,
+                lambda: UndecidedClosureError(
+                    f"a count of paths reaches {limit:.0f}, beyond which it is not "
+                    "exact"
+                ),
+            )
+        return star
 
     @property
     def name(self) -> str:
@@ -4178,7 +5120,7 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Semiring):
         return 0.0
 
 
-class MarkovAlgebra(Semifield, ZeroSumFree, Semiring):
+class MarkovAlgebra(Semifield, ZeroSumFree, Star, Semiring):
     """Sum-product composition for stochastic matrices.
 
     Implements the composition rule of FinStoch:
@@ -4198,8 +5140,41 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Semiring):
     of row-stochastic matrices is row-stochastic.
     """
 
-    proof = _proved("markov")
+    proof = _proved_with_star("markov")
     tested = _UNITAL_TESTS
+
+    @property
+    def star_domain(self) -> str:
+        """The nonnegative matrices of spectral radius below one.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        return "square nonnegative matrices of spectral radius below one"
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """``(I - A)⁻¹`` by elimination of states, without subtraction.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n)``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``A*``.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the spectral radius is at least one.
+        UndecidedClosureError
+            If a loop weight is within the rounding bound of one.
+        """
+        return _linear_star(self, matrix, 4)
 
     @property
     def name(self) -> str:
@@ -4849,6 +5824,9 @@ __all__ = [
     "Semifield",
     "Ring",
     "Semimodule",
+    "DivergentClosureError",
+    "UndecidedClosureError",
+    "Star",
     "DualAlgebra",
     "DualIdempotentSemiring",
     "CustomAlgebra",

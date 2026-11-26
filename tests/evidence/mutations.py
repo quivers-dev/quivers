@@ -216,7 +216,6 @@ def _keyword_defaults(target: str) -> dict[str, str | int | float | bool | None]
 
 AGENDA = "quivers.stochastic.agenda"
 ALGEBRAS = "quivers.core.algebras"
-KLEENE = "quivers.stochastic._kleene"
 SPAN = "quivers.stochastic.span"
 INSIDE = "quivers.stochastic.inside"
 WIRING = "quivers.core.wiring"
@@ -401,8 +400,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-gradient-cut",
         defect_class="gradient path",
         provenance="a closure computed without its gradient",
-        target=f"{KLEENE}:_log_star",
-        rewrites=(Rewrite(old="star = matrix\n", new="star = matrix.detach()\n"),),
+        target=f"{ALGEBRAS}:LogProbAlgebra.star",
+        rewrites=(
+            Rewrite(
+                old="return _eliminate(self, matrix, repeat)",
+                new="return _eliminate(self, matrix.detach(), repeat)",
+            ),
+        ),
         rejected_by=("span/inside/gradient", "span/chart-parser/gradient"),
         min_effect=1.0,
     ),
@@ -457,11 +461,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-stops-on-a-residual",
         defect_class="stopping rule",
         provenance="a truncated series whose last term is small",
-        target=f"{KLEENE}:_log_star",
+        target=f"{ALGEBRAS}:LogProbAlgebra.star",
         rewrites=(
             Rewrite(
-                old="repeat = -torch.log(-torch.expm1(loop))",
-                new="repeat = torch.logsumexp("
+                old="return -torch.log(-torch.expm1(loop))",
+                new="return torch.logsumexp("
                 "loop * torch.arange(64, dtype=loop.dtype), 0)",
             ),
         ),
@@ -475,8 +479,17 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="divergence-test-removed",
         defect_class="stopping rule",
         provenance="a divergent cycle returns a number",
-        target=f"{KLEENE}:_linear_star",
-        rewrites=(Rewrite(old="if not radius < 1.0:", new="if False:"),),
+        target=f"{ALGEBRAS}:_linear_star",
+        rewrites=(
+            Rewrite(
+                old="loop * (1 - relative_error) >= 1,",
+                new='loop * (1 - relative_error) >= float("inf"),',
+            ),
+            Rewrite(
+                old="loop * (1 + relative_error) < 1,",
+                new='loop * (1 + relative_error) < float("inf"),',
+            ),
+        ),
         rejected_by=("closure/divergence/counting/above_one",),
         min_effect=1.0,
     ),
@@ -687,12 +700,12 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-in-the-linear-domain",
         defect_class="scaling",
         provenance="a closure computed from exponentials of the weights",
-        target=f"{KLEENE}:_log_star",
+        target=f"{ALGEBRAS}:LogProbAlgebra.star",
         rewrites=(
             Rewrite(
-                old="star = matrix\n",
-                new="return torch.linalg.inv(torch.eye(n, dtype=matrix.dtype)"
-                " - matrix.exp()).log()\n    star = matrix\n",
+                old="largest = _largest_finite(matrix)\n",
+                new="return torch.linalg.inv(torch.eye(matrix.shape[0], "
+                "dtype=matrix.dtype) - matrix.exp()).log()\n",
             ),
         ),
         rejected_by=("closure/tiny_edge",),
