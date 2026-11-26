@@ -98,9 +98,7 @@ def reduction_axes(
     axes: list[int] = []
     for axis in named:
         if not -index_rank <= axis < index_rank:
-            raise IndexError(
-                f"axis {axis} is out of range for {index_rank} index axes"
-            )
+            raise IndexError(f"axis {axis} is out of range for {index_rank} index axes")
         axes.append(axis % index_rank)
     if len(set(axes)) != len(axes):
         raise ValueError(f"axes {named} repeat")
@@ -170,9 +168,7 @@ def representable(value: float, dtype: torch.dtype) -> bool:
     return info.min <= value <= info.max
 
 
-def constant(
-    value: float, shape: tuple[int, ...], like: torch.Tensor
-) -> torch.Tensor:
+def constant(value: float, shape: tuple[int, ...], like: torch.Tensor) -> torch.Tensor:
     """A tensor filled with one real number in the dtype and device of ``like``.
 
     Parameters

@@ -26,7 +26,6 @@ from quivers.core.algebras import (
     GODEL,
     LogProbAlgebra,
     ProductFuzzyAlgebra,
-    TropicalAlgebra,
 )
 from quivers.core.morphisms import Morphism, observed
 from quivers.core.objects import FinSet, ProductSet
@@ -1111,7 +1110,18 @@ def _named_goal(head: str) -> str:
 class _Forwarded(ChartSemiring):
     """A semiring that forwards every operation to the log semiring."""
 
-    def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    @property
+    def name(self) -> str:
+        """A name of its own.
+
+        Returns
+        -------
+        str
+            The name.
+        """
+        return "ForwardedLogProb"
+
+    def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Forward a product.
 
         Parameters
@@ -1126,26 +1136,26 @@ class _Forwarded(ChartSemiring):
         torch.Tensor
             The product.
         """
-        return LOG_PROB.times(a, b)
+        return LOG_PROB.tensor_op(a, b)
 
-    def plus(self, scores: torch.Tensor, dim: int) -> torch.Tensor:
+    def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
         """Forward a reduction.
 
         Parameters
         ----------
-        scores : torch.Tensor
+        t : torch.Tensor
             The terms.
-        dim : int
-            The axis.
+        dim : int or tuple of int
+            The axes.
 
         Returns
         -------
         torch.Tensor
-            The sums.
+            The sum.
         """
-        return LOG_PROB.plus(scores, dim)
+        return LOG_PROB.join(t, dim)
 
-    def plus_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    def join_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Forward a binary sum.
 
         Parameters
@@ -1160,7 +1170,54 @@ class _Forwarded(ChartSemiring):
         torch.Tensor
             The sum.
         """
-        return LOG_PROB.plus_pair(a, b)
+        return LOG_PROB.join_pair(a, b)
+
+    def meet(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Forward a meet.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The terms.
+        dim : int or tuple of int
+            The axes.
+
+        Returns
+        -------
+        torch.Tensor
+            The meet.
+        """
+        return LOG_PROB.meet(t, dim)
+
+    def negate(self, t: torch.Tensor) -> torch.Tensor:
+        """Forward a negation.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The values.
+
+        Returns
+        -------
+        torch.Tensor
+            The negation.
+        """
+        return LOG_PROB.negate(t)
+
+    def contains(self, t: torch.Tensor) -> torch.Tensor:
+        """Forward membership.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The values.
+
+        Returns
+        -------
+        torch.Tensor
+            Membership in the log carrier.
+        """
+        return LOG_PROB.contains(t)
 
     @property
     def zero(self) -> float:
@@ -1174,15 +1231,15 @@ class _Forwarded(ChartSemiring):
         return LOG_PROB.zero
 
     @property
-    def one(self) -> float:
-        """The forwarded one.
+    def unit(self) -> float:
+        """The forwarded unit.
 
         Returns
         -------
         float
-            The one.
+            The unit.
         """
-        return LOG_PROB.one
+        return LOG_PROB.unit
 
 
 def _renamed_handlers() -> str:
@@ -1342,8 +1399,7 @@ def _empty() -> Facts:
 record(
     "empty-reduction-raises",
     "stochastic/_kleene.py: _max_plus_star",
-    "a best-path closure over no states raises instead of returning the empty "
-    "closure",
+    "a best-path closure over no states raises instead of returning the empty closure",
     {"best-path closure": "IndexError"},
     {"best-path closure": "empty"},
     _empty,

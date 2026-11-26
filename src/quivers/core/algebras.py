@@ -150,8 +150,7 @@ LAWS: Mapping[str, Law] = MappingProxyType(
             _law("multiplicative identity", "1 ⊗ a = a = a ⊗ 1"),
             _law(
                 "distributivity",
-                "a ⊗ (b ⊕ c) = (a ⊗ b) ⊕ (a ⊗ c) and "
-                "(a ⊕ b) ⊗ c = (a ⊗ c) ⊕ (b ⊗ c)",
+                "a ⊗ (b ⊕ c) = (a ⊗ b) ⊕ (a ⊗ c) and (a ⊕ b) ⊗ c = (a ⊗ c) ⊕ (b ⊗ c)",
             ),
             _law("annihilation", "0 ⊗ a = 0 = a ⊗ 0"),
             _law("multiplicative commutativity", "a ⊗ b = b ⊗ a"),
@@ -215,7 +214,6 @@ _STRENGTH: Mapping[LawStatus, int] = MappingProxyType(
 )
 
 
-
 class Lawful(ABC):
     """A structure whose class membership claims laws.
 
@@ -225,8 +223,9 @@ class Lawful(ABC):
     member's own class, never from a parent class, since a subclass may
     replace an operation: ``proof`` is an argument that establishes
     every claimed law about the carrier, and ``check`` names the test
-    that establishes the laws about the implementation. A claim with
-    neither is assumed.
+    that establishes the laws about the implementation. A law about the
+    carrier without a proof, or about the implementation without a
+    check, is assumed.
     """
 
     introduces: ClassVar[tuple[str, ...]] = ()
@@ -282,12 +281,10 @@ class Lawful(ABC):
         if law not in self.laws():
             raise ValueError(f"{self.name} does not claim {law.name!r}")
         own = vars(type(self))
-        proof = own.get("proof")
-        check = own.get("check")
-        if law.subject == "carrier" and isinstance(proof, str):
-            return self._claim(law, "proved", proof)
-        if isinstance(check, str):
-            return self._claim(law, "checked", check)
+        ground = own.get("proof" if law.subject == "carrier" else "check")
+        if isinstance(ground, str):
+            status: LawStatus = "proved" if law.subject == "carrier" else "checked"
+            return self._claim(law, status, ground)
         return self._claim(
             law, "assumed", f"declared by membership in {type(self).__name__}"
         )
@@ -361,8 +358,11 @@ def weakest(claims: tuple[LawClaim, ...]) -> LawStatus:
     LawStatus
         The status no claim falls below.
     """
-    statuses: list[LawStatus] = [claim.status for claim in claims]
-    return min(statuses, key=_STRENGTH.__getitem__, default="proved")
+    status: LawStatus = "proved"
+    for claim in claims:
+        if _STRENGTH[claim.status] < _STRENGTH[status]:
+            status = claim.status
+    return status
 
 
 def _pair(
@@ -1234,8 +1234,9 @@ def _select(
         of ``axes``. The derivative reaches the selected operand only.
     """
     kept = t.ndim - len(axes)
+    terms = math.prod(t.shape[axis] for axis in axes)
     moved = t.movedim(axes, tuple(range(kept, t.ndim)))
-    flat = moved.reshape(*moved.shape[:kept], -1)
+    flat = moved.reshape(*moved.shape[:kept], terms)
     ranked = key.movedim(axes, tuple(range(kept, t.ndim))).reshape(flat.shape)
     if ranked.dtype == torch.bool:
         ranked = ranked.to(torch.uint8)
@@ -4644,9 +4645,7 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Semiring):
 # ============================================================================
 
 
-def _inherited(
-    structure: Lawful, law: Law, base: Lawful, theorem: str
-) -> LawClaim:
+def _inherited(structure: Lawful, law: Law, base: Lawful, theorem: str) -> LawClaim:
     """A carrier claim that holds by a theorem when the base's laws do.
 
     Parameters
@@ -4665,9 +4664,7 @@ def _inherited(
     LawClaim
         The claim, as strong as the weakest claim of the base.
     """
-    support = tuple(
-        claim for claim in base.claims() if claim.law.subject == "carrier"
-    )
+    support = tuple(claim for claim in base.claims() if claim.law.subject == "carrier")
     status = weakest(support)
     evidence = f"{theorem} The laws of {base.name} it uses are {status}."
     return LawClaim(law=law, member=structure.name, status=status, evidence=evidence)
