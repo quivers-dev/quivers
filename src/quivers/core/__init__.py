@@ -217,8 +217,8 @@ from quivers.core.tensor_ops import (
 from quivers.core.carriers import (
     ExpectationSemiring,
     ProductSemiring,
+    ElementStar,
     SecondOrderExpectationSemiring,
-    Star,
 )
 from quivers.core.spanning import (
     DirectedTrees,
@@ -423,7 +423,7 @@ __all__ = [
     "ExpectationSemiring",
     "ProductSemiring",
     "SecondOrderExpectationSemiring",
-    "Star",
+    "ElementStar",
     # spanning trees
     "DirectedTrees",
     "directed_tree",

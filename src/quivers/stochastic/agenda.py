@@ -35,8 +35,8 @@ from __future__ import annotations
 import heapq
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import nullcontext
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 import didactic.api as dx
@@ -46,6 +46,7 @@ from quivers._positions import anywhere, depends_on_position
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.core.laws import PLUS_IDEMPOTENT, PLUS_SELECTIVE
 from quivers.qiec._models import QiecModel
+from quivers.qiec.contracts import Phase, WorkField, WorkReport, measuring
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
 from quivers.stochastic.semiring import ChartSemiring, LOG_PROB
 from quivers.structural.encoder import Encoder
@@ -1114,6 +1115,12 @@ class AgendaResult(QiecModel):
         An empty tensor of the dtype and device of the run's axiom
         weights, which the zeros and units the result makes take; the
         default dtype when the run had no axiom.
+    work : WorkReport
+        The run's work: its pops, chart calls, pattern matches and
+        recorded applications; its products when no rule has a
+        ``weight_fn``, whose products are its own; and the elements saved
+        for the backward pass when measured. Sums happen in the chart and
+        the agenda's queue and are not measured here.
     """
 
     chart: Chart = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1140,6 +1147,74 @@ class AgendaResult(QiecModel):
     attached_loss: torch.Tensor | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    work: WorkReport = dx.field(
+        default_factory=lambda: WorkReport(phase=Phase.EXECUTION),
+        opaque=True,
+        extras=OPAQUE_BY_VALUE,
+    )
+
+
+class _AgendaWork:
+    """The counts an agenda run keeps of its own operations."""
+
+    def __init__(self) -> None:
+        self.pops = 0
+        self.chart_calls = 0
+        self.matches = 0
+        self.products = 0
+
+
+def _agenda_report(
+    work: _AgendaWork,
+    *,
+    applications: int,
+    occurrences: int,
+    products_measured: bool,
+    saved: int | None,
+) -> WorkReport:
+    """The work report of an agenda run.
+
+    Parameters
+    ----------
+    work : _AgendaWork
+        The run's counts.
+    applications : int
+        Premise references and applications recorded, each application
+        counting one plus its premises.
+    occurrences : int
+        The axiom occurrences.
+    products_measured : bool
+        Whether every product went through the run's own calls, which
+        holds when no rule has a ``weight_fn``.
+    saved : int or None
+        Elements saved for the backward pass, or ``None`` when not
+        measured.
+
+    Returns
+    -------
+    WorkReport
+        The report, with exactly the counters measured.
+    """
+    fields = {
+        WorkField.ITERATIONS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+        WorkField.PROVENANCE_RECORDS,
+    }
+    if products_measured:
+        fields.add(WorkField.SCALAR_PRODUCTS)
+    if saved is not None:
+        fields.add(WorkField.ELEMENTS_SAVED_FOR_BACKWARD)
+    return WorkReport(
+        phase=Phase.EXECUTION,
+        iterations=work.pops,
+        hash_operations=work.chart_calls,
+        key_comparisons=work.matches,
+        provenance_records=applications + occurrences,
+        scalar_products=work.products if products_measured else 0,
+        elements_saved_for_backward=0 if saved is None else saved,
+        measured=measuring(fields),
+    )
 
 
 def run_agenda(
@@ -1151,6 +1226,8 @@ def run_agenda(
     max_iterations: int = 100_000,
     chart: Chart | None = None,
     rule_callback: RuleCallback | None = None,
+    *,
+    measure_tape: bool = False,
 ) -> AgendaResult:
     """Run the agenda-driven deduction engine to fixed point.
 
@@ -1219,10 +1296,15 @@ def run_agenda(
         and ``weight`` is the application's contribution to the
         conclusion computed from those weights.
 
+    measure_tape : bool, optional
+        Whether to count the elements the run saves for the backward
+        pass, by a hook on the autograd graph that costs time.
+
     Returns
     -------
     AgendaResult
-        The final chart, the goal items, and the step count.
+        The final chart, the goal items, the step count, and the work
+        report of the run.
 
     Raises
     ------
@@ -1249,43 +1331,19 @@ def run_agenda(
         else torch.empty(0)
     )
 
-    iterations = 0
-    while not agenda.empty():
-        if iterations >= max_iterations:
-            raise RuntimeError(
-                f"agenda exceeded max_iterations={max_iterations}; "
-                f"likely a non-terminating deduction"
-            )
-        iterations += 1
-        item, delta = agenda.pop()
-        old = chart.get(item)
-        changed = chart.insert_or_aggregate(item, delta, semiring)
-        if not changed:
-            continue
-        if old is not None:
-            delta = chart.propagated(old, item, delta, semiring)
-        update = _Update(item=item, delta=delta, old=old)
-        # Fire every rule for which this item could be a premise.
-        for rule_index, rule in enumerate(rules):
-            for premise_idx, premise_pattern in enumerate(rule.premises):
-                bindings = match(premise_pattern, item)
-                if bindings is None:
-                    continue
-                _fire_remaining_premises(
-                    rule=rule,
-                    rule_index=rule_index,
-                    bindings=bindings,
-                    chart=chart,
-                    semiring=semiring,
-                    agenda=agenda,
-                    remaining_indices=[
-                        i for i in range(len(rule.premises)) if i != premise_idx
-                    ],
-                    fixed_idx=premise_idx,
-                    update=update,
-                    applications=applications,
-                )
-
+    work = _AgendaWork()
+    saved: list[int] = []
+    with _tape(saved) if measure_tape else nullcontext():
+        _drain(
+            agenda,
+            chart,
+            rules,
+            semiring,
+            applications,
+            work,
+            max_iterations,
+        )
+    iterations = work.pops
     if rule_callback is not None:
         for application in applications.values():
             weights = tuple(_chart_weight(chart, a) for a in application.antecedents)
@@ -1294,7 +1352,12 @@ def run_agenda(
                 list(zip(application.antecedents, weights)),
                 application.conclusion,
                 _conclusion_weight(
-                    application.rule, application.bindings, weights, semiring, like
+                    application.rule,
+                    application.bindings,
+                    weights,
+                    semiring,
+                    like,
+                    work,
                 ),
             )
 
@@ -1317,7 +1380,140 @@ def run_agenda(
         ],
         axiom_occurrences=occurrences,
         like=like,
+        work=_agenda_report(
+            work,
+            applications=sum(
+                1 + len(application.antecedents)
+                for application in applications.values()
+            ),
+            occurrences=len(occurrences),
+            products_measured=all(rule.weight_fn is None for rule in rules),
+            saved=sum(saved) if measure_tape else None,
+        ),
     )
+
+
+def _drain(
+    agenda: Agenda,
+    chart: Chart,
+    rules: tuple[InferenceRule, ...],
+    semiring: ChartSemiring,
+    applications: dict[tuple[int, tuple[Item, ...]], _Application],
+    work: _AgendaWork,
+    max_iterations: int,
+) -> None:
+    """Pop and fire until the agenda is empty.
+
+    Parameters
+    ----------
+    agenda : Agenda
+        The agenda.
+    chart : Chart
+        The chart.
+    rules : tuple of InferenceRule
+        The rules.
+    semiring : ChartSemiring
+        The semiring.
+    applications : dict
+        The applications seen so far, extended in place.
+    work : _AgendaWork
+        The counts, extended in place.
+    max_iterations : int
+        The bound on pops.
+
+    Raises
+    ------
+    RuntimeError
+        If the agenda runs for more than ``max_iterations`` steps.
+    """
+    while not agenda.empty():
+        if work.pops >= max_iterations:
+            raise RuntimeError(
+                f"agenda exceeded max_iterations={max_iterations}; "
+                f"likely a non-terminating deduction"
+            )
+        work.pops += 1
+        item, delta = agenda.pop()
+        work.chart_calls += 1
+        old = chart.get(item)
+        changed = chart.insert_or_aggregate(item, delta, semiring)
+        if not changed:
+            continue
+        if old is not None:
+            delta = chart.propagated(old, item, delta, semiring)
+        update = _Update(item=item, delta=delta, old=old)
+        # Fire every rule for which this item could be a premise.
+        for rule_index, rule in enumerate(rules):
+            for premise_idx, premise_pattern in enumerate(rule.premises):
+                work.matches += 1
+                bindings = match(premise_pattern, item)
+                if bindings is None:
+                    continue
+                _fire_remaining_premises(
+                    rule=rule,
+                    rule_index=rule_index,
+                    bindings=bindings,
+                    chart=chart,
+                    semiring=semiring,
+                    agenda=agenda,
+                    remaining_indices=[
+                        i for i in range(len(rule.premises)) if i != premise_idx
+                    ],
+                    fixed_idx=premise_idx,
+                    update=update,
+                    applications=applications,
+                    work=work,
+                )
+
+
+@contextmanager
+def _tape(saved: list[int]) -> Iterator[None]:
+    """Count the elements saved for the backward pass inside the block.
+
+    Parameters
+    ----------
+    saved : list of int
+        Receives one entry per saved tensor.
+
+    Yields
+    ------
+    None
+        While the hook is installed.
+    """
+
+    def pack(tensor: torch.Tensor) -> torch.Tensor:
+        """Count a saved tensor and keep it.
+
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            The same tensor.
+        """
+        saved.append(tensor.numel())
+        return tensor
+
+    def unpack(tensor: torch.Tensor) -> torch.Tensor:
+        """Return a saved tensor.
+
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            The same tensor.
+        """
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+        yield
 
 
 def _chart_weight(chart: Chart, item: Item) -> torch.Tensor:
@@ -1412,6 +1608,7 @@ def _fire_remaining_premises(
     fixed_idx: int,
     update: _Update,
     applications: dict[tuple[int, tuple[Item, ...]], _Application],
+    work: _AgendaWork,
 ) -> None:
     """Match the remaining premise patterns against the chart, then fire.
 
@@ -1442,6 +1639,8 @@ def _fire_remaining_premises(
         The popped item, its increment, and its old weight.
     applications : dict
         The rule applications seen so far.
+    work : _AgendaWork
+        The run's counts.
     """
     if not remaining_indices:
         _fire(
@@ -1454,11 +1653,14 @@ def _fire_remaining_premises(
             semiring=semiring,
             agenda=agenda,
             applications=applications,
+            work=work,
         )
         return
     next_idx = remaining_indices[0]
     next_pattern = rule.premises[next_idx]
+    work.chart_calls += 1
     for sibling, _ in chart.lookup(next_pattern):
+        work.matches += 1
         sub_bindings = match(next_pattern, sibling, bindings)
         if sub_bindings is None:
             continue
@@ -1473,6 +1675,7 @@ def _fire_remaining_premises(
             fixed_idx=fixed_idx,
             update=update,
             applications=applications,
+            work=work,
         )
 
 
@@ -1482,6 +1685,7 @@ def _conclusion_weight(
     premise_weights: tuple[torch.Tensor, ...],
     semiring: ChartSemiring,
     like: torch.Tensor,
+    work: _AgendaWork,
 ) -> torch.Tensor:
     """The weight a rule application contributes to its conclusion.
 
@@ -1498,6 +1702,8 @@ def _conclusion_weight(
     like : torch.Tensor
         A tensor of the run's dtype and device, which the unit of an
         application without premises takes.
+    work : _AgendaWork
+        The run's counts; a ``weight_fn``'s products are its own.
 
     Returns
     -------
@@ -1512,6 +1718,7 @@ def _conclusion_weight(
     acc = premise_weights[0]
     for w in premise_weights[1:]:
         acc = semiring.times(acc, w)
+        work.products += acc.numel()
     return acc
 
 
@@ -1526,6 +1733,7 @@ def _fire(
     semiring: ChartSemiring,
     agenda: Agenda,
     applications: dict[tuple[int, tuple[Item, ...]], _Application],
+    work: _AgendaWork,
 ) -> None:
     """Push one rule application's increment onto the agenda.
 
@@ -1556,6 +1764,8 @@ def _fire(
         The agenda that receives the conclusion's increment.
     applications : dict
         The rule applications seen so far, extended with this one.
+    work : _AgendaWork
+        The run's counts.
     """
     if rule.side_condition is not None and not rule.side_condition(bindings):
         return
@@ -1572,6 +1782,7 @@ def _fire(
         if i < fixed_idx and premise_item == update.item:
             w = update.old
         else:
+            work.chart_calls += 1
             w = chart.get(premise_item)
         if w is None:
             complete = False
@@ -1590,7 +1801,9 @@ def _fire(
         return
     agenda.push(
         conclusion_item,
-        _conclusion_weight(rule, bindings, tuple(factors), semiring, update.delta),
+        _conclusion_weight(
+            rule, bindings, tuple(factors), semiring, update.delta, work
+        ),
     )
 
 

@@ -1,6 +1,7 @@
 {
  "files": {
   "__init__.py": "50aa66884345367de4f9a2d6c8dd1fd5c99dad4cc2eb6836753ad59a20a1207a",
+  "agenda_work_controls.py": "d1b280c59d4782be276cd400f9e3e3d16df20b881ee9036e17c90dd75a2441bc",
   "bodies.py": "a8db780f904aaa3b1ddd910af2999cf5a53664948954c6940396232eaae1fb78",
   "carrier_controls.py": "48b3153b30d6c00cedee4ccb70cedc0299fff82f53f2685e9417ff6a85f741b5",
   "catalogue.py": "1edeef9d010600ef51020ae9a00974accc6a515eda17ebb5f47147ee9aa37d64",
@@ -48,6 +49,7 @@
   "scaling.py": "953a0ed3a6040a7322e09eee88b278c3a0a5eff13b76ed4e64eaf3f817ebb53e",
   "sources.py": "60a5b690973ca1563ab4258f964268abef56d4d97bdde73ef8ab803db60e30fa",
   "spanning_controls.py": "584d6c777dc67c47ecf43dfac885aa5c2c66bf089fb9335893edc6fdc588e78c",
+  "test_agenda_work_controls.py": "2914c35896fcbf4d5293cacd5cc5a83188a333c14db9f98a068ffcdc7b2530a4",
   "test_carrier_controls.py": "b518d418466b25ea09d181f331add426361d15b32f3070ae368e7c53c39322bd",
   "test_catalogue.py": "c50a07eaf84f66fb959f83fd3eaf0fa6e2b31c015cba65a65c1246d102f925e6",
   "test_closure_conformance.py": "53bbaba1adac3986091bb519cb6782c31340a51cc92e9ed792ef3b74c9da3e2d",

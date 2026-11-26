@@ -57,10 +57,10 @@ __all__ = [
     "ExpectationSemiring",
     "ProductSemiring",
     "SecondOrderExpectationSemiring",
-    "Star",
+    "ElementStar",
 ]
 
-type Star = Callable[[torch.Tensor], torch.Tensor]
+type ElementStar = Callable[[torch.Tensor], torch.Tensor]
 """The star ``p* = 1 ⊕ p ⊗ p*`` of the weights, elementwise."""
 
 _PROOFS = "api/core/carriers.md"
@@ -485,7 +485,7 @@ class ExpectationSemiring(_Packed):
         p, r = self.parts(t)
         return self._base.contains(p) & self._module.contains(r)
 
-    def star(self, t: torch.Tensor, weights_star: Star) -> torch.Tensor:
+    def star(self, t: torch.Tensor, weights_star: ElementStar) -> torch.Tensor:
         """``<p, r>* = <p*, p* · (p* · r)>``, where the star of ``p`` exists.
 
         It solves ``X = 1 ⊕ <p, r> ⊗ X``: the weight is ``p*`` and the
@@ -496,7 +496,7 @@ class ExpectationSemiring(_Packed):
         ----------
         t : torch.Tensor
             Packed elements.
-        weights_star : Star
+        weights_star : ElementStar
             The star of the weights, elementwise.
 
         Returns
@@ -802,7 +802,7 @@ class SecondOrderExpectationSemiring(_Packed):
         self._check(t)
         return self._base.contains(t).all(dim=-1)
 
-    def star(self, t: torch.Tensor, weights_star: Star) -> torch.Tensor:
+    def star(self, t: torch.Tensor, weights_star: ElementStar) -> torch.Tensor:
         """``<p*, p*² r, p*² s, p*² t ⊕ 2 p*³ r sᵀ>``, where ``p*`` exists.
 
         It solves ``X = 1 ⊕ <p, r, s, t> ⊗ X`` using only
@@ -812,7 +812,7 @@ class SecondOrderExpectationSemiring(_Packed):
         ----------
         t : torch.Tensor
             Packed elements.
-        weights_star : Star
+        weights_star : ElementStar
             The star of the weights, elementwise.
 
         Returns
@@ -1071,14 +1071,14 @@ class ProductSemiring(_Packed):
             result = result & item
         return result
 
-    def star(self, t: torch.Tensor, stars: Sequence[Star]) -> torch.Tensor:
+    def star(self, t: torch.Tensor, stars: Sequence[ElementStar]) -> torch.Tensor:
         """The star of every factor.
 
         Parameters
         ----------
         t : torch.Tensor
             Packed elements.
-        stars : Sequence of Star
+        stars : Sequence of ElementStar
             The star of each factor.
 
         Returns
