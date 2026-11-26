@@ -5,14 +5,14 @@ count: pops with an agenda that counts its own, products with a
 semiring that counts its own, the tape with a hook on the autograd graph,
 and provenance with the recorded applications. A run with a rule weight
 function does not claim its products, and one without the tape measured
-does not claim it. The agenda's own work is quadratic on chains,
-diamonds and skip graphs, since its lookups scan a premise's form.
+does not claim it. The agenda's own work on chains, diamonds and skip
+graphs is recorded by the ledger entry ``agenda-work-quadratic``.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import torch
 
@@ -213,26 +213,69 @@ def _work(edges: Sequence[tuple[int, int]]) -> float:
     return float(report.iterations + report.hash_operations + report.key_comparisons)
 
 
-def check_quadratic() -> None:
-    """Require the agenda's own work within ``E^2``, and above the linear bound.
+LINEAR_SIZES = (8, 16, 32, 64, 128)
+"""The sizes of the families."""
 
-    Each pop looks up a premise's form by its pattern alone and matches
-    every item of that form against the bindings, so a run does a number
-    of matches proportional to the items times the edges. The work stays
-    within a constant of ``E^2`` on chains, diamonds and skip graphs (the
-    control of the next order fails), and a linear bound rejects it.
+LINEAR_CONSTANT = 16.0
+"""The constant of the linear bound on the agenda's own work per edge."""
+
+WITHIN = f"within {LINEAR_CONSTANT:g} per edge"
+"""The fact of a family whose work meets the linear bound."""
+
+
+def _families() -> tuple[tuple[str, Callable[[int], list[tuple[int, int]]]], ...]:
+    """The chain, diamond and skip families.
+
+    Returns
+    -------
+    tuple of tuple of str and Callable
+        Each family's name and its graph at a size.
+    """
+    return (
+        ("chains", graphs.chain),
+        ("diamonds", lambda size: graphs.diamonds(size // 4)),
+        ("skip graphs", lambda size: graphs.skips(size // 2)),
+    )
+
+
+def linear_facts() -> dict[str, str]:
+    """Whether the agenda's own work per edge meets the linear bound, per family.
+
+    Returns
+    -------
+    dict of str to str
+        For each family, `WITHIN` when the linear bound accepts its work,
+        else its work per edge at each size, to two decimals.
+    """
+    facts: dict[str, str] = {}
+    for name, build in _families():
+        work = [_work(build(size)) for size in LINEAR_SIZES]
+        edges = [float(len(build(size)) + 1) for size in LINEAR_SIZES]
+        try:
+            scaling.accept(LINEAR_SIZES, work, edges, LINEAR_CONSTANT, name)
+        except Mismatch:
+            facts[f"{name}, work per edge"] = " ".join(
+                f"{count / bound:.2f}" for count, bound in zip(work, edges, strict=True)
+            )
+            continue
+        facts[f"{name}, work per edge"] = WITHIN
+    return facts
+
+
+def check_linear() -> None:
+    """Require the agenda's own work linear on chains, diamonds and skip graphs.
+
+    The agenda looks up a premise's form by its pattern alone, so this
+    fails today; the ledger entry ``agenda-work-quadratic`` records the
+    measured work, and removing that entry with its repair registers
+    this check.
 
     Raises
     ------
     Mismatch
-        If a family breaks the quadratic bound, or meets the linear one.
+        If a family breaks the linear bound, or its control does not.
     """
-    sizes = (8, 16, 32, 64, 128)
-    for name, build in (
-        ("chains", graphs.chain),
-        ("diamonds", lambda size: graphs.diamonds(size // 4)),
-        ("skip graphs", lambda size: graphs.skips(size // 2)),
-    ):
+    for name, build in _families():
         scaling.check_family(
             scaling.Family(
                 name=f"agenda on {name}",
@@ -240,27 +283,17 @@ def check_quadratic() -> None:
                 question="Q1",
                 varies="edges",
                 part="forward",
-                sizes=sizes,
+                sizes=LINEAR_SIZES,
                 work=lambda size, build=build: _work(build(size)),
-                claim=lambda size, build=build: float((len(build(size)) + 1) ** 2),
-                constant=16.0,
+                claim=lambda size, build=build: float(len(build(size)) + 1),
+                constant=LINEAR_CONSTANT,
             )
         )
-        work = [_work(build(size)) for size in sizes]
-        linear = [float(len(build(size)) + 1) for size in sizes]
-        try:
-            scaling.accept(sizes, work, linear, 16.0, f"agenda on {name}, linear")
-        except Mismatch:
-            continue
-        raise Mismatch("support", math.inf, f"the agenda is linear on {name}")
 
 
 CHECKS: dict[str, Check] = {
     name: Check(name=name, executor="agenda", question="Q1", run=run)
-    for name, run in (
-        ("agenda/work-counts", check_counts),
-        ("agenda/work-quadratic", check_quadratic),
-    )
+    for name, run in (("agenda/work-counts", check_counts),)
 }
 """Every check of agenda work reports by name."""
 

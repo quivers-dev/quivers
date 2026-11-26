@@ -69,6 +69,7 @@ from quivers.stochastic.semiring import (
 )
 from quivers.structural.decoder import Decoder
 from quivers.structural.signature import Signature
+from tests.evidence import agenda_work_controls as agenda_work
 from tests.evidence.checks.consumers import GUIDES, PROBLEMS
 from tests.evidence.checks.deduction import weighted
 from tests.evidence.checks.machine import module_of
@@ -523,6 +524,26 @@ def _hub_instances(size: int) -> int:
         for b in range(size)
         for c in range(size)
     )
+
+
+record(
+    "agenda-work-quadratic",
+    "stochastic/agenda.py: HashChart.lookup, _fire_remaining_premises",
+    "the agenda's own work, measured by its work report (pops, chart calls and "
+    "matches), grows faster than the edges on chains, diamonds and skip graphs, "
+    "since each premise looks up its whole form",
+    {
+        "chains, work per edge": "18.33 26.65 42.82 74.91 138.95",
+        "diamonds, work per edge": "15.44 21.71 33.85 57.92 105.96",
+        "skip graphs, work per edge": "12.75 16.88 24.94 40.97 72.98",
+    },
+    {
+        "chains, work per edge": agenda_work.WITHIN,
+        "diamonds, work per edge": agenda_work.WITHIN,
+        "skip graphs, work per edge": agenda_work.WITHIN,
+    },
+    agenda_work.linear_facts,
+)
 
 
 record(
