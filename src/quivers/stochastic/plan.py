@@ -65,6 +65,7 @@ from quivers.qiec.contracts import (
     Statistic,
     Support,
     Weight,
+    WorkReport,
     check_admissible,
 )
 from quivers.qiec.identifiers import FamilyId
@@ -92,6 +93,7 @@ __all__ = [
     "PlanRecord",
     "PlanRefusal",
     "PlanRefused",
+    "RECOMPUTED_TWO_PASS_WORK",
     "TWO_PASS_WORK",
     "acyclicity_certificate",
     "plan",
@@ -516,62 +518,109 @@ _READING = Citation(
     locator="complexity claims, Q10",
 )
 
-TWO_PASS_WORK = ComplexityClaim(
-    query="value of every item of an acyclic presentation, and its gradient",
-    parameters=(
-        ComplexityParameter(name="V", meaning="items"),
-        ComplexityParameter(name="E", meaning="grounded rule instances"),
-        ComplexityParameter(name="J", meaning="candidates matched by keyed lookups"),
-    ),
-    model=ALGEBRA_OPERATIONS,
-    bounds=(
-        ComplexityBound(
-            phase=Phase.EXECUTION,
-            resource="time",
-            expression="V + E + J",
-            status=BestKnown(sources=(_EISNER,)),
-        ),
-        ComplexityBound(
-            phase=Phase.EXECUTION,
-            resource="space",
-            expression="V",
-            status=ProvedOptimal(
-                lower_bound="V", model=ALGEBRA_OPERATIONS, sources=(_READING,)
-            ),
-        ),
-        ComplexityBound(
-            phase=Phase.DIFFERENTIATION,
-            resource="time",
-            expression="V + E + J",
-            status=BestKnown(sources=(_EISNER,)),
-        ),
-        ComplexityBound(
+
+def _two_pass_work(backward: Literal["autograd", "recompute"]) -> ComplexityClaim:
+    """The cost claim of two-pass evaluation with one backward pass.
+
+    Parameters
+    ----------
+    backward : {"autograd", "recompute"}
+        The backward pass.
+
+    Returns
+    -------
+    ComplexityClaim
+        The claim.
+    """
+    final_space = ProvedOptimal(
+        lower_bound="V", model=ALGEBRA_OPERATIONS, sources=(_READING,)
+    )
+    if backward == "autograd":
+        derivative_space = ComplexityBound(
             phase=Phase.DIFFERENTIATION,
             resource="space",
-            expression="V",
-            status=ProvedOptimal(
-                lower_bound="V", model=ALGEBRA_OPERATIONS, sources=(_READING,)
+            expression="V + P E",
+            status=BestKnown(sources=(_EISNER,)),
+        )
+        tape = (
+            "the autograd tape holds every product and sum of the run, P E "
+            "elements of the weight's size, beside the V values"
+        )
+    else:
+        derivative_space = ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="space",
+            expression="V + P D",
+            status=BestKnown(sources=(_EISNER,)),
+        )
+        tape = (
+            "the recomputing pass holds the V values and cotangents and, while "
+            "one item is visited, the P D elements of that item's own sum"
+        )
+    return ComplexityClaim(
+        query="value of every item of an acyclic presentation, and its gradient",
+        parameters=(
+            ComplexityParameter(name="V", meaning="items"),
+            ComplexityParameter(name="E", meaning="grounded rule instances and inputs"),
+            ComplexityParameter(
+                name="J", meaning="candidates the keyed lookups return, at least E"
+            ),
+            ComplexityParameter(name="P", meaning="the most premises of one rule"),
+            ComplexityParameter(
+                name="D", meaning="the most instances and inputs concluding one item"
             ),
         ),
-    ),
-    inapplicable=(
-        PhaseInapplicable(
-            phase=Phase.CONSTRUCTION,
-            reason="join plans and indexes are built with the presentation, in its size",
+        model=ALGEBRA_OPERATIONS,
+        bounds=(
+            ComplexityBound(
+                phase=Phase.EXECUTION,
+                resource="time",
+                expression="V + P E + J",
+                status=BestKnown(sources=(_EISNER,)),
+            ),
+            ComplexityBound(
+                phase=Phase.EXECUTION,
+                resource="space",
+                expression="V",
+                status=final_space,
+            ),
+            ComplexityBound(
+                phase=Phase.DIFFERENTIATION,
+                resource="time",
+                expression="V + P E + J",
+                status=BestKnown(sources=(_EISNER,)),
+            ),
+            derivative_space,
         ),
-        PhaseInapplicable(
-            phase=Phase.REFIT,
-            reason="a refit is one more run of both passes at the new weights",
+        inapplicable=(
+            PhaseInapplicable(
+                phase=Phase.CONSTRUCTION,
+                reason="join plans and indexes are built from the presentation alone",
+            ),
+            PhaseInapplicable(
+                phase=Phase.REFIT,
+                reason="a refit is one more run of both passes at the new weights",
+            ),
         ),
-    ),
-    conditions=(
-        "the derived hypergraph is acyclic",
-        "J counts the candidates the keyed lookups return; with every premise "
-        "fully keyed by the variables bound before it, J is at most E",
-        "the space of the recomputing backward pass; the autograd tape is O(E)",
-    ),
-)
-"""The cost of two-pass evaluation and its recomputing backward pass."""
+        conditions=(
+            "the derived hypergraph is acyclic",
+            "operations of the algebra cost one each; the count of operations "
+            "does not depend on the precision",
+            "J counts every candidate the keyed lookups return, including those "
+            "not yet final or failing a repeated variable or side condition; "
+            "a run reports J",
+            "space excludes the presentation, the inputs and the indexes of the "
+            "chart, which hold O(V) entries per keyed premise pattern",
+            tape,
+        ),
+    )
+
+
+TWO_PASS_WORK = _two_pass_work("autograd")
+"""The cost of two-pass evaluation differentiated by autograd."""
+
+RECOMPUTED_TWO_PASS_WORK = _two_pass_work("recompute")
+"""The cost of two-pass evaluation with the recomputing backward pass."""
 
 
 class PlanRecord(QiecModel):
@@ -645,12 +694,42 @@ class Evaluation(ValueModel):
         Whether every item of a form with a measure has measure at least
         one, so the plan's certificate proves this run acyclic; ``None``
         without a certificate.
+    sums : int
+        Sums of the algebra computed.
+    products : int
+        Products of the algebra computed.
+    counts : int
+        Parent counts kept during the run, one per item.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     order: tuple[Item, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     work: ChartWork = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     certified: bool | None = None
+    sums: int = 0
+    products: int = 0
+    counts: int = 0
+
+    def report(self) -> WorkReport:
+        """The run's counters as a work report of its execution.
+
+        Algebra operations are counted once each, whatever the size of an
+        element; lookups are hash operations and candidates key
+        comparisons.
+
+        Returns
+        -------
+        WorkReport
+            The report.
+        """
+        return WorkReport(
+            phase=Phase.EXECUTION,
+            scalar_sums=self.sums,
+            scalar_products=self.products,
+            hash_operations=self.work.lookups,
+            key_comparisons=self.work.candidates,
+            provenance_records=self.counts,
+        )
 
     def value(self, item: Item) -> torch.Tensor:
         """The value of one item.
@@ -968,7 +1047,9 @@ def plan(
         assumptions=tuple(assumptions),
         structure=analysis,
         certificate=certificate,
-        complexity=TWO_PASS_WORK,
+        complexity=TWO_PASS_WORK
+        if backward == "autograd"
+        else RECOMPUTED_TWO_PASS_WORK,
         alternatives=(
             Alternative(
                 algorithm="agenda with dependency edges",
@@ -1251,22 +1332,34 @@ def _evaluate(
     """
     algebra = plan.algebra
     discovery = IndexedChart(plan.presentation)
-    discovered, counts, leaves = _discover(plan, discovery, axioms)
+    discovered, remaining, leaves = _discover(plan, discovery, axioms)
     chart = IndexedChart(plan.presentation)
     chart.items = discovery.items
+    first = dict(discovery.work)
+    del discovery
+    operations = {"sums": 0, "products": 0}
     sums: dict[Item, torch.Tensor | None] = {}
+
+    def add(item: Item, term: torch.Tensor) -> None:
+        """Add a term to an item's sum.
+
+        Parameters
+        ----------
+        item : Item
+            The item.
+        term : torch.Tensor
+            The term.
+        """
+        current = sums.get(item)
+        if current is not None:
+            operations["sums"] += 1
+        sums[item] = _accumulate(algebra, current, term)
+
     for item, occurrences in leaves.items():
-        total: torch.Tensor | None = None
         for occurrence in occurrences:
-            total = _accumulate(
-                algebra, total, _occurrence_weight(plan, occurrence, inputs, like)
-            )
-        sums[item] = total
-    remaining = dict(counts)
+            add(item, _occurrence_weight(plan, occurrence, inputs, like))
     for rule, item in _constants(plan, chart):
-        sums[item] = _accumulate(
-            algebra, sums.get(item), _weight(plan, rule.weight, inputs, like)
-        )
+        add(item, _weight(plan, rule.weight, inputs, like))
         remaining[item] -= 1
     ready: deque[Item] = deque(item for item in discovered if remaining[item] == 0)
     final: set[Item] = set()
@@ -1291,8 +1384,11 @@ def _evaluate(
                         evaluate_index(a, binding) for a in rule.conclusion.arguments
                     ),
                 )
-                term = _product(algebra, [weight, *(values[p] for p in premises)])
-                sums[conclusion] = _accumulate(algebra, sums.get(conclusion), term)
+                operations["products"] += len(premises)
+                add(
+                    conclusion,
+                    _product(algebra, [weight, *(values[p] for p in premises)]),
+                )
                 remaining[conclusion] -= 1
                 if remaining[conclusion] == 0:
                     ready.append(conclusion)
@@ -1303,12 +1399,18 @@ def _evaluate(
             f"{len(discovered) - len(final)} items lie on or above a cycle, "
             f"for instance {stuck}",
         )
-    work = ChartWork(
-        **{name: discovery.work[name] + chart.work[name] for name in discovery.work}
-    )
+    work = ChartWork(**{name: first[name] + chart.work[name] for name in first})
     certificate = plan.record.certificate
     certified = None if certificate is None else certificate.applies(discovered)
-    return Evaluation(values=values, order=tuple(order), work=work, certified=certified)
+    return Evaluation(
+        values=values,
+        order=tuple(order),
+        work=work,
+        certified=certified,
+        sums=operations["sums"],
+        products=operations["products"],
+        counts=len(discovered),
+    )
 
 
 def _terms(
