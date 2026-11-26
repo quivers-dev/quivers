@@ -1026,6 +1026,88 @@ thresholds has no counterpart, and the built-in ordinal families take that
 role. `conditional_effects` refuses a `conditions` value for a column bound
 through `data`, because the column keeps its fitted numeric carrier.
 
+### Formulas on the parameters of a program
+
+A QVR program whose observation scores one response can take its design from
+formulas. `program=` gives the program's source text, `response=` the site it
+observes, and `parameters=` a formula for each sample site or input the design
+should drive. The program's domain is the rows of the data, so its row object
+takes the number of rows. A parameter with a formula has its prior replaced by
+the regression, on the link its support requires: a real parameter is its
+predictor, a positive one `exp(eta)`, one on `(a, b)` is
+`a + (b - a) * sigmoid(eta)`, and a simplex is the softmax of a predictor whose
+first coordinate is zero. A parameter named `mu` takes the main formula, as the
+location of a family does. Every other site keeps the program's own law.
+Priors, default priors, centering and group terms follow the conventions of
+distributional formulas, with `dpar=<parameter>`.
+
+Data the program reads at each row are data columns of the same name. Data on
+another axis and scalars come from `data2`. A saved fit keeps the program's
+text, so it loads without the `.qvr` file.
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import fit, formula_to_qvr
+
+program = """object Trial : FinSet 6
+object Res : FinSet 3
+object Val : Real 1
+
+program around(trial_idx : Tensor[Int]([Trial])) : Trial -> Val
+    sample res_logits <- Normal(loc=0.0, scale=1.0) [over=Res]
+    sample noise <- Beta(concentration1=1.0, concentration0=20.0)
+    let res_probs = softmax(res_logits)
+    marginalize r : Res <- Categorical(probs=res_probs) [over=Trial, reduction=logsumexp]
+        let inside = real(dist <= halfwidth[r])
+        let p = noise + (1.0 - 2.0 * noise) * inside
+        observe accept : Trial <- Bernoulli(probs=p) [via=trial_idx]
+    return noise
+
+export around
+"""
+rng = np.random.default_rng(0)
+data = pd.DataFrame(
+    {
+        "dist": rng.uniform(0.0, 4.0, 40),
+        "accept": rng.uniform(size=40) < 0.5,
+        "participant": np.repeat(["a", "b", "c", "d"], 10),
+        "trial_idx": np.arange(40),
+    }
+)
+formulas = {"res_logits": "~ 1", "noise": "~ 1 + (1 | participant)"}
+print(
+    formula_to_qvr(
+        program=program,
+        parameters=formulas,
+        response="accept",
+        data=data,
+        data2={"halfwidth": np.array([1.0, 2.0, 3.0])},
+    )
+)
+result = fit(
+    program=program,
+    parameters=formulas,
+    response="accept",
+    data=data,
+    data2={"halfwidth": np.array([1.0, 2.0, 3.0])},
+    method="svi",
+    num_steps=20,
+)
+assert result.log_likelihood(num_samples=4)["accept"].shape == (1, 4, 40)
+```
+
+A `marginalize` without `over=` draws one value for every row, so the rows'
+likelihoods multiply before it is summed out. Such a program has no
+likelihood per row, and `loo` says so. A formula that varies over the rows
+cannot feed the law of such a value: the program must state the per-row model
+itself, with `[over=Trial]` on the block and `[via=...]` on the observation, as
+above. `bf(program=..., parameters=..., response=...)` gives a program block in
+a joint formula, where it can share group terms such as `(1 | p | g)` with the
+other responses.
+
 ### Factor and vector responses
 
 A factor response remains one scalar code per row. `ResponseLayout` retains

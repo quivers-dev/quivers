@@ -226,8 +226,6 @@ class ProgramAnalysis(ValueModel):
         The program's domain, whose elements are the rows of the response.
     objects : tuple[AxisDecl, ...]
         The finite objects other than the row axis.
-    module : Module
-        The parsed source.
     program : ProgramDecl
         The entry program.
     statements : tuple[Statement, ...]
@@ -245,7 +243,6 @@ class ProgramAnalysis(ValueModel):
     entry: str
     row_axis: str
     objects: tuple[AxisDecl, ...] = ()
-    module: Module = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     program: ProgramDecl = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     statements: tuple[Statement, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
@@ -846,7 +843,6 @@ def program_analysis(source: str) -> ProgramAnalysis:
         entry=program.name,
         row_axis=row_axis,
         objects=tuple(AxisDecl(name=name, size=size) for name, size in sizes.items()),
-        module=module,
         program=program,
         statements=tuple(
             item
