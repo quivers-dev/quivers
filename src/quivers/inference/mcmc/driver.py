@@ -1704,8 +1704,11 @@ class MCMC:
                 else:
                     per_chain.append(self._empty_draws(setup, record, name))
             samples[name] = torch.stack(per_chain)
+        # The densities are recorded in the precision of the chains'
+        # positions, so a float64 run reports float64 densities.
+        precision = records[0].state.position.dtype
         log_densities = torch.tensor(
-            [record.log_densities[:kept] for record in records], dtype=torch.float64
+            [record.log_densities[:kept] for record in records], dtype=precision
         ).reshape(len(records), kept)
         keys = sorted(
             {key for record in records for entry in record.stats for key in entry}
