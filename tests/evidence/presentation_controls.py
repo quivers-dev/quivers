@@ -329,11 +329,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="premises-folded-in-reverse",
         defect_class="order",
         provenance="a fold reads the premises of a node from the last to the first",
-        target=f"{RULES}:HostInterpretation.fold",
+        target=f"{RULES}:HostInterpretation._evaluate",
         rewrites=(
             Rewrite(
-                old="tuple(values.pop(id(child)) for child in node.premises)",
-                new="tuple(values.pop(id(child)) for child in reversed(node.premises))",
+                old="self.operations[node.constructor](node, tuple(done))",
+                new="self.operations[node.constructor](node, tuple(reversed(done)))",
             ),
         ),
         rejected_by=("presentations/premise-order", "presentations/nonlinear-observer"),

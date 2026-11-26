@@ -32,10 +32,12 @@ shared by every later use.
 from __future__ import annotations
 
 import itertools
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from fractions import Fraction
 from functools import cached_property
 from types import MappingProxyType
+from typing import Literal
 from weakref import WeakKeyDictionary
 
 import didactic.api as dx
@@ -53,7 +55,9 @@ from quivers.qiec.contracts import (
     Phase,
     ProvedOptimal,
     Unresolved,
+    ClaimSubject,
     InterpretationId,
+    Law,
     LawClaim,
     LinearCyclic,
     MonotonePolynomial,
@@ -61,6 +65,7 @@ from quivers.qiec.contracts import (
     ParameterId,
     PresentationId,
     Recursion,
+    Tested,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.effects import EMPTY_ROW
@@ -68,13 +73,16 @@ from quivers.qiec.evaluator import Evaluator
 from quivers.qiec.identifiers import ComputationId, ConstructorId, FamilyId, TypeId
 from quivers.qiec.kinds import (
     IndexBinder,
+    IndexSort,
     NatSort,
     Telescope,
     UserIndexSort,
     validate_telescope,
 )
+from quivers.qiec.checking import CheckContext, KernelError, KernelRegistry, infer_value
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
-from quivers.structural.signature import Signature
+from quivers.qiec.terms import ConstructorValue, LiteralValue, Local, Value, Var
+from quivers.structural.signature import Signature, Term
 from quivers.qiec.types import (
     BOOL,
     INT,
@@ -387,6 +395,37 @@ class AxiomOccurrence(QiecModel):
     )
 
 
+class Hole(QiecModel):
+    """An open hypothesis in a derivation: a variable of its context.
+
+    Parameters
+    ----------
+    index : int
+        Its de Bruijn index in the context where it occurs: 0 is the
+        innermost hypothesis.
+    item : Item
+        The item it assumes.
+    tag : str
+        Always ``"hole"``.
+    """
+
+    index: int
+    item: Item = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["hole"] = "hole"
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Require a nonnegative index.
+
+        Raises
+        ------
+        ValueError
+            If it is negative.
+        """
+        if self.index < 0:
+            raise ValueError("a hole's index is at least zero")
+
+
 class Derivation(QiecModel):
     """A derivation tree: a proof of an item, not the item.
 
@@ -402,8 +441,9 @@ class Derivation(QiecModel):
         Values of the rule's value fields.
     occurrence : OccurrenceId or None
         The input occurrence, for an axiom.
-    premises : tuple of Derivation
-        Derivations of the premises, in order.
+    premises : tuple of Derivation or Hole
+        Derivations of the premises, in order; a hole is an open
+        hypothesis.
     """
 
     constructor: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -417,12 +457,12 @@ class Derivation(QiecModel):
     occurrence: OccurrenceId | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    premises: tuple[Derivation, ...] = dx.field(
+    premises: tuple[Derivation | Hole, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     def size(self) -> int:
-        """The number of nodes.
+        """The number of nodes, holes included.
 
         Returns
         -------
@@ -430,12 +470,17 @@ class Derivation(QiecModel):
             The nodes of the tree, counted without recursion.
         """
         count = 0
-        stack: list[Derivation] = [self]
+        stack: list[Derivation | Hole] = [self]
         while stack:
             node = stack.pop()
             count += 1
-            stack.extend(node.premises)
+            if isinstance(node, Derivation):
+                stack.extend(node.premises)
         return count
+
+
+type ProofNode = Derivation | Hole
+"""A derivation or an open hypothesis."""
 
 
 # ---------------------------------------------------------------------------
@@ -490,8 +535,6 @@ def evaluate_index(term: IndexTerm, binding: Mapping[str, Ground]) -> Ground:
     if isinstance(term, IndexLiteral):
         return _ground_literal(term)
     if isinstance(term, IndexConstructor):
-        if not term.arguments:
-            return term.name
         return (term.name, *(evaluate_index(item, binding) for item in term.arguments))
     if isinstance(term, IndexSum):
         total = term.constant
@@ -538,8 +581,6 @@ def match_index(term: IndexTerm, value: Ground, binding: Binding) -> bool:
     if isinstance(term, IndexLiteral):
         return _ground_literal(term) == value
     if isinstance(term, IndexConstructor):
-        if not term.arguments:
-            return value == term.name
         if not isinstance(value, tuple) or len(value) != len(term.arguments) + 1:
             return False
         if value[0] != term.name:
@@ -593,6 +634,25 @@ def _variables(term: IndexTerm) -> Iterator[IndexVariable]:
             yield from _variables(item)
     elif isinstance(term, IndexSum):
         yield from term.terms
+
+
+def _constructors(term: IndexTerm) -> Iterator[IndexConstructor]:
+    """The constructor applications in an index term.
+
+    Parameters
+    ----------
+    term : IndexTerm
+        The term.
+
+    Yields
+    ------
+    IndexConstructor
+        Each application, outermost first.
+    """
+    if isinstance(term, IndexConstructor):
+        yield term
+        for item in term.arguments:
+            yield from _constructors(item)
 
 
 def _bindable(term: IndexTerm, bound: set[str]) -> bool:
@@ -791,6 +851,69 @@ def _components(
 
 
 # ---------------------------------------------------------------------------
+# context structure
+
+
+class ContextStructure(QiecModel):
+    """The structural rules a context admits, as declared data.
+
+    A use of the variables of a context, read from left to right, is
+    licensed when it arises from the context in order by the declared
+    rules: exchange permutes uses, weakening drops a variable, and
+    contraction uses one twice. Nothing is inferred from how a context is
+    stored.
+
+    Parameters
+    ----------
+    exchange : bool
+        Whether variables may be used out of order.
+    weakening : bool
+        Whether a variable may go unused.
+    contraction : bool
+        Whether a variable may be used more than once.
+    """
+
+    exchange: bool = False
+    weakening: bool = False
+    contraction: bool = False
+
+    def admits(self, required: ContextStructure) -> bool:
+        """Whether every rule another structure needs is admitted here.
+
+        Parameters
+        ----------
+        required : ContextStructure
+            The rules a derivation uses.
+
+        Returns
+        -------
+        bool
+            True when each rule used is admitted.
+        """
+        return (
+            (self.exchange or not required.exchange)
+            and (self.weakening or not required.weakening)
+            and (self.contraction or not required.contraction)
+        )
+
+
+ORDERED = ContextStructure()
+"""No structural rule: every variable used once, in order (Lambek)."""
+
+LINEAR = ContextStructure(exchange=True)
+"""Exchange only: every variable used exactly once."""
+
+AFFINE = ContextStructure(exchange=True, weakening=True)
+"""Exchange and weakening: every variable used at most once."""
+
+RELEVANT = ContextStructure(exchange=True, contraction=True)
+"""Exchange and contraction: every variable used at least once."""
+
+CARTESIAN = ContextStructure(exchange=True, weakening=True, contraction=True)
+"""Every structural rule."""
+
+
+# ---------------------------------------------------------------------------
 # the presentation
 
 
@@ -822,6 +945,12 @@ class RulePresentation(QiecModel):
         Its axiom slots.
     conditions : tuple of NamedComputation
         The computations its side conditions name.
+    structure : ContextStructure
+        The structural rules its contexts admit. The default admits none:
+        exchange, weakening and contraction are never inferred.
+    equations : tuple of Equation
+        The equations between open derivations it intends an
+        interpretation to preserve.
 
     Raises
     ------
@@ -847,6 +976,12 @@ class RulePresentation(QiecModel):
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     conditions: tuple[NamedComputation, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    structure: ContextStructure = dx.field(
+        default=ORDERED, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    equations: tuple[Equation, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -923,6 +1058,17 @@ class RulePresentation(QiecModel):
             constructors=constructors,
             computations=self.conditions,
         )
+
+    @cached_property
+    def registry(self) -> KernelRegistry:
+        """The QIEC registry of the lowered module, resolved once.
+
+        Returns
+        -------
+        KernelRegistry
+            The registry derivations are checked against.
+        """
+        return validate_module(self.to_module())
 
     # ---- indexes --------------------------------------------------------
 
@@ -1126,6 +1272,12 @@ def _validate_presentation(presentation: RulePresentation) -> None:
         form = forms.get(judgment.family)
         if form is None:
             raise RuleError(f"{where} names an unknown judgment form")
+        for argument in judgment.arguments:
+            if any(not item.arguments for item in _constructors(argument)):
+                raise RuleError(
+                    f"{where} applies a nullary index constructor; write it as an "
+                    "IndexLiteral, its canonical form"
+                )
         if len(judgment.arguments) != len(form.indices):
             raise RuleError(
                 f"{where} gives {len(judgment.arguments)} arguments to "
@@ -1626,6 +1778,1065 @@ def presentation_of(signature: Signature) -> RulePresentation:
 
 
 # ---------------------------------------------------------------------------
+# open derivations
+
+
+class StructureError(RuleError):
+    """A derivation uses its context in a way the structure does not admit."""
+
+
+class OpenDerivation(QiecModel):
+    """A derivation with open hypotheses: an arrow of the free multicategory.
+
+    It derives its body's item from the items of its context, in order.
+    Its holes refer to the context by de Bruijn index, counted from the
+    innermost (last) item, and inside a premise with hypotheses the
+    context is extended by them.
+
+    Parameters
+    ----------
+    context : tuple of Item
+        The hypotheses, outermost first.
+    body : Derivation or Hole
+        The derivation.
+    """
+
+    context: tuple[Item, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    body: Derivation | Hole = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    @property
+    def item(self) -> Item:
+        """The item derived.
+
+        Returns
+        -------
+        Item
+            The body's item.
+        """
+        return self.body.item
+
+
+class Equation(QiecModel):
+    """An equation between two open derivations an interpretation may preserve.
+
+    Parameters
+    ----------
+    law : Law
+        The law the equation is an instance of.
+    left : OpenDerivation
+        One side.
+    right : OpenDerivation
+        The other side, with the same context and item.
+
+    Raises
+    ------
+    didactic.api.ValidationError
+        If the sides differ in context or item.
+    """
+
+    law: Law = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    left: OpenDerivation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    right: OpenDerivation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Require one context and one item on both sides.
+
+        Raises
+        ------
+        ValueError
+            If they differ.
+        """
+        if self.left.context != self.right.context or self.left.item != self.right.item:
+            raise ValueError("the two sides of an equation share context and item")
+
+
+def identity(item: Item) -> OpenDerivation:
+    """The identity arrow on an item: its own hypothesis.
+
+    Parameters
+    ----------
+    item : Item
+        The item.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation of the item from itself.
+    """
+    return OpenDerivation(context=(item,), body=Hole(index=0, item=item))
+
+
+def _hypotheses(
+    presentation: RulePresentation, node: Derivation
+) -> tuple[tuple[Item, ...], ...]:
+    """The hypotheses each premise of a node is derived under.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    node : Derivation
+        The node.
+
+    Returns
+    -------
+    tuple of tuple of Item
+        One tuple per premise, outermost first.
+
+    Raises
+    ------
+    RuleError
+        If the node's constructor is not in the presentation, or its
+        number of premises is not the rule's.
+    """
+    rule = presentation.constructors_by_id.get(node.constructor)
+    if rule is None:
+        raise RuleError("a derivation names a rule of another presentation")
+    if isinstance(rule, AxiomSlot):
+        if node.premises:
+            raise RuleError(f"axiom {rule.name!r} has no premises")
+        return ()
+    if len(node.premises) != len(rule.premises):
+        raise RuleError(
+            f"{rule.name!r} takes {len(rule.premises)} premises, got {len(node.premises)}"
+        )
+    binding = dict(node.binding)
+    return tuple(
+        tuple(
+            Item(
+                family=hypothesis.family,
+                arguments=tuple(
+                    evaluate_index(a, binding) for a in hypothesis.arguments
+                ),
+            )
+            for hypothesis in premise.hypotheses
+        )
+        for premise in rule.premises
+    )
+
+
+def _map_holes(
+    presentation: RulePresentation,
+    body: ProofNode,
+    outer: int,
+    replace: Callable[[int, int], ProofNode],
+) -> ProofNode:
+    """Replace the holes that refer to the outer context of a derivation.
+
+    Holes bound by hypotheses inside the derivation are kept; a hole at
+    hypothesis depth ``d`` with index ``i >= d`` refers to outer level
+    ``outer - 1 - (i - d)``, and is replaced by ``replace(level, d)``.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation, for the hypotheses of each premise.
+    body : Derivation or Hole
+        The derivation.
+    outer : int
+        The length of its outer context.
+    replace : Callable[[int, int], Derivation or Hole]
+        The replacement of an outer level at a depth.
+
+    Returns
+    -------
+    Derivation or Hole
+        The derivation with the outer holes replaced.
+
+    Raises
+    ------
+    RuleError
+        If a hole refers outside the outer context.
+    """
+    if isinstance(body, Hole):
+        if body.index >= outer:
+            raise RuleError(f"hole {body.index} lies outside a context of {outer}")
+        return replace(outer - 1 - body.index, 0)
+    results: list[list[ProofNode]] = []
+    frames: list[tuple[Derivation, int, tuple[int, ...]]] = []
+
+    def enter(node: Derivation, depth: int) -> None:
+        """Start a node at a hypothesis depth.
+
+        Parameters
+        ----------
+        node : Derivation
+            The node.
+        depth : int
+            The hypotheses inside the outer context at the node.
+        """
+        frames.append(
+            (node, depth, tuple(len(h) for h in _hypotheses(presentation, node)))
+        )
+        results.append([])
+
+    enter(body, 0)
+    finished: ProofNode | None = None
+    while frames:
+        node, depth, widths = frames[-1]
+        done = results[-1]
+        if len(done) == len(node.premises):
+            frames.pop()
+            results.pop()
+            rebuilt = node.with_(premises=tuple(done))
+            if results:
+                results[-1].append(rebuilt)
+            else:
+                finished = rebuilt
+            continue
+        position = len(done)
+        child = node.premises[position]
+        inner = depth + (widths[position] if widths else 0)
+        if isinstance(child, Hole):
+            if child.index < inner:
+                done.append(child)
+            elif child.index - inner >= outer:
+                raise RuleError(
+                    f"hole {child.index} lies outside a context of {outer + inner}"
+                )
+            else:
+                done.append(replace(outer - 1 - (child.index - inner), inner))
+            continue
+        enter(child, inner)
+    assert finished is not None
+    return finished
+
+
+def _weaken(
+    presentation: RulePresentation, body: ProofNode, outer: int, by: int
+) -> ProofNode:
+    """A derivation moved under ``by`` new innermost hypotheses.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    body : Derivation or Hole
+        The derivation.
+    outer : int
+        The length of its context.
+    by : int
+        The hypotheses added.
+
+    Returns
+    -------
+    Derivation or Hole
+        The derivation with its outer holes shifted.
+    """
+    if by == 0:
+        return body
+    items = _hole_items(presentation, body, outer)
+
+    def shifted(level: int, depth: int) -> Hole:
+        """The hole of an outer level after the shift.
+
+        Parameters
+        ----------
+        level : int
+            The level in the old context.
+        depth : int
+            The hypotheses inside it.
+
+        Returns
+        -------
+        Hole
+            The same variable, indexed in the larger context.
+        """
+        return Hole(index=depth + by + outer - 1 - level, item=items[level])
+
+    return _map_holes(presentation, body, outer, shifted)
+
+
+def _hole_items(
+    presentation: RulePresentation, body: ProofNode, outer: int
+) -> dict[int, Item]:
+    """The item each outer hole of a derivation assumes.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    body : Derivation or Hole
+        The derivation.
+    outer : int
+        The length of its context.
+
+    Returns
+    -------
+    dict of int to Item
+        The item of each used outer level.
+
+    Raises
+    ------
+    RuleError
+        If two holes of one level assume different items.
+    """
+    items: dict[int, Item] = {}
+    stack: list[tuple[ProofNode, int]] = [(body, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, Hole):
+            if node.index >= depth:
+                level = outer - 1 - (node.index - depth)
+                known = items.setdefault(level, node.item)
+                if known != node.item:
+                    raise RuleError(f"level {level} is assumed at two items")
+            continue
+        for child, hypotheses in itertools.zip_longest(
+            node.premises, _hypotheses(presentation, node), fillvalue=()
+        ):
+            assert not isinstance(child, tuple)
+            stack.append((child, depth + len(hypotheses)))
+    return items
+
+
+def compose(
+    presentation: RulePresentation,
+    outer: OpenDerivation,
+    arguments: Sequence[OpenDerivation],
+) -> OpenDerivation:
+    """Plug derivations into the hypotheses of a derivation, in order.
+
+    This is composition in the free colored nonsymmetric multicategory:
+    hypothesis ``k`` of ``outer`` is replaced by ``arguments[k]``, and the
+    contexts of the arguments are concatenated in order. It needs no
+    structural rule.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    outer : OpenDerivation
+        The derivation whose hypotheses are filled.
+    arguments : Sequence of OpenDerivation
+        One derivation per hypothesis, of its item.
+
+    Returns
+    -------
+    OpenDerivation
+        The composite.
+
+    Raises
+    ------
+    RuleError
+        If the number of arguments or the item of one differs.
+    """
+    if len(arguments) != len(outer.context):
+        raise RuleError(
+            f"{len(outer.context)} hypotheses take as many derivations, got "
+            f"{len(arguments)}"
+        )
+    for position, (argument, item) in enumerate(
+        zip(arguments, outer.context, strict=True)
+    ):
+        if argument.item != item:
+            raise RuleError(f"argument {position} derives another item")
+    context = tuple(item for argument in arguments for item in argument.context)
+    offsets: list[int] = []
+    start = 0
+    for argument in arguments:
+        offsets.append(start)
+        start += len(argument.context)
+    total = len(context)
+    placed: list[ProofNode] = []
+    for argument, offset in zip(arguments, offsets, strict=True):
+        width = len(argument.context)
+        items = argument.context
+
+        def moved(
+            level: int,
+            depth: int,
+            offset: int = offset,
+            items: tuple[Item, ...] = items,
+        ) -> Hole:
+            """A hole of an argument, placed in the concatenated context.
+
+            Parameters
+            ----------
+            level : int
+                Its level in the argument's context.
+            depth : int
+                The hypotheses inside it.
+            offset : int
+                Where the argument's context starts.
+            items : tuple of Item
+                The argument's context.
+
+            Returns
+            -------
+            Hole
+                The same hypothesis in the new context.
+            """
+            return Hole(index=depth + total - 1 - (offset + level), item=items[level])
+
+        placed.append(_map_holes(presentation, argument.body, width, moved))
+
+    def filled(level: int, depth: int) -> ProofNode:
+        """The derivation that fills one hypothesis of ``outer``.
+
+        Parameters
+        ----------
+        level : int
+            The hypothesis.
+        depth : int
+            The hypotheses of ``outer`` inside it.
+
+        Returns
+        -------
+        Derivation or Hole
+            The argument, moved under those hypotheses.
+        """
+        return _weaken(presentation, placed[level], total, depth)
+
+    return OpenDerivation(
+        context=context,
+        body=_map_holes(presentation, outer.body, len(outer.context), filled),
+    )
+
+
+def substitute_hypotheses(
+    presentation: RulePresentation,
+    outer: OpenDerivation,
+    arguments: Sequence[OpenDerivation],
+    context: tuple[Item, ...],
+) -> OpenDerivation:
+    """Replace every hypothesis of a derivation by a derivation in one context.
+
+    Unlike `compose`, every argument is in the same context, so a
+    hypothesis used twice duplicates its argument and one unused drops
+    it. Whether that is licensed is a question for `required_structure`.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    outer : OpenDerivation
+        The derivation.
+    arguments : Sequence of OpenDerivation
+        One derivation per hypothesis, each in ``context``.
+    context : tuple of Item
+        The shared context.
+
+    Returns
+    -------
+    OpenDerivation
+        The substituted derivation.
+
+    Raises
+    ------
+    RuleError
+        If the number, items or contexts of the arguments differ.
+    """
+    if len(arguments) != len(outer.context):
+        raise RuleError("one derivation per hypothesis")
+    for position, (argument, item) in enumerate(
+        zip(arguments, outer.context, strict=True)
+    ):
+        if argument.item != item or argument.context != context:
+            raise RuleError(f"argument {position} has another item or context")
+    width = len(context)
+
+    def filled(level: int, depth: int) -> ProofNode:
+        """The argument of one hypothesis, under the inner hypotheses.
+
+        Parameters
+        ----------
+        level : int
+            The hypothesis.
+        depth : int
+            The hypotheses inside it.
+
+        Returns
+        -------
+        Derivation or Hole
+            The argument.
+        """
+        return _weaken(presentation, arguments[level].body, width, depth)
+
+    return OpenDerivation(
+        context=context,
+        body=_map_holes(presentation, outer.body, len(outer.context), filled),
+    )
+
+
+def rename(
+    presentation: RulePresentation,
+    derivation: OpenDerivation,
+    targets: Sequence[int],
+    context: tuple[Item, ...],
+) -> OpenDerivation:
+    """Move each hypothesis of a derivation to a position of a new context.
+
+    An injective, order-keeping renaming is a weakening; a permutation is
+    an exchange; a renaming that sends two hypotheses to one is a
+    contraction. The result says which rules it uses through
+    `required_structure`.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    derivation : OpenDerivation
+        The derivation.
+    targets : Sequence of int
+        The new level of each old level.
+    context : tuple of Item
+        The new context.
+
+    Returns
+    -------
+    OpenDerivation
+        The renamed derivation.
+
+    Raises
+    ------
+    RuleError
+        If a target is outside the new context or holds another item.
+    """
+    if len(targets) != len(derivation.context):
+        raise RuleError("one target per hypothesis")
+    for level, target in enumerate(targets):
+        if (
+            not 0 <= target < len(context)
+            or context[target] != derivation.context[level]
+        ):
+            raise RuleError(f"hypothesis {level} goes to a position of another item")
+    width = len(context)
+
+    def moved(level: int, depth: int) -> Hole:
+        """The hole of an old level in the new context.
+
+        Parameters
+        ----------
+        level : int
+            The old level.
+        depth : int
+            The hypotheses inside it.
+
+        Returns
+        -------
+        Hole
+            The renamed hole.
+        """
+        return Hole(
+            index=depth + width - 1 - targets[level], item=context[targets[level]]
+        )
+
+    return OpenDerivation(
+        context=context,
+        body=_map_holes(presentation, derivation.body, len(derivation.context), moved),
+    )
+
+
+def required_structure(
+    presentation: RulePresentation, derivation: OpenDerivation
+) -> ContextStructure:
+    """The structural rules a derivation uses.
+
+    In every scope (the derivation's context, and each premise with
+    hypotheses) the uses of visible hypotheses, read left to right, are
+    compared with the scope's context in order: a use out of order needs
+    exchange, a hypothesis of the scope not used needs weakening, and one
+    used twice needs contraction.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    derivation : OpenDerivation
+        The derivation.
+
+    Returns
+    -------
+    ContextStructure
+        The least structure that admits it.
+    """
+    exchange = weakening = contraction = False
+
+    def scope(body: ProofNode, width: int, own: range) -> list[int]:
+        """Check one scope and return the outer uses it leaves.
+
+        Parameters
+        ----------
+        body : Derivation or Hole
+            The derivation of the scope.
+        width : int
+            The length of the scope's context.
+        own : range
+            The levels this scope binds.
+
+        Returns
+        -------
+        list of int
+            The uses of levels below the scope's own, in order.
+        """
+        nonlocal exchange, weakening, contraction
+        uses = _uses(body, width)
+        if any(later < earlier for earlier, later in itertools.pairwise(uses)):
+            exchange = True
+        counts = Counter(level for level in uses if level in own)
+        if any(counts[level] == 0 for level in own):
+            weakening = True
+        if any(count > 1 for count in counts.values()):
+            contraction = True
+        return [level for level in uses if level < own.start]
+
+    def _uses(body: ProofNode, width: int) -> list[int]:
+        """The levels used in a scope, in order, after checking inner scopes.
+
+        Parameters
+        ----------
+        body : Derivation or Hole
+            The derivation.
+        width : int
+            The length of its context.
+
+        Returns
+        -------
+        list of int
+            The levels of the scope's context used, left to right.
+        """
+        if isinstance(body, Hole):
+            return [width - 1 - body.index]
+        found: list[int] = []
+        for child, hypotheses in zip(
+            body.premises,
+            _hypotheses(presentation, body) or ((),) * len(body.premises),
+            strict=True,
+        ):
+            if hypotheses:
+                inner = width + len(hypotheses)
+                found.extend(scope(child, inner, range(width, inner)))
+            else:
+                found.extend(_uses(child, width))
+        return found
+
+    width = len(derivation.context)
+    scope(derivation.body, width, range(0, width))
+    return ContextStructure(
+        exchange=exchange, weakening=weakening, contraction=contraction
+    )
+
+
+def check_structure(presentation: RulePresentation, derivation: OpenDerivation) -> None:
+    """Refuse a derivation that uses a structural rule the presentation lacks.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    derivation : OpenDerivation
+        The derivation.
+
+    Raises
+    ------
+    StructureError
+        Naming each rule used and not admitted.
+    """
+    required = required_structure(presentation, derivation)
+    missing = [
+        name
+        for name in ("exchange", "weakening", "contraction")
+        if getattr(required, name) and not getattr(presentation.structure, name)
+    ]
+    if missing:
+        raise StructureError(
+            f"the derivation uses {', '.join(missing)}, which "
+            f"{presentation.name!r} does not admit"
+        )
+
+
+def _static(value: Ground, sort: IndexSort) -> IndexTerm:
+    """The static index term of a ground value.
+
+    Parameters
+    ----------
+    value : Ground
+        The value.
+    sort : IndexSort
+        Its sort.
+
+    Returns
+    -------
+    IndexTerm
+        A literal for a number or a nullary constructor, an application
+        otherwise.
+
+    Raises
+    ------
+    RuleError
+        If the value does not fit the sort.
+    """
+    if isinstance(value, tuple):
+        if not isinstance(sort, UserIndexSort) or not value:
+            raise RuleError(f"{value!r} is not a constructor application")
+        name = value[0]
+        assert isinstance(name, str)
+        # Constructor arguments of a closed sort range over the same sort.
+        return IndexConstructor(
+            name=name,
+            arguments=tuple(_static(item, sort) for item in value[1:]),
+            sort=sort,
+        )
+    return IndexLiteral(value=value, sort=sort)
+
+
+def _item_type(presentation: RulePresentation, item: Item) -> TypeApplication:
+    """The QIEC type of the proofs of an item.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    item : Item
+        The item.
+
+    Returns
+    -------
+    TypeApplication
+        The family applied to the item's arguments as static terms.
+
+    Raises
+    ------
+    RuleError
+        If the item's form is unknown or its arguments do not fit.
+    """
+    form = presentation.judgments_by_id.get(item.family)
+    if form is None or len(form.indices) != len(item.arguments):
+        raise RuleError("an item does not fit its judgment form")
+    arguments: list[IndexTerm] = []
+    for binder, value in zip(form.indices, item.arguments, strict=True):
+        assert isinstance(binder, IndexBinder)
+        arguments.append(_static(value, binder.sort))
+    return _judgment_type(
+        Judgment(family=item.family, arguments=tuple(arguments)),
+        presentation.judgments_by_id,
+    )
+
+
+def check_derivation(
+    presentation: RulePresentation, derivation: OpenDerivation
+) -> None:
+    """Check a derivation with the QIEC checker.
+
+    Each node becomes a QIEC constructor value of its rule, with the
+    rule's telescope instantiated at the node's binding, its premises as
+    fields, and its values as literals; each hypothesis becomes a local of
+    its item's type. `quivers.qiec.checking.infer_value` then checks that
+    every field has the type the rule gives it and that the node has its
+    item's type. A premise with hypotheses is checked as its own value in
+    the context extended by them, and stands for a local of its type in
+    its parent, since QIEC has no function values.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    derivation : OpenDerivation
+        The derivation.
+
+    Raises
+    ------
+    RuleError
+        If a node names another presentation's rule, a hole assumes an
+        item other than its context's, or the checker refuses it.
+    """
+    registry = presentation.registry
+    hypotheses: list[Local] = []
+
+    def local(item: Item) -> Local:
+        """A fresh local of an item's proof type.
+
+        Parameters
+        ----------
+        item : Item
+            The item.
+
+        Returns
+        -------
+        Local
+            The local, named by its level.
+        """
+        return Local(
+            name=f"hypothesis{len(hypotheses)}", type=_item_type(presentation, item)
+        )
+
+    for item in derivation.context:
+        hypotheses.append(local(item))
+    pending: list[tuple[ProofNode, tuple[Local, ...], Item]] = [
+        (derivation.body, tuple(hypotheses), derivation.item)
+    ]
+    while pending:
+        body, scope, item = pending.pop()
+        context = CheckContext()
+        for entry in scope:
+            context = context.extend(entry)
+        value = _lower_value(presentation, body, scope, pending, local, hypotheses)
+        try:
+            found = infer_value(value, registry, context)
+        except KernelError as error:
+            raise RuleError(
+                f"the QIEC checker refuses the derivation: {error}"
+            ) from error
+        if found != _item_type(presentation, item):
+            raise RuleError("a derivation does not have its item's type")
+
+
+def _lower_value(
+    presentation: RulePresentation,
+    body: ProofNode,
+    scope: tuple[Local, ...],
+    pending: list[tuple[ProofNode, tuple[Local, ...], Item]],
+    local: Callable[[Item], Local],
+    hypotheses: list[Local],
+) -> Value:
+    """A derivation as a QIEC value in a scope of hypothesis locals.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+    body : Derivation or Hole
+        The derivation.
+    scope : tuple of Local
+        The locals of its context, outermost first.
+    pending : list
+        Scoped premises to check later, appended to.
+    local : Callable[[Item], Local]
+        Makes the local of a new hypothesis.
+    hypotheses : list of Local
+        Every local made so far, appended to.
+
+    Returns
+    -------
+    Value
+        The QIEC value.
+
+    Raises
+    ------
+    RuleError
+        If a hole is out of scope or assumes another item.
+    """
+    if isinstance(body, Hole):
+        if body.index >= len(scope):
+            raise RuleError(f"hole {body.index} lies outside its context")
+        entry = scope[len(scope) - 1 - body.index]
+        if entry.type != _item_type(presentation, body.item):
+            raise RuleError("a hole assumes another item than its context holds")
+        return Var(local=entry)
+    rule = presentation.constructors_by_id.get(body.constructor)
+    if rule is None:
+        raise RuleError("a derivation names a rule of another presentation")
+    binding = dict(body.binding)
+    static: list[IndexTerm] = []
+    for binder in rule.telescope:
+        assert isinstance(binder, IndexBinder)
+        if binder.name not in binding:
+            raise RuleError(f"{rule.name!r} leaves {binder.name!r} unbound")
+        static.append(_static(binding[binder.name], binder.sort))
+    fields: list[Value] = []
+    widths = _hypotheses(presentation, body)
+    for position, child in enumerate(body.premises):
+        extra = widths[position] if widths else ()
+        if not extra:
+            fields.append(
+                _lower_value(presentation, child, scope, pending, local, hypotheses)
+            )
+            continue
+        premise = rule.premises[position] if isinstance(rule, Rule) else None
+        assert premise is not None
+        target = Item(
+            family=premise.judgment.family,
+            arguments=tuple(
+                evaluate_index(a, binding) for a in premise.judgment.arguments
+            ),
+        )
+        inner = list(scope)
+        for item in extra:
+            made = local(item)
+            hypotheses.append(made)
+            inner.append(made)
+        pending.append((child, tuple(inner), target))
+        placeholder = local(target)
+        hypotheses.append(placeholder)
+        scope = (*scope, placeholder)
+        fields.append(Var(local=placeholder))
+    if len(body.values) != len(rule.values):
+        raise RuleError(f"{rule.name!r} carries {len(rule.values)} values")
+    for value, field in zip(body.values, rule.values, strict=True):
+        fields.append(LiteralValue(value=value, type=field.type))
+    return ConstructorValue(
+        constructor=rule.id,
+        static_arguments=tuple(static),
+        fields=tuple(fields),
+        result_type=_item_type(presentation, body.item),
+    )
+
+
+def term_derivation(
+    signature: Signature, term: Term, context: tuple[str, ...] = ()
+) -> OpenDerivation:
+    """The derivation of a structural term in its signature's presentation.
+
+    A constructor or binder node is a rule application, its data and
+    index arguments are values, and a bound variable is a hole.
+
+    Parameters
+    ----------
+    signature : Signature
+        The signature.
+    term : Term
+        The term.
+    context : tuple of str
+        The sorts of its free variables, outermost first.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation, in the context of the free variables.
+
+    Raises
+    ------
+    RuleError
+        If the term does not fit its signature.
+    """
+    rules = {rule.name: rule.id for rule in presentation_of(signature).rules}
+
+    def item(sort: str) -> Item:
+        """The item of an object sort.
+
+        Parameters
+        ----------
+        sort : str
+            The sort.
+
+        Returns
+        -------
+        Item
+            The item.
+        """
+        return Item(family=_sort_family(signature, sort))
+
+    frames: list[
+        tuple[
+            Term, tuple[str, ...], str, list[ProofNode], list[str | int | float | bool]
+        ]
+    ] = []
+    finished: ProofNode | None = None
+
+    def deliver(node: ProofNode) -> None:
+        """Hand a finished node to its parent.
+
+        Parameters
+        ----------
+        node : Derivation or Hole
+            The node.
+        """
+        nonlocal finished
+        if frames:
+            frames[-1][3].append(node)
+        else:
+            finished = node
+
+    def enter(node: Term, scope: tuple[str, ...], sort: str) -> None:
+        """Start a node, or finish a variable at once.
+
+        Parameters
+        ----------
+        node : Term
+            The node.
+        scope : tuple of str
+            The sorts of the variables in scope, outermost first.
+        sort : str
+            The sort the node must have.
+
+        Raises
+        ------
+        RuleError
+            If a variable is out of scope or of another sort.
+        """
+        if node.op == "BoundVar":
+            index = node.args[0]
+            assert isinstance(index, int)
+            if index >= len(scope) or scope[len(scope) - 1 - index] != sort:
+                raise RuleError(f"variable {index} is out of scope or of another sort")
+            deliver(Hole(index=index, item=item(sort)))
+            return
+        if signature.codomain_of(node.op) != sort:
+            raise RuleError(f"{node.op!r} does not produce sort {sort!r}")
+        frames.append((node, scope, sort, [], []))
+
+    enter(term, context, _sort_of_root(signature, term, context))
+    while frames:
+        node, scope, sort, premises, values = frames[-1]
+        domain = signature.domain_of(node.op)
+        position = len(premises) + len(values)
+        if position == len(node.args):
+            frames.pop()
+            deliver(
+                Derivation(
+                    constructor=rules[node.op],
+                    item=item(sort),
+                    values=tuple(values),
+                    premises=tuple(premises),
+                )
+            )
+            continue
+        argument = node.args[position]
+        argument_sort = domain[position]
+        inner = scope
+        binder = signature.binders.get(node.op)
+        if binder is not None:
+            annotations = sum(1 for b in binder.binds if b.annot_sort is not None)
+            if position >= annotations:
+                inner = scope + tuple(b.sort for b in binder.binds)
+        if signature.sorts[argument_sort].kind == "object":
+            if not isinstance(argument, Term):
+                raise RuleError(f"{node.op!r} takes a term at position {position}")
+            enter(argument, inner, argument_sort)
+        else:
+            if isinstance(argument, Term) or isinstance(argument, bytes):
+                raise RuleError(f"{node.op!r} takes a value at position {position}")
+            values.append(argument)
+    assert finished is not None
+    return OpenDerivation(context=tuple(item(sort) for sort in context), body=finished)
+
+
+def _sort_of_root(signature: Signature, term: Term, context: tuple[str, ...]) -> str:
+    """The sort of a term's root.
+
+    Parameters
+    ----------
+    signature : Signature
+        The signature.
+    term : Term
+        The term.
+    context : tuple of str
+        The sorts of its free variables.
+
+    Returns
+    -------
+    str
+        The sort.
+
+    Raises
+    ------
+    RuleError
+        If a root variable is out of scope.
+    """
+    if term.op == "BoundVar":
+        index = term.args[0]
+        assert isinstance(index, int)
+        if index >= len(context):
+            raise RuleError(f"variable {index} is out of scope")
+        return context[len(context) - 1 - index]
+    return signature.codomain_of(term.op)
+
+
+# ---------------------------------------------------------------------------
 # interpretations
 
 
@@ -1655,13 +2866,24 @@ class InterpretationDecl(QiecModel):
     )
 
 
-type Operation[B] = Callable[[Derivation, tuple[B, ...]], B]
+type Scoped[B] = Callable[[tuple[B, ...]], B]
+"""The value of a premise derived under hypotheses: a function of their
+values, outermost first. This is the context-indexed reading of a premise."""
+
+type PremiseValue[B] = B | Scoped[B]
+"""The value an operation receives for one premise."""
+
+type Operation[B] = Callable[[Derivation, tuple[PremiseValue[B], ...]], B]
 """The value of a rule application from its derivation node and the
 values of its premises, in premise order."""
 
 
 class HostInterpretation[B](ValueModel):
     """An interpretation by host functions, one per rule and slot.
+
+    A premise without hypotheses reaches its rule's operation as a value;
+    a premise with hypotheses reaches it as a function from the values of
+    the hypotheses, so a binder decides what its variables stand for.
 
     Parameters
     ----------
@@ -1690,11 +2912,8 @@ class HostInterpretation[B](ValueModel):
         if set(self.operations) != expected:
             raise ValueError("an interpretation has one operation per rule and slot")
 
-    def fold(self, derivation: Derivation) -> B:
-        """The value of a derivation: the unique map out of the initial algebra.
-
-        The cost is one operation per node; the traversal uses an explicit
-        stack.
+    def fold[V](self: HostInterpretation[V], derivation: Derivation) -> V:
+        """The value of a closed derivation: the unique map out of the initial algebra.
 
         Parameters
         ----------
@@ -1703,20 +2922,225 @@ class HostInterpretation[B](ValueModel):
 
         Returns
         -------
-        B
+        V
             Its value.
         """
-        values: dict[int, B] = {}
-        stack: list[tuple[Derivation, bool]] = [(derivation, False)]
-        while stack:
-            node, ready = stack.pop()
-            if ready:
-                children = tuple(values.pop(id(child)) for child in node.premises)
-                values[id(node)] = self.operations[node.constructor](node, children)
+        return self.fold_open(OpenDerivation(body=derivation), ())
+
+    def fold_open[V](
+        self: HostInterpretation[V],
+        derivation: OpenDerivation,
+        environment: tuple[V, ...],
+    ) -> V:
+        """The value of an open derivation at values of its hypotheses.
+
+        The cost is one operation per node; the traversal uses an explicit
+        stack, and a premise under hypotheses is folded when its rule's
+        operation applies it.
+
+        Parameters
+        ----------
+        derivation : OpenDerivation
+            The derivation.
+        environment : tuple of V
+            A value per hypothesis of its context, outermost first.
+
+        Returns
+        -------
+        V
+            Its value.
+
+        Raises
+        ------
+        RuleError
+            If the environment does not match the context, or a hole lies
+            outside it.
+        """
+        if len(environment) != len(derivation.context):
+            raise RuleError("one value per hypothesis")
+        return self._evaluate(derivation.body, environment)
+
+    def _evaluate[V](
+        self: HostInterpretation[V], body: ProofNode, environment: tuple[V, ...]
+    ) -> V:
+        """Fold a derivation in an environment.
+
+        Parameters
+        ----------
+        body : Derivation or Hole
+            The derivation.
+        environment : tuple of V
+            The values of its context, outermost first.
+
+        Returns
+        -------
+        V
+            Its value.
+
+        Raises
+        ------
+        RuleError
+            If a hole lies outside the environment.
+        """
+        if isinstance(body, Hole):
+            return _lookup(environment, body.index)
+        presentation = self.presentation
+        frames: list[tuple[Derivation, tuple[tuple[Item, ...], ...]]] = []
+        built: list[list[PremiseValue[V]]] = []
+        result: V | None = None
+        frames.append((body, _hypotheses(presentation, body)))
+        built.append([])
+        while frames:
+            node, widths = frames[-1]
+            done = built[-1]
+            if len(done) == len(node.premises):
+                frames.pop()
+                built.pop()
+                value = self.operations[node.constructor](node, tuple(done))
+                if built:
+                    built[-1].append(value)
+                else:
+                    result = value
                 continue
-            stack.append((node, True))
-            stack.extend((child, False) for child in reversed(node.premises))
-        return values[id(derivation)]
+            child = node.premises[len(done)]
+            extra = widths[len(done)] if widths else ()
+            if extra:
+                done.append(_scoped(self, child, environment))
+            elif isinstance(child, Hole):
+                done.append(_lookup(environment, child.index))
+            else:
+                frames.append((child, _hypotheses(presentation, child)))
+                built.append([])
+        assert result is not None
+        return result
+
+
+def _lookup[V](environment: tuple[V, ...], index: int) -> V:
+    """The value of a hypothesis by de Bruijn index.
+
+    Parameters
+    ----------
+    environment : tuple of V
+        The values, outermost first.
+    index : int
+        The index, from the innermost.
+
+    Returns
+    -------
+    V
+        The value.
+
+    Raises
+    ------
+    RuleError
+        If the index lies outside the environment.
+    """
+    if index >= len(environment):
+        raise RuleError(f"hole {index} lies outside a context of {len(environment)}")
+    return environment[len(environment) - 1 - index]
+
+
+def _scoped[V](
+    interpretation: HostInterpretation[V], child: ProofNode, environment: tuple[V, ...]
+) -> Scoped[V]:
+    """The value of a premise under hypotheses, as a function of theirs.
+
+    Parameters
+    ----------
+    interpretation : HostInterpretation
+        The interpretation.
+    child : Derivation or Hole
+        The premise's derivation.
+    environment : tuple of V
+        The values of the enclosing context.
+
+    Returns
+    -------
+    Scoped
+        The function from the hypotheses' values to the premise's value.
+    """
+
+    def apply(hypotheses: tuple[V, ...]) -> V:
+        """Fold the premise with its hypotheses bound.
+
+        Parameters
+        ----------
+        hypotheses : tuple of V
+            Their values, outermost first.
+
+        Returns
+        -------
+        V
+            The premise's value.
+        """
+        return interpretation._evaluate(child, environment + hypotheses)
+
+    return apply
+
+
+class EquationFails(RuleError):
+    """An interpretation gives the two sides of an equation different values."""
+
+
+def check_equation[V](
+    interpretation: HostInterpretation[V],
+    equation: Equation,
+    environments: Sequence[tuple[V, ...]],
+    equal: Callable[[V, V], bool],
+    *,
+    subject: ClaimSubject,
+    check: str,
+    domain: str,
+) -> LawClaim:
+    """Test whether an interpretation preserves an equation.
+
+    Both sides are folded at every environment. A test on finitely many
+    environments can refute preservation and cannot establish it, so the
+    claim it returns is tested, never proved.
+
+    Parameters
+    ----------
+    interpretation : HostInterpretation
+        The interpretation.
+    equation : Equation
+        The equation.
+    environments : Sequence of tuple of V
+        Values of the context to try.
+    equal : Callable[[V, V], bool]
+        Equality of values.
+    subject : ClaimSubject
+        The interpretation, as the claim names it.
+    check : str
+        The test that runs this.
+    domain : str
+        Where the environments come from.
+
+    Returns
+    -------
+    LawClaim
+        The tested claim that the interpretation preserves the equation's law.
+
+    Raises
+    ------
+    EquationFails
+        With the first environment at which the sides differ.
+    ValueError
+        If no environment is given.
+    """
+    if not environments:
+        raise ValueError("a test of an equation needs an environment")
+    for environment in environments:
+        left = interpretation.fold_open(equation.left, environment)
+        right = interpretation.fold_open(equation.right, environment)
+        if not equal(left, right):
+            raise EquationFails(
+                f"{equation.law.name!r} fails at {environment!r}: {left!r} and {right!r}"
+            )
+    return LawClaim(
+        law=equation.law,
+        subject=subject,
+        evidence=Tested(check=check, cases=len(environments), domain=domain),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1968,9 +3392,11 @@ class ReferenceInterpretation:
         total = zero
         for derivation in self.derivations(goal, height=height):
             product = weight(derivation)
-            stack = list(derivation.premises)
+            stack: list[ProofNode] = list(derivation.premises)
             while stack:
                 node = stack.pop()
+                if isinstance(node, Hole):
+                    raise RuleError("a reference derivation has no open hypothesis")
                 product = product * weight(node)
                 stack.extend(node.premises)
             total = total + product * observer(value(derivation))

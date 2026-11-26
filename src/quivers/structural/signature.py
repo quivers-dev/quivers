@@ -715,6 +715,353 @@ EMPTY_CONTEXT = Context()
 """The context with no bound variables."""
 
 
+# ---------------------------------------------------------------------------
+# renaming and substitution of de-Bruijn terms
+# ---------------------------------------------------------------------------
+
+
+class SubstitutionError(ValueError):
+    """A substitution cannot be applied to a term."""
+
+
+class Substitution(ValueModel):
+    """A simultaneous substitution of the free variables of de-Bruijn terms.
+
+    The variable with index ``i`` becomes ``replacements[i]`` when ``i`` is
+    below their number ``n``, and the variable ``i - n + shift``
+    otherwise. Every substitution of terms in a context of ``n + k``
+    variables by terms in a context of ``shift + k`` variables has this
+    form. A renaming is a substitution whose replacements are variables.
+
+    Parameters
+    ----------
+    replacements : tuple of Term
+        The replacements of the innermost variables.
+    shift : int
+        Where the remaining variables go; at least zero.
+
+    Raises
+    ------
+    didactic.api.ValidationError
+        If the shift is negative.
+    """
+
+    replacements: tuple[Term, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    shift: int = 0
+
+    @dx.model_validator()
+    def _check_shift(self) -> None:
+        """Require a nonnegative shift.
+
+        Raises
+        ------
+        ValueError
+            If the shift is negative.
+        """
+        if self.shift < 0:
+            raise ValueError("a substitution's shift is at least zero")
+
+    @classmethod
+    def weakening(cls, amount: int) -> Substitution:
+        """The renaming that makes room for new innermost variables.
+
+        Parameters
+        ----------
+        amount : int
+            How many variables are added.
+
+        Returns
+        -------
+        Substitution
+            The variable ``i`` goes to ``i + amount``.
+        """
+        return cls(shift=amount)
+
+    @classmethod
+    def renaming(cls, targets: tuple[int, ...], shift: int) -> Substitution:
+        """The renaming that sends variable ``i`` to ``targets[i]``.
+
+        Parameters
+        ----------
+        targets : tuple of int
+            The new index of each of the innermost variables.
+        shift : int
+            Where the remaining variables go.
+
+        Returns
+        -------
+        Substitution
+            The renaming.
+        """
+        return cls(replacements=tuple(bound_var(i) for i in targets), shift=shift)
+
+    def image(self, index: int) -> Term:
+        """The replacement of one variable.
+
+        Parameters
+        ----------
+        index : int
+            The variable.
+
+        Returns
+        -------
+        Term
+            Its replacement.
+        """
+        if index < len(self.replacements):
+            return self.replacements[index]
+        return bound_var(index - len(self.replacements) + self.shift)
+
+    def lift(self, count: int, signature: Signature) -> Substitution:
+        """The substitution under ``count`` new innermost variables.
+
+        Parameters
+        ----------
+        count : int
+            The variables a binder introduces.
+        signature : Signature
+            The signature of the terms.
+
+        Returns
+        -------
+        Substitution
+            The new variables go to themselves, and the replacements are
+            weakened past them.
+        """
+        if count == 0:
+            return self
+        weaken = Substitution.weakening(count)
+        return Substitution(
+            replacements=(
+                *(bound_var(i) for i in range(count)),
+                *(substitute(item, weaken, signature) for item in self.replacements),
+            ),
+            shift=self.shift + count,
+        )
+
+    def then(self, other: Substitution, signature: Signature) -> Substitution:
+        """The substitution that applies this one and then another.
+
+        Parameters
+        ----------
+        other : Substitution
+            The substitution applied second.
+        signature : Signature
+            The signature of the terms.
+
+        Returns
+        -------
+        Substitution
+            ``substitute(t, self.then(other)) == substitute(substitute(t,
+            self), other)`` for every term ``t``.
+        """
+        first = tuple(substitute(item, other, signature) for item in self.replacements)
+        count = len(other.replacements)
+        extra = other.replacements[self.shift :] if self.shift < count else ()
+        return Substitution(
+            replacements=(*first, *extra),
+            shift=other.shift + max(0, self.shift - count),
+        )
+
+
+def _scopes(signature: Signature, op: str) -> tuple[tuple[str, int], ...]:
+    """The sort and the number of new variables of each argument position.
+
+    Parameters
+    ----------
+    signature : Signature
+        The signature.
+    op : str
+        A constructor or binder.
+
+    Returns
+    -------
+    tuple of tuple of str and int
+        For each position its sort and how many variables it is under.
+
+    Raises
+    ------
+    SubstitutionError
+        If the operation is not declared.
+    """
+    constructor = signature.constructors.get(op)
+    if constructor is not None:
+        return tuple((sort, 0) for sort in constructor.domain)
+    binder = signature.binders.get(op)
+    if binder is None:
+        raise SubstitutionError(
+            f"op {op!r} is not a constructor or binder of signature {signature.name!r}"
+        )
+    count = len(binder.binds)
+    annotations = tuple(
+        (b.annot_sort, 0) for b in binder.binds if b.annot_sort is not None
+    )
+    return annotations + tuple((a.sort, count) for a in binder.scoped)
+
+
+def substitute(term: Term, substitution: Substitution, signature: Signature) -> Term:
+    """Apply a substitution to the free variables of a term.
+
+    It goes under binders by lifting the substitution, so a replacement is
+    never captured. An argument at an index-sorted position names a
+    variable and may only be renamed. The cost is the size of the term
+    times the cost of weakening each replacement used under binders; the
+    traversal uses an explicit stack.
+
+    Parameters
+    ----------
+    term : Term
+        The term.
+    substitution : Substitution
+        The substitution.
+    signature : Signature
+        The signature of the term.
+
+    Returns
+    -------
+    Term
+        The substituted term.
+
+    Raises
+    ------
+    SubstitutionError
+        If an operation is undeclared, an index position would receive a
+        term that is not a variable, or an argument's kind does not match
+        its position.
+    """
+    frames: list[tuple[Term, Substitution, tuple[tuple[str, int], ...]]] = []
+    built: list[list[TermArg]] = []
+    result: Term | None = None
+
+    def deliver(value: Term) -> Term | None:
+        """Hand a finished subterm to its parent, or return it at the root.
+
+        Parameters
+        ----------
+        value : Term
+            The finished subterm.
+
+        Returns
+        -------
+        Term or None
+            The value when it is the root, else ``None``.
+        """
+        if built:
+            built[-1].append(value)
+            return None
+        return value
+
+    def enter(node: Term, sigma: Substitution) -> Term | None:
+        """Start a subterm, or finish it at once when it is a variable.
+
+        Parameters
+        ----------
+        node : Term
+            The subterm.
+        sigma : Substitution
+            The substitution in its scope.
+
+        Returns
+        -------
+        Term or None
+            The root's result when the root is a variable.
+
+        Raises
+        ------
+        SubstitutionError
+            If the operation is undeclared or has the wrong arity.
+        """
+        if node.op == "BoundVar":
+            index = node.args[0]
+            assert isinstance(index, int)
+            return deliver(sigma.image(index))
+        scopes = _scopes(signature, node.op)
+        if len(scopes) != len(node.args):
+            raise SubstitutionError(
+                f"{node.op!r} takes {len(scopes)} arguments, got {len(node.args)}"
+            )
+        frames.append((node, sigma, scopes))
+        built.append([])
+        return None
+
+    result = enter(term, substitution)
+    while frames:
+        node, sigma, scopes = frames[-1]
+        position = len(built[-1])
+        if position == len(node.args):
+            frames.pop()
+            arguments = tuple(built.pop())
+            result = deliver(Term(op=node.op, args=arguments))
+            continue
+        sort, count = scopes[position]
+        argument = node.args[position]
+        inner = sigma.lift(count, signature)
+        if isinstance(argument, Term):
+            result = enter(argument, inner)
+            continue
+        declared = signature.sorts.get(sort)
+        if declared is not None and declared.kind == "index":
+            assert isinstance(argument, int)
+            image = inner.image(argument)
+            if image.op != "BoundVar":
+                raise SubstitutionError(
+                    f"index position of {node.op!r} would receive a term that "
+                    "is not a variable"
+                )
+            built[-1].append(image.args[0])
+        else:
+            built[-1].append(argument)
+    assert result is not None
+    return result
+
+
+def free_indices(term: Term, signature: Signature) -> frozenset[int]:
+    """The free variables of a term.
+
+    Parameters
+    ----------
+    term : Term
+        The term.
+    signature : Signature
+        Its signature.
+
+    Returns
+    -------
+    frozenset of int
+        The indices of its free variables in its context.
+
+    Raises
+    ------
+    SubstitutionError
+        If an operation is undeclared.
+    """
+    found: set[int] = set()
+    stack: list[tuple[Term, int]] = [(term, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if node.op == "BoundVar":
+            index = node.args[0]
+            assert isinstance(index, int)
+            if index >= depth:
+                found.add(index - depth)
+            continue
+        for (sort, count), argument in zip(
+            _scopes(signature, node.op), node.args, strict=True
+        ):
+            if isinstance(argument, Term):
+                stack.append((argument, depth + count))
+            elif (
+                signature.sorts.get(sort) is not None
+                and signature.sorts[sort].kind == "index"
+            ):
+                assert isinstance(argument, int)
+                if argument >= depth + count:
+                    found.add(argument - depth - count)
+    return frozenset(found)
+
+
 __all__ = [
     "DataLeaf",
     "TermArg",
@@ -734,4 +1081,8 @@ __all__ = [
     "ContextEntry",
     "Context",
     "EMPTY_CONTEXT",
+    "Substitution",
+    "SubstitutionError",
+    "free_indices",
+    "substitute",
 ]

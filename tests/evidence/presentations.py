@@ -36,7 +36,7 @@ from quivers.qiec.rules import (
     SideCondition,
 )
 from quivers.qiec.terms import Local, PrimitiveApplication, Return, Var
-from quivers.qiec.types import BOOL, INT, STRING, IndexConstructor, IndexVariable
+from quivers.qiec.types import BOOL, INT, STRING, IndexLiteral, IndexVariable
 from tests.evidence.oracles import derivations as tree_oracle
 from tests.evidence.oracles.derivations import (
     AxiomRow,
@@ -106,7 +106,7 @@ def position(name: str) -> IndexVariable:
     return IndexVariable(name=name, sort=NAT)
 
 
-def category(name: str) -> IndexConstructor:
+def category(name: str) -> IndexLiteral:
     """A category constant.
 
     Parameters
@@ -116,10 +116,10 @@ def category(name: str) -> IndexConstructor:
 
     Returns
     -------
-    IndexConstructor
-        The constant.
+    IndexLiteral
+        The constant, a nullary constructor of the category sort.
     """
-    return IndexConstructor(name=name, arguments=(), sort=CAT)
+    return IndexLiteral(value=name, sort=CAT)
 
 
 def span(label: str, start: str, end: str) -> Judgment:
