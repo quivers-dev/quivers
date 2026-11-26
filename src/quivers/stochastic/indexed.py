@@ -22,6 +22,7 @@ import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec.contracts import Phase, WorkField, WorkReport, measuring
+from quivers.stochastic.tries import Trie, TrieCounter, descend, insert, intersect
 from quivers.qiec.evaluator import Evaluator
 from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.rules import (
@@ -173,7 +174,7 @@ def join_order(rule: Rule, trigger: int) -> tuple[str, ...]:
     return tuple(order)
 
 
-type TrieNode = dict[Ground, TrieNode | Item]
+type TrieNode = Trie[Ground, Item]
 """A level of a premise's trie; its leaves are items. A premise without
 variables keeps its item under the key ``()``."""
 
@@ -711,15 +712,7 @@ class IndexedChart:
         ):
             return
         self.work["index_entries"] += 1
-        values = [binding[name] for name in variables] or [()]
-        node = root
-        for depth, value in enumerate(values):
-            if depth == len(values) - 1:
-                node[value] = item
-                return
-            child = node.setdefault(value, {})
-            assert isinstance(child, dict)
-            node = child
+        insert(root, [binding[name] for name in variables] or [()], item)
 
     def _generic(
         self,
@@ -757,26 +750,24 @@ class IndexedChart:
         """
         order = self._order(rule, trigger)
         others = [p for p in range(len(rule.premises)) if p != trigger]
-        tries = {p: self._trie(rule, trigger, p) for p in others}
-        nodes: dict[int, TrieNode | Item] = {}
-        for position in others:
-            variables, root = tries[position]
+        tries = [self._trie(rule, trigger, p) for p in others]
+        nodes: list[TrieNode | Item] = []
+        for variables, root in tries:
             self.work["lookups"] += 1
-            node: TrieNode | Item | None = root
             path = [binding[name] for name in variables if name in binding] or (
                 [()] if not variables else []
             )
-            for value in path:
-                if not isinstance(node, dict):
-                    return
-                node = node.get(value)
-                if node is None:
-                    return
-            nodes[position] = node
+            node = descend(root, path)
+            if node is None:
+                return
+            nodes.append(node)
         free = [name for name in order if name not in binding]
-        containing = [[p for p in others if name in tries[p][0]] for name in free]
+        containing = [
+            [index for index, (variables, _) in enumerate(tries) if name in variables]
+            for name in free
+        ]
         yield from self._intersect(
-            rule, trigger, item, admitted, free, containing, nodes, binding, 0
+            rule, trigger, item, admitted, free, containing, nodes, others, binding
         )
 
     def _intersect(
@@ -787,11 +778,11 @@ class IndexedChart:
         admitted: Callable[[Item], bool],
         free: list[str],
         containing: list[list[int]],
-        nodes: dict[int, TrieNode | Item],
+        nodes: list[TrieNode | Item],
+        others: list[int],
         binding: Binding,
-        depth: int,
     ) -> Iterator[tuple[Binding, tuple[Item, ...]]]:
-        """Bind the free variable at ``depth`` and recurse.
+        """Complete the instances by the intersection step and test each.
 
         Parameters
         ----------
@@ -806,79 +797,51 @@ class IndexedChart:
         free : list of str
             The variables the trigger leaves free, in order.
         containing : list of list of int
-            The premises containing each free variable.
-        nodes : dict of int to TrieNode or Item
+            For each free variable, the other premises containing it, as
+            indexes into ``others``.
+        nodes : list
             Each other premise's trie below the bound variables.
+        others : list of int
+            The positions of the other premises.
         binding : Binding
-            The variables bound so far.
-        depth : int
-            The next free variable.
+            The variables the trigger binds.
 
         Yields
         ------
         tuple of Binding and tuple of Item
             Complete instances.
         """
-        if depth == len(free):
-            chosen: list[Item] = []
-            for position in range(len(rule.premises)):
-                if position == trigger:
-                    chosen.append(item)
-                    continue
-                node = nodes[position]
+        counter = TrieCounter()
+        counted = 0
+        for full, leaves in intersect(free, containing, nodes, binding, counter):
+            seen = counter.iterated + counter.probes
+            self.work["candidates"] += seen - counted
+            counted = seen
+            chosen: dict[int, Item] = {}
+            if trigger >= 0:
+                chosen[trigger] = item
+            rejected = False
+            for position, node in zip(others, leaves, strict=True):
                 assert isinstance(node, Item)
                 if trigger >= 0 and position < trigger and node == item:
-                    return
+                    rejected = True
+                    break
                 if not admitted(node):
-                    return
-                chosen.append(node)
-            if not self.holds(rule, binding):
-                return
+                    rejected = True
+                    break
+                chosen[position] = node
+            if rejected or not self.holds(rule, full):
+                continue
             if trigger < 0:
                 conclusion = tuple(
-                    evaluate_index(argument, binding)
+                    evaluate_index(argument, full)
                     for argument in rule.conclusion.arguments
                 )
                 if conclusion != item.arguments:
-                    return
+                    continue
             self.work["instances"] += 1
-            yield dict(binding), tuple(chosen)
-            return
-        name = free[depth]
-        positions = containing[depth]
-        sets: list[TrieNode] = []
-        for position in positions:
-            node = nodes[position]
-            assert isinstance(node, dict)
-            sets.append(node)
-        smallest = min(range(len(sets)), key=lambda index: len(sets[index]))
-        for value in list(sets[smallest]):
-            self.work["candidates"] += 1
-            children: list[TrieNode | Item] = []
-            for index, table in enumerate(sets):
-                if index != smallest:
-                    self.work["candidates"] += 1
-                child = table.get(value)
-                if child is None:
-                    break
-                children.append(child)
-            else:
-                advanced = dict(nodes)
-                for position, child in zip(positions, children, strict=True):
-                    advanced[position] = child
-                binding[name] = value
-                yield from self._intersect(
-                    rule,
-                    trigger,
-                    item,
-                    admitted,
-                    free,
-                    containing,
-                    advanced,
-                    binding,
-                    depth + 1,
-                )
-                del binding[name]
+            yield full, tuple(chosen[p] for p in range(len(rule.premises)))
+        self.work["candidates"] += counter.iterated + counter.probes - counted
 
     def _extend(
         self,
