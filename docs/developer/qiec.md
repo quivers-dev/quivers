@@ -778,7 +778,7 @@ for the premise and rule weights. The iteration stops when two rounds agree in e
 certifies the value, or agree in every weight, within `tolerance` or exactly: in exact arithmetic
 that certifies the value, and in rounded arithmetic it stops only once more rounds have passed
 than the chart has items, which shows a cycle. `<name>__run` then sums the goal entries, which for a
-lexical system are the spans that cover the sentence and the items without positions.
+lexical system are the spans that cover the sentence and goal items of every other form.
 
 This iteration imposes no proof-height limit. Constructor depth can bound the reachable items,
 but convergence also depends on the weights and cycles in the rules. Passing `fuel` to
