@@ -20,6 +20,7 @@ from quivers.qiec.identifiers import StableId
 from quivers.qiec.rules import (
     LINEAR,
     ORDERED,
+    Operation,
     Derivation,
     Hole,
     HostInterpretation,
@@ -44,7 +45,7 @@ from quivers.qiec.rules import (
 )
 from quivers.qiec.identifiers import ConstructorId
 from quivers.structural.signature import Substitution, substitute
-from tests.evidence.oracles import binding
+from tests.evidence.oracles import binding, lambek
 from quivers.qiec.serialization import SerializationError, dumps, loads
 from tests.evidence import presentations as fixture
 from tests.evidence.checks._registry import Check
@@ -643,6 +644,438 @@ def _strings(presentation: RulePresentation) -> HostInterpretation[str]:
     )
 
 
+NP, S, N = ("np",), ("s",), ("n",)
+
+
+def _over(a: lambek.Type, b: lambek.Type) -> lambek.Type:
+    """The type ``a / b``.
+
+    Parameters
+    ----------
+    a, b : Type
+        The parts.
+
+    Returns
+    -------
+    Type
+        The type.
+    """
+    return ("/", a, b)
+
+
+def _under(b: lambek.Type, a: lambek.Type) -> lambek.Type:
+    """The type ``b \\ a``.
+
+    Parameters
+    ----------
+    b, a : Type
+        The parts.
+
+    Returns
+    -------
+    Type
+        The type.
+    """
+    return ("\\", b, a)
+
+
+def _hole(index: int, type_: lambek.Type) -> Hole:
+    """A hypothesis of a derived type.
+
+    Parameters
+    ----------
+    index : int
+        Its de Bruijn index.
+    type_ : Type
+        Its type.
+
+    Returns
+    -------
+    Hole
+        The hole.
+    """
+    return Hole(index=index, item=fixture.lambek_item(type_))
+
+
+def _rule(
+    name: str,
+    conclusion: lambek.Type,
+    a: lambek.Type,
+    b: lambek.Type,
+    premises: tuple[Derivation | Hole, ...],
+) -> Derivation:
+    """An application of a Lambek rule.
+
+    Parameters
+    ----------
+    name : str
+        The rule.
+    conclusion : Type
+        The type it derives.
+    a, b : Type
+        The rule's type variables.
+    premises : tuple of Derivation or Hole
+        Its premises.
+
+    Returns
+    -------
+    Derivation
+        The node.
+    """
+    return Derivation(
+        constructor=ConstructorId.derive("lambek", name),
+        item=fixture.lambek_item(conclusion),
+        binding=(
+            ("a", fixture.lambek_ground(a)),
+            ("b", fixture.lambek_ground(b)),
+        ),
+        premises=premises,
+    )
+
+
+def _open(context: tuple[lambek.Type, ...], body: Derivation) -> OpenDerivation:
+    """An open Lambek derivation.
+
+    Parameters
+    ----------
+    context : tuple of Type
+        The hypotheses.
+    body : Derivation
+        The derivation.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation in that context.
+    """
+    return OpenDerivation(
+        context=tuple(fixture.lambek_item(t) for t in context), body=body
+    )
+
+
+def raised_right() -> OpenDerivation:
+    """``np |- s / (np \\ s)``: the hypothesis ``np \\ s`` is on the right.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation.
+    """
+    verb = _under(NP, S)
+    inner = _rule("under-elim", S, S, NP, (_hole(1, NP), _hole(0, verb)))
+    return _open((NP,), _rule("over-intro", _over(S, verb), S, verb, (inner,)))
+
+
+def raised_left() -> OpenDerivation:
+    """``np |- (s / np) \\ s``: the hypothesis ``s / np`` is on the left.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation.
+    """
+    verb = _over(S, NP)
+    inner = _rule("over-elim", S, S, NP, (_hole(1, verb), _hole(0, NP)))
+    return _open((NP,), _rule("under-intro", _under(verb, S), S, verb, (inner,)))
+
+
+def composed() -> OpenDerivation:
+    """``s / np, np / n |- s / n``: composition, by a right hypothesis.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation.
+    """
+    inner = _rule(
+        "over-elim",
+        S,
+        S,
+        NP,
+        (
+            _hole(2, _over(S, NP)),
+            _rule("over-elim", NP, NP, N, (_hole(1, _over(NP, N)), _hole(0, N))),
+        ),
+    )
+    return _open(
+        (_over(S, NP), _over(NP, N)), _rule("over-intro", _over(S, N), S, N, (inner,))
+    )
+
+
+def crossed_right() -> OpenDerivation:
+    """``np |- s / (s / np)``, which uses its hypotheses out of order.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation.
+    """
+    verb = _over(S, NP)
+    inner = _rule("over-elim", S, S, NP, (_hole(0, verb), _hole(1, NP)))
+    return _open((NP,), _rule("over-intro", _over(S, verb), S, verb, (inner,)))
+
+
+def crossed_left() -> OpenDerivation:
+    """``np |- (np \\ s) \\ s``, which uses its hypotheses out of order.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation.
+    """
+    verb = _under(NP, S)
+    inner = _rule("under-elim", S, S, NP, (_hole(0, NP), _hole(1, verb)))
+    return _open((NP,), _rule("under-intro", _under(verb, S), S, verb, (inner,)))
+
+
+def _sequent(derivation: OpenDerivation) -> tuple[tuple[lambek.Type, ...], lambek.Type]:
+    """The sequent an open Lambek derivation proves.
+
+    Parameters
+    ----------
+    derivation : OpenDerivation
+        The derivation.
+
+    Returns
+    -------
+    tuple of tuple of Type and Type
+        The antecedent and the succedent, in the oracle's form.
+    """
+    return (
+        tuple(fixture.lambek_type(item) for item in derivation.context),
+        fixture.lambek_type(derivation.item),
+    )
+
+
+def check_lambek_planar() -> None:
+    """Require the Lambek slash rules to derive exactly the planar sequents.
+
+    The planar derivations pass the QIEC checker and an ordered context,
+    and their sequents are provable in the Lambek calculus. The crossed
+    ones pass the checker, need exchange, are refused in an ordered
+    context and admitted in a linear one, and their sequents are provable
+    only with permutation.
+
+    Raises
+    ------
+    Mismatch
+        If any of these fails.
+    """
+    presentation = fixture.LAMBEK
+    try:
+        for derivation in (raised_right(), raised_left(), composed()):
+            check_derivation(presentation, derivation)
+            check_structure(presentation, derivation)
+            if not lambek.provable(*_sequent(derivation)):
+                raise Mismatch(
+                    "value", math.inf, "a planar derivation proves no sequent"
+                )
+        for derivation in (crossed_right(), crossed_left()):
+            check_derivation(presentation, derivation)
+            antecedent, succedent = _sequent(derivation)
+            if lambek.provable(
+                antecedent, succedent
+            ) or not lambek.provable_with_exchange(antecedent, succedent):
+                raise Mismatch(
+                    "value", math.inf, "the oracle disagrees on a crossed sequent"
+                )
+            if not required_structure(presentation, derivation).exchange:
+                raise Mismatch("refusal", math.inf, "a crossed use needs no exchange")
+            try:
+                check_structure(presentation, derivation)
+            except StructureError:
+                pass
+            else:
+                raise Mismatch(
+                    "refusal", math.inf, "an ordered context admits a crossing"
+                )
+            check_structure(presentation.with_(structure=LINEAR), derivation)
+    except RuleError as error:
+        raise Mismatch(
+            "refusal", math.inf, f"a Lambek derivation refused: {error}"
+        ) from error
+
+
+def check_lambek_sides() -> None:
+    """Require the two slashes not to be interchangeable.
+
+    The left type raising with its introduction replaced by the right one
+    keeps its premise and claims ``np |- s / (s / np)``; the checker has
+    to refuse it, since its hypothesis is then on the other side.
+
+    Raises
+    ------
+    Mismatch
+        If the swapped derivation is admitted.
+    """
+    body = raised_left().body
+    assert isinstance(body, Derivation)
+    verb = _over(S, NP)
+    swapped = _open((NP,), _rule("over-intro", _over(S, verb), S, verb, body.premises))
+    try:
+        check_derivation(fixture.LAMBEK, swapped)
+        check_structure(fixture.LAMBEK, swapped)
+    except RuleError:
+        return
+    raise Mismatch("refusal", math.inf, "a hypothesis was accepted on the other side")
+
+
+def check_lambek_composition() -> None:
+    """Require the multicategory laws and functoriality with left hypotheses.
+
+    Raises
+    ------
+    Mismatch
+        If composing into a left-scoped hypothesis differs from the
+        derivation built by hand, a law fails, or folding does not commute.
+    """
+    presentation = fixture.LAMBEK
+    f = raised_left()
+    noun = _over(NP, N)
+    g = _open((noun, N), _rule("over-elim", NP, NP, N, (_hole(1, noun), _hole(0, N))))
+    failures = 0
+    try:
+        composite = compose_derivations(presentation, f, (g,))
+        verb = _over(S, NP)
+        inner = _rule(
+            "over-elim",
+            S,
+            S,
+            NP,
+            (
+                _hole(2, verb),
+                _rule("over-elim", NP, NP, N, (_hole(1, noun), _hole(0, N))),
+            ),
+        )
+        expected = _open(
+            (noun, N), _rule("under-intro", _under(verb, S), S, verb, (inner,))
+        )
+        if composite != expected:
+            failures += 1
+        check_derivation(presentation, composite)
+        check_structure(presentation, composite)
+        if not lambek.provable(*_sequent(composite)):
+            failures += 1
+        if (
+            compose_derivations(presentation, f, (identity_derivation(f.context[0]),))
+            != f
+        ):
+            failures += 1
+        unit = tuple(identity_derivation(item) for item in g.context)
+        if compose_derivations(presentation, composite, unit) != compose_derivations(
+            presentation, f, (compose_derivations(presentation, g, unit),)
+        ):
+            failures += 1
+        printer = lambek_printer(presentation)
+        whole = printer.fold_open(composite, ("d", "x"))
+        parts = printer.fold_open(f, (printer.fold_open(g, ("d", "x")),))
+        if whole != parts:
+            failures += 1
+    except RuleError as error:
+        raise Mismatch("value", math.inf, f"composition refused: {error}") from error
+    if failures:
+        raise Mismatch(
+            "value", float(failures), f"{failures} laws fail with left hypotheses"
+        )
+
+
+def lambek_printer(presentation: RulePresentation) -> HostInterpretation[str]:
+    """Read a Lambek derivation as a lambda term with directed abstractions.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The Lambek presentation.
+
+    Returns
+    -------
+    HostInterpretation of str
+        The reading.
+    """
+    ids = {rule.name: rule.id for rule in presentation.rules}
+
+    def apply_right(node: Derivation, values: tuple[PremiseValue[str], ...]) -> str:
+        """``f x`` for ``a / b``.
+
+        Parameters
+        ----------
+        node : Derivation
+            The node.
+        values : tuple
+            Function and argument.
+
+        Returns
+        -------
+        str
+            The application.
+        """
+        function, argument = closed_values(values)
+        return f"({function} {argument})"
+
+    def apply_left(node: Derivation, values: tuple[PremiseValue[str], ...]) -> str:
+        """``f x`` for ``b \\ a``.
+
+        Parameters
+        ----------
+        node : Derivation
+            The node.
+        values : tuple
+            Argument and function.
+
+        Returns
+        -------
+        str
+            The application.
+        """
+        argument, function = closed_values(values)
+        return f"({function} {argument})"
+
+    def abstract(side: str) -> Operation[str]:
+        """An abstraction over a hypothesis on one side.
+
+        Parameters
+        ----------
+        side : str
+            ``"/"`` or ``"\\"``.
+
+        Returns
+        -------
+        Operation of str
+            The operation.
+        """
+
+        def operation(node: Derivation, values: tuple[PremiseValue[str], ...]) -> str:
+            """The abstraction.
+
+            Parameters
+            ----------
+            node : Derivation
+                The node.
+            values : tuple
+                The body, scoped by the hypothesis.
+
+            Returns
+            -------
+            str
+                ``(side v. body)``.
+            """
+            body = values[0]
+            assert isinstance(body, Scoped)
+            return f"({side}v. {body(('v',))})"
+
+        return operation
+
+    return HostInterpretation[str](
+        presentation=presentation,
+        operations={
+            ids["over-elim"]: apply_right,
+            ids["under-elim"]: apply_left,
+            ids["over-intro"]: abstract("/"),
+            ids["under-intro"]: abstract("\\"),
+        },
+    )
+
+
 CHECKS: dict[str, Check] = {}
 """Every check of rule presentations by name."""
 
@@ -679,6 +1112,9 @@ for _name, _run in (
     ("binding/ordered-structure", check_ordered_structure),
     ("binding/multicategory", check_multicategory),
     ("binding/naturality", check_naturality),
+    ("lambek/planar", check_lambek_planar),
+    ("lambek/sides", check_lambek_sides),
+    ("lambek/composition", check_lambek_composition),
 ):
     _add(_name, _run)
 
@@ -762,8 +1198,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=f"{RULES}:_weaken",
         rewrites=(
             Rewrite(
-                old="return Hole(index=depth + by + outer - 1 - level, item=items[level])",
-                new="return Hole(index=depth + outer - 1 - level, item=items[level])",
+                old="index=inner_right + total - 1 - (left + level), item=items[level]",
+                new="index=inner_right + outer - 1 - level, item=items[level]",
             ),
         ),
         rejected_by=("binding/naturality", "binding/multicategory"),
@@ -781,6 +1217,34 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("binding/ordered-structure",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="side-of-hypotheses-ignored",
+        defect_class="order",
+        provenance="the left hypotheses of a premise are placed on its right",
+        target=f"{RULES}:extend_context",
+        rewrites=(
+            Rewrite(
+                old="return (*before, *context, *after)",
+                new="return (*context, *before, *after)",
+            ),
+        ),
+        rejected_by=("lambek/planar", "lambek/composition"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="left-hypotheses-counted-on-the-right",
+        defect_class="binding",
+        provenance="the hole arithmetic treats every hypothesis as a right one",
+        target=f"{RULES}:_counts",
+        rewrites=(
+            Rewrite(
+                old="return (len(before), len(after))",
+                new="return (0, len(before) + len(after))",
+            ),
+        ),
+        rejected_by=("lambek/composition",),
         min_effect=1.0,
     ),
     Mutation(

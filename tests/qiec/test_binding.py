@@ -43,7 +43,9 @@ from quivers.structural.signature import (
     free_indices,
     substitute,
 )
+from tests.evidence import presentation_controls as controls
 from tests.evidence import presentations as fixture
+from tests.evidence.oracles import lambek
 
 A = Item(family=fixture.FIRST)
 B = Item(family=fixture.SECOND)
@@ -378,3 +380,35 @@ def test_open_records_round_trip() -> None:
     presentation = fixture.ORDERED_PAIRS.with_(structure=LINEAR, equations=(equation,))
     for record in (pair(0, 1), equation, LINEAR, presentation):
         assert loads(dumps(record)) == record
+
+
+def test_left_and_right_hypotheses_fold_on_their_sides() -> None:
+    """Require a scoped premise to see its left block before the context."""
+    printer = controls.lambek_printer(fixture.LAMBEK)
+    assert printer.fold_open(controls.raised_right(), ("x",)) == "(/v. (v x))"
+    assert printer.fold_open(controls.raised_left(), ("x",)) == "(\\v. (v x))"
+
+
+def test_the_reference_refuses_open_premises() -> None:
+    """Require the closed-derivation oracle to refuse premises with hypotheses."""
+    with pytest.raises(RuleError):
+        ReferenceInterpretation(fixture.LAMBEK, ())
+
+
+def test_a_premise_declares_both_sides() -> None:
+    """Require the hypotheses of a premise to be its left block then its right."""
+    rule = fixture.LAMBEK.rules[3]
+    premise = rule.premises[0]
+    assert premise.before and not premise.after
+    assert premise.hypotheses == premise.before
+
+
+def test_the_lambek_oracle_on_known_sequents() -> None:
+    """Require the sequent oracle to agree with known facts of L and LP."""
+    np_, s = ("np",), ("s",)
+    assert lambek.provable((np_,), ("/", s, ("\\", np_, s)))
+    assert lambek.provable((np_,), ("\\", ("/", s, np_), s))
+    assert not lambek.provable((np_,), ("/", s, ("/", s, np_)))
+    assert lambek.provable_with_exchange((np_,), ("/", s, ("/", s, np_)))
+    assert not lambek.provable((("\\", np_, s), np_), s)
+    assert lambek.provable((np_, ("\\", np_, s)), s)

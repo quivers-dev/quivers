@@ -177,20 +177,40 @@ class Judgment(QiecModel):
 class Premise(QiecModel):
     """One premise of a rule, in its position.
 
+    The premise is derived in the context ``before + context + after``.
+    In an ordered context the two sides differ: in the Lambek calculus a
+    hypothesis on the right introduces ``A / B`` and one on the left
+    introduces ``B \\ A``.
+
     Parameters
     ----------
     judgment : Judgment
         What the premise has to derive.
-    hypotheses : tuple of Judgment
-        Judgments the premise may use as open hypotheses: the context it
-        is derived in is the rule's context extended by these, innermost
-        last.
+    before : tuple of Judgment
+        Hypotheses the premise may use that are inserted at the left of
+        the rule's context, outermost first.
+    after : tuple of Judgment
+        Hypotheses inserted at its right, outermost first.
     """
 
     judgment: Judgment = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    hypotheses: tuple[Judgment, ...] = dx.field(
+    before: tuple[Judgment, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
+    after: tuple[Judgment, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    @property
+    def hypotheses(self) -> tuple[Judgment, ...]:
+        """Every hypothesis of the premise, left block then right block.
+
+        Returns
+        -------
+        tuple of Judgment
+            ``before + after``.
+        """
+        return (*self.before, *self.after)
 
 
 class SideCondition(QiecModel):
@@ -1323,6 +1343,17 @@ def _validate_presentation(presentation: RulePresentation) -> None:
             for argument in rule.conclusion.arguments
             for variable in _variables(argument)
         }
+        # A variable of a hypothesis is fixed by the derivation that
+        # discharges it, as in an introduction rule; grounding forward
+        # from closed items cannot find it, and the reference
+        # interpretation refuses such rules.
+        bound |= {
+            variable.name
+            for premise in rule.premises
+            for hypothesis in premise.hypotheses
+            for argument in hypothesis.arguments
+            for variable in _variables(argument)
+        }
         if not conclusion <= bound:
             raise RuleError(
                 f"the conclusion of {rule.name!r} uses {sorted(conclusion - bound)}, "
@@ -1755,7 +1786,7 @@ def presentation_of(signature: Signature) -> RulePresentation:
         premises, values = split(annotations)
         for argument in binder.scoped:
             premises.append(
-                Premise(judgment=judgment(argument.sort), hypotheses=tuple(hypotheses))
+                Premise(judgment=judgment(argument.sort), after=tuple(hypotheses))
             )
         rules.append(
             Rule(
@@ -1871,9 +1902,37 @@ def identity_derivation(item: Item) -> OpenDerivation:
     return OpenDerivation(context=(item,), body=Hole(index=0, item=item))
 
 
-def _hypotheses(
-    presentation: RulePresentation, node: Derivation
-) -> tuple[tuple[Item, ...], ...]:
+def extend_context[T](
+    before: tuple[T, ...], context: tuple[T, ...], after: tuple[T, ...]
+) -> tuple[T, ...]:
+    """The context of a premise: its left hypotheses, the context, its right ones.
+
+    Every operation on open derivations places a premise's hypotheses by
+    this function or by the counts it implies, so the side of a
+    hypothesis is decided in one place.
+
+    Parameters
+    ----------
+    before : tuple
+        The left block.
+    context : tuple
+        The enclosing context.
+    after : tuple
+        The right block.
+
+    Returns
+    -------
+    tuple
+        ``before + context + after``.
+    """
+    return (*before, *context, *after)
+
+
+type Blocks = tuple[tuple[Item, ...], tuple[Item, ...]]
+"""The left and right hypotheses of one premise."""
+
+
+def _hypotheses(presentation: RulePresentation, node: Derivation) -> tuple[Blocks, ...]:
     """The hypotheses each premise of a node is derived under.
 
     Parameters
@@ -1885,8 +1944,9 @@ def _hypotheses(
 
     Returns
     -------
-    tuple of tuple of Item
-        One tuple per premise, outermost first.
+    tuple of Blocks
+        One pair of left and right blocks per premise, each outermost
+        first; empty for an axiom.
 
     Raises
     ------
@@ -1906,31 +1966,73 @@ def _hypotheses(
             f"{rule.name!r} takes {len(rule.premises)} premises, got {len(node.premises)}"
         )
     binding = dict(node.binding)
-    return tuple(
-        tuple(
+
+    def items(block: tuple[Judgment, ...]) -> tuple[Item, ...]:
+        """The items of a block of hypotheses at the node's binding.
+
+        Parameters
+        ----------
+        block : tuple of Judgment
+            The block.
+
+        Returns
+        -------
+        tuple of Item
+            Its items.
+        """
+        return tuple(
             Item(
                 family=hypothesis.family,
                 arguments=tuple(
                     evaluate_index(a, binding) for a in hypothesis.arguments
                 ),
             )
-            for hypothesis in premise.hypotheses
+            for hypothesis in block
         )
-        for premise in rule.premises
+
+    return tuple(
+        (items(premise.before), items(premise.after)) for premise in rule.premises
     )
+
+
+def _counts(blocks: tuple[Blocks, ...], position: int) -> tuple[int, int]:
+    """The numbers of left and right hypotheses of one premise.
+
+    Parameters
+    ----------
+    blocks : tuple of Blocks
+        The blocks of a node's premises, empty for an axiom.
+    position : int
+        The premise.
+
+    Returns
+    -------
+    tuple of int and int
+        The sizes of its left and right blocks.
+    """
+    if not blocks:
+        return (0, 0)
+    before, after = blocks[position]
+    return (len(before), len(after))
 
 
 def _map_holes(
     presentation: RulePresentation,
     body: ProofNode,
     outer: int,
-    replace: Callable[[int, int], ProofNode],
+    new_outer: int,
+    replace: Callable[[int, int, int], ProofNode],
 ) -> ProofNode:
     """Replace the holes that refer to the outer context of a derivation.
 
-    Holes bound by hypotheses inside the derivation are kept; a hole at
-    hypothesis depth ``d`` with index ``i >= d`` refers to outer level
-    ``outer - 1 - (i - d)``, and is replaced by ``replace(level, d)``.
+    Inside the derivation the context is the outer one with ``left``
+    hypotheses inserted at its left and ``right`` at its right, summed
+    over the premises above. Holes count from the right, so a hole with
+    index ``i`` is bound on the right when ``i < right``, refers to outer
+    level ``outer - 1 - (i - right)`` when ``i < right + outer``, and is
+    bound on the left otherwise. A right-bound hole is kept; an outer one
+    becomes ``replace(level, left, right)``; a left-bound one moves past a
+    new outer context of ``new_outer`` hypotheses.
 
     Parameters
     ----------
@@ -1940,8 +2042,12 @@ def _map_holes(
         The derivation.
     outer : int
         The length of its outer context.
-    replace : Callable[[int, int], Derivation or Hole]
-        The replacement of an outer level at a depth.
+    new_outer : int
+        The length of the outer context after the replacement.
+    replace : Callable[[int, int, int], Derivation or Hole]
+        The replacement of an outer level, given the left and right
+        hypotheses around it; it must be valid in a context of
+        ``left + new_outer + right`` hypotheses.
 
     Returns
     -------
@@ -1951,34 +2057,48 @@ def _map_holes(
     Raises
     ------
     RuleError
-        If a hole refers outside the outer context.
+        If a hole refers outside its context.
     """
-    if isinstance(body, Hole):
-        if body.index >= outer:
-            raise RuleError(f"hole {body.index} lies outside a context of {outer}")
-        return replace(outer - 1 - body.index, 0)
-    results: list[list[ProofNode]] = []
-    frames: list[tuple[Derivation, int, tuple[int, ...]]] = []
 
-    def enter(node: Derivation, depth: int) -> None:
-        """Start a node at a hypothesis depth.
+    def mapped(hole: Hole, left: int, right: int) -> ProofNode:
+        """One hole after the replacement.
 
         Parameters
         ----------
-        node : Derivation
-            The node.
-        depth : int
-            The hypotheses inside the outer context at the node.
-        """
-        frames.append(
-            (node, depth, tuple(len(h) for h in _hypotheses(presentation, node)))
-        )
-        results.append([])
+        hole : Hole
+            The hole.
+        left, right : int
+            The hypotheses around the outer context at it.
 
-    enter(body, 0)
+        Returns
+        -------
+        Derivation or Hole
+            The kept, replaced or moved hole.
+
+        Raises
+        ------
+        RuleError
+            If it lies outside its context.
+        """
+        if hole.index < right:
+            return hole
+        if hole.index < right + outer:
+            return replace(outer - 1 - (hole.index - right), left, right)
+        if hole.index < right + outer + left:
+            return hole.with_(index=hole.index - outer + new_outer)
+        raise RuleError(
+            f"hole {hole.index} lies outside a context of {left + outer + right}"
+        )
+
+    if isinstance(body, Hole):
+        return mapped(body, 0, 0)
+    results: list[list[ProofNode]] = []
+    frames: list[tuple[Derivation, int, int, tuple[Blocks, ...]]] = []
+    frames.append((body, 0, 0, _hypotheses(presentation, body)))
+    results.append([])
     finished: ProofNode | None = None
     while frames:
-        node, depth, widths = frames[-1]
+        node, left, right, blocks = frames[-1]
         done = results[-1]
         if len(done) == len(node.premises):
             frames.pop()
@@ -1991,26 +2111,27 @@ def _map_holes(
             continue
         position = len(done)
         child = node.premises[position]
-        inner = depth + (widths[position] if widths else 0)
+        before, after = _counts(blocks, position)
+        inner_left, inner_right = left + before, right + after
         if isinstance(child, Hole):
-            if child.index < inner:
-                done.append(child)
-            elif child.index - inner >= outer:
-                raise RuleError(
-                    f"hole {child.index} lies outside a context of {outer + inner}"
-                )
-            else:
-                done.append(replace(outer - 1 - (child.index - inner), inner))
+            done.append(mapped(child, inner_left, inner_right))
             continue
-        enter(child, inner)
+        frames.append(
+            (child, inner_left, inner_right, _hypotheses(presentation, child))
+        )
+        results.append([])
     assert finished is not None
     return finished
 
 
 def _weaken(
-    presentation: RulePresentation, body: ProofNode, outer: int, by: int
+    presentation: RulePresentation,
+    body: ProofNode,
+    outer: int,
+    left: int,
+    right: int,
 ) -> ProofNode:
-    """A derivation moved under ``by`` new innermost hypotheses.
+    """A derivation moved into a context with hypotheses on both sides.
 
     Parameters
     ----------
@@ -2020,36 +2141,38 @@ def _weaken(
         The derivation.
     outer : int
         The length of its context.
-    by : int
-        The hypotheses added.
+    left, right : int
+        The hypotheses added at the left and at the right.
 
     Returns
     -------
     Derivation or Hole
-        The derivation with its outer holes shifted.
+        The derivation in the context ``left + outer + right``.
     """
-    if by == 0:
+    if left == 0 and right == 0:
         return body
     items = _hole_items(presentation, body, outer)
+    total = left + outer + right
 
-    def shifted(level: int, depth: int) -> Hole:
-        """The hole of an outer level after the shift.
+    def shifted(level: int, inner_left: int, inner_right: int) -> Hole:
+        """The hole of an outer level after the move.
 
         Parameters
         ----------
         level : int
             The level in the old context.
-        depth : int
-            The hypotheses inside it.
+        inner_left, inner_right : int
+            The hypotheses around it inside the derivation.
 
         Returns
         -------
         Hole
             The same variable, indexed in the larger context.
         """
-        return Hole(index=depth + by + outer - 1 - level, item=items[level])
+        del inner_left
+        return Hole(index=inner_right + total - 1 - (left + level), item=items[level])
 
-    return _map_holes(presentation, body, outer, shifted)
+    return _map_holes(presentation, body, outer, total, shifted)
 
 
 def _hole_items(
@@ -2079,19 +2202,17 @@ def _hole_items(
     items: dict[int, Item] = {}
     stack: list[tuple[ProofNode, int]] = [(body, 0)]
     while stack:
-        node, depth = stack.pop()
+        node, right = stack.pop()
         if isinstance(node, Hole):
-            if node.index >= depth:
-                level = outer - 1 - (node.index - depth)
+            if right <= node.index < right + outer:
+                level = outer - 1 - (node.index - right)
                 known = items.setdefault(level, node.item)
                 if known != node.item:
                     raise RuleError(f"level {level} is assumed at two items")
             continue
-        for child, hypotheses in itertools.zip_longest(
-            node.premises, _hypotheses(presentation, node), fillvalue=()
-        ):
-            assert not isinstance(child, tuple)
-            stack.append((child, depth + len(hypotheses)))
+        blocks = _hypotheses(presentation, node)
+        for position, child in enumerate(node.premises):
+            stack.append((child, right + _counts(blocks, position)[1]))
     return items
 
 
@@ -2150,7 +2271,8 @@ def compose_derivations(
 
         def moved(
             level: int,
-            depth: int,
+            left: int,
+            right: int,
             offset: int = offset,
             items: tuple[Item, ...] = items,
         ) -> Hole:
@@ -2160,8 +2282,8 @@ def compose_derivations(
             ----------
             level : int
                 Its level in the argument's context.
-            depth : int
-                The hypotheses inside it.
+            left, right : int
+                The argument's own hypotheses around it.
             offset : int
                 Where the argument's context starts.
             items : tuple of Item
@@ -2172,30 +2294,31 @@ def compose_derivations(
             Hole
                 The same hypothesis in the new context.
             """
-            return Hole(index=depth + total - 1 - (offset + level), item=items[level])
+            del left
+            return Hole(index=right + total - 1 - (offset + level), item=items[level])
 
-        placed.append(_map_holes(presentation, argument.body, width, moved))
+        placed.append(_map_holes(presentation, argument.body, width, total, moved))
 
-    def filled(level: int, depth: int) -> ProofNode:
+    def filled(level: int, left: int, right: int) -> ProofNode:
         """The derivation that fills one hypothesis of ``outer``.
 
         Parameters
         ----------
         level : int
             The hypothesis.
-        depth : int
-            The hypotheses of ``outer`` inside it.
+        left, right : int
+            The hypotheses of ``outer`` around it.
 
         Returns
         -------
         Derivation or Hole
-            The argument, moved under those hypotheses.
+            The argument, moved between those hypotheses.
         """
-        return _weaken(presentation, placed[level], total, depth)
+        return _weaken(presentation, placed[level], total, left, right)
 
     return OpenDerivation(
         context=context,
-        body=_map_holes(presentation, outer.body, len(outer.context), filled),
+        body=_map_holes(presentation, outer.body, len(outer.context), total, filled),
     )
 
 
@@ -2241,26 +2364,26 @@ def substitute_hypotheses(
             raise RuleError(f"argument {position} has another item or context")
     width = len(context)
 
-    def filled(level: int, depth: int) -> ProofNode:
-        """The argument of one hypothesis, under the inner hypotheses.
+    def filled(level: int, left: int, right: int) -> ProofNode:
+        """The argument of one hypothesis, between the inner hypotheses.
 
         Parameters
         ----------
         level : int
             The hypothesis.
-        depth : int
-            The hypotheses inside it.
+        left, right : int
+            The hypotheses around it.
 
         Returns
         -------
         Derivation or Hole
             The argument.
         """
-        return _weaken(presentation, arguments[level].body, width, depth)
+        return _weaken(presentation, arguments[level].body, width, left, right)
 
     return OpenDerivation(
         context=context,
-        body=_map_holes(presentation, outer.body, len(outer.context), filled),
+        body=_map_holes(presentation, outer.body, len(outer.context), width, filled),
     )
 
 
@@ -2308,28 +2431,31 @@ def rename_hypotheses(
             raise RuleError(f"hypothesis {level} goes to a position of another item")
     width = len(context)
 
-    def moved(level: int, depth: int) -> Hole:
+    def moved(level: int, left: int, right: int) -> Hole:
         """The hole of an old level in the new context.
 
         Parameters
         ----------
         level : int
             The old level.
-        depth : int
-            The hypotheses inside it.
+        left, right : int
+            The hypotheses around it.
 
         Returns
         -------
         Hole
             The renamed hole.
         """
+        del left
         return Hole(
-            index=depth + width - 1 - targets[level], item=context[targets[level]]
+            index=right + width - 1 - targets[level], item=context[targets[level]]
         )
 
     return OpenDerivation(
         context=context,
-        body=_map_holes(presentation, derivation.body, len(derivation.context), moved),
+        body=_map_holes(
+            presentation, derivation.body, len(derivation.context), width, moved
+        ),
     )
 
 
@@ -2358,8 +2484,10 @@ def required_structure(
     """
     exchange = weakening = contraction = False
 
-    def scope(body: ProofNode, width: int, own: range) -> list[int]:
-        """Check one scope and return the outer uses it leaves.
+    def scope(
+        body: ProofNode, width: int, own: set[int], start: int, outer: int
+    ) -> list[int]:
+        """Check one scope and return the uses of its enclosing context.
 
         Parameters
         ----------
@@ -2367,27 +2495,31 @@ def required_structure(
             The derivation of the scope.
         width : int
             The length of the scope's context.
-        own : range
-            The levels this scope binds.
+        own : set of int
+            The positions this scope binds.
+        start : int
+            Where the enclosing context begins in the scope's.
+        outer : int
+            The length of the enclosing context.
 
         Returns
         -------
         list of int
-            The uses of levels below the scope's own, in order.
+            The uses of positions of the enclosing context, in order.
         """
         nonlocal exchange, weakening, contraction
         uses = _uses(body, width)
         if any(later < earlier for earlier, later in itertools.pairwise(uses)):
             exchange = True
-        counts = Counter(level for level in uses if level in own)
-        if any(counts[level] == 0 for level in own):
+        counts = Counter(position for position in uses if position in own)
+        if any(counts[position] == 0 for position in own):
             weakening = True
         if any(count > 1 for count in counts.values()):
             contraction = True
-        return [level for level in uses if level < own.start]
+        return [p - start for p in uses if start <= p < start + outer]
 
     def _uses(body: ProofNode, width: int) -> list[int]:
-        """The levels used in a scope, in order, after checking inner scopes.
+        """The positions used in a scope, in order, after checking inner scopes.
 
         Parameters
         ----------
@@ -2399,25 +2531,24 @@ def required_structure(
         Returns
         -------
         list of int
-            The levels of the scope's context used, left to right.
+            The positions of the scope's context used, left to right.
         """
         if isinstance(body, Hole):
             return [width - 1 - body.index]
         found: list[int] = []
-        for child, hypotheses in zip(
-            body.premises,
-            _hypotheses(presentation, body) or ((),) * len(body.premises),
-            strict=True,
-        ):
-            if hypotheses:
-                inner = width + len(hypotheses)
-                found.extend(scope(child, inner, range(width, inner)))
+        blocks = _hypotheses(presentation, body)
+        for position, child in enumerate(body.premises):
+            before, after = _counts(blocks, position)
+            if before or after:
+                inner = before + width + after
+                own = set(range(before)) | set(range(before + width, inner))
+                found.extend(scope(child, inner, own, before, width))
             else:
                 found.extend(_uses(child, width))
         return found
 
     width = len(derivation.context)
-    scope(derivation.body, width, range(0, width))
+    scope(derivation.body, width, set(range(width)), 0, width)
     return ContextStructure(
         exchange=exchange, weakening=weakening, contraction=contraction
     )
@@ -2560,16 +2691,17 @@ def check_derivation(
         Returns
         -------
         Local
-            The local, named by its level.
+            The local, named by its number, and recorded.
         """
-        return Local(
+        made = Local(
             name=f"hypothesis{len(hypotheses)}", type=_item_type(presentation, item)
         )
+        hypotheses.append(made)
+        return made
 
-    for item in derivation.context:
-        hypotheses.append(local(item))
+    context_locals = tuple(local(item) for item in derivation.context)
     pending: list[tuple[ProofNode, tuple[Local, ...], Item]] = [
-        (derivation.body, tuple(hypotheses), derivation.item)
+        (derivation.body, context_locals, derivation.item)
     ]
     while pending:
         body, scope, item = pending.pop()
@@ -2647,10 +2779,10 @@ def _lower_value(
             raise RuleError(f"{rule.name!r} leaves {binder.name!r} unbound")
         static.append(_static(binding[binder.name], binder.sort))
     fields: list[Value] = []
-    widths = _hypotheses(presentation, body)
+    blocks = _hypotheses(presentation, body)
     for position, child in enumerate(body.premises):
-        extra = widths[position] if widths else ()
-        if not extra:
+        before, after = blocks[position] if blocks else ((), ())
+        if not before and not after:
             fields.append(
                 _lower_value(
                     presentation, child, scope, pending, local, hypotheses, placeholders
@@ -2665,14 +2797,10 @@ def _lower_value(
                 evaluate_index(a, binding) for a in premise.judgment.arguments
             ),
         )
-        inner = list(scope)
-        for item in extra:
-            made = local(item)
-            hypotheses.append(made)
-            inner.append(made)
-        pending.append((child, tuple(inner), target))
+        left = tuple(local(item) for item in before)
+        right = tuple(local(item) for item in after)
+        pending.append((child, extend_context(left, scope, right), target))
         placeholder = local(target)
-        hypotheses.append(placeholder)
         placeholders.append(placeholder)
         fields.append(Var(local=placeholder))
     if len(body.values) != len(rule.values):
@@ -2880,8 +3008,9 @@ class InterpretationDecl(QiecModel):
 class Scoped[B](ValueModel):
     """The value of a premise derived under hypotheses.
 
-    It is a function of the hypotheses' values, outermost first: the
-    context-indexed reading of a premise. Calling it folds the premise
+    It is a function of the hypotheses' values, the premise's left block
+    then its right block, each outermost first: the context-indexed
+    reading of a premise. Calling it folds the premise
     with them bound.
 
     Parameters
@@ -3025,7 +3154,7 @@ class HostInterpretation[B](ValueModel):
         if isinstance(body, Hole):
             return _lookup(environment, body.index)
         presentation = self.presentation
-        frames: list[tuple[Derivation, tuple[tuple[Item, ...], ...]]] = []
+        frames: list[tuple[Derivation, tuple[Blocks, ...]]] = []
         built: list[list[PremiseValue[V]]] = []
         result: V | None = None
         frames.append((body, _hypotheses(presentation, body)))
@@ -3043,9 +3172,9 @@ class HostInterpretation[B](ValueModel):
                     result = value
                 continue
             child = node.premises[len(done)]
-            extra = widths[len(done)] if widths else ()
-            if extra:
-                done.append(_scoped(self, child, environment))
+            before, after = _counts(widths, len(done))
+            if before or after:
+                done.append(_scoped(self, child, environment, before))
             elif isinstance(child, Hole):
                 done.append(_lookup(environment, child.index))
             else:
@@ -3107,7 +3236,10 @@ def _lookup[V](environment: tuple[V, ...], index: int) -> V:
 
 
 def _scoped[V](
-    interpretation: HostInterpretation[V], child: ProofNode, environment: tuple[V, ...]
+    interpretation: HostInterpretation[V],
+    child: ProofNode,
+    environment: tuple[V, ...],
+    before: int,
 ) -> Scoped[V]:
     """The value of a premise under hypotheses, as a function of theirs.
 
@@ -3119,11 +3251,14 @@ def _scoped[V](
         The premise's derivation.
     environment : tuple of V
         The values of the enclosing context.
+    before : int
+        How many of the hypotheses are on the left.
 
     Returns
     -------
     Scoped
-        The function from the hypotheses' values to the premise's value.
+        The function from the hypotheses' values, the left block then the
+        right block, to the premise's value.
     """
 
     def apply(hypotheses: tuple[V, ...]) -> V:
@@ -3132,14 +3267,16 @@ def _scoped[V](
         Parameters
         ----------
         hypotheses : tuple of V
-            Their values, outermost first.
+            Their values: the left block, then the right block, each
+            outermost first.
 
         Returns
         -------
         V
             The premise's value.
         """
-        return interpretation._evaluate(child, environment + hypotheses)
+        context = extend_context(hypotheses[:before], environment, hypotheses[before:])
+        return interpretation._evaluate(child, context)
 
     return Scoped(apply=apply)
 
@@ -3248,6 +3385,15 @@ class ReferenceInterpretation:
         self.item_limit = item_limit
         self._leaves: dict[Item, list[Derivation]] = {}
         self._instances: dict[Item, list[tuple[Rule, Binding, tuple[Item, ...]]]] = {}
+        if any(
+            premise.hypotheses
+            for rule in presentation.rules
+            for premise in rule.premises
+        ):
+            raise RuleError(
+                "the reference interpretation lists closed derivations; a premise "
+                "with hypotheses is derived open, by an open derivation"
+            )
         self._ground()
 
     def _axiom(self, occurrence: AxiomOccurrence) -> Derivation:
@@ -3583,6 +3729,7 @@ __all__ = [
     "AFFINE",
     "AxiomOccurrence",
     "AxiomSlot",
+    "Blocks",
     "Binding",
     "CARTESIAN",
     "ContextStructure",
@@ -3624,6 +3771,7 @@ __all__ = [
     "check_structure",
     "compose_derivations",
     "evaluate_index",
+    "extend_context",
     "identity_derivation",
     "match_index",
     "named_conditions",

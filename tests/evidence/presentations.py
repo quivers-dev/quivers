@@ -28,6 +28,8 @@ from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
     Derivation,
+    Ground,
+    Item,
     Judgment,
     JudgmentDecl,
     Premise,
@@ -36,7 +38,14 @@ from quivers.qiec.rules import (
     SideCondition,
 )
 from quivers.qiec.terms import Local, PrimitiveApplication, Return, Var
-from quivers.qiec.types import BOOL, INT, STRING, IndexLiteral, IndexVariable
+from quivers.qiec.types import (
+    BOOL,
+    INT,
+    STRING,
+    IndexConstructor,
+    IndexLiteral,
+    IndexVariable,
+)
 from quivers.structural.signature import (
     Binder,
     BinderArgSpec,
@@ -49,6 +58,7 @@ from quivers.structural.signature import (
 )
 from quivers.structural.signature import Term as StructuralTerm
 from tests.evidence.oracles import binding as binding_oracle
+from tests.evidence.oracles import lambek as lambek_oracle
 from tests.evidence.oracles import derivations as tree_oracle
 from tests.evidence.oracles.derivations import (
     AxiomRow,
@@ -597,3 +607,229 @@ ORDERED_PAIRS = RulePresentation(
     ),
 )
 """A product of two resources in a context with no structural rule."""
+
+
+# -- the Lambek calculus ------------------------------------------------
+
+
+TYPE = UserIndexSort(
+    name="LambekType",
+    constructors=("np", "s", "n", "over", "under"),
+    arities=(0, 0, 0, 2, 2),
+)
+"""Atoms and the two slashes: ``over(a, b)`` is ``a / b`` and
+``under(b, a)`` is ``b \\\\ a``."""
+
+DER = FamilyId.derive("lambek", "der")
+"""The judgment that a type is derived."""
+
+
+def _type_variable(name: str) -> IndexVariable:
+    """A type variable.
+
+    Parameters
+    ----------
+    name : str
+        Its name.
+
+    Returns
+    -------
+    IndexVariable
+        The variable.
+    """
+    return IndexVariable(name=name, sort=TYPE)
+
+
+def _der(argument: IndexVariable | IndexConstructor) -> Judgment:
+    """The judgment of a type pattern.
+
+    Parameters
+    ----------
+    argument : IndexVariable or IndexConstructor
+        The type.
+
+    Returns
+    -------
+    Judgment
+        The judgment.
+    """
+    return Judgment(family=DER, arguments=(argument,))
+
+
+def _slash(name: str, first: str, second: str) -> IndexConstructor:
+    """A slash type pattern.
+
+    Parameters
+    ----------
+    name : str
+        ``"over"`` or ``"under"``.
+    first, second : str
+        Its argument variables, in constructor order.
+
+    Returns
+    -------
+    IndexConstructor
+        The pattern.
+    """
+    return IndexConstructor(
+        name=name,
+        arguments=(_type_variable(first), _type_variable(second)),
+        sort=TYPE,
+    )
+
+
+_TYPES = (IndexBinder(name="a", sort=TYPE), IndexBinder(name="b", sort=TYPE))
+
+LAMBEK = RulePresentation(
+    id=PresentationId.derive("lambek"),
+    name="lambek",
+    index_sorts=(TYPE,),
+    judgments=(
+        JudgmentDecl(
+            id=DER,
+            name="der",
+            indices=(IndexBinder(name="t", sort=TYPE, refinable=True),),
+        ),
+    ),
+    rules=(
+        Rule(
+            id=ConstructorId.derive("lambek", "over-elim"),
+            name="over-elim",
+            telescope=_TYPES,
+            premises=(
+                Premise(judgment=_der(_slash("over", "a", "b"))),
+                Premise(judgment=_der(_type_variable("b"))),
+            ),
+            conclusion=_der(_type_variable("a")),
+        ),
+        Rule(
+            id=ConstructorId.derive("lambek", "under-elim"),
+            name="under-elim",
+            telescope=_TYPES,
+            premises=(
+                Premise(judgment=_der(_type_variable("b"))),
+                Premise(judgment=_der(_slash("under", "b", "a"))),
+            ),
+            conclusion=_der(_type_variable("a")),
+        ),
+        Rule(
+            id=ConstructorId.derive("lambek", "over-intro"),
+            name="over-intro",
+            telescope=_TYPES,
+            premises=(
+                Premise(
+                    judgment=_der(_type_variable("a")),
+                    after=(_der(_type_variable("b")),),
+                ),
+            ),
+            conclusion=_der(_slash("over", "a", "b")),
+        ),
+        Rule(
+            id=ConstructorId.derive("lambek", "under-intro"),
+            name="under-intro",
+            telescope=_TYPES,
+            premises=(
+                Premise(
+                    judgment=_der(_type_variable("a")),
+                    before=(_der(_type_variable("b")),),
+                ),
+            ),
+            conclusion=_der(_slash("under", "b", "a")),
+        ),
+    ),
+)
+"""The product-free Lambek calculus in natural deduction, ordered contexts."""
+
+
+def lambek_item(type_: lambek_oracle.Type) -> Item:
+    """The item of a derived type.
+
+    Parameters
+    ----------
+    type_ : Type
+        The type in the oracle's form.
+
+    Returns
+    -------
+    Item
+        Its ``der`` item.
+    """
+    return Item(family=DER, arguments=(_ground(type_),))
+
+
+def _ground(type_: lambek_oracle.Type) -> Ground:
+    """A type in the ground form of the presentation.
+
+    Parameters
+    ----------
+    type_ : Type
+        The type in the oracle's form.
+
+    Returns
+    -------
+    Ground
+        A name for an atom, ``("over", a, b)`` or ``("under", b, a)``.
+    """
+    if len(type_) == 1:
+        return type_[0]
+    connective, first, second = type_
+    name = "over" if connective == "/" else "under"
+    return (name, _ground(first), _ground(second))
+
+
+def lambek_ground(type_: lambek_oracle.Type) -> Ground:
+    """A type in the ground form of the presentation.
+
+    Parameters
+    ----------
+    type_ : Type
+        The type in the oracle's form.
+
+    Returns
+    -------
+    Ground
+        Its ground value.
+    """
+    return _ground(type_)
+
+
+def lambek_type(item: Item) -> lambek_oracle.Type:
+    """The oracle's type of a ``der`` item.
+
+    Parameters
+    ----------
+    item : Item
+        The item.
+
+    Returns
+    -------
+    Type
+        Its type.
+    """
+    return _type(item.arguments[0])
+
+
+def _type(value: Ground) -> lambek_oracle.Type:
+    """The oracle's type of a ground type.
+
+    Parameters
+    ----------
+    value : Ground
+        The ground type.
+
+    Returns
+    -------
+    Type
+        The same type.
+
+    Raises
+    ------
+    ValueError
+        If the value is not a type.
+    """
+    if isinstance(value, str):
+        return (value,)
+    if not isinstance(value, tuple) or len(value) != 3:
+        raise ValueError(f"{value!r} is not a Lambek type")
+    name, first, second = value
+    return ("/" if name == "over" else "\\", _type(first), _type(second))

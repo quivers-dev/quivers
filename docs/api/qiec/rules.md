@@ -70,8 +70,11 @@ of the term.
 
 An [`OpenDerivation`][quivers.qiec.rules.OpenDerivation] derives an item from a context of
 hypotheses. Its [`Hole`][quivers.qiec.rules.Hole]s refer to the context by de Bruijn index,
-counted from the innermost hypothesis, and inside a premise that has hypotheses the context is
-extended by them. Open derivations are the arrows of the free colored nonsymmetric
+counted from the last (innermost) hypothesis. A [`Premise`][quivers.qiec.rules.Premise] declares
+where its hypotheses go: its `before` block at the left of the enclosing context and its `after`
+block at the right, so it is derived in `before + context + after`
+([`extend_context`][quivers.qiec.rules.extend_context] is the one place this is decided). In an
+ordered context the side matters. Open derivations are the arrows of the free colored nonsymmetric
 [multicategory](https://ncatlab.org/nlab/show/multicategory) of the presentation:
 [`identity_derivation`][quivers.qiec.rules.identity_derivation] is the identity, and
 [`compose_derivations`][quivers.qiec.rules.compose_derivations] plugs a derivation into each
@@ -93,8 +96,19 @@ which is how exchange, weakening and contraction are written, and
 [`substitute_hypotheses`][quivers.qiec.rules.substitute_hypotheses] replaces every hypothesis by a
 derivation in one shared context.
 
+The Lambek calculus is the example. Its slash eliminations are ordinary rules, and its
+introductions are premises with one hypothesis: on the right for `a / b`, on the left for
+`b \ a`. With [`ORDERED`][quivers.qiec.rules.ORDERED] structure exactly the planar derivations
+are admitted: type raising `np |- s / (np \ s)` and `np |- (s / np) \ s` and composition
+`s / np, np / n |- s / n` pass the QIEC checker and the structure check, and an independent
+cut-free sequent search proves their sequents. `np |- s / (s / np)` needs its hypotheses out of
+order; it is refused in an ordered context, admitted in a linear one, and provable only with
+permutation. Swapping a left introduction for a right one is refused by the checker, so the two
+slashes are not interchangeable.
+
 An interpretation is context indexed: a premise with hypotheses reaches its rule's operation as a
-[`Scoped`][quivers.qiec.rules.Scoped] function of the hypotheses' values, so a binder decides what
+[`Scoped`][quivers.qiec.rules.Scoped] function of the hypotheses' values (the left block, then the
+right block), so a binder decides what
 its variables stand for, and [`fold_open`][quivers.qiec.rules.HostInterpretation.fold_open] folds an
 open derivation at values of its context.
 
