@@ -198,7 +198,7 @@ instance. Each is a class with the operation it adds and the law it claims:
 | `NoZeroDivisors` | none | $a \otimes b = 0$ implies $a = 0$ or $b = 0$ | Boolean, Gödel, tropical, max-plus, log, Markov, real, counting, ProductFuzzy, Probability |
 | `Semifield` | `divide` | $(a \otimes b) \oslash b = a$ for $b \ne 0$ | Boolean, max-plus, log, Markov, real |
 | `Ring` | `subtract` | $a \oplus (0 \ominus a) = 0$ | real |
-| `Star` | `star`, `star_domain` | `star(A)` is the least solution of $X = I \oplus A X$ on the declared domain; outside it `star` raises `DivergentClosureError`, and where rounding cannot decide `UndecidedClosureError` | Boolean, Gödel, tropical, max-plus, log, Markov, counting |
+| `Star` | `star`, `star_domain` | `star(A)` is the least solution of $X = I \oplus A X$ on the declared domain; outside it `star` raises `DivergentClosureError`, and where rounding cannot decide `UndecidedClosureError` | Boolean, Gödel, tropical, max-plus, log, Markov, counting, and matrices over any of them (`StarMatrixSemiring`) |
 | `Semimodule` | `act`, `scalars` | the action is associative, unital, distributes over both sums and is annihilated by either zero | `FreeSemimodule` |
 
 A semifield has no zero divisors, so `Semifield` is a refinement of `NoZeroDivisors`. The
@@ -379,6 +379,23 @@ semiring whose zero is the zero matrix and whose unit is the identity matrix
 entry, to those of the base and to the generalized associativity and commutativity of its sum.
 The product does not commute for $n \ge 2$. The claims hold when the laws of the base are
 established.
+
+The closure of a matrix of blocks. Let `MatrixSemiring(S, k)` have a base $S$ with a closure, and
+write $\varphi : M_n(M_k(S)) \to M_{nk}(S)$ for the flattening
+$\varphi(A)[(i, a), (j, b)] = A[i, j][a, b]$. It is a bijection, it sends the entrywise sum to the
+entrywise sum and the zero to the zero, and it sends the block product to the product of the flat
+matrices, since
+$(AB)[i, j][a, b] = \bigoplus_l \bigoplus_c A[i, l][a, c] \otimes B[l, j][c, b]$ is the
+$((i, a), (j, b))$ entry of $\varphi(A)\varphi(B)$ by the generalized associativity and
+commutativity of $\oplus$; the block identity goes to the identity. So $\varphi$ is an isomorphism
+of semirings, and it preserves the order of sums, $x \le y$ when $x \oplus z = y$ for some $z$,
+because it preserves sums. A matrix $X$ solves $X = I \oplus A X$ exactly when $\varphi(X)$ solves
+$\varphi(X) = I \oplus \varphi(A)\varphi(X)$, and $X$ is least among the solutions exactly when
+$\varphi(X)$ is. Hence the closure of $A$ exists exactly when the base's closure of $\varphi(A)$
+does, the domain of the closure is the set of matrices whose flat matrix lies in the base's domain,
+and $A^* = \varphi^{-1}(\varphi(A)^*)$ is the least solution of $X = I \oplus A X$ and of
+$X = I \oplus X A$; the base's least-solution law transfers along $\varphi$. `StarMatrixSemiring`
+computes it so, and it is the closure of a semiring whose product does not commute.
 
 ### Vectors over a semiring {#proof-free-semimodule}
 

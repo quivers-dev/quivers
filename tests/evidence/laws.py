@@ -716,6 +716,13 @@ COUNT_MATRICES: tuple[Element, ...] = (
     [[1.0, 0.0], [1.0, 1.0]],
     [[0.0, 2.0], [1.0, 0.0]],
 )
+#: Two by two real matrices that do not commute; the reals have no closure.
+REAL_MATRICES: tuple[Element, ...] = (
+    [[0.0, 0.0], [0.0, 0.0]],
+    [[1.0, 0.0], [0.0, 1.0]],
+    [[2.0, -1.0], [0.0, 1.0]],
+    [[0.5, 0.0], [3.0, -2.0]],
+)
 SCORE_MATRICES: tuple[Element, ...] = (
     [[-INFINITY, -INFINITY], [-INFINITY, -INFINITY]],
     [[0.0, -INFINITY], [-INFINITY, 0.0]],
@@ -923,6 +930,12 @@ MEMBERS: dict[str, Member] = {
             MatrixSemiring(MAX_PLUS, 2),
             SCORE_MATRICES,
             matrix_reference(REFERENCES["MaxPlus"], 2),
+        ),
+        _row(
+            "matrix/Real",
+            MatrixSemiring(REAL, 2),
+            REAL_MATRICES,
+            matrix_reference(REFERENCES["Real"], 2),
         ),
         _row(
             "vector/Counting",
@@ -2316,8 +2329,9 @@ class ClosureCases(ValueModel):
     Parameters
     ----------
     kind : str
-        ``"idempotent"`` when the least solution is the sum of the first
-        ``n + 1`` powers, ``"linear"`` when it is ``(I - A)⁻¹``, ``"log"``
+        ``"series"`` when the least solution is the sum of the powers up
+        to the order of the flattened matrix (idempotent sums without a
+        gaining cycle, and nilpotent matrices), ``"linear"`` when it is ``(I - A)⁻¹``, ``"log"``
         when it is the logarithm of that of the exponentiated matrix.
     convergent : tuple of Element
         Square matrices inside the closure's domain, one of order zero.
@@ -2330,7 +2344,7 @@ class ClosureCases(ValueModel):
         decided over every matrix of order two.
     """
 
-    kind: Literal["idempotent", "linear", "log"]
+    kind: Literal["series", "linear", "log"]
     convergent: tuple[Element, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     divergent: tuple[Element, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -2344,7 +2358,7 @@ class ClosureCases(ValueModel):
 _LOG = math.log
 _NONE = -INFINITY
 _BOOLEAN_CLOSURES = ClosureCases(
-    kind="idempotent",
+    kind="series",
     convergent=(
         [],
         [[0.0, 1.0], [0.0, 0.0]],
@@ -2354,7 +2368,7 @@ _BOOLEAN_CLOSURES = ClosureCases(
     exhaustive=True,
 )
 _SCORE_CLOSURES = ClosureCases(
-    kind="idempotent",
+    kind="series",
     convergent=(
         [],
         [[-1.0, 0.0], [_NONE, _NONE]],
@@ -2391,11 +2405,11 @@ CLOSURE_CASES: dict[str, ClosureCases] = {
     "core/Boolean": _BOOLEAN_CLOSURES,
     "chart/Boolean": _BOOLEAN_CLOSURES,
     "core/Godel": ClosureCases(
-        kind="idempotent",
+        kind="series",
         convergent=([], [[0.5, 0.25], [1.0, 0.0]], [[0.0, 1.0], [0.25, 0.5]]),
     ),
     "core/Tropical": ClosureCases(
-        kind="idempotent",
+        kind="series",
         convergent=(
             [],
             [[0.0, 1.0], [2.5, INFINITY]],
@@ -2414,6 +2428,28 @@ CLOSURE_CASES: dict[str, ClosureCases] = {
     "chart/LogProb": _LOG_CLOSURES,
     "core/Counting": _COUNT_CLOSURES,
     "chart/Counting": _COUNT_CLOSURES,
+    "matrix/Counting": ClosureCases(
+        kind="series",
+        convergent=(
+            [],
+            [
+                [[[0.0, 1.0], [0.0, 0.0]], [[1.0, 0.0], [0.0, 0.0]]],
+                [[[0.0, 0.0], [0.0, 0.0]], [[0.0, 1.0], [0.0, 0.0]]],
+            ],
+        ),
+        divergent=([[[[1.0, 0.0], [0.0, 0.0]]]],),
+    ),
+    "matrix/MaxPlus": ClosureCases(
+        kind="series",
+        convergent=(
+            [],
+            [
+                [[[0.0, -1.0], [_NONE, -1.0]], [[_NONE, 2.0], [_NONE, _NONE]]],
+                [[[_NONE, _NONE], [_NONE, _NONE]], [[-1.0, _NONE], [0.0, -2.0]]],
+            ],
+        ),
+        divergent=([[[[1.0, _NONE], [_NONE, _NONE]]]],),
+    ),
     "core/Markov": ClosureCases(
         kind="linear",
         convergent=([], [[0.5, 0.25], [0.0, 0.5]], [[0.0, 0.5], [0.5, 0.0]]),
@@ -2423,28 +2459,32 @@ CLOSURE_CASES: dict[str, ClosureCases] = {
 """The closure cases of every row with a closure."""
 
 
-def _matrix(rows: Element, dtype: torch.dtype) -> torch.Tensor:
-    """A square matrix of plain numbers as a tensor.
+def _matrix(
+    rows: Element, dtype: torch.dtype, element: tuple[int, ...]
+) -> torch.Tensor:
+    """A square matrix of plain elements as a tensor.
 
     Parameters
     ----------
     rows : Element
-        Rows of numbers, or ``[]`` for the matrix of order zero.
+        Rows of elements, or ``[]`` for the matrix of order zero.
     dtype : torch.dtype
         The precision.
+    element : tuple of int
+        The shape of one element.
 
     Returns
     -------
     torch.Tensor
-        Shape ``(n, n)``.
+        Shape ``(n, n, *element)``.
     """
     assert isinstance(rows, list)
     if not rows:
-        return torch.zeros(0, 0, dtype=dtype)
+        return torch.zeros(0, 0, *element, dtype=dtype)
     return torch.tensor(rows, dtype=dtype)
 
 
-def reference_star(member: Member, rows: Element, kind: str) -> list[list[float]]:
+def reference_star(member: Member, rows: Element, kind: str) -> Element:
     """The least solution of ``X = I + A X``, from the reference operations.
 
     Parameters
@@ -2458,16 +2498,16 @@ def reference_star(member: Member, rows: Element, kind: str) -> list[list[float]
 
     Returns
     -------
-    list of list of float
+    Element
         The closure.
     """
     assert isinstance(rows, list)
     n = len(rows)
-    entry: list[list[float]] = [[_number(x) for x in row] for row in rows]  # type: ignore[union-attr]
-    if kind == "linear":
-        star = exact.linear_star([[Fraction(x) for x in row] for row in entry])
-        return [[float(x) for x in row] for row in star]
-    if kind == "log":
+    if kind in ("linear", "log"):
+        entry = [[_number(x) for x in row] for row in rows]  # type: ignore[union-attr]
+        if kind == "linear":
+            star = exact.linear_star([[Fraction(x) for x in row] for row in entry])
+            return [[float(x) for x in row] for row in star]
         weights = [
             [Fraction(math.exp(x)) if x != -INFINITY else Fraction(0) for x in row]
             for row in entry
@@ -2478,24 +2518,27 @@ def reference_star(member: Member, rows: Element, kind: str) -> list[list[float]
     assert reference.times is not None and reference.zero is not None
     assert reference.unit is not None
     times = reference.times
-    zero, unit = _number(reference.zero), _number(reference.unit)
-    power = [[unit if i == j else zero for j in range(n)] for i in range(n)]
+    zero, unit = reference.zero, reference.unit
+    blocks: list[list[Element]] = [list(row) for row in rows]  # type: ignore[arg-type]
+    shape = element_shape(member)
+    terms = n * (shape[0] if shape else 1)
+    power: list[list[Element]] = [
+        [unit if i == j else zero for j in range(n)] for i in range(n)
+    ]
     total = [row[:] for row in power]
-    for _ in range(n):
+    for _ in range(terms):
         power = [
             [
-                _number(
-                    reference.plus([times(power[i][k], entry[k][j]) for k in range(n)])
-                )
+                reference.plus([times(power[i][k], blocks[k][j]) for k in range(n)])
                 for j in range(n)
             ]
             for i in range(n)
         ]
         total = [
-            [_number(reference.plus([total[i][j], power[i][j]])) for j in range(n)]
+            [reference.plus([total[i][j], power[i][j]]) for j in range(n)]
             for i in range(n)
         ]
-    return total
+    return total  # type: ignore[return-value]
 
 
 def check_star(member: Member, dtype: torch.dtype) -> None:
@@ -2518,11 +2561,12 @@ def check_star(member: Member, dtype: torch.dtype) -> None:
     assert isinstance(structure, Star) and isinstance(structure, CompositionRule)
     cases = CLOSURE_CASES[member.name]
     for rows in cases.convergent:
-        a = _matrix(rows, dtype)
+        shape = element_shape(member)
+        a = _matrix(rows, dtype, shape)
         n = a.shape[0]
         found = structure.star(a)
-        wanted = torch.tensor(reference_star(member, rows, cases.kind), dtype=dtype)
-        agree(found, wanted.reshape(n, n), member, f"closure of {rows}")
+        wanted = _matrix(reference_star(member, rows, cases.kind), dtype, shape)
+        agree(found, wanted.reshape(n, n, *shape), member, f"closure of {rows}")
         unit = structure.identity_tensor((n,), dtype=dtype)
         agree(
             found,
@@ -2566,7 +2610,7 @@ def check_star_decided(member: Member, dtype: torch.dtype) -> int:
     cases = CLOSURE_CASES[member.name]
     for rows in cases.convergent:
         try:
-            structure.star(_matrix(rows, dtype))
+            structure.star(_matrix(rows, dtype, element_shape(member)))
         except (DivergentClosureError, UndecidedClosureError) as refusal:
             raise Mismatch(
                 "refusal", math.inf, f"{member.name}: {rows} refused with {refusal!r}"
@@ -2577,7 +2621,7 @@ def check_star_decided(member: Member, dtype: torch.dtype) -> int:
     ):
         for rows in group:
             try:
-                value = structure.star(_matrix(rows, dtype))
+                value = structure.star(_matrix(rows, dtype, element_shape(member)))
             except (DivergentClosureError, UndecidedClosureError) as refusal:
                 if type(refusal) is wanted:
                     continue
@@ -3527,6 +3571,24 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
         rejected_by=(
             "core/LogProb/second derivatives",
             "chart/LogProb/second derivatives",
+        ),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="block-closure-on-the-diagonal",
+        defect_class="order",
+        provenance="a closure of a matrix of blocks that closes each diagonal block alone",
+        target=f"{ALGEBRAS}:StarMatrixSemiring.star",
+        rewrites=(
+            Rewrite(
+                old="closed = base.star(flat)",
+                new="closed = torch.block_diag("
+                "*(base.star(matrix[i, i]) for i in range(n)))",
+            ),
+        ),
+        rejected_by=(
+            "matrix/Counting/star-least-solution",
+            "matrix/MaxPlus/star-least-solution",
         ),
         min_effect=1.0,
     ),

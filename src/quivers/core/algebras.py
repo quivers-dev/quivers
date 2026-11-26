@@ -5457,6 +5457,37 @@ class MatrixSemiring(OrderPreservingSemiring):
 
     tested = _UNITAL_TESTS
 
+    def __new__(cls, base: OrderPreservingSemiring, size: int) -> MatrixSemiring:
+        """Build the matrices over a base, with a closure when the base has one.
+
+        Parameters
+        ----------
+        base : OrderPreservingSemiring
+            The scalar semiring of the entries.
+        size : int
+            The order of the matrices.
+
+        Returns
+        -------
+        MatrixSemiring
+            A `StarMatrixSemiring` when ``base`` is a `Star`, else a
+            `MatrixSemiring`.
+        """
+        del size
+        if isinstance(base, Star) and issubclass(StarMatrixSemiring, cls):
+            return super().__new__(StarMatrixSemiring)
+        return super().__new__(cls)
+
+    def __getnewargs__(self) -> tuple[OrderPreservingSemiring, int]:
+        """The constructor's arguments, for copies and pickles.
+
+        Returns
+        -------
+        tuple
+            The base and the order.
+        """
+        return (self._base, self._size)
+
     def __init__(self, base: OrderPreservingSemiring, size: int) -> None:
         if base.element_shape != ():
             raise ValueError("matrix entries are scalars of the base")
@@ -5670,6 +5701,86 @@ class MatrixSemiring(OrderPreservingSemiring):
         """
         self._check(t)
         return self._base.contains(t).all(dim=-1).all(dim=-1)
+
+
+class StarMatrixSemiring(MatrixSemiring, Star):
+    """Square matrices over a semiring with a closure, closed as one flat matrix.
+
+    `MatrixSemiring` returns this class when its base is a `Star`. An
+    ``n × n`` matrix ``A`` whose entries are ``k × k`` matrices is the
+    ``nk × nk`` matrix ``φ(A)[(i, a), (j, b)] = A[i, j][a, b]`` of the
+    base, and ``φ`` is an isomorphism of semirings from ``M_n(M_k(S))``
+    onto ``M_nk(S)``. The closure of ``A`` is therefore
+    ``φ⁻¹(star(φ(A)))``: it exists exactly when the base's closure of the
+    flat matrix does, and it is the least solution of ``X = I ⊕ A X``
+    because ``φ`` maps solutions to solutions and preserves the order of
+    sums. This is the first closure whose product does not commute; it
+    solves both ``X = I ⊕ A X`` and ``X = I ⊕ X A``.
+
+    The constructor takes the parameters of `MatrixSemiring`.
+
+    Raises
+    ------
+    TypeError
+        If the base has no closure.
+    """
+
+    tested = _tests(unital=True, star=6)
+
+    def __init__(self, base: OrderPreservingSemiring, size: int) -> None:
+        if not isinstance(base, Star):
+            raise TypeError(f"{base!r} has no closure, so its matrices have none")
+        super().__init__(base, size)
+
+    @property
+    def star_domain(self) -> str:
+        """The matrices whose flat matrix lies in the base's closure domain.
+
+        Returns
+        -------
+        str
+            The domain.
+        """
+        base = self._base
+        assert isinstance(base, Star)
+        return (
+            "square matrices of blocks whose flattened matrix lies in the "
+            f"domain of {base.name}: {base.star_domain}"
+        )
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """The closure of a matrix of blocks, through its flat matrix.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n, k, k)``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``A*``, of the same shape.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the base's closure of the flat matrix diverges.
+        UndecidedClosureError
+            If rounding cannot decide it.
+        ValueError
+            If the matrix is not square in its blocks.
+        """
+        self._check(matrix)
+        if matrix.dim() != 4 or matrix.shape[0] != matrix.shape[1]:
+            raise ValueError(
+                f"a closure needs a square matrix of blocks; got shape {tuple(matrix.shape)}"
+            )
+        base = self._base
+        assert isinstance(base, Star)
+        n, k = matrix.shape[0], self._size
+        flat = matrix.permute(0, 2, 1, 3).reshape(n * k, n * k)
+        closed = base.star(flat)
+        return closed.reshape(n, k, n, k).permute(0, 2, 1, 3)
 
 
 class FreeSemimodule(Semimodule):
@@ -5930,6 +6041,7 @@ __all__ = [
     "CountingAlgebra",
     "MarkovAlgebra",
     "MatrixSemiring",
+    "StarMatrixSemiring",
     "FreeSemimodule",
     "PRODUCT_FUZZY",
     "BOOLEAN",
