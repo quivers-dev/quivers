@@ -16,6 +16,7 @@ import math
 import pytest
 
 from quivers.dsl import loads
+from quivers.qiec.contracts import ContractNotMet, FailurePolicy, Unestablished
 from quivers.qiec.program_runtime import run_deduction
 
 CHAIN = """
@@ -128,10 +129,24 @@ def test_an_ambiguous_sentence_longer_than_the_depth_counts_every_derivation(
 
 
 def test_a_cycle_of_unary_rules_converges_to_the_charts_fixed_point() -> None:
-    agenda, checked = _both(MODAL, "M", ["kim", "runs"])
+    program = loads(MODAL)
+    agenda = float(program.deductions["M"](["kim", "runs"]).goal_weight().detach())
     # Each bounded rule fires with weight 1/4, so an item and its Dia
     # each carry the series sum_k (1/16)^k = 16/15 around the cycle: once
     # for each word and once for the sentence.
     expected = 3 * math.log(16 / 15)
     assert agenda == pytest.approx(expected, abs=1e-4)
-    assert checked == pytest.approx(expected, abs=1e-4)
+    # The search stops when two weights agree within the tolerance while
+    # the chains keep growing, which shows nothing about the series' sum:
+    # it is refused, or held as unestablished.
+    with pytest.raises(ContractNotMet):
+        run_deduction(program.qiec, "M", tokens=["kim", "runs"])
+    held = run_deduction(
+        program.qiec,
+        "M",
+        tokens=["kim", "runs"],
+        on_failure=FailurePolicy.RETURN_UNESTABLISHED,
+    ).weight
+    assert isinstance(held, Unestablished)
+    assert held.report.stop.tag == "control-reached"
+    assert held.value == pytest.approx(expected, abs=1e-4)
