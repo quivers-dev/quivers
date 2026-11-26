@@ -14,8 +14,9 @@ $h : V \to W$ to every entry of a matrix [@kelly1982basic].
 ## 1. The built-in instances {#1-the-eleven-algebras}
 
 Each row gives the carrier, the two operations, and the unit and zero that the class
-implements. The last column names the structure, with the laws checked by hand against the
-definitions on [Setting §1](setting.md#1-weights-and-their-operations). The library checks none of
+implements. The last column names the structure. Each class states the laws of that structure
+as claims with a status, and the law grid of the evidence harness checks every claim of every
+shipped instance ([§6](#6-capabilities-and-the-status-of-laws)). The library checks none of
 these laws at run time.
 
 | Class (`name`) | Carrier | $a \otimes b$ | $\bigoplus_i a_i$ | $\mathbf 1$ | $\mathbf 0$ | Structure |
@@ -35,7 +36,8 @@ these laws at run time.
 The default for a finite weighted morphism is `ProductFuzzyAlgebra`. The classes record the
 structure: the eight semirings are subclasses of `Semiring`, the four idempotent ones (Boolean,
 Gödel, tropical, and max-plus) of `IdempotentSemiring`, and the three that are not semirings of
-`Algebra` only.
+`Algebra` only. Further properties are capabilities that a class also inherits, listed in
+[§6](#6-capabilities-and-the-status-of-laws).
 
 The [t-norms](https://en.wikipedia.org/wiki/T-norm) in the table are the product, Łukasiewicz,
 and minimum (Gödel) t-norms, each paired with a t-conorm: the probabilistic sum
@@ -125,7 +127,18 @@ maps are:
 Only `CountingToReal` and the identity are semiring homomorphisms between semirings, and only for
 them is $h_*$ a functor. `Embedding` preserves both operations, but its target is not a semiring.
 The two logarithm maps send $0$ to $\log 10^{-30} \approx -69$ instead of to the zero $-\infty$ of
-the target. `Morphism.change_base` applies either a `CarrierMap` or a
+the target.
+
+`SupportMap(source)` sends every entry other than the zero to true and the zero to false. It is a
+homomorphism onto the Boolean algebra exactly when sums and products of the source are the zero
+only when they must be: a sum only when every term is the zero (the source is *zero-sum-free*), a
+product only when a factor is (it has *no zero divisors*) [@golan1999semirings]. The map accepts a
+source by these two capabilities, and only when both claims are proved or checked, so a subclass
+that replaces an operation without its own proof is refused. The accepted sources are the
+Boolean, Gödel, tropical, max-plus, log, probability and counting semirings and the two algebras
+with a product t-norm (`ProductFuzzy` and `Probability`). The reals are refused, since
+$1 + (-1) = 0$, and so is the Łukasiewicz algebra, since
+$\tfrac12 \otimes \tfrac12 = 0$. `Morphism.change_base` applies either a `CarrierMap` or a
 [morphism transformation](composition-rules.md#5-first-class-transformations), such as softmax
 row normalization, which rewrites a whole matrix and is not an entrywise map.
 
@@ -148,8 +161,103 @@ not depend on the active instance.
 
 ## 5. Implementation
 
-Each instance implements `join` as a reduction over tensor axes. The log semiring computes
-$\log \sum_i e^{a_i}$ by subtracting the maximum first. When every $a_i$ is $-\infty$, an
-unguarded `torch.logsumexp` returns $-\infty$ with a gradient of `NaN`. The library returns
-$-\infty$ with a gradient of zero, because cells of a dynamic program that no derivation reaches
-are represented by such rows.
+Each instance implements `join` as a reduction over tensor axes. A reduction over an axis of size
+zero is the zero of the remaining shape, in the dtype and device of its input, and its derivative
+is zero ([§7](#7-carriers)). The log semiring computes $\log \sum_i e^{a_i}$ with
+`torch.logsumexp`, and its binary sum with `torch.logaddexp`. When every $a_i$ is $-\infty$, an
+unguarded `torch.logsumexp` returns $-\infty$ with a gradient of `NaN`. The library replaces such
+rows by zeros before the reduction and returns the constant $-\infty$, with a gradient of zero,
+because cells of a dynamic program that no derivation reaches are represented by such rows: the
+log of a sum of absent alternatives is $-\infty$ near them, so no mass moves.
+
+The semirings of chart parsing in `quivers.stochastic` are members of the same hierarchy.
+`ChartSemiring` is a `Semiring`, and `LogProbSemiring`, `ViterbiSemiring`, `BooleanSemiring` and
+`CountingSemiring` are the log, max-plus, Boolean and counting semirings read through the chart
+names of their operations: `times` is `tensor_op`, `plus` is `join`, `plus_pair` is `join_pair`,
+and `one` is `unit`. A chart therefore has the empty reductions, the impossible sums and the tie
+rule of the core instances.
+
+## 6. Capabilities and the status of laws
+
+The classes form one hierarchy. Above `Semiring`, whose product commutes, is
+`OrderPreservingSemiring`: a semiring whose product need not commute [@golan1999semirings].
+Matrices over it compose associatively and unitally, but a composite keeps the order of its
+factors, so a computation over such weights may reorder sums and may not exchange factors.
+`MatrixSemiring(base, n)` is the shipped member: $n \times n$ matrices over a scalar semiring,
+with the entrywise sum and the matrix product, which do not commute for $n \ge 2$.
+
+A *capability* is a further property that an executor asks for by type, never by the name of an
+instance. Each is a class with the operation it adds and the law it claims:
+
+| Capability | Operation | Law | Shipped members |
+|---|---|---|---|
+| `Carrier` | `zero_like`, `contains`, `element_shape`, `join` | the zero in the requested shape, dtype and device; a join over no terms is the zero | every algebra, `MatrixSemiring`, `FreeSemimodule` |
+| `UnitalCarrier` | `unit_like`, `tensor_op` | the unit in the requested shape, dtype and device | every algebra, `MatrixSemiring` |
+| `Selective` | `select`, `rank` | $a \oplus b$ is $a$ or $b$; the first best operand receives the derivative | Boolean, Gödel, tropical, max-plus |
+| `ZeroSumFree` | none | $a \oplus b = 0$ implies $a = b = 0$ | Boolean, Gödel, tropical, max-plus, log, Markov, counting, ProductFuzzy, Probability, Łukasiewicz |
+| `NoZeroDivisors` | none | $a \otimes b = 0$ implies $a = 0$ or $b = 0$ | Boolean, Gödel, tropical, max-plus, log, Markov, real, counting, ProductFuzzy, Probability |
+| `Semifield` | `divide` | $(a \otimes b) \oslash b = a$ for $b \ne 0$ | Boolean, max-plus, log, Markov, real |
+| `Ring` | `subtract` | $a \oplus (0 \ominus a) = 0$ | real |
+| `Semimodule` | `act`, `scalars` | the action is associative, unital, distributes over both sums and is annihilated by either zero | `FreeSemimodule` |
+
+A semifield has no zero divisors, so `Semifield` is a refinement of `NoZeroDivisors`. The
+tropical semiring on $[0, \infty]$ is not a semifield: the inverse of $1$ would be $-1$, which is
+not in its carrier. The counting semiring is not one either, since the naturals have no
+inverses; the nonnegative reals with division are the Markov semifield. `FreeSemimodule(K, n)`
+is the module of vectors of length $n$ over $K$, with the entrywise sum and $K$ acting on the left
+of every entry [@golan1999semirings]. It is the construction on which carriers of expected
+statistics are built, whose second component is acted on by probabilities.
+
+A class lists the laws it adds, and `laws()` collects them along the hierarchy. For each law a
+member claims, `claim(law)` returns a `LawClaim` with one of three statuses:
+
+- *proved*: a written argument, cited, establishes the law about the mathematical carrier. A
+  floating-point implementation satisfies no algebraic law exactly, so such a claim is about the
+  carrier, and rounding is a separate matter.
+- *checked*: a test on finite data establishes it. The laws about the implementation (the form
+  of the zero and the unit, the empty reduction, the tie rule) are of this kind, and the law grid
+  of the evidence harness checks them.
+- *assumed*: membership in the class is the only ground.
+
+The status is read from declarations of the member's own class and never inherited: a subclass
+may replace an operation, so its claims are assumed until it states its own argument.
+A structure built from another one, such as the matrices over a semiring, holds its laws by a
+theorem when the base holds its own, and its claims are as strong as the weakest claim of the base.
+A `CustomAlgebra` claims every law of an algebra, all of them assumed.
+`establishes(*names)` asks whether a member claims laws with a status other than assumed, and is
+how `SupportMap` decides. `weakest(claims)` gives the status that a computation using several
+claims can state.
+
+The law grid checks every claim of every shipped member, in float64 and float32, on every pair and
+triple of sample elements and on batches with axes of size zero. It compares the operations with
+a reference written in plain numbers, which catches a sum replaced by a maximum and a product
+whose factors are exchanged: both satisfy every law. Each law also has a member that claims it
+and breaks it, which the grid has to reject.
+
+## 7. Carriers
+
+One element of a carrier occupies the trailing `element_shape` axes of a tensor, and the leading
+axes index elements. A scalar carrier has `element_shape == ()`; a matrix of `MatrixSemiring(K, n)`
+has shape `(n, n)`. The scalar `zero` and `unit` of an `Algebra` are the constants; the general
+form is `zero_like(shape, like)` and `unit_like(shape, like)`, which give the constant at every
+index of `shape` in the dtype and device of `like`, without a gradient. A dtype that cannot hold
+the constant is refused: the zero $-\infty$ of the log semiring has no integer form.
+`identity_tensor(shape, dtype=..., device=...)` builds the identity matrix from them.
+
+`contains(t)` decides membership by the carrier's own predicate, and `validate(t)` refuses
+complex entries and elements outside the carrier. A `CustomAlgebra` decides membership by the
+`contains` it was given, and refuses to decide without one.
+
+A reduction over no terms is the zero. The reduction stays on the autograd graph of its input,
+so a derivative with respect to an empty input exists and is zero, rather than `None` or `NaN`.
+The meet of no terms is the top of the order where the carrier has one ($1$ on $[0, 1]$, $0$ in
+the tropical order); the reals, the log weights and the naturals have no greatest element, so
+their meet of no terms is refused.
+
+A selective sum returns one of its operands, and one rule decides which operand receives the
+derivative at a tie: the first best operand, in row-major order of the reduced axes, which is
+also the witness that `select` returns. In a binary sum `join_pair(a, b)` the first operand is
+`a`. Splitting the derivative over tied operands is another element of the subdifferential, but
+using it in one operation and not in another would make a derivative depend on how a sum is
+bracketed. The rule holds for reductions over any axes and for the chart semirings, which are the
+same operations.
