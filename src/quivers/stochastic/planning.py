@@ -58,12 +58,17 @@ from quivers.qiec.contracts import (
     Acyclic,
     Best,
     BestKnown,
+    Bounded,
     ComplexityBound,
     ComplexityClaim,
     ComplexityParameter,
     InadmissibleContract,
+    Fold,
+    Forest,
     Marginal,
+    NonlinearFold,
     NoRetention,
+    PackedForest,
     OccurrenceId,
     ParameterId,
     ParentCounts,
@@ -93,6 +98,7 @@ from quivers.qiec.rules import (
     evaluate_index,
 )
 from quivers.qiec.types import IndexLiteral, IndexSum, IndexTerm, IndexVariable
+from quivers.stochastic.forest import DerivationForest, build_forest
 from quivers.stochastic.indexed import ChartWork, IndexedChart
 
 __all__ = [
@@ -103,8 +109,11 @@ __all__ = [
     "Plan",
     "PlanRecord",
     "PlanRefusal",
+    "FOREST_ALGORITHM",
+    "FOREST_WORK",
     "PlanRefused",
     "RECOMPUTED_TWO_PASS_WORK",
+    "TWO_PASS_ALGORITHM",
     "TWO_PASS_LAWS",
     "TWO_PASS_WORK",
     "acyclicity_certificate",
@@ -634,6 +643,76 @@ TWO_PASS_WORK = _two_pass_work("autograd")
 RECOMPUTED_TWO_PASS_WORK = _two_pass_work("recompute")
 """The cost of two-pass evaluation with the recomputing backward pass."""
 
+FOREST_WORK = ComplexityClaim(
+    query="the packed forest of a presentation, and folds over its derivations",
+    parameters=(
+        ComplexityParameter(name="V", meaning="items"),
+        ComplexityParameter(name="E", meaning="grounded rule instances and inputs"),
+        ComplexityParameter(
+            name="J", meaning="candidates the keyed lookups return, at least E"
+        ),
+        ComplexityParameter(name="P", meaning="the most premises of one rule"),
+        ComplexityParameter(
+            name="H", meaning="the bound on height, one for an acyclic forest"
+        ),
+        ComplexityParameter(
+            name="L", meaning="the declared limit on the derivations enumerated"
+        ),
+        ComplexityParameter(
+            name="K",
+            meaning="the items, at each height, that derivations of the goal use",
+        ),
+    ),
+    model=ALGEBRA_OPERATIONS,
+    bounds=(
+        ComplexityBound(
+            phase=Phase.CONSTRUCTION,
+            resource="time",
+            expression="V + P E + J",
+            status=BestKnown(sources=(_EISNER,)),
+        ),
+        ComplexityBound(
+            phase=Phase.CONSTRUCTION,
+            resource="space",
+            expression="V + P E",
+            status=ProvedOptimal(
+                lower_bound="P E, the forest being the output",
+                model=ALGEBRA_OPERATIONS,
+                sources=(_READING,),
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="time",
+            expression="H (V + P E) for a linear fold; P L K for a nonlinear one",
+            status=BestKnown(sources=(_EISNER,)),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="space",
+            expression="H V for a linear fold; L K for a nonlinear one",
+            status=BestKnown(sources=(_EISNER,)),
+        ),
+    ),
+    inapplicable=(
+        PhaseInapplicable(
+            phase=Phase.DIFFERENTIATION,
+            reason="a fold is differentiated by autograd through its own operations",
+        ),
+        PhaseInapplicable(
+            phase=Phase.REFIT,
+            reason="the forest depends on the inputs only; a refit folds it again",
+        ),
+    ),
+    conditions=(
+        "a goal with more than L derivations is refused, exactly counted first",
+        "each listed item has at most L derivations, since each extends to "
+        "distinct derivations of the goal",
+        "a forest with a cycle is unfolded only within a bound on height",
+    ),
+)
+"""The cost of keeping the packed forest and folding over it."""
+
 
 class PlanRecord(QiecModel):
     """What a plan computes, how, under which assumptions, and at what cost.
@@ -802,6 +881,58 @@ class Plan(ValueModel):
         """
         return Item(family=family, arguments=arguments)
 
+    @property
+    def height(self) -> int | None:
+        """The bound on the height of derivations, under bounded recursion.
+
+        Returns
+        -------
+        int or None
+            The bound, or ``None`` for an acyclic system.
+        """
+        recursion = self.record.recursion
+        return recursion.limit if isinstance(recursion, Bounded) else None
+
+    def forest(self, axioms: Sequence[AxiomOccurrence]) -> DerivationForest:
+        """The packed forest over input occurrences.
+
+        Parameters
+        ----------
+        axioms : Sequence of AxiomOccurrence
+            The input occurrences.
+
+        Returns
+        -------
+        DerivationForest
+            The forest; fold it with `height` as its bound.
+
+        Raises
+        ------
+        PlanRefused
+            If the plan does not keep the packed forest.
+        """
+        if not isinstance(self.record.retention, PackedForest):
+            raise PlanRefused(
+                PlanRefusal.RETENTION_WITHOUT_EXECUTOR,
+                f"the plan keeps {self.record.retention.tag} provenance, not the forest",
+            )
+        return build_forest(self.presentation, axioms)
+
+    def _two_pass(self) -> None:
+        """Refuse the two-pass run of a system bounded by height.
+
+        Raises
+        ------
+        PlanRefused
+            If the recursion is bounded: its meaning counts only the
+            derivations within the bound, which the forest unfolds.
+        """
+        if not isinstance(self.record.recursion, Acyclic):
+            raise PlanRefused(
+                PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
+                "a system bounded by height is folded on its forest within the bound",
+            )
+
     def run(
         self,
         axioms: Sequence[AxiomOccurrence],
@@ -830,8 +961,10 @@ class Plan(ValueModel):
         Raises
         ------
         PlanRefused
-            If the derived hypergraph has a cycle.
+            If the derived hypergraph has a cycle, or the recursion is
+            bounded.
         """
+        self._two_pass()
         return _evaluate(self, axioms, inputs, like)
 
     def gradient(
@@ -877,6 +1010,7 @@ class Plan(ValueModel):
         KeyError
             If the goal is not derived.
         """
+        self._two_pass()
         if self.record.backward == "autograd":
             leaves = {
                 key: value.detach().requires_grad_() for key, value in inputs.items()
@@ -959,9 +1093,22 @@ TWO_PASS_LAWS: tuple[Law, ...] = (
 instances arrive, products of sums are expanded in premise order, and the
 unit stands for a rule or input without a weight."""
 
+TWO_PASS_ALGORITHM = "two-pass evaluation by parent counts on an indexed chart"
+"""The executor without provenance."""
+
+FOREST_ALGORITHM = (
+    "packed forest on an indexed chart; linear folds by dynamic programming over "
+    "it, nonlinear folds by enumeration within a declared limit"
+)
+"""The executor that keeps the packed forest."""
+
 _SUPPORTED_OBSERVABLES = (Weight, Support, Best, Marginal, Statistic)
 """The observables a two-pass run answers: values of items in the algebra,
 their support, best values with witnesses, and their derivatives."""
+
+_FOREST_OBSERVABLES = (*_SUPPORTED_OBSERVABLES, Fold, NonlinearFold, Forest)
+"""The observables a packed forest answers besides: folds of the
+derivations, linear or not, and the forest itself."""
 
 
 def plan(
@@ -971,8 +1118,17 @@ def plan(
     recursion: Recursion,
     accuracy: AccuracyContract,
     retention: Retention,
+    *,
+    claims: Sequence[LawClaim] = (),
 ) -> Plan:
     """Select and record an algorithm for a query.
+
+    With no retention or parent counts, the executor is two-pass
+    evaluation of an acyclic system. With a packed forest, the executor
+    builds the forest, computes linear folds over it by dynamic
+    programming and nonlinear ones by enumeration within a declared
+    limit; it also admits recursion bounded by the height of
+    derivations, which a forest with cycles unfolds within.
 
     Parameters
     ----------
@@ -988,6 +1144,9 @@ def plan(
         The accuracy contract.
     retention : Retention
         The provenance to keep; it must be the query's.
+    claims : Sequence of LawClaim
+        Further law claims the result may rest on, such as the linearity
+        of a fold; they are checked with the algebra's and recorded.
 
     Returns
     -------
@@ -1012,15 +1171,18 @@ def plan(
             recursion,
             accuracy,
             algebra=algebra.subject,
-            claims=algebra.claims(),
+            claims=(*algebra.claims(), *claims),
             uses=requirements(TWO_PASS_LAWS, algebra.subject),
         )
     except InadmissibleContract as error:
         raise PlanRefused(PlanRefusal.INADMISSIBLE, str(error)) from error
-    if not isinstance(recursion, Acyclic):
+    kept = isinstance(retention, PackedForest)
+    bounded = isinstance(recursion, Bounded) and recursion.measure == "height"
+    if not isinstance(recursion, Acyclic) and not (kept and bounded):
         raise PlanRefused(
             PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
-            f"the two-pass executor solves acyclic systems, not {recursion.tag}",
+            f"the two-pass executor solves acyclic systems, and the forest "
+            f"executor those and systems bounded by height, not {recursion.tag}",
         )
     if any(
         premise.hypotheses for rule in presentation.rules for premise in rule.premises
@@ -1029,21 +1191,23 @@ def plan(
             PlanRefusal.OPEN_PREMISES,
             "a premise with hypotheses is derived open; a chart holds closed items",
         )
-    if not isinstance(query.observable, _SUPPORTED_OBSERVABLES):
+    supported = _FOREST_OBSERVABLES if kept else _SUPPORTED_OBSERVABLES
+    if not isinstance(query.observable, supported):
         raise PlanRefused(
             PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR,
             f"a {query.observable.tag} result needs an executor not in this plan",
         )
-    if not isinstance(retention, (NoRetention, ParentCounts)):
+    if not isinstance(retention, (NoRetention, ParentCounts, PackedForest)):
         raise PlanRefused(
             PlanRefusal.RETENTION_WITHOUT_EXECUTOR,
-            f"{retention.tag} provenance is kept by the forest executor",
+            f"{retention.tag} provenance needs evidence restricted to patterns, "
+            "which the packed forest holds in full",
         )
     certificate = acyclicity_certificate(presentation)
     analysis = presentation.analysis
     assumptions = [
         "sums are reordered and products distributed over them, by the claimed "
-        "semiring laws; products keep the premise order",
+        "semiring laws; products keep the premise order, the rule weight last",
         "each instance is produced once, by the last of its premises to become "
         "final, at the first premise that item fills",
     ]
@@ -1058,6 +1222,20 @@ def plan(
             "the form graph has cycles and no measure was found; a cycle in the "
             "derived hypergraph is refused during the run"
         )
+    if kept:
+        assumptions.append(
+            "every input occurrence and every grounded instance is an edge of its "
+            "conclusion, so the forest's unfoldings are the derivations one to one"
+        )
+        assumptions.append(
+            "a nonlinear fold builds every derivation; a goal with more than the "
+            "declared limit is refused before any is built"
+        )
+        if bounded:
+            assumptions.append(
+                f"only derivations of height at most {recursion.limit} are "
+                "unfolded, an input having height one"
+            )
     budget = accuracy.budget
     backward: Literal["autograd", "recompute"] = (
         "recompute"
@@ -1070,18 +1248,22 @@ def plan(
         accuracy=accuracy,
         retention=retention,
         algebra=algebra.subject,
-        claims=algebra.claims(),
-        algorithm="two-pass evaluation by parent counts on an indexed chart",
+        claims=(*algebra.claims(), *claims),
+        algorithm=FOREST_ALGORITHM if kept else TWO_PASS_ALGORITHM,
         assumptions=tuple(assumptions),
         structure=analysis,
         certificate=certificate,
-        complexity=TWO_PASS_WORK
+        complexity=FOREST_WORK
+        if kept
+        else TWO_PASS_WORK
         if backward == "autograd"
         else RECOMPUTED_TWO_PASS_WORK,
         alternatives=(
             Alternative(
-                algorithm="agenda with dependency edges",
-                reason="stores every instance; the query needs values only",
+                algorithm=TWO_PASS_ALGORITHM if kept else FOREST_ALGORITHM,
+                reason="the observable needs the derivations, which only the forest keeps"
+                if kept
+                else "stores every instance; the query needs values only",
             ),
             Alternative(
                 algorithm="enumeration of derivations",
@@ -1167,7 +1349,7 @@ def _product(
     algebra : OrderPreservingSemiring
         The algebra.
     factors : Sequence of torch.Tensor
-        The factors, the rule weight first.
+        The factors: the premises' values in order, then the rule weight.
 
     Returns
     -------
@@ -1415,7 +1597,7 @@ def _evaluate(
                 operations["products"] += len(premises)
                 add(
                     conclusion,
-                    _product(algebra, [weight, *(values[p] for p in premises)]),
+                    _product(algebra, [*(values[p] for p in premises), weight]),
                 )
                 remaining[conclusion] -= 1
                 if remaining[conclusion] == 0:
@@ -1599,13 +1781,14 @@ def _recompute(
                 if source.weight is not None and source.weight in inputs
                 else algebra.unit_like((), like)
             )
-            factors = [weight]
+            factors = []
             for premise in premises:
                 if premise not in premise_leaves:
                     premise_leaves[premise] = (
                         evaluation.value(premise).detach().requires_grad_()
                     )
                 factors.append(premise_leaves[premise])
+            factors.append(weight)
             pieces.append(_product(algebra, factors))
         total = pieces[0]
         for piece in pieces[1:]:
@@ -1697,7 +1880,7 @@ def _witness(
                     )
                 continue
             weight = _weight(plan, source.weight, inputs, like)
-            term = _product(algebra, [weight, *(evaluation.value(p) for p in premises)])
+            term = _product(algebra, [*(evaluation.value(p) for p in premises), weight])
             if bool(torch.equal(term.detach(), target.detach())):
                 return Derivation(
                     constructor=source.id,
