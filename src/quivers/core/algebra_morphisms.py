@@ -20,7 +20,8 @@ entry.
 
 The shipped homomorphisms are `IdentityHom`, `Embedding` (of a
 sub-algebra such as ``BOOLEAN ↪ PRODUCT_FUZZY``), `CountingToReal`, and
-`SupportMap` on its declared source algebras.
+`SupportMap` on every source that establishes zero-sum-freeness and
+the absence of zero divisors.
 Every other shipped map (`MarkovToProductFuzzy`, `LogProb`, `MaxPlus`,
 `Threshold`, `ProductFuzzyToGodel`, `ProbabilityClamp`,
 `CountingFromReal`, `ProbabilityToReal`) is a `CarrierMap` that fails
@@ -43,20 +44,19 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from quivers.core._carriers import validate_carrier
 from quivers.core.algebras import (
+    BOOLEAN,
     COUNTING,
     GODEL,
     LOG_PROB,
     MARKOV,
     MAX_PLUS,
+    PRODUCT_FUZZY,
     PROBABILITY,
     REAL,
-)
-from quivers.core.algebras import (
-    BOOLEAN,
-    PRODUCT_FUZZY,
     Algebra,
+    NoZeroDivisors,
+    ZeroSumFree,
 )
 
 
@@ -85,13 +85,37 @@ class CarrierMap(ABC):
         with entries in ``target.L``.
 
         The shape is preserved; only the per-entry lattice changes.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries.
         """
 
     @property
     def name(self) -> str:
+        """The class name.
+
+        Returns
+        -------
+        str
+            The name of the map.
+        """
         return type(self).__name__
 
     def __repr__(self) -> str:
+        """The class with its source and target.
+
+        Returns
+        -------
+        str
+            The representation.
+        """
         return f"{type(self).__name__}({self.source.name} -> {self.target.name})"
 
 
@@ -108,48 +132,75 @@ class AlgebraHomomorphism(CarrierMap):
 
 
 class SupportMap(AlgebraHomomorphism):
-    """Map positive entries to true and zero entries to false.
+    """Map each entry other than the zero to true and the zero to false.
 
-    The supported source algebras have zero-sum-free joins and products
-    without zero divisors: a join is positive exactly when some argument
-    is positive, and a product is positive exactly when both factors are.
-    Thus support preserves join, product, zero, and unit on their
-    mathematical carriers. Floating-point products can still underflow.
+    In an algebra that is `ZeroSumFree` and has `NoZeroDivisors`, a sum
+    is the zero exactly when every term is, and a product exactly when
+    a factor is. Support therefore preserves the join, the product, the
+    zero and the unit on the mathematical carrier, which is what makes
+    it a homomorphism onto the Boolean algebra [Golan (1999)]. The
+    source is accepted by its capabilities, not by its type: it must
+    claim both laws with a status other than assumed (see
+    `Lawful.establishes`), so a subclass that replaces an operation
+    without its own proof is refused. Floating-point products can still
+    underflow to the zero.
 
-    Entrywise support preserves binary matrix composition and identities.
-    For Boolean, Gödel, Counting, and Markov semirings this defines a
-    functor between matrix categories. ProductFuzzy and Probability are
-    not semirings: their matrix composition is not associative. The
-    positivity test is not differentiable.
+    Entrywise support preserves binary matrix composition and identities,
+    so for a `Semiring` source it is a functor between matrix categories.
+    ProductFuzzy and Probability are not semirings, and their matrix
+    composition is not associative. The test for the zero is not
+    differentiable.
 
     Parameters
     ----------
     source : Algebra
-        A built-in Boolean, ProductFuzzy, Gödel, Probability, Counting,
-        or Markov algebra. Custom subclasses are not accepted.
+        An algebra that establishes zero-sum-freeness and the absence of
+        zero divisors.
 
     Raises
     ------
     TypeError
-        If the source is not one of these built-in algebras.
+        If the source does not establish both laws.
+
+    References
+    ----------
+    Golan, J. S. (1999). *Semirings and their Applications*. Springer.
+    [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
     def __init__(self, source: Algebra) -> None:
-        if type(source) not in {
-            type(q)
-            for q in (BOOLEAN, PRODUCT_FUZZY, GODEL, PROBABILITY, COUNTING, MARKOV)
-        }:
-            raise TypeError(f"support is not a declared homomorphism for {source!r}")
+        if not (
+            isinstance(source, ZeroSumFree)
+            and isinstance(source, NoZeroDivisors)
+            and source.establishes("zero-sum-free", "no zero divisors")
+        ):
+            raise TypeError(
+                f"support is not a declared homomorphism for {source!r}: the "
+                "source must establish zero-sum-freeness and the absence of "
+                "zero divisors"
+            )
         self._source = source
 
     @property
     def source(self) -> Algebra:
-        """The algebra whose positive entries are mapped to true."""
+        """The algebra whose entries other than the zero map to true.
+
+        Returns
+        -------
+        Algebra
+            The source.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
-        """The Boolean algebra."""
+        """The Boolean algebra.
+
+        Returns
+        -------
+        Algebra
+            `BOOLEAN`.
+        """
         return BOOLEAN
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
@@ -163,8 +214,7 @@ class SupportMap(AlgebraHomomorphism):
         Returns
         -------
         torch.Tensor
-            Zero-one entries of the same shape and device. Floating-point
-            inputs retain their dtype; other inputs produce float32.
+            Zero-one entries of the same shape, dtype and device.
 
         Raises
         ------
@@ -173,9 +223,8 @@ class SupportMap(AlgebraHomomorphism):
         ValueError
             If entries lie outside the source carrier.
         """
-        validate_carrier(t, self._source)
-        dtype = t.dtype if t.is_floating_point() else torch.float32
-        return (t > 0).to(dtype=dtype)
+        self._source.validate(t)
+        return (~self._source.is_zero(t)).to(dtype=t.dtype)
 
 
 class IdentityHom(AlgebraHomomorphism):
@@ -183,6 +232,11 @@ class IdentityHom(AlgebraHomomorphism):
 
     Useful as the unit of composition; ``f.change_base(IdentityHom(V))``
     leaves the morphism in V unchanged.
+
+    Parameters
+    ----------
+    q : Algebra
+        The algebra mapped to itself.
     """
 
     def __init__(self, q: Algebra) -> None:
@@ -190,13 +244,39 @@ class IdentityHom(AlgebraHomomorphism):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._q
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._q
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return t
 
 
@@ -209,7 +289,16 @@ class Embedding(AlgebraHomomorphism):
     is the boolean's truth assignment.
 
     Embeddings preserve every algebra operation up to the
-    embedding inclusion; they are *strict* homomorphisms.
+    embedding inclusion; they are *strict* homomorphisms. The caller
+    asserts that the source carrier lies in the target carrier and that
+    the operations agree there; nothing checks it.
+
+    Parameters
+    ----------
+    source : Algebra
+        The sub-algebra.
+    target : Algebra
+        The algebra it is included in.
     """
 
     def __init__(self, source: Algebra, target: Algebra) -> None:
@@ -218,16 +307,40 @@ class Embedding(AlgebraHomomorphism):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
-        # Cast to the target's natural dtype (float for fuzzy /
-        # markov, bool stays bool for boolean) — no value change.
-        return t.to(dtype=torch.float32) if t.dtype == torch.bool else t
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
+        return t.to(dtype=torch.get_default_dtype()) if t.dtype == torch.bool else t
 
 
 class MarkovToProductFuzzy(CarrierMap):
@@ -251,13 +364,39 @@ class MarkovToProductFuzzy(CarrierMap):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return t.clamp(min=0.0, max=1.0)
 
 
@@ -276,13 +415,39 @@ class LogProb(CarrierMap):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return torch.log(t.clamp(min=1e-30))
 
 
@@ -307,13 +472,39 @@ class MaxPlus(CarrierMap):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return torch.log(t.clamp(min=1e-30))
 
 
@@ -340,18 +531,51 @@ class Threshold(CarrierMap):
 
     @property
     def tau(self) -> float:
+        """The threshold.
+
+        Returns
+        -------
+        float
+            Entries above it map to true.
+        """
         return self._tau
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
-        return (t > self._tau).to(dtype=torch.float32)
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
+        return (t > self._tau).to(dtype=t.dtype)
 
 
 class ProductFuzzyToGodel(CarrierMap):
@@ -372,13 +596,39 @@ class ProductFuzzyToGodel(CarrierMap):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return t.clamp(min=0.0, max=1.0)
 
 
@@ -444,13 +694,39 @@ class ProbabilityClamp(CarrierMap):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return t.clamp(min=0.0, max=1.0)
 
 
@@ -470,13 +746,39 @@ class CountingFromReal(CarrierMap):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return t.clamp(min=0.0).floor()
 
 
@@ -494,13 +796,39 @@ class ProbabilityToReal(CarrierMap):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
         return t
 
 
@@ -508,7 +836,8 @@ class CountingToReal(AlgebraHomomorphism):
     """Counting → Real (sub-algebra inclusion).
 
     Non-negative integers embed canonically in the reals; this
-    is the strict inclusion homomorphism.
+    is the strict inclusion homomorphism. The entries keep their dtype:
+    a natural number is already a real number.
     """
 
     def __init__(self) -> None:
@@ -517,14 +846,40 @@ class CountingToReal(AlgebraHomomorphism):
 
     @property
     def source(self) -> Algebra:
+        """The source algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map reads.
+        """
         return self._source
 
     @property
     def target(self) -> Algebra:
+        """The target algebra.
+
+        Returns
+        -------
+        Algebra
+            The algebra whose carrier the map writes.
+        """
         return self._target
 
     def apply(self, t: torch.Tensor) -> torch.Tensor:
-        return t.to(dtype=torch.float32)
+        """Apply the map to every entry.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            The mapped entries, of the same shape.
+        """
+        return t
 
 
 PROBABILITY_CLAMP = ProbabilityClamp()
