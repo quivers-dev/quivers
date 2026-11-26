@@ -358,3 +358,10 @@ def test_missing_responses_beside_a_recursion_and_residual_correlations_are_refu
     spec = bf("y1 ~ x + ar(time = t, gr = g)") + bf("y2 | mi() ~ x") + set_rescor(True)
     with pytest.raises(ValueError, match="conditional ARMA"):
         formula_to_qvr(spec, data=frame)
+
+
+def test_a_refused_model_r_squared_leaves_gradients_enabled():
+    fitted = fit("y1 ~ x + cosy(time = t, gr = g)", data=_frame(), **SVI)
+    with pytest.raises(ValueError, match="analytic conditional response moments"):
+        fitted.bayes_r2(method="model", num_samples=3)
+    assert torch.is_grad_enabled()

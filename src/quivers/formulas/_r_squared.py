@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from typing import TYPE_CHECKING, Literal
 
 import narwhals as nw
@@ -61,7 +61,9 @@ def _responses(fit: BayesianFit, options: ExpectationOptions) -> torch.Tensor:
     return torch.as_tensor(values.copy())
 
 
-type ResponseLaws = Callable[[], tuple[Iterator[Distribution], tuple[int, int], int]]
+type ResponseLaws = Callable[
+    [], tuple[Generator[Distribution, None, None], tuple[int, int], int]
+]
 """Replay a response's law once per draw, with the chain and draw counts and
 the number of rows."""
 
@@ -201,12 +203,21 @@ def formula_r2(
     replayed, shape, rows = laws()
 
     def moments() -> Iterator[torch.Tensor]:
-        for law in replayed:
-            mean, variance = law_moments(fit, law)
-            yield torch.stack(
-                (row_binding(mean, rows, event), row_binding(variance, rows, event)),
-                dim=-1,
-            )
+        # The replay is closed where it runs, so its gradient mode is restored
+        # in the scope it was entered from, also when a draw's law has no
+        # analytic moments.
+        try:
+            for law in replayed:
+                mean, variance = law_moments(fit, law)
+                yield torch.stack(
+                    (
+                        row_binding(mean, rows, event),
+                        row_binding(variance, rows, event),
+                    ),
+                    dim=-1,
+                )
+        finally:
+            replayed.close()
 
     paired = collect_draws(moments(), shape)
     return bayesian_r2(paired[..., 0], residual_variance=paired[..., 1])

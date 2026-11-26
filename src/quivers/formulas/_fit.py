@@ -22,7 +22,7 @@ import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
 from quivers.formulas._count_data import checked_integer_data
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import Callable, Literal, Mapping, Sequence, Unpack, cast
 
 import didactic.api as dx
@@ -1454,7 +1454,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             separately specified response metric. Zero total variance is NaN.
         """
 
-        def laws() -> tuple[Iterator[Distribution], tuple[int, int], int]:
+        def laws() -> tuple[Generator[Distribution, None, None], tuple[int, int], int]:
             context = prepare_prediction(
                 self,
                 options.get("new_data"),

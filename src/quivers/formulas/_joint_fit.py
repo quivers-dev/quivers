@@ -12,7 +12,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import replace
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from copy import copy
 from pathlib import Path
 from typing import Literal, TypedDict, Unpack, cast, overload
@@ -398,7 +398,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
 
     def _response_laws(
         self, name: str, options: JointPredictionOptions
-    ) -> tuple[Iterator[Distribution], tuple[int, int], int]:
+    ) -> tuple[Generator[Distribution, None, None], tuple[int, int], int]:
         """Replay the law of one response at each retained draw.
 
         Parameters
@@ -410,7 +410,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
 
         Returns
         -------
-        tuple[Iterator[Distribution], tuple[int, int], int]
+        tuple[Generator[Distribution, None, None], tuple[int, int], int]
             The response's law at each draw (under residual correlation the
             marginal law of its coordinate), the chain and draw counts, and
             the number of rows.
