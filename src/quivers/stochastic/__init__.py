@@ -145,6 +145,7 @@ if TYPE_CHECKING:
         PlanRefused,
         acyclicity_certificate,
         rule_joins,
+        with_requested_evidence,
         RuleJoin,
         plan,
     )
@@ -438,6 +439,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "TWO_PASS_WORK": "quivers.stochastic.planning",
     "acyclicity_certificate": "quivers.stochastic.planning",
     "rule_joins": "quivers.stochastic.planning",
+    "with_requested_evidence": "quivers.stochastic.planning",
     "RuleJoin": "quivers.stochastic.planning",
     "plan": "quivers.stochastic.planning",
     "AGMBound": "quivers.stochastic.joins",
@@ -732,6 +734,7 @@ __all__ = [
     "TWO_PASS_WORK",
     "acyclicity_certificate",
     "rule_joins",
+    "with_requested_evidence",
     "RuleJoin",
     "plan",
     "FOREST_ALGORITHM",

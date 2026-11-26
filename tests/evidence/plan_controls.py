@@ -36,8 +36,9 @@ from quivers.qiec.contracts import (
     QuerySpec,
     RequestedEvidence,
 )
-from quivers.qiec.identifiers import ComputationId
-from quivers.qiec.rules import Item, RulePresentation
+from quivers.qiec.identifiers import ComputationId, FamilyId
+from quivers.qiec.rules import Ground, Item, RulePresentation
+from quivers.stochastic.forest import DerivationForest, ForestEdge, build_forest
 from quivers.stochastic.indexed import IndexedChart
 from quivers.stochastic.planning import Plan, PlanRefusal, PlanRefused, plan
 from tests.evidence import graphs, scaling
@@ -337,6 +338,148 @@ def check_repeated_premise_keyed() -> None:
             )
 
 
+def _evidence_plan(family: FamilyId) -> Plan:
+    """A reachability plan that keeps the evidence of one form.
+
+    Parameters
+    ----------
+    family : FamilyId
+        The requested form.
+
+    Returns
+    -------
+    Plan
+        The plan.
+    """
+    evidence = RequestedEvidence(patterns=(JudgmentPattern(family=family),))
+    return plan(
+        graphs.query().with_(retention=evidence),
+        graphs.PRESENTATION,
+        REAL,
+        Acyclic(),
+        graphs.contract(),
+        evidence,
+    )
+
+
+def _root(edge: ForestEdge) -> tuple[str, tuple[tuple[Ground, ...], ...]]:
+    """An edge as the oracle names a tree's root: its name and its children's items.
+
+    Parameters
+    ----------
+    edge : ForestEdge
+        The edge.
+
+    Returns
+    -------
+    tuple
+        The rule or occurrence name and the premise items.
+    """
+    if edge.occurrence is not None:
+        if edge.occurrence == OccurrenceId.derive(graphs.NAME, "start"):
+            return "start", ()
+        index = next(i for i in range(64) if graphs.edge_id(i) == edge.occurrence)
+        return f"edge{index}", ()
+    names = {graphs.REACH: "reach", graphs.EDGE: "edge"}
+    return "step", tuple((names[p.family], *p.arguments) for p in edge.premises)
+
+
+def check_requested_evidence() -> None:
+    """Require requested evidence to be the forest restricted to the requested items (O1).
+
+    Over parallel edges, every reach item keeps exactly the edges the
+    packed forest has for it, in the same order, and these are the
+    distinct roots of the oracle's derivations of it: one rule instance or
+    input occurrence per alternative, whatever lies below. No edge item is
+    kept.
+
+    Raises
+    ------
+    Mismatch
+        If an item, an edge or an alternative differs.
+    """
+    edges = [(0, 1), (0, 1), (1, 2), (1, 2), (0, 2)]
+    inputs: Inputs = {**graphs.edge_weights(edges, [1.0] * len(edges))}
+    evaluation = _evidence_plan(graphs.REACH).run(
+        graphs.occurrences(edges), inputs, like=LIKE
+    )
+    evidence = evaluation.evidence
+    _require(evidence is not None, "no evidence was kept")
+    assert evidence is not None
+    forest = build_forest(graphs.PRESENTATION, graphs.occurrences(edges))
+    requested = {item for item in forest.items if item.family == graphs.REACH}
+    _require(set(evidence) == requested, "the kept items are not the requested ones")
+    for item in requested:
+        _require(
+            evidence[item] == forest.edges[item],
+            f"{item.arguments}: {len(evidence[item])} edges for {len(forest.edges[item])}",
+        )
+        (node,) = item.arguments
+        assert isinstance(node, int)
+        expected = sorted(
+            {
+                (name, tuple(child[1] for child in children))
+                for name, _, _, children in oracle_graph(edges, node)
+            }
+        )
+        found = sorted(_root(edge) for edge in evidence[item])
+        if found != expected:
+            raise Mismatch(
+                "value",
+                float(abs(len(found) - len(expected)) or 1),
+                f"reach({node}): {len(found)} alternatives for the oracle's {len(expected)}",
+            )
+
+
+def oracle_graph(edges: Sequence[tuple[int, int]], goal: int) -> list[oracle.Tree]:
+    """The oracle's derivations of ``reach(goal)`` over a graph.
+
+    Parameters
+    ----------
+    edges : Sequence of tuple of int and int
+        The edges.
+    goal : int
+        The node.
+
+    Returns
+    -------
+    list of Tree
+        Every derivation.
+    """
+    i, j = oracle.Variable("i"), oracle.Variable("j")
+    rules: tuple[oracle.RuleRow, ...] = (
+        ("step", (("reach", i), ("edge", i, j)), ("reach", j), "step"),
+    )
+    axioms: list[oracle.AxiomRow] = [("start", ("reach", 0))]
+    axioms += [(f"edge{index}", ("edge", a, b)) for index, (a, b) in enumerate(edges)]
+    return oracle.derivations(axioms, rules, ("reach", goal))
+
+
+def check_requested_memory() -> None:
+    """Require the evidence kept to be bounded by what is requested.
+
+    Requesting ``reach`` on ``0 -> 1 -> 2`` beside a growing chain that
+    ``0`` does not reach keeps the same seven entries at every size,
+    while the packed forest grows with the edges.
+
+    Raises
+    ------
+    Mismatch
+        If the kept evidence grows, or is not counted in the report.
+    """
+    current = _evidence_plan(graphs.REACH)
+    for size in (8, 32, 128):
+        edges = graphs.chain(2) + [(1000 + i, 1001 + i) for i in range(size)]
+        evaluation = current.run(graphs.occurrences(edges), {}, like=LIKE)
+        _require(evaluation.retained == 7, f"{evaluation.retained} kept at {size}")
+        _require(
+            evaluation.report().provenance_records == evaluation.counts + 7,
+            "the report does not count the evidence",
+        )
+        forest = build_forest(graphs.PRESENTATION, graphs.occurrences(edges))
+        _require(forest.size > size, "the forest does not grow")
+
+
 def check_constant_rule() -> None:
     """Require a rule without premises to be an instance, summed with the input.
 
@@ -470,7 +613,7 @@ def _square_query() -> QuerySpec:
     )
 
 
-def _attempts() -> dict[PlanRefusal, Callable[[], Plan]]:
+def _attempts() -> dict[PlanRefusal, Callable[[], Plan | DerivationForest]]:
     """One plan the planner has to refuse per reason.
 
     Returns
@@ -478,7 +621,6 @@ def _attempts() -> dict[PlanRefusal, Callable[[], Plan]]:
     dict of PlanRefusal to Callable
         Attempts by the refusal they have to meet.
     """
-    evidence = RequestedEvidence(patterns=(JudgmentPattern(family=graphs.REACH),))
     lambek = QuerySpec(
         presentation=fixture.LAMBEK.id,
         interpretation=InterpretationId.derive("lambek", "weight"),
@@ -514,13 +656,8 @@ def _attempts() -> dict[PlanRefusal, Callable[[], Plan]]:
             graphs.contract(),
             NoRetention(),
         ),
-        PlanRefusal.RETENTION_WITHOUT_EXECUTOR: lambda: plan(
-            graphs.query().with_(retention=evidence),
-            graphs.PRESENTATION,
-            REAL,
-            Acyclic(),
-            graphs.contract(),
-            evidence,
+        PlanRefusal.RETENTION_WITHOUT_EXECUTOR: lambda: _graph_plan().forest(
+            graphs.occurrences([])
         ),
     }
 
@@ -532,9 +669,9 @@ def check_refusals() -> None:
     aggregate a two-pass run computes: with alternatives ``-1`` and ``1``
     the square of the sum is zero and the sum of the squares two. So
     without the packed forest it is refused, as are bounded recursion
-    without the forest, open premises, a pushforward, evidence restricted
-    to patterns, and a run whose inputs make the derived hypergraph
-    cyclic.
+    without the forest, open premises, a pushforward, a forest from a plan
+    that does not keep one, and a run whose inputs make the derived
+    hypergraph cyclic.
 
     Raises
     ------
@@ -701,6 +838,8 @@ CHECKS: dict[str, Check] = {
         ("plan/repeated-premise", check_repeated_premise),
         ("plan/repeated-premise-keyed", check_repeated_premise_keyed),
         ("plan/constant-rule", check_constant_rule),
+        ("plan/requested-evidence", check_requested_evidence),
+        ("plan/requested-memory", check_requested_memory),
         ("plan/alternatives", check_alternatives_are_summed),
         ("plan/zero-gradient", check_zero_weight_gradient),
         ("plan/premise-order", check_premise_order),
@@ -741,6 +880,20 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("plan/repeated-premise-keyed",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="plan-requested-alternative-dropped",
+        defect_class="omitted alternative",
+        provenance="a requested item keeps only its first edge",
+        target=f"{PLAN}:_keep",
+        rewrites=(
+            Rewrite(
+                old="kept.setdefault(item, []).append(edge)",
+                new="if item not in kept:\n        kept[item] = [edge]",
+            ),
+        ),
+        rejected_by=("plan/requested-evidence",),
         min_effect=1.0,
     ),
     Mutation(

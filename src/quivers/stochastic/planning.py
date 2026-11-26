@@ -67,17 +67,16 @@ from quivers.qiec.contracts import (
     Forest,
     Marginal,
     NonlinearFold,
-    NoRetention,
     PackedForest,
     OccurrenceId,
     ParameterId,
-    ParentCounts,
     Phase,
     PhaseInapplicable,
     ProvedOptimal,
     QuerySpec,
     Rational,
     Recursion,
+    RequestedEvidence,
     Retention,
     Statistic,
     Support,
@@ -99,7 +98,7 @@ from quivers.qiec.rules import (
     evaluate_index,
 )
 from quivers.qiec.types import IndexLiteral, IndexSum, IndexTerm, IndexVariable
-from quivers.stochastic.forest import DerivationForest, build_forest
+from quivers.stochastic.forest import DerivationForest, ForestEdge, build_forest
 from quivers.stochastic.indexed import ChartWork, IndexedChart, generic_joinable
 from quivers.stochastic.joins import agm_bound, body_query
 
@@ -121,6 +120,7 @@ __all__ = [
     "TWO_PASS_WORK",
     "acyclicity_certificate",
     "rule_joins",
+    "with_requested_evidence",
     "plan",
 ]
 
@@ -642,6 +642,42 @@ def _two_pass_work(backward: Literal["autograd", "recompute"]) -> ComplexityClai
     )
 
 
+def with_requested_evidence(claim: ComplexityClaim) -> ComplexityClaim:
+    """A two-pass cost claim that also keeps the evidence of requested items.
+
+    Parameters
+    ----------
+    claim : ComplexityClaim
+        The claim without evidence.
+
+    Returns
+    -------
+    ComplexityClaim
+        The claim with ``R``, the edges and premise references of the
+        requested items, added to the execution space.
+    """
+    bounds = tuple(
+        bound.with_(expression=f"{bound.expression} + R")
+        if bound.phase is Phase.EXECUTION and bound.resource == "space"
+        else bound
+        for bound in claim.bounds
+    )
+    return claim.with_(
+        parameters=(
+            *claim.parameters,
+            ComplexityParameter(
+                name="R",
+                meaning="edges and premise references of the requested items",
+            ),
+        ),
+        bounds=bounds,
+        conditions=(
+            *claim.conditions,
+            "R counts only what is requested; the rest of the forest is not kept",
+        ),
+    )
+
+
 TWO_PASS_WORK = _two_pass_work("autograd")
 """The cost of two-pass evaluation differentiated by autograd."""
 
@@ -901,6 +937,10 @@ class Evaluation(ValueModel):
         Products of the algebra computed.
     counts : int
         Parent counts kept during the run, one per item.
+    evidence : dict of Item to tuple of ForestEdge, or None
+        Under requested evidence, the edges of every derived item of a
+        requested form: its input occurrences, then its rule instances;
+        ``None`` otherwise.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -910,6 +950,25 @@ class Evaluation(ValueModel):
     sums: int = 0
     products: int = 0
     counts: int = 0
+    evidence: dict[Item, tuple[ForestEdge, ...]] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @property
+    def retained(self) -> int:
+        """The size of the requested evidence: one per edge and premise reference.
+
+        Returns
+        -------
+        int
+            ``sum_e (1 + |premises(e)|)`` over the kept edges; zero without
+            requested evidence.
+        """
+        if self.evidence is None:
+            return 0
+        return sum(
+            1 + len(edge.premises) for edges in self.evidence.values() for edge in edges
+        )
 
     def report(self) -> WorkReport:
         """The run's counters as a work report of its execution.
@@ -929,7 +988,7 @@ class Evaluation(ValueModel):
             scalar_products=self.products,
             hash_operations=self.work.lookups,
             key_comparisons=self.work.candidates,
-            provenance_records=self.counts,
+            provenance_records=self.counts + self.retained,
         )
 
     def value(self, item: Item) -> torch.Tensor:
@@ -1307,11 +1366,19 @@ def plan(
             PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR,
             f"a {query.observable.tag} result needs an executor not in this plan",
         )
-    if not isinstance(retention, (NoRetention, ParentCounts, PackedForest)):
+    unknown = (
+        [
+            pattern.family
+            for pattern in retention.patterns
+            if pattern.family not in presentation.judgments_by_id
+        ]
+        if isinstance(retention, RequestedEvidence)
+        else []
+    )
+    if unknown:
         raise PlanRefused(
-            PlanRefusal.RETENTION_WITHOUT_EXECUTOR,
-            f"{retention.tag} provenance needs evidence restricted to patterns, "
-            "which the packed forest holds in full",
+            PlanRefusal.INADMISSIBLE,
+            f"requested evidence names {len(unknown)} forms the presentation lacks",
         )
     certificate = acyclicity_certificate(presentation)
     analysis = presentation.analysis
@@ -1331,6 +1398,12 @@ def plan(
         assumptions.append(
             "the form graph has cycles and no measure was found; a cycle in the "
             "derived hypergraph is refused during the run"
+        )
+    if isinstance(retention, RequestedEvidence):
+        assumptions.append(
+            "the evidence of a requested item is every edge concluding it, kept "
+            "when the first pass produces it, so it is the packed forest "
+            "restricted to the requested items"
         )
     if kept:
         assumptions.append(
@@ -1363,11 +1436,7 @@ def plan(
         assumptions=tuple(assumptions),
         structure=analysis,
         certificate=certificate,
-        complexity=FOREST_WORK
-        if kept
-        else TWO_PASS_WORK
-        if backward == "autograd"
-        else RECOMPUTED_TWO_PASS_WORK,
+        complexity=_complexity(kept, backward, retention),
         alternatives=(
             Alternative(
                 algorithm=TWO_PASS_ALGORITHM if kept else FOREST_ALGORITHM,
@@ -1388,6 +1457,35 @@ def plan(
         joins=rule_joins(presentation),
     )
     return Plan(record=record, presentation=presentation, algebra=algebra)
+
+
+def _complexity(
+    kept: bool,
+    backward: Literal["autograd", "recompute"],
+    retention: Retention,
+) -> ComplexityClaim:
+    """The cost claim of the selected executor.
+
+    Parameters
+    ----------
+    kept : bool
+        Whether the packed forest is kept.
+    backward : {"autograd", "recompute"}
+        The backward pass of a two-pass plan.
+    retention : Retention
+        The provenance kept.
+
+    Returns
+    -------
+    ComplexityClaim
+        The claim.
+    """
+    if kept:
+        return FOREST_WORK
+    claim = TWO_PASS_WORK if backward == "autograd" else RECOMPUTED_TWO_PASS_WORK
+    if isinstance(retention, RequestedEvidence):
+        return with_requested_evidence(claim)
+    return claim
 
 
 def _constants(plan: Plan, chart: IndexedChart) -> list[tuple[Rule, Item]]:
@@ -1559,10 +1657,53 @@ def _occurrence_weight(
     return _weight(plan, slot.weight, inputs, like)
 
 
+type Kept = dict[Item, list[ForestEdge]]
+"""The edges of the requested items, by item."""
+
+
+def _keep(kept: Kept, item: Item, edge: ForestEdge) -> None:
+    """Keep one edge of a requested item.
+
+    Every edge is kept, each alternative being part of the item's evidence.
+
+    Parameters
+    ----------
+    kept : Kept
+        The evidence so far.
+    item : Item
+        The item.
+    edge : ForestEdge
+        One of its edges.
+    """
+    kept.setdefault(item, []).append(edge)
+
+
+def _requested(plan: Plan) -> frozenset[FamilyId]:
+    """The forms whose evidence the plan keeps.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+
+    Returns
+    -------
+    frozenset of FamilyId
+        The requested forms; none without requested evidence.
+    """
+    retention = plan.record.retention
+    if isinstance(retention, RequestedEvidence):
+        return frozenset(pattern.family for pattern in retention.patterns)
+    return frozenset()
+
+
 def _discover(
     plan: Plan, chart: IndexedChart, axioms: Sequence[AxiomOccurrence]
-) -> tuple[list[Item], dict[Item, int], dict[Item, list[AxiomOccurrence]]]:
-    """The first pass: every item and how many instances conclude it.
+) -> tuple[list[Item], dict[Item, int], dict[Item, list[AxiomOccurrence]], Kept]:
+    """The first pass: every item, how many instances conclude it, and requested evidence.
+
+    Each instance is enumerated once here, so keeping it when its
+    conclusion is requested keeps each edge of a requested item once.
 
     Parameters
     ----------
@@ -1577,8 +1718,11 @@ def _discover(
     -------
     tuple
         The items in discovery order, the count of instances concluding
-        each, and the occurrences of each input item.
+        each, the occurrences of each input item, and the edges of each
+        requested item.
     """
+    requested = _requested(plan)
+    kept: Kept = {}
     leaves: dict[Item, list[AxiomOccurrence]] = {}
     counts: dict[Item, int] = {}
     discovered: list[Item] = []
@@ -1587,13 +1731,26 @@ def _discover(
     for occurrence in axioms:
         item = _axiom_item(plan, chart, occurrence)
         leaves.setdefault(item, []).append(occurrence)
+        if item.family in requested:
+            _keep(
+                kept,
+                item,
+                ForestEdge(
+                    constructor=occurrence.slot,
+                    binding=occurrence.binding,
+                    occurrence=occurrence.occurrence,
+                    values=occurrence.values,
+                ),
+            )
         if item not in seen:
             seen.add(item)
             discovered.append(item)
             counts[item] = 0
             queue.append(item)
-    for _, item in _constants(plan, chart):
+    for rule, item in _constants(plan, chart):
         counts[item] = counts.get(item, 0) + 1
+        if item.family in requested:
+            _keep(kept, item, ForestEdge(constructor=rule.id))
         if item not in seen:
             seen.add(item)
             discovered.append(item)
@@ -1605,7 +1762,7 @@ def _discover(
         popped.add(item)
         chart.add(item)
         for rule, position in by_premise.get(item.family, ()):
-            for binding, _ in chart.instances(
+            for binding, premises in chart.instances(
                 rule, position, item, popped.__contains__
             ):
                 conclusion = chart.items.intern(
@@ -1615,11 +1772,21 @@ def _discover(
                     ),
                 )
                 counts[conclusion] = counts.get(conclusion, 0) + 1
+                if conclusion.family in requested:
+                    _keep(
+                        kept,
+                        conclusion,
+                        ForestEdge(
+                            constructor=rule.id,
+                            binding=tuple(sorted(binding.items())),
+                            premises=premises,
+                        ),
+                    )
                 if conclusion not in seen:
                     seen.add(conclusion)
                     discovered.append(conclusion)
                     queue.append(conclusion)
-    return discovered, counts, leaves
+    return discovered, counts, leaves, kept
 
 
 def _evaluate(
@@ -1653,7 +1820,7 @@ def _evaluate(
     """
     algebra = plan.algebra
     discovery = IndexedChart(plan.presentation)
-    discovered, remaining, leaves = _discover(plan, discovery, axioms)
+    discovered, remaining, leaves, kept = _discover(plan, discovery, axioms)
     chart = IndexedChart(plan.presentation)
     chart.items = discovery.items
     first = dict(discovery.work)
@@ -1731,6 +1898,9 @@ def _evaluate(
         sums=operations["sums"],
         products=operations["products"],
         counts=len(discovered),
+        evidence=None
+        if not _requested(plan)
+        else {item: tuple(edges) for item, edges in kept.items()},
     )
 
 

@@ -82,6 +82,32 @@ the values, the counts and the chart's indexes, $O(V)$ for a fixed presentation;
 are the only provenance kept, which is the [`ParentCounts`][quivers.qiec.contracts.ParentCounts]
 retention.
 
+## Requested evidence
+
+With [`RequestedEvidence`][quivers.qiec.contracts.RequestedEvidence] as the retention, a run
+keeps, for every derived item of a requested form, the edges that conclude it: its input
+occurrences, each on its own, and its grounded rule instances with their premise items. They are
+in [`Evaluation.evidence`][quivers.stochastic.planning.Evaluation], and nothing else of the
+forest is kept.
+
+**Theorem.** For every item $x$ of a requested form, the kept evidence of $x$ is the list of edges
+of $x$ in the [packed forest](forest.md) of the same inputs, in the same order; no other item has
+evidence.
+
+*Proof.* The first pass and the forest's construction admit the inputs, then the rules without
+premises, then items in the same queue order, and enumerate the same instances from each admitted
+item. By the lemma above each instance is enumerated once, and the forest stores it as one edge
+of its conclusion; the first pass keeps it exactly when its conclusion's form is requested. Inputs
+are kept one edge per occurrence in both, and only items of requested forms are kept at all. So
+the two lists of $x$ are equal, element by element. QED
+
+The evidence of $x$ is one level of its derivations: each alternative's rule instance or input
+occurrence, with the premise items it uses. A derivation of $x$ is recovered from it together with
+the evidence of the premises, so requesting the forms of every item below $x$ recovers all of them,
+and requesting fewer keeps less. The memory is $R$, the edges and premise references of the
+requested items, beside the parent counts
+([`with_requested_evidence`][quivers.stochastic.planning.with_requested_evidence]).
+
 ## Gradients
 
 With autograd as the backward pass, the run is recorded on the autograd tape, which holds every
