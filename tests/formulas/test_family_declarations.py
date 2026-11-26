@@ -205,13 +205,14 @@ def test_a_declared_elliptical_law_correlates_rows(make, builtin):
 
 
 def test_autocorrelation_binding_names_the_missing_elliptical_law():
-    from quivers.formulas._autocor import autocor_family, split_autocor_terms
+    from quivers.formulas._autocor import split_autocor_terms
+    from quivers.formulas._residual_law import residual_law
     from quivers.formulas import formula_from_data
 
     text, terms = split_autocor_terms("y ~ x + ar(t, p = 1, cov = TRUE)")
     parsed = formula_from_data(text, _frame())
     with pytest.raises(ValueError, match=r"Family\.elliptical.*'bell' declares none"):
-        autocor_family(
+        residual_law(
             terms,
             _bell(elliptical=None),
             data=_frame(),
@@ -251,15 +252,14 @@ def test_a_declared_elliptical_law_correlates_responses(make, builtin):
     other = emitted(builtin)[1].variables(num_samples=1)
     assert named == set(other)
     assert "rescor__y__z" in named
-    with pytest.raises(dx.ValidationError, match=r"Family\.elliptical"):
-        _joint(make(elliptical=None))
+    # The families are checked when the joint program is built.
+    with pytest.raises(ValueError, match=r"Family\.elliptical"):
+        formula_to_qvr(_joint(make(elliptical=None)), data=_frame())
 
 
 def test_residual_correlation_needs_one_common_elliptical_law():
-    with pytest.raises(
-        dx.ValidationError, match=r"Family\.elliptical.*'bell', 'student_t'"
-    ):
-        _joint(_bell(), "student_t")
+    with pytest.raises(ValueError, match=r"Family\.elliptical.*'bell', 'student_t'"):
+        formula_to_qvr(_joint(_bell(), "student_t"), data=_frame())
 
 
 def test_declared_r_squared_selects_the_model_variance():

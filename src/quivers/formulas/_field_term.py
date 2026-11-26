@@ -385,6 +385,19 @@ class FieldTerm(ValueModel):
             ).items()
         )
 
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        Returns
+        -------
+        bool
+            True for a spatial field, which the row reads at its location;
+            False for latent residuals, one latent per training row.
+        """
+        return self.binding is None
+
     def sites(self) -> tuple[SiteDecl, ...]:
         """List the latent sites the term owns.
 

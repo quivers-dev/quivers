@@ -2052,6 +2052,18 @@ class SpectralTerm(_ProcessTerm):
             design_declarations(self.name, self.matrix)[1],
         )
 
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        Returns
+        -------
+        bool
+            True: the row reads the basis at its own inputs.
+        """
+        return True
+
     def sites(self) -> tuple[SiteDecl, ...]:
         """List the latent sites the term owns.
 
@@ -2319,6 +2331,19 @@ class ExactProcessTerm(_ProcessTerm):
             *anchor,
             design_declarations(self.name, self.matrix)[1],
         )
+
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        Returns
+        -------
+        bool
+            False: the process is a latent over the training inputs, and its
+            value at other rows is a conditional draw given it.
+        """
+        return False
 
     def sites(self) -> tuple[SiteDecl, ...]:
         """List the latent sites the term owns.

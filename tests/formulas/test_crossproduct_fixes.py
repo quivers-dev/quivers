@@ -314,7 +314,7 @@ def test_inits_return_given_and_zero_starts() -> None:
 
 def test_joint_bayes_r2_matches_the_residual_definition() -> None:
     joint = fit(bf("y ~ x") + bf("y2 ~ x + z") + set_rescor(True), data=DATA, **SVI)
-    ratios = joint.bayes_r2(num_samples=4, seed=3)
+    ratios = joint.bayes_r2(method="residual", num_samples=4, seed=3)
     assert set(ratios) == {"R2y", "R2y2"}
     expected = joint.posterior_epred(num_samples=4, seed=3)
     for name in ("y", "y2"):

@@ -22,6 +22,7 @@ import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
 from quivers.formulas._count_data import checked_integer_data
 from pathlib import Path
+from collections.abc import Generator
 from typing import Callable, Literal, Mapping, Sequence, Unpack, cast
 
 import didactic.api as dx
@@ -29,6 +30,7 @@ from formulae.matrices import DesignMatrices
 import narwhals as nw
 import torch
 from torch import nn
+from torch.distributions import Distribution
 from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
@@ -45,6 +47,7 @@ from quivers.formulas._category_formulas import (
     category_distributional,
     check_scale_formulas,
     is_category_parameter,
+    is_scale_parameter,
     main_without_terms,
 )
 from quivers.formulas.formula import (
@@ -68,16 +71,18 @@ from quivers.formulas._predictor_graph import (
     predictor_items,
 )
 
-from quivers.formulas._prediction import FormulaPredictionPlan
+from quivers.formulas._prediction import FormulaPredictionPlan, prepare_prediction
+from quivers.formulas._r_squared import formula_r2
 from quivers.formulas._autocor import (
     AutocorMatrix,
-    autocor_binding,
-    autocor_joint,
-    autocor_linear_predictor,
-    bind_autocor_terms,
     fields_and_design,
-    autocor_log_likelihood,
     split_autocor_terms,
+)
+from quivers.formulas._residual_law import (
+    ResidualLaw,
+    bind_autocor_terms,
+    linear_predictor,
+    pointwise_scores,
 )
 
 # Joint (multivariate) formulas: typed overload contracts and dispatch target.
@@ -182,6 +187,7 @@ from quivers.formulas._posterior import (
 )
 from quivers.formulas._predictor import Predictor, response_axis
 from quivers.inference._posterior import draw_count
+from quivers.inference.trace import Trace
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 
@@ -232,6 +238,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         Parsed formula IR.
     family : Family
         Response family used at compile time.
+    residual : ResidualLaw or None
+        Residual law of the response: natural residuals correlated across
+        rows by an autocorrelation term; None for independent rows.
     program : MonadicProgram
         The compiled program.
     posterior : MCMCResult or PriorDraws or Guide
@@ -285,6 +294,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
 
     formula: Formula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     family: Family = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    residual: ResidualLaw | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     posterior: MCMCResult | PriorDraws | Guide = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -687,6 +699,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         *,
         distributional: Mapping[str, Formula] | None = None,
         nonlinear_leaves: Mapping[str, Formula] | None = None,
+        residual: ResidualLaw | None = None,
     ) -> FormulaToQVRModule:
         """Reuse fitted compiler settings with optional specialized predictors.
 
@@ -696,34 +709,40 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             Specialized auxiliary metadata, or the fitted metadata.
         nonlinear_leaves : Mapping[str, Formula] or None
             Group-specialized designs for the same nonlinear graph.
+        residual : ResidualLaw or None
+            The residual law over other rows, or None for the fitted one.
 
         Returns
         -------
         FormulaToQVRModule
             A fresh lens retaining every fitted prior and compiler option.
         """
-        return FormulaToQVRModule(
-            self.family,
-            fixed_prior=self.fixed_prior,
-            random_scale_prior=self.random_scale_prior,
-            correlation_prior=self.correlation_prior,
-            group_covariances=self.group_covariances,
-            user_priors=self.priors,
-            reparameterize=self.reparameterize,
-            binomial_trials=self.binomial_trials,
-            thresholds_by=self.thresholds_by,
-            mixture_components=self.mixture_components,
-            predictor_name=self.predictor_name,
-            distributional=self.distributional
-            if distributional is None
-            else distributional,
-            fixed_parameters=self.fixed_parameters,
-            predictor_graph=self.predictor_graph
-            if nonlinear_leaves is None or self.predictor_graph is None
-            else self.predictor_graph.with_(leaves=dict(nonlinear_leaves)),
-            default_priors=self.default_priors,
-            center=self.center,
-            decomp=self.decomp,
+        return residual_lens(
+            self.residual if residual is None else residual,
+            self.fixed_parameters,
+            lambda fixed: FormulaToQVRModule(
+                self.family,
+                fixed_parameters=fixed,
+                fixed_prior=self.fixed_prior,
+                random_scale_prior=self.random_scale_prior,
+                correlation_prior=self.correlation_prior,
+                group_covariances=self.group_covariances,
+                user_priors=self.priors,
+                reparameterize=self.reparameterize,
+                binomial_trials=self.binomial_trials,
+                thresholds_by=self.thresholds_by,
+                mixture_components=self.mixture_components,
+                predictor_name=self.predictor_name,
+                distributional=self.distributional
+                if distributional is None
+                else distributional,
+                predictor_graph=self.predictor_graph
+                if nonlinear_leaves is None or self.predictor_graph is None
+                else self.predictor_graph.with_(leaves=dict(nonlinear_leaves)),
+                default_priors=self.default_priors,
+                center=self.center,
+                decomp=self.decomp,
+            ),
         )
 
     @property
@@ -1227,20 +1246,10 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                     yield fixed.reshape(()).expand(rows)
                     continue
 
-                def read(name: str) -> torch.Tensor:
-                    """Read one row binding of the replayed program."""
-                    # brms's mu includes conditional ARMA terms.
-                    if (
-                        name == binding.site
-                        and parameter == "mu"
-                        and autocor_binding(self.family) is not None
-                    ):
-                        return autocor_linear_predictor(
-                            recorded, _qvr_name(self.formula.response_name)
-                        )
-                    return recorded.sites[name].value
-
-                yield binding.read(read, rows)
+                yield binding.read(
+                    self._row_reader(parameter, binding, recorded, lambda name: name),
+                    rows,
+                )
 
         return collect_draws(values(), shape)
 
@@ -1444,9 +1453,41 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             use ordered integer scores. Unordered categories require a
             separately specified response metric. Zero total variance is NaN.
         """
-        from quivers.formulas._r_squared import formula_r2
 
-        return formula_r2(self, method, observed, options)
+        def laws() -> tuple[Generator[Distribution, None, None], tuple[int, int], int]:
+            context = prepare_prediction(
+                self,
+                options.get("new_data"),
+                options.get("predictor_data"),
+                re_formula=options.get("re_formula"),
+                allow_new_levels=options.get("allow_new_levels", False),
+                sample_new_levels=options.get("sample_new_levels", "uncertainty"),
+                seed=options.get("seed", 0),
+                trials=options.get("trials"),
+            )
+            shape = draw_count(self.posterior, options.get("num_samples"))
+            draws = self.draws(
+                num_samples=options.get("num_samples"), seed=options.get("seed", 0)
+            )
+            response = _qvr_name(self.formula.response_name)
+            return (
+                (
+                    response_distribution(recorded, response)
+                    for recorded in replay(self, draws, shape, context=context)
+                ),
+                shape,
+                context.rows,
+            )
+
+        return formula_r2(
+            self,
+            method,
+            observed,
+            new_data=options.get("new_data"),
+            mc_samples=options.get("mc_samples"),
+            expected=lambda: self.posterior_epred(**options),
+            laws=laws,
+        )
 
     def posterior_choice_probs(
         self, **options: Unpack[ExpectationOptions]
@@ -1690,22 +1731,16 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             and actual sampler statistics. Later analysis reuses these tensors.
         """
         from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
-        from quivers.inference._likelihood import collect_log_likelihood
 
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
-            likelihood = (
-                autocor_log_likelihood(
-                    replay(self, draws, shape, score_observations=True), response, shape
-                )
-                if autocor_joint(self.family)
-                else collect_log_likelihood(
-                    replay(self, draws, shape, score_observations=True),
-                    {response},
-                    shape,
-                )
+            likelihood = pointwise_scores(
+                replay(self, draws, shape, score_observations=True),
+                {response},
+                {response} if self.residual is not None else set(),
+                shape,
             )
         return PosteriorAnalysis(
             samples=draws,
@@ -1775,7 +1810,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         TypeError
             If a hidden response needs a marginal-likelihood observer.
         """
-        from quivers.inference._likelihood import collect_log_likelihood
 
         context = None
         if new_data is not None:
@@ -1833,18 +1867,11 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
-            # Non-factorized residual structures score brms's LOO conditionals.
-            if incl_autocor and autocor_joint(self.family):
-                return autocor_log_likelihood(
-                    replay(
-                        self, draws, shape, context=context, score_observations=True
-                    ),
-                    response,
-                    shape,
-                )
-            return collect_log_likelihood(
+            # Correlated residuals score brms's leave-one-out conditionals.
+            return pointwise_scores(
                 replay(self, draws, shape, context=context, score_observations=True),
                 {response},
+                {response} if self.residual is not None else set(),
                 shape,
             )
 
@@ -2171,6 +2198,78 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             ):
                 return predictor, output.parameters.index(parameter)
         return None
+
+    @property
+    def _separable_rows(self) -> bool:
+        """Whether each training row scores as a new row of the same data.
+
+        A row's pointwise score on new data equals its training score when
+        its law is independent of the other rows given the parameters and
+        every term's value at the row is fixed by the parameters and the
+        row's data. A residual law correlates rows or conditions on earlier
+        recorded responses, and a latent drawn per training row is drawn
+        again for new rows, so neither holds there.
+
+        Returns
+        -------
+        bool
+            True when no residual law and only separable terms enter.
+        """
+        plan = self.prediction_plan
+        return (
+            self.residual is None
+            and plan is not None
+            and all(
+                term.separable
+                for predictor in plan.predictors
+                for term in predictor.terms
+            )
+        )
+
+    def _row_reader(
+        self,
+        parameter: str,
+        binding: LinpredBinding,
+        recorded: Trace,
+        site: Callable[[str], str],
+        location: Callable[[], torch.Tensor] | None = None,
+    ) -> Callable[[str], torch.Tensor]:
+        """Read the row bindings of a linear predictor from one replay.
+
+        brms's ``mu`` includes the conditional ARMA recursion of a residual
+        law, which moves the location by lagged recorded residuals; the
+        replayed residual law states that location.
+
+        Parameters
+        ----------
+        parameter : str
+            Predictor name.
+        binding : LinpredBinding
+            Binding holding the predictor.
+        recorded : Trace
+            One replayed execution.
+        site : Callable[[str], str]
+            Program name of a binding of this response: the identity for a
+            single fit, the response namespace in a joint program.
+        location : Callable[[], torch.Tensor] or None
+            The response law's location, recursion included; None reads the
+            law of the response's own observation.
+
+        Returns
+        -------
+        Callable[[str], torch.Tensor]
+            The value of a named binding of this response.
+        """
+        response = site(_qvr_name(self.formula.response_name))
+
+        def read(name: str) -> torch.Tensor:
+            if name == binding.site and parameter == "mu" and self.residual is not None:
+                if location is not None:
+                    return location()
+                return linear_predictor(recorded, response)
+            return recorded.sites[site(name)].value
+
+        return read
 
     def _linpred_binding(self, parameter: str, transform: bool) -> LinpredBinding:
         """Choose the row binding holding a linear predictor.
@@ -3217,6 +3316,43 @@ def get_prior(
     return lens.get_prior(parsed)
 
 
+def residual_lens(
+    law: ResidualLaw | None,
+    fixed_parameters: Mapping[str, float],
+    build: Callable[[dict[str, float]], FormulaToQVRModule],
+) -> FormulaToQVRModule:
+    """Build a formula lens that observes the response through a residual law.
+
+    Parameters
+    ----------
+    law : ResidualLaw or None
+        Residual law of the response, or None for the family's own law.
+    fixed_parameters : Mapping[str, float]
+        Constant values of family parameters and of the law's structural
+        sites.
+    build : Callable[[dict[str, float]], FormulaToQVRModule]
+        The lens of the family from its own fixed values.
+
+    Returns
+    -------
+    FormulaToQVRModule
+        The lens, with the law bound.
+    """
+    structural = set(law.coefficients) if law is not None else set()
+    lens = build(
+        {
+            name: value
+            for name, value in fixed_parameters.items()
+            if name not in structural
+        }
+    )
+    lens._bind_residual(
+        law,
+        {name: value for name, value in fixed_parameters.items() if name in structural},
+    )
+    return lens
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedFormula:
     """Ephemeral shared preparation, including live fitted design evaluators.
@@ -3781,6 +3917,7 @@ def _assemble_fit(
         refit_recipe=refit_recipe,
         formula=prepared.formula.formula,
         family=prepared.formula.family,
+        residual=prepared.formula.lens._residual,
         program=prepared.program,
         posterior=result.posterior,
         sample_prior=result.sample_prior,
@@ -4206,8 +4343,9 @@ def _prepare_formula(
         data = original
     data = included_data(parsed, data)
     binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
+    residual = None
     if autocor_terms:
-        family_obj, parsed = bind_autocor_terms(
+        residual, parsed = bind_autocor_terms(
             autocor_terms,
             family_obj,
             parsed,
@@ -4245,6 +4383,18 @@ def _prepare_formula(
         """Evaluate one auxiliary formula on the included rows."""
         return fields_and_design(text, data=data, data2=data2, caller=caller)
 
+    family_parameters = frozenset(
+        {
+            "mu",
+            *(aux.name for aux in family_obj.aux_params),
+            *(
+                name
+                for name in distributional or {}
+                if is_category_parameter(family_obj, name)
+                or is_scale_parameter(family_obj, name)
+            ),
+        }
+    )
     with formula_data_options(knots, drop_unused_levels, data2):
         graph = build_predictor_graph(
             formula,
@@ -4252,25 +4402,17 @@ def _prepare_formula(
             distributional,
             data,
             parsed.response_name,
-            family_parameters=frozenset(
-                {
-                    "mu",
-                    *(aux.name for aux in family_obj.aux_params),
-                    *(
-                        name
-                        for name in distributional or {}
-                        if is_category_parameter(family_obj, name)
-                    ),
-                }
-            ),
+            family_parameters=family_parameters,
             evaluate=evaluate,
             designs=parameter_designs,
         )
+        # A formula of a name that is no family parameter is a nonlinear
+        # parameter of the graph.
         parameter_formulas = _parse_distributional(
             {
                 name: value
                 for name, value in (distributional or {}).items()
-                if isinstance(value, str)
+                if isinstance(value, str) and name in family_parameters
             },
             parsed.response_name,
             evaluate=evaluate,
@@ -4281,24 +4423,28 @@ def _prepare_formula(
         if family_obj.trials_parameter is not None
         else None
     )
-    lens = FormulaToQVRModule(
-        family_obj,
-        fixed_prior=fixed_prior,
-        random_scale_prior=random_scale_prior,
-        correlation_prior=correlation_prior,
-        group_covariances=group_covariances,
-        user_priors=priors,
-        reparameterize=reparameterize,
-        binomial_trials=binomial_trials,
-        thresholds_by=thresholds_by,
-        mixture_components=mixture_components,
-        predictor_name=predictor_name,
-        distributional=parameter_formulas,
-        predictor_graph=graph,
-        fixed_parameters=fixed_parameters,
-        default_priors=default_priors,
-        center=center,
-        decomp=decomp,
+    lens = residual_lens(
+        residual,
+        fixed_parameters or {},
+        lambda fixed: FormulaToQVRModule(
+            family_obj,
+            fixed_parameters=fixed,
+            fixed_prior=fixed_prior,
+            random_scale_prior=random_scale_prior,
+            correlation_prior=correlation_prior,
+            group_covariances=group_covariances,
+            user_priors=priors,
+            reparameterize=reparameterize,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            predictor_name=predictor_name,
+            distributional=parameter_formulas,
+            predictor_graph=graph,
+            default_priors=default_priors,
+            center=center,
+            decomp=decomp,
+        ),
     )
     return _PreparedFormula(
         lens,

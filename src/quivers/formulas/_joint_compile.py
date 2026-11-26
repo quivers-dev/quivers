@@ -16,6 +16,7 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
     LetExprLiteral,
     LetExprNode,
+    LetExprVar,
     Module,
     ObjectDecl,
     ProgramDecl,
@@ -27,9 +28,6 @@ from quivers.dsl.ast_nodes import (
     TypeFromExpr,
     LetStep,
     ObserveStep,
-    OptionEntry,
-    OptionName,
-    DrawArgNamed,
     TypeName,
 )
 from quivers.dsl.program_templates import (
@@ -37,10 +35,8 @@ from quivers.dsl.program_templates import (
     _bound_names,
     _rename_step,
     substitute_program_object,
-    draw_argument_expression,
 )
 from quivers.dsl.step_resolution import _step_value_names
-from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import (
     _add,
     _factor,
@@ -92,7 +88,12 @@ from quivers.formulas._priors import (
     resolve_priors,
 )
 from quivers.formulas._response import response_tensor
-from quivers.formulas.compile import FormulaToQVRModule, _draw
+from quivers.formulas.compile import FormulaToQVRModule
+from quivers.formulas._observation import Observation, observation
+from quivers.formulas._joint_residual import (
+    RecursiveResidualFactory,
+    recursive_residual_record,
+)
 from quivers.formulas.formula import Formula, FormulaData, RandomTerm, _qvr_name
 
 _Value = TypeVar("_Value")
@@ -531,7 +532,7 @@ def _namespace(
         if laws is None
         else {record.name: prefix + record.name for record in laws.definitions}
     )
-    families = lens._family.custom.catalog if lens._family.custom is not None else None
+    families = lens.response_laws
     if laws is not None:
         laws = laws.renamed(morphisms)
         families = laws if families is None else families.with_catalog(laws)
@@ -792,27 +793,24 @@ def _validate_residual_rows(components: _Components) -> None:
         share one ``nu``.
     """
     laws = {lens._family.elliptical for lens, _ in components.values()}
-    # Residual autocorrelation terms replace a response's law. brms refuses
-    # its covariance terms beside estimated residual correlations; it admits
-    # the conditional ARMA formulation there, which this emission lacks.
-    for label, (lens, _) in components.items():
-        binding = autocor_binding(lens._family)
-        if binding is None:
-            continue
-        if binding.term.cov:
+    # A conditional ARMA recursion moves each row's location and keeps the law
+    # of the row's residual vector (RecursiveResiduals). A covariance across
+    # rows beside one across responses has no single composition: a Kronecker
+    # product, a sum and a nesting all fit the syntax, and brms refuses it.
+    for lens, _ in components.values():
+        residual = lens._residual
+        if residual is not None and not residual.factorized:
             raise ValueError(
                 "Explicit covariance terms cannot be modeled when 'rescor' is "
                 "estimated at the same time."
             )
-        raise ValueError(
-            f"response {label!r}: {binding.term.label} beside estimated residual "
-            "correlations is not supported; use set_rescor(False)"
-        )
     elliptical = next(iter(laws))
     if len(laws) != 1 or elliptical is None:
+        names = sorted({lens._family.name for lens, _ in components.values()})
         raise ValueError(
-            "residual correlations require homogeneous Gaussian or Student responses, "
-            "families declaring one elliptical residual law (Family.elliptical)"
+            "rescor requires homogeneous Gaussian or Student responses, "
+            "families declaring one elliptical residual law "
+            f"(Family.elliptical); got families {names!r}"
         )
     df = elliptical.df
     first = next(iter(components.values()))[1]
@@ -867,8 +865,13 @@ def _correlated_residual(
     statements: list[Statement],
     targets: Sequence[PriorTarget],
     fixed_inputs: Mapping[str, torch.Tensor],
-) -> tuple[ProgramDecl, list[PriorTarget], dict[str, torch.Tensor]]:
+) -> tuple[
+    ProgramDecl, list[PriorTarget], dict[str, torch.Tensor], FamilyCatalog | None
+]:
     """Join existing scalar location/scale bindings under one vector residual law.
+
+    Responses with a conditional ARMA recursion are observed through
+    `RecursiveResiduals`, whose locations follow each response's own past.
 
     Parameters
     ----------
@@ -887,10 +890,11 @@ def _correlated_residual(
 
     Returns
     -------
-    tuple[ProgramDecl, list[PriorTarget], dict[str, torch.Tensor]]
+    tuple
         The program with one multivariate observation, its prior targets
-        with the residual correlation and shared ``nu``, and the inputs with
-        the stacked joint response.
+        with the residual correlation and shared ``nu``, the inputs with the
+        stacked joint response, and the catalog of a recursive joint law or
+        None.
     """
     names = tuple(responses)
     width = len(names)
@@ -900,20 +904,17 @@ def _correlated_residual(
         response.names[_qvr_name(response.formula.response_name)]
         for response in responses.values()
     }
-    arguments_by_response = {}
-    for name, response in responses.items():
-        observation = next(
-            step
-            for step in program.draws
-            if isinstance(step, ObserveStep)
-            and step.vars[0]
-            == response.names[_qvr_name(response.formula.response_name)]
-        )
-        arguments_by_response[name] = {
-            argument.parameter: draw_argument_expression(argument.value)
-            for argument in observation.args or ()
-            if isinstance(argument, DrawArgNamed)
+    # Each response's own observation, in the joint program's names.
+    observations = {
+        name: response_observation(response) for name, response in responses.items()
+    }
+    arguments_by_response = {
+        name: {
+            parameter: observed.argument(parameter)
+            for parameter, _ in observed.arguments
         }
+        for name, observed in observations.items()
+    }
     shared = next(iter(responses.values())).lens
     elliptical = shared._family.elliptical
     assert elliptical is not None
@@ -1001,29 +1002,33 @@ def _correlated_residual(
             ),
         )
     )
-    first = next(iter(responses.values()))
-    weights = (
-        first.names.get("formula_weights")
-        if first.formula.modifiers.weights is not None
-        else None
-    )
+    weights = next(iter(observations.values())).weights
     location = ("formula_joint_mu", "formula_joint_scale")
-    observation = _draw(
-        "formula_joint_response",
-        elliptical.kernel,
-        location if df is None else (df, *location),
-        index=TypeName(name=row),
-        mode="score",
-        weights=weights,
-        parameterization=elliptical.parameterization,
+    recursions = recursion_kernel(
+        responses, arguments_by_response, student=df is not None
     )
-    observation = observation.with_(
-        options=(
-            *observation.options,
-            OptionEntry(key="over", value=OptionName(value=axis)),
+    joint = (
+        observation(
+            "formula_joint_response",
+            elliptical.kernel,
+            location if df is None else (df, *location),
+            None,
+            plate=row,
+            event=axis,
+            parameterization=elliptical.parameterization,
         )
-    )
-    steps.append(observation)
+        if recursions is None
+        else observation(
+            "formula_joint_response",
+            recursions[0].definitions[0].name,
+            (*((df,) if df is not None else ()), *location, *recursions[1]),
+            None,
+            plate=row,
+            event=axis,
+            catalog=recursions[0],
+        )
+    ).with_(weights=weights)
+    steps.append(joint.step())
     fixed_inputs = dict(fixed_inputs) | {
         "formula_joint_response": torch.stack(
             tuple(
@@ -1037,7 +1042,103 @@ def _correlated_residual(
         program.with_(draws=tuple(steps), return_vars=("formula_joint_response",)),
         targets,
         fixed_inputs,
+        None if recursions is None else recursions[0],
     )
+
+
+def response_observation(response: _ResponseEmission) -> Observation:
+    """Return the observation of one response in the joint program's names.
+
+    Parameters
+    ----------
+    response : _ResponseEmission
+        Namespaced response.
+
+    Returns
+    -------
+    Observation
+        The response's observation with namespaced bindings.
+
+    Raises
+    ------
+    ValueError
+        If the response's lens has emitted no observation.
+    """
+    observed = response.lens._observation
+    if observed is None:
+        raise ValueError(
+            f"response {response.formula.response_name!r} has no observation"
+        )
+
+    def named(value: str | float) -> str | float:
+        return response.names.get(value, value) if isinstance(value, str) else value
+
+    return (
+        observed.with_(
+            site=response.names.get(observed.site, observed.site),
+            weights=None if observed.weights is None else str(named(observed.weights)),
+        )
+        .with_arguments(
+            tuple((parameter, named(bound)) for parameter, bound in observed.arguments)
+        )
+        .with_events(
+            tuple((key, str(named(column))) for key, column in observed.events)
+        )
+    )
+
+
+def recursion_kernel(
+    responses: Mapping[str, _ResponseEmission],
+    arguments: Mapping[str, Mapping[str, LetExprNode]],
+    *,
+    student: bool,
+) -> tuple[FamilyCatalog, tuple[str, ...]] | None:
+    """Declare the joint residual law of responses with conditional recursions.
+
+    Parameters
+    ----------
+    responses : Mapping[str, _ResponseEmission]
+        Namespaced responses in coordinate order.
+    arguments : Mapping[str, Mapping[str, LetExprNode]]
+        Arguments of each response's own observation, by kernel parameter.
+    student : bool
+        Student vectors with shared degrees of freedom.
+
+    Returns
+    -------
+    tuple[FamilyCatalog, tuple[str, ...]] or None
+        The catalog registering the law, and the bindings of the responses'
+        structural parameters in signature order; None when no response has
+        a residual law.
+    """
+    laws = {name: response.lens._residual for name, response in responses.items()}
+    if all(law is None for law in laws.values()):
+        return None
+    names: list[str] = []
+    bindings: list[str] = []
+    coefficients: list[tuple[tuple[str, str], ...]] = []
+    for label, law in laws.items():
+        pairs = []
+        for coefficient in () if law is None else law.coefficients:
+            value = arguments[label][coefficient]
+            if not isinstance(value, LetExprVar):
+                raise TypeError("a structural parameter is passed by its binding")
+            kernel = f"{coefficient}_{_qvr_name(label)}"
+            names.append(kernel)
+            bindings.append(value.name)
+            pairs.append((kernel, coefficient))
+        coefficients.append(tuple(pairs))
+    record = recursive_residual_record(
+        "JointResidualStudentT" if student else "JointResidualNormal",
+        names,
+        student=student,
+    )
+    factory = RecursiveResidualFactory(
+        layouts=tuple(None if law is None else law.layout for law in laws.values()),
+        coefficients=tuple(coefficients),
+        student=student,
+    )
+    return FamilyCatalog().with_family(record, factory), tuple(bindings)
 
 
 def _shared_groups(
@@ -1395,8 +1496,9 @@ def emit_joint(
         draws=tuple(steps),
         return_vars=tuple(returned),
     )
+    joint_laws = None
     if rescor:
-        program, targets, fixed_inputs = _correlated_residual(
+        program, targets, fixed_inputs, joint_laws = _correlated_residual(
             program, responses, emitter, statements, targets, fixed_inputs
         )
     module = Module(
@@ -1456,7 +1558,7 @@ def emit_joint(
             return_vars=tuple(returned),
         )
         if rescor:
-            program, _, fixed_inputs = _correlated_residual(
+            program, _, fixed_inputs, joint_laws = _correlated_residual(
                 program, responses, emitter, statements, targets, fixed_inputs
             )
         replacements = {
@@ -1513,7 +1615,7 @@ def emit_joint(
         else:
             module = order_prior_dependencies(module)
     module = order_prior_dependencies(module)
-    catalog = FamilyCatalog()
+    catalog = FamilyCatalog() if joint_laws is None else joint_laws
     for response in responses.values():
         if response.families is not None:
             catalog = catalog.with_catalog(response.families)

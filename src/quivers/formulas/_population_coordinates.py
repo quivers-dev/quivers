@@ -688,6 +688,18 @@ class PopulationTerm(ValueModel):
             multiplier=multiplier,
         )
 
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        Returns
+        -------
+        bool
+            True: the row reads its own design columns.
+        """
+        return True
+
     def sites(self) -> tuple[SiteDecl, ...]:
         """List the sampled coordinates.
 

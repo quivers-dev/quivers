@@ -34,7 +34,6 @@ from quivers.formulas._ast import (
     _var,
     finite_object_sizes,
 )
-from quivers.formulas._autocor import autocor_matrix_targets, autocor_prior_target
 from quivers.formulas._category_formulas import scale_parameter
 from quivers.formulas._group_law import option_prior_sites
 from quivers.formulas._term import catalogue_sites
@@ -412,6 +411,7 @@ def build_prior_targets(
     thresholds_by=None,
     predictor_scopes=None,
     separated=frozenset(),
+    residual=None,
 ):
     """Combine explicit formula roles, group-block laws, and actual sample axes.
 
@@ -436,6 +436,9 @@ def build_prior_targets(
         existing predictor prefixes. Ordinary programs derive their scopes.
     separated : Collection[str]
         Sites whose components are drawn on their own.
+    residual : ResidualLaw or None
+        Residual law of the response, whose structural sites take brms's
+        classes (``ar``, ``ma``, ``cosy``, ``lagsar``, ``Lcortime``, ...).
 
     Returns
     -------
@@ -538,12 +541,6 @@ def build_prior_targets(
             else None,
         )
         lower = max((end for end in ends if end is not None), default=None)
-        # Autocorrelation parameters take brms classes (ar, ma, cosy, ...).
-        structural = autocor_prior_target(family, auxiliary.name)
-        if structural is not None:
-            role, lag, lower, upper = structural
-            add(auxiliary.name, role, lower=lower, upper=upper, coef=lag)
-            continue
         add(
             auxiliary.name,
             auxiliary.name,
@@ -551,6 +548,8 @@ def build_prior_targets(
             upper=upper,
             dpar=auxiliary.name,
         )
+    for site in residual.sites if residual is not None else ():
+        add(site.name, site.class_, lower=site.lower, upper=site.upper, coef=site.coef)
     if family.ordinal is not None:
         for site in (
             "cutpoint_log_spacing",
@@ -575,7 +574,7 @@ def build_prior_targets(
         for label in labels:
             name = scale_parameter(component_scale.name, label)
             add(name, name, lower=0.0, dpar=name)
-    for site, role in autocor_matrix_targets(family):
+    for site, role in residual.matrix_targets() if residual is not None else ():
         add(site, role)
     return tuple(targets.values())
 

@@ -650,6 +650,11 @@ approximation. The estimate reports the subsampling standard error separately.
 The posterior mean is taken in the sampler's unconstrained coordinates, which
 gives a valid point for correlation and simplex sites. brms averages
 constrained draws instead. The estimator stays unbiased for either point.
+Where a row's score on new data is not its training score (a residual law
+that correlates rows or conditions on earlier responses, or a latent drawn for
+each training row, such as latent residuals or an exact Gaussian process), the
+sampled rows are scored on the training rows instead, at the cost of scoring
+every row at every draw.
 
 `loo_predict`, `loo_epred`, `loo_linpred`, and `loo_predictive_interval` weight
 predictions by the same importance weights, and `loo_r2` computes brms's

@@ -17,7 +17,9 @@ does not add a predictor column.
 | `car(M, gr, type)` with `type` one of `escar`, `esicar`, `icar`, `bym2` | conditional autoregressive location effect | `sdcar`, `car` (`escar`), `rhocar` (`bym2`) | `random_scale_prior`, `Uniform(0, 1)`, `Beta(1, 1)` |
 
 For `family="gaussian"` and `family="student_t"`, the residual terms change
-the response law, as brms's natural-residual formulation does. For every
+the response law, as brms's natural-residual formulation does. The fit keeps
+the family it was given (`fit.family` is still `gaussian`) and holds the
+dependence as its residual law, `fit.residual`. For every
 other family with one location predictor, brms adds latent residuals to the
 linear predictor instead, and QVR does the same (see below). A `car` term
 adds a spatial effect to the linear predictor of any such family. Matrices
@@ -113,7 +115,27 @@ scores its one-step conditional density. A covariance or SAR row scores its
 leave-one-out predictive density given all other rows of its series
 [@burkner2021efficient], the value that PSIS-LOO requires for these
 non-factorized models. Those values do not sum to the joint density. The
-fitted target always uses the exact joint density.
+fitted target always uses the exact joint density. `loo_subsample` scores the
+sampled rows with the same values, read from the training rows, so its
+pointwise terms agree with those of `loo` at the same draws.
+
+### Residual correlations across responses
+
+In a joint model with `set_rescor(True)`, a response may have a conditional
+ARMA term, as in brms. Row $t$ of response $k$ is
+$y_{tk}=\mu_{tk}+e_{tk}$, where $\mu_{tk}$ adds the recursion of response
+$k$ over its own recorded responses, and the vector $e_t$ has the Normal or
+Student law of the residual correlation. The map from $y$ to $e$ is lower
+triangular with unit diagonal in each response's series order, so the
+density is $\prod_t f(e_t)$: the recursion moves the locations and leaves the
+law of each row's vector unchanged. `posterior_linpred` includes the
+recursion, and a missing recorded response is completed by the same joint
+innovation that the prediction draws. A covariance term (`cov = TRUE`,
+`cosy`, `unstr`, `sar`, `fcor`) beside estimated residual correlations stays
+refused, as in brms: a covariance across rows and one across responses could
+be combined as a Kronecker product, a sum, or a nesting, and the syntax does
+not choose one. An `mi()` response of such a model is refused, because its
+joint density is then written in the program, where the recursion is not.
 
 ## Combining terms
 

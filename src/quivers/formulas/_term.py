@@ -719,6 +719,24 @@ class Term(Protocol):
         """
         ...
 
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        A separable term has the same value at a training row as at a new row
+        of the same data. A latent drawn for each training row (latent
+        residuals, an exact Gaussian process at its training inputs) is not:
+        other rows draw their own.
+
+        Returns
+        -------
+        bool
+            True when the value at a row is a function of the parameters
+            and the row's data.
+        """
+        ...
+
     def at(self, rows: PredictorRows) -> Term:
         """Return the term on other rows.
 

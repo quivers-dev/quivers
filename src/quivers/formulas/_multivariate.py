@@ -16,6 +16,7 @@ from typing import Literal, cast
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.formulas._r_expression import translate_r_expression
 from quivers.formulas._predictor_graph import NonlinearExpression
 from quivers.formulas.family import Family, families
 from quivers.formulas._category_formulas import (
@@ -535,14 +536,27 @@ def classify_parameters(
     ------
     ValueError
         If a formula lacks a named left side, a name is given twice, or,
-        when strict, a name is not a parameter of the family and ``nl`` is
-        False.
+        when strict, a name is not a parameter of the family, ``nl`` is
+        False, and no nonlinear formula reads it.
     """
     resolved = families[family] if isinstance(family, str) else family
     resolved = expand_mixture(resolved, mixture_components)
     auxiliary = {parameter.name for parameter in resolved.aux_params}
     distributional: dict[str, str | NonlinearExpression] = {}
     nonlinear: dict[str, str | NonlinearExpression] = {}
+    # brms nlf(): a name a nonlinear formula reads is a nonlinear parameter
+    # when a formula gives it, whether or not the location is nonlinear; with
+    # a linear location it is kept with the parameter formulas, and the
+    # predictor graph declares it.
+    referenced = set().union(
+        *(
+            translate_r_expression(
+                text.split("~", 1)[1] if "~" in text else "",
+                context=f"nonlinear formula {text!r}",
+            ).names
+            for text in nonlinear_formulas
+        )
+    )
     for text, expression in (
         *((text, False) for text in formulas),
         *((text, True) for text in nonlinear_formulas),
@@ -562,7 +576,7 @@ def classify_parameters(
             # A formula kept for a later family must name a parameter of
             # some registered family.
             deferred = pending or (not strict and name in _family_parameters())
-            if known or (not nl and deferred):
+            if known or (not nl and (deferred or name in referenced)):
                 distributional[name] = (
                     NonlinearExpression(expression=right.strip(), syntax="r")
                     if expression
@@ -762,9 +776,7 @@ class MultivariateFormula(ValueModel):
         ------
         ValueError
             If no response is given, the order does not list
-            each response exactly once, a label is not alphanumeric, or
-            residual correlation joins families other than one common
-            Gaussian or Student family.
+            each response exactly once, or a label is not alphanumeric.
         TypeError
             If ``rescor`` is not Boolean or a response is not a ResponseModel.
         """
@@ -784,18 +796,6 @@ class MultivariateFormula(ValueModel):
                 )
             if not isinstance(response, ResponseModel):
                 raise TypeError("responses must map labels to ResponseModel values")
-        if self.rescor:
-            resolved = [
-                response.resolved_family for response in self.responses.values()
-            ]
-            laws = {family.elliptical for family in resolved}
-            if len(laws) != 1 or None in laws:
-                raise ValueError(
-                    "rescor requires homogeneous Gaussian or Student responses, "
-                    "families declaring one elliptical residual law "
-                    "(Family.elliptical); got families "
-                    f"{sorted({family.name for family in resolved})!r}"
-                )
 
     def __add__(
         self, other: ResponseModel | MultivariateFormula | RescorSetting | MecorSetting

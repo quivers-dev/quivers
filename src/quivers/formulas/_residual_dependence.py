@@ -27,7 +27,6 @@ shared recorded-event masses.
 from __future__ import annotations
 
 from collections.abc import Mapping
-import functools
 import math
 from typing import Literal
 
@@ -40,11 +39,8 @@ from torch.types import _size
 from torch.distributions import (
     Chi2,
     Distribution,
-    Independent,
-    MultivariateNormal,
     Normal,
     StudentT,
-    TransformedDistribution,
     Transform,
     constraints,
 )
@@ -53,62 +49,11 @@ from quivers._positions import anywhere, demand
 from quivers._values import ValueModel, opaque_by_value
 from quivers.continuous._observation_events import event_log_prob
 from quivers.continuous.measure import Normalize, Restrict
-from quivers.continuous._multivariate_student_t import MultivariateStudentT
-from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._group_covariance import _matrix_values, _tolerance
-from quivers.qiec.families import DistributionFamily, FamilyParameter
-from quivers.qiec.types import REAL
 
 ResidualKind = Literal[
     "independent", "arma", "cosy", "unstr", "fcor", "sar_lag", "sar_error"
 ]
 """Residual structures scored on the natural response scale."""
-
-
-def _vector(value: torch.Tensor, name: str) -> None:
-    """Require a finite, nonempty real vector with optional leading batches.
-
-    Parameters
-    ----------
-    value : torch.Tensor
-        Candidate vector, whose trailing axis indexes response rows.
-    name : str
-        Role named in the error message.
-
-    Raises
-    ------
-    ValueError
-        If the value is not a tensor, has no nonempty trailing axis, or holds
-        nonfinite or non-floating values.
-    """
-    if not isinstance(value, torch.Tensor) or value.ndim < 1 or not value.shape[-1]:
-        raise ValueError(f"{name} requires a nonempty vector")
-    if not value.is_floating_point():
-        raise ValueError(f"{name} requires finite floating values")
-    demand(
-        torch.isfinite(value),
-        lambda: ValueError(f"{name} requires finite floating values"),
-    )
-
-
-def _matrix_tuple(
-    value: tuple[tuple[float, ...], ...] | np.ndarray | torch.Tensor,
-) -> tuple[tuple[float, ...], ...]:
-    """Copy a known matrix into immutable nested tuples once.
-
-    Parameters
-    ----------
-    value : tuple, np.ndarray, or torch.Tensor
-        Known covariance or weight matrix, or an empty tuple.
-
-    Returns
-    -------
-    tuple[tuple[float, ...], ...]
-        Immutable Double-precision rows.
-    """
-    if isinstance(value, tuple) and not value:
-        return ()
-    return _matrix_values(value)
 
 
 def _frozen_array(value: np.ndarray | None) -> np.ndarray | None:
@@ -129,77 +74,6 @@ def _frozen_array(value: np.ndarray | None) -> np.ndarray | None:
     frozen = np.array(value, dtype=np.float64, copy=True, order="C")
     frozen.setflags(write=False)
     return frozen
-
-
-def arma_factor(
-    scale: torch.Tensor,
-    ar: torch.Tensor,
-    ma: torch.Tensor,
-    *,
-    stationary: bool = False,
-) -> torch.Tensor:
-    """Factor one ARMA residual covariance without changing its innovation scale.
-
-    Parameters
-    ----------
-    scale : torch.Tensor
-        Positive innovation scales, with one trailing coordinate per row.
-    ar, ma : torch.Tensor
-        Autoregressive and moving-average coefficients, in lag order, with
-        optional leading batches. Zero-length vectors omit the corresponding
-        operator. Coefficients remain unconstrained for finite conditional
-        initialization. Stationary initialization requires order at most one
-        and an AR coefficient strictly between minus one and one.
-    stationary : bool
-        Use the stationary ARMA(1,1) covariance. False conditions every
-        pre-series residual and innovation to zero, retaining arbitrary order.
-
-    Returns
-    -------
-    torch.Tensor
-        A lower-triangular factor, preserving every broadcast parameter batch.
-
-    Raises
-    ------
-    ValueError
-        If a scale is nonpositive or nonfinite, a coefficient vector is not
-        finite, or the stationary covariance is requested outside its domain.
-    """
-    _vector(scale, "residual scale")
-    demand(scale > 0, lambda: ValueError("residual scales must be positive"))
-    for name, value in (("ar", ar), ("ma", ma)):
-        if value.ndim < 1 or not value.is_floating_point():
-            raise ValueError(f"{name} requires a finite coefficient vector")
-        demand(
-            torch.isfinite(value),
-            lambda: ValueError(f"{name} requires a finite coefficient vector"),
-        )
-    count = scale.shape[-1]
-    batch = torch.broadcast_shapes(scale.shape[:-1], ar.shape[:-1], ma.shape[:-1])
-    if stationary:
-        if ar.shape[-1] > 1 or ma.shape[-1] > 1:
-            raise ValueError("stationary ARMA covariance requires orders at most one")
-        phi = ar[..., 0] if ar.shape[-1] else scale.new_zeros(batch)
-        theta = ma[..., 0] if ma.shape[-1] else scale.new_zeros(batch)
-        correlation_factor = torch.linalg.cholesky(
-            stationary_arma_covariance(phi, theta, count)
-        )
-        return scale[..., :, None] * correlation_factor
-    identity = torch.eye(count, dtype=scale.dtype, device=scale.device).expand(
-        *batch, count, count
-    )
-    autoregression = identity
-    moving_average = identity
-    for lag in range(1, min(count, ar.shape[-1] + 1)):
-        band = torch.diag(scale.new_ones(count - lag), diagonal=-lag)
-        autoregression = autoregression - ar[..., lag - 1, None, None] * band
-    for lag in range(1, min(count, ma.shape[-1] + 1)):
-        band = torch.diag(scale.new_ones(count - lag), diagonal=-lag)
-        moving_average = moving_average + ma[..., lag - 1, None, None] * band
-    innovation_factor = moving_average * scale[..., None, :]
-    return torch.linalg.solve_triangular(
-        autoregression, innovation_factor, upper=False, unitriangular=True
-    )
 
 
 def stationary_arma_covariance(
@@ -240,49 +114,6 @@ def stationary_arma_covariance(
     decay = torch.stack(powers, dim=-1)[..., (lag - 1).clamp_min(0)]
     covariance = first[..., None, None] * decay
     return torch.where(lag == 0, variance[..., None, None], covariance)
-
-
-def compound_symmetry_factor(scale: torch.Tensor, rho: torch.Tensor) -> torch.Tensor:
-    """Use a compound-symmetry correlation with its exact positive domain.
-
-    Parameters
-    ----------
-    scale : torch.Tensor
-        Positive residual scales, with one trailing coordinate per row.
-    rho : torch.Tensor
-        Common correlation, with optional leading batches. With ``n`` rows it
-        must lie strictly between ``-1 / (n - 1)`` and one.
-
-    Returns
-    -------
-    torch.Tensor
-        A lower-triangular factor of the scaled compound-symmetry covariance.
-
-    Raises
-    ------
-    ValueError
-        If a scale or the correlation is invalid, or the correlation lies
-        outside its positive-definite domain.
-    """
-    _vector(scale, "residual scale")
-    count = scale.shape[-1]
-    for valid in (torch.isfinite(rho), scale > 0):
-        demand(
-            valid,
-            lambda: ValueError(
-                "residual scales and correlation must be finite and valid"
-            ),
-        )
-    if count > 1:
-        demand(
-            (rho > -1 / (count - 1)) & (rho < 1),
-            lambda: ValueError(
-                "compound symmetry correlation is outside its positive-definite domain"
-            ),
-        )
-    identity = torch.eye(count, dtype=scale.dtype, device=scale.device)
-    covariance = identity + rho[..., None, None] * (1 - identity)
-    return scale[..., :, None] * torch.linalg.cholesky(covariance)
 
 
 class _ARMAFilter(Transform):
@@ -403,90 +234,6 @@ class _ARMAFilter(Transform):
         return torch.zeros_like(x[..., 0])
 
 
-class _ARMAInnovations(TransformedDistribution):
-    """Compose existing scalar innovation laws with a unit-determinant filter.
-
-    Parameters
-    ----------
-    loc : torch.Tensor
-        Residual location, one trailing coordinate per row.
-    scale : torch.Tensor
-        Positive innovation scales on the same rows.
-    ar, ma : torch.Tensor
-        Autoregressive and moving-average coefficients, in lag order.
-    nu : torch.Tensor or None
-        Student degrees of freedom for each innovation, or None for Gaussian
-        innovations.
-
-    Raises
-    ------
-    ValueError
-        If the location or scale is not a finite, nonempty vector.
-    """
-
-    def __init__(
-        self,
-        loc: torch.Tensor,
-        scale: torch.Tensor,
-        ar: torch.Tensor,
-        ma: torch.Tensor,
-        nu: torch.Tensor | None = None,
-    ) -> None:
-        _vector(loc, "residual location")
-        _vector(scale, "residual scale")
-        batch = torch.broadcast_shapes(
-            loc.shape[:-1],
-            scale.shape[:-1],
-            ar.shape[:-1],
-            ma.shape[:-1],
-            () if nu is None else nu.shape,
-        )
-        self.loc = loc.expand(*batch, loc.shape[-1])
-        self.scale = scale.expand_as(self.loc)
-        self.ar, self.ma, self.nu = ar, ma, nu
-        innovations = (
-            Normal(torch.zeros_like(self.loc), self.scale)
-            if nu is None
-            else StudentT(nu[..., None], torch.zeros_like(self.loc), self.scale)
-        )
-        super().__init__(Independent(innovations, 1), [_ARMAFilter(self.loc, ar, ma)])
-
-    @property
-    def mean(self) -> torch.Tensor:
-        """Give the residual mean, undefined for Student laws with ``nu <= 1``.
-
-        Returns
-        -------
-        torch.Tensor
-            The location, or NaN where the Student mean does not exist.
-        """
-        return (
-            self.loc
-            if self.nu is None
-            else torch.where(self.nu[..., None] > 1, self.loc, torch.nan)
-        )
-
-    @property
-    def variance(self) -> torch.Tensor:
-        """Give the marginal residual variance of each row.
-
-        Returns
-        -------
-        torch.Tensor
-            Row variances, infinite for Student laws with ``1 < nu <= 2`` and
-            NaN where ``nu <= 1``.
-        """
-        variance = arma_factor(self.scale, self.ar, self.ma).square().sum(-1)
-        if self.nu is not None:
-            multiplier = self.nu / (self.nu - 2)
-            variance = torch.where(
-                self.nu[..., None] > 2,
-                variance * multiplier[..., None],
-                torch.where(self.nu[..., None] > 1, torch.inf, torch.nan),
-            )
-        return variance
-
-
 class ResidualLayout(ValueModel):
     """Row coding and known matrices of one residual dependence structure.
 
@@ -570,6 +317,21 @@ class ResidualLayout(ValueModel):
     mean_order: tuple[int, ...] = ()
     mean_starts: tuple[int, ...] = ()
     mean_lengths: tuple[int, ...] = ()
+
+    @property
+    def factorized(self) -> bool:
+        """Report whether the rows are independent given the parameters.
+
+        Returns
+        -------
+        bool
+            True for independent rows and for the conditional ARMA
+            formulation alone, whose rows condition on recorded responses;
+            False for every covariance and simultaneous autoregression.
+        """
+        return self.kind == "independent" or (
+            self.kind == "arma" and not self.stationary
+        )
 
     @property
     def conditional(self) -> bool:
@@ -994,6 +756,7 @@ class ResidualResponse(Distribution):
             None,
             None,
         ),
+        innovations: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run brms's conditional ARMA predictor over each series.
 
@@ -1013,6 +776,11 @@ class ResidualResponse(Distribution):
         bounds : tuple
             Inclusive truncation bounds of the response sampling law, each a
             scalar, one value per row, or None for an open side.
+        innovations : torch.Tensor or None
+            Innovations in original row order. A missing response is then its
+            conditional mean plus the row's innovation instead of an
+            independent draw, so a law that draws the innovations jointly
+            (correlated across responses) completes the history with them.
 
         Returns
         -------
@@ -1031,6 +799,9 @@ class ResidualResponse(Distribution):
         eta = self.loc[..., index]
         history = values.expand_as(self.loc)[..., index]
         scale = self.scale[..., index]
+        given = (
+            None if innovations is None else innovations.expand_as(self.loc)[..., index]
+        )
         limits = [
             None
             if bound is None
@@ -1065,7 +836,9 @@ class ResidualResponse(Distribution):
                     None if limit is None else limit[..., position] for limit in limits
                 )
                 draw = (
-                    innovation.sample()
+                    mean + given[..., position]
+                    if given is not None
+                    else innovation.sample()
                     if low is None and high is None
                     else Normalize(Restrict(innovation, low, high))
                     .sample()
@@ -1552,6 +1325,47 @@ class ResidualResponse(Distribution):
             return self._sar_solve(self.linear_predictor)
         return self.linear_predictor
 
+    def conditional_means(
+        self, values: torch.Tensor, innovations: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Give brms's ``mu`` of each row given recorded responses.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            Responses in original row order, NaN where one is to be
+            predicted.
+        innovations : torch.Tensor or None
+            Innovations completing the missing responses; None requires
+            every response.
+
+        Returns
+        -------
+        torch.Tensor
+            The location with any conditional ARMA contribution.
+
+        Raises
+        ------
+        ValueError
+            If a response is missing and no innovations complete it.
+        """
+        if not self.layout.conditional:
+            return self.loc
+        return self._arma_means(
+            values, fill=innovations is not None, innovations=innovations
+        )
+
+    @property
+    def history(self) -> torch.Tensor:
+        """Return the recorded responses of the rows, NaN where absent.
+
+        Returns
+        -------
+        torch.Tensor
+            History in original row order.
+        """
+        return self._history()
+
     @property
     def linear_predictor(self) -> torch.Tensor:
         """Give brms's ``mu``, including conditional ARMA terms.
@@ -1823,290 +1637,6 @@ class TruncatedResidualRows(Normalize):
         super().__init__(
             Restrict(law._innovation(law.linear_predictor, law.scale), lower, upper)
         )
-
-
-class ResidualKernel(ValueModel):
-    """An immutable native factory for one explicitly selected residual event.
-
-    The constructed law treats its whole row vector as one correlated series
-    and reuses `ResidualResponse` through an event reinterpretation.
-
-    Parameters
-    ----------
-    kind : str
-        One of arma, cosy, fixed, unstructured, sar_error, or sar_lag.
-    matrix : tuple[tuple[float, ...], ...]
-        Fixed covariance for fixed, or spatial weights for SAR. Known matrices
-        are copied once, so posterior calls retain no caller-owned mutable data.
-    stationary : bool
-        Use stationary ARMA initialization rather than zero initial innovations.
-    student : bool
-        Use Student innovations and the natural ``nu``.
-    """
-
-    kind: Literal["arma", "cosy", "fixed", "unstructured", "sar_error", "sar_lag"]
-    matrix: tuple[tuple[float, ...], ...] = dx.field(
-        default=(), opaque=True, extras=opaque_by_value(_matrix_tuple)
-    )
-    stationary: bool = False
-    student: bool = False
-
-    @dx.model_validator()
-    def _validate(self) -> None:
-        if type(self.stationary) is not bool or type(self.student) is not bool:
-            raise TypeError(
-                "residual initialization and Student policy must be Boolean"
-            )
-        matrix = self.matrix
-        if self.kind in {"fixed", "sar_error", "sar_lag"}:
-            tensor = torch.tensor(matrix, dtype=torch.float64)
-            if (
-                tensor.ndim != 2
-                or tensor.shape[0] != tensor.shape[1]
-                or not tensor.shape[0]
-            ):
-                raise ValueError(
-                    "fixed residual operators require a nonempty square matrix"
-                )
-            if self.kind == "fixed" and not bool(
-                torch.allclose(tensor, tensor.T, atol=_tolerance(tensor), rtol=0)
-            ):
-                raise ValueError("fixed residual covariance must be symmetric")
-        elif matrix:
-            raise ValueError("this residual operator does not accept a fixed matrix")
-
-    def layout(self, rows: int) -> ResidualLayout:
-        """Describe one series over ``rows`` rows, prepared once per extent.
-
-        A fixed covariance is factored and SAR eigenvalues are computed on
-        the first request for a row count and reused by every later law.
-
-        Parameters
-        ----------
-        rows : int
-            Number of rows in the event.
-
-        Returns
-        -------
-        ResidualLayout
-            Single-series layout, with any known matrix prepared once.
-
-        Raises
-        ------
-        ValueError
-            If a known matrix does not match the rows.
-        """
-        return _kernel_layout(self, rows)
-
-    def _prepare(self, rows: int) -> ResidualLayout:
-        """Build the single-series layout for one row count.
-
-        Parameters
-        ----------
-        rows : int
-            Number of rows in the event.
-
-        Returns
-        -------
-        ResidualLayout
-            Layout with any known matrix factored or decomposed.
-
-        Raises
-        ------
-        ValueError
-            If a known matrix does not match the rows.
-        """
-        common = {
-            "rows": rows,
-            "order": tuple(range(rows)),
-            "starts": (0,),
-            "lengths": (rows,),
-            "student": self.student,
-        }
-        if self.kind in {"fixed", "sar_error", "sar_lag"} and len(self.matrix) != rows:
-            raise ValueError("fixed residual matrix and response rows disagree")
-        if self.kind == "fixed":
-            matrix = np.asarray(self.matrix, dtype=np.float64)
-            return ResidualLayout(
-                kind="fcor",
-                matrix=matrix,
-                matrix_factor=np.linalg.cholesky(matrix),
-                **common,
-            )
-        if self.kind in {"sar_error", "sar_lag"}:
-            weights, eigenvalues = sar_weights(np.asarray(self.matrix))
-            return ResidualLayout(
-                kind="sar_lag" if self.kind == "sar_lag" else "sar_error",
-                weights=weights,
-                eigenvalues=eigenvalues,
-                **common,
-            )
-        if self.kind == "unstructured":
-            return ResidualLayout(
-                kind="unstr",
-                time_index=tuple(range(rows)),
-                times=rows,
-                **common,
-            )
-        return ResidualLayout(kind=self.kind, stationary=self.stationary, **common)
-
-    def __call__(self, parameters: Mapping[str, torch.Tensor]) -> Distribution:
-        """Construct the native law while retaining all parameter gradients.
-
-        Parameters
-        ----------
-        parameters : Mapping[str, torch.Tensor]
-            Natural-scale parameters: ``loc`` and ``scale`` always, with ``ar``
-            and ``ma``, ``rho``, ``factor``, or ``nu`` as the operator requires.
-
-        Returns
-        -------
-        Distribution
-            The residual law over one event of rows; the conditional ARMA
-            uses the innovation filter and every other operator the
-            structured `ResidualResponse`.
-
-        Raises
-        ------
-        ValueError
-            If the location and scales disagree on their row axis, a scale is
-            nonpositive, or an operator matrix does not match the rows.
-        KeyError
-            If a parameter the operator requires is absent.
-        """
-        loc, scale = parameters["loc"], parameters["scale"]
-        _vector(loc, "residual location")
-        _vector(scale, "residual scale")
-        if loc.shape[-1] != scale.shape[-1]:
-            raise ValueError(
-                "residual location and positive scales must share their row axis"
-            )
-        demand(
-            scale > 0,
-            lambda: ValueError(
-                "residual location and positive scales must share their row axis"
-            ),
-        )
-        nu = parameters["nu"] if self.student else None
-        if self.kind == "arma" and not self.stationary:
-            return _ARMAInnovations(loc, scale, parameters["ar"], parameters["ma"], nu)
-        if self.kind == "arma":
-            factor = arma_factor(
-                scale, parameters["ar"], parameters["ma"], stationary=True
-            )
-            if nu is not None:
-                return MultivariateStudentT(nu, loc, scale_tril=factor)
-            return MultivariateNormal(loc, scale_tril=factor)
-        coefficients: dict[str, torch.Tensor] = {}
-        if self.kind == "cosy":
-            coefficients["cosy"] = parameters["rho"]
-        elif self.kind in {"sar_error", "sar_lag"}:
-            name = "lagsar" if self.kind == "sar_lag" else "errorsar"
-            coefficients[name] = parameters["rho"]
-        law = ResidualResponse(
-            self.layout(loc.shape[-1]),
-            loc,
-            scale,
-            coefficients,
-            nu,
-            parameters["factor"] if self.kind == "unstructured" else None,
-        )
-        return Independent(law, 1)
-
-
-@functools.lru_cache(maxsize=256)
-def _kernel_layout(kernel: ResidualKernel, rows: int) -> ResidualLayout:
-    """Prepare and retain one kernel's layout for a row count.
-
-    Parameters
-    ----------
-    kernel : ResidualKernel
-        Immutable residual operator, hashed by value.
-    rows : int
-        Number of rows in the event.
-
-    Returns
-    -------
-    ResidualLayout
-        The prepared layout.
-    """
-    return kernel._prepare(rows)
-
-
-def residual_catalog(
-    kernel: ResidualKernel,
-    *,
-    name: str = "ResidualNormal",
-    base: FamilyCatalog | None = None,
-) -> FamilyCatalog:
-    """Bind a residual operator through the ordinary checked family boundary.
-
-    The event is one explicit correlated row vector. Callers retain grouping
-    and observation identities. This contract never infers independence from
-    an equal axis extent.
-
-    Parameters
-    ----------
-    kernel : ResidualKernel
-        The residual operator that constructs the native law.
-    name : str
-        Family name under which the operator is registered.
-    base : FamilyCatalog or None
-        Catalog to extend, or None for the default catalog.
-
-    Returns
-    -------
-    FamilyCatalog
-        The extended catalog, with one family whose parameters follow the
-        operator kind and Student policy.
-    """
-    parameters = [
-        FamilyParameter(
-            name="loc",
-            constraint="real",
-            rank=1,
-            event_dims=(0,),
-            scalar_broadcast=False,
-        ),
-        FamilyParameter(
-            name="scale",
-            constraint="positive",
-            rank=1,
-            event_dims=(0,),
-            scalar_broadcast=False,
-        ),
-    ]
-    if kernel.kind == "arma":
-        parameters.extend(
-            FamilyParameter(name=key, constraint="real", rank=1, scalar_broadcast=False)
-            for key in ("ar", "ma")
-        )
-    elif kernel.kind in {"cosy", "sar_error", "sar_lag"}:
-        parameters.append(FamilyParameter(name="rho", constraint="real", rank=0))
-    elif kernel.kind == "unstructured":
-        parameters.append(
-            FamilyParameter(
-                name="factor",
-                constraint="lower_cholesky",
-                rank=2,
-                event_dims=(0, 0),
-                scalar_broadcast=False,
-            )
-        )
-    if kernel.student:
-        parameters.append(FamilyParameter(name="nu", constraint="positive", rank=0))
-    record = DistributionFamily(
-        name=name,
-        parameters=tuple(parameters),
-        support="real",
-        element=REAL,
-        event_rank=1,
-        event_sources=("loc",),
-        discrete=False,
-        reparameterizable=kernel.kind not in {"sar_error", "sar_lag"},
-        compositional=False,
-    )
-    return (FamilyCatalog() if base is None else base).with_family(record, kernel)
 
 
 __all__: list[str] = []

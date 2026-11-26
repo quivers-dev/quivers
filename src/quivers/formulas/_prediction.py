@@ -9,6 +9,7 @@ from formulae.matrices import DesignMatrices
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
 import numpy as np
+import pandas as pd
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
@@ -21,11 +22,8 @@ from quivers.formulas.formula import (
     _CS_ONES,
     _qvr_name,
 )
-from quivers.formulas._autocor import (
-    AutocorMatrix,
-    autocor_binding,
-    autocor_catalog,
-)
+from quivers.formulas._autocor import AutocorMatrix
+from quivers.formulas._residual_law import ResidualLaw, recorded_history
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
 from quivers.formulas._predictor import Predictor
@@ -266,6 +264,49 @@ def _set_trial_rows(
 
 
 @torch.random.fork_rng(devices=[])
+def residual_at(
+    fit: BayesianFit,
+    frame: pd.DataFrame | None,
+    *,
+    include: bool,
+    data2: Mapping[str, AutocorMatrix] | None,
+) -> ResidualLaw:
+    """Rebuild a fit's residual law over prediction rows.
+
+    Parameters
+    ----------
+    fit : BayesianFit
+        Fitted formula with a residual law.
+    frame : pandas.DataFrame or None
+        Prediction rows, or None for the training rows.
+    include : bool
+        Include the dependence (brms ``incl_autocor``).
+    data2 : Mapping[str, AutocorMatrix] or None
+        Named matrices over the prediction rows.
+
+    Returns
+    -------
+    ResidualLaw
+        The law over the requested rows, with the recorded responses of new
+        rows as recursion history.
+    """
+    law = fit.residual
+    assert law is not None
+    history = None
+    if frame is not None and law.conditional:
+        plan = fit.prediction_plan
+        assert plan is not None
+        evaluator = plan.designs["mu"].response
+        assert evaluator is not None
+        history = recorded_history(
+            frame.reset_index(drop=True),
+            evaluator.term.term.eval_new_data,
+            float(np.nanmean(np.asarray(fit.formula.response_values))),
+            law.response,
+        )
+    return law.at(frame, include=include, data2=data2, history=history)
+
+
 def prepare_prediction(
     fit: BayesianFit,
     new_data: IntoDataFrame | None,
@@ -365,9 +406,9 @@ def prepare_prediction(
             )
             retained_observations = dict(fit.observations)
             _set_trial_rows(fit, retained_observations, counts, specification=trials)
-    # Autocorrelation terms rebuild their residual law for the requested rows.
-    autocor_families = (
-        autocor_catalog(
+    # A residual law is rebuilt over the requested rows.
+    residual = (
+        residual_at(
             fit,
             None
             if new_data is None
@@ -375,14 +416,7 @@ def prepare_prediction(
             include=incl_autocor,
             data2=data2,
         )
-        if autocor_binding(fit.family) is not None
-        else None
-    )
-    response_families = (
-        autocor_families
-        if autocor_families is not None
-        else fit.family.custom.catalog
-        if fit.family.custom is not None
+        if fit.residual is not None
         else None
     )
     if new_data is None and re_formula is None and incl_autocor:
@@ -400,13 +434,13 @@ def prepare_prediction(
         if plan is None:
             raise ValueError("this fit has no retained formula prediction plan")
         source = RowSource(selected=selected, include=incl_autocor)
-        lens = fit._formula_lens()
+        lens = fit._formula_lens(residual=residual)
         module, _ = lens._forward(fit.formula, rows=source)
         program = (
             Compiler(
                 module,
                 # Improper flat priors are compilation-local native laws.
-                families=with_flat_catalog(lens.families(response_families), module),
+                families=with_flat_catalog(lens.families(), module),
             )
             .compile()
             .morphism
@@ -517,6 +551,7 @@ def prepare_prediction(
             for name, formula in specialized.items()
             if fit.predictor_graph is not None and name in fit.predictor_graph.leaves
         },
+        residual=residual,
     )
     module, _ = specialized_lens._forward(specialized["mu"], rows=source)
     terms = specialized_lens._terms(specialized["mu"], source)
@@ -613,7 +648,7 @@ def prepare_prediction(
     # The level inputs of every block on the compact prediction levels.
     observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
     # Improper flat priors are compilation-local native laws.
-    families = with_flat_catalog(specialized_lens.families(response_families), module)
+    families = with_flat_catalog(specialized_lens.families(), module)
     program = Compiler(module, families=families).compile().morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("prediction requires a native monadic program")

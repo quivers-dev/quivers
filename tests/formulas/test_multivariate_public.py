@@ -119,7 +119,11 @@ def test_invalid_joint_specifications_are_refused(build, message):
 
 
 def mixed_rescor():
-    return bf("y ~ x") + bf("k ~ x", family="bernoulli") + set_rescor(True)
+    # The families of a joint formula are checked when it is compiled.
+    return formula_to_qvr(
+        bf("y_1 ~ x") + bf("k ~ x", family="bernoulli") + set_rescor(True),
+        data=_frame(),
+    )
 
 
 def test_fit_refuses_raw_mvbind_strings_and_response_options():

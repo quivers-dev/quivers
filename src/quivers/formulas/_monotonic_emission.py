@@ -531,6 +531,18 @@ class MonotonicRow(ValueModel):
             for name, value in values.items()
         )
 
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        Returns
+        -------
+        bool
+            True: the row reads the simplex at its own category.
+        """
+        return True
+
     def sites(self) -> tuple[SiteDecl, ...]:
         """List the latent sites the term owns.
 

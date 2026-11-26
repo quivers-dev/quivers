@@ -854,7 +854,6 @@
    "tests/formulas/test_recorded_event_scale.py::test_rescaling_shifts_the_log_density_by_the_jacobian": 40.5,
    "tests/formulas/test_recorded_event_scale.py::test_right_censored_fits_run_at_a_large_data_scale": 31.6,
    "tests/formulas/test_recorded_event_scale.py::test_weibull_tails_at_a_mismatched_scale_match_scipy": 1.7,
-   "tests/formulas/test_residual_dependence.py": 20.8,
    "tests/formulas/test_row_retention.py": 17.5,
    "tests/formulas/test_row_retention_features.py": 4.9,
    "tests/formulas/test_se_and_links.py": 4.0,

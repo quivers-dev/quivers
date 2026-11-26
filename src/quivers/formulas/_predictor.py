@@ -256,6 +256,18 @@ class OffsetTerm(ValueModel):
             for name, column in zip(self.names(), self.columns, strict=True)
         )
 
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        Returns
+        -------
+        bool
+            True: the row reads its own offset.
+        """
+        return True
+
     def sites(self) -> tuple[SiteDecl, ...]:
         """List the latent sites the term owns.
 
@@ -448,6 +460,18 @@ class HostTerm(ValueModel):
             Empty: the host binds its own value at every evaluation.
         """
         return ()
+
+    @property
+    def separable(self) -> bool:
+        """Whether the term's value at a row is fixed by the parameters and the
+        row's own data.
+
+        Returns
+        -------
+        bool
+            True: the row reads the host output of its own inputs.
+        """
+        return True
 
     def sites(self) -> tuple[SiteDecl, ...]:
         """List the latent sites the term owns.

@@ -1176,7 +1176,12 @@ def _joint_score(joint: ObserveStep, values: tuple[str, ...]) -> list[ProgramSte
         named arguments.
     """
     if joint.morphism not in {"MultivariateNormal", "MultivariateStudentT"}:
-        raise ValueError("a joint residual event must be Normal or Student")
+        raise ValueError(
+            "mi() responses beside estimated residual correlations need a Normal "
+            "or Student row law written in the program; a conditional ARMA "
+            "recursion moves the locations outside it, so use set_rescor(False) "
+            "or remove the recursion"
+        )
     arguments: dict[str, LetExprNode] = {}
     for argument in joint.args or ():
         if not isinstance(argument, DrawArgNamed):

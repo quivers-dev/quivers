@@ -90,7 +90,6 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     ProgramStep,
     SampleStep,
-    atom_to_draw_arg as _to_draw_arg,
     Statement,
     ObjectDecl,
     TypeFromExpr,
@@ -149,7 +148,6 @@ from quivers.formulas._group_covariance import (
 )
 from quivers.formulas._ast import (
     _bind,
-    _draw,
     _let,
     _var,
     _add,
@@ -201,7 +199,8 @@ from quivers.formulas._population_coordinates import (
     CENTERED_SUFFIX,
 )
 
-from quivers.formulas._autocor import append_autocor_steps
+from quivers.formulas._observation import Observation, observation
+from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._predictor import (
     Predictor,
     PredictorOptions,
@@ -712,6 +711,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         family = expand_mixture(family, mixture_components)
         self._mixture_targets: tuple[PriorTarget, ...] = ()
         self._family = family
+        self._residual: ResidualLaw | None = None
+        self._observation: Observation | None = None
         # brms default prior policy and population-coordinate options.
         if default_priors not in ("quivers", "brms"):
             raise ValueError("default_priors must be 'quivers' or 'brms'")
@@ -1032,8 +1033,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         FamilyCatalog or None
             The response laws joined with those of the terms.
         """
-        if response is None and self._family.custom is not None:
-            response = self._family.custom.catalog
+        if response is None:
+            response = self.response_laws
         if response is None or self._term_laws is None:
             return response if response is not None else self._term_laws
         return response.with_catalog(self._term_laws)
@@ -1696,6 +1697,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             draw=self._parse_prior,
             thresholds_by=self._thresholds_by,
             separated=frozenset(target.site for target in self._separated),
+            residual=self._residual,
         )
         # brms center = FALSE puts the location intercept in class b.
         if self._center is False:
@@ -3692,32 +3694,20 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             assert reference is not None
             args = ("mu", "formula_alr_scale", reference)
-        observation = _draw(
+        observed = observation(
             _qvr_name(formula.response_name),
             self._family.observe_family,
             args,
-            index=TypeName(name="Resp"),
-            mode="score",
-            weights="formula_weights"
-            if formula.modifiers.weights is not None
-            else None,
+            formula.modifiers,
+            event="FormulaCategory",
+            events=False,
         )
         if kind == "multinomial":
-            observation = observation.with_(
-                args=(
-                    DrawArgNamed(
-                        parameter="total_count", value=_to_draw_arg("formula_trials")
-                    ),
-                    DrawArgNamed(parameter="logits", value=_to_draw_arg("eta")),
-                )
+            observed = observed.with_arguments(
+                (("total_count", "formula_trials"), ("logits", "eta"))
             )
-        observation = observation.with_(
-            options=(
-                *observation.options,
-                OptionEntry(key="over", value=OptionName(value="FormulaCategory")),
-            )
-        )
-        program_steps.append(observation)
+        self._observation = observed
+        program_steps.append(observed.step())
 
     def _append_residual_correlation(
         self,
@@ -4052,6 +4042,78 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 eta_name = f"dpar_{aux.name}_eta"
                 program_steps.append(_let(eta_name, linear_predictor))
                 _append_link(program_steps, aux.name, _var(eta_name), planned.link)
+        for site in self._residual.sites if self._residual is not None else ():
+            if site.name in self._fixed_parameters:
+                program_steps.append(
+                    _let(
+                        site.name,
+                        LetExprLiteral(value=float(self._fixed_parameters[site.name])),
+                    )
+                )
+                continue
+            program_steps.append(self._draw_site(site))
+
+    def _bind_residual(
+        self, law: ResidualLaw | None, fixed: Mapping[str, float]
+    ) -> None:
+        """Observe the response through a residual law.
+
+        Parameters
+        ----------
+        law : ResidualLaw or None
+            Residual law of the response: natural residuals correlated
+            across rows. It gives the native kernel of the observation and
+            its structural sites; None observes the family's own law.
+        fixed : Mapping[str, float]
+            Constant values of structural sites of the law.
+
+        Raises
+        ------
+        ValueError
+            If a value names no site of the law or lies outside the site's
+            interval.
+        """
+        sites = {site.name: site for site in law.sites} if law is not None else {}
+        unknown = set(fixed) - set(sites)
+        if unknown:
+            raise ValueError(f"unknown fixed auxiliary parameters {sorted(unknown)}")
+        for name, value in fixed.items():
+            domain = Domain(lower=sites[name].lower, upper=sites[name].upper)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (float, int))
+                or not math.isfinite(value)
+                or not domain.contains(value)
+            ):
+                raise ValueError(
+                    f"fixed parameter {name!r} must {domain.requirement()}"
+                )
+        self._residual = law
+        self._fixed_parameters.update(fixed)
+
+    @property
+    def response_laws(self) -> FamilyCatalog | None:
+        """Return the compilation-local laws of the response.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            The catalog of a custom family joined with that of the residual
+            law, or None when the response law is built in.
+        """
+        laws = [
+            catalog
+            for catalog in (
+                self._family.custom.catalog
+                if self._family.custom is not None
+                else None,
+                self._residual.catalog if self._residual is not None else None,
+            )
+            if catalog is not None
+        ]
+        if not laws:
+            return None
+        return laws[0] if len(laws) == 1 else laws[0].with_catalog(laws[1])
 
     def _named_module(
         self,
@@ -4307,18 +4369,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self._append_auxiliaries(formula, statements, program_steps, correlated)
                 self._append_vector_observation(formula, statements, program_steps)
             else:
-                program_steps.append(
-                    _draw(
-                        _qvr_name(formula.response_name),
-                        "Categorical",
-                        ("mu",),
-                        index=TypeName(name="Resp"),
-                        mode="score",
-                        weights="formula_weights"
-                        if formula.modifiers.weights is not None
-                        else None,
-                    )
+                self._observation = observation(
+                    _qvr_name(formula.response_name),
+                    "Categorical",
+                    ("mu",),
+                    formula.modifiers,
+                    events=False,
                 )
+                program_steps.append(self._observation.step())
             statements.append(
                 ProgramDecl(
                     name="model",
@@ -4436,68 +4494,56 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self._observe_argument(argument, scale)
                 for argument in self._family.observe_args
             )
+        observe_family = self._family.observe_family
         if self._family.custom is not None:
-            # Autocorrelation terms: structural matrices beyond scalar auxiliaries.
-            append_autocor_steps(self, statements, program_steps)
             obs_args = tuple(
                 "formula_sigma" if binding in scale else binding
                 for _, binding in self._family.custom.bindings
             )
+        if self._residual is not None:
+            # Natural residuals correlated across rows: the law gives the
+            # kernel, its structural sites, and their order.
+            for axis in self._residual.axes():
+                self._append_finite_object(statements, axis.name, axis.size)
+            program_steps.extend(
+                self._residual.steps(ProgramEmission(self, statements, {}))
+            )
+            observe_family = self._residual.name
+            elliptical = self._residual.elliptical
+            obs_args = self._residual.arguments(
+                "mu",
+                "formula_sigma" if elliptical.scale in scale else elliptical.scale,
+            )
         # brms rate(): count denominators scale the mean and NB shape.
         observe_family, obs_args = rate_arguments(
             self._family,
-            self._family.observe_family,
+            observe_family,
             obs_args,
             program_steps,
             formula.modifiers,
         )
-        observation = _draw(
+        observed = observation(
             _qvr_name(formula.response_name),
             observe_family,
             obs_args,
-            index=TypeName(name="Resp"),
-            mode="score",
-            family_catalog=self._family.custom.catalog
-            if self._family.custom is not None
-            else None,
-            weights="formula_weights"
-            if formula.modifiers.weights is not None
-            else None,
+            formula.modifiers,
+            catalog=self.response_laws,
         )
         if retained_log_location:
             assert self._family.log_location_argument is not None
-            location = _to_draw_arg("mu")
-            observation = observation.with_(
-                args=tuple(
-                    DrawArgNamed(
-                        parameter=self._family.log_location_argument,
-                        value=_to_draw_arg("eta"),
-                    )
-                    if isinstance(argument, DrawArgNamed) and argument.value == location
-                    else argument
-                    for argument in observation.args or ()
+            # The kernel takes the linear predictor on the log scale.
+            observed = observed.with_arguments(
+                tuple(
+                    (self._family.log_location_argument, "eta")
+                    if bound == "mu"
+                    else (parameter, bound)
+                    for parameter, bound in observed.arguments
                 )
             )
         if self._family.ordinal is not None and not self._family.scores_cutpoints:
-            observation = observation.with_(
-                args=(
-                    DrawArgNamed(
-                        parameter="logits", value=_to_draw_arg("ordinal_logits")
-                    ),
-                )
-            )
-        from quivers.formulas._response_roles import event_option_columns
-
-        observation = observation.with_(
-            options=(
-                *observation.options,
-                *(
-                    OptionEntry(key=key, value=OptionName(value=column.qvr_name))
-                    for key, column in event_option_columns(formula.modifiers)
-                ),
-            )
-        )
-        program_steps.append(observation)
+            observed = observed.with_arguments((("logits", "ordinal_logits"),))
+        self._observation = observed
+        program_steps.append(observed.step())
 
         program_decl = ProgramDecl(
             name="model",

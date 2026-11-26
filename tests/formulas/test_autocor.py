@@ -71,10 +71,10 @@ def _t(values, grad=False):
 def _layout(term, frame=FRAME, *, student_law=False, matrix=None):
     terms = split_autocor_terms(f"y ~ x + {term}")[1]
     from quivers.formulas import families
-    from quivers.formulas._autocor import autocor_binding, autocor_family
+    from quivers.formulas._residual_law import residual_law
     from quivers.formulas.formula import ResponseModifiers
 
-    family = autocor_family(
+    law = residual_law(
         terms,
         families["student_t" if student_law else "gaussian"],
         data=frame,
@@ -85,9 +85,7 @@ def _layout(term, frame=FRAME, *, student_law=False, matrix=None):
         modifiers=ResponseModifiers(),
         caller="test",
     )
-    binding = autocor_binding(family)
-    assert binding is not None
-    return binding.layout
+    return law.layout
 
 
 def _stan_arma(eta, y, sigma, ar, ma, groups, nu=None):
