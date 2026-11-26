@@ -105,7 +105,7 @@ from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
-from quivers.formulas.family import Domain, Family
+from quivers.formulas.family import Domain, Family, parameter_prefix
 from quivers.formulas._modifiers import Admission, admit_modifiers, response_modifiers
 
 from quivers.formulas._category_formulas import (
@@ -3230,14 +3230,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         # A parameter declaring its own coordinates has one coefficient
         # vector per free coordinate.
         axes: dict[str, OutputAxis] = {
-            f"dpar_{aux.name}_": OutputAxis(
+            parameter_prefix(aux.name): OutputAxis(
                 name=aux.coordinates.axis
                 if aux.coordinates.reference is None
-                else f"dpar_{aux.name}_{aux.coordinates.axis}",
+                else f"{parameter_prefix(aux.name)}{aux.coordinates.axis}",
                 size=len(aux.coordinates.free),
             )
             for aux in self._family.aux_params
-            if aux.coordinates is not None and aux.name in self._distributional
+            if aux.coordinates is not None
+            and (aux.name in self._distributional or not parameter_prefix(aux.name))
         }
         axis = (
             response_axis(self._family, self._component_labels(formula))

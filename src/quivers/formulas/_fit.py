@@ -2293,6 +2293,12 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             If the parameter has no predictor or an ordinal inverse link is
             requested.
         """
+        if parameter == "mu" and not self.family.reads_location:
+            raise ValueError(
+                f"the response kernel {self.family.name!r} has no location 'mu'; "
+                "name one of its parameters with a formula: "
+                f"{[aux.name for aux in self.family.aux_params]}"
+            )
         coordinate = self._vector_coordinate(parameter)
         if coordinate is not None and coordinate[0].prefix:
             predictor, index = coordinate

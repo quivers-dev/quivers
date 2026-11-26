@@ -18,6 +18,7 @@ import didactic.api as dx
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.formulas._r_expression import translate_r_expression
 from quivers.formulas._predictor_graph import NonlinearExpression
+from quivers.formulas._program_kernel import program_arguments
 from quivers.formulas.family import Family, families
 from quivers.formulas._category_formulas import (
     is_category_parameter,
@@ -932,8 +933,11 @@ def mvbf(
 
 
 def bf(
-    formula: str,
-    *parameters: str,
+    formula: str | None = None,
+    *formulas: str,
+    program: str | None = None,
+    parameters: Mapping[str, str] | None = None,
+    response: str | None = None,
     family: str | Family | None = None,
     nl: bool = False,
     fixed_parameters: Mapping[str, float] | None = None,
@@ -952,15 +956,23 @@ def bf(
 
     Parameters
     ----------
-    formula : str
+    formula : str or None
         Response formula. A left-hand side ``mvbind(y1, y2, ...)`` repeats
         the right-hand side and every other argument for each named response.
-    *parameters : str
+        None for a program, given by ``program=``.
+    *formulas : str
         Formulas for distributional parameters (``"sigma ~ x"``) or, with
         ``nl=True``, for nonlinear parameters (``"a ~ 1 + (1 | g)"``).
         A left-hand side naming an auxiliary parameter of the family is
         distributional; any other name is nonlinear. Several parameters
         joined by ``+`` share one right-hand side (``"b1 + b2 ~ 1"``).
+    program : str or None
+        QVR source of a program whose observation of ``response`` is the
+        likelihood of this response, as in `fit`.
+    parameters : Mapping[str, str] or None
+        Formulas of the program's parameters, by name.
+    response : str or None
+        The site the program observes.
     family : str or Family or None
         Response family of every response built by this call. None leaves
         the family to the entry point (``fit(bf(...), family=...)``), which
@@ -1003,10 +1015,48 @@ def bf(
         parameter without ``nl=True``, or ``mvbind`` names fewer than two
         responses.
     """
+    if program is not None:
+        if formulas or nl:
+            raise ValueError(
+                "bf: the formulas of a program's parameters are given as "
+                "parameters=, not as further formulas or nl=True"
+            )
+        text, kernel_family, given = program_arguments(
+            formula,
+            program=program,
+            parameters=parameters,
+            response=response,
+            family="gaussian" if family is None else family,
+            distributional=None,
+            nonlinear=None,
+            fixed_parameters=fixed_parameters,
+            caller="bf",
+        )
+        return ResponseModel(
+            formula=text,
+            family=kernel_family,
+            distributional=dict(given) if given else None,
+            fixed_parameters=dict(fixed_parameters) if fixed_parameters else None,
+            weights=weights,
+            decision=decision,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            center=center,
+            decomp=decomp,
+            cmc=cmc,
+            sparse=sparse,
+            unused=tuple(unused),
+        )
+    if formula is None or parameters is not None or response is not None:
+        raise ValueError(
+            "bf: give a response formula, or a program= with its response= and "
+            "parameters="
+        )
     stated = "gaussian" if family is None else family
     distributional, nonlinear = classify_parameters(
         stated,
-        tuple(parameters),
+        tuple(formulas),
         (),
         nl=nl,
         mixture_components=mixture_components,
@@ -1030,7 +1080,7 @@ def bf(
             formula=text,
             family=stated,
             family_given=family is not None,
-            parameter_formulas=tuple(parameters),
+            parameter_formulas=tuple(formulas),
             nl=nl,
             distributional=distributional or None,
             nonlinear=nonlinear if nl else None,
@@ -1052,7 +1102,7 @@ def bf(
         single = response(formula)
         # mi() and me() terms compile through the joint program, so one
         # response with them is a one-response joint formula.
-        if uses_missing_syntax(formula, *parameters):
+        if uses_missing_syntax(formula, *formulas):
             return MultivariateFormula(responses={single.label: single})
         return single
     names = [name.strip() for name in bound.group("names").split(",") if name.strip()]

@@ -572,6 +572,11 @@ def prepare_prediction(
         from quivers.formulas._predictor_graph import graph_input_bindings
 
         observations.update(graph_input_bindings(fit.predictor_graph, frame))
+    # The response kernel's own data: row values from the fresh rows, the
+    # others as fitted unless data2 gives them anew.
+    observations.update(
+        fit.family.kernel_bindings(frame, {**fit.observations, **(data2 or {})})
+    )
 
     from quivers.formulas._fit import _binomial_trial_tensor, _predictor_output
 

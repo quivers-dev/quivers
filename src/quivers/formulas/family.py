@@ -281,6 +281,27 @@ class OrdinalSpec(dx.Model):
     thresholds: Literal["flexible", "equidistant", "sum_to_zero"] = "flexible"
 
 
+LOCATION = "mu"
+"""The parameter whose formula is the main formula of the model."""
+
+
+def parameter_prefix(name: str) -> str:
+    """Return the namespace of the predictor of a parameter.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name.
+
+    Returns
+    -------
+    str
+        Empty for the location ``mu``, whose formula is the main formula;
+        ``dpar_<name>_`` for any other parameter.
+    """
+    return "" if name == LOCATION else f"dpar_{name}_"
+
+
 class ParameterCoordinates(dx.Model):
     """The coordinates of a parameter that takes one value per element of an axis.
 
@@ -952,6 +973,20 @@ class Family(ValueModel):
     kernel_law: KernelLaw | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+
+    @property
+    def reads_location(self) -> bool:
+        """Whether the family's kernel reads the location ``mu``.
+
+        Returns
+        -------
+        bool
+            True for a native law; for a kernel law, whether ``mu`` is one of
+            the parameters it replaces.
+        """
+        return self.kernel_law is None or any(
+            aux.name == LOCATION for aux in self.aux_params
+        )
 
     @property
     def kernel_columns(self) -> tuple[str, ...]:

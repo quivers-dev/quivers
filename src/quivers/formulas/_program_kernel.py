@@ -92,8 +92,10 @@ from quivers.formulas.family import (
     Domain,
     Family,
     Link,
+    LOCATION,
     ParameterCoordinates,
     links,
+    parameter_prefix,
 )
 from quivers.formulas.formula import Formula
 from quivers.inference import LatentRegistry
@@ -113,6 +115,7 @@ type Node = dx.Model | tuple[Node, ...] | str | int | float | bool | None
 
 ROWS = "Resp"
 """The axis of the response rows in an emitted model."""
+
 
 _CARRIERS: dict[str, Literal["Real", "Int", "Bool"]] = {
     "Real": "Real",
@@ -1417,14 +1420,9 @@ class ProgramKernelSpec(KernelLaw):
         sources: dict[str, ParameterSource] = {}
         varying: dict[str, frozenset[str]] = {}
         for name, declaration in declarations.items():
-            prefix = f"dpar_{name}_"
+            prefix = parameter_prefix(name)
             coordinates = declaration.coordinates
-            if name in inputs.distributional:
-                predictor = inputs.predictor(prefix)
-                sources[name] = PredictorSource(predictor=predictor)
-                if predictor.rowwise or declaration.rows:
-                    varying[name] = frozenset({name})
-            else:
+            if name in inputs.fixed:
                 if coordinates is not None or declaration.rows:
                     raise ValueError(
                         f"a fixed value of {name!r} is one number, and the program "
@@ -1433,12 +1431,17 @@ class ProgramKernelSpec(KernelLaw):
                         + "; give it a formula such as '~ 1'"
                     )
                 sources[name] = ConstantSource(value=float(inputs.fixed[name]))
+            else:
+                predictor = inputs.predictor(prefix)
+                sources[name] = PredictorSource(predictor=predictor)
+                if predictor.rowwise or declaration.rows:
+                    varying[name] = frozenset({name})
             slots.append(
                 ParameterSlot(
                     name=name,
                     eta=f"{prefix}eta",
                     link=declaration.link,
-                    free=None if coordinates is None else f"{prefix}free",
+                    free=None if coordinates is None else f"{prefix}eta_free",
                     completion=None
                     if coordinates is None or coordinates.reference is None
                     else Completion(
@@ -1448,7 +1451,7 @@ class ProgramKernelSpec(KernelLaw):
                         coordinates=coordinates.free,
                         prefix=prefix,
                     ),
-                    row_binder=f"{prefix}row"
+                    row_binder=f"{prefix}eta_row"
                     if declaration.rows and coordinates is None
                     else None,
                     constant_rows=not declaration.rows,
@@ -1583,7 +1586,9 @@ def program_family(spec: ProgramKernelSpec) -> Family:
 
     The family observes the response under the law of the program's
     observation, has one auxiliary parameter per replaced site or input, and
-    builds its kernel through the program's law.
+    builds its kernel through the program's law. A replaced parameter named
+    ``mu`` is the location: its formula is the main formula, and its link is
+    the location link.
 
     Parameters
     ----------
@@ -1605,9 +1610,13 @@ def program_family(spec: ProgramKernelSpec) -> Family:
     declarations = [
         parameter_decl(analysis, name, spec.response) for name in spec.parameters
     ]
+    location = next(
+        (item.link for item in declarations if item.name == LOCATION),
+        links["identity"],
+    )
     return Family(
         name=analysis.entry,
-        location_link=links["identity"],
+        location_link=location,
         observe_family=site.law,
         aux_params=tuple(
             AuxParam(
@@ -1686,9 +1695,10 @@ def program_arguments[Authored](
     """Read the response, family and parameter formulas of a formula call.
 
     A program call names the program, its response, and the formulas of its
-    parameters; it becomes the formula ``<response> ~ 0`` (a program has no
-    location design) under the program's family, with one distributional
-    formula per parameter.
+    parameters; it becomes the formula of the response under the program's
+    family, with one distributional formula per parameter. The formula of a
+    parameter named ``mu`` is the main formula; without one the main formula
+    is ``<response> ~ 0``, a location design without terms.
 
     Parameters
     ----------
@@ -1752,4 +1762,14 @@ def program_arguments[Authored](
     site = response.partition("|")[0].strip()
     formulas = dict(parameters or {})
     spec = program_spec(program, site, {*formulas, *(fixed_parameters or {})})
-    return f"{response} ~ 0", program_family(spec), formulas or None
+    location = formulas.pop(LOCATION, None)
+    right = "~ 0"
+    if location is not None:
+        left, tilde, right = location.partition("~")
+        if not tilde or left.strip() not in ("", LOCATION):
+            raise ValueError(
+                f"{caller}: the formula of {LOCATION!r} is a right-hand side such as "
+                f"'~ x', optionally after '{LOCATION}'; got {location!r}"
+            )
+        right = "~" + right
+    return f"{response} {right}", program_family(spec), formulas or None
