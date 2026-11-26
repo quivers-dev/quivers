@@ -7,12 +7,14 @@ the tape with a hook on the autograd graph, and provenance with the
 recorded applications. A run with a rule weight
 function does not claim its products, one without the tape measured
 does not claim it, and a chart or queue that reports no work leaves its
-counters unmeasured. The agenda's own work on chains, diamonds and skip
+counters unmeasured. A priority agenda's comparisons are compared with a
+fresh heap replaying its pushes and pops. The agenda's own work on chains, diamonds and skip
 graphs is recorded by the ledger entry ``agenda-work-quadratic``.
 """
 
 from __future__ import annotations
 
+import heapq
 import math
 from collections.abc import Callable, Iterable, Sequence
 
@@ -20,6 +22,7 @@ import torch
 
 from quivers.qiec.contracts import WorkField
 from quivers.stochastic.agenda import (
+    COMPONENT_FIELDS,
     AgendaResult,
     Chart,
     FIFOAgenda,
@@ -165,6 +168,87 @@ class _PlainChart(Chart):
         return self._store.items()
 
 
+class _LoggingHeap(PriorityQueueAgenda):
+    """A priority agenda that logs the priorities it pushes and its pops."""
+
+    def __init__(self) -> None:
+        super().__init__(lambda item, weight: float(weight))
+        self.log: list[float | None] = []
+
+    def push(self, item: Item, weight: torch.Tensor) -> None:
+        """Log and forward a push.
+
+        Parameters
+        ----------
+        item : Item
+            The item.
+        weight : torch.Tensor
+            Its weight.
+        """
+        self.log.append(-float(weight))
+        super().push(item, weight)
+
+    def pop(self) -> tuple[Item, torch.Tensor]:
+        """Log and forward a pop.
+
+        Returns
+        -------
+        tuple of Item and torch.Tensor
+            The next item and its pending weight.
+        """
+        self.log.append(None)
+        return super().pop()
+
+
+class _CountedKey:
+    """A heap key ordered by priority, then push order, counting comparisons."""
+
+    count = 0
+
+    def __init__(self, priority: float, order: int) -> None:
+        self.priority = priority
+        self.order = order
+
+    def __lt__(self, other: _CountedKey) -> bool:
+        """Count one comparison and order the keys.
+
+        Parameters
+        ----------
+        other : _CountedKey
+            Another key.
+
+        Returns
+        -------
+        bool
+            Whether this key comes first.
+        """
+        _CountedKey.count += 1
+        return (self.priority, self.order) < (other.priority, other.order)
+
+
+def _replayed(log: Sequence[float | None]) -> int:
+    """The comparisons a fresh heap makes for the same pushes and pops.
+
+    Parameters
+    ----------
+    log : Sequence of float or None
+        Each push's key, or ``None`` for a pop, in order.
+
+    Returns
+    -------
+    int
+        The comparisons counted by the keys.
+    """
+    _CountedKey.count = 0
+    heap: list[_CountedKey] = []
+    for order, entry in enumerate(log, start=1):
+        if entry is None:
+            heapq.heappop(heap)
+        else:
+            heapq.heappush(heap, _CountedKey(entry, order))
+    return _CountedKey.count
+
+
 def _axioms(
     edges: Sequence[tuple[int, int]], *, grad: bool = False
 ) -> list[tuple[Item, torch.Tensor]]:
@@ -285,17 +369,13 @@ def check_counts() -> None:
             field not in plain_chart.measured,
             f"{field.value} is claimed with a chart that reports no work",
         )
-    heap = run_agenda(
-        _axioms(edges),
-        [STEP],
-        semiring=LOG_PROB,
-        agenda=PriorityQueueAgenda(lambda item, weight: 0.0),
-    ).work
-    _require(
-        WorkField.KEY_COMPARISONS not in heap.measured,
-        "a heap's comparisons are claimed",
-    )
-    _require(WorkField.SCALAR_SUMS in heap.measured, "a heap's sums are not claimed")
+    logged = _LoggingHeap()
+    heap = run_agenda(_axioms(edges), [STEP], semiring=LOG_PROB, agenda=logged).work
+    for field in COMPONENT_FIELDS:
+        _require(field in heap.measured, f"a heap run does not measure {field.value}")
+    queue = logged.work_counts()[WorkField.KEY_COMPARISONS]
+    _equal(queue, _replayed(logged.log), "heap comparisons")
+    _require(queue > 0, "the heap compared nothing")
     plain = run_agenda(_axioms(edges), [STEP], semiring=LOG_PROB).work
     _require(
         WorkField.ELEMENTS_SAVED_FOR_BACKWARD not in plain.measured,
@@ -436,6 +516,17 @@ MUTATIONS: tuple[Mutation, ...] = (
                 old="self._work.sums += merged.numel()",
                 new="self._work.sums += 0",
             ),
+        ),
+        rejected_by=("agenda/work-counts",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="agenda-heap-comparisons-not-counted",
+        defect_class="evidence",
+        provenance="a priority agenda's heap entries do not count their comparisons",
+        target=f"{AGENDA}:_HeapEntry.__lt__",
+        rewrites=(
+            Rewrite(old="self.work.comparisons += 1", new="self.work.comparisons += 0"),
         ),
         rejected_by=("agenda/work-counts",),
         min_effect=1.0,

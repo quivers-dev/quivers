@@ -1126,6 +1126,60 @@ class LIFOAgenda(Agenda):
         return not self._stack
 
 
+class _HeapEntry:
+    """An entry of a priority agenda's heap that counts its comparisons.
+
+    Entries order by priority, then by the order they were pushed, so no
+    two compare equal; each comparison the heap makes is one call of
+    ``__lt__``, which the queue's counter records.
+
+    Parameters
+    ----------
+    priority : float
+        The negated priority, for a min-heap.
+    order : int
+        The push's position, the tie-breaker.
+    item : Item
+        The item.
+    weight : torch.Tensor
+        Its pending weight.
+    work : _ComponentWork
+        The queue's counts.
+    """
+
+    __slots__ = ("item", "order", "priority", "weight", "work")
+
+    def __init__(
+        self,
+        priority: float,
+        order: int,
+        item: Item,
+        weight: torch.Tensor,
+        work: _ComponentWork,
+    ) -> None:
+        self.priority = priority
+        self.order = order
+        self.item = item
+        self.weight = weight
+        self.work = work
+
+    def __lt__(self, other: _HeapEntry) -> bool:
+        """Count one comparison and order by priority, then push order.
+
+        Parameters
+        ----------
+        other : _HeapEntry
+            Another entry of the same heap.
+
+        Returns
+        -------
+        bool
+            Whether this entry comes first.
+        """
+        self.work.comparisons += 1
+        return (self.priority, self.order) < (other.priority, other.order)
+
+
 class PriorityQueueAgenda(Agenda):
     """Priority-queue agenda parameterized by a priority function.
 
@@ -1145,23 +1199,20 @@ class PriorityQueueAgenda(Agenda):
 
     def __init__(self, priority_fn: Callable[[Item, torch.Tensor], float]) -> None:
         self._priority_fn = priority_fn
-        self._heap: list[tuple[float, int, Item, torch.Tensor]] = []
+        self._heap: list[_HeapEntry] = []
         self._counter = 0  # tie-breaker for deterministic ordering
+        self._work = _ComponentWork()
 
     def work_counts(self) -> Mapping[WorkField, int]:
-        """The queue's work: no sums, hashes or products; comparisons unmeasured.
+        """The queue's work since it was made.
 
         Returns
         -------
         Mapping of WorkField to int
-            Zero sums, hashes and products; the heap's comparisons happen
-            inside the heap and are not counted, so they are absent.
+            The comparisons its heap made, counted by its entries; it
+            sums, hashes and multiplies nothing.
         """
-        return {
-            WorkField.SCALAR_SUMS: 0,
-            WorkField.SCALAR_PRODUCTS: 0,
-            WorkField.HASH_OPERATIONS: 0,
-        }
+        return self._work.counts()
 
     def push(self, item: Item, weight: torch.Tensor) -> None:
         """Add an item and its weight to the agenda.
@@ -1176,7 +1227,9 @@ class PriorityQueueAgenda(Agenda):
         # heapq is a min-heap; negate priority for max-heap behavior.
         priority = -float(self._priority_fn(item, weight))
         self._counter += 1
-        heapq.heappush(self._heap, (priority, self._counter, item, weight))
+        heapq.heappush(
+            self._heap, _HeapEntry(priority, self._counter, item, weight, self._work)
+        )
 
     def pop(self) -> tuple[Item, torch.Tensor]:
         """Remove and return the next item under this discipline.
@@ -1186,8 +1239,8 @@ class PriorityQueueAgenda(Agenda):
         tuple of (Item, torch.Tensor)
             The next item and its pending weight.
         """
-        _, _, item, weight = heapq.heappop(self._heap)
-        return item, weight
+        entry = heapq.heappop(self._heap)
+        return entry.item, entry.weight
 
     def empty(self) -> bool:
         """Whether no items are pending.
