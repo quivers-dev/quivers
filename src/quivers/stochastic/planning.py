@@ -38,7 +38,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
-from quivers.core.algebras import OrderPreservingSemiring
+from quivers.core.algebras import OrderPreservingSemiring, Star
 from quivers.core.laws import (
     DISTRIBUTIVE,
     PLUS_ASSOCIATIVE,
@@ -65,6 +65,7 @@ from quivers.qiec.contracts import (
     InadmissibleContract,
     Fold,
     Forest,
+    LinearCyclic,
     Marginal,
     NonlinearFold,
     PackedForest,
@@ -100,6 +101,7 @@ from quivers.qiec.rules import (
 from quivers.qiec.types import IndexLiteral, IndexSum, IndexTerm, IndexVariable
 from quivers.stochastic.forest import DerivationForest, ForestEdge, build_forest
 from quivers.stochastic.indexed import ChartWork, IndexedChart, generic_joinable
+from quivers.stochastic.recursion import Component, CyclicRefusal, CyclicRefused, solve
 from quivers.stochastic.joins import agm_bound, body_query
 
 __all__ = [
@@ -110,6 +112,8 @@ __all__ = [
     "Plan",
     "PlanRecord",
     "PlanRefusal",
+    "CYCLIC_ALGORITHM",
+    "CYCLIC_WORK",
     "FOREST_ALGORITHM",
     "FOREST_WORK",
     "PlanRefused",
@@ -139,6 +143,9 @@ class PlanRefusal(str, Enum):
     RETENTION_WITHOUT_EXECUTOR = "retention-without-executor"
     ALGEBRA = "algebra"
     CYCLE = "cycle"
+    NONLINEAR_CYCLE = "nonlinear-cycle"
+    MIXED_SIDES = "mixed-sides"
+    DIVERGENT = "divergent"
 
 
 class PlanRefused(ValueError):
@@ -684,6 +691,73 @@ TWO_PASS_WORK = _two_pass_work("autograd")
 RECOMPUTED_TWO_PASS_WORK = _two_pass_work("recompute")
 """The cost of two-pass evaluation with the recomputing backward pass."""
 
+_LEHMANN = Citation(
+    reference="Lehmann 1977, Algebraic structures for transitive closure",
+    locator="closed semirings; the closure is the least solution",
+    doi="10.1016/0304-3975(77)90056-1",
+)
+
+CYCLIC_WORK = ComplexityClaim(
+    query="value of every item of a linear cyclic presentation, and its gradient",
+    parameters=(
+        ComplexityParameter(name="V", meaning="items"),
+        ComplexityParameter(name="E", meaning="grounded rule instances and inputs"),
+        ComplexityParameter(
+            name="J", meaning="candidates the keyed lookups return, at least E"
+        ),
+        ComplexityParameter(name="P", meaning="the most premises of one rule"),
+        ComplexityParameter(
+            name="S", meaning="the sizes S_i of the strongly connected components"
+        ),
+    ),
+    model=ALGEBRA_OPERATIONS,
+    bounds=(
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="time",
+            expression="V + P E + J + sum_i S_i^3",
+            status=BestKnown(sources=(_EISNER, _LEHMANN)),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="space",
+            expression="V + P E + max_i S_i^2",
+            status=BestKnown(sources=(_EISNER, _LEHMANN)),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="time",
+            expression="V + P E + J + sum_i S_i^3",
+            status=BestKnown(sources=(_EISNER, _LEHMANN)),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="space",
+            expression="V + P E + sum_i S_i^3",
+            status=BestKnown(sources=(_EISNER,)),
+        ),
+    ),
+    inapplicable=(
+        PhaseInapplicable(
+            phase=Phase.CONSTRUCTION,
+            reason="join plans and indexes are built from the presentation alone",
+        ),
+        PhaseInapplicable(
+            phase=Phase.REFIT,
+            reason="a refit is one more solve at the new weights",
+        ),
+    ),
+    conditions=(
+        "the edges are kept to build each component's system",
+        "a component's closure costs S^3 operations by elimination of states; "
+        "a ring would allow S^omega, and between them the bound is unresolved",
+        "the autograd tape holds the eliminations of every closure",
+        "a closure outside the algebra's domain is refused, never truncated",
+    ),
+)
+"""The cost of solving a linear cyclic system component by component."""
+
+
 FOREST_WORK = ComplexityClaim(
     query="the packed forest of a presentation, and folds over its derivations",
     parameters=(
@@ -941,6 +1015,9 @@ class Evaluation(ValueModel):
         Under requested evidence, the edges of every derived item of a
         requested form: its input occurrences, then its rule instances;
         ``None`` otherwise.
+    components : tuple of Component
+        Under linear cyclic recursion, each strongly connected component
+        and the side it was solved on; none otherwise.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -952,6 +1029,9 @@ class Evaluation(ValueModel):
     counts: int = 0
     evidence: dict[Item, tuple[ForestEdge, ...]] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    components: tuple[Component, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @property
@@ -1096,7 +1176,7 @@ class Plan(ValueModel):
             If the recursion is bounded: its meaning counts only the
             derivations within the bound, which the forest unfolds.
         """
-        if not isinstance(self.record.recursion, Acyclic):
+        if isinstance(self.record.recursion, Bounded):
             raise PlanRefused(
                 PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
                 "a system bounded by height is folded on its forest within the bound",
@@ -1134,7 +1214,7 @@ class Plan(ValueModel):
             bounded.
         """
         self._two_pass()
-        return _evaluate(self, axioms, inputs, like)
+        return _run(self, axioms, inputs, like)
 
     def gradient(
         self,
@@ -1184,7 +1264,7 @@ class Plan(ValueModel):
             leaves = {
                 key: value.detach().requires_grad_() for key, value in inputs.items()
             }
-            evaluation = _evaluate(self, axioms, leaves, like)
+            evaluation = _run(self, axioms, leaves, like)
             value = evaluation.value(goal)
             if not value.requires_grad:
                 return {key: torch.zeros_like(leaf) for key, leaf in leaves.items()}
@@ -1237,12 +1317,19 @@ class Plan(ValueModel):
         Raises
         ------
         PlanRefused
-            If the observable is not `Best` or no term attains a value.
+            If the observable is not `Best`, the recursion is cyclic, or no
+            term attains a value.
         """
         if not isinstance(self.record.query.observable, Best):
             raise PlanRefused(
                 PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR,
                 "a witness is a derivation of a best value; the query is not Best",
+            )
+        if isinstance(self.record.recursion, LinearCyclic):
+            raise PlanRefused(
+                PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR,
+                "the best value of a cyclic system is its closure in the selective "
+                "algebra; following the terms that attain it may cycle",
             )
         return _witness(self, axioms, evaluation, goal, inputs, like)
 
@@ -1270,6 +1357,12 @@ FOREST_ALGORITHM = (
     "it, nonlinear folds by enumeration within a declared limit"
 )
 """The executor that keeps the packed forest."""
+
+CYCLIC_ALGORITHM = (
+    "strongly connected components of the derived hypergraph, each linear "
+    "component solved by the algebra's closure"
+)
+"""The executor for linear cyclic systems."""
 
 _SUPPORTED_OBSERVABLES = (Weight, Support, Best, Marginal, Statistic)
 """The observables a two-pass run answers: values of items in the algebra,
@@ -1347,11 +1440,18 @@ def plan(
         raise PlanRefused(PlanRefusal.INADMISSIBLE, str(error)) from error
     kept = isinstance(retention, PackedForest)
     bounded = isinstance(recursion, Bounded) and recursion.measure == "height"
-    if not isinstance(recursion, Acyclic) and not (kept and bounded):
+    cyclic = isinstance(recursion, LinearCyclic)
+    if cyclic and (kept or not isinstance(algebra, Star)):
         raise PlanRefused(
             PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
-            f"the two-pass executor solves acyclic systems, and the forest "
-            f"executor those and systems bounded by height, not {recursion.tag}",
+            "a linear cyclic system is solved by the algebra's closure, without "
+            "a forest of its infinitely many derivations",
+        )
+    if not isinstance(recursion, Acyclic) and not (kept and bounded) and not cyclic:
+        raise PlanRefused(
+            PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
+            f"the executors here solve acyclic, linear cyclic and height-bounded "
+            f"systems, not {recursion.tag}",
         )
     if any(
         premise.hypotheses for rule in presentation.rules for premise in rule.premises
@@ -1419,10 +1519,18 @@ def plan(
                 f"only derivations of height at most {recursion.limit} are "
                 "unfolded, an input having height one"
             )
+    if cyclic:
+        assumptions.append(
+            "each strongly connected component of a run is linear, one premise "
+            "of an edge inside it; it is solved on the right as M* b when every "
+            "edge's premise in it comes last and its rule has no weight, on the "
+            "left as b N* when it comes first, and otherwise only when the "
+            "product is established to commute; each run checks this"
+        )
     budget = accuracy.budget
     backward: Literal["autograd", "recompute"] = (
         "recompute"
-        if budget.elements is not None or budget.bytes is not None
+        if (budget.elements is not None or budget.bytes is not None) and not cyclic
         else "autograd"
     )
     record = PlanRecord(
@@ -1432,11 +1540,15 @@ def plan(
         retention=retention,
         algebra=algebra.subject,
         claims=(*algebra.claims(), *claims),
-        algorithm=FOREST_ALGORITHM if kept else TWO_PASS_ALGORITHM,
+        algorithm=FOREST_ALGORITHM
+        if kept
+        else CYCLIC_ALGORITHM
+        if cyclic
+        else TWO_PASS_ALGORITHM,
         assumptions=tuple(assumptions),
         structure=analysis,
         certificate=certificate,
-        complexity=_complexity(kept, backward, retention),
+        complexity=CYCLIC_WORK if cyclic else _complexity(kept, backward, retention),
         alternatives=(
             Alternative(
                 algorithm=TWO_PASS_ALGORITHM if kept else FOREST_ALGORITHM,
@@ -1787,6 +1899,101 @@ def _discover(
                     discovered.append(conclusion)
                     queue.append(conclusion)
     return discovered, counts, leaves, kept
+
+
+def _run(
+    plan: Plan,
+    axioms: Sequence[AxiomOccurrence],
+    inputs: Mapping[InputId, torch.Tensor],
+    like: torch.Tensor,
+) -> Evaluation:
+    """Run the plan's executor.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+    axioms : Sequence of AxiomOccurrence
+        The input occurrences.
+    inputs : Mapping of InputId to torch.Tensor
+        The input weights.
+    like : torch.Tensor
+        The dtype and device of units and zeros.
+
+    Returns
+    -------
+    Evaluation
+        The values.
+
+    Raises
+    ------
+    PlanRefused
+        If the run has no value under the plan.
+    """
+    if isinstance(plan.record.recursion, LinearCyclic):
+        return _solve_cyclic(plan, axioms, inputs, like)
+    return _evaluate(plan, axioms, inputs, like)
+
+
+_CYCLIC_CODES = {
+    CyclicRefusal.NONLINEAR: PlanRefusal.NONLINEAR_CYCLE,
+    CyclicRefusal.SIDES: PlanRefusal.MIXED_SIDES,
+    CyclicRefusal.DIVERGENT: PlanRefusal.DIVERGENT,
+    CyclicRefusal.UNDECIDED: PlanRefusal.DIVERGENT,
+}
+"""The plan's refusal for each refusal of the cyclic solver."""
+
+
+def _solve_cyclic(
+    plan: Plan,
+    axioms: Sequence[AxiomOccurrence],
+    inputs: Mapping[InputId, torch.Tensor],
+    like: torch.Tensor,
+) -> Evaluation:
+    """Solve a linear cyclic system component by component.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+    axioms : Sequence of AxiomOccurrence
+        The input occurrences.
+    inputs : Mapping of InputId to torch.Tensor
+        The input weights.
+    like : torch.Tensor
+        The dtype and device of units and zeros.
+
+    Returns
+    -------
+    Evaluation
+        The least solution, in component order.
+
+    Raises
+    ------
+    PlanRefused
+        If a component is not linear, mixes the sides of a product that
+        does not commute, or has no closure.
+    """
+    forest = build_forest(plan.presentation, axioms)
+    try:
+        values, parts = solve(forest, plan.algebra, inputs, like=like)
+    except CyclicRefused as refused:
+        raise PlanRefused(_CYCLIC_CODES[refused.code], refused.reason) from refused
+    requested = _requested(plan)
+    return Evaluation(
+        values=values,
+        order=tuple(item for part in parts for item in part.items),
+        work=forest.work,
+        counts=0,
+        components=parts,
+        evidence=None
+        if not requested
+        else {
+            item: edges
+            for item, edges in forest.edges.items()
+            if item.family in requested
+        },
+    )
 
 
 def _evaluate(

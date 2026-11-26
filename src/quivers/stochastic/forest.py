@@ -50,7 +50,7 @@ from quivers.qiec.rules import (
     RulePresentation,
     evaluate_index,
 )
-from quivers.stochastic.indexed import IndexedChart
+from quivers.stochastic.indexed import ChartWork, IndexedChart
 from quivers.structural.encoder import Encoder
 from quivers.structural.signature import DataLeaf, Signature
 
@@ -141,6 +141,8 @@ class DerivationForest(ValueModel):
     order : tuple of Item or None
         The items in an order in which every premise precedes its
         conclusions, or ``None`` when the hypergraph has a cycle.
+    work : ChartWork
+        The counters of the chart that found the edges.
     """
 
     presentation: RulePresentation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -150,6 +152,9 @@ class DerivationForest(ValueModel):
     )
     order: tuple[Item, ...] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    work: ChartWork = dx.field(
+        default=ChartWork(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @property
@@ -498,6 +503,7 @@ def build_forest(
         items=tuple(discovered),
         edges=frozen,
         order=_topological(discovered, frozen),
+        work=chart.counters(),
     )
 
 

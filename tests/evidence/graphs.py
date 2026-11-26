@@ -321,3 +321,27 @@ ORIGIN = Rule(
 
 SEEDED = PRESENTATION.with_(rules=(STEP, TRIPLED, ORIGIN))
 """Reachability whose start is a rule without premises as well as an input."""
+
+
+STEP_RIGHT = Rule(
+    id=ConstructorId.derive(NAME, "step-right"),
+    name="step-right",
+    telescope=(_binder("i"), _binder("j")),
+    premises=(
+        Premise(judgment=Judgment(family=EDGE, arguments=(_v("i"), _v("j")))),
+        Premise(judgment=Judgment(family=REACH, arguments=(_v("i"),))),
+    ),
+    conclusion=Judgment(family=REACH, arguments=(_v("j"),)),
+)
+"""``reach(j) <- edge(i, j), reach(i)`` without a weight: right linear."""
+
+RIGHT = PRESENTATION.with_(id=PresentationId.derive(NAME, "right"), rules=(STEP_RIGHT,))
+"""Reachability whose step multiplies the edge on the left of the path."""
+
+LEFT = PRESENTATION.with_(id=PresentationId.derive(NAME, "left"), rules=(STEP,))
+"""Reachability whose step multiplies the edge and the rule on the right."""
+
+MIXED = PRESENTATION.with_(
+    id=PresentationId.derive(NAME, "mixed"), rules=(STEP, STEP_RIGHT)
+)
+"""Both steps: a cycle multiplied on both sides."""
