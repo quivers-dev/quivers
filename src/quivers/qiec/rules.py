@@ -1853,7 +1853,7 @@ class Equation(QiecModel):
             raise ValueError("the two sides of an equation share context and item")
 
 
-def identity(item: Item) -> OpenDerivation:
+def identity_derivation(item: Item) -> OpenDerivation:
     """The identity arrow on an item: its own hypothesis.
 
     Parameters
@@ -2093,7 +2093,7 @@ def _hole_items(
     return items
 
 
-def compose(
+def compose_derivations(
     presentation: RulePresentation,
     outer: OpenDerivation,
     arguments: Sequence[OpenDerivation],
@@ -2205,7 +2205,7 @@ def substitute_hypotheses(
 ) -> OpenDerivation:
     """Replace every hypothesis of a derivation by a derivation in one context.
 
-    Unlike `compose`, every argument is in the same context, so a
+    Unlike `compose_derivations`, every argument is in the same context, so a
     hypothesis used twice duplicates its argument and one unused drops
     it. Whether that is licensed is a question for `required_structure`.
 
@@ -2262,7 +2262,7 @@ def substitute_hypotheses(
     )
 
 
-def rename(
+def rename_hypotheses(
     presentation: RulePresentation,
     derivation: OpenDerivation,
     targets: Sequence[int],
@@ -2875,9 +2875,38 @@ class InterpretationDecl(QiecModel):
     )
 
 
-type Scoped[B] = Callable[[tuple[B, ...]], B]
-"""The value of a premise derived under hypotheses: a function of their
-values, outermost first. This is the context-indexed reading of a premise."""
+class Scoped[B](ValueModel):
+    """The value of a premise derived under hypotheses.
+
+    It is a function of the hypotheses' values, outermost first: the
+    context-indexed reading of a premise. Calling it folds the premise
+    with them bound.
+
+    Parameters
+    ----------
+    apply : Callable[[tuple of B], B]
+        The function.
+    """
+
+    apply: Callable[[tuple[B, ...]], B] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    def __call__[V](self: Scoped[V], hypotheses: tuple[V, ...]) -> V:
+        """Fold the premise with values for its hypotheses.
+
+        Parameters
+        ----------
+        hypotheses : tuple of V
+            Their values, outermost first.
+
+        Returns
+        -------
+        V
+            The premise's value.
+        """
+        return self.apply(hypotheses)
+
 
 type PremiseValue[B] = B | Scoped[B]
 """The value an operation receives for one premise."""
@@ -3024,6 +3053,32 @@ class HostInterpretation[B](ValueModel):
         return result
 
 
+def closed_values[V](values: tuple[PremiseValue[V], ...]) -> tuple[V, ...]:
+    """The values of premises that have no hypotheses.
+
+    Parameters
+    ----------
+    values : tuple of PremiseValue
+        What an operation received.
+
+    Returns
+    -------
+    tuple of V
+        The same values.
+
+    Raises
+    ------
+    RuleError
+        If a premise is scoped under hypotheses.
+    """
+    found: list[V] = []
+    for value in values:
+        if isinstance(value, Scoped):
+            raise RuleError("a premise under hypotheses is a function, not a value")
+        found.append(value)
+    return tuple(found)
+
+
 def _lookup[V](environment: tuple[V, ...], index: int) -> V:
     """The value of a hypothesis by de Bruijn index.
 
@@ -3084,7 +3139,7 @@ def _scoped[V](
         """
         return interpretation._evaluate(child, environment + hypotheses)
 
-    return apply
+    return Scoped(apply=apply)
 
 
 class EquationFails(RuleError):
@@ -3397,6 +3452,11 @@ class ReferenceInterpretation:
         -------
         N
             The sum, ``zero`` when the item has no derivation.
+
+        Raises
+        ------
+        RuleError
+            If a derivation has an open hypothesis.
         """
         total = zero
         for derivation in self.derivations(goal, height=height):
@@ -3518,32 +3578,56 @@ class ReferenceInterpretation:
 
 
 __all__ = [
+    "AFFINE",
     "AxiomOccurrence",
     "AxiomSlot",
     "Binding",
+    "CARTESIAN",
+    "ContextStructure",
     "CyclicDerivations",
     "Derivation",
+    "Equation",
+    "EquationFails",
     "FamilyComponent",
     "Ground",
+    "Hole",
     "HostInterpretation",
     "InterpretationDecl",
     "Item",
     "ItemTable",
     "Judgment",
     "JudgmentDecl",
+    "LINEAR",
     "MatchError",
+    "ORDERED",
+    "OpenDerivation",
     "Operation",
     "PRESENTATION_PROTOCOL",
     "PRESENTATION_WORK",
     "Premise",
+    "PremiseValue",
     "PresentationAnalysis",
+    "ProofNode",
+    "RELEVANT",
     "ReferenceInterpretation",
     "Rule",
     "RuleError",
     "RulePresentation",
+    "Scoped",
     "SideCondition",
+    "StructureError",
+    "check_derivation",
+    "closed_values",
+    "check_equation",
+    "check_structure",
+    "compose_derivations",
     "evaluate_index",
+    "identity_derivation",
     "match_index",
     "named_conditions",
     "presentation_of",
+    "rename_hypotheses",
+    "required_structure",
+    "substitute_hypotheses",
+    "term_derivation",
 ]

@@ -27,15 +27,17 @@ from quivers.qiec.rules import (
     OpenDerivation,
     PremiseValue,
     ReferenceInterpretation,
+    Scoped,
+    closed_values,
     RuleError,
     RulePresentation,
     StructureError,
     check_derivation,
     check_structure,
-    compose,
-    identity,
+    compose_derivations,
+    identity_derivation,
     presentation_of,
-    rename,
+    rename_hypotheses,
     required_structure,
     substitute_hypotheses,
     term_derivation,
@@ -104,14 +106,16 @@ def _algebra(name: str, children: tuple[Fraction, ...]) -> Fraction:
     return 2 * left - right + 1
 
 
-def _operation(node: Derivation, values: tuple[Fraction, ...]) -> Fraction:
+def _operation(
+    node: Derivation, values: tuple[PremiseValue[Fraction], ...]
+) -> Fraction:
     """The same fold, as an operation of the presentation.
 
     Parameters
     ----------
     node : Derivation
         The node.
-    values : tuple of Fraction
+    values : tuple of PremiseValue
         The premise values.
 
     Returns
@@ -121,7 +125,8 @@ def _operation(node: Derivation, values: tuple[Fraction, ...]) -> Fraction:
     """
     if node.occurrence is not None:
         return fixture.LEAF_WEIGHTS[fixture.NAMES[node.occurrence]]
-    return 2 * values[0] - values[1] + 1
+    left, right = closed_values(values)
+    return 2 * left - right + 1
 
 
 def _interpretation() -> HostInterpretation[Fraction]:
@@ -280,7 +285,7 @@ def _identities(presentation: RulePresentation, derivation: Derivation) -> list[
     while stack:
         node = stack.pop()
         held.extend((node.constructor, node.occurrence))
-        stack.extend(node.premises)
+        stack.extend(child for child in node.premises if isinstance(child, Derivation))
     return [f"{type(item).__name__}:{item}" for item in held]
 
 
@@ -424,7 +429,7 @@ def check_ordered_structure() -> None:
     in_order = _pair(1, 0, "twice")
     check_structure(presentation, in_order)
     a, _, _ = _pairs_items()
-    swapped = rename(presentation, in_order, (1, 0), (a, a))
+    swapped = rename_hypotheses(presentation, in_order, (1, 0), (a, a))
     required = required_structure(presentation, swapped)
     if not required.exchange:
         raise Mismatch("refusal", math.inf, "a permuted use needs no exchange")
@@ -453,15 +458,26 @@ def check_multicategory() -> None:
     f = _pair(1, 0)
     failures = 0
     try:
-        if compose(presentation, f, (identity(a), identity(b))) != f:
+        if (
+            compose_derivations(
+                presentation, f, (identity_derivation(a), identity_derivation(b))
+            )
+            != f
+        ):
             failures += 1
-        if compose(presentation, identity(pair), (f,)) != f:
+        if compose_derivations(presentation, identity_derivation(pair), (f,)) != f:
             failures += 1
-        nested = compose(
-            presentation, identity(pair), (compose(presentation, identity(pair), (f,)),)
+        nested = compose_derivations(
+            presentation,
+            identity_derivation(pair),
+            (compose_derivations(presentation, identity_derivation(pair), (f,)),),
         )
-        flat = compose(
-            presentation, compose(presentation, identity(pair), (identity(pair),)), (f,)
+        flat = compose_derivations(
+            presentation,
+            compose_derivations(
+                presentation, identity_derivation(pair), (identity_derivation(pair),)
+            ),
+            (f,),
         )
         if nested != flat:
             failures += 1
@@ -475,7 +491,7 @@ def check_multicategory() -> None:
             term_derivation(fixture.LAMBDA, fixture.abs_(fixture.var(1)), ("T",)),
             term_derivation(fixture.LAMBDA, fixture.const("a"), ()),
         )
-        composite = compose(lam, body, arguments)
+        composite = compose_derivations(lam, body, arguments)
         planar = Substitution(
             replacements=(fixture.const("a"), fixture.abs_(fixture.var(1))), shift=1
         )
@@ -613,7 +629,7 @@ def _strings(presentation: RulePresentation) -> HostInterpretation[str]:
         """
         del node
         body = values[0]
-        assert callable(body)
+        assert isinstance(body, Scoped)
         name = "v"
         return f"(\\{name}. {body((name,))})"
 

@@ -22,6 +22,8 @@ from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.module import validate_module
 from quivers.qiec.rules import (
     PRESENTATION_WORK,
+    PremiseValue,
+    closed_values,
     CyclicDerivations,
     Derivation,
     HostInterpretation,
@@ -220,16 +222,32 @@ def test_weight_and_nonlinear_fold_match_the_oracle() -> None:
         left, right = children
         return 2 * left - right + 1
 
+    def operation(
+        node: Derivation, values: tuple[PremiseValue[Fraction], ...]
+    ) -> Fraction:
+        """The same fold as an operation of the presentation.
+
+        Parameters
+        ----------
+        node : Derivation
+            The node.
+        values : tuple of PremiseValue
+            The premise values.
+
+        Returns
+        -------
+        Fraction
+            The value.
+        """
+        if node.occurrence is not None:
+            return fixture.LEAF_WEIGHTS[fixture.NAMES[node.occurrence]]
+        left, right = closed_values(values)
+        return 2 * left - right + 1
+
     interpretation = HostInterpretation[Fraction](
         presentation=fixture.PRESENTATION,
         operations={
-            item.id: (
-                lambda node, values: (
-                    fixture.LEAF_WEIGHTS[fixture.NAMES[node.occurrence]]
-                    if node.occurrence is not None
-                    else 2 * values[0] - values[1] + 1
-                )
-            )
+            item.id: operation
             for item in (*fixture.PRESENTATION.rules, *fixture.PRESENTATION.axioms)
         },
     )
@@ -245,7 +263,7 @@ def test_one_presentation_parses_means_and_encodes() -> None:
     item = table.item(fixture.SPAN, fixture.GOAL)
     rules = fixture.PRESENTATION.rules
 
-    def logical(node: Derivation, values: tuple[str, ...]) -> str:
+    def logical(node: Derivation, values: tuple[PremiseValue[str], ...]) -> str:
         """A bracketing of the words.
 
         Parameters
@@ -264,7 +282,8 @@ def test_one_presentation_parses_means_and_encodes() -> None:
             word = node.values[0]
             assert isinstance(word, str)
             return word
-        return f"({values[0]} {values[1]})"
+        left, right = closed_values(values)
+        return f"({left} {right})"
 
     meaning = HostInterpretation[str](
         presentation=fixture.PRESENTATION,
@@ -282,7 +301,9 @@ def test_one_presentation_parses_means_and_encodes() -> None:
     left = torch.tensor([0.5, -1.0], dtype=torch.float64, requires_grad=True)
     right = torch.tensor([2.0, 0.25], dtype=torch.float64)
 
-    def encode(node: Derivation, values: tuple[torch.Tensor, ...]) -> torch.Tensor:
+    def encode(
+        node: Derivation, values: tuple[PremiseValue[torch.Tensor], ...]
+    ) -> torch.Tensor:
         """A vector per node: a fixed vector at leaves, a linear form above.
 
         Parameters
@@ -299,7 +320,8 @@ def test_one_presentation_parses_means_and_encodes() -> None:
         """
         if node.occurrence is not None:
             return torch.ones(2, dtype=torch.float64)
-        return left * values[0] + right * values[1]
+        first, second = closed_values(values)
+        return left * first + right * second
 
     encoder = HostInterpretation[torch.Tensor](
         presentation=fixture.PRESENTATION,

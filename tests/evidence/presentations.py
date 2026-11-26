@@ -395,7 +395,11 @@ def shape(derivation: Derivation) -> Tree:
         rule,
         derivation.item.arguments,
         rule,
-        tuple(shape(child) for child in derivation.premises),
+        tuple(
+            shape(child)
+            for child in derivation.premises
+            if isinstance(child, Derivation)
+        ),
     )
 
 

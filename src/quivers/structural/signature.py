@@ -61,6 +61,13 @@ class SortVocabEntry(dx.Model):
     Each entry is a tagged Python value: ``kind`` is the leaf
     type (``"string" | "integer" | "float"``), ``value`` is the
     decoded Python value (``str``, ``int``, or ``float``).
+
+    Parameters
+    ----------
+    kind : str
+        The leaf type.
+    value : DataLeaf
+        The decoded value.
     """
 
     kind: Literal["string", "integer", "float"]
@@ -74,6 +81,17 @@ class Sort(dx.Model):
     A data sort may carry a ``vocab`` tuple of
     `SortVocabEntry` records. Object / index sorts must
     have an empty vocab (the framework checks at runtime).
+
+    Parameters
+    ----------
+    name : str
+        The sort's name.
+    kind : SortKind
+        ``"object"``, ``"index"`` or ``"data"``.
+    dim : int or None
+        The embedding dimension, if declared.
+    vocab : tuple of SortVocabEntry
+        The closed vocabulary of a data sort.
     """
 
     name: str
@@ -83,12 +101,28 @@ class Sort(dx.Model):
 
     @property
     def vocab_values(self) -> tuple[DataLeaf, ...]:
-        """The decoded Python values in declaration order."""
+        """The decoded Python values in declaration order.
+
+        Returns
+        -------
+        tuple of DataLeaf
+            The values.
+        """
         return tuple(e.value for e in self.vocab)
 
 
 class Constructor(dx.Model):
-    """A typed constructor symbol."""
+    """A typed constructor symbol.
+
+    Parameters
+    ----------
+    name : str
+        The constructor's name.
+    domain : tuple of str
+        The sorts of its arguments, in order.
+    codomain : str
+        The sort it produces.
+    """
 
     name: str
     domain: tuple[str, ...] = ()
@@ -96,7 +130,13 @@ class Constructor(dx.Model):
 
     @property
     def arity(self) -> int:
-        """The number of arguments the constructor takes."""
+        """The number of arguments the constructor takes.
+
+        Returns
+        -------
+        int
+            The arity.
+        """
         return len(self.domain)
 
 
@@ -107,6 +147,15 @@ class BinderVarSpec(dx.Model):
     of an optional *type annotation*, a sibling argument in the
     enclosing Term that travels alongside the variable's embedding
     in Γ. Used to track per-variable type information.
+
+    Parameters
+    ----------
+    var : str
+        The variable's name.
+    sort : str
+        Its sort.
+    annot_sort : str or None
+        The sort of its annotation, if any.
     """
 
     var: str
@@ -115,7 +164,15 @@ class BinderVarSpec(dx.Model):
 
 
 class BinderArgSpec(dx.Model):
-    """A scoped argument of a binder."""
+    """A scoped argument of a binder.
+
+    Parameters
+    ----------
+    arg : str
+        The argument's name.
+    sort : str
+        Its sort.
+    """
 
     arg: str
     sort: str
@@ -123,7 +180,19 @@ class BinderArgSpec(dx.Model):
 
 class Binder(dx.Model):
     """A binder constructor: introduces variables of given sorts into
-    the scope of given arguments."""
+    the scope of given arguments.
+
+    Parameters
+    ----------
+    name : str
+        The binder's name.
+    binds : tuple of BinderVarSpec
+        The variables it introduces.
+    scoped : tuple of BinderArgSpec
+        The arguments in their scope.
+    codomain : str
+        The sort it produces.
+    """
 
     name: str
     binds: tuple[BinderVarSpec, ...] = ()
@@ -136,6 +205,11 @@ class Binder(dx.Model):
 
         Each annotated bound variable contributes one annotation
         argument, and each scoped argument contributes one more.
+
+        Returns
+        -------
+        int
+            The arity.
         """
         n_annots = sum(1 for b in self.binds if b.annot_sort is not None)
         return n_annots + len(self.scoped)
@@ -157,7 +231,17 @@ class Binder(dx.Model):
 
 
 class VertexKind(dx.Model):
-    """A vertex kind in a graph-shaped signature."""
+    """A vertex kind in a graph-shaped signature.
+
+    Parameters
+    ----------
+    name : str
+        The kind's name.
+    kind : SortKind
+        The kind of its values.
+    dim : int or None
+        The embedding dimension, if declared.
+    """
 
     name: str
     kind: SortKind
@@ -165,7 +249,19 @@ class VertexKind(dx.Model):
 
 
 class EdgeKind(dx.Model):
-    """An edge kind in a graph-shaped signature."""
+    """An edge kind in a graph-shaped signature.
+
+    Parameters
+    ----------
+    name : str
+        The kind's name.
+    src : str
+        The vertex kind it leaves.
+    tgt : str
+        The vertex kind it enters.
+    directed : bool
+        Whether it is directed.
+    """
 
     name: str
     src: str
@@ -188,6 +284,23 @@ class Signature(dx.Model):
     runtime exposes name-keyed tables (`sorts`, `constructors`, ...)
     on top of those tuples, each built once per signature, and every
     lookup through them takes constant time.
+
+    Parameters
+    ----------
+    name : str
+        The signature's name.
+    params : tuple of str
+        Its parameters.
+    sorts_t : tuple of Sort
+        Its sorts.
+    constructors_t : tuple of Constructor
+        Its constructors.
+    binders_t : tuple of Binder
+        Its binders.
+    vertex_kinds_t : tuple of VertexKind
+        Its vertex kinds, for a graph signature.
+    edge_kinds_t : tuple of EdgeKind
+        Its edge kinds, for a graph signature.
     """
 
     name: str
@@ -441,6 +554,13 @@ class Term(ValueModel):
 
     No wrapping such as ``Term("Data", …)`` is used at any
     position; raw values appear directly at data positions.
+
+    Parameters
+    ----------
+    op : str
+        The constructor, binder, or ``"BoundVar"``.
+    args : tuple of TermArg
+        The positional children.
     """
 
     op: str
@@ -469,6 +589,13 @@ class Term(ValueModel):
                 )
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
+        """The term written as ``op(arg, ...)``.
+
+        Returns
+        -------
+        str
+            The text.
+        """
         if not self.args:
             return self.op
         inside = ", ".join(repr(a) for a in self.args)
@@ -560,6 +687,15 @@ class ContextEntry(ValueModel):
     ``embedding`` is a runtime tensor; ``type_term`` is the binder's
     annotation term captured at scope-extension time. Tensor identity
     participates in equality and hashing, preserving live autograd state.
+
+    Parameters
+    ----------
+    var_sort : str
+        The sort of the bound variable.
+    embedding : torch.Tensor
+        Its embedding.
+    type_term : Term or None
+        The binder's annotation of it, if any.
     """
 
     var_sort: str
@@ -587,6 +723,11 @@ class Context(ValueModel):
 
     Position 0 is the most recently bound variable; lookup ``var(i)``
     returns the i-th entry from the top.
+
+    Parameters
+    ----------
+    entries : tuple of ContextEntry
+        The entries, innermost first.
     """
 
     entries: tuple[ContextEntry, ...] = dx.field(
