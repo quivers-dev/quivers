@@ -36,8 +36,8 @@ many derivations, and a nonlinear function of an aggregate over an item's deriva
 general a function of the derivations.
 
 A host interpretation is an algebra of the signature functor $F_A$: a carrier per judgment and an
-operation per rule. It is neither a weight algebra of [`quivers.core`][quivers.core] (a semiring of
-weights, with laws) nor an Eilenberg-Moore algebra of a monad in [`quivers.monadic`][quivers.monadic];
+operation per rule. It is neither a weight algebra of [`quivers.core`](../core/algebras.md) (a semiring of
+weights, with laws) nor an Eilenberg-Moore algebra of a monad in [`quivers.monadic`](../monadic/algebras.md);
 a weight algebra interprets the rules only through the weights of their applications.
 
 ## The reference interpretation
@@ -104,7 +104,7 @@ Terms of a structural signature use de Bruijn indices.
 [`Substitution`][quivers.structural.Substitution] is a simultaneous substitution: the innermost
 variables go to replacements and the rest are shifted. [`substitute`][quivers.structural.substitute]
 applies it under binders by lifting it, so no replacement is captured, and
-[`then`][quivers.structural.Substitution.then] composes two of them. The identity, composition and
+[`then`][quivers.structural.signature.Substitution.then] composes two of them. The identity, composition and
 renaming laws are checked, and substitution agrees with textbook capture-avoiding substitution on
 named terms. [`term_derivation`][quivers.qiec.rules.term_derivation] reads a term as an open
 derivation whose holes are its free variables, and substitution of terms corresponds to
