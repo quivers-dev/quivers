@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     import pandas as pd
     import torch
 
+    from quivers.dsl.ast_nodes import Module
+    from quivers.family_catalog import FamilyCatalog
+
 
 class Binding(dx.Model):
     """One named quantity defined by a QVR expression over earlier names.
@@ -1020,6 +1023,22 @@ class Family(ValueModel):
             Values by input name; empty for a native law.
         """
         return {} if self.kernel_law is None else self.kernel_law.bindings(frame, data2)
+
+    def check_kernel(self, module: Module, families: FamilyCatalog | None) -> None:
+        """Check a model emitted with the family's kernel law.
+
+        A native law's model is correct by its construction; a kernel law
+        states a body the formulas change, so its model is checked.
+
+        Parameters
+        ----------
+        module : Module
+            The emitted model.
+        families : FamilyCatalog or None
+            Compilation-local laws of the model.
+        """
+        if self.kernel_law is not None:
+            self.kernel_law.check(module, families)
 
     @dx.model_validator()
     def _validate_declarations(self) -> None:

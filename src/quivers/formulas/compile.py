@@ -1632,6 +1632,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 # Improper flat priors are compilation-local native laws.
                 families=with_flat_catalog(self.families(), module),
             )
+        if check:
+            self._family.check_kernel(
+                module, with_flat_catalog(self.families(), module)
+            )
         complement = FormulaData(
             source=formula,
             witnesses=self._witnesses(),

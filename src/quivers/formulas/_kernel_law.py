@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     import pandas as pd
     import torch
 
+    from quivers.dsl.ast_nodes import Module
+    from quivers.family_catalog import FamilyCatalog
     from quivers.formulas._kernel import KernelInputs, ParameterSource, ResponseKernel
     from quivers.formulas.formula import Formula
 
@@ -80,5 +82,22 @@ class KernelLaw(dx.TaggedUnion, ValueModel, discriminator="kind"):
         -------
         dict[str, torch.Tensor]
             Values by input name.
+        """
+        raise NotImplementedError
+
+    def check(self, module: Module, families: FamilyCatalog | None) -> None:
+        """Check a model emitted with the law's kernel.
+
+        Parameters
+        ----------
+        module : Module
+            The emitted model.
+        families : FamilyCatalog or None
+            Compilation-local laws of the model.
+
+        Raises
+        ------
+        ValueError
+            If the model does not check, with the law's reason.
         """
         raise NotImplementedError

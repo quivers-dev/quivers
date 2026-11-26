@@ -67,6 +67,7 @@ from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.program_templates import _bound_names
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.step_resolution import _draw_arg_value_names, _step_value_names
+from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._blocks import Namespace, rename_program
 from quivers.formulas._kernel import (
     BindSlot,
@@ -236,6 +237,9 @@ class ProgramAnalysis(ValueModel):
         The program's sites, in checked order.
     inputs : tuple[KernelInput, ...]
         The program's external values, in checked order.
+    row_maps : frozenset[str]
+        Index maps into the rows: the ``via`` maps of the observations a
+        marginalization over the row axis encloses.
     """
 
     entry: str
@@ -248,6 +252,7 @@ class ProgramAnalysis(ValueModel):
     )
     sites: tuple[KernelSite, ...] = ()
     inputs: tuple[KernelInput, ...] = ()
+    row_maps: frozenset[str] = frozenset()
 
     def site(self, name: str) -> KernelSite | None:
         """Return the site of a name.
@@ -767,10 +772,17 @@ def program_analysis(source: str) -> ProgramAnalysis:
         compiler.compile()
     except CompileError as error:
         raise ValueError(f"the program does not compile: {error}") from error
-    registry = LatentRegistry.from_model(
-        compiler.morphisms[program.name],
-        observed_names={item.name for item in inputs},
-    )
+    try:
+        registry = LatentRegistry.from_model(
+            compiler.morphisms[program.name],
+            observed_names={item.name for item in inputs},
+        )
+    except NotImplementedError as error:
+        raise ValueError(
+            f"a site of the program {program.name!r} has no continuous "
+            f"coordinates for inference to move in ({error}); a program block "
+            "draws continuous sites and marginalizes discrete ones"
+        ) from error
     sites: list[KernelSite] = []
     for site in entry.sites:
         plates = (*site.batch, *site.event)
@@ -815,7 +827,36 @@ def program_analysis(source: str) -> ProgramAnalysis:
         ),
         sites=tuple(sites),
         inputs=inputs,
+        row_maps=frozenset(_row_maps(program.draws, row_axis, inside=False)),
     )
+
+
+def _row_maps(
+    steps: Sequence[ProgramStep], row_axis: str, *, inside: bool
+) -> Iterator[str]:
+    """Find the index maps of observations into the rows.
+
+    Parameters
+    ----------
+    steps : Sequence[ProgramStep]
+        Program steps.
+    row_axis : str
+        The row axis.
+    inside : bool
+        Whether the steps lie in a marginalization over the row axis.
+
+    Yields
+    ------
+    str
+        The ``via`` map of each observation such a marginalization encloses.
+    """
+    for step in steps:
+        if isinstance(step, ObserveStep) and inside and step.via is not None:
+            yield step.via
+        if isinstance(step, MarginalizeStep):
+            yield from _row_maps(
+                step.scope, row_axis, inside=inside or step.over == row_axis
+            )
 
 
 class ParameterDecl(ValueModel):
@@ -890,7 +931,7 @@ def parameter_decl(
         law = site.law_of_support
         if law.obstacle is not None or law.link is None:
             raise ValueError(
-                f"the program {entry!r} cannot take a formula for {law.obstacle}"
+                f"{law.obstacle}; the program {entry!r} cannot take a formula for it"
             )
         if analysis.row_axis in site.axes:
             raise ValueError(
@@ -1287,7 +1328,9 @@ class ProgramKernelSpec(KernelLaw):
         """Bind the program's data by name.
 
         Data at each row are columns of ``frame``; data on another axis and
-        scalars come from ``data2``.
+        scalars come from ``data2``. An index map into the rows takes the rank
+        of each row's label among the labels, so the groups of a
+        marginalization over the rows are the rows given.
 
         Parameters
         ----------
@@ -1324,9 +1367,16 @@ class ProgramKernelSpec(KernelLaw):
                         f"the program {self.entry!r} reads {item.name!r} at each "
                         f"row, and the data has no column {item.name!r}{place}"
                     )
-                bound[item.name] = _tensor(
+                value = _tensor(
                     item, np.asarray(frame[item.name].to_numpy()), len(frame)
                 )
+                if item.name in self.analysis.row_maps:
+                    # A map into the rows labels rows; the groups of a
+                    # marginalization over the rows are the kept rows in
+                    # label order, so a map of row positions is the
+                    # identity on any subset of the rows.
+                    value = torch.unique(value, sorted=True, return_inverse=True)[1]
+                bound[item.name] = value
                 continue
             if item.name not in extra:
                 place = (
@@ -1349,6 +1399,32 @@ class ProgramKernelSpec(KernelLaw):
             )
             bound[item.name] = _tensor(item, array, None)
         return bound
+
+    def check(self, module: Module, families: FamilyCatalog | None) -> None:
+        """Check a model emitted with the program's kernel.
+
+        Parameters
+        ----------
+        module : Module
+            The emitted model.
+        families : FamilyCatalog or None
+            Compilation-local laws of the model.
+
+        Raises
+        ------
+        ValueError
+            If the program does not check with its parameters replaced.
+        """
+        try:
+            lower_qvr_to_qiec(module, families=families)
+        except (QiecDiagnosticError, CompileError) as error:
+            raise ValueError(
+                f"the program {self.entry!r} does not check with its parameters "
+                f"{list(self.parameters)} replaced by formulas: {error}. A formula "
+                "that varies over the rows gives one value per row, which the "
+                "program must read per row; give such a parameter a formula "
+                "constant over the rows, such as '~ 1', or state the program per row"
+            ) from error
 
     def kernel(
         self, inputs: KernelInputs, formula: Formula
