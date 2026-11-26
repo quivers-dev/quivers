@@ -1008,17 +1008,10 @@ EVALUATION_MEASURES: tuple[WorkField, ...] = measuring(
 """The counters a two-pass evaluation counts: it divides and closes nothing."""
 
 CYCLIC_MEASURES: tuple[WorkField, ...] = measuring(
-    {
-        WorkField.SCALAR_SUMS,
-        WorkField.SCALAR_PRODUCTS,
-        WorkField.SCALAR_DIVISIONS,
-        WorkField.STAR_PIVOTS,
-        WorkField.HASH_OPERATIONS,
-        WorkField.KEY_COMPARISONS,
-    }
+    {WorkField.HASH_OPERATIONS, WorkField.KEY_COMPARISONS}
 )
-"""The counters a cyclic run counts: the algebra's operations of building,
-closing and applying each component's system, its closures of one element,
+"""The counters a cyclic run counts: its chart's lookups and candidates. The
+operations of building, closing and applying each component's system, its closures of one element,
 and its chart's lookups and candidates; it divides nothing."""
 
 
@@ -1104,14 +1097,35 @@ class Evaluation(ValueModel):
         WorkReport
             The report.
         """
+        measured = set(self.measures)
+
+        def kept(field: WorkField, count: int) -> int:
+            """A count when the run measured it, else nothing.
+
+            Parameters
+            ----------
+            field : WorkField
+                The counter.
+            count : int
+                What the run tallied for it.
+
+            Returns
+            -------
+            int
+                The count, or zero for a counter not measured.
+            """
+            return count if field in measured else 0
+
         return WorkReport(
             phase=Phase.EXECUTION,
-            scalar_sums=self.sums,
-            scalar_products=self.products,
-            star_pivots=self.pivots,
-            hash_operations=self.work.lookups,
-            key_comparisons=self.work.candidates,
-            provenance_records=self.counts + self.retained,
+            scalar_sums=kept(WorkField.SCALAR_SUMS, self.sums),
+            scalar_products=kept(WorkField.SCALAR_PRODUCTS, self.products),
+            star_pivots=kept(WorkField.STAR_PIVOTS, self.pivots),
+            hash_operations=kept(WorkField.HASH_OPERATIONS, self.work.lookups),
+            key_comparisons=kept(WorkField.KEY_COMPARISONS, self.work.candidates),
+            provenance_records=kept(
+                WorkField.PROVENANCE_RECORDS, self.counts + self.retained
+            ),
             measured=self.measures,
         )
 

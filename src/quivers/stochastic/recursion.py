@@ -125,7 +125,7 @@ class CyclicWork(QiecModel):
     products : int
         Products, one per element.
     pivots : int
-        Closures of one element, one per state eliminated.
+        States the closures eliminated, as the algebra reports them.
     """
 
     sums: int = 0
@@ -303,60 +303,6 @@ def _add(
     return result
 
 
-def _closure(
-    algebra: Star, matrix: torch.Tensor, like: torch.Tensor, work: _Work
-) -> torch.Tensor:
-    """The closure ``A*`` of a square matrix of elements, by eliminating states.
-
-    For each state ``k`` in turn, with ``s = (A_kk)*`` the closure of one
-    element, every entry becomes ``A_ij ⊕ A_ik ⊗ s ⊗ A_kj`` from the
-    matrix before the step; after the last step the matrix is ``A⁺``,
-    the sum of the paths of positive length, and ``A* = I ⊕ A⁺``
-    (Lehmann 1977). Each step closes one element and does ``n + n²``
-    products and ``n²`` sums, and ``I ⊕ A⁺`` ``n²`` sums more, so the
-    closure is ``n`` closures of one element, ``n³ + n²`` products and
-    ``n³ + n²`` sums. The closure of one
-    element is the algebra's own, which refuses outside its domain.
-
-    Parameters
-    ----------
-    algebra : Star
-        The algebra.
-    matrix : torch.Tensor
-        Shape ``(n, n, *element_shape)``.
-    like : torch.Tensor
-        The dtype and device of the unit.
-    work : _Work
-        The counts.
-
-    Returns
-    -------
-    torch.Tensor
-        The closure.
-
-    Raises
-    ------
-    DivergentClosureError
-        If an element's closure has no value.
-    UndecidedClosureError
-        If rounding cannot decide whether it has.
-    """
-    n = matrix.shape[0]
-    current = matrix
-    for k in range(n):
-        star = algebra.star(current[k : k + 1, k : k + 1])[0, 0]
-        work.pivots += 1
-        column = _times(algebra, current[:, k], star.unsqueeze(0), work)
-        update = _times(algebra, column.unsqueeze(1), current[k].unsqueeze(0), work)
-        current = _add(algebra, current, update, work)
-    zero = algebra.zero_like((n, n), like)
-    unit = algebra.unit_like((n,), like)
-    identity = zero.clone()
-    for i in range(n):
-        identity[i, i] = unit[i]
-    return _add(algebra, identity, current, work)
-
-
 def _unit_or(
     algebra: OrderPreservingSemiring, value: torch.Tensor | None, like: torch.Tensor
 ) -> torch.Tensor:
@@ -403,8 +349,9 @@ def solve(
     -------
     tuple of dict, tuple of Component and CyclicWork
         The value of every item, each component with its side, and the
-        algebra's operations: building each component's system, its
-        closure, and the product of the closure with the constants.
+        algebra's operations of building each component's system and of
+        applying its closure to the constants; the closures' own work is
+        the algebra's to report.
 
     Raises
     ------
@@ -492,7 +439,7 @@ def solve(
         ]
         filled = torch.stack(rows)
         try:
-            closure = _closure(algebra, filled, like, work)
+            closure = algebra.star(filled)
         except DivergentClosureError as error:
             raise CyclicRefused(CyclicRefusal.DIVERGENT, str(error)) from error
         except UndecidedClosureError as error:

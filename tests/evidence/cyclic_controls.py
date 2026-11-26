@@ -629,10 +629,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=f"{RECURSION}:solve",
         also_in=("quivers.stochastic.planning",),
         rewrites=(
-            Rewrite(
-                old="closure = _closure(algebra, filled, like, work)",
-                new="closure = filled",
-            ),
+            Rewrite(old="closure = algebra.star(filled)", new="closure = filled"),
         ),
         rejected_by=("cyclic/closed-form",),
         min_effect=1e-6,
