@@ -84,7 +84,6 @@ from quivers.formulas._r_squared import _responses, formula_r2
 from quivers.formulas._fit_controls import SamplerControl, mcmc_kernel, sampler_control
 from quivers.formulas._initial_values import chain_initial_values
 from quivers.inference.mcmc.hmc import _HamiltonianKernel
-from quivers.diagnostics.regression import bayesian_r2
 
 # Bayesian model averaging weights by bridge sampling.
 from quivers.formulas._evidence import post_prob

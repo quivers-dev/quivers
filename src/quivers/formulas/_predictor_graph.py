@@ -351,7 +351,13 @@ def build_predictor_graph(
     unknown_roots = roots.keys() - family_parameters
     if unknown_roots:
         raise ValueError(f"unknown nonlinear family parameters {sorted(unknown_roots)}")
-    declarations = dict(nonlinear or {})
+    # A formula for a name that is no family parameter declares a nonlinear
+    # parameter read by a nonlinear parameter formula (brms lf() beside nlf()).
+    declarations = dict(nonlinear or {}) | {
+        name: value
+        for name, value in (distributional or {}).items()
+        if name not in family_parameters
+    }
     for name in declarations:
         if not isinstance(name, str) or not re.fullmatch(
             r"[A-Za-z][A-Za-z0-9_]*", name

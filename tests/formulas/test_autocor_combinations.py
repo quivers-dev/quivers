@@ -1067,11 +1067,12 @@ def test_estimated_residual_correlations_refuse_residual_terms():
             data=frame,
             data2=_data2(),
         )
-    # brms admits the conditional formulation there; QVR names the gap.
-    with pytest.raises(ValueError, match=r"ar\(t, g\) beside estimated residual"):
-        formula_to_qvr(
-            bf("y ~ x + ar(t, g)") + bf("z ~ x") + set_rescor(True), data=frame
-        )
+    # brms admits the conditional formulation there: the recursion moves the
+    # locations of one joint residual law.
+    source = formula_to_qvr(
+        bf("y ~ x + ar(t, g)") + bf("z ~ x") + set_rescor(True), data=frame
+    )
+    assert "<- JointResidualNormal(" in source
 
 
 @pytest.mark.parametrize(

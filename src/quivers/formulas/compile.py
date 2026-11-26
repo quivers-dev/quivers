@@ -668,10 +668,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     decomp : {"none", "QR"}
         brms ``decomp``: sample the location coefficients in scaled QR
         coordinates and report them on the original scale.
-    residual : ResidualLaw or None
-        Residual law of the response: natural residuals correlated across
-        rows. It gives the native kernel of the observation and its
-        structural sites; None observes the family's own law.
 
     Raises
     ------
@@ -711,13 +707,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         default_priors: DefaultPriorPolicy = "quivers",
         center: bool | None = None,
         decomp: Literal["none", "QR"] = "none",
-        residual: ResidualLaw | None = None,
     ) -> None:
         # mixtures: the registered "mixture" family is mixture(gaussian, nmix=K).
         family = expand_mixture(family, mixture_components)
         self._mixture_targets: tuple[PriorTarget, ...] = ()
         self._family = family
-        self._residual = residual
+        self._residual: ResidualLaw | None = None
         # brms default prior policy and population-coordinate options.
         if default_priors not in ("quivers", "brms"):
             raise ValueError("default_priors must be 'quivers' or 'brms'")
@@ -754,7 +749,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._distributional = dict(distributional or {})
         self._predictor_graph = predictor_graph
         auxiliary_names = {aux.name for aux in family.aux_params}
-        structural_names = set(residual.coefficients) if residual is not None else set()
         expression_roots = (
             set(predictor_graph.roots) - {"mu"}
             if predictor_graph is not None
@@ -777,9 +771,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         unknown_fixed = {
             name
-            for name in self._fixed_parameters.keys()
-            - auxiliary_names
-            - structural_names
+            for name in self._fixed_parameters.keys() - auxiliary_names
             if not is_scale_parameter(family, name)
         }
         if unknown_fixed:
@@ -805,13 +797,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             domain = next(
                 (aux.domain for aux in family.aux_params if aux.name == name),
-                None,
-            ) or next(
-                (
-                    Domain(lower=site.lower, upper=site.upper)
-                    for site in (residual.sites if residual is not None else ())
-                    if site.name == name
-                ),
                 Domain(),
             )
             if not domain.contains(value):
@@ -4078,7 +4063,45 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     )
                 )
                 continue
-            program_steps.append(self.draw_site(site))
+            program_steps.append(self._draw_site(site))
+
+    def _bind_residual(
+        self, law: ResidualLaw | None, fixed: Mapping[str, float]
+    ) -> None:
+        """Observe the response through a residual law.
+
+        Parameters
+        ----------
+        law : ResidualLaw or None
+            Residual law of the response: natural residuals correlated
+            across rows. It gives the native kernel of the observation and
+            its structural sites; None observes the family's own law.
+        fixed : Mapping[str, float]
+            Constant values of structural sites of the law.
+
+        Raises
+        ------
+        ValueError
+            If a value names no site of the law or lies outside the site's
+            interval.
+        """
+        sites = {site.name: site for site in law.sites} if law is not None else {}
+        unknown = set(fixed) - set(sites)
+        if unknown:
+            raise ValueError(f"unknown fixed auxiliary parameters {sorted(unknown)}")
+        for name, value in fixed.items():
+            domain = Domain(lower=sites[name].lower, upper=sites[name].upper)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (float, int))
+                or not math.isfinite(value)
+                or not domain.contains(value)
+            ):
+                raise ValueError(
+                    f"fixed parameter {name!r} must {domain.requirement()}"
+                )
+        self._residual = law
+        self._fixed_parameters.update(fixed)
 
     @property
     def response_laws(self) -> FamilyCatalog | None:

@@ -47,6 +47,7 @@ from quivers.formulas._category_formulas import (
     category_distributional,
     check_scale_formulas,
     is_category_parameter,
+    is_scale_parameter,
     main_without_terms,
 )
 from quivers.formulas.formula import (
@@ -716,29 +717,32 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         FormulaToQVRModule
             A fresh lens retaining every fitted prior and compiler option.
         """
-        return FormulaToQVRModule(
-            self.family,
-            fixed_prior=self.fixed_prior,
-            random_scale_prior=self.random_scale_prior,
-            correlation_prior=self.correlation_prior,
-            group_covariances=self.group_covariances,
-            user_priors=self.priors,
-            reparameterize=self.reparameterize,
-            binomial_trials=self.binomial_trials,
-            thresholds_by=self.thresholds_by,
-            mixture_components=self.mixture_components,
-            predictor_name=self.predictor_name,
-            distributional=self.distributional
-            if distributional is None
-            else distributional,
-            fixed_parameters=self.fixed_parameters,
-            predictor_graph=self.predictor_graph
-            if nonlinear_leaves is None or self.predictor_graph is None
-            else self.predictor_graph.with_(leaves=dict(nonlinear_leaves)),
-            default_priors=self.default_priors,
-            center=self.center,
-            residual=self.residual if residual is None else residual,
-            decomp=self.decomp,
+        return residual_lens(
+            self.residual if residual is None else residual,
+            self.fixed_parameters,
+            lambda fixed: FormulaToQVRModule(
+                self.family,
+                fixed_parameters=fixed,
+                fixed_prior=self.fixed_prior,
+                random_scale_prior=self.random_scale_prior,
+                correlation_prior=self.correlation_prior,
+                group_covariances=self.group_covariances,
+                user_priors=self.priors,
+                reparameterize=self.reparameterize,
+                binomial_trials=self.binomial_trials,
+                thresholds_by=self.thresholds_by,
+                mixture_components=self.mixture_components,
+                predictor_name=self.predictor_name,
+                distributional=self.distributional
+                if distributional is None
+                else distributional,
+                predictor_graph=self.predictor_graph
+                if nonlinear_leaves is None or self.predictor_graph is None
+                else self.predictor_graph.with_(leaves=dict(nonlinear_leaves)),
+                default_priors=self.default_priors,
+                center=self.center,
+                decomp=self.decomp,
+            ),
         )
 
     @property
@@ -2228,6 +2232,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         binding: LinpredBinding,
         recorded: Trace,
         site: Callable[[str], str],
+        location: Callable[[], torch.Tensor] | None = None,
     ) -> Callable[[str], torch.Tensor]:
         """Read the row bindings of a linear predictor from one replay.
 
@@ -2246,6 +2251,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         site : Callable[[str], str]
             Program name of a binding of this response: the identity for a
             single fit, the response namespace in a joint program.
+        location : Callable[[], torch.Tensor] or None
+            The response law's location, recursion included; None reads the
+            law of the response's own observation.
 
         Returns
         -------
@@ -2256,6 +2264,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
 
         def read(name: str) -> torch.Tensor:
             if name == binding.site and parameter == "mu" and self.residual is not None:
+                if location is not None:
+                    return location()
                 return linear_predictor(recorded, response)
             return recorded.sites[site(name)].value
 
@@ -3306,6 +3316,43 @@ def get_prior(
     return lens.get_prior(parsed)
 
 
+def residual_lens(
+    law: ResidualLaw | None,
+    fixed_parameters: Mapping[str, float],
+    build: Callable[[dict[str, float]], FormulaToQVRModule],
+) -> FormulaToQVRModule:
+    """Build a formula lens that observes the response through a residual law.
+
+    Parameters
+    ----------
+    law : ResidualLaw or None
+        Residual law of the response, or None for the family's own law.
+    fixed_parameters : Mapping[str, float]
+        Constant values of family parameters and of the law's structural
+        sites.
+    build : Callable[[dict[str, float]], FormulaToQVRModule]
+        The lens of the family from its own fixed values.
+
+    Returns
+    -------
+    FormulaToQVRModule
+        The lens, with the law bound.
+    """
+    structural = set(law.coefficients) if law is not None else set()
+    lens = build(
+        {
+            name: value
+            for name, value in fixed_parameters.items()
+            if name not in structural
+        }
+    )
+    lens._bind_residual(
+        law,
+        {name: value for name, value in fixed_parameters.items() if name in structural},
+    )
+    return lens
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedFormula:
     """Ephemeral shared preparation, including live fitted design evaluators.
@@ -4336,6 +4383,18 @@ def _prepare_formula(
         """Evaluate one auxiliary formula on the included rows."""
         return fields_and_design(text, data=data, data2=data2, caller=caller)
 
+    family_parameters = frozenset(
+        {
+            "mu",
+            *(aux.name for aux in family_obj.aux_params),
+            *(
+                name
+                for name in distributional or {}
+                if is_category_parameter(family_obj, name)
+                or is_scale_parameter(family_obj, name)
+            ),
+        }
+    )
     with formula_data_options(knots, drop_unused_levels, data2):
         graph = build_predictor_graph(
             formula,
@@ -4343,25 +4402,17 @@ def _prepare_formula(
             distributional,
             data,
             parsed.response_name,
-            family_parameters=frozenset(
-                {
-                    "mu",
-                    *(aux.name for aux in family_obj.aux_params),
-                    *(
-                        name
-                        for name in distributional or {}
-                        if is_category_parameter(family_obj, name)
-                    ),
-                }
-            ),
+            family_parameters=family_parameters,
             evaluate=evaluate,
             designs=parameter_designs,
         )
+        # A formula of a name that is no family parameter is a nonlinear
+        # parameter of the graph.
         parameter_formulas = _parse_distributional(
             {
                 name: value
                 for name, value in (distributional or {}).items()
-                if isinstance(value, str)
+                if isinstance(value, str) and name in family_parameters
             },
             parsed.response_name,
             evaluate=evaluate,
@@ -4372,25 +4423,28 @@ def _prepare_formula(
         if family_obj.trials_parameter is not None
         else None
     )
-    lens = FormulaToQVRModule(
-        family_obj,
-        fixed_prior=fixed_prior,
-        random_scale_prior=random_scale_prior,
-        correlation_prior=correlation_prior,
-        group_covariances=group_covariances,
-        user_priors=priors,
-        reparameterize=reparameterize,
-        binomial_trials=binomial_trials,
-        thresholds_by=thresholds_by,
-        mixture_components=mixture_components,
-        predictor_name=predictor_name,
-        distributional=parameter_formulas,
-        predictor_graph=graph,
-        fixed_parameters=fixed_parameters,
-        default_priors=default_priors,
-        center=center,
-        decomp=decomp,
-        residual=residual,
+    lens = residual_lens(
+        residual,
+        fixed_parameters or {},
+        lambda fixed: FormulaToQVRModule(
+            family_obj,
+            fixed_parameters=fixed,
+            fixed_prior=fixed_prior,
+            random_scale_prior=random_scale_prior,
+            correlation_prior=correlation_prior,
+            group_covariances=group_covariances,
+            user_priors=priors,
+            reparameterize=reparameterize,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            predictor_name=predictor_name,
+            distributional=parameter_formulas,
+            predictor_graph=graph,
+            default_priors=default_priors,
+            center=center,
+            decomp=decomp,
+        ),
     )
     return _PreparedFormula(
         lens,

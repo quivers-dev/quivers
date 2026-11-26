@@ -3,8 +3,10 @@
 import pickle
 
 import didactic.api as dx
+import pandas as pd
 import pytest
 
+from quivers.formulas import formula_to_qvr
 from quivers.formulas._multivariate import MultivariateFormula, ResponseModel
 from quivers.formulas._priors import PriorSet, PriorSpec, PriorTarget, resolve_priors
 
@@ -51,15 +53,19 @@ def test_residual_correlation_keeps_response_and_native_component_axes_distinct(
 
 
 def test_residual_correlation_refuses_heterogeneous_and_nonelliptical_families():
+    frame = pd.DataFrame({"y": [0.1, 0.4, -0.2, 0.3], "z": [1, 0, 1, 1], "x": [0.0, 1.0, 2.0, 3.0]})
     for second in ("student_t", "bernoulli"):
-        with pytest.raises((ValueError, dx.ValidationError), match="homogeneous"):
-            MultivariateFormula(
-                responses={
-                    "a": ResponseModel(formula="y~x"),
-                    "b": ResponseModel(formula="z~x", family=second),
-                },
-                rescor=True,
-            )
+        spec = MultivariateFormula(
+            responses={
+                "a": ResponseModel(formula="y~x"),
+                "b": ResponseModel(formula="z~x", family=second),
+            },
+            rescor=True,
+        )
+        # A plain refusal when the program is built, not a validation error.
+        with pytest.raises(ValueError, match="homogeneous") as refused:
+            formula_to_qvr(spec, data=frame)
+        assert not isinstance(refused.value, dx.ValidationError)
 
 
 def test_response_prior_selectors_refine_the_existing_catalogue():

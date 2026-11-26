@@ -1411,12 +1411,25 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             result = {}
             for name in names:
                 response = self.emission.responses[name]
+                index = self.response_names.index(name)
                 result[name] = bindings[name].read(
                     self._response_fit(name)._row_reader(
                         parameter,
                         bindings[name],
                         recorded,
                         lambda binding, names=response.names: names[binding],
+                        # Under residual correlation the response is one
+                        # coordinate of the joint law.
+                        (
+                            lambda index=index: (
+                                coordinate(
+                                    response_distribution(recorded, JOINT_RESPONSE),
+                                    index,
+                                ).mean
+                            )
+                        )
+                        if self.rescor
+                        else None,
                     ),
                     prepared.rows[name],
                 )
