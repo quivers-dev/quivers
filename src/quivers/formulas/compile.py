@@ -3224,16 +3224,28 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Returns
         -------
         dict[str, OutputAxis]
-            Axes by predictor namespace; empty for a scalar response.
+            Axes by predictor namespace: those of the parameters with
+            coordinates of their own, and of a vector response.
         """
+        # A parameter declaring its own coordinates has one coefficient
+        # vector per free coordinate.
+        axes: dict[str, OutputAxis] = {
+            f"dpar_{aux.name}_": OutputAxis(
+                name=aux.coordinates.axis
+                if aux.coordinates.reference is None
+                else f"dpar_{aux.name}_{aux.coordinates.axis}",
+                size=len(aux.coordinates.free),
+            )
+            for aux in self._family.aux_params
+            if aux.coordinates is not None and aux.name in self._distributional
+        }
         axis = (
             response_axis(self._family, self._component_labels(formula))
             if self._family.response is not None
             else None
         )
         if axis is None:
-            return {}
-        axes: dict[str, OutputAxis] = {}
+            return axes
         if not self._category_parameters:
             axes[""] = axis
         scale = self._family.component_scale
@@ -3471,7 +3483,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         formula : Formula
             Primary predictor, combined with configured auxiliary predictors.
         data : Sequence[InputDecl]
-            Row columns the response kernel reads by name.
+            Columns the response kernel reads by name; those it declares
+            are declared with their axes, the others keep the types their
+            uses give them.
 
         Returns
         -------
@@ -3563,11 +3577,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         parameters += tuple(
             QiecValueParameter(
                 name=column.name,
-                type_expr=index_type.with_(
-                    static_arguments=(QiecTypeName(name=column.element),)
-                ),
+                type_expr=QiecTypeApplication(
+                    constructor="Tensor",
+                    static_arguments=(QiecTypeName(name=column.element),),
+                    indices=(
+                        QiecShapeIndex(
+                            dimensions=tuple(
+                                QiecIndexName(name=axis) for axis in column.axes
+                            )
+                        ),
+                    ),
+                )
+                if column.axes
+                else QiecTypeName(name=column.element),
             )
             for column in data
+            if column.declared
         )
         existing = {parameter.name for parameter in parameters}
         for role, column in self._response_data(formula).column_items():

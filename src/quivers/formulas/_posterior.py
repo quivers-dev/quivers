@@ -111,7 +111,10 @@ def replay(
     Yields
     ------
     Trace
-        One native execution trace per chain and draw.
+        One native execution trace per chain and draw. Each trace is made
+        without gradients and under the requested observation scoring; both
+        are released at every yield, so a consumer that stops early leaves
+        neither in force.
 
     Raises
     ------
@@ -121,148 +124,180 @@ def replay(
     """
     from quivers.effects.observation_scoring import observation_scoring
 
-    with torch.no_grad(), observation_scoring(score_observations):
-        observations = dict(
-            fit.observations if context is None else context.observations
-        )
-        program = fit.program if context is None else context.program
-        input = torch.zeros(1, 1, dtype=torch.long)
-        generator = torch.Generator().manual_seed(
-            (context.seed + 2) % 2**64 if context is not None else 0
-        )
-        # Fresh latent sites of prediction rows (the latent function of an
-        # exact gp() at new inputs) are sampled by the program. Their stream
-        # depends on the prediction seed and the draw alone, so every
-        # prediction method sees the same latent draws for one seed.
-        fresh = (
-            torch.Generator().manual_seed((context.seed + 3) % 2**64)
-            if context is not None and context.fresh_sites
-            else None
-        )
-        fixed_donors: dict[str, torch.Tensor] = {}
-        specialized_shapes = {}
-        if context is not None and context.groups:
-            registry = LatentRegistry.from_model(
-                program, observed_names=set(observations)
-            )
-            specialized_shapes = {
-                name: registry[name].constrained_shape for name in registry.names
-            }
-        for chain in range(shape[0]):
-            for draw in range(shape[1]):
-                original_latents = {
-                    name: values[chain, draw]
-                    for name, values in draws.items()
-                    if context is None or name not in context.fresh_sites
-                }
-                retained: dict[str, torch.Tensor] = {}
-                fitted: Trace | None = None
-                # Retained threshold replays: one per ordinal response, named by
-                # its site prefix (empty for a single response, namespaced in
-                # a joint program).
-                replays = (
-                    ()
-                    if context is None or not context.retain_ordinal_cutpoints
-                    else context.ordinal_replays
-                    or (
-                        OrdinalReplay(
-                            prefix="",
-                            thresholds_by=fit.thresholds_by,
-                            fitted_levels=len(
-                                fit.formula.group_levels[fit.thresholds_by]
-                            )
-                            if fit.thresholds_by is not None
-                            else 0,
-                            rows=context.rows,
-                        ),
-                    )
-                )
-                if replays:
-                    fitted = trace(
-                        fit.program, input, dict(fit.observations) | original_latents
-                    )
-                    for entry in replays:
-                        site = entry.prefix + "cutpoints"
-                        if site in fitted.sites:
-                            retained[site] = fitted.sites[site].value.reshape(-1)
-                feasible = (
-                    context is not None
-                    and context.new_level_policy.startswith("feasible_")
-                    and any(
-                        name in context.ordinal_order_groups
-                        and -1 in group.fitted_indices
-                        for name, group in context.groups.items()
-                    )
-                )
-                attempts = _MAX_FEASIBLE_GROUP_ATTEMPTS if feasible else 1
-                recorded: Trace | None = None
-                for attempt in range(attempts):
-                    latents = original_latents
-                    donors: dict[str, torch.Tensor] = {}
-                    if context is not None and context.groups:
-                        from quivers.formulas._group_prediction import remap_draw
+    traces = _replayed_traces(fit, draws, shape, context=context)
+    while True:
+        with torch.no_grad(), observation_scoring(score_observations):
+            recorded = next(traces, None)
+        if recorded is None:
+            return
+        yield recorded
 
-                        latents = remap_draw(
-                            context,
-                            latents,
-                            specialized_shapes,
-                            generator,
-                            fixed_donors,
-                            donors,
+
+def _replayed_traces(
+    fit: BayesianFit,
+    draws: dict[str, torch.Tensor],
+    shape: tuple[int, int],
+    *,
+    context: PredictionContext | None,
+) -> Iterator[Trace]:
+    """Make the traces of `replay`, one per chain and draw.
+
+    Parameters
+    ----------
+    fit : BayesianFit
+        The retained fitted program and training observations.
+    draws : dict[str, torch.Tensor]
+        Validated constrained posterior draws.
+    shape : tuple[int, int]
+        The chain count and draw count.
+    context : PredictionContext or None
+        Prepared fresh-row program and bindings, or None for training rows.
+
+    Yields
+    ------
+    Trace
+        One native execution trace per chain and draw.
+
+    Raises
+    ------
+    ValueError
+        If fresh rows cross retained thresholds, or a conditional new-group
+        policy exhausts its proposal budget.
+    """
+    observations = dict(fit.observations if context is None else context.observations)
+    program = fit.program if context is None else context.program
+    input = torch.zeros(1, 1, dtype=torch.long)
+    generator = torch.Generator().manual_seed(
+        (context.seed + 2) % 2**64 if context is not None else 0
+    )
+    # Fresh latent sites of prediction rows (the latent function of an
+    # exact gp() at new inputs) are sampled by the program. Their stream
+    # depends on the prediction seed and the draw alone, so every
+    # prediction method sees the same latent draws for one seed.
+    fresh = (
+        torch.Generator().manual_seed((context.seed + 3) % 2**64)
+        if context is not None and context.fresh_sites
+        else None
+    )
+    fixed_donors: dict[str, torch.Tensor] = {}
+    specialized_shapes = {}
+    if context is not None and context.groups:
+        registry = LatentRegistry.from_model(program, observed_names=set(observations))
+        specialized_shapes = {
+            name: registry[name].constrained_shape for name in registry.names
+        }
+    for chain in range(shape[0]):
+        for draw in range(shape[1]):
+            original_latents = {
+                name: values[chain, draw]
+                for name, values in draws.items()
+                if context is None or name not in context.fresh_sites
+            }
+            retained: dict[str, torch.Tensor] = {}
+            fitted: Trace | None = None
+            # Retained threshold replays: one per ordinal response, named by
+            # its site prefix (empty for a single response, namespaced in
+            # a joint program).
+            replays = (
+                ()
+                if context is None or not context.retain_ordinal_cutpoints
+                else context.ordinal_replays
+                or (
+                    OrdinalReplay(
+                        prefix="",
+                        thresholds_by=fit.thresholds_by,
+                        fitted_levels=len(fit.formula.group_levels[fit.thresholds_by])
+                        if fit.thresholds_by is not None
+                        else 0,
+                        rows=context.rows,
+                    ),
+                )
+            )
+            if replays:
+                fitted = trace(
+                    fit.program, input, dict(fit.observations) | original_latents
+                )
+                for entry in replays:
+                    site = entry.prefix + "cutpoints"
+                    if site in fitted.sites:
+                        retained[site] = fitted.sites[site].value.reshape(-1)
+            feasible = (
+                context is not None
+                and context.new_level_policy.startswith("feasible_")
+                and any(
+                    name in context.ordinal_order_groups and -1 in group.fitted_indices
+                    for name, group in context.groups.items()
+                )
+            )
+            attempts = _MAX_FEASIBLE_GROUP_ATTEMPTS if feasible else 1
+            recorded: Trace | None = None
+            for attempt in range(attempts):
+                latents = original_latents
+                donors: dict[str, torch.Tensor] = {}
+                if context is not None and context.groups:
+                    from quivers.formulas._group_prediction import remap_draw
+
+                    latents = remap_draw(
+                        context,
+                        latents,
+                        specialized_shapes,
+                        generator,
+                        fixed_donors,
+                        donors,
+                    )
+                for entry in replays:
+                    if (
+                        context is not None
+                        and fitted is not None
+                        and entry.prefix + "cutpoint_matrix" in fitted.sites
+                    ):
+                        retained.update(
+                            _retained_group_cutpoints(
+                                entry,
+                                context,
+                                fitted,
+                                latents,
+                                observations,
+                                donors,
+                                input,
+                            )
                         )
-                    for entry in replays:
-                        if (
-                            context is not None
-                            and fitted is not None
-                            and entry.prefix + "cutpoint_matrix" in fitted.sites
-                        ):
-                            retained.update(
-                                _retained_group_cutpoints(
-                                    entry,
-                                    context,
-                                    fitted,
-                                    latents,
-                                    observations,
-                                    donors,
-                                    input,
-                                )
-                            )
-                    try:
-                        with (
-                            nullcontext()
-                            if fresh is None
-                            else seeded_rng(
-                                int(torch.randint(2**62, (), generator=fresh)),
-                                devices=(input.device,),
-                            )
-                        ):
-                            recorded = trace(
-                                program, input, observations | latents | retained
-                            )
-                    except ValueError as exc:
-                        if (
-                            context is None
-                            or not context.retain_ordinal_cutpoints
-                            or "ordinal_effective_spacing" not in str(exc)
-                        ):
-                            raise
-                        if feasible and attempt + 1 < attempts:
-                            continue
-                        raise ValueError(
-                            "ordinal prediction requires ordered effective cutpoints; "
-                            f"chain {chain}, draw {draw}, requested rows/groups "
-                            f"{tuple(context.groups)}: {exc}. "
-                            + (
-                                f"No feasible joint new-group proposal was obtained in {attempts} attempts; "
-                                "the posterior draw was retained, and prediction failed."
-                                if feasible
-                                else "Fitted cutpoints were retained; use prediction covariates "
-                                "inside their fitted order-support domain."
-                            )
-                        ) from exc
-                    break
-                assert recorded is not None
-                yield recorded
+                try:
+                    with (
+                        nullcontext()
+                        if fresh is None
+                        else seeded_rng(
+                            int(torch.randint(2**62, (), generator=fresh)),
+                            devices=(input.device,),
+                        )
+                    ):
+                        recorded = trace(
+                            program, input, observations | latents | retained
+                        )
+                except ValueError as exc:
+                    if (
+                        context is None
+                        or not context.retain_ordinal_cutpoints
+                        or "ordinal_effective_spacing" not in str(exc)
+                    ):
+                        raise
+                    if feasible and attempt + 1 < attempts:
+                        continue
+                    raise ValueError(
+                        "ordinal prediction requires ordered effective cutpoints; "
+                        f"chain {chain}, draw {draw}, requested rows/groups "
+                        f"{tuple(context.groups)}: {exc}. "
+                        + (
+                            f"No feasible joint new-group proposal was obtained in {attempts} attempts; "
+                            "the posterior draw was retained, and prediction failed."
+                            if feasible
+                            else "Fitted cutpoints were retained; use prediction covariates "
+                            "inside their fitted order-support domain."
+                        )
+                    ) from exc
+                break
+            assert recorded is not None
+            yield recorded
 
 
 def _retained_group_cutpoints(

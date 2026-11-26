@@ -88,6 +88,7 @@ from quivers.formulas._residual_law import (
 # Joint (multivariate) formulas: typed overload contracts and dispatch target.
 from typing import overload
 from quivers.formulas._joint_options import FormulaFitOptions, JointFitOptions
+from quivers.formulas._program_kernel import program_arguments
 from quivers.formulas._multivariate import (
     MultivariateFormula,
     ResponseModel,
@@ -2524,10 +2525,24 @@ def fit(
 ) -> BayesianFit: ...
 
 
+@overload
 def fit(
-    formula: str | ResponseModel | MultivariateFormula,
+    formula: None = None,
     *,
     data: IntoDataFrame,
+    program: str,
+    response: str,
+    **options: Unpack[FormulaFitOptions],
+) -> BayesianFit: ...
+
+
+def fit(
+    formula: str | ResponseModel | MultivariateFormula | None = None,
+    *,
+    data: IntoDataFrame,
+    program: str | None = None,
+    parameters: Mapping[str, str] | None = None,
+    response: str | None = None,
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
@@ -2592,16 +2607,30 @@ def fit(
 
     Parameters
     ----------
-    formula : str or ResponseModel or MultivariateFormula
+    formula : str or ResponseModel or MultivariateFormula or None
         brms/lme4-style response formula, or a joint formula built with
         `bf` (``bf("mvbind(y1, y2) ~ x")`` or ``bf(...) + bf(...)``), which
         returns a `MultivariateFit`. Response-level keywords then belong
         to each `bf` call. A single-response ``bf("y ~ x", "sigma ~ z")``
         is fitted as the string formula with the response keywords it
         carries; a keyword given both there and here with different values
-        raises.
+        raises. None for a program, given by ``program=``.
     data : IntoDataFrame
         Pandas, Polars, or another Narwhals-compatible dataframe.
+    program : str or None
+        QVR source of a program whose observation of ``response`` is the
+        likelihood: the exported program, or the only one. Its domain is the
+        rows of the data. Every sample site and input that ``parameters``
+        names is replaced by a regression on the link scale its support
+        requires; every other site keeps the program's own law. Data the
+        program reads at each row are data columns of the same name; data on
+        another axis and scalars come from ``data2``.
+    parameters : Mapping[str, str] or None
+        Formulas of the program's parameters, as ``{"noise": "~ 1 + (1 | g)"}``.
+        Their priors are those of distributional formulas, with
+        ``dpar=<parameter>``.
+    response : str or None
+        The site the program observes, a data column.
     family : str or Family
         Registered response family or a family value. ``Family.with_links``
         selects location or auxiliary inverse links.
@@ -2862,6 +2891,17 @@ def fit(
             return _joint_fit.fit_entry(
                 formula, preparation_data, refit_recipe.method, refit_recipe
             )
+        formula, family, distributional = program_arguments(
+            formula,
+            program=program,
+            parameters=parameters,
+            response=response,
+            family=family,
+            distributional=distributional,
+            nonlinear=nonlinear,
+            fixed_parameters=fixed_parameters,
+            caller="fit",
+        )
         _refuse_joint_syntax(formula, "fit")
         if method == "svi":
             given = [
@@ -2974,9 +3014,12 @@ _FIT_ARGUMENTS = frozenset(inspect.signature(fit).parameters)
 
 
 def formula_to_qvr(
-    formula: str | ResponseModel | MultivariateFormula,
+    formula: str | ResponseModel | MultivariateFormula | None = None,
     *,
     data: IntoDataFrame,
+    program: str | None = None,
+    parameters: Mapping[str, str] | None = None,
+    response: str | None = None,
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
@@ -3022,12 +3065,19 @@ def formula_to_qvr(
 
     Parameters
     ----------
-    formula : str or ResponseModel or MultivariateFormula
+    formula : str or ResponseModel or MultivariateFormula or None
         Authored formula over original dataframe rows, a single-response
         `bf` carrying its response keywords, or a joint formula whose one
-        composed program is emitted.
+        composed program is emitted; None for a program.
     data : IntoDataFrame
         Original training columns, including response modifiers.
+    program : str or None
+        QVR source of a program whose observation of ``response`` is the
+        likelihood, as in `fit`.
+    parameters : Mapping[str, str] or None
+        Formulas of the program's parameters, by name.
+    response : str or None
+        The site the program observes.
     family : str or Family
         Checked response law and retained link, threshold, and event choices.
     weights, decision : str or None
@@ -3110,6 +3160,17 @@ def formula_to_qvr(
         if path is not None:
             Path(path).write_text(source)
         return source
+    formula, family, distributional = program_arguments(
+        formula,
+        program=program,
+        parameters=parameters,
+        response=response,
+        family=family,
+        distributional=distributional,
+        nonlinear=nonlinear,
+        fixed_parameters=fixed_parameters,
+        caller="formula_to_qvr",
+    )
     _refuse_joint_syntax(formula, "formula_to_qvr")
     lens, parsed = _formula_lens(
         formula,
@@ -3148,9 +3209,12 @@ def formula_to_qvr(
 
 
 def get_prior(
-    formula: str | ResponseModel | MultivariateFormula,
+    formula: str | ResponseModel | MultivariateFormula | None = None,
     *,
     data: IntoDataFrame,
+    program: str | None = None,
+    parameters: Mapping[str, str] | None = None,
+    response: str | None = None,
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
@@ -3186,12 +3250,20 @@ def get_prior(
 
     Parameters
     ----------
-    formula : str or ResponseModel or MultivariateFormula
+    formula : str or ResponseModel or MultivariateFormula or None
         Response formula in brms/lme4 notation, a single-response `bf`
         carrying its response keywords, or a joint formula whose
-        namespaced sites (``response_<resp>__...``, ``rescor``) are listed.
+        namespaced sites (``response_<resp>__...``, ``rescor``) are listed;
+        None for a program.
     data : IntoDataFrame
         Rows used to evaluate design matrices and autoscale default priors.
+    program : str or None
+        QVR source of a program whose observation of ``response`` is the
+        likelihood, as in `fit`.
+    parameters : Mapping[str, str] or None
+        Formulas of the program's parameters, by name.
+    response : str or None
+        The site the program observes.
     family : str or Family
         Registered response family or a family value with selected links.
     weights : str or None
@@ -3284,6 +3356,17 @@ def get_prior(
                 caller="get_prior",
             )
         return _joint_fit.joint_prior(module, targets)
+    formula, family, distributional = program_arguments(
+        formula,
+        program=program,
+        parameters=parameters,
+        response=response,
+        family=family,
+        distributional=distributional,
+        nonlinear=nonlinear,
+        fixed_parameters=fixed_parameters,
+        caller="get_prior",
+    )
     _refuse_joint_syntax(formula, "get_prior")
     lens, parsed = _formula_lens(
         formula,
@@ -3376,6 +3459,8 @@ class _PreparedFormula:
         Checked nonlinear dependency graph.
     trials : torch.Tensor or None
         Validated finite-trial observations.
+    inputs : dict[str, torch.Tensor]
+        Data the response kernel reads by name.
     """
 
     lens: FormulaToQVRModule
@@ -3386,6 +3471,7 @@ class _PreparedFormula:
     distributional: dict[str, Formula]
     graph: PredictorGraph | None
     trials: torch.Tensor | None
+    inputs: dict[str, torch.Tensor]
 
 
 @dataclass(frozen=True, slots=True)
@@ -3597,7 +3683,7 @@ def _formula_observations(
     parsed = prepared.formula if formula is None else formula
     lens = prepared.lens if lens is None else lens
     family_obj = prepared.family
-    observations: dict[str, torch.Tensor] = {}
+    observations: dict[str, torch.Tensor] = dict(prepared.inputs)
     observations.update(lens.fixed_column_observations(parsed))
 
     observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
@@ -4298,6 +4384,7 @@ def _prepare_formula(
                 binomial_trials,
                 family_obj.baseline.by if family_obj.baseline is not None else None,
                 *unused,
+                *family_obj.kernel_columns,
             ),
         )
     if retained is not None:
@@ -4343,6 +4430,10 @@ def _prepare_formula(
         )
         data = original
     data = included_data(parsed, data)
+    # Data the response kernel reads by name, on the included rows.
+    kernel_inputs = family_obj.kernel_bindings(
+        nw.from_native(data, eager_only=True).to_pandas(), data2
+    )
     binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
     residual = None
     if autocor_terms:
@@ -4456,6 +4547,7 @@ def _prepare_formula(
         parameter_formulas,
         graph,
         trials,
+        kernel_inputs,
     )
 
 

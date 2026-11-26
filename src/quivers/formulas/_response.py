@@ -35,7 +35,8 @@ def normalize_response_values(
     Returns
     -------
     numpy.ndarray
-        Scalar category codes or numeric row/event values in Int64 or Float64.
+        Scalar category codes or numeric row/event values in Int64 or Float64;
+        Boolean values become the integers zero and one.
 
     Raises
     ------
@@ -71,6 +72,9 @@ def normalize_response_values(
             values = values[:, 0]
         if values.ndim != 1:
             raise ValueError("vector responses require explicit cbind component labels")
+    if values.dtype.kind == "b":
+        # A Boolean response is the integer carrier of zero and one.
+        values = values.astype(np.int64)
     if values.dtype.kind not in "iuf":
         raise ValueError("responses must have a real or integer numeric carrier")
     integer = values.dtype.kind in "iu"

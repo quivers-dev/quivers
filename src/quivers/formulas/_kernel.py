@@ -97,21 +97,69 @@ class Completion(ValueModel):
     coordinates: tuple[int, ...] = ()
     prefix: str = ""
 
-    def steps(self, free: str, result: str) -> tuple[ProgramStep, ...]:
+    def steps(
+        self, free: str, result: str, *, rows: bool = True
+    ) -> tuple[ProgramStep, ...]:
         """Bind the value over the full axis.
 
         Parameters
         ----------
         free : str
-            Binding of the free coordinates over ``(Resp, free axis)``.
+            Binding of the free coordinates over ``(Resp, free axis)``, or
+            over the free axis alone when ``rows`` is False.
         result : str
-            Binding of the value over ``(Resp, axis)``.
+            Binding of the value over ``(Resp, axis)``, or over the axis
+            alone when ``rows`` is False.
+        rows : bool
+            Whether the value varies over the rows.
 
         Returns
         -------
         tuple[ProgramStep, ...]
-            The zero row of the reference and the stack by coordinate.
+            The zero row of the reference and the stack by coordinate; for a
+            value that does not vary over the rows, one binding over the axis.
         """
+        if not rows:
+            return (
+                _let(
+                    result,
+                    _factor(
+                        (("category", self.axis),),
+                        cases=tuple(
+                            sorted(
+                                (
+                                    *(
+                                        ()
+                                        if self.reference is None
+                                        else (
+                                            (
+                                                self.reference,
+                                                LetExprLiteral(value=0.0),
+                                            ),
+                                        )
+                                    ),
+                                    *(
+                                        (
+                                            category,
+                                            _index(
+                                                free,
+                                                LetExprLiteral(
+                                                    value=float(coordinate),
+                                                    integral=True,
+                                                ),
+                                            ),
+                                        )
+                                        for coordinate, category in enumerate(
+                                            self.coordinates
+                                        )
+                                    ),
+                                ),
+                                key=lambda case: case[0],
+                            )
+                        ),
+                    ),
+                ),
+            )
         zero = f"{self.prefix}categorical_zero_logit"
         cases: tuple[tuple[int, LetExprNode], ...] = (
             () if self.reference is None else ((self.reference, _var(zero)),)
@@ -396,6 +444,10 @@ class ParameterSlot(ValueModel):
         the row); None for a linked value.
     precomposition : Precomposition or None
         How the body computes the slot, when no source feeds it.
+    constant_rows : bool
+        Whether a vector value that no term of its predictor varies over the
+        rows is bound over its coordinates alone; False binds it at every
+        row.
     """
 
     name: str
@@ -405,6 +457,7 @@ class ParameterSlot(ValueModel):
     completion: Completion | None = None
     axis: str | None = None
     row_binder: str | None = None
+    constant_rows: bool = False
     precomposition: Precomposition | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -464,8 +517,16 @@ class PredictorSource(ParameterSource):
                     AxisDecl(name=slot.completion.axis, size=slot.completion.size)
                 )
             emission.declare(AxisDecl(name=output.name, size=output.size))
-            emit_axis_part(predictor, output, emission.terms, emission.steps, slot.free)
-            emission.pending(slot.name, None, ValueShape(rows=True, coordinates=True))
+            rows = predictor.rowwise or not slot.constant_rows
+            emit_axis_part(
+                predictor,
+                output,
+                emission.terms,
+                emission.steps,
+                slot.free,
+                rows=rows,
+            )
+            emission.pending(slot.name, None, ValueShape(rows=rows, coordinates=True))
             return
         summands = emit_terms(predictor.part(None), emission.terms, emission.steps)
         emission.pending(
@@ -1341,7 +1402,11 @@ class KernelEmission:
                 if value != _var(slot.free):
                     self.steps.append(_let(slot.free, value))
             if slot.completion is not None:
-                self.steps.extend(slot.completion.steps(slot.free, slot.eta))
+                self.steps.extend(
+                    slot.completion.steps(
+                        slot.free, slot.eta, rows=self._shapes[name].rows
+                    )
+                )
             else:
                 self.steps.append(_let(slot.eta, _var(slot.free)))
         else:
@@ -1352,13 +1417,22 @@ class KernelEmission:
                 self.steps.append(_let(slot.eta, value))
         if slot.row_binder is not None:
             row = _var(slot.row_binder)
+            value = self._shapes[name].at(slot.eta, row)
+            if slot.link is not None:
+                if slot.link.intermediates:
+                    raise ValueError(
+                        f"parameter {name!r} is bound at every row through the "
+                        f"link {slot.link.name!r}, whose intermediate bindings "
+                        "have no row form"
+                    )
+                value = _bind(
+                    slot.link.inverse_expr.format(eta="eta", name=slot.name),
+                    eta=value,
+                )
             self.steps.append(
                 _let(
                     slot.name,
-                    _factor(
-                        ((slot.row_binder, self.kernel.row_axis),),
-                        body=self._shapes[name].at(slot.eta, row),
-                    ),
+                    _factor(((slot.row_binder, self.kernel.row_axis),), body=value),
                 )
             )
             self._shapes[name] = ValueShape(rows=True)

@@ -970,10 +970,13 @@ def family_kernel(
     Returns
     -------
     tuple[ResponseKernel, dict[str, ParameterSource]]
-        The kernel and the source of each slot a source feeds. A mixture's
-        kernel emits its components as nested blocks and has no slot.
+        The kernel and the source of each slot a source feeds. A family
+        with a kernel law takes the law's kernel; a mixture's kernel emits
+        its components as nested blocks and has no slot.
     """
     family = inputs.family
+    if family.kernel_law is not None:
+        return family.kernel_law.kernel(inputs, formula)
     if family.mixture is not None:
         return mixture_kernel(inputs, formula), {}
     location = inputs.predictor("")
