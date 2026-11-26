@@ -7,8 +7,8 @@ from fractions import Fraction
 from functools import lru_cache, partial
 
 import torch
-from quivers.dsl.compiler.deductions import BASE_WEIGHT_KEY
 
+from quivers.dsl.compiler.deductions import BASE_WEIGHT_KEY
 from quivers.qiec.contracts import (
     ContractField,
     ContractNotMet,
@@ -144,7 +144,7 @@ def check_lexical(semiring: str) -> None:
                 "G.rule.lift:": logarithm(LIFT),
             },
         ).weight
-        assert isinstance(value, (bool, int, float))
+        assert isinstance(value, torch.Tensor) and value.dim() == 0
         compare_number(
             float(value),
             lexical_reference(sentence, semiring),
@@ -229,7 +229,7 @@ def check_nonlexical(semiring: str) -> None:
         },
         fuel=200_000,
     ).weight
-    assert isinstance(value, (bool, int, float))
+    assert isinstance(value, torch.Tensor) and value.dim() == 0
     compare_number(
         float(value),
         wanted,
@@ -257,7 +257,7 @@ def check_boolean_cycle(name: str) -> None:
         ).weight
     else:
         value = run_deduction(module, "M", tokens=["a"]).weight
-    assert isinstance(value, bool)
+    assert isinstance(value, torch.Tensor) and value.dtype == torch.bool
     compare_number(
         float(value), 1, Accuracy(domain="linear", operations=1), f"machine {name}"
     )
@@ -368,7 +368,11 @@ def _claimed(value: object, what: str) -> Mismatch:
         form, infinite for a value that is not a number.
     """
     exact = logarithm(closed_forms.geometric(Fraction(1, 2)))
-    deviation = abs(value - exact) if isinstance(value, float) else math.inf
+    deviation = (
+        abs(float(value) - exact)
+        if isinstance(value, torch.Tensor) and value.is_floating_point()
+        else math.inf
+    )
     return Mismatch("value", deviation, f"{what} returned {value!r} as its weight")
 
 
@@ -402,11 +406,12 @@ def check_residual(name: str) -> None:
         tolerance
     ):
         raise Mismatch("refusal", math.inf, f"machine {name} reported {stop!r}")
-    assert isinstance(held.value, float)
+    assert isinstance(held.value, torch.Tensor) and held.value.dim() == 0
+    iterate = float(held.value)
     compare_number(
-        held.value,
+        iterate,
         # The stopped iterate is below the least fixed point.
-        min(held.value, logarithm(closed_forms.geometric(Fraction(1, 2)))),
+        min(iterate, logarithm(closed_forms.geometric(Fraction(1, 2)))),
         Accuracy(domain="log", operations=1),
         f"machine {name} iterate below the closed form",
     )
@@ -435,9 +440,9 @@ def check_rounded_agreement(name: str) -> None:
     ).weight
     if not isinstance(held, Unestablished):
         raise _claimed(held, f"machine {name} without a tolerance")
-    assert isinstance(held.value, float)
+    assert isinstance(held.value, torch.Tensor) and held.value.dim() == 0
     compare_number(
-        held.value,
+        float(held.value),
         logarithm(closed_forms.geometric(ROUNDED_TURN)),
         Accuracy(domain="log", operations=ROUNDINGS, magnitude=1.0),
         f"machine {name} stagnated iterate",

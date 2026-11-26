@@ -37,7 +37,8 @@ from quivers.core.elimination import plan_contraction, run_contraction
 from quivers.core.wiring import EinsumWiring
 from quivers.effects import collapse
 from quivers.inference import trace
-from quivers.qiec.program_runtime import run_deduction
+from quivers.continuous.tensor_backend import TensorBackend
+from quivers.qiec.program_runtime import run_deduction, run_program
 from quivers.stochastic._kleene import kleene_star
 from quivers.stochastic.agenda import InferenceRule, run_agenda
 from quivers.stochastic.recursion import solve_polynomial
@@ -140,18 +141,10 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         "Q2": ("linear-semiring-reads-logarithms",),
         "Q10": ("linear-semiring-reads-logarithms",),
     },
-    "machine-lexical": {
-        "Q1g": ("machine-values-are-numbers",),
-        "Q24": ("module-traversed-per-run",),
-    },
-    "machine-nonlexical": {
-        "Q1g": ("machine-values-are-numbers",),
-        "Q24": ("module-traversed-per-run",),
-    },
-    "machine-chained": {
-        "Q1g": ("machine-values-are-numbers",),
-        "Q24": ("module-traversed-per-run",),
-    },
+    "machine-lexical": {"Q24": ("module-traversed-per-run",)},
+    "machine-nonlexical": {"Q24": ("module-traversed-per-run",)},
+    "machine-chained": {"Q24": ("module-traversed-per-run",)},
+    "machine-program": {"Q24": ("module-traversed-per-run",)},
     "einsum-wiring": {
         "Q6": (
             "certain-entry-clamped",
@@ -336,6 +329,13 @@ ENTRIES: dict[str, Entry] = {
         "M",
         tokens=value,  # type: ignore[arg-type]
         fuel=5000,
+    ),
+    "machine-program": lambda value: run_program(
+        machine.module_of("recursive"),
+        "recursive",
+        data={"y": value},
+        sites={"t": value},
+        distributions=TensorBackend(),
     ),
     "kleene-star": lambda value: kleene_star(value, LOG_PROB),  # type: ignore[arg-type]
     "kleene-star-trace": _trace,

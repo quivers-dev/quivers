@@ -461,12 +461,54 @@ def _number(
             return value
         return value.to(dtype=dtype, device=domain.torch_device)
     if not _host_entries(value, kind):
-        return value
+        stacked = _stacked_entries(value, kind, domain)
+        return value if stacked is None else stacked
     tensor = torch.tensor(value, dtype=dtype, device=domain.torch_device)
     shape = static_shape(type_)
     if shape is not None and tensor.numel() == 0 and len(shape) > tensor.dim():
         tensor = tensor.reshape(shape)
     return tensor
+
+
+def _stacked_entries(
+    value: object, kind: NumberKind, domain: NumberDomain
+) -> torch.Tensor | None:
+    """Nested sequences whose leaves are tensors or numbers, stacked.
+
+    A tensor given as a sequence of tensors (the weights of several
+    axioms, each a leaf of its own) keeps every entry's gradient.
+
+    Parameters
+    ----------
+    value : object
+        Nested tuples or lists.
+    kind : NumberKind
+        The kind of number.
+    domain : NumberDomain
+        The run's numbers.
+
+    Returns
+    -------
+    torch.Tensor | None
+        The stacked tensor, or ``None`` when an entry is neither a number
+        of the kind nor a tensor admitting it, or the entries differ in
+        shape.
+    """
+    if isinstance(value, torch.Tensor):
+        if not _kind_admits(kind, value.dtype):
+            return None
+        return value.to(dtype=domain.dtype(kind), device=domain.torch_device)
+    if _host_admits(kind, value):
+        return domain.number(kind, value)  # type: ignore[arg-type]
+    if not isinstance(value, tuple | list) or not value:
+        return None
+    entries = [_stacked_entries(item, kind, domain) for item in value]
+    if any(entry is None for entry in entries):
+        return None
+    try:
+        return torch.stack([entry for entry in entries if entry is not None])
+    except RuntimeError:
+        return None
 
 
 def host_value(value: object) -> object:

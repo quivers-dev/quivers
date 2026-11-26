@@ -39,7 +39,8 @@ from quivers.inference import (
     trace,
 )
 from quivers.inference.mcmc import PotentialFn
-from quivers.qiec.program_runtime import deduction_item, run_deduction
+from quivers.continuous.tensor_backend import TensorBackend
+from quivers.qiec.program_runtime import deduction_item, run_deduction, run_program
 from quivers.stochastic.agenda import ChartView
 from quivers.stochastic.semiring import LOG_PROB
 from tests.evidence.checks import closure, consumers, contraction, deduction
@@ -130,19 +131,20 @@ def _machine_lexical() -> Result:
     Returns
     -------
     Result
-        The weight.
+        The weight and its gradients in the rule weights.
     """
+    leaves = [
+        torch.tensor(logarithm(weight), dtype=torch.float64, requires_grad=True)
+        for weight in (machine.JOIN, machine.LIFT)
+    ]
     weight = run_deduction(
         machine.module_of("lexical", SEMIRING="LogProb"),
         "G",
         tokens=["a", "b"],
-        parameters={
-            "G.rule.join:": logarithm(machine.JOIN),
-            "G.rule.lift:": logarithm(machine.LIFT),
-        },
+        parameters={"G.rule.join:": leaves[0], "G.rule.lift:": leaves[1]},
     ).weight
-    assert isinstance(weight, float)
-    return _number(weight)
+    assert isinstance(weight, torch.Tensor)
+    return with_gradients(weight, leaves)
 
 
 def _machine_nonlexical() -> Result:
@@ -151,22 +153,24 @@ def _machine_nonlexical() -> Result:
     Returns
     -------
     Result
-        The weight.
+        The weight and its gradients in the rule and axiom weights.
     """
     module = machine.module_of("nonlexical", SEMIRING="LogProb")
+    rules = {
+        name: torch.tensor(logarithm(value), dtype=torch.float64, requires_grad=True)
+        for name, value in machine.NONLEXICAL_WEIGHTS.items()
+    }
+    axiom = torch.tensor(-0.5, dtype=torch.float64, requires_grad=True)
     weight = run_deduction(
         module,
         "W",
         axioms=[deduction_item(module, "W", "A")],
-        axiom_weights=[-0.5],
-        parameters={
-            f"W.rule.{name}:": logarithm(value)
-            for name, value in machine.NONLEXICAL_WEIGHTS.items()
-        },
+        axiom_weights=[axiom],
+        parameters={f"W.rule.{name}:": leaf for name, leaf in rules.items()},
         fuel=200_000,
     ).weight
-    assert isinstance(weight, float)
-    return _number(weight)
+    assert isinstance(weight, torch.Tensor)
+    return with_gradients(weight, [*rules.values(), axiom])
 
 
 def _machine_chained() -> Result:
@@ -182,8 +186,28 @@ def _machine_chained() -> Result:
         "M",
         tokens=["a"],
     ).weight
-    assert isinstance(weight, bool)
-    return _number(weight)
+    assert isinstance(weight, torch.Tensor) and weight.dtype == torch.bool
+    return _number(bool(weight))
+
+
+def _machine_program() -> Result:
+    """Score a program that calls a recursive computation on the machine.
+
+    Returns
+    -------
+    Result
+        The log joint and its gradients in the site and the datum.
+    """
+    t = torch.tensor(0.3, dtype=torch.float64, requires_grad=True)
+    y = torch.tensor(0.5, dtype=torch.float64, requires_grad=True)
+    run = run_program(
+        machine.module_of("recursive"),
+        "recursive",
+        data={"y": y},
+        sites={"t": t},
+        distributions=TensorBackend(),
+    )
+    return with_gradients(run.log_joint, [t, y])
 
 
 def _star() -> Result:
@@ -494,6 +518,7 @@ RUNS: dict[str, Run] = {
     "machine-lexical": _machine_lexical,
     "machine-nonlexical": _machine_nonlexical,
     "machine-chained": _machine_chained,
+    "machine-program": _machine_program,
     "kleene-star": _star,
     "kleene-star-trace": _trace,
     "einsum-wiring": _wiring,
