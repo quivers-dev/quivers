@@ -13,6 +13,7 @@ from collections.abc import Collection, Iterable, Mapping
 from typing import TypeVar, cast
 
 import didactic.api as dx
+import numpy as np
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
@@ -33,6 +34,9 @@ from quivers.dsl.program_templates import (
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._modifiers import response_columns
+from quivers.formulas._residual_law import ResidualLaw
+from quivers.formulas.formula import FixedColumn, Formula
 
 __all__: list[str] = []
 
@@ -137,6 +141,87 @@ class Namespace(ValueModel):
             The prefix in the model.
         """
         return self.prefix if not value else self.name(value)
+
+
+class ResponseColumn(ValueModel):
+    """One column of a response term that a response program reads.
+
+    Parameters
+    ----------
+    role : str
+        Role of the column (``weights``, ``censoring``, ``trials``, ...).
+    column : FixedColumn
+        Checked values and input name.
+    """
+
+    role: str
+    column: FixedColumn = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+
+class ResponseData(ValueModel):
+    """The rows and recorded values of one response, without any predictor.
+
+    Parameters
+    ----------
+    name : str
+        Response column.
+    values : np.ndarray
+        Response values, NaN where a value is not recorded.
+    recorded : np.ndarray
+        Boolean, one entry per row: whether the row's value is recorded.
+    columns : tuple[ResponseColumn, ...]
+        Columns of the response terms the program reads, in input order.
+    """
+
+    name: str
+    values: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    recorded: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    columns: tuple[ResponseColumn, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    def column_items(self) -> tuple[tuple[str, FixedColumn], ...]:
+        """Return the role and column of each input.
+
+        Returns
+        -------
+        tuple[tuple[str, FixedColumn], ...]
+            The columns in input order.
+        """
+        return tuple((item.role, item.column) for item in self.columns)
+
+
+def response_data(formula: Formula, residual: ResidualLaw | None) -> ResponseData:
+    """Read the response data of a formula.
+
+    Parameters
+    ----------
+    formula : Formula
+        Evaluated formula with the response and its terms.
+    residual : ResidualLaw or None
+        Residual law correlated across the rows, which may take response
+        columns into its covariance.
+
+    Returns
+    -------
+    ResponseData
+        Values, recorded rows, and the columns the program reads.
+    """
+    values = np.asarray(formula.response_values)
+    recorded: np.ndarray = (
+        np.asarray(~np.isnan(values).reshape(len(values), -1).any(axis=1))
+        if values.dtype.kind == "f"
+        else np.ones(len(values), dtype=bool)
+    )
+    return ResponseData(
+        name=formula.response_name,
+        values=values,
+        recorded=recorded,
+        columns=tuple(
+            ResponseColumn(role=role, column=column)
+            for role, column in response_columns(formula.modifiers, residual)
+        ),
+    )
 
 
 class RenamedProgram(ValueModel):

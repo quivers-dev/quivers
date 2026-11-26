@@ -139,6 +139,7 @@ from quivers.formulas._group_covariance import (
     GroupCovariance,
     GroupCovarianceBasis,
 )
+from quivers.formulas._blocks import ResponseData, response_data
 from quivers.formulas._ast import (
     _let,
     _var,
@@ -1377,7 +1378,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise ValueError(
                 "trials requires a response family with finite trial counts"
             )
-        reserved = {column.qvr_name for _, column in formula.modifiers.columns()}
+        reserved = {
+            column.qvr_name for _, column in self.response_data(formula).column_items()
+        }
         if formula.modifiers.decision is not None:
             reserved.add("formula_response")
         if formula.modifiers.standard_error is not None:
@@ -1801,6 +1804,21 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 column.validate_rows("Resp", len(predictor.response_values))
         return tuple(columns)
 
+    def response_data(self, formula: Formula) -> ResponseData:
+        """Return the response data of a formula.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response and its terms.
+
+        Returns
+        -------
+        ResponseData
+            Values, recorded rows, and the columns the program reads.
+        """
+        return response_data(formula, self._residual)
+
     def fixed_column_observations(self, formula: Formula) -> dict[str, torch.Tensor]:
         """Bind retained covariates, offsets, and response likelihood weights.
 
@@ -1834,7 +1852,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             obs["formula_decision"] = torch.as_tensor(
                 formula.modifiers.decision.data.copy(), dtype=torch.bool
             )
-        for role, column in formula.modifiers.columns():
+        for role, column in self.response_data(formula).column_items():
             if role not in {"weights", "decision"}:
                 obs[column.qvr_name] = torch.as_tensor(column.data.copy())
         if formula.modifiers.threshold_groups is not None and threshold_kinds(
@@ -3367,7 +3385,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for column in data
         )
         existing = {parameter.name for parameter in parameters}
-        for role, column in formula.modifiers.columns():
+        for role, column in self.response_data(formula).column_items():
             if column.qvr_name in existing:
                 continue
             carrier = (
@@ -3566,7 +3584,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     - {column.name for column in term.column_names()}
                 )
             ),
-            *(column.qvr_name for _, column in formula.modifiers.columns()),
+            *(
+                column.qvr_name
+                for _, column in self.response_data(formula).column_items()
+            ),
             *(
                 f"{_qvr_name(group)}_idx"
                 for _, _, predictor in self._predictor_items(formula)

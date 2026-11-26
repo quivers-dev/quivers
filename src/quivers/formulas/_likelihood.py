@@ -10,6 +10,7 @@ from narwhals.typing import IntoDataFrame
 import numpy as np
 import torch
 
+from quivers.formulas._modifiers import response_columns
 from quivers.formulas._autocor import AutocorMatrix
 from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._prediction import (
@@ -191,7 +192,7 @@ def prepare_likelihood(
             column.qvr_name: torch.as_tensor(
                 column.data.copy(), dtype=torch.bool if role == "decision" else None
             )
-            for role, column in modifiers.columns()
+            for role, column in response_columns(modifiers, fit.residual)
             if role != "trials"
         }
     )

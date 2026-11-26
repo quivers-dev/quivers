@@ -509,6 +509,20 @@ class ResidualLaw(ValueModel):
         return self.term.kind == "unstr"
 
     @property
+    def absorbed_roles(self) -> frozenset[str]:
+        """Response columns the law takes into its covariance.
+
+        A time-series covariance takes the squared known errors on its
+        diagonal, so the program reads no error column.
+
+        Returns
+        -------
+        frozenset[str]
+            ``{"standard_error"}`` with known errors; empty otherwise.
+        """
+        return frozenset({"standard_error"}) if self.se is not None else frozenset()
+
+    @property
     def factorized(self) -> bool:
         """Whether the rows are independent given the parameters.
 
@@ -1002,19 +1016,6 @@ def bind_autocor_terms(
             modifiers=formula.modifiers,
             caller=caller,
         )
-        if law.se is not None:
-            # The squared errors live in the residual layout, on the diagonal
-            # of each series covariance, so no scale role reaches the program.
-            formula = formula.with_(
-                modifiers=formula.modifiers.with_(
-                    standard_error=None,
-                    sources=tuple(
-                        (role, source)
-                        for role, source in formula.modifiers.sources
-                        if role not in {"standard_error", "se_sigma"}
-                    ),
-                )
-            )
     return law, bind_car_terms(terms, formula, data=data, data2=data2, caller=caller)
 
 

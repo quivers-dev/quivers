@@ -34,7 +34,7 @@ from quivers.formulas._observation import WEIGHTS, Observation
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._response_roles import event_option_columns
 from quivers.formulas.family import Family, families
-from quivers.formulas.formula import ResponseModifiers
+from quivers.formulas.formula import FixedColumn, ResponseModifiers
 
 __all__: list[str] = []
 
@@ -235,9 +235,8 @@ class KnownError(Modifier):
     """``se()`` known standard errors of the responses.
 
     With ``sigma = FALSE`` the response scale is the known error; with
-    ``sigma = TRUE`` it is ``sqrt(se**2 + sigma**2)``. A time-series
-    covariance takes the squared errors on the diagonal of its covariance
-    instead.
+    ``sigma = TRUE`` it is ``sqrt(se**2 + sigma**2)``. Errors a time-series
+    covariance takes on its diagonal belong to the residual law instead.
 
     Parameters
     ----------
@@ -308,12 +307,8 @@ class KnownError(Modifier):
         Returns
         -------
         KernelArguments
-            The law over the total scale; unchanged when the residual law
-            takes the errors on its covariance.
+            The law over the total scale.
         """
-        residual = emission.inputs.residual
-        if residual is not None and residual.se is not None:
-            return arguments
         scale = emission.inputs.family.error_scale
         assert scale is not None
         steps: list[ProgramStep] = []
@@ -592,7 +587,9 @@ def response_modifiers(
     """List the modifiers of a response in the order of the fold.
 
     The order is exposure, known errors, residual law, recorded events,
-    weights.
+    weights. Known errors that the residual law takes on its covariance
+    (`ResidualLaw.absorbed_roles`) are part of the residual law and not a
+    modifier of their own.
 
     Parameters
     ----------
@@ -616,7 +613,12 @@ def response_modifiers(
             if modifiers.rate is not None
             else ()
         ),
-        *((KnownError(sigma=error.sigma),) if error is not None else ()),
+        *(
+            (KnownError(sigma=error.sigma),)
+            if error is not None
+            and (residual is None or "standard_error" not in residual.absorbed_roles)
+            else ()
+        ),
         *((ResidualDependence(),) if residual is not None else ()),
         *(
             (
@@ -646,3 +648,29 @@ def admit_modifiers(modifiers: tuple[Modifier, ...], admission: Admission) -> No
     """
     for modifier in sorted(modifiers, key=lambda item: item.admission_rank):
         modifier.admit(admission)
+
+
+def response_columns(
+    modifiers: ResponseModifiers, residual: ResidualLaw | None
+) -> tuple[tuple[str, FixedColumn], ...]:
+    """Name the response columns a response program reads.
+
+    Every column of the response terms is an input of the program except
+    those the residual law takes into its covariance.
+
+    Parameters
+    ----------
+    modifiers : ResponseModifiers
+        Response terms of the formula.
+    residual : ResidualLaw or None
+        Residual law correlated across the rows.
+
+    Returns
+    -------
+    tuple[tuple[str, FixedColumn], ...]
+        Role and column of each input, in canonical input order.
+    """
+    absorbed = frozenset() if residual is None else residual.absorbed_roles
+    return tuple(
+        (role, column) for role, column in modifiers.columns() if role not in absorbed
+    )
