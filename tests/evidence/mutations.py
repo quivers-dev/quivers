@@ -577,13 +577,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         defect_class="omitted alternative",
         provenance=(
             "a rule whose item is a bare variable is instantiated at the first "
-            "judgment form only, as if the variable named that form"
+            "judgment form only, the term form, as if every item were a term"
         ),
         target=f"{PRESENTATION}:_instances",
         rewrites=(
             Rewrite(
-                old="choices[bare.name] = forms\n",
-                new="choices[bare.name] = forms[:1]\n",
+                old="[TERM_ITEM] if bare.name in variables else [TERM_ITEM, *positioned]",
+                new="[TERM_ITEM]",
             ),
         ),
         rejected_by=("presented/bare_items",),

@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Mapping
+
+import torch
 
 from quivers.dsl.ast_nodes import DeductionDecl
 from quivers.dsl.compiler._deduction_presentation import (
+    TERM_ITEM,
     DeductionPresentation,
     deduction_presentation,
 )
@@ -37,6 +41,11 @@ from quivers.qiec.rules import (
     check_derivation,
     closed_values,
 )
+from quivers.dsl.compiler._deduction_terms import atom_term
+from quivers.qiec.evaluator import RuntimeConstructor
+from quivers.stochastic.agenda import InferenceRule, run_agenda
+from quivers.stochastic.semiring import BOOLEAN
+from quivers.qiec.module import QiecModule
 from quivers.qiec.serialization import SerializationError, dumps, loads
 from quivers.stochastic.categories import CategorySystem
 from quivers.stochastic.schema import EVALUATION, schema_presentation
@@ -44,7 +53,13 @@ from tests.evidence.checks._registry import add
 from tests.evidence.checks.machine import SENTENCES, module_of, parses
 from tests.evidence.compare import Mismatch
 from tests.evidence.oracles import derivations
-from tests.evidence.oracles.derivations import RuleRow, Term, Tree, Variable
+from tests.evidence.oracles.derivations import (
+    AxiomRow,
+    RuleRow,
+    Term,
+    Tree,
+    Variable,
+)
 from tests.evidence.sources import SOURCES, deduction, program
 
 LEXICON = (("a", "S"), ("b", "V"), ("a", "V"))
@@ -346,15 +361,22 @@ def check_schema_presentation() -> None:
 
 
 BARE_RULES: tuple[RuleRow, ...] = (
-    ("ab", ("A",), "B", "ab"),
+    ("ab", (("span", Variable("I"), Variable("J"), "A"),), "B", "ab"),
+    ("tag", (("span", Variable("I"), Variable("J"), "K"),), "K", "tag"),
     ("wrap", ("K",), ("p", "K"), "wrap"),
     ("keep", (Variable("X"), "K"), Variable("X"), "keep"),
     ("goal", ("B", ("p", "K")), "G", "goal"),
 )
 """The rules of the deduction with a bare variable, as plain rows."""
 
-BARE_AXIOMS: tuple[tuple[str, str], ...] = (("ax:A", "A"), ("ax:K", "K"))
-"""Its axioms: occurrence and atom."""
+BARE_AXIOMS: tuple[tuple[str, Term], ...] = (
+    ("0:A", ("span", 0, 1, "A")),
+    ("1:K", ("span", 1, 2, "K")),
+)
+"""Its lexical axioms for the sentence ``a k``: occurrence and span item."""
+
+BARE_WORDS = {"A": "a", "K": "k"}
+"""The word of each category of the lexicon."""
 
 BARE_HEIGHT = 3
 """The height the derivations are listed to: ``keep`` makes every item cyclic."""
@@ -373,10 +395,13 @@ def _oracle_item(presented: DeductionPresentation, item: Item) -> Term:
     Returns
     -------
     Term
-        An atom's name, or the head applied to the arguments.
+        The term of a term item, or the head applied to the arguments.
     """
     head = presented.families[item.family].name
-    return (head, *item.arguments) if item.arguments else head
+    if head == TERM_ITEM:
+        (term,) = item.arguments
+        return term
+    return (head, *item.arguments)
 
 
 def _bare_interpretation(presented: DeductionPresentation) -> HostInterpretation[Tree]:
@@ -432,8 +457,9 @@ def check_bare_items() -> None:
     ------
     Mismatch
         If the derivations of an item to the height differ from the
-        oracle's, by the number of trees that differ, or the machine does
-        not recognize the goal.
+        oracle's, by the number of trees that differ, or the agenda run
+        on the rules spelled from the presentation does not derive the
+        items the oracle derives.
     """
     text = SOURCES["bare"].replace("SEMIRING", "Boolean")
     decl = next(
@@ -442,24 +468,38 @@ def check_bare_items() -> None:
         if isinstance(statement, DeductionDecl)
     )
     presented = deduction_presentation(decl)
-    slots = {
-        presented.families[slot.judgment.family].name: slot
-        for slot in presented.presentation.axioms
-    }
+    (slot,) = (
+        item
+        for item in presented.presentation.axioms
+        if presented.families[item.judgment.family].name == "span"
+    )
+    names = [binder.name for binder in slot.telescope]
     axioms = [
         AxiomOccurrence(
-            slot=slots[item].id, occurrence=OccurrenceId.derive("bare", name)
+            slot=slot.id,
+            occurrence=OccurrenceId.derive("bare", name),
+            binding=tuple(zip(names, item[1:], strict=True)),
+            values=(BARE_WORDS[str(item[3])],),
         )
         for name, item in BARE_AXIOMS
+        if isinstance(item, tuple)
     ]
     reference = ReferenceInterpretation(presented.presentation, axioms)
     interpretation = _bare_interpretation(presented)
     family = {form.name: identity for identity, form in presented.families.items()}
-    for goal in ("A", "B", "K", "G", ("p", "K")):
+    goals: tuple[Term, ...] = (
+        "B",
+        "K",
+        "G",
+        ("p", "K"),
+        ("span", 0, 1, "A"),
+        ("span", 1, 2, "K"),
+    )
+    for goal in goals:
         item = (
-            reference.item(family[goal], ())
-            if isinstance(goal, str)
-            else reference.item(family[goal[0]], goal[1:])
+            reference.item(family["span"], goal[1:])
+            if isinstance(goal, tuple) and goal[0] == "span"
+            else reference.item(family[TERM_ITEM], (goal,))
         )
         found = Counter(
             interpretation.fold(tree)
@@ -473,16 +513,192 @@ def check_bare_items() -> None:
             raise Mismatch(
                 "value", float(differ), f"{differ} derivations of {goal} differ"
             )
-    module = module_of("bare", SEMIRING="Boolean")
-    recognized = run_deduction(
-        module,
-        "I",
-        axioms=[deduction_item(module, "I", name) for _occurrence, name in BARE_AXIOMS],
-        axiom_weights=[True, True],
-        fuel=200_000,
-    ).weight
-    if recognized is not True:
-        raise Mismatch("value", math.inf, f"the machine gave {recognized!r} for G")
+    rules = [
+        InferenceRule(
+            name=item.rule.name,
+            premises=tuple(
+                presented.chart_pattern(premise.judgment)
+                for premise in item.rule.premises
+            ),
+            conclusion=presented.chart_pattern(item.rule.conclusion),
+        )
+        for item in presented.rules
+    ]
+    spelled = {"A": atom_term("A"), "K": atom_term("K")}
+    chart = run_agenda(
+        [
+            (
+                ("span", item[1], item[2], spelled[str(item[3])]),
+                torch.tensor(1.0, dtype=torch.float64),
+            )
+            for _name, item in BARE_AXIOMS
+            if isinstance(item, tuple)
+        ],
+        rules,
+        semiring=BOOLEAN,
+    ).chart
+    for goal in ("B", "K", "G"):
+        found = chart.get(atom_term(goal))
+        if found is None or not bool(found):
+            raise Mismatch("value", math.inf, f"the agenda does not derive {goal}")
+    wrapped = chart.get(("p", atom_term("K")))
+    if wrapped is None or not bool(wrapped):
+        raise Mismatch("value", math.inf, "the agenda does not derive p(K)")
+
+
+CATEGORIAL_SENTENCES: tuple[tuple[Term, ...], ...] = (
+    ("NP", ("bwd_slash", "NP", "S")),
+    (("fwd_slash", "S", "NP"), "NP"),
+    ("NP", ("bwd_slash", "NP", ("fwd_slash", "S", "NP")), "NP"),
+    (("fwd_slash", "S", "VP"), ("fwd_slash", "VP", "NP"), "NP"),
+    ("NP", "NP"),
+)
+"""Inputs of the categorial deduction, each a sequence of category terms,
+none of which derives an item from itself."""
+
+CATEGORIAL_RULES: tuple[RuleRow, ...] = (
+    (
+        "fwd_app",
+        (("fwd_slash", Variable("X"), Variable("Y")), Variable("Y")),
+        Variable("X"),
+        "fwd_app",
+    ),
+    (
+        "bwd_app",
+        (Variable("Y"), ("bwd_slash", Variable("Y"), Variable("X"))),
+        Variable("X"),
+        "bwd_app",
+    ),
+)
+"""Application in both directions, as written: ``X/Y, Y |- X`` and
+``Y, Y\\X |- X``."""
+
+
+def _category_item(module: QiecModule, category: Term) -> RuntimeConstructor:
+    """The machine's item of a category term.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module.
+    category : Term
+        An atom's name, or a slash applied to two categories.
+
+    Returns
+    -------
+    RuntimeConstructor
+        The item.
+    """
+    if isinstance(category, str):
+        return deduction_item(module, "CG", category)
+    assert isinstance(category, tuple)
+    head, *arguments = category
+    assert isinstance(head, str)
+    return deduction_item(
+        module, "CG", head, *(_category_item(module, item) for item in arguments)
+    )
+
+
+def check_categorial() -> None:
+    """Require a deduction over the terms of its signature to count derivations.
+
+    Every item is a category term, a bare variable is a category, and a
+    variable that is an item is the variable inside a slash.
+
+    Raises
+    ------
+    Mismatch
+        If the presentation's derivations of ``S`` are not the oracle's
+        trees, or the agenda or the machine counts another number.
+    """
+    text = SOURCES["categorial"].replace("SEMIRING", "Counting")
+    decl = next(
+        statement
+        for statement in parse(text).statements
+        if isinstance(statement, DeductionDecl)
+    )
+    presented = deduction_presentation(decl)
+    (slot,) = presented.presentation.axioms
+    (form,) = presented.presentation.judgments
+    module = module_of("categorial", SEMIRING="Counting")
+    for sentence in CATEGORIAL_SENTENCES:
+        rows: list[AxiomRow] = [
+            (f"w{index}", item) for index, item in enumerate(sentence)
+        ]
+        leaves = {OccurrenceId.derive("categorial", name): name for name, _ in rows}
+        reference = ReferenceInterpretation(
+            presented.presentation,
+            [
+                AxiomOccurrence(
+                    slot=slot.id,
+                    occurrence=identity,
+                    binding=(("x0", item),),
+                )
+                for identity, (_, item) in zip(leaves, rows, strict=True)
+            ],
+        )
+        goal = reference.item(form.id, ("S",))
+        found = Counter(
+            _categorial_tree(presented, leaves, tree)
+            for tree in reference.derivations(goal)
+        )
+        wanted = Counter(derivations.derivations(rows, CATEGORIAL_RULES, "S"))
+        if found != wanted:
+            differ = (found - wanted).total() + (wanted - found).total()
+            raise Mismatch(
+                "value", float(differ), f"{differ} derivations of {sentence} differ"
+            )
+        counted = run_deduction(
+            module,
+            "CG",
+            axioms=[_category_item(module, item) for item in sentence],
+            axiom_weights=[1] * len(sentence),
+            fuel=500_000,
+        ).weight
+        if counted != wanted.total():
+            raise Mismatch(
+                "value",
+                float(abs(int(counted) - wanted.total())),
+                f"the machine counts {counted} derivations of {sentence}",
+            )
+
+
+def _categorial_tree(
+    presented: DeductionPresentation,
+    leaves: Mapping[OccurrenceId, str],
+    node: Derivation,
+) -> Tree:
+    """A derivation of the categorial deduction in the oracle's tree form.
+
+    Parameters
+    ----------
+    presented : DeductionPresentation
+        The presentation.
+    leaves : Mapping of OccurrenceId to str
+        The name of each input occurrence.
+    node : Derivation
+        The derivation.
+
+    Returns
+    -------
+    Tree
+        Rule or occurrence name, item, weight name, children.
+    """
+    item = _oracle_item(presented, node.item)
+    if node.occurrence is not None:
+        name = leaves[node.occurrence]
+        return (name, item, name, ())
+    name = presented.presentation.constructors_by_id[node.constructor].name
+    return (
+        name,
+        item,
+        name,
+        tuple(
+            _categorial_tree(presented, leaves, child)
+            for child in node.premises
+            if isinstance(child, Derivation)
+        ),
+    )
 
 
 def _register() -> None:
@@ -490,7 +706,8 @@ def _register() -> None:
     add("presented/one_presentation", "machine-lexical", "Q24", check_one_presentation)
     add("presented/codec", "machine-lexical", "Q24", check_presentation_codec)
     add("presented/schema", "chart-parser", "Q24", check_schema_presentation)
-    add("presented/bare_items", "machine-nonlexical", "Q24", check_bare_items)
+    add("presented/bare_items", "agenda-fifo", "Q24", check_bare_items)
+    add("presented/categorial", "machine-nonlexical", "Q24", check_categorial)
 
 
 _register()

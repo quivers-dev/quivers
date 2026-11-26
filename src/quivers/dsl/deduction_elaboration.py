@@ -108,6 +108,7 @@ from quivers.dsl.compiler._deduction_productions import (
 )
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
 from quivers.dsl.compiler._deduction_presentation import (
+    TERM_ITEM,
     DeductionPresentation,
     DeductionPresentationError,
     DeductionRule,
@@ -2045,6 +2046,9 @@ class _DeductionElaboration:
         presented = system.presentation_cell[0]
         assert presented is not None
         head = presented.families[judgment.family].name
+        if head == TERM_ITEM:
+            (term,) = judgment.arguments
+            return self._term_pattern(term, system)
         if presented.forms[head].kind == "atom":
             self._note_atom(system, head)
             return _Atom(name=head)
