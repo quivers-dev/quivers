@@ -17,26 +17,23 @@ vectors rather than scalar auxiliaries.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Literal, Mapping
+from typing import Literal, Mapping
 
 import didactic.api as dx
 import numpy as np
+import pandas as pd
+import torch
 
 from quivers._splines import MSplineBasis
 from quivers.formulas._survival import BaselineSpec
 from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._family_registry import FamilyRegistry
-from quivers.formulas._kernel_law import KernelDatum, KernelLaw
+from quivers.dsl.ast_nodes import Module
+from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._kernel_law import KernelLaw
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec.families import DistributionFamily
 from quivers.qiec.families import family as semantic_family
-
-if TYPE_CHECKING:
-    import pandas as pd
-    import torch
-
-    from quivers.dsl.ast_nodes import Module
-    from quivers.family_catalog import FamilyCatalog
 
 
 class Binding(dx.Model):
@@ -1006,7 +1003,8 @@ class Family(ValueModel):
     def kernel_bindings(
         self,
         frame: pd.DataFrame,
-        data2: Mapping[str, KernelDatum] | None,
+        data2: Mapping[str, np.ndarray | pd.DataFrame | torch.Tensor | float | int]
+        | None,
     ) -> dict[str, torch.Tensor]:
         """Bind the data the family's kernel reads by name.
 
@@ -1014,7 +1012,7 @@ class Family(ValueModel):
         ----------
         frame : pandas.DataFrame
             The rows of the response, in row order.
-        data2 : Mapping[str, KernelDatum] or None
+        data2 : Mapping[str, numpy.ndarray or pandas.DataFrame or torch.Tensor or float or int] or None
             Values that are not indexed by the rows.
 
         Returns
