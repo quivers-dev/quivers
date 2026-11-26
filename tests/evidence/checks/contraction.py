@@ -25,6 +25,11 @@ from quivers.core.algebras import (
     StandardMVAlgebra,
     TropicalAlgebra,
 )
+from quivers.core.elimination import (
+    ELIMINATION_LAWS,
+    plan_contraction,
+    run_contraction,
+)
 from quivers.core.wiring import EinsumWiring
 from quivers.enriched.day_convolution import day_convolution
 from quivers.categorical.monoidal import CartesianProductMonoidal
@@ -747,6 +752,108 @@ def check_day_convolution() -> None:
         )
 
 
+def check_plan(network: str, rule: str) -> None:
+    """Compare the planned contraction with the sum over assignments.
+
+    The plan is made and run directly, without a wiring, so the engine is
+    checked as its own executor; its plan is elimination exactly for the
+    rules that establish the laws.
+
+    Parameters
+    ----------
+    network : str
+        The network.
+    rule : str
+        The rule's name.
+
+    Raises
+    ------
+    Mismatch
+        If the value differs, or the algorithm is not the one the laws
+        decide.
+    """
+    spec, sizes, tables, tensors = inputs_of(network, rule, zeros=True)
+    letters, output = spec.split("->")
+    algebra = RULES[rule]
+    plan = plan_contraction(algebra, letters.split(","), output, sizes)
+    wanted = (
+        "variable elimination"
+        if algebra.establishes(*ELIMINATION_LAWS)
+        else "written order"
+    )
+    if plan.algorithm != wanted:
+        raise Mismatch("value", math.inf, f"{rule} {network}: {plan.algorithm}")
+    value, _ = run_contraction(plan, algebra, tensors)
+    compare_tensor(
+        value,
+        tensor(rule, output, sizes, reference(rule, spec, sizes, tables)),
+        accuracy(network, rule),
+        f"plan {rule} {network}",
+    )
+
+
+def check_plan_gradient(network: str) -> None:
+    """Compare the planned contraction's gradient at exact zeros with the oracle's.
+
+    Parameters
+    ----------
+    network : str
+        The network.
+    """
+    spec, sizes, tables, tensors = inputs_of(network, "real", zeros=True)
+    letters, output = spec.split("->")
+    names = letters.split(",")
+    plan = plan_contraction(RULES["real"], names, output, sizes)
+    leaves = [value.requires_grad_() for value in tensors]
+    total = run_contraction(plan, RULES["real"], leaves)[0].sum()
+    found = torch.autograd.grad(total, leaves, allow_unused=True)
+    gradients: dict[str, torch.Tensor | None] = {}
+    wanted: dict[str, Fraction] = {}
+    for position, (spec_letters, entries) in enumerate(zip(names, tables, strict=True)):
+        gradient = found[position]
+        for key in entries:
+            label = f"{position}{spec_letters}{key}"
+            gradients[label] = None if gradient is None else gradient[key]
+            unit: Table = {other: Fraction(int(other == key)) for other in entries}
+            changed = [*tables[:position], unit, *tables[position + 1 :]]
+            wanted[label] = sum(
+                exact.contraction(
+                    names, "", sizes, changed, Fraction(0), Fraction(1)
+                ).values(),
+                Fraction(0),
+            )
+    compare_gradients(
+        gradients,
+        wanted,
+        Accuracy(domain="linear", operations=5 * accuracy(network, "real").operations),
+        f"plan gradient {network}",
+    )
+
+
+def check_plan_refusals() -> None:
+    """Require a malformed plan to be refused by name.
+
+    Raises
+    ------
+    Mismatch
+        If one is admitted or the reason differs.
+    """
+    cases = (
+        ((), "", {}, "a contraction has at least one input"),
+        (("ii",), "i", {"i": 2}, "input 0 repeats a letter of 'ii'"),
+        (("ij",), "k", {"i": 2, "j": 2}, "output letter 'k' is in no input"),
+        (("ij",), "i", {"i": 2}, "letter 'j' has no extent of at least zero"),
+    )
+    for inputs, output, extents, wanted in cases:
+        try:
+            plan_contraction(RULES["real"], inputs, output, extents)
+        except ValueError as refused:
+            if str(refused) != wanted:
+                raise Mismatch("refusal", math.inf, str(refused)) from refused
+            continue
+        raise Mismatch("refusal", math.inf, f"{inputs} -> {output} was planned")
+
+
 class _LeftProjection(CompositionRule):
     """A rule whose product is its first factor and whose join is the sum."""
 
@@ -821,6 +928,22 @@ def _register() -> None:
     add("contraction/chain-peak", row, "Q6", check_chain_peak)
     add("contraction/counts-measured", row, "Q6", check_counts_are_measured)
     add("contraction/day-convolution", row, "Q6", check_day_convolution)
+    for rule in RULES:
+        for network in NETWORKS:
+            add(
+                f"contraction-plan/value/{rule}/{network}",
+                "contraction-plan",
+                "Q6",
+                partial(check_plan, network, rule),
+            )
+    for network in NETWORKS:
+        add(
+            f"contraction-plan/gradient/{network}",
+            "contraction-plan",
+            "Q1g",
+            partial(check_plan_gradient, network),
+        )
+    add("contraction-plan/refusals", "contraction-plan", "Q6", check_plan_refusals)
     add("contraction/impossible_row", row, "Q1g", check_impossible_row)
     add("contraction/refuses_diagonal", row, "Q6", check_refuses_diagonal)
 

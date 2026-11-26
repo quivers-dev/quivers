@@ -19,6 +19,7 @@ from quivers.continuous.scan import ScanMorphism
 from quivers.continuous.spaces import Euclidean, ProductSpace
 from quivers.core.morphisms import observed
 from quivers.core.objects import CoproductSet, FinSet
+from quivers.core.elimination import plan_contraction, run_contraction
 from quivers.core.wiring import EinsumWiring
 from quivers.effects import collapse
 from quivers.effects.replay import replay
@@ -226,6 +227,23 @@ def _wiring() -> Result:
     spec, _, _, tensors = contraction.inputs_of("chain", "logprob", zeros=False)
     leaves = [value.requires_grad_() for value in tensors]
     value = EinsumWiring(contraction.RULES["logprob"], spec).apply(*leaves)
+    return with_gradients(value, leaves)
+
+
+def _contraction_plan() -> Result:
+    """Plan and run a line of matrices without a wiring.
+
+    Returns
+    -------
+    Result
+        The contraction and its gradients.
+    """
+    spec, sizes, _, tensors = contraction.inputs_of("chain", "logprob", zeros=False)
+    letters, output = spec.split("->")
+    algebra = contraction.RULES["logprob"]
+    plan = plan_contraction(algebra, letters.split(","), output, sizes)
+    leaves = [value.requires_grad_() for value in tensors]
+    value, _ = run_contraction(plan, algebra, leaves)
     return with_gradients(value, leaves)
 
 
@@ -478,6 +496,7 @@ RUNS: dict[str, Run] = {
     "kleene-star": _star,
     "kleene-star-trace": _trace,
     "einsum-wiring": _wiring,
+    "contraction-plan": _contraction_plan,
     "chart-parser": _parser,
     "inside": _inside,
     "marginalize-grouped": _mixture("grouped"),

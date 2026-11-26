@@ -33,6 +33,7 @@ from quivers.continuous.scan import ScanMorphism
 from quivers.continuous.spaces import Euclidean, ProductSpace
 from quivers.core.algebras import MarkovAlgebra, RealAlgebra
 from quivers.core.objects import FinSet
+from quivers.core.elimination import plan_contraction, run_contraction
 from quivers.core.wiring import EinsumWiring
 from quivers.effects import collapse
 from quivers.inference import trace
@@ -349,6 +350,16 @@ ENTRIES: dict[str, Entry] = {
         value,  # type: ignore[arg-type]
         value,  # type: ignore[arg-type]
     ),
+    "contraction-plan": lambda value: run_contraction(
+        plan_contraction(
+            RealAlgebra(),
+            value,  # type: ignore[arg-type]
+            "",
+            {},
+        ),
+        RealAlgebra(),
+        (value,),  # type: ignore[arg-type]
+    )[0],
     "chart-parser": lambda value: span.chart_parser(LOG_PROB, {})(value),
     "inside": lambda value: span.inside_algorithm({})[0](value),
     "marginalize-grouped": lambda value: marginalize_grouped(

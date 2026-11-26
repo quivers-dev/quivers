@@ -364,11 +364,17 @@ def plan_contraction(
 
     Raises
     ------
+    TypeError
+        If an input or the output is not a string of letters.
     ValueError
         If there is no input, a letter repeats within an input or the
         output, an output letter is in no input, or a letter has no
         extent or a negative one.
     """
+    if not isinstance(output, str) or any(
+        not isinstance(letters, str) for letters in inputs
+    ):
+        raise TypeError("the inputs and output of a contraction are strings of letters")
     if not inputs:
         raise ValueError("a contraction has at least one input")
     universe = _universe(inputs)
