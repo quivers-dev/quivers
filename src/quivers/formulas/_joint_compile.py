@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
 from typing import TypeVar, cast
@@ -41,23 +41,43 @@ from quivers.dsl.program_templates import (
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._autocor import autocor_binding
-from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
+from quivers.formulas._ast import (
+    _add,
+    _factor,
+    _index,
+    _let,
+    _mul,
+    _var,
+    row_zero,
+    stack_rows,
+)
 from quivers.formulas._group_law import (
     GroupBlockLaw,
     IdentityCovariance,
+    KnownCovariance,
     LevelSite,
+    law_inputs,
     renamed_law,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_emission import draw_level, emit_group_block
-from quivers.formulas._group_plan import check_names, level_law, plan_joint_block
-from quivers.formulas._grouping_emission import (
-    law_observations,
-    law_runtime_parameters,
+from quivers.formulas._group_plan import (
+    block_covariance,
+    check_names,
+    level_law,
+    plan_joint_block,
 )
+from quivers.formulas._predictor import (
+    Predictor,
+    group_term,
+    slot_link,
+)
+from quivers.formulas._row_source import RowSource
+from quivers.formulas._term import OutputAxis, bind_inputs, declare_inputs
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
+    separate_components,
     build_prior_targets,
     ordinary_prior_step,
     order_prior_dependencies,
@@ -68,6 +88,7 @@ from quivers.formulas._priors import (
     PriorSpec,
     PriorTarget,
     normalize_priors,
+    component_rules,
     resolve_priors,
 )
 from quivers.formulas._response import response_tensor
@@ -105,6 +126,8 @@ class _ResponseEmission:
         Local binding names and their namespaced names.
     objects : Mapping[str, str]
         Local object names and their namespaced or shared names.
+    families : FamilyCatalog or None
+        Laws of the response and, under namespaced names, of its terms.
     """
 
     name: str
@@ -115,6 +138,7 @@ class _ResponseEmission:
     complement: FormulaData
     names: Mapping[str, str]
     objects: Mapping[str, str]
+    families: FamilyCatalog | None
 
 
 @dataclass(frozen=True)
@@ -159,7 +183,9 @@ class _JointEmission:
         return tuple(law.layout for law in self.group_laws)
 
 
-_LevelFactors = tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+type _ByLevels = dict[tuple[str, str | None], dict[str, str]]
+type _PriorWeights = dict[tuple[str, str | None], dict[str, float]]
+_LevelFactors = tuple[_ByLevels, _PriorWeights]
 
 
 def _declared_level_factors(components: _Components) -> _LevelFactors:
@@ -177,9 +203,9 @@ def _declared_level_factors(components: _Components) -> _LevelFactors:
 
     Returns
     -------
-    tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+    tuple
         The declared ``by`` level and the declared prior weight of each
-        labeled level, by grouping factor.
+        labeled level, by grouping factor and declaring column.
 
     Raises
     ------
@@ -187,31 +213,36 @@ def _declared_level_factors(components: _Components) -> _LevelFactors:
         If two declarations give one level of a grouping factor different
         ``by`` levels or different prior weights.
     """
-    by: dict[str, dict[str, str]] = {}
-    weights: dict[str, dict[str, float]] = {}
+    by: _ByLevels = {}
+    weights: _PriorWeights = {}
     for lens, formula in components.values():
         for _, _, predictor in lens._predictor_items(formula):
             for option in predictor.grouping.options:
                 group = option.group
                 labels = predictor.group_levels[group]
                 if option.by_levels:
+                    partition = by.setdefault((group, option.options.by), {})
                     for label, code in zip(labels, option.by_codes, strict=True):
                         value = option.by_levels[code]
-                        if by.setdefault(group, {}).setdefault(label, value) != value:
+                        if partition.setdefault(label, value) != value:
                             raise ValueError(
-                                f"gr({group}, by = ...): a by partition assigns "
-                                f"each level of {group!r} one by level, and the "
-                                f"responses give level {label!r} both "
-                                f"{by[group][label]!r} and {value!r}"
+                                f"gr({group}, by = {option.options.by}): a by "
+                                f"partition assigns each level of {group!r} one by "
+                                f"level, and the responses give level {label!r} both "
+                                f"{partition[label]!r} and {value!r}"
                             )
                 if option.prior_weights:
+                    declared = weights.setdefault(
+                        (group, option.options.prior_weight), {}
+                    )
                     for label, weight in zip(labels, option.prior_weights, strict=True):
-                        known = weights.setdefault(group, {}).setdefault(label, weight)
+                        known = declared.setdefault(label, weight)
                         if known != weight:
                             raise ValueError(
-                                f"gr({group}, pw = ...): a prior weight belongs to "
-                                f"a level of {group!r}, and the responses give "
-                                f"level {label!r} both {known!r} and {weight!r}"
+                                f"gr({group}, pw = {option.options.prior_weight}): a "
+                                f"prior weight belongs to a level of {group!r}, and "
+                                f"the responses give level {label!r} both {known!r} "
+                                f"and {weight!r}"
                             )
     return by, weights
 
@@ -227,9 +258,9 @@ def _recode(
         Response formula carrying its own group levels and codes.
     levels : Mapping[str, tuple[str, ...]]
         Joint levels for every group, a superset of each response's levels.
-    factors : tuple[dict[str, dict[str, str]], dict[str, dict[str, float]]]
+    factors : tuple
         The ``by`` level and the prior weight declared for each labeled
-        level, by grouping factor.
+        level, by grouping factor and declaring column.
 
     Returns
     -------
@@ -255,7 +286,7 @@ def _recode(
         group = option.group
         joint = levels[group]
         if option.by_levels:
-            declared = factors[0][group]
+            declared = factors[0][(group, option.options.by)]
             missing = [label for label in joint if label not in declared]
             if missing:
                 raise ValueError(
@@ -271,7 +302,7 @@ def _recode(
                 by_codes=tuple(position[declared[label]] for label in joint),
             )
         if option.prior_weights:
-            known = factors[1][group]
+            known = factors[1][(group, option.options.prior_weight)]
             missing = [label for label in joint if label not in known]
             if missing:
                 raise ValueError(
@@ -404,7 +435,7 @@ def _namespace(
     supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
     supplied_sites: Collection[str] = (),
     supplied_inputs: Mapping[str, LetExprNode] | None = None,
-    local_module: Callable[[str, Module], Module] | None = None,
+    rows: RowSource | None = None,
 ) -> _ResponseEmission:
     """Apply the existing program-template substitution to one emitted response.
 
@@ -428,9 +459,8 @@ def _namespace(
         from the joint program.
     supplied_inputs : Mapping[str, LetExprNode] or None
         Explicit expressions for response inputs over joint bindings.
-    local_module : Callable[[str, Module], Module] or None
-        Rewrite of the response's local module before namespacing, used by
-        prediction to resize the row axis and select varying effects.
+    rows : RowSource or None
+        Rows the response covers; None for its training rows.
 
     Returns
     -------
@@ -450,9 +480,8 @@ def _namespace(
         supplied_groups=supplied_groups,
         supplied_sites=supplied_sites,
         check=False,
+        rows=rows,
     )
-    if local_module is not None:
-        module = local_module(name, module)
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     prefix = "response_" + _qvr_name(name) + "__"
     objects = {
@@ -473,6 +502,7 @@ def _namespace(
     names = {value: prefix + value for value in variables - global_names}
     explicit_inputs = supplied_inputs or {}
     supplied_inputs = lens.symbolic_column_expressions(formula)
+    symbolic = set(supplied_inputs)
     for value, expression in explicit_inputs.items():
         if value in supplied_inputs and supplied_inputs[value] != expression:
             raise ValueError(
@@ -483,12 +513,29 @@ def _namespace(
     # Fixed columns may be inferred inputs of an ordinary emission, so use the
     # actual retained input metadata as well as explicit runtime parameters.
     known_inputs.update(lens.fixed_column_observations(formula))
-    unknown = set(supplied_inputs) - known_inputs
+    unknown = set(explicit_inputs) - known_inputs - symbolic
     if unknown:
         raise ValueError(f"unknown supplied response inputs: {sorted(unknown)!r}")
+    # A group-level coefficient the request leaves out reads no column.
+    supplied_inputs = {
+        value: expression
+        for value, expression in supplied_inputs.items()
+        if value in known_inputs
+    }
     for value in supplied_inputs:
         names.setdefault(value, prefix + value)
-    bindings = TemplateBindings(objects=objects, values={}, morphisms={})
+    # Two responses may draw from one law over different coordinates.
+    laws = lens.term_laws
+    morphisms = (
+        {}
+        if laws is None
+        else {record.name: prefix + record.name for record in laws.definitions}
+    )
+    families = lens._family.custom.catalog if lens._family.custom is not None else None
+    if laws is not None:
+        laws = laws.renamed(morphisms)
+        families = laws if families is None else families.with_catalog(laws)
+    bindings = TemplateBindings(objects=objects, values={}, morphisms=morphisms)
     parameters = tuple(
         parameter.with_(
             name=names.get(parameter.name, parameter.name),
@@ -552,6 +599,7 @@ def _namespace(
         complement,
         names,
         objects,
+        families,
     )
 
 
@@ -674,6 +722,12 @@ def _response_parts(
             target.with_(
                 site=response.names[target.site],
                 axes=tuple(response.objects.get(axis, axis) for axis in target.axes),
+                whole=None
+                if target.whole is None
+                else response.names.get(target.whole, target.whole),
+                partition_axis=None
+                if target.partition_axis is None
+                else response.objects.get(target.partition_axis, target.partition_axis),
                 response=name,
             )
             for target in response.lens.prior_targets
@@ -692,8 +746,8 @@ def _member_axis(
     formula: Formula,
     prefix: str,
     term: RandomTerm,
-) -> tuple[str, int] | None:
-    """Read an explicit response-component or ordinal-transition coordinate.
+) -> OutputAxis | None:
+    """Locate the coordinate axis of one member of a shared block.
 
     Parameters
     ----------
@@ -710,31 +764,15 @@ def _member_axis(
 
     Returns
     -------
-    tuple[str, int] or None
-        The namespaced coordinate axis and its width, or None for a scalar
-        member.
+    OutputAxis or None
+        The namespaced coordinate axis, or None for a scalar member.
     """
-    namespace = "response_" + _qvr_name(name) + "__"
-    if lens._family.response is not None and (
-        prefix == ""
-        or lens._family.component_scale is not None
-        and prefix == f"dpar_{lens._family.component_scale.name}_"
-    ):
-        labels = lens._component_labels(formula)
-        width = len(lens._family.response.coordinate_indices(labels))
-        axis = (
-            "FormulaCategoryLogit" if prefix == "" else prefix + "FormulaCategoryLogit"
-        )
-        return namespace + axis, width
-    if term.column is not None and term.column.category_specific:
-        count = lens._category_count(formula, family=lens._family.name) - 1
-        if (
-            lens._family.ordinal is not None
-            and lens._family.ordinal.kind == "hurdle_cumulative"
-        ):
-            count -= 1
-        return namespace + "FormulaCutpoint", count
-    return None
+    axis = lens._output_axes(formula).get(prefix)
+    if axis is None and term.category_specific:
+        axis = lens._transition_axis(formula)
+    if axis is None:
+        return None
+    return axis.with_(name="response_" + _qvr_name(name) + "__" + axis.name)
 
 
 def _validate_residual_rows(components: _Components) -> None:
@@ -929,42 +967,28 @@ def _correlated_residual(
             targets.append(original.with_(site=df, response=None))
         else:
             steps.append(_let(df, LetExprLiteral(value=float(fixed_nu))))
-    steps.append(
-        _let(
-            "formula_joint_zeros",
-            _factor((("row", row),), body=LetExprLiteral(value=0.0)),
-        )
-    )
-    for result, quantity in (
-        ("formula_joint_means_by_response", "mu"),
-        ("formula_joint_scales_by_response", elliptical.scale),
-    ):
+    rows, zero = ("row", row), "formula_joint_zeros"
+
+    def stacked(quantity: str) -> Iterator[tuple[int, LetExprNode]]:
         # Scalar-to-row broadcasting uses the ordinary typed binary operation;
         # nominal row ownership never depends on coincident axis cardinalities.
-        cases = tuple(
-            (
-                index,
-                _add(
-                    arguments_by_response[name][
-                        response.lens._family.native_parameter(quantity)
-                    ],
-                    _var("formula_joint_zeros"),
-                ),
-            )
-            for index, (name, response) in enumerate(responses.items())
-        )
-        steps.append(_let(result, _factor((("component", axis),), cases=cases)))
-    steps.append(
-        _let(
-            "formula_joint_mu",
-            _factor(
-                (("row", row), ("component", axis)),
-                body=_index(
-                    "formula_joint_means_by_response", _var("component"), _var("row")
-                ),
-            ),
-        )
+        for index, (name, response) in enumerate(responses.items()):
+            argument = response.lens._family.native_parameter(quantity)
+            yield index, _add(arguments_by_response[name][argument], _var(zero))
+
+    component = ("component", axis)
+    means, locations = stack_rows(
+        "formula_joint_mu",
+        stacked("mu"),
+        component,
+        stem="formula_joint_means_by_response",
+        row=rows,
     )
+    scales = _let(
+        "formula_joint_scales_by_response",
+        _factor((component,), cases=tuple(stacked(elliptical.scale))),
+    )
+    steps.extend((row_zero(zero, rows), means, scales, locations))
     steps.append(
         _let(
             "formula_joint_scale",
@@ -1026,9 +1050,8 @@ def _shared_groups(
     tuple[QiecValueParameter, ...],
     dict[str, torch.Tensor],
     dict[str, _GroupValues],
-    list[tuple[str, str, Formula]],
+    list[Predictor],
     dict[str, dict[str, str]],
-    dict[str, tuple[str, ...]],
 ]:
     """Emit one existing Gaussian block for each cross-response shared ID.
 
@@ -1044,8 +1067,7 @@ def _shared_groups(
     tuple
         The emitting lens, the grouping formula, object declarations, program
         steps, runtime parameters and their bound inputs, shared coefficients
-        for each response, namespaced predictors, their response scopes, and
-        their component labels.
+        for each response, namespaced predictors, and their response scopes.
     """
     blocks: dict[tuple[str, str], list[tuple[str, str, str, Formula, RandomTerm]]] = {}
     for name, (lens, formula) in components.items():
@@ -1073,14 +1095,13 @@ def _shared_groups(
     statements: list[Statement] = []
     steps: list[ProgramStep] = []
     scopes: dict[str, dict[str, str]] = {}
-    labels: dict[str, tuple[str, ...]] = {}
-    predictors: list[tuple[str, str, Formula]] = []
+    planned: dict[str, Predictor] = {}
     supplied: dict[str, _GroupValues] = {name: {} for name in components}
     for (group, identity), members in blocks.items():
         if len({item[0] for item in members}) < 2:
             continue
         actual: list[tuple[str, RandomTerm]] = []
-        axes: list[tuple[str, int] | None] = []
+        axes: list[OutputAxis | None] = []
         for name, parameter, prefix, predictor, term in members:
             lens, formula = components[name]
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
@@ -1088,21 +1109,26 @@ def _shared_groups(
             axis = _member_axis(name, lens, formula, prefix, term)
             axes.append(axis)
             if axis is not None:
-                emitter._append_finite_object(statements, *axis)
-            scopes[actual_prefix] = {
-                "response": name,
+                emitter._append_finite_object(statements, axis.name, axis.size)
+            role = (
                 "nlpar"
                 if lens._predictor_graph is not None
                 and parameter in lens._predictor_graph.leaves
-                else "dpar": parameter,
-            }
-            if lens._family.response is not None:
-                names = lens._component_labels(formula)
-                labels[actual_prefix] = tuple(
-                    names[index]
-                    for index in lens._family.response.coordinate_indices(names)
-                )
-            predictors.append((parameter, actual_prefix, predictor))
+                else "dpar"
+            )
+            scopes[actual_prefix] = {"response": name, role: parameter}
+            planned.setdefault(
+                actual_prefix,
+                Predictor(
+                    parameter=parameter,
+                    role=role,
+                    prefix=actual_prefix,
+                    link=slot_link(lens._family, parameter),
+                ),
+            )
+        matrix_name, matrix = block_covariance(
+            group, [term for _, term in actual], emitter._group_covariances
+        )
         law = plan_joint_block(
             group,
             "joint_shared_" + identity,
@@ -1112,16 +1138,36 @@ def _shared_groups(
                     actual, members, strict=True
                 )
             ],
-            axes,
-            basis=emitter._level_basis(group, grouping.group_levels)
-            if group in emitter._group_covariances
-            else None,
+            [None if axis is None else (axis.name, axis.size) for axis in axes],
+            covariance=IdentityCovariance()
+            if matrix is None
+            else KnownCovariance(
+                basis=matrix.basis(grouping.group_levels[group]), name=matrix_name
+            ),
             correlate=True,
+            components=1,
+            vectors={
+                actual_prefix
+                for (actual_prefix, _), axis in zip(actual, axes, strict=True)
+                if axis is not None
+            },
             parameterization=emitter._reparameterize,
         )
         values = emit_group_block(emitter, law, statements, steps)
-        for name, _parameter, prefix, _predictor, term in members:
+        for (name, _, prefix, predictor, term), axis in zip(members, axes, strict=True):
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
+            planned[actual_prefix] = planned[actual_prefix].with_(
+                terms=(
+                    *planned[actual_prefix].terms,
+                    group_term(
+                        predictor,
+                        actual_prefix,
+                        term,
+                        axis,
+                        {(actual_prefix, group, term.slope): law},
+                    ),
+                )
+            )
             supplied[name][(prefix, group, term.slope)] = values[
                 (actual_prefix, group, term.slope)
             ]
@@ -1130,7 +1176,7 @@ def _shared_groups(
     for lens, formula in components.values():
         for _, _, predictor in lens._predictor_items(formula):
             for term in predictor.random_terms:
-                option = predictor.grouping.option(term.group)
+                option = predictor.grouping.option(term.options)
                 if option is not None and option.options.student:
                     draw_level(
                         emitter,
@@ -1143,13 +1189,8 @@ def _shared_groups(
                         statements,
                         steps,
                     )
-    # The responses bind the row data of multi-membership factors.
-    inputs = law_observations(emitter.group_laws)
-    parameters = tuple(
-        parameter
-        for parameter in law_runtime_parameters(emitter.group_laws)
-        if parameter.name in inputs
-    )
+    inputs = bind_inputs(law_inputs(emitter.group_laws))
+    parameters = declare_inputs(law_inputs(emitter.group_laws))
     return (
         emitter,
         grouping,
@@ -1158,9 +1199,8 @@ def _shared_groups(
         parameters,
         inputs,
         supplied,
-        predictors,
+        list(planned.values()),
         scopes,
-        labels,
     )
 
 
@@ -1173,7 +1213,7 @@ def emit_joint(
     preamble: tuple[ProgramStep, ...] = (),
     external_inputs: tuple[QiecValueParameter, ...] = (),
     external_objects: tuple[ObjectDecl, ...] = (),
-    local_module: Callable[[str, Module], Module] | None = None,
+    rows: Mapping[str, RowSource] | None = None,
 ) -> _JointEmission:
     """Compose existing response emissions, shared groups, and one prior plan.
 
@@ -1196,8 +1236,8 @@ def emit_joint(
         Joint runtime parameters preceding every response parameter.
     external_objects : tuple[ObjectDecl, ...]
         Joint object declarations preceding every response object.
-    local_module : Callable[[str, Module], Module] or None
-        Rewrite applied to each response's local module before namespacing.
+    rows : Mapping[str, RowSource] or None
+        Rows each response covers; None for the training rows.
 
     Returns
     -------
@@ -1237,7 +1277,6 @@ def emit_joint(
         supplied,
         predictors,
         scopes,
-        labels,
     ) = _shared_groups(components, levels)
     global_steps = [*preamble, *global_steps]
     global_parameters = (*external_inputs, *global_parameters)
@@ -1255,7 +1294,7 @@ def emit_joint(
             supplied_groups=supplied[name],
             supplied_sites=emitter._drawn_sites,
             supplied_inputs=supplied_inputs.get(name),
-            local_module=local_module,
+            rows=(rows or {}).get(name),
         )
         for name, (lens, formula) in components.items()
     }
@@ -1264,36 +1303,88 @@ def emit_joint(
         emitter._append_finite_object(statements, _qvr_name(group), len(names))
     emitter._append_finite_object(statements, "FormulaJointUnit", 1)
     initial_objects = tuple(statements)
-    statements, steps, parameters, returned, targets, layouts = _response_parts(
-        responses,
-        initial_objects,
-        global_steps,
-        global_parameters,
-        emitter.group_laws,
-    )
-    global_module = Module(
-        statements=(
-            *statements,
-            ProgramDecl(
-                name="model",
-                params=None,
-                domain=TypeName(name="FormulaJointUnit"),
-                codomain=TypeName(name="FormulaJointUnit"),
-                draws=tuple(global_steps),
-                return_vars=(),
+    plan = normalize_priors(priors)
+
+    def shared_targets(
+        separated: Sequence[PriorTarget],
+    ) -> tuple[list[ProgramStep], tuple[PriorTarget, ...]]:
+        """Draw the shared group blocks, with some sites by component."""
+        module = separate_components(
+            Module(
+                statements=(
+                    *statements,
+                    ProgramDecl(
+                        name="model",
+                        params=None,
+                        domain=TypeName(name="FormulaJointUnit"),
+                        codomain=TypeName(name="FormulaJointUnit"),
+                        draws=tuple(global_steps),
+                        return_vars=(),
+                    ),
+                )
             ),
+            separated,
+            {},
         )
-    )
-    global_targets = build_prior_targets(
-        global_module,
-        grouping,
-        emitter._family,
-        predictors,
-        layouts,
-        draw=emitter._parse_prior,
-        predictor_scopes=scopes,
-        predictor_component_labels=labels,
-    )
+        targets = build_prior_targets(
+            module,
+            grouping,
+            emitter._family,
+            predictors,
+            layouts,
+            draw=emitter._parse_prior,
+            predictor_scopes=scopes,
+            separated=frozenset(target.site for target in separated),
+        )
+        program = next(
+            item for item in module.statements if isinstance(item, ProgramDecl)
+        )
+        return list(program.draws), targets
+
+    def parts() -> tuple[
+        list[Statement],
+        list[ProgramStep],
+        list[QiecValueParameter],
+        list[str],
+        list[PriorTarget],
+        list[GroupBlockLaw],
+    ]:
+        """Join the responses' programs."""
+        return _response_parts(
+            responses,
+            initial_objects,
+            global_steps,
+            global_parameters,
+            emitter.group_laws,
+        )
+
+    statements, steps, parameters, returned, targets, layouts = parts()
+    _, global_targets = shared_targets(())
+    separated = component_rules(plan, [*targets, *global_targets])
+    if separated:
+        sites = {target.site for target in separated}
+        for name, response in tuple(responses.items()):
+            local = frozenset(
+                local for local, site in response.names.items() if site in sites
+            )
+            if local:
+                lens = copy(response.lens)
+                lens._component_sites = lens._component_sites | local
+                responses[name] = _namespace(
+                    name,
+                    lens,
+                    response.formula,
+                    shared_objects=shared_objects,
+                    global_names=global_names,
+                    supplied_groups=supplied[name],
+                    supplied_sites=emitter._drawn_sites,
+                    supplied_inputs=supplied_inputs.get(name),
+                    rows=(rows or {}).get(name),
+                )
+        global_steps, global_targets = shared_targets(
+            [target for target in separated if target in global_targets]
+        )
+        statements, steps, parameters, returned, targets, layouts = parts()
     targets.extend(global_targets)
     program = ProgramDecl(
         name="model",
@@ -1311,7 +1402,6 @@ def emit_joint(
     module = Module(
         statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
     )
-    plan = normalize_priors(priors)
     if plan.rules:
         selected = resolve_priors(plan, targets)
         ordinary = {
@@ -1351,7 +1441,7 @@ def emit_joint(
                     supplied_groups=supplied[name],
                     supplied_sites=emitter._drawn_sites,
                     supplied_inputs=supplied_inputs.get(name),
-                    local_module=local_module,
+                    rows=(rows or {}).get(name),
                 )
         statements, steps, parameters, returned, _, layouts = _response_parts(
             responses,
@@ -1425,9 +1515,8 @@ def emit_joint(
     module = order_prior_dependencies(module)
     catalog = FamilyCatalog()
     for response in responses.values():
-        custom = response.lens._family.custom
-        if custom is not None:
-            catalog = catalog.with_catalog(custom.catalog)
+        if response.families is not None:
+            catalog = catalog.with_catalog(response.families)
     # Improper flat priors are compilation-local native laws.
     if improper_sites(module):
         catalog = catalog.with_catalog(FLAT_CATALOG)

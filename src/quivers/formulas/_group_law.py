@@ -35,9 +35,10 @@ from typing import Literal
 import didactic.api as dx
 import torch
 
-from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.formulas._group_covariance import GroupCovarianceBasis
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
+from quivers.formulas._term import InputDecl
 
 __all__: list[str] = []
 
@@ -60,9 +61,13 @@ class KnownCovariance(LevelCovariance):
     basis : GroupCovarianceBasis
         Projection from support coordinates to the physical levels and the
         factored support covariance.
+    name : str
+        Name of the matrix, which tells several covariances of one factor
+        apart; empty for the covariance given with the factor.
     """
 
     basis: GroupCovarianceBasis = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    name: str = ""
     kind: Literal["known"] = "known"
 
 
@@ -191,7 +196,20 @@ class GroupLevelLaw(ValueModel):
         str
             Finite axis name.
         """
-        return f"FormulaGroupSupport_{self.axis}"
+        return f"FormulaGroupSupport_{self._covariance_name}"
+
+    @property
+    def _covariance_name(self) -> str:
+        """Name the known level covariance in the program.
+
+        Returns
+        -------
+        str
+            The level axis and the name of the matrix.
+        """
+        covariance = self.covariance
+        name = covariance.name if isinstance(covariance, KnownCovariance) else ""
+        return f"{self.axis}_{name}" if name else self.axis
 
     def basis_input(self, matrix: BasisMatrix) -> str:
         """Name the runtime input holding one matrix of the support basis.
@@ -206,7 +224,7 @@ class GroupLevelLaw(ValueModel):
         str
             Runtime input name.
         """
-        return f"__formula_level_basis_{self.axis}_{matrix}"
+        return f"__formula_level_basis_{self._covariance_name}_{matrix}"
 
 
 class CoefficientCorrelation(dx.TaggedUnion, discriminator="kind"):
@@ -231,40 +249,34 @@ class IndependentCoordinates(CoefficientCorrelation):
 
 
 class LKJCorrelation(CoefficientCorrelation):
-    """One LKJ-distributed correlation shared by every grouping level.
+    """LKJ-distributed correlations between the coordinates of a block.
+
+    The coordinates divide into independent components, and each component of
+    each ``by`` level has one correlation. A block without components or a
+    ``by`` partition has one correlation over all of its coordinates.
 
     Parameters
     ----------
-    site : str
-        Cholesky-factor site.
+    factors : tuple[str, ...]
+        Cholesky-factor sites, with the components of each ``by`` level
+        consecutive.
+    axis : str
+        Axis of the coordinates that one factor correlates.
+    size : int
+        Number of those coordinates.
+    cell_axis : str or None
+        Axis over the factors; None for a single factor.
+    components : int
+        Number of independent components. The components of one coefficient
+        are consecutive coordinates of the block.
     """
 
-    site: str
+    factors: tuple[str, ...]
+    axis: str
+    size: int
+    cell_axis: str | None = None
+    components: int = 1
     kind: Literal["lkj"] = "lkj"
-
-    @property
-    def sites(self) -> tuple[str, ...]:
-        """Return the Cholesky-factor site.
-
-        Returns
-        -------
-        tuple[str, ...]
-            The one sample site.
-        """
-        return (self.site,)
-
-
-class ByLKJCorrelation(CoefficientCorrelation):
-    """One LKJ-distributed correlation per level of the ``by`` variable.
-
-    Parameters
-    ----------
-    by_sites : tuple[str, ...]
-        Cholesky-factor sites in ``by``-level order.
-    """
-
-    by_sites: tuple[str, ...]
-    kind: Literal["by_lkj"] = "by_lkj"
 
     @property
     def sites(self) -> tuple[str, ...]:
@@ -273,9 +285,9 @@ class ByLKJCorrelation(CoefficientCorrelation):
         Returns
         -------
         tuple[str, ...]
-            One sample site per ``by`` level.
+            One sample site per component of each ``by`` level.
         """
-        return self.by_sites
+        return self.factors
 
 
 class GroupScale(ValueModel):
@@ -347,10 +359,13 @@ class SingleLevelRows(RowMap):
         Runtime input holding each row's level.
     covariate : str or None
         Input or binding multiplying the coefficient; None for an intercept.
+    by_component : bool
+        Whether each component of the coefficient has its own covariate.
     """
 
     index: str
     covariate: str | None = None
+    by_component: bool = False
     kind: Literal["single"] = "single"
 
 
@@ -370,12 +385,15 @@ class MembershipRows(RowMap):
     covariate : str or None
         Program binding multiplying the sum, for a covariate that every
         member shares and the program computes.
+    by_component : bool
+        Whether each component of the coefficient has its own covariate.
     """
 
     index: str
     indices: tuple[str, ...]
     covariates: tuple[str, ...]
     covariate: str | None = None
+    by_component: bool = False
     kind: Literal["membership"] = "membership"
 
 
@@ -404,6 +422,8 @@ class GroupMemberLaw(ValueModel):
     cell_axis : str or None
         Flat axis over the levels and components, level-major, indexing the
         raw site of a member with a component axis that owns its site.
+    bar : int
+        Position of the coefficient's bar in its formula.
     """
 
     prefix: str
@@ -417,6 +437,7 @@ class GroupMemberLaw(ValueModel):
     rows: RowMap = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     mean: GroupMean | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
     cell_axis: str | None = None
+    bar: int = 0
 
     @property
     def mean_site(self) -> str | None:
@@ -616,7 +637,7 @@ class GroupBlockLaw(ValueModel):
         GroupBlockLayout
             Raw sites, scale sites, and coordinate slices of the block.
         """
-        correlation = self.correlation
+        sites = self.correlation.sites
         return GroupBlockLayout(
             group=self.group,
             identity=self.identity,
@@ -636,9 +657,7 @@ class GroupBlockLaw(ValueModel):
                 )
                 for member in self.members
             ),
-            correlation_site=correlation.site
-            if isinstance(correlation, LKJCorrelation)
-            else None,
+            correlation_site=sites[0] if len(sites) == 1 else None,
             level_covariance=self.level.basis,
         )
 
@@ -693,11 +712,9 @@ def renamed_law(
     correlation = law.correlation
     if isinstance(correlation, LKJCorrelation):
         correlation = correlation.with_(
-            site=names.get(correlation.site, correlation.site)
-        )
-    elif isinstance(correlation, ByLKJCorrelation):
-        correlation = correlation.with_(
-            by_sites=tuple(names.get(site, site) for site in correlation.by_sites)
+            factors=tuple(names.get(site, site) for site in correlation.factors),
+            axis=objects.get(correlation.axis, correlation.axis),
+            cell_axis=_rename(objects, correlation.cell_axis),
         )
     members = []
     for member in law.members:
@@ -762,30 +779,7 @@ def renamed_law(
     )
 
 
-class LawInput(ValueModel):
-    """One runtime input the blocks of a program read.
-
-    Parameters
-    ----------
-    name : str
-        Input name.
-    element : {"Int", "Real"}
-        Element carrier.
-    axes : tuple[str, ...]
-        Finite axes of the input.
-    value : torch.Tensor or None
-        Training value the law retains; None for row data the design holds.
-    """
-
-    name: str
-    element: Literal["Int", "Real"]
-    axes: tuple[str, ...]
-    value: torch.Tensor | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-
-
-def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[LawInput, ...]:
+def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[InputDecl, ...]:
     """List the runtime inputs that the blocks of a program read.
 
     Parameters
@@ -795,13 +789,12 @@ def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[LawInput, ...]:
 
     Returns
     -------
-    tuple[LawInput, ...]
-        Each input once: the member indices and weighted covariates of
-        multi-membership rows, then per grouping factor the ``by`` codes, the
-        prior weights, and the matrices of a known level covariance.
+    tuple[InputDecl, ...]
+        Each input once, per grouping factor: the ``by`` codes, the prior
+        weights, and the matrices of a known level covariance.
     """
     laws = tuple(laws)
-    inputs: dict[str, LawInput] = {}
+    inputs: dict[str, InputDecl] = {}
 
     def add(
         name: str,
@@ -810,16 +803,16 @@ def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[LawInput, ...]:
         value: torch.Tensor | None = None,
     ) -> None:
         inputs.setdefault(
-            name, LawInput(name=name, element=element, axes=axes, value=value)
+            name,
+            InputDecl(
+                name=name,
+                element=element,
+                axes=axes,
+                declared=True,
+                values=value,
+            ),
         )
 
-    for law in laws:
-        for member in law.members:
-            rows = member.rows
-            if isinstance(rows, MembershipRows):
-                for index, covariate in zip(rows.indices, rows.covariates, strict=True):
-                    add(index, "Int", ("Resp",))
-                    add(covariate, "Real", ("Resp",))
     for law in laws:
         level = law.level
         if level.by is not None:
@@ -918,6 +911,26 @@ def level_names(laws: Iterable[GroupBlockLaw]) -> frozenset[str]:
     return frozenset(names)
 
 
+def correlation_labels(law: GroupBlockLaw) -> tuple[str | None, ...]:
+    """Label the correlation of each factor site of a block.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Block law.
+
+    Returns
+    -------
+    tuple[str or None, ...]
+        The ``by`` level of each site, or None without a ``by`` partition.
+    """
+    correlation, by = law.correlation, law.level.by
+    if not isinstance(correlation, LKJCorrelation):
+        return ()
+    levels: tuple[str | None, ...] = by.levels if by is not None else (None,)
+    return tuple(label for label in levels for _ in range(correlation.components))
+
+
 def option_prior_sites(
     laws: Iterable[GroupBlockLaw],
 ) -> tuple[tuple[str, str, str, str | None, float | None], ...]:
@@ -945,11 +958,14 @@ def option_prior_sites(
                 mixing.df_site, (mixing.df_site, "df", law.group, None, mixing.lower)
             )
     sites = list(degrees.values())
-    for law in laws:
-        correlation, by = law.correlation, law.level.by
-        if isinstance(correlation, ByLKJCorrelation) and by is not None:
-            for label, site in zip(by.levels, correlation.by_sites, strict=True):
-                sites.append((site, "cor", law.group, label, None))
+    sites.extend(
+        (site, "cor", law.group, label, None)
+        for law in laws
+        if law.level.by is not None
+        for site, label in zip(
+            law.correlation.sites, correlation_labels(law), strict=True
+        )
+    )
     return tuple(sites)
 
 
@@ -1159,6 +1175,45 @@ def _level_rows(
     return (projection if "scale" in law.carried else factor) @ raw
 
 
+def correlation_factors(
+    draws: Mapping[str, torch.Tensor],
+    law: GroupBlockLaw,
+    *,
+    sample_ndims: int,
+    like: torch.Tensor,
+) -> torch.Tensor | None:
+    """Read the correlation factors of a block's coordinates.
+
+    Parameters
+    ----------
+    draws : Mapping[str, torch.Tensor]
+        Constrained sites holding the Cholesky factors.
+    law : GroupBlockLaw
+        Block law.
+    sample_ndims : int
+        Number of leading sample axes.
+    like : torch.Tensor
+        Tensor with the data type and device of the result.
+
+    Returns
+    -------
+    torch.Tensor or None
+        Sample axes, ``by`` levels (one without a partition), coordinates,
+        coordinates; a lower Cholesky factor that is zero between different
+        components. None for independent coordinates.
+    """
+    correlation = law.correlation
+    if not isinstance(correlation, LKJCorrelation):
+        return None
+    factors = torch.stack(
+        [draws[site].to(like) for site in correlation.factors], dim=sample_ndims
+    ).unflatten(sample_ndims, (-1, correlation.components))
+    identity = torch.eye(correlation.components, dtype=like.dtype, device=like.device)
+    return torch.einsum("...kmn,kl->...mknl", factors, identity).reshape(
+        *factors.shape[: sample_ndims + 1], law.width, law.width
+    )
+
+
 def _correlate(
     rows: torch.Tensor,
     draws: Mapping[str, torch.Tensor],
@@ -1196,30 +1251,24 @@ def _correlate(
         If the correlation has one factor per ``by`` level and the levels
         have no ``by`` codes.
     """
-    correlation = law.correlation
-    if isinstance(correlation, LKJCorrelation):
-        factor = draws[correlation.site].to(rows)
+    factors = correlation_factors(draws, law, sample_ndims=sample_ndims, like=rows)
+    if factors is None:
+        return rows
+    if law.level.by is None:
+        factor = factors.squeeze(sample_ndims)
         if inverse:
             return torch.linalg.solve_triangular(
                 factor, rows.transpose(-1, -2), upper=False
             ).transpose(-1, -2)
         return rows @ factor.transpose(-1, -2)
-    if isinstance(correlation, ByLKJCorrelation):
-        codes = _by_codes(law, codes)
-        if codes is None:
-            raise ValueError(
-                "per-by-level correlations require the by codes of the levels"
-            )
-        factors = torch.stack(
-            [draws[site].to(rows) for site in correlation.by_sites], dim=sample_ndims
-        ).index_select(sample_ndims, codes.to(rows.device))
-        column = rows.unsqueeze(-1)
-        if inverse:
-            return torch.linalg.solve_triangular(factors, column, upper=False).squeeze(
-                -1
-            )
-        return (factors @ column).squeeze(-1)
-    return rows
+    codes = _by_codes(law, codes)
+    if codes is None:
+        raise ValueError("per-by-level correlations require the by codes of the levels")
+    factors = factors.index_select(sample_ndims, codes.to(rows.device))
+    column = rows.unsqueeze(-1)
+    if inverse:
+        return torch.linalg.solve_triangular(factors, column, upper=False).squeeze(-1)
+    return (factors @ column).squeeze(-1)
 
 
 def column_deviations(

@@ -25,7 +25,6 @@ from quivers.dsl.ast_nodes import ObserveStep, ProgramDecl, SampleStep
 from quivers.formulas import GroupCovariance, bf, fit, set_rescor
 from quivers.formulas._fit import _prepare_formula
 from quivers.formulas._group_law import (
-    ByLKJCorrelation,
     LKJCorrelation,
     group_coefficients,
 )
@@ -172,7 +171,7 @@ def test_shared_student_block_has_one_mixing_multiplier_per_level(covariance):
     generator = torch.Generator().manual_seed(3)
     carrier = torch.randn(factor.shape[1], 2, generator=generator)
     values = {
-        law.correlation.site: torch.tensor(CHOLESKY),
+        law.correlation.sites[0]: torch.tensor(CHOLESKY),
         "scales": torch.tensor([0.7, 0.4]),
         "df_g": torch.tensor(3.5),
         "udf_g": torch.tensor([0.4, 0.7, 1.1]),
@@ -182,7 +181,7 @@ def test_shared_student_block_has_one_mixing_multiplier_per_level(covariance):
     }
     values = {name: value.requires_grad_() for name, value in values.items()}
     sites = {
-        law.correlation.site: values[law.correlation.site],
+        law.correlation.sites[0]: values[law.correlation.sites[0]],
         "df_g": values["df_g"],
         "udf_g": values["udf_g"],
     }
@@ -203,7 +202,7 @@ def test_shared_student_block_has_one_mixing_multiplier_per_level(covariance):
     rows = torch.tensor(emission.responses["first"].formula.group_indices["g"])
 
     def oracle(mixed: bool) -> torch.Tensor:
-        cholesky, scales = values[law.correlation.site], values["scales"]
+        cholesky, scales = values[law.correlation.sites[0]], values["scales"]
         effects = factor @ values["carrier"] @ (scales[:, None] * cholesky).T
         if mixed:
             effects = torch.sqrt(values["df_g"] * values["udf_g"])[:, None] * effects
@@ -252,7 +251,7 @@ def test_shared_by_block_reads_each_level_scale_and_correlation():
     (law,) = emission.group_laws
     by = law.level.by
     assert by is not None and by.levels == ("m", "n")
-    assert isinstance(law.correlation, ByLKJCorrelation)
+    assert isinstance(law.correlation, LKJCorrelation)
     codes = torch.tensor(by.codes)
     torch.testing.assert_close(observations[by.input], codes)
     values = {
@@ -264,7 +263,7 @@ def test_shared_by_block_reads_each_level_scale_and_correlation():
     }
     values = {name: value.requires_grad_() for name, value in values.items()}
     sites = {}
-    for index, site in enumerate(law.correlation.by_sites):
+    for index, site in enumerate(law.correlation.factors):
         sites[site] = values["cholesky"][index]
     for index, (member, name) in enumerate(
         zip(law.members, ("first", "second"), strict=True)

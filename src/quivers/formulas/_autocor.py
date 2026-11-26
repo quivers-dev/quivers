@@ -21,6 +21,7 @@ import tokenize
 from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
+from formulae.matrices import DesignMatrices
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
 import numpy as np
@@ -42,13 +43,11 @@ from quivers.dsl.ast_nodes import ProgramStep, Statement
 from quivers.formulas._latent_effects import (
     LatentTerm,
     latent_car_term,
-    latent_observations,
-    latent_prediction_codes,
 )
 from quivers.formulas._predictor_graph import NonlinearExpression
 from quivers.formulas._response_roles import bind_roles
 from quivers.formulas.family import AuxParam, Family, links
-from quivers.formulas.formula import _qvr_name
+from quivers.formulas.formula import Formula, _formula_and_design, _qvr_name
 from quivers.inference._posterior import collect_site_draws
 from quivers.inference._response import response_distribution
 from quivers.qiec.families import DistributionFamily, FamilyParameter
@@ -1206,12 +1205,7 @@ def autocor_family(
 
 
 def latent_residual_term(
-    term: AutocorTerm,
-    family: Family,
-    *,
-    data: IntoDataFrame,
-    nonlinear: bool,
-    caller: str,
+    term: AutocorTerm, *, data: IntoDataFrame, caller: str
 ) -> LatentTerm:
     """Bind brms's latent residuals for a family without natural residuals.
 
@@ -1226,12 +1220,8 @@ def latent_residual_term(
     ----------
     term : AutocorTerm
         Residual term.
-    family : Family
-        Response family.
     data : IntoDataFrame
         Included training rows.
-    nonlinear : bool
-        Whether the location is a nonlinear formula.
     caller : str
         Entry point named in errors.
 
@@ -1243,15 +1233,9 @@ def latent_residual_term(
     Raises
     ------
     ValueError
-        With brms's messages for nonlinear models, MA terms without
-        ``cov = TRUE``, and SAR or FCOR terms.
+        With brms's messages for MA terms without ``cov = TRUE``, and SAR or
+        FCOR terms.
     """
-    if nonlinear:
-        raise ValueError("Latent residuals are not implemented for non-linear models.")
-    if family.response is not None:
-        raise ValueError(
-            f"{caller}: {term.label} requires a family with one location predictor"
-        )
     if term.kind == "sar":
         raise ValueError("SAR terms are not implemented for this family.")
     if term.kind == "fcor":
@@ -1285,84 +1269,59 @@ def latent_residual_term(
     )
 
 
-def latent_prediction(
-    fit: BayesianFit, frame: pd.DataFrame | None, *, include: bool
-) -> tuple[Formula, dict[str, torch.Tensor], tuple[str, ...]]:
-    """Specialize latent terms to prediction rows, as brms predicts them.
+def rebound_residual(
+    term: LatentTerm, binding: AutocorTerm, frame: pd.DataFrame, *, include: bool
+) -> LatentTerm:
+    """Bind latent residuals to fresh rows, as brms predicts them.
 
-    CAR rows map to fitted locations. Latent residuals keep their posterior
-    values on the training rows. New rows draw fresh residuals from the
-    structure at each posterior draw (brms ``cov = TRUE``); the conditional
-    formulation cannot, as brms states.
+    Fresh rows draw new residuals from the fitted structure at each posterior
+    draw (brms ``cov = TRUE``); the conditional formulation cannot, as brms
+    states.
 
     Parameters
     ----------
-    fit : BayesianFit
-        Fitted formula.
-    frame : pandas.DataFrame or None
-        Prediction rows, or None for the training rows.
+    term : LatentTerm
+        Fitted residuals.
+    binding : AutocorTerm
+        Their authored structure.
+    frame : pandas.DataFrame
+        Fresh rows.
     include : bool
         Include autocorrelation terms (brms ``incl_autocor``).
 
     Returns
     -------
-    tuple[Formula, dict[str, torch.Tensor], tuple[str, ...]]
-        Formula whose latent terms cover the rows, their runtime inputs, and
-        latent sites to draw afresh rather than replay.
+    LatentTerm
+        Residuals of the fresh rows.
 
     Raises
     ------
     ValueError
-        For new CAR locations, CAR without ``gr``, or new rows of conditional
-        latent residuals.
+        For a conditional structure, or rows its series cannot hold.
     """
-    formula = fit.formula
-    if not formula.latent_terms:
-        return formula, {}, ()
-    if frame is None:
-        return formula, latent_observations(formula, include=include), ()
-    terms = []
-    values: dict[str, torch.Tensor] = {}
-    fresh: list[str] = []
-    for term in formula.latent_terms:
-        if term.kind == "car":
-            terms.append(term)
-            values.update(
-                term.observations(latent_prediction_codes(term, frame), include=include)
-            )
-            continue
-        assert term.layout is not None
-        if term.layout.kind == "arma" and not term.layout.stationary and include:
-            raise ValueError(
-                "Cannot predict new latent residuals when using cov = FALSE in "
-                "autocor terms."
-            )
-        binding = next(
-            parsed
-            for parsed in split_autocor_terms(formula.formula)[1]
-            if parsed.label == term.label
+    assert term.layout is not None
+    if term.layout.kind == "arma" and not term.layout.stationary and include:
+        raise ValueError(
+            "Cannot predict new latent residuals when using cov = FALSE in "
+            "autocor terms."
         )
-        rows = frame.reset_index(drop=True)
-        if not include and binding.kind != "unstr" and binding.time is not None:
-            # An excluded term adds nothing to the predictor (brms
-            # ``incl_autocor = FALSE``), so its rows need no time order:
-            # prediction grids repeat time points within a group.
-            rows = rows.assign(**{binding.time: range(len(rows))})
-        layout, _ = _series_layout(
-            binding,
-            rows,
-            student=False,
-            history=None,
-            time_levels=_unstr_levels(term),
-            caller="new_data",
-        )
-        if binding.kind == "arma" and not binding.cov:
-            layout = layout.with_(p=0, q=binding.p)
-        fresh_term = term.with_(layout=layout, codes=tuple(range(len(frame))))
-        terms.append(fresh_term)
-        values.update(fresh_term.observations(fresh_term.codes, include=include))
-        fresh.append(term.name)
-    return formula.with_(latent_terms=tuple(terms)), values, tuple(fresh)
+    rows = frame.reset_index(drop=True)
+    if not include and binding.kind != "unstr" and binding.time is not None:
+        # An excluded term adds nothing to the predictor (brms
+        # ``incl_autocor = FALSE``), so its rows need no time order:
+        # prediction grids repeat time points within a group.
+        rows = rows.assign(**{binding.time: range(len(rows))})
+    layout, _ = _series_layout(
+        binding,
+        rows,
+        student=False,
+        history=None,
+        time_levels=_unstr_levels(term),
+        caller="new_data",
+    )
+    if binding.kind == "arma" and not binding.cov:
+        layout = layout.with_(p=0, q=binding.p)
+    return term.with_(layout=layout, codes=tuple(range(len(frame))))
 
 
 def _unstr_levels(term: LatentTerm) -> tuple[str, ...] | None:
@@ -1399,7 +1358,7 @@ def bind_autocor_terms(
 
     A residual term replaces the response law (`autocor_family`); a ``car``
     term adds a latent spatial effect to the location predictor
-    (`latent_car_term`), for any family with a scalar location.
+    (`latent_car_term`).
 
     Parameters
     ----------
@@ -1432,7 +1391,16 @@ def bind_autocor_terms(
     """
     residual = tuple(term for term in terms if term.kind != "car")
     if family.mixture is not None:
-        raise ValueError("Autocorrelation terms cannot be applied in mixture models.")
+        if residual:
+            raise ValueError(
+                "Autocorrelation terms cannot be applied in mixture models."
+            )
+        # The component locations hold the spatial fields.
+        return family, formula
+    if nonlinear and any(term.kind == "car" for term in terms):
+        raise ValueError("CAR terms are not implemented for non-linear models.")
+    if residual and nonlinear and family.elliptical is None:
+        raise ValueError("Latent residuals are not implemented for non-linear models.")
     if residual and family.elliptical is None:
         # A SAR or fixed-covariance term raises brms's refusal before any
         # second latent term could be added.
@@ -1441,9 +1409,7 @@ def bind_autocor_terms(
             latent_terms=(
                 *formula.latent_terms,
                 *(
-                    latent_residual_term(
-                        term, family, data=data, nonlinear=nonlinear, caller=caller
-                    )
+                    latent_residual_term(term, data=data, caller=caller)
                     for term in ordered
                 ),
             )
@@ -1475,15 +1441,45 @@ def bind_autocor_terms(
                     ),
                 )
             )
+    return family, bind_car_terms(terms, formula, data=data, data2=data2, caller=caller)
+
+
+def bind_car_terms(
+    terms: tuple[AutocorTerm, ...],
+    formula: Formula,
+    *,
+    data: IntoDataFrame,
+    data2: Mapping[str, AutocorMatrix] | None,
+    caller: str,
+) -> Formula:
+    """Add the spatial fields of one predictor to its formula.
+
+    Parameters
+    ----------
+    terms : tuple[AutocorTerm, ...]
+        Parsed terms of the predictor.
+    formula : Formula
+        Evaluated predictor.
+    data : IntoDataFrame
+        Included training rows.
+    data2 : Mapping[str, AutocorMatrix] or None
+        Named matrices.
+    caller : str
+        Entry point named in errors.
+
+    Returns
+    -------
+    Formula
+        The formula with one latent term per ``car`` term.
+
+    Raises
+    ------
+    ValueError
+        If a matrix is missing from ``data2``.
+    """
     for term in terms:
         if term.kind != "car":
             continue
-        if nonlinear:
-            raise ValueError("CAR terms are not implemented for non-linear models.")
-        if family.response is not None:
-            raise ValueError(
-                f"{caller}: {term.label} requires a family with one location predictor"
-            )
         assert term.matrix is not None and term.car_type is not None
         if data2 is None or term.matrix not in data2:
             raise ValueError(f"{caller}: {term.label} requires data2[{term.matrix!r}]")
@@ -1496,7 +1492,51 @@ def bind_autocor_terms(
                 ),
             )
         )
-    return family, formula
+    return formula
+
+
+def fields_and_design(
+    text: str,
+    *,
+    data: IntoDataFrame,
+    data2: Mapping[str, AutocorMatrix] | None,
+    caller: str,
+) -> tuple[Formula, DesignMatrices]:
+    """Evaluate one auxiliary predictor with its structured fields.
+
+    Parameters
+    ----------
+    text : str
+        Formula of the predictor.
+    data : IntoDataFrame
+        Included training rows.
+    data2 : Mapping[str, AutocorMatrix] or None
+        Named matrices.
+    caller : str
+        Entry point named in errors.
+
+    Returns
+    -------
+    tuple[Formula, DesignMatrices]
+        The evaluated predictor and its retained design. Residual structures
+        of a predictor other than the location are latent residuals.
+    """
+    stripped, terms = split_autocor_terms(text)
+    formula, design = _formula_and_design(stripped, data)
+    residual = sorted(
+        (term for term in terms if term.kind != "car"),
+        key=lambda term: term.dimension == "time",
+    )
+    formula = formula.with_(
+        formula=text,
+        latent_terms=tuple(
+            latent_residual_term(term, data=data, caller=caller) for term in residual
+        ),
+    )
+    return (
+        bind_car_terms(terms, formula, data=data, data2=data2, caller=caller),
+        design,
+    )
 
 
 def autocor_prior_target(

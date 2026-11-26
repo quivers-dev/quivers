@@ -227,10 +227,10 @@ def test_missing_selector_dropped_rows_and_reserved_input_names_are_rejected(dat
         assert dropped.modifiers.weights is not None
         assert dropped.modifiers.weights.data.shape == (3,)
         assert dropped.response_values.shape == (3,)
-    with pytest.raises(ValueError, match="formula_weights is reserved"):
-        formula_to_qvr(
-            "y ~ formula_weights", data=data.assign(formula_weights=data.x), weights="w"
-        )
+    source = formula_to_qvr(
+        "y ~ formula_weights", data=data.assign(formula_weights=data.x), weights="w"
+    )
+    assert "beta_formula_weights * data_formula_weights" in source
 
 
 def test_manually_constructed_formula_weight_shape_is_checked(data):
@@ -291,14 +291,14 @@ def test_distributional_scale_priors_are_not_weighted(data):
 def test_weight_input_has_explicit_row_type_and_response_names_cannot_shadow_it(data):
     source = formula_to_qvr("y ~ x", data=data, weights="w")
     assert "formula_weights : Tensor[Real]([Resp])" in source
-    with pytest.raises(ValueError, match="formula_weights is reserved"):
+    with pytest.raises(ValueError, match="reserved for response inputs"):
         formula_to_qvr(
             "formula_weights ~ x",
             data=data.rename(columns={"y": "formula_weights"}),
             weights="w",
         )
     formula = formula_from_data("y ~ x", data, weights="w")
-    with pytest.raises(ValueError, match="formula_weights is reserved"):
+    with pytest.raises(ValueError, match="reserved for response inputs"):
         FormulaToQVRModule(
             families["gaussian"], predictor_name="formula_weights"
         ).forward(formula)

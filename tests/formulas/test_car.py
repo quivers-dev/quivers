@@ -298,15 +298,12 @@ def _count_series(seed=5):
     ],
 )
 def test_latent_residual_law_matches_brms_construction(term, kind):
-    from quivers.formulas import families
     from quivers.formulas._autocor import latent_residual_term, parse_autocor_call
 
     frame = _count_series()
     latent = latent_residual_term(
         parse_autocor_call(term),
-        families["poisson"],
         data=frame,
-        nonlinear=False,
         caller="test",
     )
     values = {"ar_1": 0.4, "ar_2": -0.2, "ma_1": 0.3, "cosy": 0.35}

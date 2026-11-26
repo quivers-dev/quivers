@@ -59,7 +59,10 @@ from quivers.dsl.compiler.programs import _ProgramsMixin
 from quivers.dsl.emit import draw_call_to_source
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _factor, finite_object_sizes
-from quivers.formulas._category_formulas import is_scale_parameter
+from quivers.formulas._category_formulas import (
+    is_category_parameter,
+    is_scale_parameter,
+)
 from quivers.formulas.family import RESPONSE_MIN, Family, Link, links
 from quivers.formulas._priors import (
     ConstantPrior,
@@ -1200,7 +1203,13 @@ def brms_default_rule(
     if role == "Intercept":
         if target.site not in centered:
             return None
-        dpar = target.dpar or "mu"
+        # A component of a vector of parameters has the vector's default.
+        dpar = target.vector or target.dpar or "mu"
+        if is_category_parameter(family, dpar):
+            dpar = "mu"
+        if dpar == "mu" and family.ordinal is not None:
+            # brms has the thresholds in place of the intercept.
+            return None
         if dpar == "mu":
             if family.location_link.brms_intercept_prior is not None:
                 return rule(family.location_link.brms_intercept_prior)
@@ -1430,7 +1439,8 @@ def prior_table(
                 lower = rule.lower if lower is None else max(lower, rule.lower)
             if rule.upper is not None:
                 upper = rule.upper if upper is None else min(upper, rule.upper)
-        rows.append(
+        # Each component of a vector of parameters has a row, as in brms.
+        rows.extend(
             PriorRow(
                 site=target.site,
                 prior=_step_prior(step),
@@ -1438,13 +1448,14 @@ def prior_table(
                 coef=target.coef,
                 group=target.group,
                 response=target.response,
-                dpar=target.dpar,
+                dpar=dpar,
                 nlpar=target.nlpar,
                 lower=lower,
                 upper=upper,
                 tag=None if rule is None else rule.tag,
                 source="default" if rule is None else "user",
             )
+            for dpar in target.parameters or (target.dpar,)
         )
     return PriorTable(rows=tuple(rows), policy=policy)
 
@@ -1466,7 +1477,9 @@ def user_selection(
     dict[str, PriorSpec]
         Winning rule per selected site.
     """
-    return resolve_priors(priors, targets) if priors.rules else {}
+    if not priors.rules:
+        return {}
+    return resolve_priors(priors, targets)
 
 
 def join_main_rules(

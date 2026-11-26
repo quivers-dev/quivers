@@ -38,8 +38,9 @@ u m^2 + m^3) per draw.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from functools import reduce
 import math
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 import didactic.api as dx
 import numpy as np
@@ -55,11 +56,6 @@ from quivers._positions import demand
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.dsl.ast_nodes import (
     DrawArgNamed,
-    QiecIndexName,
-    QiecShapeIndex,
-    QiecTypeApplication,
-    QiecTypeName,
-    QiecValueParameter,
     LetExprLiteral,
     LetExprNode,
     ProgramStep,
@@ -72,19 +68,41 @@ from quivers.formulas._ast import (
     _add,
     _call,
     _div,
+    _draw,
+    _factor,
+    _index,
     _let,
     _mul,
     _sub,
     _var,
 )
+from quivers.formulas._term import (
+    COORDINATE,
+    AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
+    VariableDecl,
+    coordinate_scopes,
+    ColumnName,
+    Contribution,
+    Emission,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    at_coordinate,
+    design_declarations,
+    flat_index,
+    over_output,
+    read_only,
+)
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 
 if TYPE_CHECKING:
-    from formulae.matrices import DesignMatrices
+    from quivers.formulas._name_scope import NameScope
+    from quivers.formulas._row_source import PredictorRows
 
-    from quivers.formulas.compile import FormulaToQVRModule
-    from quivers.formulas.formula import Formula
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
 type GpKernel = Literal["exp_quad", "matern32", "matern52", "exponential"]
@@ -235,6 +253,20 @@ class GaussianProcessBlock(ValueModel):
     prediction_inputs: np.ndarray | None = dx.field(
         default=None, opaque=True, extras=opaque_by_value(_frozen_or_none)
     )
+
+    def specific(self) -> GaussianProcessBlock:
+        """Return the block of one process per ordinal transition.
+
+        Returns
+        -------
+        GaussianProcessBlock
+            The same block, with labels distinct from those of a block
+            shared by the transitions.
+        """
+        return self.with_(
+            label="cs" + self.label,
+            lscale_labels=tuple("cs" + label for label in self.lscale_labels),
+        )
 
     @property
     def exact(self) -> bool:
@@ -395,7 +427,9 @@ def _numeric(value: ColumnInput) -> npt.NDArray[np.float64]:
     return result
 
 
-def _factor(value: ColumnInput) -> tuple[npt.NDArray[np.str_], tuple[str, ...]] | None:
+def _by_factor(
+    value: ColumnInput,
+) -> tuple[npt.NDArray[np.str_], tuple[str, ...]] | None:
     """Read a factor ``by`` variable, or None for a numeric one.
 
     Parameters
@@ -690,7 +724,7 @@ class GaussianProcess:
         else:
             by_name = _label(by, 0)
             label += brms_rename(by_name)
-            factor = _factor(by)
+            factor = _by_factor(by)
             if factor is None:
                 by_kind = "numeric"
                 contrasts.append(("", None, np.ones(rows)))
@@ -805,12 +839,12 @@ class GaussianProcess:
         labels = None
         if state.by_kind == "numeric":
             assert by is not None
-            if _factor(by) is not None:
+            if _by_factor(by) is not None:
                 raise ValueError("gp() numeric by variable became a factor")
             multiplier = _numeric(by)
         elif state.by_kind == "factor":
             assert by is not None
-            factor = _factor(by)
+            factor = _by_factor(by)
             if factor is None:
                 raise ValueError("gp() factor by variable became numeric")
             labels = factor[0]
@@ -926,209 +960,6 @@ def _log_spectral_density(
     )
 
 
-def gp_block_steps(
-    lens: FormulaToQVRModule,
-    block: GaussianProcessBlock,
-    name: str,
-    prefix: str,
-    sdgp_default: str,
-) -> list[ProgramStep]:
-    """Emit one GP's hyperparameters, innovations, and coefficients.
-
-    For the approximation the coefficients are brms's
-    ``rgp = sqrt(spd(slambda; sdgp, lscale)) .* zgp``, computed as
-    ``exp(log(spd) / 2)`` so a vanishing density keeps finite gradients. For
-    the exact GP they are the latent function at the distinct inputs (see
-    `_exact_steps`). ``name_coefficients`` then enters the shared design
-    contraction.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler with the shared prior emitter.
-    block : GaussianProcessBlock
-        Retained block.
-    name : str
-        Prefixed design identifier.
-    prefix : str
-        Owning predictor namespace.
-    sdgp_default : str
-        Default ``sdgp`` prior.
-
-    Returns
-    -------
-    list[ProgramStep]
-        Prior draws, innovations, and coefficient bindings.
-    """
-    sdgp, lscales = block.sites(prefix)
-    steps: list[ProgramStep] = [lens._prior_draw(sdgp, sdgp_default)]
-    for site, default in zip(lscales, block.lscale_priors, strict=True):
-        steps.append(lens._prior_draw(site, default))
-    if block.exact:
-        return steps + _exact_steps(block, name, sdgp, lscales)
-    raw = name + "_z"
-    steps.append(
-        SampleStep(
-            vars=(raw,),
-            morphism="Normal",
-            args=(
-                DrawArgNamed(parameter="loc", value=atom_to_draw_arg(0.0)),
-                DrawArgNamed(parameter="scale", value=atom_to_draw_arg(1.0)),
-            ),
-            index=TypeName(name=name + "_Coordinate"),
-        )
-    )
-    frequency_names = [
-        _var(f"{name}_frequency_sq_{d + 1}") for d in range(block.dimension)
-    ]
-    lscale_values = (
-        tuple(_var(lscales[0]) for _ in range(block.dimension))
-        if block.isotropic
-        else tuple(_var(site) for site in lscales)
-    )
-    log_spd = name + "_log_spd"
-    steps.append(
-        _let(
-            log_spd,
-            _log_spectral_density(
-                block,
-                _call("log", _var(sdgp)),
-                lscale_values,
-                tuple(frequency_names),
-            ),
-        )
-    )
-    steps.append(
-        _let(
-            name + "_coefficients",
-            _mul(
-                _call("exp", _mul(LetExprLiteral(value=0.5), _var(log_spd))),
-                _var(raw),
-            ),
-        )
-    )
-    return steps
-
-
-def gp_runtime_parameters(
-    name: str, block: GaussianProcessBlock | None
-) -> tuple[QiecValueParameter, ...]:
-    """Declare a block's data inputs.
-
-    Parameters
-    ----------
-    name : str
-        Prefixed design identifier.
-    block : GaussianProcessBlock or None
-        Retained block, or None for a block that is not a GP.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        ``name_frequency_sq_d`` vectors over the block's coordinate axis, or
-        for an exact GP its distance and jitter matrices over the training
-        inputs and, for prediction, the anchor over the fresh inputs.
-    """
-    if block is None:
-        return ()
-    if block.exact:
-        axis = _input_axis(name, block)
-        parameters = [
-            QiecValueParameter(name=matrix, type_expr=_real_tensor(axis, axis))
-            for matrix in (*_distance_names(name, block), name + "_jitter")
-        ]
-        if block.prediction_inputs is not None:
-            parameters.append(
-                QiecValueParameter(
-                    name=name + "_anchor",
-                    type_expr=_real_tensor(name + "_Coordinate"),
-                )
-            )
-        return tuple(parameters)
-    return tuple(
-        QiecValueParameter(
-            name=f"{name}_frequency_sq_{d + 1}",
-            type_expr=QiecTypeApplication(
-                constructor="Tensor",
-                static_arguments=(QiecTypeName(name="Real"),),
-                indices=(
-                    QiecShapeIndex(
-                        dimensions=(QiecIndexName(name=name + "_Coordinate"),)
-                    ),
-                ),
-            ),
-        )
-        for d in range(block.dimension)
-    )
-
-
-def gp_observations(
-    name: str, block: GaussianProcessBlock | None
-) -> dict[str, torch.Tensor]:
-    """Bind a block's retained data inputs in double precision.
-
-    The approximation binds its squared frequencies, and the exact GP the
-    pairwise distances of its training inputs and brms's ``1e-12`` jitter.
-    Both are retained training structure, so fresh rows bind the same values.
-
-    Parameters
-    ----------
-    name : str
-        Prefixed design identifier.
-    block : GaussianProcessBlock or None
-        Retained block, or None for a block that is not a GP.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Inputs by name.
-    """
-    if block is None:
-        return {}
-    if block.exact:
-        assert block.inputs is not None
-        values = {
-            matrix: torch.as_tensor(distance, dtype=torch.float64)
-            for matrix, distance in zip(
-                _distance_names(name, block),
-                _distances(block, block.inputs, block.inputs),
-                strict=True,
-            )
-        }
-        values[name + "_jitter"] = EXACT_JITTER * torch.eye(
-            len(block.inputs), dtype=torch.float64
-        )
-        return values
-    return {
-        f"{name}_frequency_sq_{d + 1}": torch.as_tensor(
-            block.frequencies[:, d] ** 2, dtype=torch.float64
-        )
-        for d in range(block.dimension)
-    }
-
-
-def _real_tensor(*axes: str) -> QiecTypeApplication:
-    """Spell a real tensor type over named finite axes.
-
-    Parameters
-    ----------
-    *axes : str
-        Axis names, outermost first.
-
-    Returns
-    -------
-    QiecTypeApplication
-        ``Tensor[Real]([axes])``.
-    """
-    return QiecTypeApplication(
-        constructor="Tensor",
-        static_arguments=(QiecTypeName(name="Real"),),
-        indices=(
-            QiecShapeIndex(dimensions=tuple(QiecIndexName(name=a) for a in axes)),
-        ),
-    )
-
-
 def _input_axis(name: str, block: GaussianProcessBlock) -> str:
     """Name the axis of an exact GP's training inputs.
 
@@ -1239,121 +1070,6 @@ def _correlation_expression(
             polynomial, _mul(LetExprLiteral(value=5.0 / 3.0), _mul(ratio, ratio))
         )
     return _mul(polynomial, _call("exp", _mul(LetExprLiteral(value=-root), ratio)))
-
-
-def _exact_steps(
-    block: GaussianProcessBlock, name: str, sdgp: str, lscales: tuple[str, ...]
-) -> list[ProgramStep]:
-    """Emit brms's exact GP from its sampled hyperparameters.
-
-    The steps are brms's ``gp_<cov>`` Stan function: the kernel matrix
-    ``sdgp^2 prod_d k_d(r_d / l_d)`` of the training inputs (one factor of
-    the Euclidean distance for an isotropic GP), plus ``1e-12`` on the
-    diagonal, its lower Cholesky factor, and ``f = L zgp`` with
-    ``zgp ~ N(0, I)``. A block specialized to prediction rows then draws
-    ``f`` at the fresh inputs from `GaussianProcessConditional`.
-
-    Parameters
-    ----------
-    block : GaussianProcessBlock
-        Exact block.
-    name : str
-        Prefixed design identifier.
-    sdgp : str
-        Marginal standard deviation site.
-    lscales : tuple[str, ...]
-        Length-scale sites.
-
-    Returns
-    -------
-    list[ProgramStep]
-        Innovations, kernel, factor, and ``name_coefficients``.
-    """
-    raw = name + "_z"
-    steps: list[ProgramStep] = [
-        SampleStep(
-            vars=(raw,),
-            morphism="Normal",
-            args=(
-                DrawArgNamed(parameter="loc", value=atom_to_draw_arg(0.0)),
-                DrawArgNamed(parameter="scale", value=atom_to_draw_arg(1.0)),
-            ),
-            index=TypeName(name=_input_axis(name, block)),
-        )
-    ]
-    correlation: LetExprNode | None = None
-    for distance, lscale in zip(
-        _distance_names(name, block),
-        lscales if not block.isotropic else lscales[:1],
-        strict=True,
-    ):
-        factor = _correlation_expression(block.kernel, _var(distance), _var(lscale))
-        correlation = factor if correlation is None else _mul(correlation, factor)
-    assert correlation is not None
-    steps.append(
-        _let(
-            name + "_kernel",
-            _add(
-                _mul(_mul(_var(sdgp), _var(sdgp)), correlation),
-                _var(name + "_jitter"),
-            ),
-        )
-    )
-    steps.append(_let(name + "_factor", _call("cholesky", _var(name + "_kernel"))))
-    if block.prediction_inputs is None:
-        steps.append(
-            _let(
-                name + "_coefficients",
-                _call("matmul", _var(name + "_factor"), _var(raw)),
-            )
-        )
-        return steps
-    steps.append(
-        _let(name + "_values", _call("matmul", _var(name + "_factor"), _var(raw)))
-    )
-    arguments = {"values": name + "_values", "scale": sdgp}
-    arguments.update(
-        {
-            f"lscale_{d + 1}": site
-            for d, site in enumerate(lscales if not block.isotropic else lscales[:1])
-        }
-    )
-    arguments["anchor"] = name + "_anchor"
-    steps.append(
-        SampleStep(
-            vars=(name + "_coefficients",),
-            morphism=conditional_family_name(name),
-            args=tuple(
-                DrawArgNamed(parameter=key, value=atom_to_draw_arg(value))
-                for key, value in arguments.items()
-            ),
-        )
-    )
-    return steps
-
-
-def gp_axes(
-    name: str, block: GaussianProcessBlock | None
-) -> tuple[tuple[str, int], ...]:
-    """List the finite axes a block declares beside its design coordinates.
-
-    Parameters
-    ----------
-    name : str
-        Prefixed design identifier.
-    block : GaussianProcessBlock or None
-        Retained block, or None for a block that is not a GP.
-
-    Returns
-    -------
-    tuple[tuple[str, int], ...]
-        The training-input axis of an exact block specialized to prediction
-        rows, and nothing otherwise.
-    """
-    if block is None or block.prediction_inputs is None:
-        return ()
-    assert block.inputs is not None
-    return ((name + "_Input", len(block.inputs)),)
 
 
 def gp_rows(
@@ -1811,144 +1527,6 @@ def gp_conditional_catalog(
     return catalog
 
 
-def gp_prediction(
-    items: Iterable[tuple[str, str, Formula]],
-    designs: Mapping[str, DesignMatrices],
-    frame: pd.DataFrame,
-) -> tuple[dict[str, Formula], dict[str, torch.Tensor], tuple[str, ...]]:
-    """Specialize every exact GP block to prediction rows, as brms predicts them.
-
-    Each exact block reads its fresh inputs and design from the rows
-    (`gp_rows`) and draws the latent function there from
-    `GaussianProcessConditional`, given the replayed training values, under
-    each posterior draw. A sub-GP with no active row keeps one zero design
-    column at its first training input, so it adds nothing.
-
-    Parameters
-    ----------
-    items : Iterable[tuple[str, str, Formula]]
-        Fitted predictor name, input prefix, and formula of each predictor.
-    designs : Mapping[str, DesignMatrices]
-        Retained evaluators by predictor name.
-    frame : pandas.DataFrame
-        Prediction rows.
-
-    Returns
-    -------
-    tuple[dict[str, Formula], dict[str, torch.Tensor], tuple[str, ...]]
-        The formulas with specialized blocks, the fresh designs and anchors,
-        and the latent sites to draw afresh; empty when no exact block exists.
-    """
-    formulas: dict[str, Formula] = {}
-    values: dict[str, torch.Tensor] = {}
-    fresh: list[str] = []
-    for parameter, prefix, formula in items:
-        if not any(
-            term.gp is not None and term.gp.exact for term in formula.design_terms
-        ):
-            formulas[parameter] = formula
-            continue
-        design = designs[parameter]
-        assert design.common is not None
-        evaluated = design.common.evaluate_new_data(frame)
-        assert evaluated.design_matrix is not None
-        terms = []
-        for term in formula.design_terms:
-            block = term.gp
-            if block is None or not block.exact:
-                terms.append(term)
-                continue
-            assert block.inputs is not None
-            columns = evaluated.design_matrix[:, design.common.slices[term.term]]
-            raw = np.asarray(columns, dtype=np.float64)[:, list(term.column_indices)]
-            points, rows = gp_rows(raw, block)
-            if not len(points):
-                points, rows = block.inputs[:1], np.zeros((len(frame), 1))
-            name = prefix + term.qvr_name
-            terms.append(
-                term.with_(data=rows, gp=block.with_(prediction_inputs=points))
-            )
-            values[name] = torch.as_tensor(rows, dtype=torch.float64)
-            values[name + "_anchor"] = torch.zeros(len(points), dtype=torch.float64)
-            fresh.append(name + "_coefficients")
-        formulas[parameter] = formula.with_(design_terms=tuple(terms))
-    return formulas, values, tuple(fresh)
-
-
-def exact_contribution(
-    draws: Mapping[str, torch.Tensor],
-    block: GaussianProcessBlock,
-    name: str,
-    prefix: str,
-    raw: npt.NDArray[np.float64],
-    generator: torch.Generator,
-) -> torch.Tensor:
-    """Evaluate one exact sub-GP's contribution at rows for posterior draws.
-
-    The latent function is drawn at the rows' distinct inputs from its law
-    given the training values of each draw, as brms's ``conditional_effects``
-    does through ``.predictor_gp_new``.
-
-    Parameters
-    ----------
-    draws : Mapping[str, torch.Tensor]
-        Constrained draws with chain and draw axes.
-    block : GaussianProcessBlock
-        Exact block.
-    name : str
-        Prefixed design identifier.
-    prefix : str
-        Owning predictor namespace.
-    raw : numpy.ndarray
-        ``(rows, 1 + D)`` contrast values and covariates.
-    generator : torch.Generator
-        Seeded source of the conditional draws.
-
-    Returns
-    -------
-    torch.Tensor
-        Contributions with shape ``(chain, draw, rows)``.
-    """
-    points, rows = gp_rows(raw, block)
-    sdgp_site, lscale_sites = block.sites(prefix)
-    sdgp = draws[sdgp_site].double()
-    lscales = tuple(
-        draws[site].double()
-        for site in (lscale_sites[:1] if block.isotropic else lscale_sites)
-    )
-    if not len(points):
-        return sdgp.new_zeros((*sdgp.shape, raw.shape[0]))
-    values = exact_values(block, sdgp, lscales, draws[name + "_z"])
-    mean, factor = conditional_moments(block, values, sdgp, lscales, points)
-    noise = torch.randn(mean.shape, generator=generator, dtype=torch.float64)
-    latent = mean + (factor @ noise[..., None])[..., 0]
-    return latent @ torch.as_tensor(rows, dtype=torch.float64).T
-
-
-def gp_prior_sites(
-    block: GaussianProcessBlock, prefix: str
-) -> tuple[tuple[str, str, str], ...]:
-    """List ``(site, class, coef)`` of a block's hyperparameters.
-
-    Parameters
-    ----------
-    block : GaussianProcessBlock
-        Retained block.
-    prefix : str
-        Owning predictor namespace.
-
-    Returns
-    -------
-    tuple[tuple[str, str, str], ...]
-        brms classes ``sdgp`` and ``lscale`` with their coefficient labels.
-    """
-    sdgp, lscales = block.sites(prefix)
-    return ((sdgp, "sdgp", block.label),) + tuple(
-        (site, "lscale", label)
-        for site, label in zip(lscales, block.lscale_labels, strict=True)
-    )
-
-
 def spectral_density(
     block: GaussianProcessBlock, sdgp: torch.Tensor, lscales: tuple[torch.Tensor, ...]
 ) -> torch.Tensor:
@@ -2000,34 +1578,920 @@ def spectral_density(
     return log_spd.exp()
 
 
-def gp_block_coefficients(
-    draws: dict[str, torch.Tensor], block: GaussianProcessBlock, name: str, prefix: str
-) -> torch.Tensor:
-    """Assemble ``sqrt(spd) * z`` for posterior draws of one block.
+class _ProcessTerm(ValueModel):
+    """The hyperparameters and design of one Gaussian process block.
 
     Parameters
     ----------
-    draws : dict[str, torch.Tensor]
-        Constrained draws with chain and draw axes.
-    block : GaussianProcessBlock
-        Retained block.
+    label : str
+        Authored term.
     name : str
         Prefixed design identifier.
     prefix : str
         Owning predictor namespace.
+    block : GaussianProcessBlock
+        Retained block.
+    matrix : np.ndarray
+        Rows by coordinates; read-only.
+    columns : tuple[int, ...]
+        Columns of the evaluated term the block reads.
+    scale_prior : str
+        Default ``sdgp`` prior.
+    output : OutputAxis or None
+        Axis of the coefficient vectors.
+    """
+
+    label: str
+    name: str
+    prefix: str
+    block: GaussianProcessBlock = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    matrix: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(read_only))
+    columns: tuple[int, ...]
+    scale_prior: str
+    output: OutputAxis | None = None
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            The hyperparameters and the standardized innovations.
+        """
+        sdgp, lscales = self.block.sites(self.prefix)
+        return tuple(
+            declaration
+            for index, part in coordinate_scopes(self.output, scope)
+            for declaration in (
+                VariableDecl(
+                    name=f"sdgp_{part.infix}{brms_rename(self.block.label)}",
+                    site=sdgp,
+                    kind="special",
+                    index=index,
+                    parameter=part.position,
+                ),
+                *(
+                    VariableDecl(
+                        name=f"lscale_{part.infix}{brms_rename(label)}",
+                        site=site,
+                        kind="special",
+                        index=index,
+                        parameter=part.position,
+                    )
+                    for site, label in zip(
+                        lscales, self.block.lscale_labels, strict=True
+                    )
+                ),
+                VariableDecl(
+                    name=f"zgp_{part.infix}{self.block.label}",
+                    site=self.name + "_z",
+                    kind="special",
+                    index=index,
+                    parameter=part.position,
+                    flat=self.output.size if self.output is not None else None,
+                ),
+            )
+        )
+
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            Empty.
+        """
+        return ()
+
+    def smooth_part(self, label: str) -> Self | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        Self or None
+            The process.
+        """
+        return self if self.label == label else None
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            The term.
+        """
+        return (EffectSource(label=self.label, kind="gp"),)
+
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
+
+        Returns
+        -------
+        tuple[Contribution, ...]
+            The row contribution.
+        """
+        return (
+            Contribution(
+                name=self.name + "_per_row",
+                rows=True,
+                coordinates=self.output is not None,
+                part=FormulaPart(
+                    field="design_terms", key=self.name.removeprefix(self.prefix)
+                ),
+            ),
+        )
+
+    def hyperparameters(self) -> tuple[SiteDecl, ...]:
+        """Declare the ``sdgp`` and ``lscale`` sites.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The marginal standard deviation, then each length scale, per
+            coordinate of the output axis.
+        """
+        sdgp, lscales = self.block.sites(self.prefix)
+        output = self.output
+        axes = (output.name,) if output is not None else ()
+        labels = output.labels if output is not None else ()
+        parameters = output.parameters if output is not None else ()
+        return (
+            SiteDecl(
+                name=sdgp,
+                class_="sdgp",
+                default=self.scale_prior,
+                coef=self.block.label,
+                axes=axes,
+                component_labels=labels,
+                parameters=parameters,
+                lower=0.0,
+            ),
+            *(
+                SiteDecl(
+                    name=site,
+                    class_="lscale",
+                    default=default,
+                    coef=label,
+                    axes=axes,
+                    component_labels=labels,
+                    parameters=parameters,
+                    lower=0.0,
+                )
+                for site, default, label in zip(
+                    lscales,
+                    self.block.lscale_priors,
+                    self.block.lscale_labels,
+                    strict=True,
+                )
+            ),
+        )
+
+    def _innovation_axis(self, elements: AxisDecl) -> AxisDecl:
+        """Declare the axis of the innovations.
+
+        Parameters
+        ----------
+        elements : AxisDecl
+            Axis of the elements with one innovation per output coordinate.
+
+        Returns
+        -------
+        AxisDecl
+            The axis itself for a scalar process; otherwise a flat axis that
+            holds the coordinates of each element consecutively.
+        """
+        if self.output is None:
+            return elements
+        return AxisDecl(
+            name=self.name + "_InnovationCoordinate",
+            size=elements.size * self.output.size,
+        )
+
+    def _innovation_site(self, elements: AxisDecl) -> SiteDecl:
+        """Declare the innovations, whose law the term fixes.
+
+        Parameters
+        ----------
+        elements : AxisDecl
+            Axis of the elements with one innovation per output coordinate.
+
+        Returns
+        -------
+        SiteDecl
+            The site.
+        """
+        return SiteDecl(
+            name=self.name + "_z",
+            class_="zgp",
+            axes=(self._innovation_axis(elements).name,),
+            overridable=False,
+        )
+
+    def _innovations(self, elements: AxisDecl) -> tuple[ProgramStep, ...]:
+        """Draw the standard-normal innovations.
+
+        Parameters
+        ----------
+        elements : AxisDecl
+            Axis of the elements with one innovation per output coordinate.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The draw and, for a vector of processes, the binding of its
+            innovations by coordinate and element.
+        """
+        raw, output = self.name + "_z", self.output
+        draw = _draw(
+            raw,
+            "Normal",
+            (0.0, 1.0),
+            index=TypeName(name=self._innovation_axis(elements).name),
+        )
+        if output is None:
+            return (draw,)
+        element = "process_element"
+        return (
+            draw,
+            _let(
+                raw + "_by_coordinate",
+                over_output(
+                    output,
+                    _index(raw, flat_index(output, _var(element))),
+                    (element, elements.name),
+                ),
+            ),
+        )
+
+    def _innovation(self) -> LetExprNode:
+        """Read the innovations at the bound output coordinate.
+
+        Returns
+        -------
+        LetExprNode
+            Vector over the elements.
+        """
+        raw = self.name + "_z"
+        if self.output is None:
+            return _var(raw)
+        return at_coordinate(raw + "_by_coordinate", self.output)
+
+    def _lengths(self) -> tuple[LetExprNode, ...]:
+        """Read the length scales at the bound output coordinate.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...]
+            One per covariate; the shared one of an isotropic process.
+        """
+        _, lscales = self.block.sites(self.prefix)
+        return tuple(
+            at_coordinate(
+                lscales[0] if self.block.isotropic else lscales[d], self.output
+            )
+            for d in range(self.block.dimension)
+        )
+
+    def _drawn(
+        self, emission: Emission, coefficients: tuple[ProgramStep, ...]
+    ) -> tuple[ProgramStep, ...]:
+        """Wrap the coefficients in the hyperparameters and the contribution.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+        coefficients : tuple[ProgramStep, ...]
+            Steps binding ``name_coefficients``.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Every step of the term.
+        """
+        return (
+            *(emission.draw(site) for site in self.hyperparameters()),
+            *coefficients,
+            _let(
+                self.name + "_per_row",
+                over_output(
+                    self.output,
+                    _call(
+                        "matmul",
+                        _var(self.name),
+                        at_coordinate(self.name + "_coefficients", self.output),
+                    ),
+                ),
+            ),
+        )
+
+    def _parameters(
+        self, draws: Mapping[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
+        """Read the hyperparameters and innovations in one batch shape.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        tuple[torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]
+            Marginal standard deviation, length scale of each covariate (one
+            for an isotropic process), and innovations. The batch shape is
+            the draws, then the output axis; the innovations add the
+            elements.
+        """
+        sdgp, lscales = self.block.sites(self.prefix)
+        raw = draws[self.name + "_z"].double()
+        if self.output is not None:
+            raw = raw.unflatten(-1, (-1, self.output.size)).transpose(-1, -2)
+        return (
+            draws[sdgp].double(),
+            tuple(
+                draws[site].double()
+                for site in (lscales[:1] if self.block.isotropic else lscales)
+            ),
+            raw,
+        )
+
+    def _by_element(self, values: torch.Tensor) -> torch.Tensor:
+        """Put the output axis of a batch of values last.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            Values with the batch shape of `_parameters`, then the elements.
+
+        Returns
+        -------
+        torch.Tensor
+            Values by draw and element, then output coordinate.
+        """
+        return values if self.output is None else values.transpose(-1, -2)
+
+
+class SpectralTerm(_ProcessTerm):
+    """An approximate Gaussian process on brms's spectral basis.
+
+    The coefficients are ``sqrt(spd(frequencies; sdgp, lscale)) * z``.
+    """
+
+    def at(self, rows: PredictorRows) -> SpectralTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        SpectralTerm
+            The same coefficients over the spectral basis at the rows.
+        """
+        if rows.frame is None:
+            return self
+        return self.with_(matrix=rows.matrix(self.label)[:, list(self.columns)])
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients by spectral basis function, then output coordinate.
+        """
+        sdgp, lscales, innovations = self._parameters(draws)
+        spd = spectral_density(
+            self.block, sdgp, lscales * (self.block.dimension // len(lscales))
+        )
+        return self._by_element(spd.sqrt() * innovations)
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Unused: the basis is known.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
+        """
+        design = torch.tensor(self.matrix)
+        return torch.einsum("cdj...,nj->cdn...", self.coefficients(draws), design)
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The coordinate axis and, for a vector of processes, the flat axis
+            of the innovations.
+        """
+        axis = design_declarations(self.name, self.matrix)[0]
+        return tuple(dict.fromkeys((axis, self._innovation_axis(axis))))
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The squared frequencies of each covariate and the basis matrix.
+        """
+        return (
+            *(
+                InputDecl(
+                    name=f"{self.name}_frequency_sq_{d + 1}",
+                    element="Real",
+                    axes=(self.name + "_Coordinate",),
+                    declared=True,
+                    values=torch.as_tensor(
+                        self.block.frequencies[:, d] ** 2, dtype=torch.float64
+                    ),
+                )
+                for d in range(self.block.dimension)
+            ),
+            design_declarations(self.name, self.matrix)[1],
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The hyperparameters and the innovations.
+        """
+        axis = design_declarations(self.name, self.matrix)[0]
+        return (*self.hyperparameters(), self._innovation_site(axis))
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contribution.
+
+        The coefficients are brms's ``rgp = sqrt(spd(slambda; sdgp, lscale))
+        .* zgp``, computed as ``exp(log(spd) / 2)`` so a vanishing density
+        keeps finite gradients.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Hyperparameters, innovations, coefficients, and contribution.
+        """
+        block, name, output = self.block, self.name, self.output
+        sdgp, _ = block.sites(self.prefix)
+        log_spd = _log_spectral_density(
+            block,
+            _call("log", at_coordinate(sdgp, output)),
+            self._lengths(),
+            tuple(_var(f"{name}_frequency_sq_{d + 1}") for d in range(block.dimension)),
+        )
+        return self._drawn(
+            emission,
+            (
+                *self._innovations(design_declarations(name, self.matrix)[0]),
+                _let(name + "_log_spd", over_output(output, log_spd)),
+                _let(
+                    name + "_coefficients",
+                    over_output(
+                        output,
+                        _mul(
+                            _call(
+                                "exp",
+                                _mul(
+                                    LetExprLiteral(value=0.5),
+                                    at_coordinate(name + "_log_spd", output),
+                                ),
+                            ),
+                            self._innovation(),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+
+class ExactProcessTerm(_ProcessTerm):
+    """An exact Gaussian process at its distinct inputs.
+
+    The coefficients are the latent function at the inputs. A block
+    specialized to prediction rows draws them at the fresh inputs from
+    `GaussianProcessConditional`, given the function at the training inputs.
+    """
+
+    def _training_axis(self) -> AxisDecl:
+        """Declare the axis of the training inputs.
+
+        Returns
+        -------
+        AxisDecl
+            The design coordinates while fitting, and an axis of its own for
+            a block specialized to prediction rows.
+        """
+        assert self.block.inputs is not None
+        return AxisDecl(
+            name=_input_axis(self.name, self.block),
+            size=len(self.block.inputs),
+        )
+
+    def at(self, rows: PredictorRows) -> ExactProcessTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        ExactProcessTerm
+            The function drawn at the rows' distinct inputs given its training
+            values. A block with no active row keeps one zero design column at
+            its first training input, so it adds nothing.
+        """
+        if rows.frame is None:
+            return self
+        block = self.block
+        assert block.inputs is not None
+        raw = np.asarray(rows.matrix(self.label), dtype=np.float64)
+        points, design = gp_rows(raw[:, list(self.columns)], block)
+        if not len(points):
+            points, design = block.inputs[:1], np.zeros((len(raw), 1))
+        return self.with_(matrix=design, block=block.with_(prediction_inputs=points))
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Values of the function at the training inputs, then output
+            coordinates.
+        """
+        sdgp, lscales, innovations = self._parameters(draws)
+        return self._by_element(exact_values(self.block, sdgp, lscales, innovations))
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Source of the draws of the function at the rows' inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
+        """
+        block = self.block
+        values = self.coefficients(draws)
+        design = torch.tensor(self.matrix)
+        if block.prediction_inputs is not None:
+            if not design.any():
+                return values.new_zeros(
+                    (*values.shape[:2], len(design), *values.shape[3:])
+                )
+            sdgp, lscales, innovations = self._parameters(draws)
+            mean, factor = conditional_moments(
+                block,
+                exact_values(block, sdgp, lscales, innovations),
+                sdgp,
+                lscales,
+                block.prediction_inputs,
+            )
+            noise = torch.randn(mean.shape, generator=generator, dtype=torch.float64)
+            values = self._by_element(mean + (factor @ noise[..., None])[..., 0])
+        return torch.einsum("cdj...,nj->cdn...", values, design)
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The coordinate axis, the axis of the training inputs of a
+            specialized block, and the flat axis of the innovations of a
+            vector of processes.
+        """
+        coordinates, _ = design_declarations(self.name, self.matrix)
+        training = self._training_axis()
+        return tuple(
+            dict.fromkeys((coordinates, training, self._innovation_axis(training)))
+        )
+
+    def _fresh_sites(self) -> tuple[SiteDecl, ...]:
+        """Declare the function at the fresh inputs of a specialized block.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            One vector per coordinate of the output axis; empty for a block
+            over its training inputs.
+        """
+        if self.block.prediction_inputs is None:
+            return ()
+        name = self.name + "_coefficients"
+        return tuple(
+            SiteDecl(
+                name=site,
+                class_="zgp",
+                event_axis=self.name + "_Coordinate",
+                overridable=False,
+                fresh=True,
+            )
+            for site in (
+                (name,)
+                if self.output is None
+                else tuple(f"{name}_{index}" for index in range(self.output.size))
+            )
+        )
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The distances between the training inputs, brms's ``1e-12``
+            jitter, the anchor over the fresh inputs of a specialized block,
+            and the row design.
+        """
+        block = self.block
+        assert block.inputs is not None
+        axis = self._training_axis().name
+        matrices = [
+            *zip(
+                _distance_names(self.name, block),
+                _distances(block, block.inputs, block.inputs),
+                strict=True,
+            ),
+            (self.name + "_jitter", EXACT_JITTER * np.eye(len(block.inputs))),
+        ]
+        anchor = (
+            (
+                InputDecl(
+                    name=self.name + "_anchor",
+                    element="Real",
+                    axes=(self.name + "_Coordinate",),
+                    declared=True,
+                    values=torch.zeros(
+                        len(block.prediction_inputs), dtype=torch.float64
+                    ),
+                ),
+            )
+            if block.prediction_inputs is not None
+            else ()
+        )
+        return (
+            *(
+                InputDecl(
+                    name=name,
+                    element="Real",
+                    axes=(axis, axis),
+                    declared=True,
+                    values=torch.as_tensor(values, dtype=torch.float64),
+                )
+                for name, values in matrices
+            ),
+            *anchor,
+            design_declarations(self.name, self.matrix)[1],
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The hyperparameters, the innovations at the training inputs, and
+            the function at the fresh inputs of a specialized block.
+        """
+        return (
+            *self.hyperparameters(),
+            self._innovation_site(self._training_axis()),
+            *self._fresh_sites(),
+        )
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            The conditional law of the function at the fresh inputs of a
+            specialized block, or None.
+        """
+        return gp_conditional_catalog(((self.name, self.block),))
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contribution.
+
+        The steps are brms's ``gp_<cov>`` Stan function: the kernel matrix
+        ``sdgp^2 prod_d k_d(r_d / l_d)`` of the training inputs (one factor of
+        the Euclidean distance for an isotropic GP), plus ``1e-12`` on the
+        diagonal, its lower Cholesky factor, and ``f = L zgp`` with
+        ``zgp ~ N(0, I)``. A block specialized to prediction rows then draws
+        ``f`` at the fresh inputs from `GaussianProcessConditional`.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            Hyperparameters, innovations, kernel, factor, coefficients, and
+            contribution.
+        """
+        block, name, output = self.block, self.name, self.output
+        sdgp, lscales = block.sites(self.prefix)
+        scale = at_coordinate(sdgp, output)
+        correlation = reduce(
+            _mul,
+            (
+                _correlation_expression(block.kernel, _var(distance), lscale)
+                for distance, lscale in zip(
+                    _distance_names(name, block),
+                    self._lengths()[:1] if block.isotropic else self._lengths(),
+                    strict=True,
+                )
+            ),
+        )
+        kernel = _add(_mul(_mul(scale, scale), correlation), _var(name + "_jitter"))
+        values = _call(
+            "matmul", at_coordinate(name + "_factor", output), self._innovation()
+        )
+        steps: list[ProgramStep] = [
+            *self._innovations(self._training_axis()),
+            _let(name + "_kernel", over_output(output, kernel)),
+            _let(
+                name + "_factor",
+                over_output(
+                    output, _call("cholesky", at_coordinate(name + "_kernel", output))
+                ),
+            ),
+        ]
+        fresh = self._fresh_sites()
+        if not fresh:
+            steps.append(_let(name + "_coefficients", over_output(output, values)))
+            return self._drawn(emission, tuple(steps))
+        steps.append(_let(name + "_values", over_output(output, values)))
+        arguments = {
+            "values": name + "_values",
+            "scale": sdgp,
+            **{
+                f"lscale_{d + 1}": site
+                for d, site in enumerate(lscales[:1] if block.isotropic else lscales)
+            },
+        }
+        for index, site in enumerate(fresh):
+            bound = {}
+            for key, value in arguments.items():
+                bound[key] = value if output is None else f"{value}_{index}"
+                if output is not None:
+                    steps.append(
+                        _let(
+                            bound[key],
+                            _index(value, LetExprLiteral(value=index, integral=True)),
+                        )
+                    )
+            steps.append(
+                SampleStep(
+                    vars=(site.name,),
+                    morphism=conditional_family_name(name),
+                    args=tuple(
+                        DrawArgNamed(parameter=key, value=atom_to_draw_arg(value))
+                        for key, value in (bound | {"anchor": name + "_anchor"}).items()
+                    ),
+                )
+            )
+        if output is not None:
+            steps.append(
+                _let(
+                    name + "_coefficients",
+                    _factor(
+                        ((COORDINATE, output.name),),
+                        cases=tuple(
+                            (index, _var(site.name)) for index, site in enumerate(fresh)
+                        ),
+                    ),
+                )
+            )
+        return self._drawn(emission, tuple(steps))
+
+
+def process_term(
+    *,
+    label: str,
+    name: str,
+    prefix: str,
+    block: GaussianProcessBlock,
+    matrix: np.ndarray,
+    columns: tuple[int, ...],
+    scale_prior: str,
+    output: OutputAxis | None,
+) -> SpectralTerm | ExactProcessTerm:
+    """Build the term of one Gaussian process block.
+
+    Parameters
+    ----------
+    label : str
+        Authored term.
+    name : str
+        Prefixed design identifier.
+    prefix : str
+        Owning predictor namespace.
+    block : GaussianProcessBlock
+        Retained block.
+    matrix : np.ndarray
+        Rows by coordinates; read-only.
+    columns : tuple[int, ...]
+        Columns of the evaluated term the block reads.
+    scale_prior : str
+        Default ``sdgp`` prior.
+    output : OutputAxis or None
+        Axis of the predictor.
 
     Returns
     -------
-    torch.Tensor
-        Coefficients with shape ``(chain, draw, m)``.
+    SpectralTerm or ExactProcessTerm
+        The approximate or the exact process.
     """
-    sdgp, lscales = block.sites(prefix)
-    lengths = tuple(
-        draws[lscales[0] if block.isotropic else lscales[d]].double()
-        for d in range(block.dimension)
+    variant = ExactProcessTerm if block.exact else SpectralTerm
+    return variant(
+        label=label,
+        name=name,
+        prefix=prefix,
+        block=block,
+        matrix=matrix,
+        columns=columns,
+        scale_prior=scale_prior,
+        output=output,
     )
-    spd = spectral_density(block, draws[sdgp].double(), lengths)
-    return spd.sqrt() * draws[name + "_z"].double()
 
 
 __all__: list[str] = []

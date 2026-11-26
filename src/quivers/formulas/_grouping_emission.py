@@ -14,10 +14,9 @@ new-level policies of the shared Gaussian group layout unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING
 
-from formulae.terms.terms import Term
 import numpy as np
 import pandas as pd
 import torch
@@ -27,14 +26,10 @@ from quivers.dsl.ast_nodes import (
     QiecShapeIndex,
     QiecTypeApplication,
     QiecTypeName,
-    QiecValueParameter,
 )
-from quivers.formulas._group_law import GroupBlockLaw, law_inputs
 from quivers.formulas._grouping import (
     GroupLevelOptions,
     Membership,
-    member_codes,
-    member_weights,
 )
 from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
 
@@ -46,7 +41,7 @@ __all__: list[str] = []
 
 def joint_group_blocks(
     predictors: Iterable[tuple[str, str, Formula]],
-    covariances: Collection[str],
+    known: Callable[[RandomTerm], bool],
     supplied: Collection[tuple[str, str, str]] = (),
 ) -> dict[tuple[str, str], list[tuple[str, RandomTerm]]]:
     """Collect the group terms that share one joint coefficient distribution.
@@ -60,8 +55,8 @@ def joint_group_blocks(
     ----------
     predictors : Iterable[tuple[str, str, Formula]]
         Predicted parameters as (name, coefficient prefix, design).
-    covariances : Collection[str]
-        Grouping factors with a known level covariance.
+    known : Callable[[RandomTerm], bool]
+        Whether a term has a known level covariance.
     supplied : Collection[tuple[str, str, str]]
         Members, as (prefix, group, slope), whose block is already emitted.
 
@@ -77,7 +72,7 @@ def joint_group_blocks(
             if (prefix, term.group, term.slope) in supplied:
                 continue
             if term.correlation_id is None:
-                if term.group not in covariances:
+                if not known(term):
                     continue
                 identity = (
                     prefix
@@ -157,9 +152,10 @@ def _tensor(element: str, *axes: str) -> QiecTypeApplication:
     )
 
 
-def _covariate_inputs(
+def member_covariates(
     prefix: str,
-    term: RandomTerm,
+    group: str,
+    slope: str,
     membership: Membership,
     weights: np.ndarray,
     values: np.ndarray,
@@ -170,10 +166,12 @@ def _covariate_inputs(
     ----------
     prefix : str
         Predictor namespace.
-    term : RandomTerm
-        Group-level coefficient.
+    group : str
+        Grouping-factor name.
+    slope : str
+        Coefficient label.
     membership : Membership
-        Its factor.
+        The factor.
     weights, values : numpy.ndarray
         Weights and covariates, shape ``(rows, members)``.
 
@@ -186,192 +184,63 @@ def _covariate_inputs(
         values, dtype=np.float64
     )
     return {
-        member_input(prefix, term.group, term.slope, k): torch.as_tensor(
-            product[:, k].copy()
-        )
+        member_input(prefix, group, slope, k): torch.as_tensor(product[:, k].copy())
         for k in range(membership.size)
     }
 
 
-def membership_observations(formula: Formula, prefix: str) -> dict[str, torch.Tensor]:
-    """Bind training member codes and weighted covariates.
-
-    Parameters
-    ----------
-    formula : Formula
-        One predictor's evaluated terms.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime bindings.
-
-    Raises
-    ------
-    ValueError
-        If a multi-membership coefficient has no retained covariate.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for term in formula.random_terms:
-        membership = formula.grouping.membership(term.group)
-        if membership is None:
-            continue
-        covariate = formula.grouping.covariate(term.group, term.slope)
-        if covariate is None:
-            raise ValueError(
-                f"multi-membership coefficient {term.slope!r} has no member covariate"
-            )
-        for k, codes in enumerate(membership.codes):
-            values[member_index(term.group, k)] = torch.tensor(codes, dtype=torch.long)
-        values.update(
-            _covariate_inputs(
-                prefix, term, membership, membership.weights, covariate.values
-            )
-        )
-    return values
-
-
-def membership_prediction_bindings(
-    formula: Formula,
-    design_terms: Mapping[str, Term],
-    frame: pd.DataFrame,
-    prefix: str,
-    groups: Mapping[str, GroupRemap] | None,
-) -> dict[str, torch.Tensor]:
-    """Bind fresh member codes and weighted covariates.
-
-    Parameters
-    ----------
-    formula : Formula
-        Fitted predictor.
-    design_terms : Mapping[str, Term]
-        Retained formulae group-level expressions by term name.
-    frame : pandas.DataFrame
-        Fresh rows.
-    prefix : str
-        Predictor namespace.
-    groups : Mapping[str, GroupRemap] or None
-        Compact prediction axes with member codes, or None to code fresh
-        members against the fitted levels.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime bindings.
-
-    Raises
-    ------
-    ValueError
-        If members, weights, or covariates are invalid.
-    """
-    values: dict[str, torch.Tensor] = {}
-    rows = len(frame)
-    for term in formula.random_terms:
-        membership = formula.grouping.membership(term.group)
-        if membership is None:
-            continue
-        spec = membership.spec
-        if groups is not None:
-            codes = tuple(
-                tuple(int(code) for code in indices.tolist())
-                for indices in groups[term.group].member_indices
-            )
-        else:
-            levels = formula.group_levels[term.group]
-            codes = member_codes(
-                frame, spec, {label: index for index, label in enumerate(levels)}
-            )
-        for k, member in enumerate(codes):
-            values[member_index(term.group, k)] = torch.tensor(member, dtype=torch.long)
-        covariate = formula.grouping.covariate(term.group, term.slope)
-        assert covariate is not None
-        if covariate.term == "":
-            columns = np.ones((rows, membership.size))
-        else:
-            evaluated = np.asarray(
-                design_terms[covariate.term].eval_new_data(frame),
-                dtype=np.float64,
-            ).reshape(rows, -1)
-            if covariate.per_member:
-                columns = evaluated
-            else:
-                # The slope's position among its term's exploded columns.
-                assert term.column is not None
-                siblings = [
-                    other.column.name
-                    for other in formula.random_terms
-                    if other.group == term.group
-                    and other.column is not None
-                    and other.column.term == covariate.term
-                ]
-                position = siblings.index(term.column.name)
-                if evaluated.shape[1] != len(siblings):
-                    raise ValueError(
-                        f"new_data changed the design width of {covariate.term!r}"
-                    )
-                columns = np.repeat(
-                    evaluated[:, position : position + 1], membership.size, axis=1
-                )
-            if columns.shape[1] != membership.size or not np.isfinite(columns).all():
-                raise ValueError(
-                    f"new_data must give finite member covariates for {covariate.term!r}"
-                )
-        values.update(
-            _covariate_inputs(
-                prefix, term, membership, member_weights(frame, spec), columns
-            )
-        )
-    return values
-
-
-def by_axis(group: str) -> str:
-    """Name the finite axis of a grouping factor's ``by`` levels.
+def by_axis(group: str, variable: str) -> str:
+    """Name the finite axis of a ``by`` variable's levels.
 
     Parameters
     ----------
     group : str
         Grouping-factor name.
+    variable : str
+        Authored ``by`` variable.
 
     Returns
     -------
     str
         Axis name.
     """
-    return f"FormulaBy_{_qvr_name(group)}"
+    return f"FormulaBy_{_qvr_name(group)}_{_qvr_name(variable)}"
 
 
-def by_input(group: str) -> str:
+def by_input(group: str, variable: str) -> str:
     """Name the input holding each grouping level's ``by`` level.
 
     Parameters
     ----------
     group : str
         Grouping-factor name.
+    variable : str
+        Authored ``by`` variable.
 
     Returns
     -------
     str
         Runtime input name.
     """
-    return f"{_qvr_name(group)}_by"
+    return f"{_qvr_name(group)}_by_{_qvr_name(variable)}"
 
 
-def weight_input(group: str) -> str:
+def weight_input(group: str, column: str) -> str:
     """Name the input holding each grouping level's prior weight.
 
     Parameters
     ----------
     group : str
         Grouping-factor name.
+    column : str
+        Column of the weights.
 
     Returns
     -------
     str
         Runtime input name.
     """
-    return f"{_qvr_name(group)}_prior_weight"
+    return f"{_qvr_name(group)}_prior_weight_{_qvr_name(column)}"
 
 
 def student_sites(group: str) -> tuple[str, str, str]:
@@ -394,7 +263,7 @@ def student_sites(group: str) -> tuple[str, str, str]:
 def merged_group_option(
     options: Iterable[GroupLevelOptions],
 ) -> GroupLevelOptions | None:
-    """Merge the ``gr()`` options the members of one block declare.
+    """Merge the ``gr()`` options the terms of one block declare.
 
     The coefficients of a block have one law, so an option any member
     declares applies to the block, as in brms.
@@ -412,7 +281,7 @@ def merged_group_option(
     Raises
     ------
     ValueError
-        If members give one factor different ``by`` variables or prior
+        If members give one block different ``by`` variables or prior
         weights.
     """
     merged: GroupLevelOptions | None = None
@@ -434,8 +303,8 @@ def merged_group_option(
         ):
             if any(first) and any(second) and first != second:
                 raise ValueError(
-                    "Each grouping factor can only be associated with one "
-                    f"{label}; {option.group!r} has several"
+                    "Each block of group-level effects can only be associated "
+                    f"with one {label}; a block of {option.group!r} has several"
                 )
         merged = GroupLevelOptions(
             options=merged.options.with_(
@@ -449,46 +318,6 @@ def merged_group_option(
             prior_weights=merged.prior_weights or option.prior_weights,
         )
     return merged
-
-
-def law_runtime_parameters(
-    laws: Iterable[GroupBlockLaw],
-) -> tuple[QiecValueParameter, ...]:
-    """Declare the runtime inputs that the blocks of a program read.
-
-    Parameters
-    ----------
-    laws : Iterable[GroupBlockLaw]
-        Laws of the blocks.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        One checked tensor per input.
-    """
-    return tuple(
-        QiecValueParameter(name=item.name, type_expr=_tensor(item.element, *item.axes))
-        for item in law_inputs(laws)
-    )
-
-
-def law_observations(laws: Iterable[GroupBlockLaw]) -> dict[str, torch.Tensor]:
-    """Bind the inputs whose values the laws of a program retain.
-
-    Parameters
-    ----------
-    laws : Iterable[GroupBlockLaw]
-        Laws of the blocks.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        ``by`` codes, prior weights, and matrices of known level covariances.
-        The row data of multi-membership factors is bound with the design.
-    """
-    return {
-        item.name: item.value for item in law_inputs(laws) if item.value is not None
-    }
 
 
 def compact_option(

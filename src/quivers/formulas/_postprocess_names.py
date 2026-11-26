@@ -26,22 +26,27 @@ from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import smooth_states
 from quivers.formulas._threshold_groups import LOCATION_SITE
 from quivers.formulas.formula import Formula
+from quivers.formulas._group_law import GroupMemberLaw
+from quivers.formulas._name_scope import (
+    coefficient_names,
+    NameScope,
+    level_coefficients,
+    predictor_variables,
+)
 from quivers.formulas._variable_catalogue import (
     brms_order,
     brms_rename,
     checked_variables,
     class_variables,
-    design_term_variables,
     native_variables,
     scalar_coordinates,
     shrinkage_blocks,
     shrinkage_scale_site,
     shrinkage_variables,
-    SmoothNames,
-    smooth_names,
     threshold_variables,
-    correlation_variables,
-    scale_variables,
+    CoefficientName,
+    time_label,
+    group_variables,
 )
 from quivers.inference._posterior import draw_count
 
@@ -159,33 +164,7 @@ def _ordinal_thresholds(fit: BayesianFit) -> bool:
         return True
     if fit.family.ordinal.kind != "cumulative" or fit.thresholds_by is not None:
         return False
-    return not any(
-        column.category_specific for column in fit.formula.fixed_columns
-    ) and not any(
-        term.column is not None and term.column.category_specific
-        for term in fit.formula.random_terms
-    )
-
-
-def _time_label(level: str) -> str:
-    """Spell a retained time level as R prints the time value.
-
-    Parameters
-    ----------
-    level : str
-        Canonical time level: ``repr`` of a float for numbers, text otherwise.
-
-    Returns
-    -------
-    str
-        An integer-valued number without its fraction (``"1.0"`` is ``"1"``),
-        other values with brms's character renaming.
-    """
-    try:
-        number = float(level)
-    except ValueError:
-        return brms_rename(level)
-    return str(int(number)) if number.is_integer() else brms_rename(level)
+    return not fit.formula.category_specific
 
 
 def coordinate_labels(fit: BayesianFit, target: PriorTarget) -> tuple[str, ...]:
@@ -213,7 +192,7 @@ def coordinate_labels(fit: BayesianFit, target: PriorTarget) -> tuple[str, ...]:
     binding = autocor_binding(fit.family)
     if binding is None:
         return ()
-    return tuple(_time_label(level) for level in binding.time_levels)
+    return tuple(time_label(level) for level in binding.time_levels)
 
 
 def shrinkage_scales(
@@ -324,6 +303,56 @@ def _location_first(fit: BayesianFit) -> list[tuple[str, str, Formula]]:
     return sorted(fit._predictor_items(), key=rank)
 
 
+def name_scope(
+    fit: BayesianFit,
+    parameter: str,
+    prefix: str,
+    predictor: Formula,
+    labels: Mapping[tuple[str, str], str],
+    *,
+    response: str = "",
+    special: Mapping[str, str] | None = None,
+) -> NameScope:
+    """Build the names of one predictor of a fit.
+
+    Parameters
+    ----------
+    fit : BayesianFit
+        Fitted model, or the response view of a joint fit.
+    parameter : str
+        Predicted parameter.
+    prefix : str
+        Its native namespace.
+    predictor : Formula
+        Evaluated predictor.
+    labels : Mapping[tuple[str, str], str]
+        Design labels of the fit (`coefficient_labels`).
+    response : str
+        Response part of the names; empty for a single response.
+    special : Mapping[str, str] or None
+        Labels of special-effects columns, by column name.
+
+    Returns
+    -------
+    NameScope
+        The names of the predictor.
+    """
+    plan = fit.prediction_plan
+    return NameScope(
+        parameter=parameter,
+        role="nlpar" if prefix.startswith("nlpar_") else "dpar",
+        response=response,
+        formula=predictor,
+        labels={
+            column: label
+            for (owner, column), label in labels.items()
+            if owner == parameter
+        },
+        states=smooth_states(plan.designs.get(parameter) if plan is not None else None),
+        special=dict(special or {}),
+    )
+
+
 def single_variables(
     fit: BayesianFit, *, num_samples: int | None, seed: int
 ) -> dict[str, torch.Tensor]:
@@ -366,61 +395,27 @@ def single_variables(
     intercepts: set[str] = set()
     thresholds = _ordinal_thresholds(fit)
     labels = coefficient_labels(fit)
-    prefixes: dict[str, str] = {}
     special: dict[str, torch.Tensor] = {}
+    latent: dict[str, torch.Tensor] = {}
     shrunk: dict[str, str] = {}
-    smooths: dict[str, SmoothNames] = {}
-    scale_names: dict[str, str] = {}
     items = _location_first(fit)
-    for parameter, prefix, predictor in items:
-        prefixes[parameter] = prefix
-        smooths[parameter] = smooth_names(
-            predictor,
-            smooth_states(plan.designs.get(parameter)),
-            infix=_infix(parameter),
+    planned = {predictor.prefix: predictor for predictor in plan.predictors}
+    scopes = {
+        prefix: name_scope(fit, parameter, prefix, predictor, labels)
+        for parameter, prefix, predictor in items
+    }
+    for parameter, prefix, _ in items:
+        named = predictor_variables(
+            planned[prefix].terms,
+            scopes[prefix].with_(intercept=not (thresholds and parameter == "mu")),
+            draws,
         )
-        scale_names |= {
-            prefix + site: name for site, name in smooths[parameter].scales.items()
-        }
-        for column in predictor.fixed_columns:
-            site = prefix + (
-                "intercept" if column.is_intercept else f"beta_{column.qvr_name}"
-            )
-            if site not in draws:
-                continue
-            consumed.add(site)
-            if thresholds and parameter == "mu" and column.is_intercept:
-                continue
-            value = draws[site]
-            coef = labels[(parameter, column.name)]
-            name = f"b_{_infix(parameter)}{coef}"
-            shrunk[site] = f"{_infix(parameter)}{coef}"
-            if column.is_intercept:
-                intercepts.add(name)
-            if column.name in smooths[parameter].population:
-                # brms names the unpenalized columns of a smooth bs_<label>_<k>.
-                population |= scalar_coordinates(
-                    smooths[parameter].population[column.name], value
-                )
-            elif column.category_specific:
-                # brms names category-specific coefficients bcs_<coef>[k].
-                population |= scalar_coordinates(
-                    f"bcs_{_infix(parameter)}"
-                    f"{brms_rename(column.term.removeprefix('cs(').removesuffix(')'))}"
-                    if column.term.startswith("cs(")
-                    else f"bcs_{_infix(parameter)}{coef}",
-                    value,
-                )
-            elif value.ndim > len(shape) and fit.coefficient_labels:
-                for index, label in enumerate(fit.coefficient_labels):
-                    population |= scalar_coordinates(
-                        f"b_mu{brms_rename(str(label))}_{coef}"
-                        if parameter == "mu"
-                        else f"{name}[{index + 1}]",
-                        value[..., index],
-                    )
-            else:
-                population |= scalar_coordinates(name, value)
+        population |= named.population
+        special |= named.special
+        latent |= named.latent
+        intercepts |= named.intercepts
+        shrunk |= named.sites
+        consumed |= named.read
     # brms lists every intercept before the other population coefficients.
     population = {
         name: value for name, value in population.items() if name in intercepts
@@ -443,47 +438,35 @@ def single_variables(
             if target.class_.startswith("cutpoint")
             or target.class_ in {"Intercept", LOCATION_SITE}
         )
-    scale_members = {
-        member.scale.site: (law, member)
-        for law in plan.group_laws
-        for member in law.members
-    }
+
+    def member_names(member: GroupMemberLaw) -> tuple[CoefficientName, ...]:
+        """Name the components of one group-level coefficient."""
+        if member.prefix not in scopes:
+            return ()
+        return coefficient_names(
+            scopes[member.prefix],
+            planned[member.prefix].output,
+            member.slope,
+            member.width if member.axis is not None else None,
+        )
+
     auxiliary: dict[str, torch.Tensor] = {}
-    scales: dict[str, torch.Tensor] = {}
-    terms: dict[str, str] = {}
-    by_scales: dict[str, list[list[list[str]]]] = {}
     block_correlations = {
         site for law in plan.group_laws for site in law.correlation.sites
     }
     for target in targets:
         if target.site not in draws or target.site in consumed:
             continue
+        if target.whole is not None:
+            # A component drawn on its own is part of its site's variables.
+            consumed.update(target.sites)
+            continue
         parameter = target.nlpar or target.dpar or "mu"
         value = draws[target.site]
         if target.class_ in {"b", "Intercept"}:
-            local = target.site.removeprefix(prefixes.get(parameter, ""))
-            if local.startswith("bsp_") and target.coef is not None:
-                # brms names special-term coefficients bsp_<term>.
-                population |= scalar_coordinates(
-                    f"bsp_{_infix(parameter)}{brms_rename(target.coef)}", value
-                )
+            # The reported coefficients of transformed coordinates.
             consumed.add(target.site)
         elif target.class_ == "sd" and target.group is not None:
-            coef = target.coef or "Intercept"
-            term = (
-                f"{_infix(parameter)}{labels.get((parameter, coef), brms_rename(coef))}"
-            )
-            terms[target.site] = term
-            law, member = scale_members[target.site]
-            named_levels = scale_variables(
-                law, member, f"sd_{target.group}__{term}", value
-            )
-            for level_names in named_levels:
-                scales |= level_names
-            if member.scale.by_axis is not None:
-                by_scales.setdefault(target.group, []).append(
-                    [list(level_names) for level_names in named_levels]
-                )
             consumed.add(target.site)
         elif target.class_ == "cor" and target.site in block_correlations:
             continue
@@ -507,29 +490,20 @@ def single_variables(
                 target,
                 value,
                 infix=_infix(parameter),
-                scales=scale_names,
                 labels=coordinate_labels(fit, target),
             )
             consumed.add(target.site)
-    # brms lists the standard deviations of a by-group level by level.
-    for coefficient_names in by_scales.values():
-        by_level = iter(
-            [
-                name
-                for level in zip(*coefficient_names, strict=True)
-                for names in level
-                for name in names
-            ]
-        )
-        grouped = {
-            name for levels in coefficient_names for names in levels for name in names
-        }
-        reordered: dict[str, torch.Tensor] = {}
-        for name in scales:
-            key = next(by_level) if name in grouped else name
-            reordered[key] = scales[key]
-        scales = reordered
-    correlations: dict[str, torch.Tensor] = {}
+    order = {target.site: index for index, target in enumerate(targets)}
+    scales, correlations = group_variables(
+        sorted(
+            plan.group_laws,
+            key=lambda law: min(
+                order.get(member.scale.site, len(order)) for member in law.members
+            ),
+        ),
+        member_names,
+        draws,
+    )
     for law in plan.group_laws:
         consumed.update(
             site
@@ -538,31 +512,6 @@ def single_variables(
             if site is not None
         )
         consumed.update(law.correlation.sites)
-        member_terms = []
-        for member in law.members:
-            parameter = (
-                member.prefix.removeprefix("dpar_").removeprefix("nlpar_").rstrip("_")
-                if member.prefix
-                else "mu"
-            )
-            member_terms.append(
-                terms.get(
-                    member.scale.site,
-                    f"{_infix(parameter)}"
-                    f"{labels.get((parameter, member.slope), brms_rename(member.slope))}",
-                )
-            )
-        correlations |= correlation_variables(law, member_terms, draws)
-    for parameter, prefix, predictor in items:
-        named, read = design_term_variables(
-            predictor,
-            prefix,
-            draws,
-            infix=_infix(parameter),
-            smooths=smooths[parameter],
-        )
-        special |= named
-        consumed |= read
     named, read = shrinkage_variables(
         draws, consumed, shrinkage_scales(plan.module, draws, shrunk)
     )
@@ -573,15 +522,10 @@ def single_variables(
     for parameter, prefix, predictor in items:
         if not predictor.random_terms:
             continue
-        suffix = "" if parameter == "mu" else f"__{parameter}"
         varying = fit._random_effects(draws, shape, predictor, prefix)
-        for group, coefficients in varying.items():
-            for coef, value in coefficients.items():
-                label = labels.get((parameter, coef), brms_rename(coef))
-                for index, level in enumerate(group_levels[group]):
-                    group_coefficients |= scalar_coordinates(
-                        f"r_{group}{suffix}[{level},{label}]", value[:, :, index]
-                    )
+        for item in level_coefficients(varying, scopes[prefix], planned[prefix].output):
+            for index, level in enumerate(group_levels[item.group]):
+                group_coefficients[item.variable(level)] = item.values[:, :, index]
     return checked_variables(
         brms_order(
             population
@@ -590,6 +534,7 @@ def single_variables(
             | correlations
             | special
             | group_coefficients
+            | latent
             | native_variables(draws, consumed),
             distributional_classes(fit),
         ),

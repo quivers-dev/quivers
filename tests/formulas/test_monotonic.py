@@ -365,7 +365,8 @@ def test_invalid_predictors_priors_and_specifications_are_refused():
     categorical = fit(
         "f ~ mo(x)", data=frame, family="categorical", method="svi", num_steps=1
     )
-    assert sum("_simo_" in name for name in categorical.draws()) == 2
+    simplexes = categorical.draws()["simo_mox1"]
+    assert simplexes.shape[-2:] == (2, 3)
 
 
 def _frame(rows: int = 36) -> pd.DataFrame:

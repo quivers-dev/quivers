@@ -30,7 +30,8 @@ namespace so users coming from R get the expected base R behaviour.
 
 from __future__ import annotations
 
-from typing import Literal, Mapping
+from collections.abc import Collection, Mapping, Sequence
+from typing import Literal
 import io
 import re
 import tokenize
@@ -58,6 +59,8 @@ from quivers.formulas._r_transforms import r_transform_namespace
 
 # brms drop_unused_levels.
 from quivers.formulas._data_options import (
+    Data2Object,
+    formula_data_options,
     dropping_unused_levels,
     formula_data2,
     keep_unused_levels,
@@ -72,6 +75,7 @@ from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._latent_effects import LatentTerm
 from quivers.formulas._priors import PriorTarget
+from quivers.formulas.formula_parts import FormulaField, FormulaPart
 from quivers.formulas._ordered_contrasts import apply_ordered_contrasts
 from quivers.formulas._ordinal_coding import (
     CategoryCoding,
@@ -85,7 +89,10 @@ from quivers.formulas._row_retention import (
     role_columns,
 )
 from quivers.formulas._mgcv_smooth import BSplineBasis
+from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._grouping import (
+    GroupOptions,
+    named_covariance,
     GroupingPlan,
     add_grouping_columns,
     fit_group_options,
@@ -95,6 +102,7 @@ from quivers.formulas._grouping import (
     rewrite_grouping,
 )
 from quivers.formulas._monotonic import (
+    modified_call,
     Monotonic,
     MonotonicTerm,
     monotonic_design,
@@ -352,15 +360,45 @@ class RandomTerm(ValueModel):
     column : FixedColumn or None
         Evaluated slope column, including categorical contrasts and numeric
         transforms. The intercept uses a constant column.
+    specific : bool
+        Whether a slope the program computes has one coefficient per ordinal
+        transition.
+    options : GroupOptions or None
+        ``gr()`` or ``mm()`` options of the term; None without any.
+    covariance : GroupCovariance or None
+        Known covariance between the levels that the options name.
+    bar : int
+        Position of the term's bar in the formula.
     """
 
     slope: str
     group: str
     correlation_id: str | None = None
     shared: bool = False
+    specific: bool = False
     column: FixedColumn | SymbolicColumn | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    options: GroupOptions | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    covariance: GroupCovariance | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    bar: int = 0
+
+    @property
+    def category_specific(self) -> bool:
+        """Return whether the slope has one coefficient per transition.
+
+        Returns
+        -------
+        bool
+            True for a ``cs()`` slope.
+        """
+        return self.specific or (
+            self.column is not None and self.column.category_specific
+        )
 
 
 class SplineBasis(ValueModel):
@@ -400,6 +438,32 @@ class SplineBasis(ValueModel):
             )
 
 
+def _distinct_columns(columns: Sequence[FixedColumn]) -> list[FixedColumn]:
+    """Give every design column an identifier of its own.
+
+    Parameters
+    ----------
+    columns : Sequence[FixedColumn]
+        Columns whose labels may normalize to one identifier.
+
+    Returns
+    -------
+    list[FixedColumn]
+        The columns. A later column whose identifier is taken has the next
+        free number after it.
+    """
+    taken = {column.qvr_name for column in columns}
+    used: set[str] = set()
+    result = []
+    for column in columns:
+        name, number = column.qvr_name, 2
+        while name in used or name != column.qvr_name and name in taken:
+            name, number = f"{column.qvr_name}_{number}", number + 1
+        used.add(name)
+        result.append(column.with_(qvr_name=name))
+    return result
+
+
 class GaussianDesignTerm(ValueModel):
     """One coupled Gaussian coefficient block evaluated on response rows.
 
@@ -425,6 +489,8 @@ class GaussianDesignTerm(ValueModel):
     scale_group : str
         Name of a smoothing scale shared with other blocks (an mgcv ``id``),
         or empty when this block samples its own scale.
+    category_specific : bool
+        Whether the block has one coefficient vector per ordinal transition.
     gp : GaussianProcessBlock or None
         For an approximate ``gp()`` term, the block whose coordinates take
         per-coordinate scales ``sqrt(spd)`` of sampled ``sdgp`` and
@@ -444,6 +510,7 @@ class GaussianDesignTerm(ValueModel):
     coefficient_map: tuple[tuple[float, ...], ...] = ()
     constraint: tuple[float, ...] = ()
     scale_group: str = ""
+    category_specific: bool = False
     gp: GaussianProcessBlock | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -837,93 +904,118 @@ class Formula(ValueModel):
         default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
+    @property
+    def category_specific(self) -> bool:
+        """Return whether a term has one coefficient per ordinal transition.
 
-class FormulaData(ValueModel):
-    """Store the nonstructural complement of a `Formula` lens mapping.
+        Returns
+        -------
+        bool
+            True for a formula with a ``cs()`` term.
+        """
+        return any(
+            part.category_specific
+            for part in (
+                *self.fixed_columns,
+                *self.design_terms,
+                *self.monotonic_terms,
+                *self.random_terms,
+            )
+        )
 
-    The emitted QVR module records formula structure under normalized
-    identifiers. This complement retains the source formula, original names,
-    presentation labels, per-row arrays, group levels, and group indices so
-    ``backward(module, complement)`` can reconstruct the original `Formula`.
-    Complements compare by value over every field, the arrays (stored
-    as read-only copies made at construction) included.
+    def without(self, parts: Collection[FormulaPart]) -> Formula:
+        """Return the formula without some of its elements.
 
-    Attributes
+        Parameters
+        ----------
+        parts : Collection[FormulaPart]
+            Elements to leave out.
+
+        Returns
+        -------
+        Formula
+            The formula with every other element, in authored order.
+        """
+
+        def absent(field: FormulaField, key: str) -> bool:
+            return FormulaPart(field=field, key=key) in parts
+
+        return self.with_(
+            fixed_columns=tuple(
+                column
+                for column in self.fixed_columns
+                if not absent("fixed_columns", column.name)
+            ),
+            design_terms=tuple(
+                term
+                for term in self.design_terms
+                if not absent("design_terms", term.qvr_name)
+            ),
+            random_terms=tuple(
+                term
+                for term in self.random_terms
+                if not absent("random_terms", f"{term.group}:{term.slope}")
+            ),
+            latent_terms=tuple(
+                term
+                for term in self.latent_terms
+                if not absent("latent_terms", term.name)
+            ),
+            monotonic_terms=tuple(
+                term
+                for term in self.monotonic_terms
+                if not absent("monotonic_terms", term.name)
+            ),
+            offsets=tuple(
+                column
+                for index, column in enumerate(self.offsets)
+                if not absent("offsets", str(index))
+            ),
+        )
+
+
+class Witness(ValueModel):
+    """The program binding that shows one element of a formula.
+
+    Parameters
     ----------
-    formula : str
-        Original formula string.
-    response_name : str
-        Original response column name.
-    response_values : np.ndarray
-        Response values with shape ``(N, *response_layout.event_shape)``; read-only.
-    response_layout : ResponseLayout
-        Event coordinates and evaluated numeric carrier.
-    fixed_column_names : Mapping[str, tuple[str, str]]
-        ``(term, name)`` pairs keyed by normalized fixed-column name; a
-        read-only mapping.
-    fixed_column_data : Mapping[str, np.ndarray]
-        Predictor values keyed by normalized fixed-column name; a
-        read-only mapping of read-only arrays.
-    category_specific_columns : tuple[str, ...]
-        Normalized fixed-column names carrying ordinal transition coefficients.
-    fixed_column_order : tuple[str, ...]
-        Authored fixed-column order, retained across staged predictor emission.
-    design_terms : tuple[GaussianDesignTerm, ...]
-        Retained coupled Gaussian designs, preserving source-lens value equality.
-    group_original_names : dict[str, str]
-        Original group names keyed by normalized group name.
-    group_levels : dict[str, tuple[str, ...]]
-        Canonical level order for each group.
-    modifiers : ResponseModifiers
-        Checked response-row weights and decision columns, independent of
-        predictor coefficients.
-    offsets : tuple[FixedColumn, ...]
-        Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
-        the linear-predictor scale. These columns receive no coefficients.
-    group_indices : dict[str, tuple[int, ...]]
-        Per-row integer codes for each group.
-    group_laws : tuple[GroupBlockLaw, ...]
-        Immutable group-block laws from this forward pass, independent of
-        subsequent uses of the configured lens.
-    prior_targets : tuple[PriorTarget, ...]
-        Immutable parameter roles, authored labels, and nominal coefficient
-        axes used to resolve the matching forward pass's prior rules.
-    random_terms : tuple[RandomTerm, ...]
-        Original slope-column data and correlation identities, matched to
-        the group/slope structure decoded from the emitted module.
-    monotonic_terms : tuple[MonotonicTerm, ...]
-        Retained ``mo()`` columns with their training indicators.
-    grouping : GroupingPlan
-        Retained derived grouping factors and multi-membership codes.
+    part : FormulaPart
+        Element of the formula.
+    binding : str
+        Name in the program.
     """
 
-    formula: str = ""
-    response_name: str = ""
-    response_layout: ResponseLayout = dx.field(
-        default_factory=ResponseLayout, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    response_values: np.ndarray = dx.field(
-        opaque=True, extras=opaque_by_value(_read_only)
-    )
-    fixed_column_names: Mapping[str, tuple[str, str]] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    fixed_column_data: Mapping[str, np.ndarray] = dx.field(
-        default_factory=dict,
-        opaque=True,
-        extras=opaque_by_value(_read_only_columns),
-    )
-    symbolic_columns: Mapping[str, SymbolicColumn] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    category_specific_columns: tuple[str, ...] = ()
-    fixed_column_order: tuple[str, ...] = ()
-    design_terms: tuple[GaussianDesignTerm, ...] = dx.field(
+    part: FormulaPart = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    binding: str
+
+
+class FormulaData(ValueModel):
+    """The complement of a `Formula` under its translation to a program.
+
+    The program states which terms a model has. The complement holds what a
+    program cannot state: the data, the authored names, and the binding by
+    which each authored element is recognized. ``backward(module, complement)``
+    reads the terms from the module and their content from here.
+
+    Parameters
+    ----------
+    source : Formula
+        The translated formula.
+    witnesses : tuple[Witness, ...]
+        Binding of each element of the formula in the program.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Laws of the group blocks of the program.
+    level_sites : tuple[LevelSite, ...]
+        Sites holding values for every level of a grouping factor.
+    prior_targets : tuple[PriorTarget, ...]
+        Parameter roles, authored labels, and nominal coefficient axes of the
+        program's sites.
+    """
+
+    source: Formula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    witnesses: tuple[Witness, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
-    group_original_names: dict[str, str] = dx.field(default_factory=dict)
-    group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
-    group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
     group_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -932,21 +1024,6 @@ class FormulaData(ValueModel):
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    offsets: tuple[FixedColumn, ...] = dx.field(
-        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    modifiers: ResponseModifiers = dx.field(
-        default_factory=ResponseModifiers, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    random_terms: tuple[RandomTerm, ...] = dx.field(
-        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    monotonic_terms: tuple[MonotonicTerm, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    grouping: GroupingPlan = dx.field(
-        default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     @property
@@ -1051,6 +1128,9 @@ def _smooth_design(
                     column_indices=group,
                     data=np.column_stack([columns[index].data for index in group]),
                     basis=basis,
+                    category_specific=any(
+                        columns[index].category_specific for index in group
+                    ),
                     coefficient_map=tuple(map(tuple, padded.tolist())),
                     constraint=state.constraint,
                     scale_group=(
@@ -1097,16 +1177,61 @@ def _gp_design(
         data = np.column_stack([columns[index].data for index in indices])
         if subterm.block.exact:
             data = gp_rows(data, subterm.block)[1]
+        specific = any(columns[index].category_specific for index in indices)
+        block = subterm.block.specific() if specific else subterm.block
         terms.append(
             GaussianDesignTerm(
                 term=term_name,
-                qvr_name="gp_" + _qvr_name(subterm.block.label),
+                qvr_name="gp_" + _qvr_name(block.label),
                 column_indices=indices,
                 data=data,
-                gp=subterm.block,
+                category_specific=specific,
+                gp=block,
             )
         )
     return terms
+
+
+def _distinct_processes(
+    blocks: Sequence[GaussianDesignTerm], earlier: Sequence[GaussianDesignTerm]
+) -> list[GaussianDesignTerm]:
+    """Give the Gaussian processes of one covariate labels of their own.
+
+    Parameters
+    ----------
+    blocks : Sequence[GaussianDesignTerm]
+        Blocks of one ``gp()`` term.
+    earlier : Sequence[GaussianDesignTerm]
+        Blocks of the terms before it.
+
+    Returns
+    -------
+    list[GaussianDesignTerm]
+        The blocks. A label an earlier block has takes brms's suffix ``__1``,
+        ``__2`` and so on.
+    """
+    used = {block.gp.label for block in earlier if block.gp is not None}
+    result = []
+    for block in blocks:
+        assert block.gp is not None
+        repeat = next(
+            count
+            for count in range(len(used) + 1)
+            if block.gp.label + (f"__{count}" if count else "") not in used
+        )
+        suffix = f"__{repeat}" if repeat else ""
+        label = block.gp.label + suffix
+        used.add(label)
+        process = block.gp.with_(
+            label=label,
+            lscale_labels=tuple(name + suffix for name in block.gp.lscale_labels),
+        )
+        result.append(
+            block.with_(gp=process, qvr_name="gp_" + _qvr_name(label))
+            if suffix
+            else block
+        )
+    return result
 
 
 def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
@@ -1167,12 +1292,54 @@ def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
     ]
 
 
+class RandomBlock(ValueModel):
+    """The bar a random coefficient is written in.
+
+    Parameters
+    ----------
+    identity : str or None
+        Correlation identity; None for independent coefficients.
+    shared : bool
+        Whether the identity was authored.
+    options : GroupOptions or None
+        Options of the bar's grouping term.
+    position : int
+        Position of the bar in the formula.
+    """
+
+    identity: str | None
+    shared: bool
+    position: int = 0
+    options: GroupOptions | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+
 def _random_blocks(
-    formula: str,
-) -> tuple[str, dict[tuple[str, str], tuple[str | None, bool]]]:
-    """Normalize bar notation and retain each random-effect correlation block."""
+    formula: str, options: Sequence[GroupOptions] = ()
+) -> tuple[str, dict[tuple[str, str], RandomBlock]]:
+    """Normalize bar notation and retain each random-effect correlation block.
+
+    Parameters
+    ----------
+    formula : str
+        Formula over plain grouping factors.
+    options : Sequence[GroupOptions]
+        Options of each bar, in text order; empty when they are not needed.
+
+    Returns
+    -------
+    tuple[str, dict[tuple[str, str], RandomBlock]]
+        The formula with plain bars, and the block of each coefficient term
+        and grouping factor.
+
+    Raises
+    ------
+    ValueError
+        If a bar is malformed or a coefficient appears in two.
+    """
     replacements: list[tuple[int, int, str]] = []
-    metadata: dict[tuple[str, str], tuple[str | None, bool]] = {}
+    metadata: dict[tuple[str, str], RandomBlock] = {}
     starts: list[int] = []
     quote: str | None = None
     escaped = False
@@ -1243,7 +1410,12 @@ def _random_blocks(
                     raise ValueError(
                         f"random coefficient {key[0]!r} for {key[1]!r} appears in multiple blocks"
                     )
-                metadata[key] = (identity, shared)
+                metadata[key] = RandomBlock(
+                    identity=identity,
+                    shared=shared,
+                    options=options[len(replacements) - 1] if options else None,
+                    position=len(replacements) - 1,
+                )
     for start, end, replacement in reversed(replacements):
         formula = formula[:start] + replacement + formula[end:]
     return formula, metadata
@@ -1351,6 +1523,7 @@ def formula_from_data(
     decision: str | None = None,
     groups: tuple[str, ...] = (),
     extra_namespace: Mapping[str, object] | None = None,
+    data2: Mapping[str, Data2Object] | None = None,
 ) -> Formula:
     """Build a typed `Formula` IR by lifting
     `formulae.design_matrices` over a dataframe.
@@ -1400,6 +1573,9 @@ def formula_from_data(
     extra_namespace : Mapping[str, object], optional
         Additional names visible inside the formula's expression
         evaluation, merged on top of the R-style transforms.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Named matrices the formula reads, such as the ``cov`` matrix of a
+        ``gr()`` term.
 
     Returns
     -------
@@ -1416,14 +1592,15 @@ def formula_from_data(
         interaction or group, or weights are nonnumeric, negative, nonfinite,
         or misaligned with the evaluated response rows.
     """
-    return _formula_and_design(
-        formula,
-        data,
-        weights=weights,
-        decision=decision,
-        groups=groups,
-        extra_namespace=extra_namespace,
-    )[0]
+    with formula_data_options(data2=data2):
+        return _formula_and_design(
+            formula,
+            data,
+            weights=weights,
+            decision=decision,
+            groups=groups,
+            extra_namespace=extra_namespace,
+        )[0]
 
 
 def _formula_and_design(
@@ -1568,7 +1745,7 @@ def _formula_and_design(
     nw_df = nw.from_native(pandas_df, eager_only=True)
     member_covariates = []
     memberships = []
-    normalized, random_blocks = _random_blocks(regrouped.formula)
+    normalized, random_blocks = _random_blocks(regrouped.formula, regrouped.options)
     # Inspect only formulas containing modifiers, so ordinary formulas retain
     # their single design-matrix parse. Inspect before evaluation because a
     # nested offset object can otherwise fail inside formulae arithmetic.
@@ -1638,7 +1815,9 @@ def _formula_and_design(
                 continue
             columns = _explode_term(term_name, term, n_obs)
             call = (
-                getattr(components[0], "call", None) if len(components) == 1 else None
+                modified_call(getattr(components[0], "call", None))
+                if len(components) == 1
+                else None
             )
             modifier = getattr(call, "callee", None)
             if modifier not in _SMOOTH_CALLS and any(
@@ -1663,7 +1842,11 @@ def _formula_and_design(
                     or transform.state is None
                 ):
                     raise ValueError("gp() terms require the retained basis evaluator")
-                design_terms.extend(_gp_design(term_name, transform, columns))
+                design_terms.extend(
+                    _distinct_processes(
+                        _gp_design(term_name, transform, columns), design_terms
+                    )
+                )
             elif modifier in _SMOOTH_CALLS:
                 transform = getattr(call, "stateful_transform", None)
                 if (
@@ -1698,6 +1881,7 @@ def _formula_and_design(
 
     if drop_intercept:
         fixed_columns = [column for column in fixed_columns if not column.is_intercept]
+    fixed_columns = _distinct_columns(fixed_columns)
     random_terms: list[RandomTerm] = []
     group_levels: dict[str, tuple[str, ...]] = {}
     group_indices: dict[str, tuple[int, ...]] = {}
@@ -1716,7 +1900,15 @@ def _formula_and_design(
             ):
                 raise ValueError("gp() terms cannot be group-level coefficients")
             group = term.factor.name
-            identity, shared = random_blocks.get((term.expr.name, group), (None, False))
+            block = random_blocks.get(
+                (term.expr.name, group), RandomBlock(identity=None, shared=False)
+            )
+            identity, shared = block.identity, block.shared
+            covariance = (
+                named_covariance(block.options, formula_data2())
+                if block.options is not None
+                else None
+            )
             # A group-level mo() slope varies the matching population column.
             slopes = (
                 monotonic_slopes(monotonic_terms, term.expr.name, group)
@@ -1725,7 +1917,17 @@ def _formula_and_design(
             )
             random_terms.extend(
                 RandomTerm(
-                    slope=slope, group=group, correlation_id=identity, shared=shared
+                    slope=slope,
+                    group=group,
+                    correlation_id=identity,
+                    shared=shared,
+                    options=block.options,
+                    covariance=covariance,
+                    bar=block.position,
+                    specific=any(
+                        column.name == slope and column.category_specific
+                        for column in monotonic_terms
+                    ),
                 )
                 for slope in slopes
             )
@@ -1753,6 +1955,9 @@ def _formula_and_design(
                         group=group,
                         correlation_id=identity,
                         shared=shared,
+                        options=block.options,
+                        covariance=covariance,
+                        bar=block.position,
                     )
                 )
                 member_covariates.append(
@@ -1776,6 +1981,9 @@ def _formula_and_design(
                         group=group,
                         correlation_id=identity,
                         shared=shared,
+                        options=block.options,
+                        covariance=covariance,
+                        bar=block.position,
                         column=column,
                     )
                 )
@@ -1922,7 +2130,6 @@ def _formula_and_design(
         monotonic_terms=tuple(monotonic_terms),
         grouping=GroupingPlan(
             specs=regrouped.specs,
-            covariances=regrouped.covariances,
             memberships=tuple(memberships),
             covariates=tuple(member_covariates),
             options=fit_group_options(

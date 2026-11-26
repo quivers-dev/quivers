@@ -108,7 +108,6 @@ from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._priors import PriorSpec, resolve_priors
 from quivers.formulas._priors import PriorInput, PriorSet, PriorTarget, normalize_priors
 from quivers.formulas._response import expected_response, response_tensor
-from quivers.formulas._smooth import smooth_states
 from quivers.formulas.formula import Formula, _qvr_name
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.inference._likelihood import collect_log_likelihood
@@ -141,28 +140,33 @@ from quivers.formulas._postprocess_methods import JointPostprocess
 # brms coefficient renaming shared with single fits.
 from quivers.formulas._postprocess_names import (
     _ordinal_thresholds,
-    brms_rename,
     coefficient_labels,
+    name_scope,
     coordinate_labels,
     distributional_classes,
     shrinkage_scales,
 )
 
 # One catalogue of brms variable names shared with single-response fits.
+from quivers.formulas._term import OutputAxis
+from quivers.formulas._group_law import GroupMemberLaw
+from quivers.formulas._name_scope import (
+    NameScope,
+    coefficient_names,
+    level_coefficients,
+    predictor_variables,
+)
 from quivers.formulas._variable_catalogue import (
     brms_order,
     checked_variables,
     class_variables,
     correlation_pairs,
-    design_term_variables,
     native_variables,
     scalar_coordinates,
     shrinkage_variables,
-    SmoothNames,
-    smooth_names,
     threshold_variables,
-    correlation_variables,
-    scale_variables,
+    CoefficientName,
+    group_variables,
 )
 from quivers.formulas._threshold_groups import LOCATION_SITE
 
@@ -425,10 +429,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         program = (
             Compiler(
                 module,
-                families=with_flat_catalog(
-                    family.custom.catalog if family.custom is not None else None,
-                    module,
-                ),
+                families=with_flat_catalog(lens.families(), module),
             )
             .compile()
             .morphism
@@ -454,6 +455,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             distributional=dict(response.lens._distributional),
             predictor_graph=response.lens._predictor_graph,
             fixed_parameters=dict(authored.fixed_parameters or {}),
+            default_priors=response.lens._default_priors,
+            center=response.lens._center,
+            decomp=response.lens._decomp,
             prediction_plan=FormulaPredictionPlan(
                 module=module,
                 designs=part.designs,
@@ -461,6 +465,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 group_laws=complement.group_laws,
                 level_sites=complement.level_sites,
                 prior_targets=complement.prior_targets,
+                predictors=lens._planned(response.formula),
             ),
         )
         self.response_fits[name] = view
@@ -516,7 +521,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             self.emission.module,
             draws,
             reported
-            + [target.site for target in self.emission.prior_targets]
+            + [site for target in self.emission.prior_targets for site in target.sites]
             + equated,
         )
 
@@ -655,7 +660,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             brms-named draws.
         """
         result: dict[str, torch.Tensor] = {}
-        terms: dict[str, str] = {}
         # brms omits the response from names of a one-response model.
         joint = len(self.response_names) > 1
         # Coefficient labels as single fits name them:
@@ -666,28 +670,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         }
 
         special: dict[tuple[str, str, str], str] = {}
-
-        def coefficient_label(resp: str, parameter: str, coef: str) -> str:
-            """Return brms's label of one coefficient of a response.
-
-            Parameters
-            ----------
-            resp : str
-                Response label.
-            parameter : str
-                ``mu``, a distributional, or a nonlinear parameter.
-            coef : str
-                Design column or varying coefficient name.
-
-            Returns
-            -------
-            str
-                The renamed R column label; an ``mi()`` or ``me()`` column,
-                also as a varying slope, takes brms's special-term spelling.
-            """
-            if (resp, parameter, coef) in special:
-                return special[(resp, parameter, coef)]
-            return renamed[resp].get((parameter, coef), brms_rename(coef))
 
         def tag(resp: str) -> str:
             """Return the response part of a brms name.
@@ -723,41 +705,99 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
         consumed: set[str] = set()
         shrunk: dict[str, str] = {}
-        # Names of every smooth term, by response and parameter.
-        smooths: dict[tuple[str, str], SmoothNames] = {}
-        scale_names: dict[str, dict[str, str]] = {}
+        latent: dict[str, torch.Tensor] = {}
+        scopes: dict[str, NameScope] = {}
+        outputs: dict[str, OutputAxis | None] = {}
         for resp, response in self.emission.responses.items():
-            scale_names[resp] = {}
-            designs = self._response_fit(resp).prediction_plan.designs
+            plan = self._response_fit(resp).prediction_plan
+            assert plan is not None
+            local = {
+                site.removeprefix(response.prefix): value
+                for site, value in draws.items()
+                if site.startswith(response.prefix)
+            }
+            planned = {predictor.prefix: predictor for predictor in plan.predictors}
+            outputs |= {
+                response.prefix + key: item.output for key, item in planned.items()
+            }
+            if resp in thresholds:
+                # brms reports the thresholds in place of the intercept and
+                # the native threshold coordinates.
+                result |= threshold_variables(
+                    thresholds[resp],
+                    infix=tag(resp),
+                    groups=self._response_fit(resp).formula.modifiers.threshold_groups,
+                )
             for parameter, prefix, predictor in response.lens._predictor_items(
                 response.formula
             ):
-                if prefix.startswith("nlpar_"):
-                    infix = f"{tag(resp)}{parameter}_"
-                elif prefix.startswith("dpar_"):
-                    infix = f"{parameter}_{tag(resp)}"
-                else:
-                    infix = tag(resp)
-                smooths[(resp, parameter)] = smooth_names(
-                    predictor, smooth_states(designs.get(parameter)), infix=infix
+                scope = name_scope(
+                    self._response_fit(resp),
+                    parameter,
+                    prefix,
+                    predictor,
+                    renamed[resp],
+                    response=resp if joint else "",
+                    special={
+                        column: label
+                        for (owner, name, column), label in special.items()
+                        if (owner, name) == (resp, parameter)
+                    },
                 )
-                scale_names[resp] |= {
-                    prefix + site: name
-                    for site, name in smooths[(resp, parameter)].scales.items()
+                scopes[response.prefix + prefix] = scope
+                named = predictor_variables(
+                    planned[prefix].terms,
+                    scope.with_(
+                        intercept=not (resp in thresholds and parameter == "mu")
+                    ),
+                    local,
+                )
+                result |= {**named.population, **named.special}
+                latent |= named.latent
+                shrunk |= {
+                    response.prefix + site: name for site, name in named.sites.items()
                 }
+                consumed |= {response.prefix + site for site in named.read}
+
+        def member_names(member: GroupMemberLaw) -> tuple[CoefficientName, ...]:
+            """Name the components of one group-level coefficient."""
+            if member.prefix not in scopes:
+                return ()
+            return coefficient_names(
+                scopes[member.prefix],
+                outputs[member.prefix],
+                member.slope,
+                member.width if member.axis is not None else None,
+            )
+
         block_laws = self.emission.group_laws
         grouped = {site for law in block_laws for site in law.correlation.sites}
-        scale_members = {
-            member.scale.site: (law, member)
-            for law in block_laws
-            for member in law.members
+        order = {
+            target.site: index
+            for index, target in enumerate(self.emission.prior_targets)
         }
+        scales, correlations = group_variables(
+            sorted(
+                block_laws,
+                key=lambda law: min(
+                    order.get(member.scale.site, len(order)) for member in law.members
+                ),
+            ),
+            member_names,
+            draws,
+        )
+        result |= scales | correlations
         for target in self.emission.prior_targets:
             if target.site not in draws:
                 continue
             value = draws[target.site]
             resp = target.response
-            consumed.add(target.site)
+            if target.site in consumed:
+                continue
+            # A component drawn on its own is part of its site's variables.
+            consumed.update(target.sites)
+            if target.whole is not None:
+                continue
             if target.class_ == "cor" and target.site in grouped:
                 continue
             if (
@@ -773,59 +813,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     )
                 )
             ):
-                # brms reports the thresholds in place of the intercept and
-                # the native threshold coordinates.
-                result |= threshold_variables(
-                    thresholds[resp],
-                    infix=tag(resp),
-                    groups=self._response_fit(resp).formula.modifiers.threshold_groups,
-                )
                 continue
             if target.class_ in {"b", "Intercept"} and resp is not None:
-                coef = target.coef or "Intercept"
-                key = (resp, target.nlpar or target.dpar or "mu", coef)
-                if key in special:
-                    if target.nlpar is not None:
-                        name = f"bsp_{tag(resp)}{target.nlpar}_{special[key]}"
-                    elif key[1] != "mu":
-                        name = f"bsp_{key[1]}_{tag(resp)}{special[key]}"
-                    else:
-                        name = f"bsp_{tag(resp)}{special[key]}"
-                    result |= scalar_coordinates(name, value)
-                    continue
-                local = target.site.removeprefix(self.emission.responses[resp].prefix)
-                if local.removeprefix(self._local_prefix(target)).startswith("bsp_"):
-                    # brms names special-term coefficients bsp_<term>.
-                    result |= scalar_coordinates(
-                        f"bsp_{self._infix(target)}{brms_rename(coef)}", value
-                    )
-                    continue
-                if coef in smooths[(resp, key[1])].population:
-                    # brms names the unpenalized columns of a smooth
-                    # bs_<label>_<k>.
-                    result |= scalar_coordinates(
-                        smooths[(resp, key[1])].population[coef], value
-                    )
-                    continue
-                coef = coefficient_label(resp, key[1], coef)
-                if target.nlpar is not None:
-                    name = f"b_{tag(resp)}{target.nlpar}_{coef}"
-                elif target.dpar not in (None, "mu"):
-                    name = f"b_{target.dpar}_{tag(resp)}{coef}"
-                else:
-                    name = f"b_{tag(resp)}{coef}"
-                shrunk[target.site] = name.removeprefix("b_")
-                result |= scalar_coordinates(name, value)
+                # The reported coefficients of transformed coordinates.
+                continue
             elif target.class_ == "sd" and resp is not None:
-                term = self._term(target, coefficient_label)
-                terms[target.site] = term
-                law, member = scale_members[target.site]
-                for level in scale_variables(
-                    law, member, f"sd_{target.group}__{term}", value
-                ):
-                    result |= level
+                # The standard deviations of the group blocks.
+                continue
             elif target.class_ == "cor" and target.site == "rescor":
-                result |= correlation_pairs("rescor", self.response_names, value)
+                result |= correlation_pairs(
+                    "rescor", self.response_names, value @ value.transpose(-1, -2)
+                )
             elif target.dpar == target.site and resp is None:
                 # The degrees of freedom that correlated responses share.
                 result[target.site] = value
@@ -833,7 +831,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 result |= correlation_pairs(
                     f"corme_{resp}" if joint else "corme",
                     target.component_labels,
-                    value,
+                    value @ value.transpose(-1, -2),
                 )
             elif target.class_ in {"meanme", "sdme"} and resp is not None:
                 if target.coef is not None:
@@ -862,17 +860,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     else target,
                     value,
                     infix=self._infix(target),
-                    scales=scale_names[resp] if resp is not None else None,
                     labels=coordinate_labels(self._response_fit(resp), target)
                     if resp is not None
                     else tuple(str(label) for label in target.component_labels),
                 )
-        for law in block_laws:
-            result |= correlation_variables(
-                law,
-                [terms.get(member.scale.site, member.slope) for member in law.members],
-                draws,
-            )
         for label, spec in self.missing_specs.items():
             if spec.standard_error is not None and f"mi_{label}__truth" in draws:
                 values = draws[f"mi_{label}__truth"]
@@ -890,38 +881,13 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             ):
                 if not predictor.random_terms:
                     continue
-                if prefix.startswith("nlpar_"):
-                    label = f"{tag(resp)}{parameter}"
-                elif prefix.startswith("dpar_"):
-                    label = f"{parameter}_{resp}" if joint else parameter
-                else:
-                    label = resp if joint else ""
-                varying = self._random(draws, predictor, response.prefix + prefix)
-                for group, coefficients in varying.items():
-                    for coef, value in coefficients.items():
-                        brms_coef = coefficient_label(resp, parameter, coef)
-                        for index, level in enumerate(levels[group]):
-                            name = f"r_{group}__{label}" if label else f"r_{group}"
-                            result[f"{name}[{level},{brms_coef}]"] = value[:, :, index]
-        for resp, response in self.emission.responses.items():
-            for parameter, prefix, predictor in response.lens._predictor_items(
-                response.formula
-            ):
-                if prefix.startswith("nlpar_"):
-                    infix = f"{tag(resp)}{parameter}_"
-                elif prefix.startswith("dpar_"):
-                    infix = f"{parameter}_{tag(resp)}"
-                else:
-                    infix = tag(resp)
-                named, read = design_term_variables(
-                    predictor,
-                    response.prefix + prefix,
-                    draws,
-                    infix=infix,
-                    smooths=smooths[(resp, parameter)],
-                )
-                result |= named
-                consumed |= read
+                for item in level_coefficients(
+                    self._random(draws, predictor, response.prefix + prefix),
+                    scopes[response.prefix + prefix],
+                    outputs[response.prefix + prefix],
+                ):
+                    for index, level in enumerate(levels[item.group]):
+                        result[item.variable(level)] = item.values[:, :, index]
         for law in block_laws:
             consumed.update(law.correlation.sites)
             consumed.update(
@@ -945,7 +911,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         chains, count = next(iter(draws.values())).shape[:2] if draws else (0, 0)
         return checked_variables(
             brms_order(
-                result | native_variables(draws, consumed),
+                result | latent | native_variables(draws, consumed),
                 [
                     name
                     for resp in self.response_names
@@ -1000,35 +966,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             return f"dpar_{target.dpar}_"
         return ""
 
-    def _term(self, target: PriorTarget, label: Callable[[str, str, str], str]) -> str:
-        """Name a varying coefficient as brms does inside sd and cor names.
-
-        Parameters
-        ----------
-        target : PriorTarget
-            A group standard-deviation target.
-        label : Callable[[str, str, str], str]
-            brms's coefficient label of ``(response, parameter, coefficient)``.
-
-        Returns
-        -------
-        str
-            ``<resp>_<coef>``, ``<dpar>_<resp>_<coef>``, or
-            ``<resp>_<nlpar>_<coef>``.
-        """
-        assert target.response is not None
-        coef = label(
-            target.response,
-            target.nlpar or target.dpar or "mu",
-            target.coef or "Intercept",
-        )
-        resp = f"{target.response}_" if len(self.response_names) > 1 else ""
-        if target.nlpar is not None:
-            return f"{resp}{target.nlpar}_{coef}"
-        if target.dpar not in (None, "mu"):
-            return f"{target.dpar}_{resp}{coef}"
-        return f"{resp}{coef}"
-
     def _predictor(self, resp: str, parameter: str) -> tuple[Formula, str]:
         """Locate one response predictor and its namespaced coefficient prefix.
 
@@ -1074,9 +1011,11 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             Column labels mapped to coefficient draws on chain and draw axes.
         """
         self._selection(resp)
-        predictor, prefix = self._predictor(resp, parameter)
-        return BayesianFit._fixed_effects(
-            self.draws(num_samples=num_samples, seed=seed), predictor, prefix
+        view = self._response_fit(resp)
+        return view._fixed_effects(
+            self.draws(num_samples=num_samples, seed=seed),
+            view._formula_predictor(parameter)[1],
+            self.emission.responses[resp].prefix,
         )
 
     def random_effects(
@@ -1177,7 +1116,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         self._selection(resp)
         predictor, prefix = self._predictor(resp, parameter)
         draws = self.draws(num_samples=num_samples, seed=seed)
-        fixed = BayesianFit._fixed_effects(draws, predictor, prefix)
+        view = self._response_fit(resp)
+        fixed = view._fixed_effects(
+            draws,
+            view._formula_predictor(parameter)[1],
+            self.emission.responses[resp].prefix,
+        )
         varying = self._random(draws, predictor, prefix)
         for group, values in varying.items():
             for name, coefficient in fixed.items():
@@ -1378,7 +1322,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         """
         names = self._selection(resp)
         bindings = {
-            name: _linpred_binding(self._response_fit(name), parameter, transform)
+            name: self._response_fit(name)._linpred_binding(parameter, transform)
             for name in names
         }
         prepared = self._prepare(
@@ -1407,18 +1351,13 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             result = {}
             for name in names:
                 response = self.emission.responses[name]
-                binding, exponentiate, specific, width = bindings[name]
                 rows = prepared.rows[name]
-                value = recorded.sites[response.names[binding]].value
-                if exponentiate:
-                    value = value.exp()
-                if specific:
-                    value = row_binding(value, rows).unsqueeze(-1) + row_binding(
-                        recorded.sites[response.names["eta_nonbaseline"]].value,
-                        rows,
-                        width,
-                    )
-                result[name] = row_binding(value, rows, width)
+                result[name] = bindings[name].read(
+                    lambda binding, names=response.names: (
+                        recorded.sites[names[binding]].value
+                    ),
+                    rows,
+                )
             return result
 
         return self._replay(
@@ -2400,81 +2339,6 @@ def _brms_name(text: str) -> str:
         Letters and digits only.
     """
     return "".join(character for character in text if character.isalnum())
-
-
-def _linpred_binding(
-    view: BayesianFit, parameter: str, transform: bool
-) -> tuple[str, bool, bool, int]:
-    """Choose a response's native linear-predictor binding.
-
-    The rules are those of `BayesianFit.posterior_linpred`, applied to the
-    response view before namespacing.
-
-    Parameters
-    ----------
-    view : BayesianFit
-        Response view.
-    parameter : str
-        Predictor name.
-    transform : bool
-        Request the inverse-link binding.
-
-    Returns
-    -------
-    tuple[str, bool, bool, int]
-        Local binding name, whether to exponentiate a retained log rate,
-        whether category-specific effects are added, and the event width.
-
-    Raises
-    ------
-    ValueError
-        If the parameter has no predictor or an ordinal inverse link is
-        requested.
-    """
-    graph = view.predictor_graph
-    graph_parameter = graph is not None and parameter in (
-        graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
-    )
-    # brms: an auxiliary parameter without a formula is constant over rows.
-    if view._constant_parameter(parameter):
-        return parameter, False, False, 0
-    # mixtures: parameter="mu" stacks the component locations.
-    if not graph_parameter and not (
-        parameter == "mu" and view.family.mixture is not None
-    ):
-        view._formula_predictor(parameter)
-    if transform and parameter == "mu" and view.family.ordinal is not None:
-        raise ValueError(
-            "ordinal probabilities depend on thresholds; use posterior_epred"
-        )
-    retained_log_rate = view.family.retains_log_location and parameter == "mu"
-    binding = (
-        ("mu" if transform and not retained_log_rate else "eta")
-        if parameter == "mu"
-        else (parameter if transform else f"dpar_{parameter}_eta")
-    )
-    if graph is not None and parameter in (
-        graph.leaves.keys() | graph.expressions.keys()
-    ):
-        binding = f"nlpar_{parameter}"
-    specific = parameter == "mu" and (
-        any(column.category_specific for column in view.formula.fixed_columns)
-        or any(
-            term.column is not None and term.column.category_specific
-            for term in view.formula.random_terms
-        )
-    )
-    width = view._predictor_width(parameter)
-    if specific:
-        width = (
-            len(view.category_labels)
-            - 1
-            - int(
-                view.family.ordinal is not None
-                and view.family.ordinal.kind == "hurdle_cumulative"
-            )
-        )
-    return binding, retained_log_rate and transform, specific, width
 
 
 def _joint_observations(

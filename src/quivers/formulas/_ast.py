@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from collections.abc import Iterable
 from typing import Literal
 
 from quivers.dsl._value_expressions import _parse_value_expression
@@ -389,6 +390,70 @@ def _draw(
         morphism=family,
         args=tagged_args,
         index=index,
+    )
+
+
+type Binder = tuple[str, str]
+"""A bound variable and the finite axis it ranges over."""
+
+ROW: Binder = ("response", "Resp")
+"""Binder of the response rows."""
+
+
+def row_zero(name: str, row: Binder = ROW) -> LetStep:
+    """Bind a row vector of zeros, which broadcasts a scalar to the rows.
+
+    Parameters
+    ----------
+    name : str
+        Binding.
+    row : Binder
+        Row binder and axis.
+
+    Returns
+    -------
+    LetStep
+        The binding.
+    """
+    return _let(name, _factor((row,), body=LetExprLiteral(value=0.0)))
+
+
+def stack_rows(
+    name: str,
+    rows: Iterable[tuple[int, LetExprNode]],
+    coordinate: Binder,
+    *,
+    stem: str,
+    row: Binder = ROW,
+) -> tuple[LetStep, LetStep]:
+    """Stack one row vector per coordinate along an axis.
+
+    Parameters
+    ----------
+    name : str
+        Binding of the value over the rows, then the axis.
+    rows : Iterable[tuple[int, LetExprNode]]
+        Coordinates of the axis and their row vectors.
+    coordinate : Binder
+        Coordinate binder and the axis.
+    stem : str
+        Binding of the value over the axis, then the rows.
+    row : Binder
+        Row binder and axis.
+
+    Returns
+    -------
+    tuple[LetStep, LetStep]
+        The stack by coordinate, and its arrangement by row.
+    """
+    return (
+        _let(stem, _factor((coordinate,), cases=tuple(rows))),
+        _let(
+            name,
+            _factor(
+                (row, coordinate), body=_index(stem, _var(coordinate[0]), _var(row[0]))
+            ),
+        ),
     )
 
 

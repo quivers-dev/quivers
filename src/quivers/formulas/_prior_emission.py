@@ -36,9 +36,8 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._autocor import autocor_matrix_targets, autocor_prior_target
 from quivers.formulas._category_formulas import scale_parameter
-from quivers.formulas._gp import gp_prior_sites
-from quivers.formulas._group_law import LKJCorrelation, option_prior_sites
-from quivers.formulas._monotonic_emission import monotonic_prior_sites
+from quivers.formulas._group_law import option_prior_sites
+from quivers.formulas._term import catalogue_sites
 from quivers.formulas._priors import PriorTarget, PriorSpec, RegularizedHorseshoe, R2D2
 
 # brms prior surface: flat and constant rules, main = TRUE, sampled coordinates.
@@ -48,7 +47,6 @@ from quivers.formulas._brms_priors import (
     flat_event_rank,
     join_main_rules,
 )
-from quivers.formulas._population_coordinates import sampled_site
 
 
 def _ordered_steps(steps: Sequence[ProgramStep]) -> tuple[ProgramStep, ...]:
@@ -410,11 +408,10 @@ def build_prior_targets(
     predictors,
     laws,
     *,
-    nonlinear_names=(),
     draw,
     thresholds_by=None,
     predictor_scopes=None,
-    predictor_component_labels=None,
+    separated=frozenset(),
 ):
     """Combine explicit formula roles, group-block laws, and actual sample axes.
 
@@ -426,12 +423,10 @@ def build_prior_targets(
         Response layout and retained authored labels.
     family : Family
         Response and auxiliary parameter metadata.
-    predictors : Sequence
-        Canonical predictor_items output with labels, prefixes, and designs.
+    predictors : Sequence[Predictor]
+        Planned predictors, whose terms declare their sites.
     laws : Sequence[GroupBlockLaw]
         Laws of the group blocks of the same emission.
-    nonlinear_names : Collection[str]
-        Names of retained nonlinear parameter designs.
     draw : Callable
         Existing compositional prior parser.
     thresholds_by : str or None
@@ -439,8 +434,8 @@ def build_prior_targets(
     predictor_scopes : Mapping or None
         Explicit response/dpar/nlpar coordinates for a joint program's
         existing predictor prefixes. Ordinary programs derive their scopes.
-    predictor_component_labels : Mapping or None
-        Free component labels for each explicitly indexed joint predictor.
+    separated : Collection[str]
+        Sites whose components are drawn on their own.
 
     Returns
     -------
@@ -455,10 +450,7 @@ def build_prior_targets(
     }
     sizes = finite_object_sizes(module)
     targets = {}
-    scopes = {
-        prefix: ({"nlpar": name} if name in nonlinear_names else {"dpar": name})
-        for name, prefix, _ in predictors
-    }
+    scopes = {predictor.prefix: predictor.scope for predictor in predictors}
     scopes.update(predictor_scopes or {})
     labels = ()
     if family.response is not None:
@@ -470,115 +462,68 @@ def build_prior_targets(
             names = tuple(str(i) for i in sorted(set(formula.response_values.tolist())))
         labels = tuple(str(names[i]) for i in family.response.coordinate_indices(names))
 
-    def add(site, role, *, lower=None, upper=None, component_labels=None, **metadata):
-        if site not in samples or site in targets:
+    def add(site, role, *, lower=None, upper=None, **metadata):
+        if site in targets:
             return
-        step = samples[site]
+        if site in separated:
+            whole = PriorTarget(
+                site=site, class_=role, lower=lower, upper=upper, **metadata
+            )
+            for component in whole.components():
+                record(component)
+            return
+        if site in samples:
+            record(
+                PriorTarget(
+                    site=site, class_=role, lower=lower, upper=upper, **metadata
+                )
+            )
+
+    def record(target):
+        step = samples[target.site]
         axes = ()
         if step.index is not None:
             if not isinstance(step.index, TypeName) or step.index.name not in sizes:
                 raise ValueError(
-                    f"prior target {site!r} has no retained nominal finite axis"
+                    f"prior target {target.site!r} has no retained nominal finite axis"
                 )
             axes = (step.index.name,)
         # Improper flat laws live in a compilation-local catalog.
         event_rank = flat_event_rank(step.morphism)
         if event_rank is None:
             event_rank = semantic_family(step.morphism).event_rank
-        targets[site] = PriorTarget(
-            site=site,
-            class_=role,
+        targets[target.site] = target.with_(
             axes=axes,
             shape=tuple(sizes[axis] for axis in axes),
-            lower=lower,
-            upper=upper,
             event_rank=event_rank,
-            component_labels=(labels if component_labels is None else component_labels)
-            if axes and role in {"b", "Intercept", "sd", "sds"}
-            else (),
-            **metadata,
         )
 
-    members = {
-        (member.prefix, law.group, member.slope): (law, member)
-        for law in laws
-        for member in law.members
-    }
-    for _name, prefix, predictor in predictors:
-        for term in predictor.design_terms:
-            # brms gp(): classes sdgp and lscale in place of one sds.
-            if term.gp is not None:
-                for site, role, coef in gp_prior_sites(term.gp, prefix):
-                    add(
-                        site,
-                        role,
-                        coef=coef,
-                        lower=0.0,
-                        component_labels=(predictor_component_labels or {}).get(prefix),
-                        **scopes[prefix],
-                    )
-                continue
+    for predictor in predictors:
+        for site in catalogue_sites(predictor.terms):
             add(
-                prefix + (term.scale_group or term.qvr_name) + "_scale",
-                "sds",
-                coef=term.term,
-                lower=0.0,
-                component_labels=(predictor_component_labels or {}).get(prefix),
-                **scopes[prefix],
-            )
-        for column in predictor.fixed_columns:
-            # Centered and QR predictors sample transformed coordinates.
-            site = sampled_site(
-                prefix
-                + ("intercept" if column.is_intercept else "beta_" + column.qvr_name),
-                samples,
-            )
-            add(
-                site,
-                "Intercept" if column.is_intercept else "b",
-                coef=column.name,
-                component_labels=(predictor_component_labels or {}).get(prefix),
-                **scopes[prefix],
-            )
-        # brms mo(): class b for bsp, class simo for each simplex.
-        for site, role, coef in monotonic_prior_sites(predictor, prefix):
-            add(
-                site,
-                role,
-                coef=coef,
-                component_labels=(predictor_component_labels or {}).get(prefix),
-                **scopes[prefix],
-            )
-        for term in predictor.random_terms:
-            law, member = members.get((prefix, term.group, term.slope), (None, None))
-            if law is None or member is None:
-                continue
-            by = law.level.by if member.scale.by_axis is not None else None
-            add(
-                member.scale.site,
-                "sd",
-                coef=term.slope,
-                group=term.group,
-                lower=0.0,
-                component_labels=(predictor_component_labels or {}).get(prefix)
-                if member.scale.component_axis is not None
-                else (),
-                partition_labels=by.levels if by is not None else (),
-                **scopes[prefix],
+                site.name,
+                site.class_,
+                coef=site.coef,
+                group=site.group,
+                lower=site.lower,
+                upper=site.upper,
+                component_labels=site.component_labels,
+                parameters=site.parameters,
+                partition_labels=site.partition_labels,
+                partition_axis=site.partition_axis,
+                **scopes[predictor.prefix],
             )
     # brms gr(dist = "student") df and gr(by =) per-level correlations.
     for site, role, group, coef, lower in option_prior_sites(laws):
         add(site, role, group=group, coef=coef, lower=lower)
     for law in laws:
-        correlation = law.correlation
-        if (
-            not isinstance(correlation, LKJCorrelation)
-            or correlation.site not in samples
-        ):
+        drawn = [site for site in law.correlation.sites if site in samples]
+        if law.level.by is not None or not drawn:
             continue
         common = {tuple(scopes[member.prefix].items()) for member in law.members}
         scope = dict(next(iter(common))) if len(common) == 1 else {}
-        add(correlation.site, "cor", group=law.group, **scope)
+        for site in drawn:
+            add(site, "cor", group=law.group, **scope)
     for auxiliary in family.aux_params:
         default = draw(auxiliary.name, auxiliary.prior)
         support = semantic_family(default.morphism).support
@@ -632,9 +577,6 @@ def build_prior_targets(
             add(name, name, lower=0.0, dpar=name)
     for site, role in autocor_matrix_targets(family):
         add(site, role)
-    for latent in formula.latent_terms:
-        for site, role, lower, upper in latent.prior_sites():
-            add(site, role, lower=lower, upper=upper)
     return tuple(targets.values())
 
 
@@ -723,3 +665,85 @@ def restrict_prior_step(
         )
         prior = prior.with_(morphism="Restrict", args=tuple(arguments))
     return prior
+
+
+def separate_components(
+    module: Module,
+    targets: Sequence[PriorTarget],
+    priors: Mapping[str, SampleStep],
+) -> Module:
+    """Draw the components of some sites one by one.
+
+    Each component is drawn from the site's own law, or from its configured
+    prior, and the site becomes the array of its components.
+
+    Parameters
+    ----------
+    module : Module
+        Program drawing every site whole.
+    targets : Sequence[PriorTarget]
+        Sites to separate.
+    priors : Mapping[str, SampleStep]
+        Configured prior of each component's site.
+
+    Returns
+    -------
+    Module
+        The same law, with one site per component where no prior is
+        configured.
+    """
+    by_site = {target.site: target for target in targets}
+
+    def steps(step: ProgramStep) -> tuple[ProgramStep, ...]:
+        target = by_site.get(step.vars[0]) if isinstance(step, SampleStep) else None
+        if target is None or not isinstance(step, SampleStep):
+            return (step,)
+        assert isinstance(step.index, TypeName)
+        # The component of a plated event keeps the event's axis.
+        event = step.axes.over[0] if step.axes is not None and step.axes.over else None
+        axis = event or target.partition_axis
+        draws = []
+        for component in target.components():
+            prior = priors.get(component.site, step)
+            draws.append(
+                step.with_(
+                    vars=(component.site,),
+                    morphism=prior.morphism,
+                    args=prior.args,
+                    static_args=prior.static_args,
+                    index=TypeName(name=axis) if axis is not None else None,
+                    axes=None,
+                    options=(),
+                )
+            )
+        count = len(draws)
+        names = [draw.vars[0] for draw in draws]
+        if target.partition_axis is None:
+            value = _factor(
+                (("prior_component", step.index.name),),
+                cases=tuple((index, _var(name)) for index, name in enumerate(names)),
+            )
+        else:
+            value = _factor(
+                (("prior_cell", step.index.name),),
+                cases=tuple(
+                    (
+                        index,
+                        _index(
+                            names[index % count],
+                            _literal(index // count, integral=True),
+                        ),
+                    )
+                    for index in range(count * len(target.partition_labels))
+                ),
+            )
+        return (*draws, _let(target.site, value))
+
+    return module.with_(
+        statements=tuple(
+            item.with_(draws=tuple(new for step in item.draws for new in steps(step)))
+            if isinstance(item, ProgramDecl)
+            else item
+            for item in module.statements
+        )
+    )

@@ -6,7 +6,8 @@ from itertools import product
 from typing import TYPE_CHECKING
 
 from quivers.diagnostics.contrast import _contrast_hypothesis
-from quivers.formulas._group_law import group_coefficients
+from quivers.formulas._predictor import TRANSITION_AXIS
+from quivers.formulas._group_law import LKJCorrelation, group_coefficients
 
 # Pathfinder draws report variational provenance.
 from quivers.inference.pathfinder import draw_provenance
@@ -76,32 +77,14 @@ def _formula_contrast_inputs(
                 original_components.get(label, label)
                 for label in target.component_labels
             )
-        for name, _, predictor in fit._predictor_items():
-            if name != (target.nlpar or target.dpar):
-                continue
-            columns = (
-                (
-                    term.column
-                    for term in predictor.random_terms
-                    if term.group == target.group and term.slope == target.coef
-                )
-                if target.group is not None
-                else (
-                    column
-                    for column in predictor.fixed_columns
-                    if column.name == target.coef
-                )
-            )
-            if any(
-                column is not None and column.category_specific for column in columns
+        if target.coef is not None and TRANSITION_AXIS in target.axes:
+            categories = fit.category_labels
+            if (
+                fit.family.ordinal is not None
+                and fit.family.ordinal.kind == "hurdle_cumulative"
             ):
-                categories = fit.category_labels
-                if (
-                    fit.family.ordinal is not None
-                    and fit.family.ordinal.kind == "hurdle_cumulative"
-                ):
-                    categories = categories[1:]
-                return tuple(zip(categories[:-1], categories[1:], strict=True))
+                categories = categories[1:]
+            return tuple(zip(categories[:-1], categories[1:], strict=True))
         return ()
 
     def add(name, value, axes=(), labels=()):
@@ -191,7 +174,7 @@ def _formula_contrast_inputs(
             for term in predictor.random_terms
             if term.group == group
         }
-        fixed = fit._fixed_effects(draws, predictor, prefix) if scope == "coef" else {}
+        fixed = fit._fixed_effects(draws, prefix) if scope == "coef" else {}
         population_targets = {
             target.coef: target
             for target in targets
@@ -290,7 +273,10 @@ def _formula_contrast_inputs(
                     (parameters[member.prefix], member.slope, component)
                     for component in components
                 )
-            labels = tuple(coordinate_labels)
+            correlation = law.correlation
+            assert isinstance(correlation, LKJCorrelation)
+            part = correlation.factors.index(target.site) % correlation.components
+            labels = tuple(coordinate_labels[part :: correlation.components])
             axis = f"correlation:{law.identity}"
             first = law.members[0]
             predictor = next(
@@ -307,6 +293,10 @@ def _formula_contrast_inputs(
             # One correlation per by level is named by its level.
             if target.coef is not None:
                 authored, axis = f"{authored}:{target.coef}", f"{axis}:{target.coef}"
+            # Independent components are named by their label.
+            if correlation.components > 1:
+                component = labels[0][2]
+                authored, axis = f"{authored}:{component}", f"{axis}:{component}"
             add(authored, value, (axis + ":row", axis + ":column"), (labels, labels))
         else:
             axes, labels = target_axes(target, value)

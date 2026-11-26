@@ -4,15 +4,13 @@ brms reports every parameter as a scalar variable: a vector parameter is
 ``name[i]``, a matrix ``name[i,j]``, a correlation matrix one variable per
 pair, and a simplex of mixing proportions one variable per component. Each
 term of a formula model registers its overrideable sites as `PriorTarget`
-values and its design blocks as `GaussianDesignTerm` values. This module
-names those registrations, so a single-response fit and a joint fit list the
-same variables for the same term and no variable keeps an event axis:
+values. This module names those registrations, so a single-response fit and a
+joint fit list the same variables for the same term and no variable keeps an
+event axis:
 
 - `class_variables` names a hyperparameter target from its prior class
-  (``sds_sx_1``, ``sdgp_gpx``, ``simo_mox1[k]``, ``ar[1]``, ``theta1``,
-  ``cortime__a__b``, ``df_g``).
-- `design_term_variables` names the innovations of smooth and Gaussian
-  process blocks (``s_sx_1[k]``, ``zgp_gpx[k]``).
+  (``ar[1]``, ``theta1``, ``cortime__a__b``, ``df_g``). The terms of a
+  predictor name their own draws (`quivers.formulas._name_scope`).
 - `shrinkage_variables` names the auxiliary sites of horseshoe and R2D2
   priors (``hs_global``, ``hs_local[k]``, ``R2D2_R2``, ``R2D2_phi[k]``).
 - `native_variables` lists every remaining site under its QVR name, one
@@ -25,7 +23,7 @@ Cost is one pass over the retained draws; no model replay occurs.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 import itertools
 import re
 
@@ -33,7 +31,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import ValueModel
-from quivers.formulas._group_law import GroupBlockLaw, GroupMemberLaw
+from quivers.formulas._group_law import GroupBlockLaw, GroupMemberLaw, LKJCorrelation
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import SmoothState
 from quivers.formulas.formula import Formula, ThresholdGroups
@@ -129,6 +127,9 @@ def smooth_label(term: str) -> str:
         raise ValueError(f"smooth term {term!r} is not a function call") from error
     if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
         raise ValueError(f"smooth term {term!r} is not a function call")
+    if call.func.id == "cs" and len(call.args) == 1:
+        # A category-specific smooth has the label of its smooth.
+        return "cs" + smooth_label(ast.unparse(call.args[0]))
     variables = [ast.unparse(argument) for argument in call.args]
     variables.extend(
         ast.unparse(keyword.value)
@@ -233,8 +234,9 @@ def smooth_names(
     coefficients: list[tuple[str, str]] = []
     for term, state in states.items():
         base = smooth_label(term)
+        specific = "cs" if term.startswith("cs(") else ""
         fixed = [
-            (brms_rename(block.label), position + 1)
+            (specific + brms_rename(block.label), position + 1)
             for block in state.blocks
             for position in range(block.fixed_width)
         ]
@@ -299,6 +301,27 @@ def smooth_names(
     )
 
 
+def time_label(level: str) -> str:
+    """Spell a retained time level as R prints the time value.
+
+    Parameters
+    ----------
+    level : str
+        Canonical time level: ``repr`` of a float for numbers, text otherwise.
+
+    Returns
+    -------
+    str
+        An integer-valued number without its fraction (``"1.0"`` is ``"1"``),
+        other values with brms's character renaming.
+    """
+    try:
+        number = float(level)
+    except ValueError:
+        return brms_rename(level)
+    return str(int(number)) if number.is_integer() else brms_rename(level)
+
+
 def scalar_coordinates(stem: str, value: torch.Tensor) -> dict[str, torch.Tensor]:
     """Split draws of one site into brms's scalar variables.
 
@@ -319,25 +342,27 @@ def scalar_coordinates(stem: str, value: torch.Tensor) -> dict[str, torch.Tensor
     event = tuple(value.shape[2:])
     if not event:
         return {stem: value}
+    # The coordinates of an indexed name follow its index.
+    stem = stem.removesuffix("]") + "," if stem.endswith("]") else stem + "["
     return {
-        f"{stem}[{','.join(str(i + 1) for i in index)}]": value[(..., *index)]
+        f"{stem}{','.join(str(i + 1) for i in index)}]": value[(..., *index)]
         for index in itertools.product(*(range(size) for size in event))
     }
 
 
 def correlation_pairs(
-    prefix: str, labels: Sequence[str], factor: torch.Tensor
+    prefix: str, labels: Sequence[str], matrix: torch.Tensor
 ) -> dict[str, torch.Tensor]:
-    """Name the correlations of a Cholesky factor as brms names pairs.
+    """Name the correlations of a matrix as brms names pairs.
 
     Parameters
     ----------
     prefix : str
         Class and grouping part of the name, such as ``cor_g`` or ``rescor``.
     labels : Sequence[str]
-        Coordinate labels in factor order.
-    factor : torch.Tensor
-        Lower Cholesky factors on ``(chain, draw, K, K)`` axes.
+        Coordinate labels in matrix order.
+    matrix : torch.Tensor
+        Correlation matrices on ``(chain, draw, K, K)`` axes.
 
     Returns
     -------
@@ -348,14 +373,13 @@ def correlation_pairs(
     Raises
     ------
     ValueError
-        If the labels do not match the factor's dimension.
+        If the labels do not match the matrix's dimension.
     """
-    if factor.ndim != 4 or factor.shape[-1] != len(labels):
+    if matrix.ndim != 4 or matrix.shape[-1] != len(labels):
         raise ValueError(
-            f"correlation factor of shape {tuple(factor.shape)} does not match "
+            f"correlation matrix of shape {tuple(matrix.shape)} does not match "
             f"the {len(labels)} coordinates of {prefix!r}"
         )
-    matrix = factor @ factor.transpose(-1, -2)
     return {
         f"{prefix}__{labels[j]}__{labels[k]}": matrix[..., j, k]
         for k in range(len(labels))
@@ -383,77 +407,120 @@ def by_suffixes(law: GroupBlockLaw) -> tuple[str, ...]:
     return tuple(":" + brms_rename(by.variable + str(level)) for level in by.levels)
 
 
-def scale_variables(
-    law: GroupBlockLaw, member: GroupMemberLaw, stem: str, value: torch.Tensor
-) -> tuple[dict[str, torch.Tensor], ...]:
-    """Name the standard deviations of one group-level coefficient.
+class CoefficientName(ValueModel):
+    """The brms name of one component of a group-level coefficient.
 
     Parameters
     ----------
-    law : GroupBlockLaw
-        Block of the coefficient.
-    member : GroupMemberLaw
-        The coefficient.
-    stem : str
-        ``sd_<group>__<coefficient>``.
-    value : torch.Tensor
-        Draws of its scale on ``(chain, draw)`` axes and the scale's axis.
-
-    Returns
-    -------
-    tuple[dict[str, torch.Tensor], ...]
-        Named scalars of each ``by`` level, or of the one shared scale; a
-        coefficient over components adds its index.
+    infix : str
+        Parameter and response part of the name, ending in an underscore when
+        nonempty.
+    label : str
+        Coefficient label.
+    parameter : int
+        Position of the component's parameter among those of its predictor.
     """
-    if member.scale.by_axis is None:
-        return (scalar_coordinates(stem, value),)
-    suffixes = by_suffixes(law)
-    levels = value.reshape(*value.shape[:2], len(suffixes), member.width)
-    return tuple(
-        scalar_coordinates(
-            stem + suffix,
-            levels[:, :, index, 0] if member.axis is None else levels[:, :, index],
-        )
-        for index, suffix in enumerate(suffixes)
-    )
+
+    infix: str
+    label: str
+    parameter: int = 0
+
+    @property
+    def name(self) -> str:
+        """Return the name brms's ``sd`` and ``cor`` variables hold.
+
+        Returns
+        -------
+        str
+            The parameter, the response, and the coefficient.
+        """
+        return self.infix + self.label
 
 
-def correlation_variables(
-    law: GroupBlockLaw, terms: Sequence[str], draws: Mapping[str, torch.Tensor]
-) -> dict[str, torch.Tensor]:
-    """Name the correlations between the coefficients of one block.
+type MemberNames = Callable[[GroupMemberLaw], tuple[CoefficientName, ...]]
+"""Names of the components of one group-level coefficient."""
+
+
+def group_variables(
+    laws: Sequence[GroupBlockLaw], names: MemberNames, draws: Mapping[str, torch.Tensor]
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    """Name the standard deviations and correlations of group-level coefficients.
+
+    brms lists the coefficients of a block parameter by parameter, and the
+    standard deviations of a ``by`` partition level by level.
 
     Parameters
     ----------
-    law : GroupBlockLaw
-        Block law.
-    terms : Sequence[str]
-        brms coefficient name of each member.
+    laws : Sequence[GroupBlockLaw]
+        Laws of the blocks, in the order of their variables.
+    names : MemberNames
+        Names of a coefficient's components; empty for a coefficient of no
+        predictor, such as a threshold spacing.
     draws : Mapping[str, torch.Tensor]
-        Draws holding the block's Cholesky factors.
+        Draws holding the blocks' scales and Cholesky factors.
 
     Returns
     -------
-    dict[str, torch.Tensor]
-        One correlation per pair of coordinates and, with one correlation
-        per ``by`` level, per level; empty for independent coordinates.
+    tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]
+        Standard deviations, then one correlation per pair of correlated
+        coordinates of each factor.
     """
-    coordinates = [
-        term if member.width == 1 else f"{term}[{index + 1}]"
-        for term, member in zip(terms, law.members, strict=True)
-        for index in range(member.width)
-    ]
-    sites = law.correlation.sites
-    suffixes = by_suffixes(law) if len(sites) > 1 else ("",) * len(sites)
-    result: dict[str, torch.Tensor] = {}
-    for site, suffix in zip(sites, suffixes, strict=True):
-        if site in draws:
-            result |= correlation_pairs(
-                f"cor_{law.group}",
-                [coordinate + suffix for coordinate in coordinates],
-                draws[site],
+    blocks: dict[str, list[tuple[tuple[int, int, int], str, torch.Tensor]]] = {}
+    correlations: dict[str, torch.Tensor] = {}
+    for law in laws:
+        prefixes = list(dict.fromkeys(member.prefix for member in law.members))
+        suffixes = by_suffixes(law)
+        coordinates: list[tuple[tuple[int, int], str]] = []
+        for member in law.members:
+            components = names(member)
+            # A bar is a block of its own, whose coefficients may be independent.
+            key = (
+                f"{law.group}|{member.prefix}|{member.bar}"
+                if len(prefixes) == 1
+                else f"{law.group}|{law.identity}"
             )
-    return result
+            rank = prefixes.index(member.prefix)
+            coordinates.extend(
+                ((rank, component.parameter), component.name)
+                for component in components
+            )
+            if not components or member.scale.site not in draws:
+                continue
+            value = draws[member.scale.site]
+            levels = value.reshape(*value.shape[:2], -1, member.width)
+            blocks.setdefault(key, []).extend(
+                (
+                    (level, rank, component.parameter),
+                    f"sd_{law.group}__{component.name}{suffix}",
+                    levels[:, :, level, index],
+                )
+                for level, suffix in enumerate(suffixes[: levels.shape[2]])
+                for index, component in enumerate(components)
+            )
+        correlation = law.correlation
+        if not isinstance(correlation, LKJCorrelation):
+            continue
+        for index, site in enumerate(correlation.factors):
+            if site not in draws:
+                continue
+            level, part = divmod(index, correlation.components)
+            block = coordinates[part :: correlation.components]
+            order = sorted(range(len(block)), key=lambda at: block[at][0])
+            factor = draws[site]
+            matrix = (factor @ factor.transpose(-1, -2))[..., order, :][..., order]
+            correlations |= correlation_pairs(
+                f"cor_{law.group}",
+                [block[at][1] + suffixes[level] for at in order],
+                matrix,
+            )
+    return (
+        {
+            name: value
+            for entries in blocks.values()
+            for _, name, value in sorted(entries, key=lambda entry: entry[0])
+        },
+        correlations,
+    )
 
 
 def class_variables(
@@ -461,7 +528,6 @@ def class_variables(
     value: torch.Tensor,
     *,
     infix: str,
-    scales: Mapping[str, str] | None = None,
     labels: Sequence[str] = (),
 ) -> dict[str, torch.Tensor]:
     """Name the draws of one hyperparameter target from its prior class.
@@ -476,9 +542,6 @@ def class_variables(
     infix : str
         Parameter and response part of the name, such as ``""``,
         ``"sigma_"`` or ``"y_"``, ending in an underscore when nonempty.
-    scales : Mapping[str, str] or None
-        Names of the smoothing standard deviations of the target's
-        predictor (`SmoothNames.scales`), by full site name.
     labels : Sequence[str]
         Coordinate labels of a correlation class (time levels of ``unstr``).
 
@@ -492,8 +555,7 @@ def class_variables(
     Raises
     ------
     ValueError
-        If a correlation class has no coordinate labels, or a smoothing
-        standard deviation has no retained smooth block.
+        If a correlation class has no coordinate labels.
     """
     kind = target.class_
     # brms appends the response of a joint model to a class without a
@@ -504,17 +566,10 @@ def class_variables(
             raise ValueError(
                 f"correlation site {target.site!r} retains no coordinate labels"
             )
-        return correlation_pairs(CHOLESKY_CLASSES[kind] + owner, labels, value)
-    if kind == "sds" and target.coef is not None:
-        if scales is None or target.site not in scales:
-            raise ValueError(
-                f"smoothing scale site {target.site!r} belongs to no retained "
-                "smooth block"
-            )
-        stem = scales[target.site]
-    elif kind in {"sdgp", "lscale", "simo"} and target.coef is not None:
-        stem = f"{kind}_{infix}{brms_rename(target.coef)}"
-    elif kind == "df" and target.group is not None:
+        return correlation_pairs(
+            CHOLESKY_CLASSES[kind] + owner, labels, value @ value.transpose(-1, -2)
+        )
+    if kind == "df" and target.group is not None:
         stem = f"df_{target.group}"
     elif kind in _LAGGED_CLASSES and re.fullmatch(rf"(.*_)?{kind}_[0-9]+", target.site):
         return {f"{kind}{owner}[{target.site.rsplit('_', 1)[1]}]": value}
@@ -523,72 +578,6 @@ def class_variables(
     else:
         stem = target.site + owner
     return scalar_coordinates(stem, value)
-
-
-def design_term_variables(
-    predictor: Formula,
-    prefix: str,
-    draws: Mapping[str, torch.Tensor],
-    *,
-    infix: str,
-    smooths: SmoothNames,
-) -> tuple[dict[str, torch.Tensor], set[str]]:
-    """Name the innovations of a predictor's smooth and GP blocks.
-
-    Parameters
-    ----------
-    predictor : Formula
-        One evaluated predictor with its design blocks.
-    prefix : str
-        Site prefix of the predictor.
-    draws : Mapping[str, torch.Tensor]
-        Constrained draws.
-    infix : str
-        Parameter and response part of the names.
-    smooths : SmoothNames
-        Names of the predictor's smooth terms.
-
-    Returns
-    -------
-    tuple[dict[str, torch.Tensor], set[str]]
-        The variables and the sites they read. A penalized smooth block is
-        ``s_<label>_<j>[k]``, the block's coefficients (its standard
-        deviation times its standardized innovations, as brms reports
-        them), with ``j`` counting the penalties of the block; a block of a
-        per-category predictor is ``zs_<label>_<j>[k,c]``, its standardized
-        innovations. A Gaussian process block is ``zgp_<label>[k]``, its
-        standardized innovations.
-
-    Raises
-    ------
-    ValueError
-        If a smooth block has no retained names.
-    """
-    result: dict[str, torch.Tensor] = {}
-    consumed: set[str] = set()
-    for block in predictor.design_terms:
-        raw = prefix + block.qvr_name + "_z"
-        if raw not in draws:
-            continue
-        consumed.add(raw)
-        if block.gp is not None:
-            result |= scalar_coordinates(f"zgp_{infix}{block.gp.label}", draws[raw])
-            continue
-        if block.qvr_name not in smooths.coefficients:
-            raise ValueError(
-                f"smooth block {block.qvr_name!r} of {block.term!r} retains no names"
-            )
-        names = smooths.coefficients[block.qvr_name]
-        scale = draws[prefix + (block.scale_group or block.qvr_name) + "_scale"]
-        if scale.ndim == 2 and draws[raw].ndim == 3:
-            coefficients = scale[..., None] * draws[raw]
-            result |= {
-                name: coefficients[..., index] for index, name in enumerate(names)
-            }
-        else:
-            # ``s_<label>_<j>[1]`` without its index is the block's stem.
-            result |= scalar_coordinates("z" + names[0].split("[", 1)[0], draws[raw])
-    return result, consumed
 
 
 def shrinkage_blocks(draws: Mapping[str, torch.Tensor]) -> tuple[str, ...]:

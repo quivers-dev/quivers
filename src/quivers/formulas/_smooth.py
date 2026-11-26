@@ -14,14 +14,29 @@ population coefficients and each penalized group one Gaussian design block.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from formulae.matrices import DesignMatrices
 from formulae.terms.terms import Term
 import numpy as np
+import torch
 import numpy.typing as npt
 import pandas as pd
 
-from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
+from quivers.dsl.ast_nodes import (
+    ProgramStep,
+    TypeName,
+)
+from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._ast import (
+    _call,
+    _draw,
+    _index,
+    _let,
+    _mul,
+    _var,
+)
 import didactic.api as dx
 
 from quivers.formulas._data_options import (
@@ -52,6 +67,31 @@ from quivers.formulas._mgcv_smooth import (
     tensor_t2,
     thin_plate,
 )
+from quivers.formulas._monotonic import modified_call
+from quivers.formulas._term import (
+    AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
+    VariableDecl,
+    SmoothPart,
+    coordinate_scopes,
+    ColumnName,
+    Contribution,
+    at_coordinate,
+    flat_index,
+    over_output,
+    read_only,
+    Emission,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    design_declarations,
+)
+from quivers.formulas.formula_parts import FormulaPart
+
+if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
+    from quivers.formulas._row_source import PredictorRows
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
 type Order = int | float | tuple[int | float, ...] | None
@@ -1407,7 +1447,9 @@ def term_constants(term: Term) -> frozenset[str]:
     names = {"TRUE", "FALSE", "NA"}
     for component in getattr(term, "components", ()):
         transform = getattr(
-            getattr(component, "call", None), "stateful_transform", None
+            modified_call(getattr(component, "call", None)),
+            "stateful_transform",
+            None,
         )
         if isinstance(transform, SmoothTransform) and transform.state is not None:
             names.update(transform.state.data2)
@@ -1435,7 +1477,9 @@ def smooth_states(design: DesignMatrices | None) -> dict[str, SmoothState]:
         if len(components) != 1:
             continue
         transform = getattr(
-            getattr(components[0], "call", None), "stateful_transform", None
+            modified_call(getattr(components[0], "call", None)),
+            "stateful_transform",
+            None,
         )
         if isinstance(transform, SmoothTransform) and transform.state is not None:
             states[str(label)] = transform.state
@@ -1456,6 +1500,335 @@ def smooth_namespace() -> Mapping[str, type]:
         "te": UnsupportedTensor,
         "ti": UnsupportedTensor,
     }
+
+
+class BasisTerm(ValueModel):
+    """One penalized basis block with independent Gaussian coordinates.
+
+    The coefficients are ``scale * z`` for standard-normal ``z``, with one
+    scale per coordinate of the output axis. Blocks sharing an mgcv ``id``
+    share one scale.
+
+    Parameters
+    ----------
+    label : str
+        Authored term.
+    name : str
+        Prefixed design identifier.
+    prefix : str
+        Predictor namespace.
+    matrix : np.ndarray
+        Rows by coordinates; read-only.
+    columns : tuple[int, ...]
+        Columns of the evaluated term holding the coordinates.
+    scale : str
+        Scale site.
+    owns_scale : bool
+        Whether this block draws the scale.
+    prior : str
+        Default prior of the scale.
+    output : OutputAxis or None
+        Axis of the coefficient vectors.
+    """
+
+    label: str
+    name: str
+    prefix: str
+    matrix: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(read_only))
+    columns: tuple[int, ...]
+    scale: str
+    owns_scale: bool
+    prior: str
+    output: OutputAxis | None = None
+
+    def at(self, rows: PredictorRows) -> BasisTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        BasisTerm
+            The same coefficients over the basis at the rows.
+        """
+        if rows.frame is None:
+            return self
+        return self.with_(matrix=rows.matrix(self.label)[:, list(self.columns)])
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            The scale this block draws, and the coefficients of the basis.
+        """
+        block = self.name.removeprefix(self.prefix)
+        scale = self.scale.removeprefix(self.prefix)
+        declarations: list[VariableDecl] = []
+        for index, part in coordinate_scopes(self.output, scope):
+            names = part.smooths
+            if block not in names.coefficients:
+                raise ValueError(
+                    f"smooth block {block!r} of {self.label!r} retains no names"
+                )
+            if self.owns_scale:
+                declarations.append(
+                    VariableDecl(
+                        name=names.scales[scale],
+                        site=self.scale,
+                        kind="special",
+                        index=index,
+                        parameter=part.position,
+                    )
+                )
+            declarations.extend(
+                VariableDecl(
+                    name=name,
+                    site=self.name + "_z",
+                    kind="special",
+                    index=(position, *index),
+                    parameter=part.position,
+                    derived=True,
+                )
+                for position, name in enumerate(names.coefficients[block])
+            )
+        return tuple(declarations)
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients by basis coordinate, then output coordinate.
+        """
+        raw, scale = draws[self.name + "_z"], draws[self.scale]
+        if self.output is not None:
+            raw = raw.unflatten(-1, (-1, self.output.size))
+        return scale.unsqueeze(2) * raw
+
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            Empty.
+        """
+        return ()
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            The penalized coordinates of the smooth.
+        """
+        return self if self.label == label else None
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Unused: the basis is known.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
+        """
+        design = torch.tensor(self.matrix)
+        return torch.einsum(
+            "cdj...,nj->cdn...", self.coefficients(draws).to(design), design
+        )
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            The term.
+        """
+        return (EffectSource(label=self.label, kind="sm"),)
+
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
+
+        Returns
+        -------
+        tuple[Contribution, ...]
+            The row contribution.
+        """
+        return (
+            Contribution(
+                name=self.name + "_per_row",
+                rows=True,
+                coordinates=self.output is not None,
+                part=FormulaPart(
+                    field="design_terms", key=self.name.removeprefix(self.prefix)
+                ),
+            ),
+        )
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The coordinate axis and, for coefficient vectors, the flat axis
+            of the innovations.
+        """
+        axis, _ = design_declarations(self.name, self.matrix)
+        if self.output is None:
+            return (axis,)
+        return (axis, self._innovations(self.output))
+
+    def _innovations(self, output: OutputAxis) -> AxisDecl:
+        """Declare the flat axis of the innovations of coefficient vectors.
+
+        Parameters
+        ----------
+        output : OutputAxis
+            Axis of the coefficient vectors.
+
+        Returns
+        -------
+        AxisDecl
+            One element per coordinate of the basis and of the output axis.
+        """
+        return AxisDecl(
+            name=self.name + "_InnovationCoordinate",
+            size=self.matrix.shape[1] * output.size,
+        )
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The basis matrix.
+        """
+        return (design_declarations(self.name, self.matrix)[1],)
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The scale, when this block draws it, and the innovations.
+        """
+        scale = SiteDecl(
+            name=self.scale,
+            class_="sds",
+            default=self.prior,
+            coef=self.label,
+            axes=(self.output.name,) if self.output is not None else (),
+            component_labels=self.output.labels if self.output is not None else (),
+            parameters=self.output.parameters if self.output is not None else (),
+            lower=0.0,
+        )
+        innovations = SiteDecl(
+            name=self.name + "_z",
+            class_="z",
+            axes=(
+                self.name + "_Coordinate"
+                if self.output is None
+                else self._innovations(self.output).name,
+            ),
+            overridable=False,
+        )
+        return (scale, innovations) if self.owns_scale else (innovations,)
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The scale, the innovations, the coefficients, and the contribution.
+        """
+        draws = {site.name: site for site in self.sites()}
+        raw, output = draws[self.name + "_z"], self.output
+        coefficients = self.name + "_coefficients"
+        axis = self.name + "_Coordinate"
+        scale = at_coordinate(self.scale, output)
+        value = (
+            _mul(scale, _var(raw.name))
+            if output is None
+            else over_output(
+                output,
+                _mul(scale, _index(raw.name, flat_index(output, _var("design_basis")))),
+                ("design_basis", axis),
+            )
+        )
+        steps: list[ProgramStep] = []
+        if self.owns_scale:
+            steps.append(emission.draw(draws[self.scale]))
+        steps.append(
+            _draw(raw.name, "Normal", (0.0, 1.0), index=TypeName(name=raw.axes[0]))
+        )
+        steps.append(_let(coefficients, value))
+        contribution = _call(
+            "matmul", _var(self.name), at_coordinate(coefficients, output)
+        )
+        steps.append(_let(self.name + "_per_row", over_output(output, contribution)))
+        return tuple(steps)
 
 
 __all__: list[str] = []

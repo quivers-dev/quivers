@@ -230,14 +230,15 @@ def test_offsets_must_be_finite(data, value):
         formula_from_data("y ~ offset(z)", data.assign(z=[value, 1.0, 2.0, 3.0]))
 
 
-def test_generated_offset_input_names_cannot_shadow_covariates(data):
-    with pytest.raises(ValueError, match="offset input names are reserved"):
-        fit(
-            "y ~ formula_offset_0 + offset(z)",
-            data=data.assign(formula_offset_0=1.0),
-            method="svi",
-            num_steps=1,
-        )
+def test_covariates_may_be_named_like_offset_inputs(data):
+    formula = formula_from_data(
+        "y ~ formula_offset_0 + offset(z)", data.assign(formula_offset_0=1.0)
+    )
+    lens = FormulaToQVRModule(families["gaussian"])
+    lens.forward(formula)
+    values = lens.fixed_column_observations(formula)
+    assert values["data_formula_offset_0"].tolist() == [1.0] * len(data)
+    assert values["formula_offset_0"].tolist() == pytest.approx(data.z.tolist())
 
 
 @pytest.mark.parametrize("name", ["offset", "exposure"])

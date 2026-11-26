@@ -515,10 +515,9 @@ def test_labelled_intermediate_nodes_reindex_by_name_and_replay_fitted_component
     [
         ({"A": "a*x", "B": "a*x"}, "component labels"),
         ({"B": "a*x", "C": "a*x", "D": "a*x"}, "component labels"),
-        ("a*x", "explicit component"),
     ],
 )
-def test_nonlinear_component_contract_refuses_missing_reference_extra_and_scalar_roots(
+def test_nonlinear_component_contract_refuses_missing_reference_and_extra_roots(
     components, message
 ):
     frame = pd.DataFrame(

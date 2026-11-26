@@ -19,10 +19,8 @@ import pytest
 import torch
 
 from quivers.formulas import bf, fit, set_rescor
-from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import smooth_states
 from quivers.formulas._variable_catalogue import (
-    class_variables,
     make_unique,
     smooth_names,
 )
@@ -123,6 +121,3 @@ def test_inconsistent_smooth_metadata_is_refused() -> None:
     stripped = model.formula.with_(design_terms=())
     with pytest.raises(ValueError, match="penalized blocks"):
         smooth_names(stripped, states, infix="")
-    target = PriorTarget(site="smooth_unknown_scale", class_="sds", coef="s(x)")
-    with pytest.raises(ValueError, match="belongs to no retained smooth block"):
-        class_variables(target, torch.zeros(1, 2), infix="", scales=names.scales)

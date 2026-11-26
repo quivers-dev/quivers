@@ -53,9 +53,10 @@ from quivers.formulas._postprocess_loo import (
     relative_efficiency,
     waic_from_fit,
 )
+from quivers.formulas._name_scope import level_coefficients
 from quivers.formulas._postprocess_names import (
-    brms_rename,
     coefficient_labels,
+    name_scope,
     single_variables,
 )
 from quivers.formulas._postprocess_predict import (
@@ -1153,32 +1154,21 @@ class SinglePostprocess(_PostprocessCore):
         draws = fit.draws(num_samples=num_samples, seed=seed)
         shape = draw_count(fit.posterior, num_samples)
         labels = coefficient_labels(fit)
+        plan = fit.prediction_plan
+        outputs = {
+            item.prefix: item.output
+            for item in (plan.predictors if plan is not None else ())
+        }
         result: dict[str, list[tuple[str, torch.Tensor]]] = {}
         for parameter, prefix, predictor in fit._predictor_items():
             if not predictor.random_terms:
                 continue
-            infix = "" if parameter == "mu" else f"{parameter}_"
-            varying = fit._random_effects(draws, shape, predictor, prefix)
-            for group, coefficients in varying.items():
-                for coef, value in coefficients.items():
-                    label = labels.get((parameter, coef), brms_rename(coef))
-                    members = result.setdefault(group, [])
-                    if value.ndim == 3:
-                        members.append((infix + label, value))
-                        continue
-                    # One coefficient per response category is brms's
-                    # mu<category>_<coef>, and per transition <coef>[k].
-                    categories = fit.coefficient_labels
-                    named = parameter == "mu" and len(categories) == value.shape[-1]
-                    members.extend(
-                        (
-                            f"mu{brms_rename(str(categories[index]))}_{label}"
-                            if named
-                            else f"{infix}{label}[{index + 1}]",
-                            value[..., index],
-                        )
-                        for index in range(value.shape[-1])
-                    )
+            for item in level_coefficients(
+                fit._random_effects(draws, shape, predictor, prefix),
+                name_scope(fit, parameter, prefix, predictor, labels),
+                outputs.get(prefix),
+            ):
+                result.setdefault(item.group, []).append((item.name, item.values))
         return result
 
     def _pp_dpars(self) -> frozenset[str]:
@@ -2267,23 +2257,29 @@ class JointPostprocess(_PostprocessCore):
         fit = self._pp_fit()
         result: dict[str, list[tuple[str, torch.Tensor]]] = {}
         for name in fit.response_names:
-            for parameter, prefix, predictor in fit._response_fit(
-                name
-            )._predictor_items():
+            view = fit._response_fit(name)
+            labels = coefficient_labels(view)
+            plan = view.prediction_plan
+            outputs = {
+                item.prefix: item.output
+                for item in (plan.predictors if plan is not None else ())
+            }
+            for parameter, prefix, predictor in view._predictor_items():
                 if not predictor.random_terms:
                     continue
-                if prefix.startswith("nlpar_"):
-                    infix = f"{name}_{parameter}_"
-                elif prefix.startswith("dpar_"):
-                    infix = f"{parameter}_{name}_"
-                else:
-                    infix = f"{name}_"
-                varying = fit.random_effects(
-                    resp=name, parameter=parameter, num_samples=num_samples, seed=seed
-                )
-                for group, coefficients in varying.items():
-                    for coef, value in coefficients.items():
-                        result.setdefault(group, []).append((f"{infix}{coef}", value))
+                for item in level_coefficients(
+                    fit.random_effects(
+                        resp=name,
+                        parameter=parameter,
+                        num_samples=num_samples,
+                        seed=seed,
+                    ),
+                    name_scope(
+                        view, parameter, prefix, predictor, labels, response=name
+                    ),
+                    outputs.get(prefix),
+                ):
+                    result.setdefault(item.group, []).append((item.name, item.values))
         return result
 
     def _pp_dpars(self) -> frozenset[str]:

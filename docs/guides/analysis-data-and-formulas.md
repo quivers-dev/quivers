@@ -2054,7 +2054,9 @@ vector differs from sampling a minimal contrast representation.
 `cs(expr)` gives a fixed or group coefficient one value per
 transition, including cumulative and hurdle-cumulative models. In
 noncumulative models, `cs(1)` supplies a transition intercept;
-`cs(x)` supplies transition-specific slopes. Shared correlation
+`cs(x)` gives transition-specific slopes, and `cs(s(x))`, `cs(mo(x))`, and
+`cs(gp(x))` give one smooth, monotonic effect, or Gaussian process per
+transition. Shared correlation
 IDs may couple ordinary scalar and transition-valued coefficients,
 including across auxiliary predictors. `fixed_effects` and
 `random_effects` preserve the final transition axis.

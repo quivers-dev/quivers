@@ -305,10 +305,9 @@ def test_invalid_memberships_are_refused():
         method="svi",
         num_steps=1,
     )
-    assert any(
-        name.startswith("dpar_mu") and "_z_mmg2g3_" in name
-        for name in categorical.draws()
-    )
+    levels = len(categorical.group_levels["mmg2g3"])
+    free = len(categorical.coefficient_labels)
+    assert categorical.draws()["z_mmg2g3_Intercept"].shape[-1] == levels * free
 
 
 def _frame(rows: int = 36) -> pd.DataFrame:

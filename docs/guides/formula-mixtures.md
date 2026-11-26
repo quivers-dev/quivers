@@ -260,15 +260,24 @@ probabilities = per_category.posterior_epred(new_data=choices.head(4), num_sampl
 assert probabilities.shape == (1, 5, 4, 3)
 ```
 
-A per-category predictor accepts every term of an ordinary predictor.
-Monotonic `mo()` effects, `gp()` terms, multi-membership `mm()` factors, and
-the `gr()` options `by`, `dist`, and `pw` have scalar coefficients, so each
-free category takes its own simplex, Gaussian process hyperparameters, and
+A main formula without per-category formulas accepts every term of an
+ordinary predictor. Each free category has its own coefficients, smooths,
+monotonic simplexes, Gaussian process hyperparameters, spatial fields, and
 group standard deviations (`simo_muB_mok1`, `lscale_muC_gpz`,
-`sd_mmg1g2__muB_Intercept` in brms's names). A main formula with one of
-these terms is copied to every free category, as brms copies it. A factor
-with `dist = "student"` shares one degrees-of-freedom parameter across the
-categories that use it.
+`sdcar_muB`, `sd_mmg1g2__muB_Intercept` in brms's names). The group
+coefficients of different categories are independent, and the coefficients
+of one category are correlated as the formula states. A term with an
+identifier, such as `(1 + x | id | g)`, correlates the coefficients of every
+category, as in brms. A factor with `dist = "student"` shares one
+degrees-of-freedom parameter across the categories that use it.
+
+A prior with `dpar="muB"` governs the parameters of one category and leaves
+the others at their own priors.
+
+A category may also have a nonlinear expression of its own, given as a
+`NonlinearExpression` under its name. With a nonlinear main formula, every
+category without a formula or expression of its own reads the main
+expression.
 
 <!-- python: run -->
 ```python
@@ -300,8 +309,8 @@ assert special.posterior_epred(new_data=choices.head(4), num_samples=5).shape ==
 Measurement-error `me()` terms are not available in a per-category or other
 distributional formula, and `mi()` terms there compile through a
 [joint formula](formula-missing-data.md). The shared logistic-normal scale
-formula `sigma ~ ...` keeps one coefficient per category, also for `mm()`
-factors and the `gr()` options, and refuses `mo()`.
+formula `sigma ~ ...` gives every scale its own coefficients for each of its
+terms.
 
 `Family.with_reference("C")` (brms `refcat`) selects the reference, and
 the free categories are then `muA` and `muB`. When every category has the

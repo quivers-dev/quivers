@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -23,7 +24,17 @@ import pytest
 import torch
 from scipy import stats
 
-from quivers.formulas import fit, formula_to_qvr, get_prior
+from quivers.formulas import (
+    PriorSpec,
+    bf,
+    fit,
+    formula_to_qvr,
+    get_prior,
+    prior_summary,
+    set_rescor,
+    validate_prior,
+)
+from quivers.inference.mcmc import PotentialFn
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.registry import LatentRegistry
 from quivers.modeling.artifact import load_fit, save_fit
@@ -114,18 +125,21 @@ def _separate_values(draws):
 
 
 def _copied_values(draws):
-    values = {}
-    for category in "BC":
-        prefix = f"dpar_mu{category}_"
-        values |= {
-            prefix + "simo_mok1": _simplex(draws, f"simo_mu{category}_mok1"),
-            prefix + "bsp_mo_k": _draw(draws, f"bsp_mu{category}_mok"),
-            prefix + "intercept": _draw(draws, f"b_mu{category}_Intercept"),
-            prefix + "sdgp_gpz": _draw(draws, f"sdgp_mu{category}_gpz"),
-            prefix + "lscale_gpz": _draw(draws, f"lscale_mu{category}_gpz"),
-            prefix + "gp_gpz_z": _draw(draws, f"zgp_mu{category}_gpz", range(1, 24)),
-        }
-    return values
+    def by_category(read):
+        return np.stack([read(f"mu{category}") for category in "BC"], axis=1)
+
+    return {
+        "simo_mok1": by_category(lambda mu: _simplex(draws, f"simo_{mu}_mok1")),
+        "bsp_mo_k": by_category(lambda mu: _draw(draws, f"bsp_{mu}_mok")),
+        "intercept": by_category(lambda mu: _draw(draws, f"b_{mu}_Intercept")),
+        "sdgp_gpz": by_category(lambda mu: _draw(draws, f"sdgp_{mu}_gpz")),
+        "lscale_gpz": by_category(lambda mu: _draw(draws, f"lscale_{mu}_gpz")),
+        # The innovations of each input are consecutive.
+        "gp_gpz_z": np.stack(
+            [_draw(draws, f"zgp_mu{category}_gpz", range(1, 24)) for category in "BC"],
+            axis=-1,
+        ).reshape(len(draws["b_muB_Intercept"]), -1),
+    }
 
 
 @pytest.fixture(scope="module")
@@ -218,7 +232,7 @@ def test_default_priors_match_the_brms_prior_rows(copied):
     priors = get_prior("y ~ mo(k) + gp(z)", data=_frame(), family="categorical")
     # Every latent except the standard normal GP coordinates has a prior row.
     assert set(priors) == {
-        name for name in _latent(copied) if not name.endswith("_gp_gpz_z")
+        name for name in _latent(copied) if not name.endswith("gp_gpz_z")
     }
 
 
@@ -276,11 +290,11 @@ def test_vector_family_predictors_equal_the_numpy_reference(family):
     values = {}
     for name in _latent(fitted):
         shape = tuple(fitted.draws()[name].shape[2:])
-        if len(shape) == 2 and shape[0] == shape[1]:
+        if "simo" in name:
+            values[name] = rng.dirichlet(np.ones(shape[-1]), (draws, shape[0]))
+        elif len(shape) == 2 and shape[0] == shape[1]:
             # Cholesky factor of the logistic-normal correlation matrix.
             values[name] = np.broadcast_to(np.eye(shape[0]), (draws, *shape)).copy()
-        elif "simo" in name:
-            values[name] = rng.dirichlet(np.ones(shape[-1]), draws)
         elif "sigma_mm" in name or name in {"phi", "sigma"}:
             values[name] = rng.uniform(0.5, 2.0, (draws, *shape))
         else:
@@ -291,16 +305,16 @@ def test_vector_family_predictors_equal_the_numpy_reference(family):
     second = pd.Categorical(frame["g2"], categories=LEVELS).codes
     logits = np.zeros((draws, len(frame), 3))
     for position, category in ((1, "mub"), (2, "muc")):
-        prefix = f"dpar_{category}_"
+        index = position - 1
         for draw in range(draws):
             effects = (
-                values[prefix + "sigma_mmg1g2_Intercept"][draw]
-                * values[prefix + "z_mmg1g2_Intercept"][draw]
+                values["sigma_mmg1g2_Intercept"][draw, index]
+                * values["z_mmg1g2_Intercept"][draw].reshape(-1, 2)[:, index]
             )
             logits[draw, :, position] = (
-                values[prefix + "intercept"][draw]
-                + values[prefix + "bsp_mo_k"][draw]
-                * _monotonic(codes, values[prefix + "simo_mok1"][draw])
+                values["intercept"][draw, index]
+                + values["bsp_mo_k"][draw, index]
+                * _monotonic(codes, values["simo_mok1"][draw, index])
                 + 0.5 * effects[first]
                 + 0.5 * effects[second]
             )
@@ -430,15 +444,6 @@ def test_rejected_special_terms():
         formula_to_qvr(
             "y ~ x", data=frame, family="categorical", distributional={"muC": "~ cs(x)"}
         )
-    # The logistic-normal scale predictor keeps one coefficient per category.
-    shares, _ = _vector_frame("shares")
-    with pytest.raises(ValueError, match="one coefficient per response category"):
-        formula_to_qvr(
-            "cbind(a, b, c) ~ 1",
-            data=shares,
-            family="logistic_normal",
-            distributional={"sigma": "~ mo(k)"},
-        )
     with pytest.raises(ValueError, match="me\\(\\) terms are supported in the main"):
         formula_to_qvr(
             "y ~ x",
@@ -450,3 +455,104 @@ def test_rejected_special_terms():
         formula_to_qvr(
             "y ~ mo(k)", data=frame, family="categorical", distributional={"muA": "~ x"}
         )
+
+
+def _prior_rows(formula, priors, **options):
+    table = validate_prior(priors, formula, data=_frame(), **options)
+    return {
+        (row.class_, row.coef, row.dpar): (row.prior, row.source) for row in table.rows
+    }
+
+
+def test_a_prior_of_one_category_leaves_the_others():
+    """A rule naming one category's parameter governs that category alone."""
+    rows = _prior_rows(
+        "y ~ x + mo(k)",
+        PriorSpec(distribution="Normal(0.0, 0.5)", class_="b", coef="x", dpar="muC")
+        + PriorSpec(
+            distribution="Dirichlet([2.0, 2.0, 2.0])", class_="simo", dpar="muB"
+        ),
+        family="categorical",
+    )
+    assert rows[("b", "x", "muC")] == ("Normal(loc=0.0, scale=0.5)", "user")
+    assert rows[("b", "x", "muB")][1] == "default"
+    assert rows[("simo", "mok1", "muB")] == (
+        "Dirichlet(concentration=[2.0, 2.0, 2.0])",
+        "user",
+    )
+    assert rows[("simo", "mok1", "muC")][1] == "default"
+
+
+@pytest.mark.parametrize("joint", [False, True])
+def test_category_priors_score_like_their_scipy_laws(joint):
+    """The log density is the sum of each category's own prior."""
+    rules = (
+        PriorSpec(distribution="Normal(0.0, 0.5)", class_="b", coef="x", dpar="muC")
+        + PriorSpec(distribution="Normal(1.0, 2.0)", class_="b", dpar="muB")
+        + PriorSpec(distribution="HalfNormal(0.3)", class_="sd", dpar="muC")
+    )
+    frame = _frame().assign(w=lambda f: f.x * 2.0)
+    formula = "y ~ x + (1 | g1)"
+    model = (
+        bf(formula, family="categorical") + bf("w ~ 1") + set_rescor(False)
+        if joint
+        else formula
+    )
+    options = {} if joint else {"family": "categorical"}
+    data = {"data": frame, "method": "svi", "num_steps": 0}
+    fitted = fit(model, priors=rules, **options, **data)
+    plain = fit(model, **options, **data)
+    prefix = next(name for name in plain.draws() if name.endswith("beta_x"))[:-6]
+
+    def density(model_fit, values):
+        registry = LatentRegistry.from_model(
+            model_fit.program, observed_names=set(model_fit.observations)
+        )
+        potential = PotentialFn(
+            model_fit.program,
+            registry,
+            torch.zeros(1, 1),
+            {
+                name: value.double() if value.is_floating_point() else value
+                for name, value in model_fit.observations.items()
+            },
+        )
+        return float(potential.log_density(registry.flatten_unconstrained(values)))
+
+    registry = LatentRegistry.from_model(
+        plain.program, observed_names=set(plain.observations)
+    )
+    generator = torch.Generator().manual_seed(4)
+    shared = {
+        name: 0.3 * torch.randn(value.shape, generator=generator, dtype=torch.float64)
+        for name, value in registry.unflatten_unconstrained(
+            torch.zeros(registry.total_unconstrained_dim, dtype=torch.float64)
+        ).items()
+    }
+    separated = dict(shared)
+    for site in ("beta_x", "sigma_g1_Intercept"):
+        whole = separated.pop(prefix + site)
+        for index, category in enumerate(("muB", "muC")):
+            separated[f"{prefix}{site}__{category}"] = whole[index]
+    assert set(separated) == set(_latent(fitted))
+    table = {
+        (row.class_, row.coef, row.dpar): row.prior for row in prior_summary(plain).rows
+    }
+    default = float(re.search(r"scale=([0-9.e-]+)", table[("b", "x", "muB")]).group(1))
+    coefficients = shared[prefix + "beta_x"].numpy()
+    scales = shared[prefix + "sigma_g1_Intercept"].exp().numpy()
+    change = (
+        stats.norm(1.0, 2.0).logpdf(coefficients[0])
+        + stats.norm(0.0, 0.5).logpdf(coefficients[1])
+        - stats.norm(0.0, default).logpdf(coefficients).sum()
+        + stats.halfnorm(scale=0.3).logpdf(scales[1])
+        - stats.halfnorm(scale=1.0).logpdf(scales[1])
+    )
+    np.testing.assert_allclose(
+        density(fitted, separated) - density(plain, shared), change, atol=1e-5
+    )
+    variables = fitted.variables(num_samples=2, seed=1)
+    tag = "_y" if joint else ""
+    for name in (f"b_muB{tag}_x", f"b_muC{tag}_x", f"sd_g1__muC{tag}_Intercept"):
+        assert name in variables
+    assert not any("__muB" in name and "beta" in name for name in variables)

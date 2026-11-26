@@ -24,18 +24,15 @@ from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import (
-    DiscreteConstructor,
-    Module,
-    ObjectDecl,
     ProgramDecl,
     SampleStep,
-    TypeFromExpr,
 )
 from quivers.formulas._autocor import AutocorMatrix, autocor_catalog
+from quivers.formulas._group_law import KnownCovariance
 from quivers.formulas._group_prediction import (
+    CovarianceRemap,
     GroupRemap,
     NewLevelPolicy,
-    select_contributions,
     selected_effects,
     specialized_formula,
 )
@@ -46,6 +43,9 @@ from quivers.formulas._joint_missing import (
     fresh_values,
     missing_multipliers,
 )
+from quivers.formulas._row_source import RowSource
+from quivers.formulas._group_law import law_inputs
+from quivers.formulas._term import bind_inputs
 from quivers.formulas._response import response_tensor
 from quivers.formulas._priors import PriorSet
 from quivers.formulas._likelihood import prepare_likelihood
@@ -162,33 +162,29 @@ def _joint_selection(
     }
 
 
-def _resized(module: Module, rows: int) -> Module:
-    """Declare the response row axis with the requested row count.
+def _response_rows(
+    context: PredictionContext,
+    groups: Mapping[str, GroupRemap],
+    selected: frozenset[tuple[str, str]],
+) -> RowSource:
+    """Read one response's rows on the joint levels of the grouping factors.
 
     Parameters
     ----------
-    module : Module
-        One response's local module.
-    rows : int
-        Requested row count.
+    context : PredictionContext
+        Prediction of the response alone.
+    groups : Mapping[str, GroupRemap]
+        Compact levels shared by the responses.
+    selected : frozenset[tuple[str, str]]
+        Group-level coefficients the request includes.
 
     Returns
     -------
-    Module
-        The module with ``Resp`` declared as a finite set of ``rows``.
+    RowSource
+        The same rows on the shared levels.
     """
-    return module.with_(
-        statements=tuple(
-            statement.with_(
-                init=TypeFromExpr(
-                    expr=DiscreteConstructor(constructor="FinSet", args=(str(rows),))
-                )
-            )
-            if isinstance(statement, ObjectDecl) and statement.names == ("Resp",)
-            else statement
-            for statement in module.statements
-        )
-    )
+    assert context.source is not None
+    return context.source.regrouped(groups, selected)
 
 
 def _merge_groups(
@@ -239,28 +235,37 @@ def _merge_groups(
                 )
     merged = {}
     for group, remap in chosen.items():
-        # The response declaring a by partition codes it on the compact levels.
-        partition = next(
-            (
-                other
-                for context in contexts.values()
-                if (other := context.groups.get(group)) is not None
-                and other.by_codes
-                and other.fitted_indices == remap.fitted_indices
-            ),
-            remap,
-        )
+        # The responses declaring by partitions code them on the compact levels.
+        partitions = {
+            partition.axis: partition
+            for context in contexts.values()
+            if (other := context.groups.get(group)) is not None
+            and other.fitted_indices == remap.fitted_indices
+            for partition in other.partitions
+        }
+        # One covariance of the factor may have blocks in several responses.
+        covariances: dict[str, CovarianceRemap] = {}
+        for context in contexts.values():
+            other = context.groups.get(group)
+            for known in other.covariances if other is not None else ():
+                covariances.setdefault(known.name, known)
         merged[group] = remap.with_(
             level_sites=tuple(
                 site for site in fit.emission.level_sites if site.group == group
             ),
-            covariance_laws=tuple(
-                law
-                for law in fit.emission.group_laws
-                if law.group == group and law.level.basis is not None
+            partitions=tuple(partitions.values()),
+            covariances=tuple(
+                known.with_(
+                    laws=tuple(
+                        law
+                        for law in fit.emission.group_laws
+                        if law.group == group
+                        and isinstance(law.level.covariance, KnownCovariance)
+                        and law.level.covariance.name == name
+                    )
+                )
+                for name, known in covariances.items()
             ),
-            by_codes=partition.by_codes,
-            compact_by_codes=partition.compact_by_codes,
         )
     return merged
 
@@ -483,31 +488,12 @@ def prepare_joint_prediction(
         lens._emitted_groups = []
         components[name] = (lens, formula)
 
-    def local(name: str, module: Module) -> Module:
-        """Select varying effects and size the row axis of one response.
-
-        Parameters
-        ----------
-        name : str
-            Response label.
-        module : Module
-            The response's local module.
-
-        Returns
-        -------
-        Module
-            The specialized local module.
-        """
-        lens, formula = components[name]
-        items = lens._predictor_items(formula)
-        module = select_contributions(
-            module,
-            {parameter: value for parameter, _, value in items},
-            selection[name],
-            prefixes={parameter: prefix for parameter, prefix, _ in items},
-        )
-        return _resized(module, rows[name])
-
+    sources = {
+        name: RowSource(selected=selection[name])
+        if frame is None
+        else _response_rows(contexts[name], groups, selection[name])
+        for name in fit.response_names
+    }
     emission = emit_joint(
         components,
         # me() hyperparameter rules apply to the me() rewrite below.
@@ -519,7 +505,14 @@ def prepare_joint_prediction(
             )
         ),
         rescor=fit.specification.rescor,
-        local_module=local,
+        rows=sources,
+    )
+    fresh_sites = tuple(
+        emission.responses[name].names.get(site.name, site.name)
+        for name, (lens, formula) in components.items()
+        for term in lens._terms(formula, sources[name])
+        for site in term.sites()
+        if site.fresh
     )
     missing_inputs: dict[str, torch.Tensor] = {}
     if not fit.missing.empty:
@@ -592,6 +585,29 @@ def prepare_joint_prediction(
                     observations[target] = value
                 elif key in parameters:
                     observations[key] = value
+            lens, formula = components[name]
+            observations.update(
+                {
+                    response.names.get(key, key): value
+                    for key, value in bind_inputs(
+                        (
+                            *law_inputs(lens.group_laws),
+                            *(
+                                item
+                                for term in lens._terms(formula, sources[name])
+                                for item in term.inputs()
+                            ),
+                        )
+                    ).items()
+                    if key in response.names or key in parameters
+                }
+            )
+        observations.update(
+            {
+                f"{_qvr_name(group)}_idx": remap.row_indices
+                for group, remap in groups.items()
+            }
+        )
         if fit.specification.rescor:
             observations[JOINT_RESPONSE] = torch.stack(
                 tuple(
@@ -607,7 +623,7 @@ def prepare_joint_prediction(
             raise ValueError(
                 f"joint prediction left program inputs unbound: {sorted(missing)!r}"
             )
-        _check_layout(fit, program, observations, groups)
+        _check_layout(fit, program, observations, groups, fresh_sites)
     prior_program = None
     if sample_new_levels.removeprefix("feasible_") == "gaussian" and any(
         -1 in group.fitted_indices
@@ -648,6 +664,7 @@ def prepare_joint_prediction(
             retain_ordinal_cutpoints=bool(replays),
             ordinal_order_groups=tuple(sorted(order_groups)),
             ordinal_replays=replays,
+            fresh_sites=fresh_sites,
         ),
         rows=rows,
     )
@@ -716,13 +733,7 @@ def _constrained_thresholds(view: BayesianFit) -> bool:
     return (
         ordinal is not None
         and ordinal.kind in {"cumulative", "hurdle_cumulative"}
-        and (
-            any(column.category_specific for column in view.formula.fixed_columns)
-            or any(
-                term.column is not None and term.column.category_specific
-                for term in view.formula.random_terms
-            )
-        )
+        and (view.formula.category_specific)
     )
 
 
@@ -731,6 +742,7 @@ def _check_layout(
     program: MonadicProgram,
     observations: Mapping[str, torch.Tensor],
     groups: Mapping[str, GroupRemap],
+    fresh_sites: tuple[str, ...],
 ) -> None:
     """Require the specialized program to keep the fitted latent layout.
 
@@ -744,6 +756,8 @@ def _check_layout(
         Prediction bindings.
     groups : Mapping[str, GroupRemap]
         Compact group axes with their raw sites.
+    fresh_sites : tuple[str, ...]
+        Sites drawn for the fresh rows.
 
     Raises
     ------
@@ -767,6 +781,7 @@ def _check_layout(
             for term in fit.missing.measurements.values()
         )
     }
+    covariance |= set(fresh_sites)
     if set(original.names) - covariance != set(fresh.names) - covariance:
         raise TypeError("joint new_data specialization changed the fitted latent names")
     widths = {

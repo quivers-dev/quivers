@@ -321,9 +321,20 @@ class PriorTarget(ValueModel):
         Native distribution event rank, separate from independent axes.
     component_labels : tuple[str, ...]
         Free response-component labels in the retained coefficient order.
+    parameters : tuple[str, ...]
+        Parameter of each component, when every component belongs to a
+        parameter of its own, as ``muB`` and ``muC`` of a categorical
+        location.
     partition_labels : tuple[str, ...]
         Levels of the ``by`` variable of a group-level scale, whose
         components vary fastest along its axis.
+    partition_axis : str or None
+        Axis over those levels.
+    vector : str or None
+        Parameter ``dpar`` is a component of, for a site that holds one
+        component alone.
+    whole : str or None
+        Site the component is part of.
     """
 
     site: str
@@ -339,7 +350,11 @@ class PriorTarget(ValueModel):
     upper: float | None = None
     event_rank: int = 0
     component_labels: tuple[str, ...] = ()
+    parameters: tuple[str, ...] = ()
     partition_labels: tuple[str, ...] = ()
+    partition_axis: str | None = None
+    vector: str | None = None
+    whole: str | None = None
 
     @dx.model_validator()
     def _validate(self) -> None:
@@ -352,6 +367,55 @@ class PriorTarget(ValueModel):
     def width(self) -> int:
         """Return the number of independent selected coordinates."""
         return math.prod(self.shape)
+
+    @property
+    def sites(self) -> tuple[str, ...]:
+        """Return the target's site and the site it is part of.
+
+        Returns
+        -------
+        tuple[str, ...]
+            One or two names.
+        """
+        return (self.site,) if self.whole is None else (self.site, self.whole)
+
+    def component_site(self, parameter: str) -> str:
+        """Name the site of one component drawn on its own.
+
+        Parameters
+        ----------
+        parameter : str
+            Parameter of the component.
+
+        Returns
+        -------
+        str
+            Site name.
+        """
+        return f"{self.site}__{parameter}"
+
+    def components(self) -> tuple[PriorTarget, ...]:
+        """Return the target of each component drawn on its own.
+
+        Returns
+        -------
+        tuple[PriorTarget, ...]
+            One target per parameter, with the component's own site.
+        """
+        partitioned = self.partition_axis is not None
+        return tuple(
+            self.with_(
+                site=self.component_site(parameter),
+                dpar=parameter,
+                vector=self.dpar,
+                whole=self.site,
+                axes=(self.partition_axis,) if partitioned else (),
+                shape=(len(self.partition_labels),) if partitioned else (),
+                component_labels=(),
+                parameters=(),
+            )
+            for parameter in self.parameters
+        )
 
 
 def brms_class_names(target: PriorTarget) -> frozenset[str]:
@@ -426,7 +490,38 @@ def _selects(target: PriorTarget, key: str, value: str | None) -> bool:
         return value in brms_class_names(target)
     if key == "coef" and value == "Intercept" and _nonlinear_intercept(target):
         return True
+    if key == "dpar" and value is not None and value == target.vector:
+        return True
     return getattr(target, key) == value
+
+
+def component_rules(
+    priors: PriorSet, targets: Sequence[PriorTarget]
+) -> tuple[PriorTarget, ...]:
+    """List the targets whose components the rules tell apart.
+
+    Parameters
+    ----------
+    priors : PriorSet
+        Authored selector rules.
+    targets : Sequence[PriorTarget]
+        Emitted sites.
+
+    Returns
+    -------
+    tuple[PriorTarget, ...]
+        Targets over several parameters of which a rule selects one.
+    """
+    return tuple(
+        target
+        for target in targets
+        if any(
+            all(_selects(component, key, value) for key, value in rule.selector.items())
+            and (rule.dpar == component.dpar or rule.site == component.site)
+            for component in target.components()
+            for rule in priors.rules
+        )
+    )
 
 
 def resolve_priors(
@@ -452,6 +547,15 @@ def resolve_priors(
         If a rule matches no target, is completely shadowed, or conflicts
         with an incomparable rule on at least one target.
     """
+
+    def specificity(index: int, target: PriorTarget) -> dict[str, str]:
+        """Read a rule's selector, where a vector's name selects nothing further."""
+        return {
+            key: value
+            for key, value in priors.rules[index].selector.items()
+            if key != "dpar" or target.vector is None or value != target.vector
+        }
+
     matched = [False] * len(priors.rules)
     won = [False] * len(priors.rules)
     selected = {}
@@ -468,7 +572,7 @@ def resolve_priors(
             for i in candidates
             if not any(
                 (priors.rules[i].site is None and priors.rules[j].site is not None)
-                or priors.rules[i].selector.items() < priors.rules[j].selector.items()
+                or specificity(i, target).items() < specificity(j, target).items()
                 for j in candidates
             )
         ]

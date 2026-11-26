@@ -22,10 +22,13 @@ Both maps are linear with constant Jacobian (one for centering,
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Mapping, Sequence
+
+from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
 import numpy as np
+import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
@@ -33,11 +36,36 @@ from quivers.dsl.ast_nodes import (
     LetExprNode,
     LetStep,
     ProgramStep,
-    SampleStep,
 )
-from quivers.formulas._ast import _add, _let, _mul, _sub, _var
+from quivers.formulas._ast import _add, _index, _let, _mul, _sub, _var
+from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
+from quivers.formulas._row_source import PredictorRows, fresh_columns
+from quivers.formulas._variable_catalogue import brms_rename
+from quivers.formulas._term import (
+    AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
+    VariableDecl,
+    SmoothPart,
+    coordinate_scopes,
+    ColumnName,
+    Contribution,
+    at_coordinate,
+    over_output,
+    Emission,
+    InputDecl,
+    OutputAxis,
+    ProgramNames,
+    SiteDecl,
+    column_inputs,
+    column_rms,
+)
+from quivers.formulas.formula_parts import FormulaPart
 from quivers.formulas.formula import FixedColumn, Formula
+
+INTERCEPT = "intercept"
+"""Reported intercept site, within the predictor namespace."""
 
 CENTERED_SUFFIX = "_centered"
 """Suffix of the sampled centered-intercept site."""
@@ -51,12 +79,13 @@ class PopulationCoordinates(ValueModel):
 
     Parameters
     ----------
-    prefix : str
-        Predictor namespace (``""`` for the location, ``dpar_<name>_``).
+    intercept : str
+        Reported intercept site.
     centered : bool
         Whether the intercept is sampled on the centered design.
-    columns : tuple[str, ...]
-        QVR names of the transformed design columns, in design order.
+    sites : tuple[str, ...]
+        Reported coefficient sites of the transformed design columns, in
+        design order.
     means : tuple[float, ...]
         Their training means (zeros when not centered).
     r_inverse : tuple[tuple[float, ...], ...] or None
@@ -65,9 +94,9 @@ class PopulationCoordinates(ValueModel):
         Columns of ``XQ``, used to scale default coordinate priors.
     """
 
-    prefix: str
+    intercept: str
     centered: bool
-    columns: tuple[str, ...] = ()
+    sites: tuple[str, ...] = ()
     means: tuple[float, ...] = ()
     r_inverse: tuple[tuple[float, ...], ...] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
@@ -162,8 +191,8 @@ def population_coordinates(
     Returns
     -------
     PopulationCoordinates or None
-        None when neither transformation applies (no intercept to center and
-        no QR), so the ordinary emission is used.
+        None when neither transformation applies (no columns, or no intercept
+        to center and no QR), so the ordinary emission is used.
 
     Raises
     ------
@@ -174,6 +203,8 @@ def population_coordinates(
     columns = _design_columns(formula)
     has_intercept = any(column.is_intercept for column in formula.fixed_columns)
     centered = center and has_intercept
+    if not formula.fixed_columns:
+        return None
     if decomp == "QR":
         if not columns:
             raise ValueError("QR decomposition requires non-intercept predictors")
@@ -209,43 +240,45 @@ def population_coordinates(
         r_inverse = tuple(tuple(float(v) for v in row) for row in np.linalg.inv(xr))
         q_columns = tuple(tuple(float(v) for v in column) for column in xq.T)
     return PopulationCoordinates(
-        prefix=prefix,
+        intercept=prefix + INTERCEPT,
         centered=centered,
-        columns=tuple(
-            "intercept" if column.is_intercept else column.qvr_name
-            for column in selected
-        ),
+        sites=tuple(coefficient_site(prefix, column) for column in selected),
         means=tuple(float(value) for value in means),
         r_inverse=r_inverse,
         q_columns=q_columns,
     )
 
 
-def coefficient_site(prefix: str, column: str) -> str:
+def coefficient_site(prefix: str, column: FixedColumn | SymbolicColumn) -> str:
     """Return the reported coefficient site of one design column.
 
     Parameters
     ----------
     prefix : str
         Predictor namespace.
-    column : str
-        QVR column name, or ``intercept``.
+    column : FixedColumn or SymbolicColumn
+        Design column.
 
     Returns
     -------
     str
         ``<prefix>intercept`` or ``<prefix>beta_<column>``.
     """
-    return prefix + ("intercept" if column == "intercept" else f"beta_{column}")
+    return prefix + (INTERCEPT if column.is_intercept else f"beta_{column.qvr_name}")
 
 
-def coordinate_bindings(plan: PopulationCoordinates) -> list[LetStep]:
+def coordinate_bindings(
+    plan: PopulationCoordinates, output: OutputAxis | None
+) -> list[LetStep]:
     """Bind the reported coefficients from the sampled coordinates.
 
     Parameters
     ----------
     plan : PopulationCoordinates
         The predictor's coordinate plan.
+    output : OutputAxis or None
+        Axis of the coefficient vectors, each of whose coordinates has the
+        same map.
 
     Returns
     -------
@@ -255,55 +288,476 @@ def coordinate_bindings(plan: PopulationCoordinates) -> list[LetStep]:
     """
     steps: list[LetStep] = []
     if plan.r_inverse is not None:
-        for j, column in enumerate(plan.columns):
+        for site, row in zip(plan.sites, plan.r_inverse, strict=True):
             terms: list[LetExprNode] = [
                 _mul(
-                    LetExprLiteral(value=plan.r_inverse[j][k]),
-                    _var(coefficient_site(plan.prefix, other) + QR_SUFFIX),
+                    LetExprLiteral(value=weight),
+                    at_coordinate(other + QR_SUFFIX, output),
                 )
-                for k, other in enumerate(plan.columns)
-                if plan.r_inverse[j][k] != 0.0
+                for other, weight in zip(plan.sites, row, strict=True)
+                if weight != 0.0
             ]
-            steps.append(_let(coefficient_site(plan.prefix, column), _add(*terms)))
+            steps.append(_let(site, over_output(output, _add(*terms))))
     if plan.centered:
         shift: list[LetExprNode] = [
-            _mul(
-                LetExprLiteral(value=mean), _var(coefficient_site(plan.prefix, column))
-            )
-            for column, mean in zip(plan.columns, plan.means, strict=True)
-            if column != "intercept" and mean != 0.0
+            _mul(LetExprLiteral(value=mean), at_coordinate(site, output))
+            for site, mean in zip(plan.sites, plan.means, strict=True)
+            if site != plan.intercept and mean != 0.0
         ]
-        intercept = _var(plan.prefix + "intercept" + CENTERED_SUFFIX)
+        intercept = at_coordinate(plan.intercept + CENTERED_SUFFIX, output)
         steps.append(
             _let(
-                plan.prefix + "intercept",
-                _sub(intercept, _add(*shift)) if shift else intercept,
+                plan.intercept,
+                over_output(
+                    output, _sub(intercept, _add(*shift)) if shift else intercept
+                ),
             )
         )
     return steps
 
 
-def sampled_site(site: str, samples: Collection[str]) -> str:
-    """Map a reported coefficient site to the site actually sampled.
+class PopulationTerm(ValueModel):
+    """The population-level columns of one predictor over one output axis.
 
     Parameters
     ----------
-    site : str
-        Reported site (``intercept`` or ``beta_<column>`` with a prefix).
-    samples : collection of str
-        Sampled site names of the emitted program.
-
-    Returns
-    -------
-    str
-        The site itself, its centered intercept, or its QR coordinate.
+    prefix : str
+        Predictor namespace.
+    names : ProgramNames
+        Names of the columns and contributions in the program.
+    prior : str
+        Default prior of a coefficient.
+    columns : tuple[FixedColumn or SymbolicColumn, ...]
+        Design columns, in authored order.
+    scales : tuple[float or None, ...]
+        Root mean square of each training column, which a default prior
+        scale is divided by.
+    coordinates : PopulationCoordinates or None
+        Centered and QR coordinates of the block; None samples the
+        coefficients themselves.
+    output : OutputAxis or None
+        Axis of the coefficient vectors.
     """
-    if site in samples:
-        return site
-    for suffix in (CENTERED_SUFFIX, QR_SUFFIX):
-        if site + suffix in samples:
-            return site + suffix
-    return site
+
+    prefix: str
+    names: ProgramNames = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    prior: str
+    columns: tuple[FixedColumn | SymbolicColumn, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    scales: tuple[float | None, ...]
+    coordinates: PopulationCoordinates | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    output: OutputAxis | None = None
+
+    @property
+    def label(self) -> str:
+        """Return the authored terms of the columns.
+
+        Returns
+        -------
+        str
+            Their labels, joined by plus signs.
+        """
+        return " + ".join(dict.fromkeys(column.term for column in self.columns))
+
+    def at(self, rows: PredictorRows) -> PopulationTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        PopulationTerm
+            The same coefficients and coordinates over the rows' columns.
+        """
+        if rows.frame is None:
+            return self
+        evaluated = iter(
+            fresh_columns(
+                tuple(
+                    column
+                    for column in self.columns
+                    if isinstance(column, FixedColumn) and not column.is_intercept
+                ),
+                rows.column,
+            )
+        )
+        return self.with_(
+            columns=tuple(
+                next(evaluated)
+                if isinstance(column, FixedColumn) and not column.is_intercept
+                else column
+                for column in self.columns
+            )
+        )
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            One per evaluated column.
+        """
+        return tuple(
+            ColumnName(prefix=self.prefix, column=column.qvr_name)
+            for column in self.columns
+            if isinstance(column, FixedColumn) and not column.is_intercept
+        )
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            Every intercept and coefficient, reported on the original
+            scale.
+        """
+        declarations = []
+        for column in self.columns:
+            if column.is_intercept and not scope.intercept:
+                declarations.append(
+                    VariableDecl(
+                        name="",
+                        site=coefficient_site(self.prefix, column),
+                        kind="intercept",
+                    )
+                )
+                continue
+            for index, part in coordinate_scopes(self.output, scope):
+                smooth = part.smooths.population.get(column.name)
+                specific = column.category_specific
+                if smooth is not None:
+                    name = smooth
+                elif column.name in scope.special:
+                    name = f"bsp_{part.infix}{scope.special[column.name]}"
+                elif specific:
+                    inner = column.term.removeprefix("cs(").removesuffix(")")
+                    authored = column.term.startswith("cs(")
+                    name = f"bcs_{part.infix}" + (
+                        brms_rename(inner) if authored else part.label(column.name)
+                    )
+                else:
+                    name = f"b_{part.infix}{part.label(column.name)}"
+                declarations.append(
+                    VariableDecl(
+                        name=name,
+                        site=coefficient_site(self.prefix, column),
+                        kind="intercept"
+                        if column.is_intercept and not specific
+                        else "population",
+                        index=index,
+                        parameter=part.position,
+                    )
+                )
+        return tuple(declarations)
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients by column, then output coordinate.
+        """
+        values = [
+            draws[coefficient_site(self.prefix, column)] for column in self.columns
+        ]
+        return torch.stack(values, 2)
+
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            One per column.
+        """
+        return tuple(
+            PopulationCoefficient(
+                label=column.name, site=coefficient_site(self.prefix, column)
+            )
+            for column in self.columns
+        )
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            The unpenalized columns of the smooth.
+        """
+        columns = tuple(column for column in self.columns if column.term == label)
+        if not columns:
+            return None
+        kept = {column.qvr_name for column in columns}
+        return self.with_(
+            columns=columns,
+            scales=tuple(
+                scale
+                for column, scale in zip(self.columns, self.scales, strict=True)
+                if column.qvr_name in kept
+            ),
+        )
+
+    def effect(
+        self, draws: Mapping[str, torch.Tensor], generator: torch.Generator
+    ) -> torch.Tensor:
+        """Evaluate the contribution for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+        generator : torch.Generator
+            Unused: the columns are known.
+
+        Returns
+        -------
+        torch.Tensor
+            Contributions with shape ``(chain, draw, rows)``, followed by the
+            output axis.
+        """
+        design = torch.as_tensor(
+            np.stack(
+                [
+                    np.asarray(column.data, dtype=np.float64)
+                    for column in self.columns
+                    if isinstance(column, FixedColumn)
+                ]
+            )
+        )
+        return torch.einsum(
+            "cdj...,jn->cdn...", self.coefficients(draws).to(design), design
+        )
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            Each design term of the columns.
+        """
+        kinds: dict[str, Literal["fe", "sp"]] = {}
+        for column in self.columns:
+            if column.is_intercept:
+                continue
+            special = isinstance(column, SymbolicColumn)
+            kinds.setdefault(column.term, "sp" if special else "fe")
+        return tuple(
+            EffectSource(label=label, kind=kind) for label, kind in kinds.items()
+        )
+
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
+
+        Returns
+        -------
+        tuple[Contribution, ...]
+            The intercept, and the row contribution of each column.
+        """
+        return tuple(
+            Contribution(
+                name=coefficient_site(self.prefix, column)
+                if column.is_intercept
+                else self.binding(column),
+                rows=not column.is_intercept,
+                coordinates=self.output is not None,
+                owner=None if column.is_intercept else self.prefix,
+                part=FormulaPart(field="fixed_columns", key=column.name),
+            )
+            for column in self.columns
+        )
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            Empty: the coefficients use the predictor's own axis.
+        """
+        return ()
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the design columns.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            One inferred row vector per evaluated column, and one declared
+            row vector, bound elsewhere, per symbolic column.
+        """
+        return column_inputs((self.input(column), column) for column in self.columns)
+
+    def input(self, column: FixedColumn | SymbolicColumn) -> str:
+        """Name the input of one column.
+
+        Parameters
+        ----------
+        column : FixedColumn or SymbolicColumn
+            Column of the block. A symbolic column keeps its declared name.
+
+        Returns
+        -------
+        str
+            Input name in the program.
+        """
+        name = ColumnName(prefix=self.prefix, column=column.qvr_name)
+        if isinstance(column, SymbolicColumn):
+            return name.name
+        return self.names.input(name)
+
+    def binding(self, column: FixedColumn | SymbolicColumn) -> str:
+        """Name the row contribution of one column.
+
+        Parameters
+        ----------
+        column : FixedColumn or SymbolicColumn
+            Column of the block.
+
+        Returns
+        -------
+        str
+            Binding in the program.
+        """
+        return self.names.binding(
+            self.prefix, coefficient_site(self.prefix, column) + "_per_row"
+        )
+
+    def site(self, column: FixedColumn | SymbolicColumn) -> SiteDecl:
+        """Declare the sampled coordinate of one column.
+
+        Parameters
+        ----------
+        column : FixedColumn or SymbolicColumn
+            Column of the block.
+
+        Returns
+        -------
+        SiteDecl
+            The coefficient, the centered intercept, or the QR coordinate.
+        """
+        plan = self.coordinates
+        site = coefficient_site(self.prefix, column)
+        divisor = multiplier = None
+        if plan is not None and column.is_intercept and plan.centered:
+            site += CENTERED_SUFFIX
+        elif plan is not None and plan.q_columns is not None and site in plan.sites:
+            # A default prior scales with the XQ column its coordinate multiplies.
+            divisor = column_rms(
+                np.asarray(plan.q_columns[plan.sites.index(site)], dtype=np.float64)
+            )
+            site += QR_SUFFIX
+        elif isinstance(column, SymbolicColumn):
+            multiplier = column.prior_multiplier
+        elif not column.is_intercept:
+            divisor = self.scales[self.columns.index(column)]
+        return SiteDecl(
+            name=site,
+            class_="Intercept" if column.is_intercept else "b",
+            default=self.prior,
+            coef=column.name,
+            axes=(self.output.name,) if self.output is not None else (),
+            component_labels=self.output.labels if self.output is not None else (),
+            parameters=self.output.parameters if self.output is not None else (),
+            divisor=divisor,
+            multiplier=multiplier,
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the sampled coordinates.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            One site per column, in authored order.
+        """
+        return tuple(self.site(column) for column in self.columns)
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The coefficients, or their sampled coordinates and the map back;
+            then, for scalar coefficients, the contribution of each column.
+        """
+        steps: list[ProgramStep] = []
+        row = _var("response")
+        bindings = tuple(
+            _let(
+                self.binding(column),
+                _mul(
+                    _var(coefficient_site(self.prefix, column)),
+                    _var(self.input(column)),
+                )
+                if self.output is None
+                else over_output(
+                    self.output,
+                    _mul(
+                        at_coordinate(
+                            coefficient_site(self.prefix, column), self.output
+                        ),
+                        _index(self.input(column), row),
+                    ),
+                    ("response", "Resp"),
+                ),
+            )
+            if not column.is_intercept
+            else None
+            for column in self.columns
+        )
+        draws = tuple(emission.draw(site) for site in self.sites())
+        if self.coordinates is None:
+            for draw, binding in zip(draws, bindings, strict=True):
+                steps.append(draw)
+                if binding is not None:
+                    steps.append(binding)
+            return tuple(steps)
+        steps.extend(draws)
+        steps.extend(coordinate_bindings(self.coordinates, self.output))
+        steps.extend(binding for binding in bindings if binding is not None)
+        return tuple(steps)
 
 
 def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[str]:
@@ -320,74 +774,13 @@ def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[
         Intercept and slope sites by prefix.
     """
     return [
-        prefix + ("intercept" if column.is_intercept else f"beta_{column.qvr_name}")
+        coefficient_site(prefix, column)
         for _, prefix, formula in formulas
         for column in formula.fixed_columns
     ]
 
 
+if TYPE_CHECKING:
+    from quivers.formulas._name_scope import NameScope
+
 __all__: list[str] = []
-
-
-def emit_population(
-    formula: Formula,
-    steps: list[ProgramStep],
-    prefix: str,
-    plan: PopulationCoordinates,
-    draw: Callable[[str, FixedColumn | SymbolicColumn], SampleStep],
-) -> list[LetExprNode]:
-    """Emit population effects in brms's sampled coordinates.
-
-    Parameters
-    ----------
-    formula : Formula
-        Evaluated predictor.
-    steps : list
-        Program steps receiving draws, bindings, and contributions.
-    prefix : str
-        Predictor namespace.
-    plan : PopulationCoordinates
-        Centering and QR plan of this predictor.
-    draw : Callable
-        The compiler's prior emission for a coefficient site and its column,
-        which applies explicit priors and default autoscaling.
-
-    Returns
-    -------
-    list[LetExprNode]
-        Additive contributions on the original design, ``b_Intercept +
-        sum_j b_j x_j``; scoring costs O(N K) as for the ordinary emission.
-    """
-    transformed = set(plan.columns)
-    q_columns = dict(zip(plan.columns, plan.q_columns or (), strict=False))
-    for column in formula.fixed_columns:
-        name = "intercept" if column.is_intercept else column.qvr_name
-        site = coefficient_site(prefix, name)
-        if column.is_intercept and plan.centered:
-            steps.append(draw(site + CENTERED_SUFFIX, column))
-        elif plan.r_inverse is not None and name in transformed:
-            # Default coordinate priors scale with the XQ column they multiply.
-            coordinate = FixedColumn(
-                term=column.term,
-                name=column.name,
-                qvr_name=column.qvr_name,
-                data=np.asarray(q_columns[name], dtype=np.float64),
-            )
-            steps.append(draw(site + QR_SUFFIX, coordinate))
-        else:
-            steps.append(draw(site, column))
-    steps.extend(coordinate_bindings(plan))
-    contributions: list[LetExprNode] = []
-    for column in formula.fixed_columns:
-        site = coefficient_site(
-            prefix, "intercept" if column.is_intercept else column.qvr_name
-        )
-        if column.is_intercept:
-            contributions.append(_var(site))
-            continue
-        contribution = f"{site}_per_row"
-        steps.append(
-            _let(contribution, _mul(_var(site), _var(prefix + column.qvr_name)))
-        )
-        contributions.append(_var(contribution))
-    return contributions

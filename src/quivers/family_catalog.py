@@ -297,6 +297,40 @@ class FamilyCatalog(Mapping[str, DistributionFamily]):
             )
         return result
 
+    def renamed(self, names: Mapping[str, str]) -> FamilyCatalog:
+        """Return this catalog with custom families under other names.
+
+        Parameters
+        ----------
+        names : Mapping[str, str]
+            New name of each renamed family; other families keep theirs.
+
+        Returns
+        -------
+        FamilyCatalog
+            A catalog sharing the original implementations and supports.
+
+        Raises
+        ------
+        ValueError
+            If two families would share one name.
+        """
+        result = FamilyCatalog()
+        for name, semantic in self._definitions.items():
+            implementation = self._implementations[name]
+            target = names.get(name, name)
+            if isinstance(implementation, FamilySpec):
+                result = result.with_family(
+                    semantic.with_(name=target), implementation.with_(name=target)
+                )
+                continue
+            result = result.with_family(
+                semantic.with_(name=target),
+                implementation,
+                support=self._supports[name],
+            )
+        return result
+
     def build(self, name: str, arguments: Mapping[str, torch.Tensor]) -> Distribution:
         """Construct and validate a custom law without sampling or detaching it.
 

@@ -46,7 +46,6 @@ from quivers.formulas._category_formulas import (
     check_scale_formulas,
     is_category_parameter,
     main_without_terms,
-    requires_category_predictors,
 )
 from quivers.formulas.formula import (
     Formula,
@@ -54,7 +53,6 @@ from quivers.formulas.formula import (
     RowSelection,
     _formula_and_design,
     _qvr_name,
-    formula_from_data,
 )
 from quivers.formulas._row_retention import (
     complete_rows,
@@ -71,17 +69,13 @@ from quivers.formulas._predictor_graph import (
 )
 
 from quivers.formulas._prediction import FormulaPredictionPlan
-from quivers.formulas._grouping import resolve_group_covariances
-from quivers.formulas._latent_effects import (
-    formula_families,
-    latent_observations,
-)
 from quivers.formulas._autocor import (
     AutocorMatrix,
     autocor_binding,
     autocor_joint,
     autocor_linear_predictor,
     bind_autocor_terms,
+    fields_and_design,
     autocor_log_likelihood,
     split_autocor_terms,
 )
@@ -177,6 +171,16 @@ from quivers.inference import (
     SMCResult,
 )
 from quivers.modeling.refit import RefitRecipe, SnapshotPolicy
+from quivers.formulas._posterior import (
+    LinpredBinding,
+    collect_draws,
+    posterior_draws,
+    replay,
+    response_distribution,
+    response_rng,
+    row_binding,
+)
+from quivers.formulas._predictor import Predictor, response_axis
 from quivers.inference._posterior import draw_count
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
@@ -855,14 +859,12 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         ValueError
             If the count is invalid or posterior sites mismatch the model.
         """
-        from quivers.formulas._posterior import posterior_draws
-
         return posterior_draws(self, num_samples, seed)
 
     def fixed_effects(
         self, *, parameter: str = "mu", num_samples: int | None = None, seed: int = 0
     ) -> dict[str, torch.Tensor]:
-        """Extract coefficients on the evaluated fixed-design columns.
+        """Extract the population coefficients of one predictor.
 
         Parameters
         ----------
@@ -880,10 +882,12 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             ``(chain, draw)`` or ``(chain, draw, K-1)`` for categorical
             reference-category coefficients.
         """
-        predictor, prefix = self._formula_predictor(parameter)
-        return self._fixed_effects(
-            self.draws(num_samples=num_samples, seed=seed), predictor, prefix
-        )
+        _, prefix = self._formula_predictor(parameter)
+        draws = self.draws(num_samples=num_samples, seed=seed)
+        return {
+            name: self._at_parameter(parameter, values)
+            for name, values in self._fixed_effects(draws, prefix).items()
+        }
 
     def random_effects(
         self, *, parameter: str = "mu", num_samples: int | None = None, seed: int = 0
@@ -912,9 +916,16 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         shape = draw_count(self.posterior, num_samples)
         if not predictor.random_terms:
             return {}
-        return self._random_effects(
-            self.draws(num_samples=num_samples, seed=seed), shape, predictor, prefix
-        )
+        draws = self.draws(num_samples=num_samples, seed=seed)
+        return {
+            group: {
+                name: self._at_parameter(parameter, values)
+                for name, values in coefficients.items()
+            }
+            for group, coefficients in self._random_effects(
+                draws, shape, predictor, prefix
+            ).items()
+        }
 
     def coefficients(
         self, *, parameter: str = "mu", num_samples: int | None = None, seed: int = 0
@@ -943,7 +954,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         if not predictor.random_terms:
             return {}
         draws = self.draws(num_samples=num_samples, seed=seed)
-        fixed = self._fixed_effects(draws, predictor, prefix)
+        fixed = self._fixed_effects(draws, prefix)
         varying = self._random_effects(draws, shape, predictor, prefix)
         for group, coefficients in varying.items():
             for name, coefficient in fixed.items():
@@ -957,7 +968,13 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                         *population.shape[3:],
                     )
                 )
-        return varying
+        return {
+            group: {
+                name: self._at_parameter(parameter, values)
+                for name, values in coefficients.items()
+            }
+            for group, coefficients in varying.items()
+        }
 
     def posterior_thresholds(
         self,
@@ -1013,7 +1030,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         ValueError
             If the family is not ordinal or a requested profile crosses.
         """
-        from quivers.formulas._posterior import collect_draws, replay, row_binding
         from quivers.formulas._prediction import prepare_prediction
 
         if self.family.ordinal is None:
@@ -1030,6 +1046,15 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         width = len(self.threshold_labels)
+        plan = self.prediction_plan
+        shifts = tuple(
+            contribution.name
+            for predictor in (plan.predictors if plan is not None else ())
+            if not predictor.prefix
+            for term in predictor.part(None)
+            for contribution in term.contributions()
+            if contribution.varying
+        )
 
         def values():
             """Yield retained row values through the shared posterior replay.
@@ -1065,16 +1090,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                     cuts = cuts - row_binding(
                         recorded.sites["eta_nonbaseline"].value, context.rows, width
                     )
-                for term in self.formula.random_terms:
-                    if term.column is not None and term.column.category_specific:
-                        continue
-                    group = _qvr_name(term.group)
-                    latent = (
-                        f"alpha_{group}"
-                        if term.slope == "Intercept"
-                        else f"beta_{group}_{_qvr_name(term.slope)}"
-                    )
-                    name = f"{latent}_per_row"
+                for name in shifts:
                     cuts = cuts - row_binding(
                         recorded.sites[name].value, context.rows
                     ).unsqueeze(-1)
@@ -1171,42 +1187,10 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             If a parameter has no fitted predictor or an ordinal inverse
             link is requested without its thresholds.
         """
-        from quivers.formulas._posterior import (
-            collect_draws,
-            replay,
-            row_binding,
-        )
         from quivers.formulas._prediction import prepare_prediction
 
-        graph = self.predictor_graph
-        graph_parameter = graph is not None and parameter in (
-            graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
-        )
-        # brms: an auxiliary parameter without a formula is constant over the
-        # rows, and its draws are returned on the parameter's own scale.
+        binding = self._linpred_binding(parameter, transform)
         constant = self._constant_parameter(parameter)
-        # mixtures: parameter="mu" returns every component location.
-        if (
-            not graph_parameter
-            and not constant
-            and not (parameter == "mu" and self.family.mixture is not None)
-        ):
-            self._formula_predictor(parameter)
-        ordinal = self.family.ordinal is not None
-        if transform and parameter == "mu" and ordinal:
-            raise ValueError(
-                "ordinal probabilities depend on thresholds; use posterior_epred"
-            )
-        retained_log_rate = self.family.retains_log_location and parameter == "mu"
-        binding = (
-            ("mu" if transform and not retained_log_rate else "eta")
-            if parameter == "mu"
-            else (parameter if transform else f"dpar_{parameter}_eta")
-        )
-        if graph is not None and parameter in (
-            graph.leaves.keys() | graph.expressions.keys()
-        ):
-            binding = f"nlpar_{parameter}"
         context = prepare_prediction(
             self,
             new_data,
@@ -1223,23 +1207,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
-        category_specific = parameter == "mu" and (
-            any(column.category_specific for column in self.formula.fixed_columns)
-            or any(
-                term.column is not None and term.column.category_specific
-                for term in self.formula.random_terms
-            )
-        )
-        categories = self._predictor_width(parameter)
-        if category_specific:
-            categories = (
-                len(self.category_labels)
-                - 1
-                - int(
-                    self.family.ordinal is not None
-                    and self.family.ordinal.kind == "hurdle_cumulative"
-                )
-            )
 
         def values():
             """Yield retained row values through the shared posterior replay.
@@ -1259,21 +1226,21 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                         )
                     yield fixed.reshape(()).expand(rows)
                     continue
-                value = recorded.sites[binding].value
-                # brms's mu includes conditional ARMA terms.
-                if parameter == "mu" and autocor_binding(self.family) is not None:
-                    value = autocor_linear_predictor(
-                        recorded, _qvr_name(self.formula.response_name)
-                    )
-                if retained_log_rate and transform:
-                    value = value.exp()
-                if category_specific:
-                    proportional = row_binding(value, rows).unsqueeze(-1)
-                    specific = row_binding(
-                        recorded.sites["eta_nonbaseline"].value, rows, categories
-                    )
-                    value = proportional + specific
-                yield row_binding(value, rows, categories)
+
+                def read(name: str) -> torch.Tensor:
+                    """Read one row binding of the replayed program."""
+                    # brms's mu includes conditional ARMA terms.
+                    if (
+                        name == binding.site
+                        and parameter == "mu"
+                        and autocor_binding(self.family) is not None
+                    ):
+                        return autocor_linear_predictor(
+                            recorded, _qvr_name(self.formula.response_name)
+                        )
+                    return recorded.sites[name].value
+
+                yield binding.read(read, rows)
 
         return collect_draws(values(), shape)
 
@@ -1369,13 +1336,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             If the native family exposes no expectation, or a circular
             response would require a specified angular convention.
         """
-        from quivers.formulas._posterior import (
-            collect_draws,
-            replay,
-            response_distribution,
-            response_rng,
-            row_binding,
-        )
         from quivers.formulas._prediction import prepare_prediction
 
         if component not in {"response", "decision"}:
@@ -1730,7 +1690,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             and actual sampler statistics. Later analysis reuses these tensors.
         """
         from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
-        from quivers.formulas._posterior import replay
         from quivers.inference._likelihood import collect_log_likelihood
 
         shape = draw_count(self.posterior, num_samples)
@@ -1816,7 +1775,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         TypeError
             If a hidden response needs a marginal-likelihood observer.
         """
-        from quivers.formulas._posterior import replay
         from quivers.inference._likelihood import collect_log_likelihood
 
         context = None
@@ -1974,12 +1932,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         TypeError
             If the response has no native sampling operation.
         """
-        from quivers.formulas._posterior import (
-            collect_draws,
-            replay,
-            row_binding,
-            response_rng,
-        )
         from quivers.formulas._prediction import prepare_prediction
         from quivers.inference._response import response_sample
 
@@ -2196,6 +2148,118 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             and any(aux.name == parameter for aux in self.family.aux_params)
         )
 
+    def _vector_coordinate(self, parameter: str) -> tuple[Predictor, int] | None:
+        """Locate a parameter that is one coordinate of a vector predictor.
+
+        Parameters
+        ----------
+        parameter : str
+            Parameter name, for instance ``muB``.
+
+        Returns
+        -------
+        tuple[Predictor, int] or None
+            The predictor and the coordinate; None for any other parameter.
+        """
+        plan = self.prediction_plan
+        for predictor in plan.predictors if plan is not None else ():
+            output = predictor.output
+            if (
+                output is not None
+                and not predictor.nonlinear
+                and parameter in output.parameters
+            ):
+                return predictor, output.parameters.index(parameter)
+        return None
+
+    def _linpred_binding(self, parameter: str, transform: bool) -> LinpredBinding:
+        """Choose the row binding holding a linear predictor.
+
+        Parameters
+        ----------
+        parameter : str
+            Predictor name.
+        transform : bool
+            Request the inverse-link binding.
+
+        Returns
+        -------
+        LinpredBinding
+            The binding, with how its values are read.
+
+        Raises
+        ------
+        ValueError
+            If the parameter has no predictor or an ordinal inverse link is
+            requested.
+        """
+        coordinate = self._vector_coordinate(parameter)
+        if coordinate is not None and coordinate[0].prefix:
+            predictor, index = coordinate
+            assert predictor.output is not None
+            return LinpredBinding(
+                site=predictor.parameter
+                if transform
+                else f"{predictor.prefix}eta_nonbaseline",
+                width=predictor.output.size,
+                coordinate=index,
+            )
+        axis = (
+            response_axis(
+                self.family, tuple(str(label) for label in self.category_labels)
+            )
+            if self.family.response is not None
+            else None
+        )
+        if axis is not None and parameter in axis.parameters:
+            return LinpredBinding(
+                site="eta_nonbaseline",
+                width=axis.size,
+                coordinate=axis.parameters.index(parameter),
+            )
+        graph = self.predictor_graph
+        graph_parameter = graph is not None and parameter in (
+            graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
+        )
+        # brms: an auxiliary parameter without a formula is constant over the
+        # rows, and its draws are returned on the parameter's own scale.
+        if self._constant_parameter(parameter):
+            return LinpredBinding(site=parameter)
+        # mixtures: parameter="mu" returns every component location.
+        if not graph_parameter and not (
+            parameter == "mu" and self.family.mixture is not None
+        ):
+            self._formula_predictor(parameter)
+        ordinal = self.family.ordinal
+        if transform and parameter == "mu" and ordinal is not None:
+            raise ValueError(
+                "ordinal probabilities depend on thresholds; use posterior_epred"
+            )
+        retained_log_rate = self.family.retains_log_location and parameter == "mu"
+        site = (
+            ("mu" if transform and not retained_log_rate else "eta")
+            if parameter == "mu"
+            else (parameter if transform else f"dpar_{parameter}_eta")
+        )
+        if graph is not None and parameter in (
+            graph.leaves.keys() | graph.expressions.keys()
+        ):
+            site = f"nlpar_{parameter}"
+        specific = parameter == "mu" and (self.formula.category_specific)
+        width = self._predictor_width(parameter)
+        if specific:
+            width = (
+                len(self.category_labels)
+                - 1
+                - int(ordinal is not None and ordinal.kind == "hurdle_cumulative")
+            )
+        return LinpredBinding(
+            site=site,
+            width=width,
+            exponentiate=retained_log_rate and transform,
+            specific="eta_nonbaseline" if specific else None,
+        )
+
     def _formula_predictor(self, parameter: str) -> tuple[Formula, str]:
         """Read retained predictor metadata without re-evaluating its formula.
 
@@ -2227,38 +2291,68 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             )
         if parameter == "mu":
             return self.formula, ""
+        coordinate = self._vector_coordinate(parameter)
+        if coordinate is not None:
+            return self._formula_predictor(coordinate[0].parameter)
         if parameter not in self.distributional:
             raise ValueError(
                 f"parameter {parameter!r} has no fitted distributional predictor"
             )
         return self.distributional[parameter], f"dpar_{parameter}_"
 
-    @staticmethod
-    def _fixed_effects(
-        draws: dict[str, torch.Tensor], predictor: Formula, prefix: str
-    ) -> dict[str, torch.Tensor]:
-        """Label native fixed-site draws with original design-column names.
+    def _at_parameter(self, parameter: str, values: torch.Tensor) -> torch.Tensor:
+        """Select a parameter's coordinate of coefficients over a vector.
 
         Parameters
         ----------
-        draws : dict[str, torch.Tensor]
+        parameter : str
+            Parameter name.
+        values : torch.Tensor
+            Coefficients of its predictor.
+
+        Returns
+        -------
+        torch.Tensor
+            The coefficients of the coordinate, or every coefficient for a
+            parameter that is no coordinate.
+        """
+        coordinate = self._vector_coordinate(parameter)
+        return values if coordinate is None else values[..., coordinate[1]]
+
+    def _fixed_effects(
+        self, draws: Mapping[str, torch.Tensor], prefix: str, namespace: str = ""
+    ) -> dict[str, torch.Tensor]:
+        """Label the population coefficients of one predictor.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
             Native site draws on chain and draw axes.
-        predictor : Formula
-            The evaluated design-column metadata.
         prefix : str
-            Native coefficient-name prefix for the selected parameter.
+            Namespace of the predictor in its own model.
+        namespace : str
+            Namespace of the model in the draws.
 
         Returns
         -------
         dict[str, torch.Tensor]
-            Original design-column labels mapped to native coefficient draws.
+            Design-column labels mapped to coefficient draws.
+
+        Raises
+        ------
+        ValueError
+            If retained term metadata is unavailable.
         """
+        if self.prediction_plan is None:
+            raise ValueError(
+                "coefficient extraction requires retained emission metadata"
+            )
         return {
-            column.name: draws[
-                prefix
-                + ("intercept" if column.is_intercept else f"beta_{column.qvr_name}")
-            ]
-            for column in predictor.fixed_columns
+            coefficient.label: draws[namespace + coefficient.site]
+            for predictor in self.prediction_plan.predictors
+            if predictor.prefix == prefix
+            for term in predictor.terms
+            for coefficient in term.population()
         }
 
     def _random_effects(
@@ -3285,18 +3379,7 @@ def _prepare_fit(
             "freeze its parameters before using NUTS or HMC"
         )
     module, complement = lens.forward(parsed)
-    compiler = (
-        Compiler(
-            module,
-            families=with_flat_catalog(
-                formula_families(family_obj.custom.catalog, parsed), module
-            ),
-        )
-        if family_obj.custom is not None
-        else Compiler(
-            module, families=with_flat_catalog(formula_families(None, parsed), module)
-        )
-    )
+    compiler = Compiler(module, families=with_flat_catalog(lens.families(), module))
     program_runtime = compiler.compile()
     morphism = program_runtime.morphism
     if not isinstance(morphism, MonadicProgram):
@@ -3381,7 +3464,6 @@ def _formula_observations(
     observations.update(lens.fixed_column_observations(parsed))
 
     observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
-    observations.update(latent_observations(parsed))
     for _, _, predictor_formula in lens._predictor_items(parsed):
         for group, codes in predictor_formula.group_indices.items():
             observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
@@ -3734,6 +3816,7 @@ def _assemble_fit(
             group_laws=prepared.complement.group_laws,
             level_sites=prepared.complement.level_sites,
             prior_targets=prepared.complement.prior_targets,
+            predictors=prepared.formula.lens._planned(prepared.formula.formula),
         ),
     )
 
@@ -4043,10 +4126,6 @@ def _prepare_formula(
     ValueError
         If a family, response role, predictor, or trial contract is invalid.
     """
-    # brms gr(g, cov = M) reads a known level covariance from data2.
-    group_covariances = resolve_group_covariances(
-        model_texts(formula, (distributional, nonlinear)), data2, group_covariances
-    )
     if isinstance(family, str):
         if family not in families:
             raise ValueError(
@@ -4144,9 +4223,9 @@ def _prepare_formula(
         distributional = category_distributional(
             family_obj,
             FormulaToQVRModule._component_labels(parsed),
-            formula,
+            authored,
             distributional,
-            every_category=requires_category_predictors(parsed),
+            nonlinear=nonlinear is not None,
         )
         # brms sigma<c>: per-category logistic-normal scale formulas.
         check_scale_formulas(
@@ -4161,6 +4240,11 @@ def _prepare_formula(
     ):
         parsed = main_without_terms(parsed)
     parameter_designs: dict[str, DesignMatrices] = {}
+
+    def evaluate(text: str) -> tuple[Formula, DesignMatrices]:
+        """Evaluate one auxiliary formula on the included rows."""
+        return fields_and_design(text, data=data, data2=data2, caller=caller)
+
     with formula_data_options(knots, drop_unused_levels, data2):
         graph = build_predictor_graph(
             formula,
@@ -4169,8 +4253,17 @@ def _prepare_formula(
             data,
             parsed.response_name,
             family_parameters=frozenset(
-                {"mu", *(aux.name for aux in family_obj.aux_params)}
+                {
+                    "mu",
+                    *(aux.name for aux in family_obj.aux_params),
+                    *(
+                        name
+                        for name in distributional or {}
+                        if is_category_parameter(family_obj, name)
+                    ),
+                }
             ),
+            evaluate=evaluate,
             designs=parameter_designs,
         )
         parameter_formulas = _parse_distributional(
@@ -4179,8 +4272,8 @@ def _prepare_formula(
                 for name, value in (distributional or {}).items()
                 if isinstance(value, str)
             },
-            data,
             parsed.response_name,
+            evaluate=evaluate,
             designs=parameter_designs,
         )
     trials = (
@@ -4292,10 +4385,10 @@ def _threshold_formula_and_design(
 
 def _parse_distributional(
     formulas: Mapping[str, str] | None,
-    data: IntoDataFrame,
     response: str,
     *,
-    designs: dict[str, DesignMatrices] | None = None,
+    evaluate: Callable[[str], tuple[Formula, DesignMatrices]],
+    designs: dict[str, DesignMatrices],
 ) -> dict[str, Formula]:
     """Evaluate auxiliary design matrices on the same response rows.
 
@@ -4303,12 +4396,12 @@ def _parse_distributional(
     ----------
     formulas : Mapping[str, str] or None
         Auxiliary parameter names and their formulas.
-    data : IntoDataFrame
-        Shared source rows.
     response : str
         Primary response name used to evaluate design matrices.
-    designs : dict[str, DesignMatrices] or None
-        Optional output mapping that retains each fitted evaluator.
+    evaluate : Callable
+        Evaluates one formula.
+    designs : dict[str, DesignMatrices]
+        Receives each fitted evaluator.
 
     Returns
     -------
@@ -4335,12 +4428,7 @@ def _parse_distributional(
                 f"distributional formula for {parameter!r}: me() terms are "
                 "supported in the main formula of a joint model only"
             )
-        if designs is None:
-            parsed[parameter] = formula_from_data(f"{response} ~ {rhs}", data)
-        else:
-            parsed[parameter], designs[parameter] = _formula_and_design(
-                f"{response} ~ {rhs}", data
-            )
+        parsed[parameter], designs[parameter] = evaluate(f"{response} ~ {rhs}")
     return parsed
 
 

@@ -43,7 +43,9 @@ from quivers.formulas._group_law import (
     block_coefficients,
 )
 from quivers.formulas._group_prediction import (
+    CovarianceRemap,
     GroupRemap,
+    LevelPartition,
     _remap_covariance_group,
     compact_groups,
     remap_draw,
@@ -333,8 +335,8 @@ def _simplex_frame(rows: int = 24) -> pd.DataFrame:
 
 @pytest.mark.parametrize(
     "bar,covariance",
-    [("|", FULL), ("|", None), ("||", None)],
-    ids=["correlated-known", "correlated", "independent"],
+    [("|p|", FULL), ("|p|", None), ("|", None), ("||", None)],
+    ids=["correlated-known", "correlated", "one-coefficient", "independent"],
 )
 def test_student_coefficients_over_the_response_categories(
     bar: str, covariance: GroupCovariance | None
@@ -363,7 +365,7 @@ def test_student_coefficients_over_the_response_categories(
         [[1.0, 0.0], [0.3, (1 - 0.3**2) ** 0.5]], dtype=torch.float64
     )
     sites = law.correlation.sites
-    assert len(sites) == (0 if bar == "||" else 1)
+    assert len(sites) == (1 if bar == "|p|" else 0)
     if basis is not None:
         _, _, factor = basis.tensors()
         shape: tuple[int, ...] = (basis.rank, 2)
@@ -857,19 +859,29 @@ def test_new_level_of_a_by_partition_takes_the_column_factor_of_its_by_level():
         fitted_indices=(0, -1, 2),
         row_indices=torch.tensor([0, 1, 2]),
         levels=compact_levels,
-        by_codes=by.codes,
-        compact_by_codes=tuple(compact_codes.tolist()),
-        covariance=repeated,
-        covariance_laws=(law,),
-        covariance_target=target,
-        covariance_conditional=conditional,
-        covariance_mean_map=tuple(tuple(row) for row in mean_map.tolist()),
+        partitions=(
+            LevelPartition(
+                axis=by.axis, codes=by.codes, compact=tuple(compact_codes.tolist())
+            ),
+        ),
+        covariances=(
+            CovarianceRemap(
+                name="",
+                covariance=repeated,
+                laws=(law,),
+                target=target,
+                conditional=conditional,
+                mean_map=tuple(tuple(row) for row in mean_map.tolist()),
+            ),
+        ),
     )
     latent = _by_latent((law,), basis)
     site = law.members[0].raw_site
     assert site is not None
     mapped = _remap_covariance_group(
         group,
+        group.covariances[0],
+        0,
         latent,
         {site: (target.rank, 2)},
         "gaussian",
@@ -1340,8 +1352,9 @@ def test_donor_of_a_new_level_shares_its_by_level():
         fitted_size=4,
         fitted_indices=(0, -1, -1, 2),
         row_indices=torch.tensor([0, 1, 2, 3]),
-        by_codes=(0, 1, 0, 1),
-        compact_by_codes=(0, 1, 0, 0),
+        partitions=(
+            LevelPartition(axis="by", codes=(0, 1, 0, 1), compact=(0, 1, 0, 0)),
+        ),
     )
     with torch.random.fork_rng():
         torch.manual_seed(3)
@@ -1406,7 +1419,7 @@ def test_mixture_components_share_one_level_law(parameterization: Parameterizati
     assert [law.members[0].prefix for law in laws] == ["dpar_mu1_", "dpar_mu2_"]
     assert all(law.level.basis is not None for law in laws)
     assert len({law.support_site for law in laws}) == 2
-    assert {"g_by", "g_prior_weight"} <= observed.keys()
+    assert {"g_by_fb", "g_prior_weight_pw"} <= observed.keys()
 
 
 def test_mixture_block_shared_across_components_draws_the_mixing_once():
@@ -1470,12 +1483,75 @@ def test_colliding_names_are_refused_with_both_owners():
     assert "'x_h' of 'g'" in message and "'h' of 'g_x'" in message
 
 
-def test_two_by_variables_of_one_factor_are_refused():
+def test_two_by_variables_of_one_factor_partition_their_own_blocks():
+    """Each term has the scales of its own by variable, as its law states."""
+    frame = _options_frame()
+    frame["fc"] = [{"a": "s", "b": "s", "c": "t"}[level] for level in frame["g"]]
+    _, _, program, observed, complement = _compiled(
+        "y ~ x + (1 | gr(g, by = fb)) + (0 + x | gr(g, by = fc))",
+        frame,
+        distributional={"sigma": "~ 1 + (1 | g)"},
+    )
+    partitions = [
+        law.level.by.variable if law.level.by is not None else None
+        for law in complement.group_laws
+    ]
+    assert partitions == ["fb", "fc", None]
+    assert {"g_by_fb", "g_by_fc"} <= observed.keys()
+    registry = LatentRegistry.from_model(program, observed_names=set(observed))
+    assert registry["sigma_g_Intercept"].constrained_shape == (2,)
+    assert registry["sigma_g_x"].constrained_shape == (2,)
+    assert registry["dpar_sigma_sigma_g_Intercept"].constrained_shape == ()
+
+
+def test_terms_of_one_factor_have_their_own_level_covariances():
+    """A block reads the factor of the matrix its own term names, as in Stan."""
+    frame = _frame()
+    second = GroupCovariance(
+        levels=FULL.levels, matrix=tuple(map(tuple, (0.5 * FULL.tensor()).tolist()))
+    )
+    data2 = {
+        name: pd.DataFrame(
+            covariance.tensor().numpy(),
+            index=covariance.levels,
+            columns=covariance.levels,
+        )
+        for name, covariance in (("V", FULL), ("W", second))
+    }
+    _, _, program, observed, complement = _compiled(
+        "y ~ x + (1 | gr(g, cov = V)) + (0 + x | gr(g, cov = W))", frame, data2=data2
+    )
+    for law, covariance in zip(complement.group_laws, (FULL, second), strict=True):
+        basis = law.level.basis
+        assert basis is not None
+        (member,) = law.members
+        draws = {
+            member.scale.site: torch.tensor([[0.7]], dtype=torch.float64),
+            member.raw_site: torch.tensor(
+                [[[[0.4], [-0.3], [0.9]]]], dtype=torch.float64
+            ),
+        }
+        rows = block_coefficients(draws, law, sample_ndims=2)[0, 0, :, 0]
+        factor = torch.linalg.cholesky(covariance.subset(basis.levels).tensor())
+        expected = 0.7 * factor @ torch.tensor([0.4, -0.3, 0.9], dtype=torch.float64)
+        torch.testing.assert_close(rows, expected, atol=1e-10, rtol=1e-10)
+
+
+def test_a_student_term_leaves_the_other_terms_of_its_factor_gaussian():
+    """brms: one df and one udf per factor, read by the terms that state them."""
+    _, _, _, _, complement = _compiled(
+        "y ~ x + (1 | gr(g, dist = 'student')) + (0 + x | g)", _options_frame()
+    )
+    student, gaussian = complement.group_laws
+    assert student.level.mixing is not None and gaussian.level.mixing is None
+
+
+def test_one_block_cannot_have_two_by_variables():
     frame = _options_frame()
     frame["fc"] = [{"a": "s", "b": "s", "c": "t"}[level] for level in frame["g"]]
     with pytest.raises(ValueError, match="one 'by' variable"):
         _compiled(
-            "y ~ x + (1 | gr(g, by = fb))",
+            "y ~ x + (1 | p | gr(g, by = fb))",
             frame,
-            distributional={"sigma": "~ 1 + (1 | gr(g, by = fc))"},
+            distributional={"sigma": "~ 1 + (1 | p | gr(g, by = fc))"},
         )

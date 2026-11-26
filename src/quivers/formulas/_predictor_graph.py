@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from graphlib import CycleError, TopologicalSorter
 import re
 from typing import Literal
@@ -19,7 +19,6 @@ from quivers.dsl.let_expr_traversal import free_let_names, substitute_let_expr
 from quivers.formulas.formula import (
     Formula,
     FixedColumn,
-    _formula_and_design,
     _qvr_name,
 )
 from quivers.formulas._r_expression import translate_r_expression
@@ -61,6 +60,30 @@ class ComponentExpression(ValueModel):
 
     components: tuple[str, ...]
     values: tuple[LetExprNode, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    def at(self, component: str) -> LetExprNode:
+        """Return the expression of one coordinate.
+
+        Parameters
+        ----------
+        component : str
+            Coordinate label.
+
+        Returns
+        -------
+        LetExprNode
+            Scalar expression of the coordinate.
+
+        Raises
+        ------
+        ValueError
+            If the value has no such coordinate.
+        """
+        if component not in self.components:
+            raise ValueError(
+                f"the nonlinear vector {self.components} has no component {component!r}"
+            )
+        return self.values[self.components.index(component)]
 
 
 class PredictorGraph(ValueModel):
@@ -253,6 +276,7 @@ def build_predictor_graph(
     response: str,
     *,
     family_parameters: frozenset[str],
+    evaluate: Callable[[str], tuple[Formula, DesignMatrices]],
     designs: dict[str, DesignMatrices] | None = None,
 ) -> PredictorGraph | None:
     """Resolve parameter dependencies once and retain their existing design evaluators.
@@ -271,6 +295,8 @@ def build_predictor_graph(
         Response name used by the existing formula parser.
     family_parameters : frozenset[str]
         Legal family roots, including mu.
+    evaluate : Callable
+        Evaluates one additive formula.
     designs : dict[str, DesignMatrices] or None
         Optional destination for retained additive evaluators.
 
@@ -346,7 +372,7 @@ def build_predictor_graph(
                 raise ValueError(
                     f"nonlinear formula {name!r} has mismatched left-hand side"
                 )
-            parsed, design = _formula_and_design(f"{response} ~ {rhs}", data)
+            parsed, design = evaluate(f"{response} ~ {rhs}")
             leaves[name] = parsed
             if designs is not None:
                 designs[name] = design

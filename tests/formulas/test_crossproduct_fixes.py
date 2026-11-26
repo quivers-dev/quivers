@@ -576,17 +576,18 @@ def test_scalar_coordinates_index_from_one_in_row_major_order() -> None:
     assert list(scalar_coordinates("s", value[..., 0, 0])) == ["s"]
 
 
-def test_correlation_pairs_follow_the_factor() -> None:
+def test_correlation_pairs_follow_the_matrix() -> None:
     factor = torch.tensor(
         [[1.0, 0.0, 0.0], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]], dtype=torch.float64
     ).expand(1, 2, 3, 3)
-    pairs = correlation_pairs("cor_g", ["a", "b", "c"], factor)
+    matrix = factor @ factor.transpose(-1, -2)
+    pairs = correlation_pairs("cor_g", ["a", "b", "c"], matrix)
     assert list(pairs) == ["cor_g__a__b", "cor_g__a__c", "cor_g__b__c"]
     assert float(pairs["cor_g__a__b"][0, 0]) == pytest.approx(0.6)
     assert float(pairs["cor_g__a__c"][0, 0]) == pytest.approx(0.0)
     assert float(pairs["cor_g__b__c"][0, 0]) == pytest.approx(0.48)
     with pytest.raises(ValueError, match="does not match the 2 coordinates"):
-        correlation_pairs("cor_g", ["a", "b"], factor)
+        correlation_pairs("cor_g", ["a", "b"], matrix)
 
 
 def test_catalogue_refuses_a_variable_with_an_event_axis() -> None:

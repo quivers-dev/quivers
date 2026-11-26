@@ -33,29 +33,20 @@ from torch.types import _size
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.dsl.ast_nodes import (
     DrawArgNamed,
-    LetExprIndex,
-    LetExprLiteral,
-    LetExprNode,
-    ProgramStep,
-    QiecIndexName,
-    QiecShapeIndex,
-    QiecTypeApplication,
-    QiecTypeName,
-    QiecValueParameter,
     SampleStep,
-    Statement,
     TypeName,
     atom_to_draw_arg,
 )
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._residual_dependence import ResidualLayout, ResidualResponse
-from quivers.formulas._ast import _add, _call, _let, _mul, _sub, _var
+from quivers.formulas._term import (
+    SiteDecl,
+)
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 
 if TYPE_CHECKING:
-    from quivers.formulas.compile import FormulaToQVRModule
-    from quivers.formulas.formula import Formula
+    pass
 
 CarType = Literal["escar", "esicar", "icar", "bym2"]
 """brms's conditional autoregressive types."""
@@ -856,31 +847,90 @@ class LatentTerm(ValueModel):
             self.layout, tuple(site for site, *_ in self.coefficients)
         )
 
-    def prior_sites(self) -> tuple[tuple[str, str, float | None, float | None], ...]:
-        """List ``(site, class, lower, upper)`` of the term's hyperparameters.
+    def sites(self, scale_prior: str, correlation_prior: str) -> tuple[SiteDecl, ...]:
+        """Declare the field's hyperparameters and coordinates.
+
+        Parameters
+        ----------
+        scale_prior : str
+            Default prior of the scale.
+        correlation_prior : str
+            Default prior of an unstructured correlation.
 
         Returns
         -------
-        tuple
-            brms classes ``sdcar``, ``car``, and ``rhocar``, or ``sderr`` and
-            the structural coefficients of latent residuals.
+        tuple[SiteDecl, ...]
+            brms classes ``sdcar``, ``car``, and ``rhocar``, or ``sderr``, the
+            structural coefficients and the correlation factor of latent
+            residuals, each followed by the coordinates they govern.
         """
-        if self.kind == "residual":
-            assert self.layout is not None
-            matrix = (
-                (("Lcortime", "Lcortime", None, None),)
-                if self.layout.kind == "unstr"
-                else ()
+
+        def hyper(
+            name: str,
+            class_: str,
+            default: str,
+            lower: float | None = None,
+            upper: float | None = None,
+            event_axis: str | None = None,
+        ) -> SiteDecl:
+            return SiteDecl(
+                name=name,
+                class_=class_,
+                default=default,
+                lower=lower,
+                upper=upper,
+                event_axis=event_axis,
             )
-            return (("sderr", "sderr", 0.0, None), *self.coefficients, *matrix)
-        sites: list[tuple[str, str, float | None, float | None]] = [
-            ("sdcar", "sdcar", 0.0, None)
-        ]
+
+        def coordinates(name: str, *, event: bool = True) -> SiteDecl:
+            return SiteDecl(
+                name=name,
+                class_="field",
+                axes=() if event else (self.axis,),
+                event_axis=self.axis if event else None,
+                overridable=False,
+            )
+
+        name = self.name
+        scale = hyper(f"sd{name}", f"sd{name}", scale_prior, 0.0)
+        if self.layout is not None:
+            unstructured = self.layout.kind == "unstr" and self.layout.times > 1
+            return (
+                scale,
+                *(
+                    hyper(site, class_, f"Uniform({lower!r}, {upper!r})", lower, upper)
+                    for site, class_, lower, upper in self.coefficients
+                ),
+                *(
+                    (
+                        hyper(
+                            "Lcortime",
+                            "Lcortime",
+                            correlation_prior,
+                            event_axis="FormulaAutocorTime",
+                        ),
+                    )
+                    if unstructured
+                    else ()
+                ),
+                coordinates(name),
+            )
         if self.car_type == "escar":
-            sites.append(("car", "car", 0.0, 1.0))
-        if self.car_type == "bym2":
-            sites.append(("rhocar", "rhocar", 0.0, 1.0))
-        return tuple(sites)
+            return (
+                scale,
+                hyper(name, name, "Uniform(0.0, 1.0)", 0.0, 1.0),
+                coordinates(f"r{name}"),
+            )
+        if self.car_type == "esicar":
+            return (scale, coordinates(f"r{name}"))
+        if self.car_type == "icar":
+            return (scale, coordinates(f"z{name}"))
+        return (
+            scale,
+            coordinates(f"z{name}"),
+            hyper(f"rho{name}", f"rho{name}", "Beta(1.0, 1.0)", 0.0, 1.0),
+            coordinates(f"nsz{name}", event=False),
+        )
 
     def observations(
         self, codes: tuple[int, ...], *, include: bool = True
@@ -1060,249 +1110,3 @@ def _named_draw(
         ),
         index=None if index is None else TypeName(name=index),
     )
-
-
-def append_latent_terms(
-    lens: FormulaToQVRModule,
-    formula: Formula,
-    statements: list[Statement],
-    steps: list[ProgramStep],
-    eta: LetExprNode,
-) -> LetExprNode:
-    """Emit each latent term's coordinates and add them to the predictor.
-
-    The emitted parameterization follows brms's Stan code: ``escar`` and
-    ``esicar`` draw ``rcar`` directly with precision ``1 / sdcar^2``; ``icar``
-    draws unit-precision ``zcar`` and sets ``rcar = sdcar * zcar``; ``bym2``
-    sets ``rcar = (sqrt(1 - rhocar) nszcar + sqrt(rhocar / s) zcar) sdcar``.
-    Latent residuals draw ``err`` from their structured law with scale
-    ``sderr``. Each contribution is multiplied by the data scalar
-    ``{name}_include``, zero for brms's ``incl_autocor = FALSE``.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler with the shared prior emitter.
-    formula : Formula
-        Location formula and its latent terms.
-    statements : list[Statement]
-        Module declarations receiving the coordinate axis.
-    steps : list[ProgramStep]
-        Program steps receiving priors and coordinates.
-    eta : LetExprNode
-        Linear predictor before latent terms.
-
-    Returns
-    -------
-    LetExprNode
-        Linear predictor including every latent contribution.
-    """
-    for term in formula.latent_terms:
-        prefix = term.name
-        anchor = f"{prefix}_anchor"
-        lens._append_finite_object(statements, term.axis, term.size)
-        if term.kind == "residual":
-            assert term.layout is not None
-            steps.append(lens._prior_draw("sderr", lens._random_scale_prior))
-            arguments: dict[str, str | float] = {"scale": "sderr"}
-            for site, _, lower, upper in term.coefficients:
-                steps.append(lens._prior_draw(site, f"Uniform({lower!r}, {upper!r})"))
-                arguments[site] = site
-            if term.layout.kind == "unstr":
-                lens._append_finite_object(
-                    statements, "FormulaAutocorTime", term.layout.times
-                )
-                lens._append_residual_correlation(
-                    steps,
-                    "FormulaAutocorTime",
-                    term.layout.times,
-                    result="formula_cortime_factor",
-                    site="Lcortime",
-                )
-                arguments["factor"] = "formula_cortime_factor"
-            arguments["anchor"] = anchor
-            steps.append(_named_draw(prefix, "LatentResidual", arguments))
-            effect = prefix
-        else:
-            effect = f"r{prefix}"
-            steps.append(lens._prior_draw(f"sd{prefix}", lens._random_scale_prior))
-            if term.car_type == "escar":
-                steps.append(lens._prior_draw(prefix, "Uniform(0.0, 1.0)"))
-                steps.append(
-                    _named_draw(
-                        effect,
-                        "SparseCAR",
-                        {"scale": f"sd{prefix}", "alpha": prefix, "anchor": anchor},
-                    )
-                )
-            elif term.car_type == "esicar":
-                steps.append(
-                    _named_draw(
-                        effect, "SparseICAR", {"scale": f"sd{prefix}", "anchor": anchor}
-                    )
-                )
-            else:
-                steps.append(
-                    _named_draw(
-                        f"z{prefix}", "SparseICAR", {"scale": 1.0, "anchor": anchor}
-                    )
-                )
-                if term.car_type == "icar":
-                    steps.append(
-                        _let(effect, _mul(_var(f"z{prefix}"), _var(f"sd{prefix}")))
-                    )
-                else:
-                    steps.append(lens._prior_draw(f"rho{prefix}", "Beta(1.0, 1.0)"))
-                    steps.append(
-                        _named_draw(
-                            f"nsz{prefix}",
-                            "Normal",
-                            {"loc": 0.0, "scale": 1.0},
-                            index=term.axis,
-                        )
-                    )
-                    rho = _var(f"rho{prefix}")
-                    spatial = _mul(
-                        _call("sqrt", _mul(rho, _var(f"{prefix}_inverse_scale"))),
-                        _var(f"z{prefix}"),
-                    )
-                    unstructured = _mul(
-                        _call("sqrt", _sub(LetExprLiteral(value=1.0), rho)),
-                        _var(f"nsz{prefix}"),
-                    )
-                    steps.append(
-                        _let(
-                            effect,
-                            _mul(_add(unstructured, spatial), _var(f"sd{prefix}")),
-                        )
-                    )
-        contribution = f"{prefix}_per_row"
-        steps.append(
-            _let(
-                contribution,
-                _mul(
-                    _var(f"{prefix}_include"),
-                    LetExprIndex(array=_var(effect), indices=(_var(f"{prefix}_idx"),)),
-                ),
-            )
-        )
-        eta = _add(eta, _var(contribution))
-    return eta
-
-
-def latent_runtime_parameters(formula: Formula) -> tuple[QiecValueParameter, ...]:
-    """Declare the data inputs of every latent term.
-
-    Parameters
-    ----------
-    formula : Formula
-        Location formula.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        Row index into the coordinates, the zero anchor fixing the event
-        extent, and for BYM2 the per-location inverse scaling factor.
-    """
-
-    def tensor(element: str, axis: str) -> QiecTypeApplication:
-        return QiecTypeApplication(
-            constructor="Tensor",
-            static_arguments=(QiecTypeName(name=element),),
-            indices=(QiecShapeIndex(dimensions=(QiecIndexName(name=axis),)),),
-        )
-
-    parameters: list[QiecValueParameter] = []
-    for term in formula.latent_terms:
-        parameters.append(
-            QiecValueParameter(name=f"{term.name}_idx", type_expr=tensor("Int", "Resp"))
-        )
-        parameters.append(
-            QiecValueParameter(
-                name=f"{term.name}_anchor", type_expr=tensor("Real", term.axis)
-            )
-        )
-        parameters.append(
-            QiecValueParameter(
-                name=f"{term.name}_include", type_expr=QiecTypeName(name="Real")
-            )
-        )
-        if term.car_type == "bym2":
-            parameters.append(
-                QiecValueParameter(
-                    name=f"{term.name}_inverse_scale",
-                    type_expr=tensor("Real", term.axis),
-                )
-            )
-    return tuple(parameters)
-
-
-def latent_observations(
-    formula: Formula, *, include: bool = True
-) -> dict[str, torch.Tensor]:
-    """Bind every latent term's training inputs.
-
-    Parameters
-    ----------
-    formula : Formula
-        Location formula.
-    include : bool
-        Add the terms to the predictor (brms ``incl_autocor``).
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime inputs by name.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for term in formula.latent_terms:
-        values.update(term.observations(term.codes, include=include))
-    return values
-
-
-def latent_prediction_observations(
-    formula: Formula, frame: pd.DataFrame
-) -> dict[str, torch.Tensor]:
-    """Bind latent inputs for prediction rows at fitted locations.
-
-    Parameters
-    ----------
-    formula : Formula
-        Fitted location formula.
-    frame : pandas.DataFrame
-        Prediction rows.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime inputs by name.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for term in formula.latent_terms:
-        values.update(term.observations(latent_prediction_codes(term, frame)))
-    return values
-
-
-def formula_families(
-    base: FamilyCatalog | None, formula: Formula
-) -> FamilyCatalog | None:
-    """Join a response catalog with the laws of every latent term.
-
-    Parameters
-    ----------
-    base : FamilyCatalog or None
-        Response catalog of a custom or residual family.
-    formula : Formula
-        Location formula.
-
-    Returns
-    -------
-    FamilyCatalog or None
-        The joined catalog, or ``base`` when there are no latent terms.
-    """
-    catalog = base
-    for term in formula.latent_terms:
-        catalog = (
-            term.catalog if catalog is None else catalog.with_catalog(term.catalog)
-        )
-    return catalog

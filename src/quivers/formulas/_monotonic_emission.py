@@ -15,65 +15,81 @@ contributions.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Mapping
+
+from functools import reduce
 from typing import TYPE_CHECKING
 
-from formulae.matrices import DesignMatrices
+import didactic.api as dx
 import numpy as np
-import pandas as pd
 import torch
 
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
     DrawArgList,
     DrawArgNamed,
     DrawArgScalar,
     LetExprLiteral,
     LetExprNode,
-    LetExprVar,
     ProgramStep,
-    QiecIndexName,
-    QiecShapeIndex,
-    QiecTypeApplication,
-    QiecTypeName,
-    QiecValueParameter,
     SampleStep,
-    TypeName,
 )
+from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _call, _let, _mul, _var
 from quivers.formulas._monotonic import (
     MonotonicTerm,
     evaluate_monotonic_term,
 )
-from quivers.formulas.formula import FixedColumn, Formula, _qvr_name
+from quivers.formulas._row_source import PredictorRows
+from quivers.formulas._variable_catalogue import brms_rename
+from quivers.formulas._term import (
+    AxisDecl,
+    EffectSource,
+    PopulationCoefficient,
+    VariableDecl,
+    SmoothPart,
+    coordinate_scopes,
+    ColumnName,
+    Contribution,
+    Emission,
+    InputDecl,
+    OutputAxis,
+    SiteDecl,
+    at_coordinate,
+    column_rms,
+    over_output,
+)
+from quivers.formulas.formula_parts import FormulaPart
+from quivers.formulas.formula import Formula, _qvr_name
 
 if TYPE_CHECKING:
-    from quivers.formulas.compile import FormulaToQVRModule
+    from quivers.formulas._name_scope import NameScope
+
+    pass
 
 __all__: list[str] = []
 
 
-class _Simplex:
-    """Names and extent of one simplex site, shared by every factor with its label."""
+class Simplex(ValueModel):
+    """Names and extent of one simplex site, shared by every factor with its label.
 
-    def __init__(self, site: str, axis: str, width: int, label: str) -> None:
-        """Retain one simplex site.
+    Parameters
+    ----------
+    site, axis : str
+        Latent binder and its finite axis.
+    width : int
+        Simplex dimension.
+    label : str
+        brms ``simo`` coefficient label.
+    """
 
-        Parameters
-        ----------
-        site, axis : str
-            Latent binder and its finite axis.
-        width : int
-            Simplex dimension.
-        label : str
-            brms ``simo`` coefficient label.
-        """
-        self.site = site
-        self.axis = axis
-        self.width = width
-        self.label = label
+    site: str
+    axis: str
+    width: int
+    label: str
 
 
-def simplex_sites(formula: Formula, prefix: str) -> dict[str, _Simplex]:
+def simplex_sites(formula: Formula, prefix: str) -> dict[str, Simplex]:
     """Resolve the simplex site of every ``mo()`` factor of one predictor.
 
     Factors with the same brms ``id`` share one site, as brms copies
@@ -88,7 +104,7 @@ def simplex_sites(formula: Formula, prefix: str) -> dict[str, _Simplex]:
 
     Returns
     -------
-    dict[str, _Simplex]
+    dict[str, Simplex]
         Simplex records keyed by brms label, in first-appearance order.
 
     Raises
@@ -97,7 +113,7 @@ def simplex_sites(formula: Formula, prefix: str) -> dict[str, _Simplex]:
         If factors sharing an ``id`` have different numbers of categories, or
         two labels normalize to one site.
     """
-    sites: dict[str, _Simplex] = {}
+    sites: dict[str, Simplex] = {}
     names: dict[str, str] = {}
     for term in formula.monotonic_terms:
         for factor in term.factors:
@@ -118,11 +134,11 @@ def simplex_sites(formula: Formula, prefix: str) -> dict[str, _Simplex]:
                     f"mo() simplex labels {names[site]!r} and {factor.simplex!r} "
                     "normalize to the same parameter name"
                 )
-            sites[factor.simplex] = _Simplex(
-                site,
-                f"FormulaMonotonic_{prefix}{label}",
-                factor.width,
-                factor.simplex,
+            sites[factor.simplex] = Simplex(
+                site=site,
+                axis=f"FormulaMonotonic_{prefix}{label}",
+                width=factor.width,
+                label=factor.simplex,
             )
     return sites
 
@@ -204,53 +220,29 @@ def value_binding(prefix: str, term: MonotonicTerm) -> str:
     return prefix + _qvr_name(term.name)
 
 
-def monotonic_axes(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> tuple[tuple[str, int], ...]:
-    """List the finite simplex axes of every predictor.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Returns
-    -------
-    tuple[tuple[str, int], ...]
-        Axis names and simplex dimensions.
-    """
-    return tuple(
-        (simplex.axis, simplex.width)
-        for _, prefix, formula in predictors
-        for simplex in simplex_sites(formula, prefix).values()
-    )
-
-
-def _simplex_prior(lens: FormulaToQVRModule, simplex: _Simplex) -> SampleStep:
-    """Emit the Dirichlet prior of one simplex, expanding a scalar concentration.
+def _recycled_simplex(step: SampleStep, simplex: Simplex) -> SampleStep:
+    """Expand a scalar concentration of one simplex's Dirichlet prior.
 
     brms's ``dirichlet(1)`` recycles a scalar concentration to the simplex
     dimension; a vector concentration must have that length.
 
     Parameters
     ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the default and overriding priors.
-    simplex : _Simplex
+    step : SampleStep
+        Draw of the simplex.
+    simplex : Simplex
         Site and extent.
 
     Returns
     -------
     SampleStep
-        The Dirichlet draw over the simplex axis.
+        The draw with one concentration per coordinate.
 
     Raises
     ------
     ValueError
         If the prior is not a Dirichlet, or its concentration has another length.
     """
-    default = "Dirichlet([" + ", ".join(["1.0"] * simplex.width) + "])"
-    step = lens._prior_draw(simplex.site, default, index=TypeName(name=simplex.axis))
     if step.morphism != "Dirichlet":
         raise ValueError(
             f"the simo prior of {simplex.label!r} must be a Dirichlet distribution, "
@@ -270,150 +262,6 @@ def _simplex_prior(lens: FormulaToQVRModule, simplex: _Simplex) -> SampleStep:
             argument = argument.with_(value=value)
         arguments.append(argument)
     return step.with_(args=tuple(arguments))
-
-
-def append_monotonic_terms(
-    lens: FormulaToQVRModule,
-    formula: Formula,
-    steps: list[ProgramStep],
-    *,
-    prefix: str = "",
-) -> list[LetExprVar]:
-    """Emit the simplexes, coefficients, and row contributions of ``mo()`` terms.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
-    formula : Formula
-        One predictor's evaluated terms.
-    steps : list[ProgramStep]
-        Program steps receiving the draws and bindings.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    list[LetExprVar]
-        One row contribution per special-effects column.
-
-    Raises
-    ------
-    ValueError
-        If a generated name collides with a design input of the predictor, or
-        a simplex prior is invalid.
-    """
-    if not formula.monotonic_terms:
-        return []
-    taken = {prefix + column.qvr_name for column in formula.fixed_columns} | {
-        f"{prefix}random_{term.column.qvr_name}"
-        for term in formula.random_terms
-        if term.column is not None
-    }
-    sites = simplex_sites(formula, prefix)
-    for simplex in sites.values():
-        steps.append(_simplex_prior(lens, simplex))
-    contributions = []
-    for term in formula.monotonic_terms:
-        value = value_binding(prefix, term)
-        if value in taken or coefficient_site(prefix, term) in taken:
-            raise ValueError(
-                f"mo() term {term.name!r} collides with the design input {value!r}"
-            )
-        factors: list[LetExprNode] = []
-        for position, factor in enumerate(term.factors):
-            factors.append(
-                _mul(
-                    LetExprLiteral(value=float(factor.width)),
-                    _call(
-                        "matmul",
-                        _var(_design_input(prefix, term, position)),
-                        _var(sites[factor.simplex].site),
-                    ),
-                )
-            )
-        if term.column >= 0:
-            factors.append(_var(_covariate_input(prefix, term)))
-        product = factors[0]
-        for factor_value in factors[1:]:
-            product = _mul(product, factor_value)
-        steps.append(_let(value, product))
-        coefficient = coefficient_site(prefix, term)
-        steps.append(
-            lens._prior_draw(
-                coefficient,
-                lens._fixed_prior,
-                column=FixedColumn(
-                    term=term.term,
-                    name=term.name,
-                    qvr_name=_qvr_name(term.name),
-                    data=term.linear_values,
-                ),
-            )
-        )
-        contribution = coefficient + "_per_row"
-        steps.append(_let(contribution, _mul(_var(coefficient), _var(value))))
-        contributions.append(_var(contribution))
-    return contributions
-
-
-def _real_tensor(*axes: str) -> QiecTypeApplication:
-    """Declare a Real tensor over named finite axes.
-
-    Parameters
-    ----------
-    *axes : str
-        Axis names in order.
-
-    Returns
-    -------
-    QiecTypeApplication
-        The checked tensor type.
-    """
-    return QiecTypeApplication(
-        constructor="Tensor",
-        static_arguments=(QiecTypeName(name="Real"),),
-        indices=(
-            QiecShapeIndex(dimensions=tuple(QiecIndexName(name=axis) for axis in axes)),
-        ),
-    )
-
-
-def monotonic_runtime_parameters(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> tuple[QiecValueParameter, ...]:
-    """Declare the indicator matrices and covariates of every ``mo()`` column.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        Real matrix inputs over the row axis and each simplex axis, and Real
-        row vectors for the covariates.
-    """
-    parameters = []
-    for _, prefix, formula in predictors:
-        sites = simplex_sites(formula, prefix)
-        for term in formula.monotonic_terms:
-            for position, factor in enumerate(term.factors):
-                parameters.append(
-                    QiecValueParameter(
-                        name=_design_input(prefix, term, position),
-                        type_expr=_real_tensor("Resp", sites[factor.simplex].axis),
-                    )
-                )
-            if term.column >= 0:
-                parameters.append(
-                    QiecValueParameter(
-                        name=_covariate_input(prefix, term),
-                        type_expr=_real_tensor("Resp"),
-                    )
-                )
-    return tuple(parameters)
 
 
 def _bindings(
@@ -453,75 +301,346 @@ def _bindings(
     return values
 
 
-def monotonic_observations(formula: Formula, prefix: str) -> dict[str, torch.Tensor]:
-    """Bind the training inputs of one predictor's ``mo()`` terms.
+class MonotonicRow(ValueModel):
+    """One special-effects column: a coefficient times a monotonic row value.
 
     Parameters
     ----------
-    formula : Formula
-        One predictor's evaluated terms.
     prefix : str
         Predictor namespace.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Indicator matrices and covariates.
+    term : MonotonicTerm
+        Evaluated column.
+    prior : str
+        Default prior of the coefficient.
+    scale : float or None
+        Root mean square of the training values the coefficient multiplies.
+    simplexes : tuple[Simplex, ...]
+        Simplex of each factor of the column.
+    owned : tuple[Simplex, ...]
+        Simplexes drawn with this column.
+    output : OutputAxis or None
+        Axis of the coefficient and the simplexes.
     """
-    values: dict[str, torch.Tensor] = {}
-    for term in formula.monotonic_terms:
-        values.update(
-            _bindings(
-                prefix,
-                term,
-                tuple(factor.design for factor in term.factors),
-                term.covariate if term.column >= 0 else None,
+
+    prefix: str
+    term: MonotonicTerm = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    prior: str
+    scale: float | None
+    simplexes: tuple[Simplex, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    owned: tuple[Simplex, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    output: OutputAxis | None = None
+
+    @property
+    def label(self) -> str:
+        """Return the authored term.
+
+        Returns
+        -------
+        str
+            Label of the column's term.
+        """
+        return self.term.term
+
+    def at(self, rows: PredictorRows) -> MonotonicRow:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        MonotonicRow
+            The same coefficient over the rows' indicator matrices.
+        """
+        if rows.frame is None:
+            return self
+        designs, covariate = evaluate_monotonic_term(
+            self.term, rows.components(self.term.term), rows.frame
+        )
+        return self.with_(
+            term=self.term.with_(
+                factors=tuple(
+                    factor.with_(design=design)
+                    for factor, design in zip(self.term.factors, designs, strict=True)
+                ),
+                covariate=self.term.covariate if covariate is None else covariate,
             )
         )
-    return values
+
+    def column_names(self) -> tuple[ColumnName, ...]:
+        """List the data columns the term reads under their own names.
+
+        Returns
+        -------
+        tuple[ColumnName, ...]
+            Empty: the inputs are named after the term.
+        """
+        return ()
+
+    def variables(self, scope: NameScope) -> tuple[VariableDecl, ...]:
+        """Name the term's draws as brms does.
+
+        Parameters
+        ----------
+        scope : NameScope
+            Names of the term's predictor.
+
+        Returns
+        -------
+        tuple[VariableDecl, ...]
+            The coefficient, and the simplexes drawn with the column.
+        """
+        site = coefficient_site(self.prefix, self.term)
+        return tuple(
+            declaration
+            for index, part in coordinate_scopes(self.output, scope)
+            for declaration in (
+                VariableDecl(
+                    name=f"bsp_{part.infix}{brms_rename(self.term.name)}",
+                    site=site,
+                    kind="population",
+                    index=index,
+                    parameter=part.position,
+                ),
+                *(
+                    VariableDecl(
+                        name=f"simo_{part.infix}{brms_rename(simplex.label)}",
+                        site=simplex.site,
+                        kind="special",
+                        index=index,
+                        parameter=part.position,
+                        event_rank=1,
+                    )
+                    for simplex in self.owned
+                ),
+            )
+        )
+
+    def coefficients(self, draws: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Evaluate the coefficients of the term for posterior draws.
+
+        Parameters
+        ----------
+        draws : Mapping[str, torch.Tensor]
+            Constrained draws with chain and draw axes.
+
+        Returns
+        -------
+        torch.Tensor
+            The coefficient, by output coordinate.
+        """
+        return draws[coefficient_site(self.prefix, self.term)]
+
+    def population(self) -> tuple[PopulationCoefficient, ...]:
+        """List the term's population-level coefficients.
+
+        Returns
+        -------
+        tuple[PopulationCoefficient, ...]
+            The coefficient of the monotonic value.
+        """
+        return (
+            PopulationCoefficient(
+                label=self.term.name, site=coefficient_site(self.prefix, self.term)
+            ),
+        )
+
+    def smooth_part(self, label: str) -> SmoothPart | None:
+        """Return the term's share of one smooth or Gaussian process.
+
+        Parameters
+        ----------
+        label : str
+            Authored smooth term.
+
+        Returns
+        -------
+        SmoothPart or None
+            None.
+        """
+        return None
+
+    def effects(self) -> tuple[EffectSource, ...]:
+        """List the design terms whose variables brms plots.
+
+        Returns
+        -------
+        tuple[EffectSource, ...]
+            The term.
+        """
+        return (EffectSource(label=self.label, kind="sp"),)
+
+    def contributions(self) -> tuple[Contribution, ...]:
+        """List the bound summands of the term.
+
+        Returns
+        -------
+        tuple[Contribution, ...]
+            The row contribution.
+        """
+        return (
+            Contribution(
+                name=coefficient_site(self.prefix, self.term) + "_per_row",
+                rows=True,
+                coordinates=self.output is not None,
+                part=FormulaPart(field="monotonic_terms", key=self.term.name),
+            ),
+        )
+
+    def axes(self) -> tuple[AxisDecl, ...]:
+        """List the finite axes the term uses.
+
+        Returns
+        -------
+        tuple[AxisDecl, ...]
+            The axis of each simplex the column draws.
+        """
+        return tuple(
+            AxisDecl(name=simplex.axis, size=simplex.width) for simplex in self.owned
+        )
+
+    def inputs(self) -> tuple[InputDecl, ...]:
+        """List the data inputs the term reads.
+
+        Returns
+        -------
+        tuple[InputDecl, ...]
+            The cumulative indicator matrix of each factor and the covariate.
+        """
+        covariate = self.term.covariate if self.term.column >= 0 else None
+        values = _bindings(
+            self.prefix,
+            self.term,
+            tuple(factor.design for factor in self.term.factors),
+            covariate,
+        )
+        axes = {
+            _design_input(self.prefix, self.term, position): ("Resp", simplex.axis)
+            for position, simplex in enumerate(self.simplexes)
+        }
+        return tuple(
+            InputDecl(
+                name=name,
+                element="Real",
+                axes=axes.get(name, ("Resp",)),
+                declared=True,
+                values=value,
+            )
+            for name, value in values.items()
+        )
+
+    def sites(self) -> tuple[SiteDecl, ...]:
+        """List the latent sites the term owns.
+
+        Returns
+        -------
+        tuple[SiteDecl, ...]
+            The simplexes drawn with the column, then its coefficient.
+        """
+        output = self.output
+        axes = (output.name,) if output is not None else ()
+        labels = output.labels if output is not None else ()
+        parameters = output.parameters if output is not None else ()
+        return (
+            *(
+                SiteDecl(
+                    name=simplex.site,
+                    class_="simo",
+                    default="Dirichlet([" + ", ".join(["1.0"] * simplex.width) + "])",
+                    coef=simplex.label,
+                    axes=axes,
+                    event_axis=simplex.axis,
+                    component_labels=labels,
+                    parameters=parameters,
+                )
+                for simplex in self.owned
+            ),
+            SiteDecl(
+                name=coefficient_site(self.prefix, self.term),
+                class_="b",
+                default=self.prior,
+                coef=self.term.name,
+                axes=axes,
+                component_labels=labels,
+                parameters=parameters,
+                divisor=self.scale,
+            ),
+        )
+
+    def catalog(self) -> FamilyCatalog | None:
+        """Return the laws only the term's compilation knows.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            None.
+        """
+        return None
+
+    def steps(self, emission: Emission) -> tuple[ProgramStep, ...]:
+        """Draw the term's sites and bind its contributions.
+
+        Parameters
+        ----------
+        emission : Emission
+            Program being emitted.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The simplexes drawn with the column, its value, its coefficient,
+            and its contribution.
+        """
+        value = value_binding(self.prefix, self.term)
+        coefficient = coefficient_site(self.prefix, self.term)
+        declared = {site.name: site for site in self.sites()}
+        factors: list[LetExprNode] = [
+            _mul(
+                LetExprLiteral(value=float(simplex.width)),
+                _call(
+                    "matmul",
+                    _var(_design_input(self.prefix, self.term, position)),
+                    at_coordinate(simplex.site, self.output),
+                ),
+            )
+            for position, simplex in enumerate(self.simplexes)
+        ]
+        if self.term.column >= 0:
+            factors.append(_var(_covariate_input(self.prefix, self.term)))
+        return (
+            *(
+                _recycled_simplex(emission.draw(declared[simplex.site]), simplex)
+                for simplex in self.owned
+            ),
+            _let(value, over_output(self.output, reduce(_mul, factors))),
+            emission.draw(declared[coefficient]),
+            _let(
+                coefficient + "_per_row",
+                over_output(
+                    self.output,
+                    _mul(
+                        at_coordinate(coefficient, self.output),
+                        at_coordinate(value, self.output),
+                    ),
+                ),
+            ),
+        )
 
 
-def monotonic_prediction_bindings(
-    formula: Formula, design: DesignMatrices, frame: pd.DataFrame, prefix: str
-) -> dict[str, torch.Tensor]:
-    """Evaluate one predictor's ``mo()`` inputs on fresh rows.
+def monotonic_rows(
+    formula: Formula,
+    prefix: str,
+    *,
+    prior: str,
+    output: OutputAxis | None,
+    transitions: OutputAxis | None,
+) -> tuple[MonotonicRow, ...]:
+    """Build the special-effects columns of one predictor.
 
-    Parameters
-    ----------
-    formula : Formula
-        Fitted predictor.
-    design : DesignMatrices
-        Its retained formulae evaluator.
-    frame : pandas.DataFrame
-        Fresh rows.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Indicator matrices and covariates of the fresh rows.
-
-    Raises
-    ------
-    ValueError
-        If a fresh value lies outside the training categories, as brms refuses.
-    """
-    values: dict[str, torch.Tensor] = {}
-    if not formula.monotonic_terms:
-        return values
-    assert design.common is not None
-    for term in formula.monotonic_terms:
-        components = design.common.terms[term.term].components
-        designs, covariate = evaluate_monotonic_term(term, components, frame)
-        values.update(_bindings(prefix, term, designs, covariate))
-    return values
-
-
-def monotonic_prior_sites(
-    formula: Formula, prefix: str
-) -> tuple[tuple[str, str, str], ...]:
-    """List the overrideable sites of one predictor's ``mo()`` terms.
+    A simplex is drawn with the first column that reads it, so columns
+    sharing an ``id`` read one site.
 
     Parameters
     ----------
@@ -529,18 +648,39 @@ def monotonic_prior_sites(
         One predictor's evaluated terms.
     prefix : str
         Predictor namespace.
+    prior : str
+        Default prior of a coefficient.
+    output : OutputAxis or None
+        Axis of the predictor.
+    transitions : OutputAxis or None
+        Axis of category-specific columns.
 
     Returns
     -------
-    tuple[tuple[str, str, str], ...]
-        Site, brms class (``b`` or ``simo``), and coefficient label.
+    tuple[MonotonicRow, ...]
+        One term per column, in authored order.
     """
-    sites: list[tuple[str, str, str]] = [
-        (coefficient_site(prefix, term), "b", term.name)
-        for term in formula.monotonic_terms
-    ]
-    sites.extend(
-        (simplex.site, "simo", simplex.label)
-        for simplex in simplex_sites(formula, prefix).values()
-    )
-    return tuple(sites)
+    if not formula.monotonic_terms:
+        return ()
+    sites = simplex_sites(formula, prefix)
+    rows = []
+    drawn: set[str] = set()
+    for term in formula.monotonic_terms:
+        rows.append(
+            MonotonicRow(
+                prefix=prefix,
+                term=term,
+                prior=prior,
+                scale=column_rms(term.linear_values),
+                simplexes=tuple(sites[factor.simplex] for factor in term.factors),
+                owned=tuple(
+                    site
+                    for name, site in sites.items()
+                    if name not in drawn
+                    and name in {factor.simplex for factor in term.factors}
+                ),
+                output=transitions if term.category_specific else output,
+            )
+        )
+        drawn.update(factor.simplex for factor in term.factors)
+    return tuple(rows)

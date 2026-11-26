@@ -178,7 +178,7 @@ def test_ordinal_epred_returns_threshold_probabilities_and_labels(data, link):
 
 def test_categorical_full_logits_reference_probabilities_and_group_coefficients(data):
     result = fit(
-        "y ~ 1 + (1 | g)",
+        "y ~ 1 + (1 | p | g)",
         data=data.assign(y=[0, 1, 2, 0]),
         family="categorical",
         method="svi",
@@ -194,7 +194,7 @@ def test_categorical_full_logits_reference_probabilities_and_group_coefficients(
         {
             "intercept": intercept,
             "sigma_g_Intercept": scale,
-            "cor_g": factor,
+            "cor_shared_p": factor,
             "z_g_Intercept": z.reshape(-1),
         },
     )

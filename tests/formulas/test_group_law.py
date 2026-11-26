@@ -14,12 +14,13 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 from quivers.dsl.ast_nodes import ProgramDecl, SampleStep
 from quivers.formulas import FormulaToQVRModule, families, formula_from_data
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._group_law import (
-    ByLKJCorrelation,
+    column_deviations,
     GroupBlockLaw,
     IdentityCovariance,
     IndependentCoordinates,
@@ -120,7 +121,11 @@ def test_correlated_coefficients_form_one_joint_lkj_block(
 ):
     _, (law,) = _laws("y ~ x + (1 + x | g)", parameterization=parameterization)
     assert law.placement == "joint"
-    assert law.correlation == LKJCorrelation(site=f"cor_{law.identity}")
+    assert law.correlation == LKJCorrelation(
+        factors=(f"cor_{law.identity}",),
+        axis=f"FormulaCorrelation_{law.identity}",
+        size=2,
+    )
     assert law.coordinate_axis == f"FormulaCorrelation_{law.identity}"
     assert [member.offset for member in law.members] == [0, 1]
     raw = [member.raw_site for member in law.members]
@@ -143,7 +148,9 @@ def test_shared_identifier_joins_location_and_scale_coefficients():
     )
     assert law.identity == "shared_p"
     assert [member.prefix for member in law.members] == ["", "dpar_sigma_"]
-    assert law.correlation == LKJCorrelation(site="cor_shared_p")
+    assert law.correlation == LKJCorrelation(
+        factors=("cor_shared_p",), axis="FormulaCorrelation_shared_p", size=2
+    )
 
 
 @pytest.mark.parametrize("covariance", [COVARIANCE, DEFICIENT])
@@ -188,8 +195,11 @@ def test_by_student_and_prior_weight_are_declared_level_factors():
     assert (level.mixing.df_site, level.mixing.mixing_site) == ("df_g", "udf_g")
     assert level.prior_weight is not None
     assert level.prior_weight.weights == (0.5, 1.0, 1.5)
-    assert law.correlation == ByLKJCorrelation(
-        by_sites=(f"cor_{law.identity}_by1", f"cor_{law.identity}_by2")
+    assert law.correlation == LKJCorrelation(
+        factors=(f"cor_{law.identity}_by1", f"cor_{law.identity}_by2"),
+        axis=f"FormulaCorrelation_{law.identity}",
+        size=2,
+        cell_axis=level.by.axis,
     )
     assert all(member.scale.by_axis == level.by.axis for member in law.members)
 
@@ -220,6 +230,60 @@ def test_component_valued_predictor_has_the_category_axis():
     assert law.placement == "joint" and law.width == 4
     assert [member.axis for member in law.members] == ["FormulaCategoryLogit"] * 2
     assert [member.offset for member in law.members] == [0, 2]
+    correlation = law.correlation
+    assert isinstance(correlation, LKJCorrelation)
+    assert (correlation.size, correlation.components) == (2, 2)
+    assert len(correlation.factors) == 2
+
+
+def test_categories_are_independent_unless_a_term_has_an_identifier():
+    """brms draws one block per category without an identifier."""
+    _, (single,) = _laws("k3 ~ x + (1 | g)", family="categorical")
+    assert isinstance(single.correlation, IndependentCoordinates)
+    assert single.placement == "inline"
+    _, (shared,) = _laws("k3 ~ x + (1 | p | g)", family="categorical")
+    correlation = shared.correlation
+    assert isinstance(correlation, LKJCorrelation)
+    assert (correlation.size, correlation.components) == (2, 1)
+
+
+@pytest.mark.parametrize("parameterization", ["centered", "noncentered"])
+@pytest.mark.parametrize("covariance", [None, COVARIANCE], ids=["iid", "known"])
+def test_block_coefficients_correlate_within_each_category(
+    parameterization: Parameterization, covariance: GroupCovariance | None
+):
+    """The covariance of one level's coefficients is block diagonal by category."""
+    _, (law,) = _laws(
+        "k3 ~ x + (1 + x | g)",
+        family="categorical",
+        covariance=covariance,
+        parameterization=parameterization,
+    )
+    correlation = law.correlation
+    assert isinstance(correlation, LKJCorrelation)
+    factors = {
+        site: torch.tensor(
+            [[1.0, 0.0], [value, (1 - value**2) ** 0.5]], dtype=torch.float64
+        )
+        for site, value in zip(correlation.factors, (0.6, -0.3), strict=True)
+    }
+    scales = {
+        member.scale.site: torch.tensor(value, dtype=torch.float64)
+        for member, value in zip(law.members, ([0.7, 0.5], [1.1, 0.9]), strict=True)
+    }
+    identity = torch.eye(law.width, dtype=torch.float64)
+    column = column_deviations(identity, factors | scales, law, sample_ndims=0)
+    covariance_matrix = column.T @ column
+    for category, site in enumerate(correlation.factors):
+        index = [category, 2 + category]
+        block = covariance_matrix[index][:, index]
+        sd = torch.stack(
+            [scales[member.scale.site][category] for member in law.members]
+        )
+        rho = factors[site] @ factors[site].T
+        torch.testing.assert_close(block, sd[:, None] * rho * sd)
+    assert float(covariance_matrix[0, 1].abs()) == 0.0
+    assert float(covariance_matrix[0, 3].abs()) == 0.0
 
 
 CASES = [

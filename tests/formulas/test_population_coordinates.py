@@ -316,8 +316,6 @@ def test_intercept_term_is_an_uncentered_class_b_coefficient():
 
 
 def test_unsupported_coordinates_are_refused():
-    with pytest.raises(ValueError, match="not supported for the cumulative family"):
-        FormulaToQVRModule(families["cumulative"], center=True)
     with pytest.raises(ValueError, match="non-intercept predictors"):
         fit("y ~ 1", data=FRAME, decomp="QR", method="svi", num_steps=1)
     collinear = FRAME.assign(v=2.0 * FRAME.x)
