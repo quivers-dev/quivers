@@ -95,7 +95,6 @@ def posterior_expectations(
         moments are invalid. No response-replication average is substituted
         for a native analytic expectation.
     """
-    from quivers.continuous._ordinal import OrdinalDistribution
     from quivers.effects.observation_scoring import observation_scoring
     from quivers.inference._likelihood import observation_sites
     from quivers.inference._posterior import (
@@ -104,6 +103,7 @@ def posterior_expectations(
         collect_site_draws,
     )
     from quivers.inference._response import (
+        category_vector,
         response_mean,
         response_distribution,
         response_rng,
@@ -175,17 +175,13 @@ def posterior_expectations(
                         moments = []
                         for site in occurrences:
                             distribution = response_distribution(recorded, site.name)
-                            if isinstance(distribution, OrdinalDistribution):
-                                mean = distribution.category_probs()
-                                categories = mean.shape[-1]
-                            elif isinstance(
-                                distribution, torch.distributions.Categorical
-                            ):
-                                mean = distribution.probs
-                                categories = mean.shape[-1]
-                            else:
+                            probabilities = category_vector(distribution)
+                            if probabilities is None:
                                 mean = response_mean(distribution, mc_samples)
                                 categories = 0
+                            else:
+                                mean = probabilities
+                                categories = int(mean.shape[-1])
                             if category_axes.setdefault(name, categories) != categories:
                                 raise TypeError(
                                     f"response {name!r} changes its native category axis between draws"

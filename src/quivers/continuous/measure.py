@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import torch
 from torch import Tensor
@@ -1711,6 +1711,18 @@ class Mixture(Measure):
         return torch.softmax(self._component_logits(), dim=-1)
 
     @property
+    def component_probabilities(self) -> Tensor:
+        """Normalized probabilities of the components.
+
+        Returns
+        -------
+        Tensor
+            ``w_k Z_k / sum_j w_j Z_j`` on the batch and component axes,
+            where ``Z_k`` is the raw mass of component ``k``.
+        """
+        return self._selection_probabilities()
+
+    @property
     def mean(self) -> Tensor:
         """Mean of the normalized mixture, ``sum_k p_k E_k[Y]``.
 
@@ -2669,6 +2681,36 @@ def _symmetric_fold_log_normalizer(
     return torch.full_like(loc, -math.log(2.0))
 
 
+def truncated_law(
+    base: Distribution, event: Mapping[str, Tensor | float | int | None] | None
+) -> Distribution:
+    """The sampling law of a response under its recording roles.
+
+    Parameters
+    ----------
+    base : Distribution
+        The response law.
+    event : Mapping[str, Tensor | float | int | None] or None
+        The bound recording roles. Only a truncation interval changes how
+        a response is sampled; censoring says how it is recorded.
+
+    Returns
+    -------
+    Distribution
+        ``base``, normalized on its truncation interval when it has one.
+    """
+    roles: Mapping[str, Tensor | float | int | None] = {} if event is None else event
+    lower, upper = roles.get("trunc_lower"), roles.get("trunc_upper")
+    if lower is None and upper is None:
+        return base
+    truncated = getattr(base, "componentwise_truncation", None)
+    if callable(truncated):
+        law = truncated(lower, upper)
+        assert isinstance(law, Distribution)
+        return law
+    return Normalize(Restrict(base, lower, upper))
+
+
 def normalize_at_boundary(d: Distribution) -> Distribution:
     """Lift `d` to a probability measure if it is a sub-measure
     with non-zero log-normaliser; otherwise return `d` unchanged.
@@ -2706,4 +2748,5 @@ __all__ = [
     "Pushforward",
     "Restrict",
     "normalize_at_boundary",
+    "truncated_law",
 ]

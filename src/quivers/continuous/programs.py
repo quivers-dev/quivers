@@ -788,6 +788,9 @@ class MonadicProgram(ContinuousMorphism):
         torch.Tensor
             Input tensor for the morphism.
         """
+        if isinstance(spec, Observe) and spec.law is not None:
+            # The law reads the environment itself.
+            return x
         if spec.args is None:
             self._check_domain_element(spec, x)
             return x
@@ -1252,7 +1255,7 @@ class MonadicProgram(ContinuousMorphism):
         The runs are scored together, each equal to its own score up to
         rounding, when every step declares that it can be evaluated at
         many positions, none draws at random, no host datum is given per
-        run, and no handler is on the stack. Otherwise they are scored
+        run, and no handler on the stack does more than fix sites. Otherwise they are scored
         one by one.
 
         Parameters

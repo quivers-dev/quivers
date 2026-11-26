@@ -48,10 +48,16 @@ from quivers.qiec import (
 from quivers.diagnostics.posterior import PosteriorAnalysis
 from quivers.diagnostics.conditional import ConditionalEffects, PredictionGrid
 from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
+from quivers.modeling._replay import (
+    ScoreUnits,
+    source_analysis,
+    source_unit_log_likelihood,
+)
 from quivers.modeling.refit import RefitRecipe, SnapshotPolicy
 
 # Pathfinder draws report variational provenance.
 from quivers.inference.pathfinder import draw_provenance
+from quivers.inference.units import UnitLogLikelihood
 
 
 class ModelSchema(ValueModel):
@@ -1236,12 +1242,11 @@ class ModelFit(ValueModel):
         ------
         ValueError
             If responses are missing or the draw count is not positive.
-        TypeError
-            If an observation is hidden by marginalization and requires a
-            marginal-likelihood observer rather than a conditional site score.
+        UnfactoredObservationError
+            If the rows of a marginalized observation share a latent, so they
+            have no scores of their own. The message says which program gives
+            each row its own; `unit_log_likelihood` reads the joint scores.
         """
-        from quivers.modeling._replay import source_analysis
-
         bound = self.model if data is None else self.model.rebind(data)
         return dict(
             source_analysis(
@@ -1249,8 +1254,55 @@ class ModelFit(ValueModel):
             ).log_likelihood
         )
 
+    def unit_log_likelihood(
+        self,
+        data: Mapping[str, object] | None = None,
+        *,
+        num_samples: int | None = None,
+        seed: int | None = None,
+    ) -> dict[str, UnitLogLikelihood]:
+        """Evaluate the density of each independent unit at posterior draws.
+
+        The units are the rows of an observation with a density of its own,
+        the units of a grouped ``marginalize`` block, and the whole of a block
+        whose rows share one latent. Given a draw, the responses' joint log
+        density is the sum over the units.
+
+        Parameters
+        ----------
+        data : Mapping[str, object] or None
+            Replacement covariates and observed responses; fitted data by default.
+        num_samples : int or None
+            Maximum draws per MCMC chain; 100 draws for a guide when omitted.
+        seed : int or None
+            Optional seed for variational draws and participating native streams, restored on exit.
+
+        Returns
+        -------
+        dict[str, UnitLogLikelihood]
+            One entry per set of responses whose rows share units, keyed by
+            their names joined by commas.
+
+        Raises
+        ------
+        ValueError
+            If responses are missing, the draw count is not positive, or the
+            units change between draws.
+        TypeError
+            If the weights of a block's units are not log densities, or nothing
+            scores an observation.
+        """
+        bound = self.model if data is None else self.model.rebind(data)
+        return source_unit_log_likelihood(
+            bound, self.posterior, num_samples=num_samples, seed=seed
+        )
+
     def analysis(
-        self, *, num_samples: int | None = None, seed: int = 0
+        self,
+        *,
+        num_samples: int | None = None,
+        seed: int = 0,
+        units: ScoreUnits = "rows",
     ) -> PosteriorAnalysis:
         """Prepare reusable tensor posterior analysis on the fitted data.
 
@@ -1260,6 +1312,10 @@ class ModelFit(ValueModel):
             Maximum recorded draws per chain, or fresh variational draws.
         seed : int
             Guide sampling seed; participating caller RNG streams are preserved.
+        units : ScoreUnits
+            ``"rows"`` for one score per response row, and ``"factors"`` for
+            one per independent unit of the likelihood, which
+            `unit_log_likelihood` describes.
 
         Returns
         -------
@@ -1269,15 +1325,14 @@ class ModelFit(ValueModel):
 
         Raises
         ------
-        TypeError
-            If a hidden observation needs a marginal-likelihood observer.
+        UnfactoredObservationError
+            If scores per row are asked for and the rows of a marginalized
+            observation share a latent.
         ValueError
             If fitted response data are missing or the draw count is invalid.
         """
-        from quivers.modeling._replay import source_analysis
-
         return source_analysis(
-            self.model, self.posterior, num_samples=num_samples, seed=seed
+            self.model, self.posterior, num_samples=num_samples, seed=seed, units=units
         )
 
     def summary(self) -> dict[str, ConvergenceSummary]:

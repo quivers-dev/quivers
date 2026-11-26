@@ -7,7 +7,10 @@ import pytest
 import torch
 
 from quivers.dsl import loads
-from quivers.dsl.compiler.programs import _binary_log_prior, _categorical_log_prior
+from quivers.dsl.compiler._marginal_blocks import (
+    _binary_log_prior,
+    _categorical_log_prior,
+)
 
 
 @pytest.fixture(autouse=True)

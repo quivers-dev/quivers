@@ -1172,7 +1172,7 @@ class _Builder:
                         spec,
                         program,
                         LOG_WEIGHT,
-                        reads=reads_of(spec.score),
+                        reads=None if spec.reads is None else tuple(sorted(spec.reads)),
                     )
                     self._add_score(frame, weight, position)
                 case Draw() | Observe():
@@ -1217,6 +1217,13 @@ class _Builder:
             reads = tuple(dict.fromkeys((*reads, *_arg_reads((spec.weights,)))))
         if isinstance(spec, Observe) and spec.event is not None:
             reads = tuple(dict.fromkeys((*reads, *spec.event.names())))
+        if isinstance(spec, Observe) and spec.law is not None:
+            declared = spec.law.reads
+            reads = tuple(
+                dict.fromkeys(
+                    (*reads, *(frame.visible() if declared is None else declared))
+                )
+            )
         categorical = extract_morphism(morphism)
         if categorical is not None and not isinstance(morphism, ContinuousMorphism):
             # A categorical morphism is deterministic: its tensor is

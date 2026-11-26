@@ -369,6 +369,8 @@ nav:
       - Programs: api/continuous/programs.md
       - Program Steps: api/continuous/program_steps.md
       - Plates: api/continuous/plate.md
+      - Marginalized responses: api/continuous/marginal.md
+      - Subsampled units: api/continuous/unit_subsets.md
       - Deterministic Morphisms: api/continuous/deterministic.md
       - Measure Algebra: api/continuous/measure.md
       - Bijectors: api/continuous/bijectors.md
@@ -414,6 +416,7 @@ nav:
       - MCMC (HMC / NUTS): api/inference/mcmc.md
       - Bayesian Lifts: api/inference/lifts.md
       - Predictive: api/inference/predictive.md
+      - Unit likelihoods: api/inference/units.md
       - Prior sampling: api/inference/prior.md
       - Pathfinder: api/inference/pathfinder.md
     - Data:
@@ -464,6 +467,7 @@ nav:
       - Sampleables: api/effects/sites.md
       - Traces: api/effects/trace.md
       - Trace types: api/effects/trace_types.md
+      - Score units: api/effects/units.md
       - Observation scoring: api/effects/observation_scoring.md
       - Batched evaluation: api/effects/batching.md
       - Handlers: api/effects/handlers.md

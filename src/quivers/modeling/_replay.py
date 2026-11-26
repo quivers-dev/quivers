@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
 from quivers._rng import seeded_rng
 from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
 from quivers.effects.observation_scoring import observation_scoring
-from quivers.inference._likelihood import collect_log_likelihood
+from quivers.inference._likelihood import (
+    collect_log_likelihood,
+    collect_unit_log_likelihood,
+)
 from quivers.inference._posterior import constrained_draws, draw_count
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
@@ -19,6 +22,7 @@ from quivers.inference.predictive import _require_replayed_sites
 from quivers.inference.prior import PriorDraws
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace, trace
+from quivers.inference.units import UnitLogLikelihood
 
 # Pathfinder draws report variational provenance.
 from quivers.inference.pathfinder import draw_provenance
@@ -26,14 +30,19 @@ from quivers.inference.pathfinder import draw_provenance
 if TYPE_CHECKING:
     from quivers.modeling.model import BoundModel
 
+type ScoreUnits = Literal["rows", "factors"]
+"""What one score of an analysis covers: a response row, or an independent
+unit of the likelihood."""
 
-def source_analysis(
+
+def _replayed[S](
     bound: BoundModel,
     posterior: MCMCResult | PriorDraws | Guide,
+    collect: Callable[[Iterator[Trace], set[str], tuple[int, int]], S],
     *,
-    num_samples: int | None = None,
-    seed: int | None = None,
-) -> PosteriorAnalysis:
+    num_samples: int | None,
+    seed: int | None,
+) -> tuple[S, dict[str, torch.Tensor], tuple[int, int]]:
     """Replay complete joint draws once using the checked source binding.
 
     Parameters
@@ -42,6 +51,8 @@ def source_analysis(
         Original or compatibly rebound source, responses, and execution input.
     posterior : MCMCResult or PriorDraws or Guide
         Retained count metadata and constrained joint draws.
+    collect : Callable
+        Reads the conditioned traces, one per chain and draw.
     num_samples : int or None
         Leading draws per recorded chain, or fresh guide draw count.
     seed : int or None
@@ -49,9 +60,9 @@ def source_analysis(
 
     Returns
     -------
-    PosteriorAnalysis
-        Raw response scores and the same sampled tensors, without an artificial
-        latent variable when the program has none.
+    tuple[S, dict[str, torch.Tensor], tuple[int, int]]
+        What ``collect`` returned, the constrained draws, and the number of
+        chains and draws.
 
     Raises
     ------
@@ -59,8 +70,8 @@ def source_analysis(
         If required responses or latent values are missing, sample counts or
         shapes disagree, or a retained label is not reached by the program.
     TypeError
-        If an observation needs a marginal-likelihood observer or the binding
-        has no native tensor executor.
+        If the binding has no native tensor executor, or ``collect`` refuses
+        an observation.
     """
     shape = draw_count(posterior, num_samples)
     program = bound.require_tensor_program()
@@ -124,16 +135,133 @@ def source_analysis(
                             )
                     yield recorded
 
-        likelihood = collect_log_likelihood(traces(), observations, shape)
+        collected = collect(traces(), observations, shape)
+    return collected, samples, shape
+
+
+def source_analysis(
+    bound: BoundModel,
+    posterior: MCMCResult | PriorDraws | Guide,
+    *,
+    num_samples: int | None = None,
+    seed: int | None = None,
+    units: ScoreUnits = "rows",
+) -> PosteriorAnalysis:
+    """Prepare a posterior analysis with the raw scores of the observations.
+
+    Parameters
+    ----------
+    bound : BoundModel
+        Original or compatibly rebound source, responses, and execution input.
+    posterior : MCMCResult or PriorDraws or Guide
+        Retained count metadata and constrained joint draws.
+    num_samples : int or None
+        Leading draws per recorded chain, or fresh guide draw count.
+    seed : int or None
+        Isolated stream seed; None retains the caller's stream policy.
+    units : ScoreUnits
+        ``"rows"`` for one score per response row, and ``"factors"`` for
+        one per independent unit of the likelihood.
+
+    Returns
+    -------
+    PosteriorAnalysis
+        Raw scores and the same sampled tensors, without an artificial
+        latent variable when the program has none. The analysis holds the
+        observed values of the responses whose scores are one per entry.
+
+    Raises
+    ------
+    ValueError
+        If required responses or latent values are missing, sample counts or
+        shapes disagree, or a retained label is not reached by the program.
+    UnfactoredObservationError
+        If scores per row are asked for and the rows of a marginalized
+        observation share a latent.
+    TypeError
+        If nothing scores an observation or the binding has no native tensor
+        executor.
+    """
+    values = bound.tensor_data()
+    observed = {
+        name: values[name] for name in bound.schema.observations if name in values
+    }
+    group_dims: dict[str, dict[str, tuple[str, ...]]] = {}
+    if units == "rows":
+        likelihood, samples, shape = _replayed(
+            bound, posterior, collect_log_likelihood, num_samples=num_samples, seed=seed
+        )
+    else:
+        factors, samples, shape = _replayed(
+            bound,
+            posterior,
+            collect_unit_log_likelihood,
+            num_samples=num_samples,
+            seed=seed,
+        )
+        likelihood = {key: scores.log_likelihood for key, scores in factors.items()}
+        group_dims["log_likelihood"] = {
+            key: scores.axes for key, scores in factors.items() if scores.axes
+        }
+        observed = {
+            key: observed[key]
+            for key, scores in factors.items()
+            if scores.axes is None and key in observed
+        }
     result = PosteriorAnalysis(
         samples=samples,
         log_likelihood=likelihood,
-        observed_data={name: values[name] for name in observations},
+        observed_data=observed,
         sample_stats=_sample_stats(posterior, shape[1]),
         kind=draw_provenance(posterior),
+        group_dims=group_dims,
     )
     result._validate_axes()
     return result
+
+
+def source_unit_log_likelihood(
+    bound: BoundModel,
+    posterior: MCMCResult | PriorDraws | Guide,
+    *,
+    num_samples: int | None = None,
+    seed: int | None = None,
+) -> dict[str, UnitLogLikelihood]:
+    """Read the log likelihood of each independent unit at posterior draws.
+
+    Parameters
+    ----------
+    bound : BoundModel
+        Original or compatibly rebound source, responses, and execution input.
+    posterior : MCMCResult or PriorDraws or Guide
+        Retained count metadata and constrained joint draws.
+    num_samples : int or None
+        Leading draws per recorded chain, or fresh guide draw count.
+    seed : int or None
+        Isolated stream seed; None retains the caller's stream policy.
+
+    Returns
+    -------
+    dict[str, UnitLogLikelihood]
+        One entry per set of responses whose rows share units.
+
+    Raises
+    ------
+    ValueError
+        If required responses or latent values are missing, sample counts or
+        shapes disagree, or the units change between draws.
+    TypeError
+        If a score's unit weights are not log densities, nothing scores an
+        observation, or the binding has no native tensor executor.
+    """
+    scores, _, _ = _replayed(
+        bound,
+        posterior,
+        collect_unit_log_likelihood,
+        num_samples=num_samples,
+        seed=seed,
+    )
+    return scores
 
 
 __all__: tuple[str, ...] = ()

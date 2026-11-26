@@ -19,6 +19,11 @@ from quivers.qiec.evaluator import RuntimeRequest
 class DoHandler(EffectHandler):
     """Intervene on named sites.
 
+    An intervened site takes the value given and contributes no factor of
+    its own to the joint. A response whose factor a score step holds loses
+    that factor in the score: the rest of its block, the class prior and
+    the other responses, keeps its own.
+
     Parameters
     ----------
     data : dict[str, torch.Tensor]
@@ -27,6 +32,17 @@ class DoHandler(EffectHandler):
 
     def __init__(self, data: dict[str, torch.Tensor]) -> None:
         self.data = dict(data)
+
+    @property
+    def site_values(self) -> dict[str, torch.Tensor]:
+        """The sites the handler fixes, which is all it does.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Site name to value.
+        """
+        return self.data
 
     def install(self, run: RunContext) -> tuple[Installation, ...]:
         """Install an intervening handler of the ``random`` instance.
@@ -54,7 +70,7 @@ class DoHandler(EffectHandler):
                 The value fixed, unused.
             """
             del value
-            run.interventions.add(run.key_of(request))
+            run.intervene(request)
 
         return (
             Installation(

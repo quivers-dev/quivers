@@ -26,8 +26,6 @@ import didactic.api as dx
 import torch
 from torch.distributions.distribution import Distribution as TorchDistribution
 from torch.distributions import constraints as _constraints
-from quivers.continuous._closed_probability import _count_log
-from quivers.continuous.param_transforms import _validate_parameter
 from quivers.continuous.deterministic import (
     LearnedFunction,
     learned_function_draw_message,
@@ -50,7 +48,7 @@ from quivers.continuous.inline import (
     get_inline_param_names,
     make_inline_distribution,
 )
-from quivers.continuous.plate import PlateDraw, VectorisedObserve, marginalize_grouped
+from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.program_steps import (
     Call,
     Draw,
@@ -60,7 +58,11 @@ from quivers.continuous.program_steps import (
     Scan,
     Score,
     Step,
+    RunConditions,
     StepArgument,
+    StepFunction,
+    UnitFactorization,
+    UnitRows,
     mappable,
     mapping_of,
     reading,
@@ -224,6 +226,16 @@ from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
 from quivers.structural.decoder import Decoder, decoder_draw_message
 from quivers.structural.encoder import Encoder, encoder_draw_message
+from quivers.dsl.compiler._marginal_blocks import (
+    BlockEntry,
+    EnumeratedBlock,
+    EnumeratedObservation,
+    GroupedBlock,
+    GroupedObservation,
+    Reduction,
+    _observation_parameter,
+    group_projection,
+)
 from quivers.dsl.compiler._prelude import (
     CompileError,
     _CompiledContraction,
@@ -768,117 +780,6 @@ def _marginal_chains(steps: tuple[ProgramStep, ...]) -> bool:
     return False
 
 
-def _observation_parameter(
-    env: Mapping[str, torch.Tensor],
-    arguments: tuple[StepArgument, ...] | None,
-    shared_vector: bool,
-) -> torch.Tensor:
-    """The parameter an observation family is scored at, at one atom.
-
-    Parameters
-    ----------
-    env : Mapping[str, torch.Tensor]
-        The bindings at the atom.
-    arguments : tuple[StepArgument, ...] | None
-        The observation's arguments; ``None`` reads the program input.
-    shared_vector : bool
-        Whether the family takes one vector-valued parameter, which a
-        single shared value presents with a leading axis of one.
-
-    Returns
-    -------
-    torch.Tensor
-        The parameter: one argument as it is (a number as one column),
-        or several stacked along a last axis.
-    """
-    if arguments is None:
-        return env["_x_input"]
-    parts = [_lookup_arg(env, argument) for argument in arguments]
-    if len(parts) == 1:
-        theta = parts[0]
-        if theta.dim() == 0:
-            # One value at this atom, shared by every row: a single
-            # column, as the stacking of several parameters gives each.
-            theta = theta.reshape(1)
-        if shared_vector and theta.dim() == 1:
-            theta = theta.unsqueeze(0)
-        return theta
-    common = torch.broadcast_shapes(*(part.shape for part in parts))
-    theta = torch.stack([part.expand(common) for part in parts], dim=-1)
-    if theta.dim() == 1:
-        # Values shared by every row at this atom stack to one row of
-        # their columns.
-        theta = theta.unsqueeze(0)
-    return theta
-
-
-def _binary_log_prior(
-    weight: torch.Tensor, parameterization: str | None
-) -> torch.Tensor:
-    """The log weights of the atoms 0 and 1 of a Bernoulli-family prior.
-
-    From ``logits`` the weights are ``log sigmoid(-l)`` and
-    ``log sigmoid(l)``, computed in log space, so both stay finite and
-    accurate where the probability ``sigmoid(l)`` rounds to zero or one
-    in the runtime's precision. From ``probs`` they are ``log1p(-p)`` and
-    ``log p``, retaining zero probability as negative infinity.
-
-    Parameters
-    ----------
-    weight : torch.Tensor
-        The prior's probability, or its logits.
-    parameterization : str | None
-        ``"logits"`` when `weight` holds logits; anything else reads it
-        as a probability.
-
-    Returns
-    -------
-    torch.Tensor
-        The log weights, stacked on a new trailing axis in atom order.
-    """
-    if parameterization == "logits":
-        return torch.stack(
-            [
-                torch.nn.functional.logsigmoid(-weight),
-                torch.nn.functional.logsigmoid(weight),
-            ],
-            dim=-1,
-        )
-    p = torch.distributions.Bernoulli(probs=weight, validate_args=True).probs
-    one = torch.ones_like(p)
-    return torch.stack([_count_log(one, 1 - p), _count_log(one, p)], dim=-1)
-
-
-def _categorical_log_prior(
-    weight: torch.Tensor, parameterization: str | None
-) -> torch.Tensor:
-    """Normalized log weights of a categorical prior.
-
-    Parameters
-    ----------
-    weight : torch.Tensor
-        Nonnegative weights or logits, with categories on the trailing axis.
-    parameterization : str | None
-        ``"logits"`` for logits, otherwise probability weights.
-
-    Returns
-    -------
-    torch.Tensor
-        Normalized log weights, retaining impossible atoms as negative infinity.
-
-    Raises
-    ------
-    ValueError
-        If the weights do not define a categorical distribution.
-    """
-    if parameterization == "logits":
-        _validate_parameter(weight, _constraints.real)
-        return torch.log_softmax(weight, dim=-1)
-    _validate_parameter(weight, _constraints.nonnegative)
-    probs = torch.distributions.Categorical(probs=weight, validate_args=True).probs
-    return _count_log(torch.ones_like(probs), probs)
-
-
 def _shared_vector_parameter(family: ContinuousMorphism | None) -> bool:
     """Whether an observation family takes one vector-valued parameter.
 
@@ -990,92 +891,156 @@ def _input_name(decl: ProgramDecl) -> str:
     return domain.name.lower() if isinstance(domain, TypeName) else ""
 
 
-def _index_map_tensor(env: dict[str, torch.Tensor], name: str) -> torch.Tensor:
-    """Resolve a grouped-marginalize ``via`` index map from the
-    runtime environment.
-
-    The index is a per-row map from the response plate into the
-    grouping plate, supplied as host data through the observations
-    dict (like any free covariate). A name that resolves to nothing
-    is a user error, so it fails with a clear message rather than a
-    bare ``KeyError``.
-    """
-    idx = env.get(name)
-    if idx is None:
-        raise CompileError(
-            f"grouped marginalize: the ``via`` index map {name!r} "
-            f"is neither a bound program variable nor supplied at runtime; "
-            f"pass it in the observations dict as a long tensor of "
-            f"row-to-group indices",
-            0,
-            0,
-        )
-    return idx
-
-
-def _project_nested_aggregates(
-    aggregates: torch.Tensor,
-    inner_sizes: tuple[int, ...],
-    kept_axes: tuple[int, ...],
-    slot: str,
-) -> torch.Tensor:
-    """Project an inner grouped block's per-position aggregates onto
-    the enclosing block's grouping plate.
-
-    The inner plate is a product whose factors include every factor
-    of the enclosing plate; the aggregates are summed along the
-    factors the enclosing plate lacks and laid out in the enclosing
-    plate's factor order, flat in row-major order.
+def _response_event(family: ContinuousMorphism) -> tuple[int, ...]:
+    """The axes of one row of a response, after its plate's.
 
     Parameters
     ----------
-    aggregates : torch.Tensor
-        The inner block's aggregates, flat over its product plate, followed
-        by any enclosing class axes.
-    inner_sizes : tuple[int, ...]
-        The cardinality of each factor of the inner plate.
-    kept_axes : tuple[int, ...]
-        The position in ``inner_sizes`` of each factor of the
-        enclosing plate, in the enclosing plate's order.
-    slot : str
-        The environment slot the aggregates were read from, named in
-        the error.
+    family : ContinuousMorphism
+        The response family.
 
     Returns
     -------
-    torch.Tensor
-        The aggregates over the enclosing plate, preserving class axes.
-
-    Raises
-    ------
-    ValueError
-        If the aggregates do not have one entry per inner position.
+    tuple[int, ...]
+        Nothing for a discrete or scalar response, else its coordinates.
     """
-    total = 1
-    for size in inner_sizes:
-        total *= size
-    if aggregates.dim() < 1 or aggregates.shape[0] != total:
-        raise ValueError(
-            f"grouped marginalize: the nested block at slot {slot!r} must "
-            f"contribute one aggregate per position of its plate "
-            f"{inner_sizes}; got shape {tuple(aggregates.shape)}"
-        )
-    extra_shape = tuple(aggregates.shape[1:])
-    shaped = aggregates.reshape(*inner_sizes, *extra_shape)
-    summed_axes = tuple(
-        axis for axis in range(len(inner_sizes)) if axis not in kept_axes
-    )
-    if summed_axes:
-        shaped = shaped.sum(dim=summed_axes)
-        remaining = [axis for axis in range(len(inner_sizes)) if axis in kept_axes]
-        order = tuple(remaining.index(axis) for axis in kept_axes)
-    else:
-        order = kept_axes
-    order = (*order, *range(len(kept_axes), shaped.dim()))
-    kept_size = 1
-    for axis in kept_axes:
-        kept_size *= inner_sizes[axis]
-    return shaped.permute(order).reshape(kept_size, *extra_shape)
+    codomain = family.codomain
+    if isinstance(codomain, SetObject) or int(getattr(codomain, "dim", 1)) == 1:
+        return ()
+    if hasattr(codomain, "dim"):
+        return (int(getattr(codomain, "dim")),)
+    return tuple(codomain.shape)
+
+
+def _single_unit(name: str, width: int | None) -> StepFunction:
+    """The row map of a sequence whose positions all belong to one unit.
+
+    Parameters
+    ----------
+    name : str
+        The sequence.
+    width : int or None
+        The number of entries a position holds, or ``None`` for one.
+
+    Returns
+    -------
+    StepFunction
+        From the environment to a zero per position.
+    """
+
+    def units(env: dict[str, torch.Tensor]) -> torch.Tensor:
+        """The unit of each position.
+
+        Parameters
+        ----------
+        env : dict[str, torch.Tensor]
+            The bindings.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(positions,)``.
+        """
+        value = env[name]
+        positions = value.numel() // (1 if width is None else width)
+        return torch.zeros(positions, dtype=torch.long, device=value.device)
+
+    return reading(units, (name,))
+
+
+def _under(
+    function: Callable[[dict[str, torch.Tensor], RunConditions], torch.Tensor],
+    reads: Iterable[str],
+) -> Callable[[RunConditions], StepFunction]:
+    """A step's function in each run, from one of the run's conditions too.
+
+    Parameters
+    ----------
+    function : Callable[[dict[str, torch.Tensor], RunConditions], torch.Tensor]
+        The step's value given the bindings and the run's conditions.
+    reads : Iterable[str]
+        The names it reads from the bindings.
+
+    Returns
+    -------
+    Callable[[RunConditions], StepFunction]
+        From conditions to the function of the bindings alone.
+    """
+    names = frozenset(reads)
+
+    def under(run: RunConditions) -> StepFunction:
+        """The step's function in a run under conditions.
+
+        Parameters
+        ----------
+        run : RunConditions
+            The conditions.
+
+        Returns
+        -------
+        StepFunction
+            The function of the bindings.
+        """
+
+        def conditioned(env: dict[str, torch.Tensor]) -> torch.Tensor:
+            """The step's value under the conditions.
+
+            Parameters
+            ----------
+            env : dict[str, torch.Tensor]
+                The bindings.
+
+            Returns
+            -------
+            torch.Tensor
+                The value.
+            """
+            return function(env, run)
+
+        return reading(conditioned, names)
+
+    return under
+
+
+def _draws_response(steps: Sequence[Step], response: str) -> bool:
+    """Whether a run draws a marginalized response it is given no value for.
+
+    A response that an earlier step reads or already observes is data of
+    the run rather than a value the run could draw there.
+
+    Parameters
+    ----------
+    steps : Sequence[Step]
+        The steps compiled so far.
+    response : str
+        The response.
+
+    Returns
+    -------
+    bool
+        Whether the observation is a site of its own.
+    """
+    for step in steps:
+        if isinstance(step, Draw | Observe):
+            if response in step.names or response in _arg_names(step.args or ()):
+                return False
+            if isinstance(step, Observe) and response in (
+                step.weights,
+                *(step.event.names() if step.event is not None else ()),
+            ):
+                return False
+        elif isinstance(step, Let):
+            if isinstance(step.value, str):
+                if step.value == response:
+                    return False
+            elif callable(step.value) and response in (reads_of(step.value) or ()):
+                return False
+        elif isinstance(step, Score):
+            if response in (reads_of(step.score) or ()):
+                return False
+        elif isinstance(step, Call) and response in step.args:
+            return False
+    return True
 
 
 # Value carried by a let-binding at compile time.  The let
@@ -1985,13 +1950,14 @@ class _ProgramsMixin:
             str,
             tuple[DrawArgName | DrawArgIndex | str, ...],
             tuple[ProgramStep, ...],
+            ObjectExpr | None,
         ],
     ]:
         """Per-marker record of an ungrouped ``marginalize`` block's body.
 
         Keyed by ``id`` of the placeholder `GroupedMarginalizeStep`
         emitted for an ungrouped block, each entry carries the
-        ``(latent_name, prior_family, prior_args, body_steps)`` the
+        ``(latent_name, prior_family, prior_args, body_steps, index)`` the
         compile pass needs to build the block's integrated score
         closure. Populated lazily so the base compiler's ``__init__``
         stays agnostic to this mixin's state.
@@ -2414,6 +2380,7 @@ class _ProgramsMixin:
                         step.morphism,
                         tuple(step.args or ()),
                         tuple(marg_body),
+                        step.index,
                     )
                     out.append(marker)
                     continue
@@ -2437,118 +2404,85 @@ class _ProgramsMixin:
                 scope_steps = step.scope if step.scope is not None else ()
                 expanded_scope = list(self._expand_bind_steps(scope_steps))
                 body_observes: list[GroupedObserveEntry] = []
-                if has_grouping:
-                    # Walk the body forward; rewrite each observe
-                    # into a GroupedBodyObserveStep with a unique
-                    # ll_slot and capture its per-observe index map.
-                    for j, scoped_step in enumerate(expanded_scope):
-                        if isinstance(scoped_step, VectorisedObserveStep):
-                            if (
-                                scoped_step.index_map_var is None
-                                and scoped_step.index_map_axes is None
-                            ):
-                                raise CompileError(
-                                    "grouped marginalize: every observe "
-                                    "inside the body must carry its own "
-                                    "via option, as in `observe r : N <- "
-                                    "Normal(loc=mu[c], scale=1.0) [via=idx]`; "
-                                    f"observe {scoped_step.response_var!r} "
-                                    "has none",
-                                    scoped_step.line,
-                                    scoped_step.col,
-                                )
-                            ll_slot = f"_grouped_ll_{latent_name}_{len(body_observes)}"
-                            expanded_scope[j] = GroupedBodyObserveStep(
-                                response_var=scoped_step.response_var,
-                                morphism=scoped_step.morphism,
-                                args=scoped_step.args,
-                                index_set=scoped_step.index_set,
-                                index_var=scoped_step.index_var,
-                                latent_name=latent_name,
-                                class_size=class_size,
+                for j, scoped_step in enumerate(expanded_scope):
+                    if isinstance(scoped_step, VectorisedObserveStep):
+                        if (
+                            scoped_step.index_map_var is None
+                            and scoped_step.index_map_axes is None
+                        ):
+                            raise CompileError(
+                                "grouped marginalize: every observe "
+                                "inside the body must carry its own "
+                                "via option, as in `observe r : N <- "
+                                "Normal(loc=mu[c], scale=1.0) [via=idx]`; "
+                                f"observe {scoped_step.response_var!r} "
+                                "has none",
+                                scoped_step.line,
+                                scoped_step.col,
+                            )
+                        ll_slot = f"_grouped_ll_{latent_name}_{len(body_observes)}"
+                        expanded_scope[j] = GroupedBodyObserveStep(
+                            response_var=scoped_step.response_var,
+                            morphism=scoped_step.morphism,
+                            args=scoped_step.args,
+                            index_set=scoped_step.index_set,
+                            index_var=scoped_step.index_var,
+                            latent_name=latent_name,
+                            class_size=class_size,
+                            index_map_var=scoped_step.index_map_var,
+                            index_map_axes=scoped_step.index_map_axes,
+                            ll_slot=ll_slot,
+                            weights=scoped_step.weights,
+                            event=scoped_step.event,
+                            line=scoped_step.line,
+                            col=scoped_step.col,
+                        )
+                        body_observes.append(
+                            GroupedObserveEntry(
+                                ll_slot=ll_slot,
                                 index_map_var=scoped_step.index_map_var,
                                 index_map_axes=scoped_step.index_map_axes,
-                                ll_slot=ll_slot,
-                                weights=scoped_step.weights,
-                                event=scoped_step.event,
-                                line=scoped_step.line,
-                                col=scoped_step.col,
                             )
-                            body_observes.append(
-                                GroupedObserveEntry(
-                                    ll_slot=ll_slot,
-                                    index_map_var=scoped_step.index_map_var,
-                                    index_map_axes=scoped_step.index_map_axes,
-                                )
-                            )
-                    if not body_observes:
-                        # Nested case: a grouped marginalize block whose
-                        # body's only contribution to the per-group
-                        # accumulator is an inner grouped block.  The
-                        # inner block's GroupedMarginalizeStep produces the
-                        # (N_outer, K_outer) tensor the outer block
-                        # consumes.  Re-point the inner's
-                        # ``body_ll_var`` at the outer latent so the
-                        # outer codegen finds the tensor at the
-                        # expected slot, and record a single
-                        # body_observes entry whose ll_slot is the
-                        # outer latent's name (no per-observe
-                        # index map, since the inner block already
-                        # performed its own scatter-add).
-                        nested_marg_idx: int | None = None
-                        for j in range(len(expanded_scope) - 1, -1, -1):
-                            if isinstance(expanded_scope[j], GroupedMarginalizeStep):
-                                nested_marg_idx = j
-                                break
-                        if nested_marg_idx is None:
-                            raise CompileError(
-                                "grouped marginalize: the body must "
-                                "contain at least one `observe` step "
-                                "(or an inner grouped marginalize) "
-                                "whose per-row log-likelihood produces "
-                                "the per-group accumulator's "
-                                "contribution",
-                                step.line,
-                                step.col,
-                            )
-                        inner_marg = expanded_scope[nested_marg_idx]
-                        assert isinstance(inner_marg, GroupedMarginalizeStep)
-                        expanded_scope[nested_marg_idx] = GroupedMarginalizeStep(
-                            var_name=inner_marg.var_name,
-                            class_size=inner_marg.class_size,
-                            probs_var=inner_marg.probs_var,
-                            probs_indices=inner_marg.probs_indices,
-                            parameterization=inner_marg.parameterization,
-                            over_obj=inner_marg.over_obj,
-                            over_objs=inner_marg.over_objs,
-                            body_ll_var=latent_name,
-                            body_observes=inner_marg.body_observes,
-                            reduction=inner_marg.reduction,
-                            line=inner_marg.line,
-                            col=inner_marg.col,
                         )
-                        inner_groups = (
-                            inner_marg.over_objs
-                            if inner_marg.over_objs is not None
-                            else (
-                                (inner_marg.over_obj,)
-                                if inner_marg.over_obj is not None
-                                else None
-                            )
+                    elif (
+                        isinstance(scoped_step, GroupedMarginalizeStep)
+                        and scoped_step.body_ll_var == scoped_step.var_name
+                    ):
+                        # A block directly inside this one. Its aggregates,
+                        # one per position of its plate and class of this
+                        # block, are a contribution to this block's units,
+                        # bound under a slot of their own.
+                        inner_groups = scoped_step.over_objs or (
+                            (scoped_step.over_obj,)
+                            if scoped_step.over_obj is not None
+                            else None
                         )
                         if inner_groups is None:
                             raise CompileError(
                                 "grouped marginalize: an inner marginalize "
                                 "block nested in a grouped block must carry "
                                 "its own grouping plate",
-                                inner_marg.line,
-                                inner_marg.col,
+                                scoped_step.line,
+                                scoped_step.col,
                             )
+                        ll_slot = f"_grouped_ll_{latent_name}_{len(body_observes)}"
+                        expanded_scope[j] = scoped_step.with_(body_ll_var=ll_slot)
                         body_observes.append(
                             GroupedObserveEntry(
-                                ll_slot=latent_name, inner_groups=inner_groups
+                                ll_slot=ll_slot, inner_groups=inner_groups
                             )
                         )
+                if not body_observes:
+                    raise CompileError(
+                        "grouped marginalize: the body must "
+                        "contain at least one `observe` step "
+                        "(or an inner grouped marginalize) "
+                        "whose per-row log-likelihood produces "
+                        "the per-group accumulator's "
+                        "contribution",
+                        step.line,
+                        step.col,
+                    )
                 out.extend(expanded_scope)
                 # Pushforward reduction. When grouped, the
                 # GroupedMarginalizeStep carries the list of per-observe
@@ -2574,7 +2508,7 @@ class _ProgramsMixin:
                         over_obj=single_over,
                         over_objs=product_overs,
                         body_ll_var=step.vars[0],
-                        body_observes=(tuple(body_observes) if has_grouping else None),
+                        body_observes=tuple(body_observes),
                         reduction=step.reduction,
                         line=step.line,
                         col=step.col,
@@ -3382,6 +3316,7 @@ class _ProgramsMixin:
                             if entry.index_map_axes is not None
                             else None
                         ),
+                        inner_groups=entry.inner_groups,
                     )
                     for entry in step.body_observes
                 )
@@ -3420,7 +3355,9 @@ class _ProgramsMixin:
                 index_map_var=rename.get(step.index_map_var, step.index_map_var)
                 if step.index_map_var is not None
                 else None,
-                index_map_axes=step.index_map_axes,
+                index_map_axes=tuple(rename.get(v, v) for v in step.index_map_axes)
+                if step.index_map_axes is not None
+                else None,
                 ll_slot=step.ll_slot,
                 weights=_rename_observation_weights(step.weights, value_subst, rename),
                 event=_rename_observation_event(step.event, value_subst, rename),
@@ -4427,6 +4364,13 @@ class _ProgramsMixin:
         grouped_dependencies: dict[str, frozenset[str]] = {}
         class_sizes: dict[str, int] = {}
         classwise_bindings: set[str] = set()
+        marginal_steps = {
+            step.var_name: step
+            for step in expanded_draws
+            if isinstance(step, GroupedMarginalizeStep)
+            and (step.over_objs or step.over_obj)
+        }
+        open_blocks: list[GroupedBlock] = []
         group_shapes = {
             step.var_name: tuple(
                 int(self._objects[name].size)
@@ -4665,6 +4609,15 @@ class _ProgramsMixin:
                         value=_compiled_step(_grouped_latent_init, ()),
                     )
                 )
+                open_blocks.append(
+                    self._open_grouped_block(
+                        marginal_steps[step.latent_name],
+                        open_blocks[-1] if open_blocks else None,
+                        class_sizes,
+                        grouped_dependencies,
+                        bound_vars,
+                    )
+                )
                 continue
             if isinstance(step, GroupedBodyObserveStep):
                 # The captured observe inside a grouped marginalize
@@ -4744,331 +4697,84 @@ class _ProgramsMixin:
                     if kind == "var"
                 )
                 grouped_dependencies[ll_slot] = frozenset(likelihood_classes)
+                block = open_blocks[-1]
+                observation = GroupedObservation(
+                    response=resp_var,
+                    family=family,
+                    arguments=step_args,
+                    rows=num_rows,
+                    row_axis=self._object_expr_text(step.index_set),
+                    classes=likelihood_classes,
+                    class_sizes=likelihood_sizes,
+                    argument_classes=argument_classes,
+                    variable_ranks=variable_ranks,
+                    group_arguments=group_arguments,
+                    group_sizes=block.sizes,
+                    index_maps=(
+                        step.index_map_axes
+                        if step.index_map_axes is not None
+                        else cast("tuple[str, ...]", (step.index_map_var,))
+                    ),
+                    weights=step.weights,
+                    event=step.event,
+                )
+                law = block.response_law(observation, class_sizes)
 
-                def _captured_observe(
-                    env: dict,
-                    _family=family,
-                    _args=step_args,
-                    _resp=resp_var,
-                    _slot=ll_slot,
-                    _N_decl=num_rows,
-                    _class_names=likelihood_classes,
-                    _class_shape=likelihood_sizes,
-                    _argument_classes=argument_classes,
-                    _variable_ranks=variable_ranks,
-                    _weights=step.weights,
-                    _event=step.event,
-                    _group_arguments=group_arguments,
-                    _group_rank=len(group_shapes[step.latent_name]),
-                    _via=step.index_map_var,
-                    _via_axes=step.index_map_axes,
+                def _row_class_scores(
+                    env: dict[str, torch.Tensor],
+                    _observation: GroupedObservation = observation,
                 ) -> torch.Tensor:
-                    # Take the row count from the response tensor at
-                    # runtime: the per-row index axis carries the
-                    # data the user actually supplied, which may be
-                    # smaller than the declared codomain cardinality
-                    # for sparse / minibatch fits.
-                    response = env[_resp]
-                    if (
-                        response.dim() >= 2
-                        and int(response.shape[0]) != _N_decl
-                        and int(response.shape[1]) == _N_decl
-                    ):
-                        # The observation carries a leading axis of runs
-                        # before its rows.
-                        runs = int(response.shape[0])
-                        if runs != 1:
-                            raise ValueError(
-                                f"grouped marginalize: observation {_resp!r} "
-                                f"has {runs} runs on its leading axis; a "
-                                f"grouped block scores one run at a time, so "
-                                f"pass one row of input and that run's data"
-                            )
-                        response = response[0]
-                    _N = int(response.shape[0]) if response.dim() >= 1 else _N_decl
-                    # Resolve theta from env. Inside a grouped
-                    # marginalize, ``args`` may reference per-class
-                    # gathers (``mu[cls]``) that resolve to shape
-                    # ``(K, ...)``; the response is shape ``(N,)``.
-                    # The per-row per-class log-likelihood requires
-                    # broadcasting theta to ``(N, K, ...)`` and the
-                    # response to ``(N, 1)`` so the resulting
-                    # ``log_prob`` has shape ``(N, K)``.
-                    if _args is None:
-                        theta = env["_x_input"]
-                        parts = [theta]
-                    elif len(_args) == 1:
-                        parts = [_lookup_arg(env, _args[0])]
-                        theta = parts[0]
-                    else:
-                        parts = [_lookup_arg(env, a) for a in _args]
+                    """The log likelihood of each row at each class.
 
-                    original_rows = _N
-                    argument_axes = _argument_classes or ((),) * len(parts)
-                    ranks = _variable_ranks or (0,) * len(parts)
-                    group_parts = tuple(
-                        grouped and part.dim() >= len(axes) + _group_rank + rank
-                        for part, axes, grouped, rank in zip(
-                            parts,
-                            argument_axes,
-                            _group_arguments or (False,) * len(parts),
-                            ranks,
-                            strict=True,
+                    Parameters
+                    ----------
+                    env : dict[str, torch.Tensor]
+                        The bindings.
+
+                    Returns
+                    -------
+                    torch.Tensor
+                        ``(rows, *classes)``.
+                    """
+                    return _observation.log_prob(env)
+
+                if _draws_response(steps, resp_var):
+                    # The response is a site of the run, whose density the
+                    # block's score holds: given a value it is scored
+                    # there, and given none it is drawn from its law.
+                    steps.append(
+                        Observe(
+                            names=(resp_var,),
+                            morphism=MarginalizedFactor(
+                                family, 1 + len(_response_event(family))
+                            ),
+                            args=(),
+                            law=law,
                         )
                     )
-                    if any(group_parts):
-                        if _via_axes is not None:
-                            indices = tuple(
-                                _index_map_tensor(env, name).reshape(-1)
-                                for name in _via_axes
-                            )
-                        else:
-                            assert _via is not None
-                            indices = (_index_map_tensor(env, _via).reshape(-1),)
-                        pulled = []
-                        for part, axes, grouped in zip(
-                            parts, argument_axes, group_parts, strict=True
-                        ):
-                            if grouped:
-                                part = part[
-                                    (
-                                        *(slice(None) for _ in axes),
-                                        *(index.to(part.device) for index in indices),
-                                    )
-                                ].movedim(len(axes), 0)
-                            pulled.append(part)
-                        parts = pulled
-                    row_parts = [
-                        grouped or (not axes and p.dim() > rank and p.shape[0] == _N)
-                        for p, axes, grouped, rank in zip(
-                            parts, argument_axes, group_parts, ranks, strict=True
-                        )
-                    ]
-                    active_rows = None
-                    weights = None
-                    if _weights is not None:
-                        from quivers.effects._observation_weights import checked_weights
-
-                        weights = checked_weights(
-                            env[_weights] if isinstance(_weights, str) else _weights,
-                            response,
-                            _N,
-                        ).expand(_N)
-                        active_rows = torch.nonzero(
-                            weights > 0, as_tuple=False
-                        ).flatten()
-                        if active_rows.numel() == 0:
-                            zero = (weights * 0.0).sum()
-                            for part in parts:
-                                zero = zero + (part * 0.0).sum()
-                            return zero.expand(_N, *_class_shape)
-                        if active_rows.numel() == _N:
-                            # Dense weights need no response/parameter copies.
-                            active_rows = None
-                        else:
-                            response = response.index_select(0, active_rows)
-                            parts = [
-                                part.index_select(0, active_rows.to(part.device))
-                                if is_row
-                                else part
-                                for part, is_row in zip(parts, row_parts, strict=True)
-                            ]
-                            _N = int(active_rows.numel())
-
-                    payload = None
-                    if _event is not None:
-                        from quivers.effects._observation_events import resolve_event
-
-                        payload = resolve_event(_event, env)
-                        if active_rows is not None:
-                            payload = {
-                                name: value.index_select(
-                                    0, active_rows.to(value.device)
-                                )
-                                if isinstance(value, torch.Tensor)
-                                and value.ndim
-                                and value.shape[0] == original_rows
-                                else value
-                                for name, value in payload.items()
-                            }
-
-                    def score_distribution(distribution, target):
-                        """Score one class-expanded law with retained event roles."""
-                        if payload is None:
-                            return distribution.log_prob(target)
-                        from quivers.continuous._observation_events import (
-                            event_log_prob,
-                        )
-
-                        roles = {}
-                        for name, value in payload.items():
-                            if (
-                                isinstance(value, torch.Tensor)
-                                and value.ndim
-                                and value.shape[0] == _N
-                            ):
-                                while value.ndim < len(distribution.batch_shape):
-                                    value = value.unsqueeze(1)
-                            roles[name] = value
-                        return event_log_prob(distribution, target, **roles)
-
-                    # Detect whether any parameter carries the class
-                    # axis. If so, broadcast each part to leading
-                    # (N, K) plus any trailing event dims and call
-                    # the family's underlying distribution builder
-                    # directly so the inline family's split-by-dim
-                    # path doesn't shrink the event axis.
-                    needs_cross = any(argument_axes)
-                    if needs_cross:
-                        coordinate_parameters = not any(ranks)
-                        event_shape: tuple[int, ...] = ()
-                        aligned_parts = []
-                        for p, axes, is_row in zip(
-                            parts, argument_axes, row_parts, strict=True
-                        ):
-                            offset = int(is_row)
-                            suffix = tuple(p.shape[offset + len(axes) :])
-                            axis_sizes = dict(
-                                zip(
-                                    axes,
-                                    p.shape[offset : offset + len(axes)],
-                                    strict=True,
-                                )
-                            )
-                            shape = (
-                                p.shape[0] if is_row else 1,
-                                *(axis_sizes.get(name, 1) for name in _class_names),
-                                *suffix,
-                            )
-                            aligned_parts.append(p.reshape(shape))
-                            if coordinate_parameters:
-                                event_shape = torch.broadcast_shapes(
-                                    event_shape, suffix
-                                )
-                        prefix = (_N, *_class_shape)
-                        resolved = []
-                        for p in aligned_parts:
-                            suffix = tuple(p.shape[1 + len(_class_shape) :])
-                            if coordinate_parameters:
-                                p = p.reshape(
-                                    *p.shape[: 1 + len(_class_shape)],
-                                    *((1,) * (len(event_shape) - len(suffix))),
-                                    *suffix,
-                                )
-                                suffix = event_shape
-                            resolved.append(p.expand(*prefix, *suffix))
-                        target = (*prefix, *event_shape)
-                        # Literal parameters share the resolved tensors' device;
-                        # only declared class axes are broadcast as enumerations.
-                        spec = getattr(_family, "_param_spec", None)
-                        if spec is not None:
-                            full: list[torch.Tensor] = []
-                            variable_parts = iter(resolved)
-                            for kind, literal in spec:
-                                if kind == "lit":
-                                    full.append(
-                                        torch.full(
-                                            target,
-                                            float(literal),
-                                            dtype=resolved[0].dtype,
-                                            device=resolved[0].device,
-                                        )
-                                    )
-                                else:
-                                    full.append(next(variable_parts))
-                            resolved = full
-                        dist = _family._dist_builder(resolved)
-                        resp_broadcast = response
-                        # Add singleton dims to make response
-                        # broadcastable against the (N, K) batch
-                        # shape (the response has no K dependence).
-                        while resp_broadcast.dim() < len(dist.batch_shape) + len(
-                            dist.event_shape
-                        ):
-                            resp_broadcast = resp_broadcast.unsqueeze(1)
-                        ll = score_distribution(dist, resp_broadcast)
-                    elif getattr(_family, "_param_spec", None) is not None:
-                        # Row-only arguments retain their rows even when
-                        # an intermediate let has no checked plate width.
-                        # Feed their resolved values to the builder rather
-                        # than interpreting their rows as shared features.
-                        resolved = []
-                        variable_parts = iter(parts)
-                        for kind, literal in _family._param_spec:
-                            resolved.append(
-                                parts[0].new_tensor(float(literal))
-                                if kind == "lit"
-                                else next(variable_parts)
-                            )
-                        dist = _family._dist_builder(resolved)
-                        target = response
-                        while target.dim() < len(dist.batch_shape) + len(
-                            dist.event_shape
-                        ):
-                            target = target.unsqueeze(-1)
-                        ll = score_distribution(dist, target)
-                        if ll.dim() > 1:
-                            ll = ll.reshape(_N, -1).sum(-1)
-                    else:
-                        if len(parts) > 1:
-                            common_shape = torch.broadcast_shapes(
-                                *(p.shape for p in parts)
-                            )
-                            expanded = [p.expand(common_shape) for p in parts]
-                            theta = torch.stack(expanded, dim=-1)
-                        else:
-                            theta = parts[0]
-                        ll = (
-                            _family.log_prob(theta, response)
-                            if payload is None
-                            else _family.log_prob_event(theta, response, payload)
-                        )
-                    # Each lexical class axis is retained until its own
-                    # grouped reduction; independent coordinate events sum here.
-                    if needs_cross:
-                        if ll.dim() > 1 + len(_class_shape):
-                            ll = ll.reshape(_N, *_class_shape, -1).sum(-1)
-                    else:
-                        ll = ll.reshape(_N, *((1,) * len(_class_shape))).expand(
-                            _N, *_class_shape
-                        )
-                    weight_shape = (-1, *((1,) * len(_class_shape)))
-                    if active_rows is not None:
-                        assert weights is not None
-                        ll = ll * weights.index_select(0, active_rows).reshape(
-                            weight_shape
-                        )
-                        return ll.new_zeros(original_rows, *_class_shape).index_copy(
-                            0, active_rows, ll
-                        )
-                    return ll if weights is None else ll * weights.reshape(weight_shape)
-
                 bound_vars[ll_slot] = None
                 steps.append(
                     Let(
                         name=ll_slot,
                         value=_compiled_step(
-                            _captured_observe,
-                            (
-                                resp_var,
-                                "_x_input",
-                                *_arg_names(step_args or ()),
-                                *(
-                                    (step.index_map_var,)
-                                    if step.index_map_var is not None
-                                    else ()
-                                ),
-                                *(step.index_map_axes or ()),
-                                *(step.event.names() if step.event is not None else ()),
-                                *(
-                                    (step.weights,)
-                                    if isinstance(step.weights, str)
-                                    else ()
-                                ),
-                            ),
+                            _row_class_scores,
+                            observation.score_reads,
                             family.mapping_obstacle(),
                             (step.weights,) if isinstance(step.weights, str) else (),
                         ),
+                        under=_under(
+                            lambda env, run, _observation=observation: (
+                                _observation.log_prob(env, conditions=run)
+                            ),
+                            observation.score_reads,
+                        ),
+                    )
+                )
+                block.add(
+                    BlockEntry(
+                        slot=ll_slot,
+                        classes=likelihood_classes,
+                        observation=observation,
                     )
                 )
                 continue
@@ -5170,415 +4876,135 @@ class _ProgramsMixin:
                 )
                 continue
             if isinstance(step, GroupedMarginalizeStep):
-                # marginalize v — pushforward G(π_{Φ\\C}). Realised as a
-                # deterministic let-step that applies log-sum-exp across
-                # the class axis of the named variable's per-class score
-                # tensor. The runtime convention is that the body
-                # populates `env[v]` with a per-class log-likelihood
-                # tensor before this step executes.
+                # A block sums its latent out. An ungrouped one carries its
+                # body, scored at each value of the latent; a grouped one
+                # closes the block its latent opened, whose contributions
+                # the body has bound.
                 pending = self._ungrouped_marg_bodies.get(id(step))
                 if pending is not None:
                     self._compile_ungrouped_marginalize(
                         step, pending, steps, bound_vars, codomain
                     )
                     continue
-                if step.var_name not in bound_vars:
-                    raise CompileError(
-                        f"marginalize: variable {step.var_name!r} not bound",
-                        step.line,
-                        step.col,
-                    )
-                target_var = step.var_name
-                # Grouped form: `over G` (single plate) or
-                # `over G * H` (product plate).  Per-observe
-                # index map data lives in ``body_observes``: each
-                # entry is ``(ll_slot, index_map_var,
-                # index_map_axes)``.  The codegen iterates the
-                # entries, builds a parallel list of (ll, idx)
-                # pairs from ``env``, and calls the multi-axis
-                # form of ``marginalize_grouped``.
-                has_grouping = step.over_obj is not None or step.over_objs is not None
-                if has_grouping:
-                    over_tuple: tuple[str, ...]
-                    if step.over_objs is not None:
-                        over_tuple = step.over_objs
-                    else:
-                        assert step.over_obj is not None
-                        over_tuple = (step.over_obj,)
-                    for over_name in over_tuple:
-                        if over_name not in self._objects:
-                            raise CompileError(
-                                f"grouped marginalize: `over` object "
-                                f"{over_name!r} is not a declared object",
-                                step.line,
-                                step.col,
-                            )
-                    if step.probs_var is None or step.probs_var not in bound_vars:
-                        raise CompileError(
-                            f"grouped marginalize: categorical prior "
-                            f"{step.probs_var!r} is not bound in program scope",
-                            step.line,
-                            step.col,
-                        )
-                    for index_name in step.probs_indices:
-                        if index_name not in bound_vars:
-                            raise CompileError(
-                                f"grouped marginalize: categorical prior "
-                                f"{step.probs_var!r} is indexed by "
-                                f"{index_name!r}, which is not bound in "
-                                "program scope",
-                                step.line,
-                                step.col,
-                            )
-                    if not step.body_observes:
-                        raise CompileError(
-                            "grouped marginalize: the body must contain "
-                            "at least one observe step carrying its own "
-                            "`via <idx>` clause",
-                            step.line,
-                            step.col,
-                        )
+                if step.over_obj is not None or step.over_objs is not None:
+                    over_tuple = step.over_objs or (cast(str, step.over_obj),)
+                    assert step.body_observes is not None
                     is_product = len(over_tuple) > 1
-                    # Verify each per-observe index map's arity and
-                    # bound-ness in scope.  Each entry is either
-                    # single-index-map (``index_map_var`` set) or
-                    # product-index-map (``index_map_axes`` set
-                    # with length equal to ``len(over_tuple)``).
-                    nested_projections: dict[
-                        str, tuple[tuple[int, ...], tuple[int, ...]]
-                    ] = {}
+                    # Verify each observe's index map: one name for a single
+                    # plate, one per factor for a product plate. A name may be
+                    # a bound latent or host data the run gives.
                     for entry in step.body_observes:
-                        slot = entry.ll_slot
-                        map_var = entry.index_map_var
-                        map_axes = entry.index_map_axes
-                        if map_var is None and map_axes is None:
-                            # Nested-marginalize entry: the inner
-                            # block contributes one aggregate per
-                            # position of its own grouping plate,
-                            # which must be this block's plate or a
-                            # product with it as a factor; the
-                            # aggregates are summed along the
-                            # projection onto this block's plate.
-                            inner_groups = entry.inner_groups
-                            if inner_groups is None:
-                                raise CompileError(
-                                    "grouped marginalize: nested block "
-                                    f"at slot {slot!r} has no grouping plate",
-                                    step.line,
-                                    step.col,
-                                )
-                            inner_sizes = tuple(
-                                int(self._objects[name].size) for name in inner_groups
-                            )
-                            if all(name in inner_groups for name in over_tuple):
-                                nested_projections[slot] = (
-                                    inner_sizes,
-                                    tuple(
-                                        inner_groups.index(name) for name in over_tuple
-                                    ),
-                                )
-                                continue
-                            inner_extent = 1
-                            for size in inner_sizes:
-                                inner_extent *= size
-                            outer_extent = 1
-                            for name in over_tuple:
-                                outer_extent *= int(self._objects[name].size)
-                            if inner_extent != outer_extent:
-                                raise CompileError(
-                                    "grouped marginalize: an inner block "
-                                    f"grouped over {inner_groups!r} (extent "
-                                    f"{inner_extent}) nests in a block grouped "
-                                    f"over {over_tuple!r} (extent "
-                                    f"{outer_extent}), but the inner plate must "
-                                    "be an axis of the outer plate's extent or "
-                                    "a product with the outer plate as a factor",
-                                    step.line,
-                                    step.col,
-                                )
-                            # An axis of the same extent, identified
-                            # with the outer plate position by position.
-                            nested_projections[slot] = ((inner_extent,), (0,))
+                        if entry.inner_groups is not None:
                             continue
-                        if is_product:
-                            if map_axes is None or len(map_axes) != len(over_tuple):
-                                raise CompileError(
-                                    "grouped marginalize: observe writing "
-                                    f"to slot {slot!r} must declare a "
-                                    f"`via product(...)` clause of arity "
-                                    f"{len(over_tuple)} matching the "
-                                    "product grouping plate",
-                                    step.line,
-                                    step.col,
-                                )
-                            # Each axis, like a single ``via``, may name a
-                            # bound latent or host data supplied at
-                            # runtime through the observations dict.
-                        else:
-                            if map_axes is not None:
-                                raise CompileError(
-                                    "grouped marginalize: `via product(...)` "
-                                    "on an observe requires the marginalize "
-                                    "header to declare a product grouping "
-                                    "plate `over G * H * ...`",
-                                    step.line,
-                                    step.col,
-                                )
-                            # ``via`` may reference a bound latent OR a
-                            # host-data name supplied at runtime through
-                            # the observations dict (the per-row
-                            # index map is usually a `LongTensor` of
-                            # row->group indices the user owns).
-                    group_sizes = tuple(
-                        int(self._objects[name].size) for name in over_tuple
-                    )
-                    num_classes = step.class_size
-                    probs_var = step.probs_var
-                    probs_indices = step.probs_indices
-                    reduction = step.reduction or "logsumexp"
-                    parameterization = step.parameterization
-                    observe_specs = tuple(
-                        (entry.ll_slot, entry.index_map_var, entry.index_map_axes)
-                        for entry in step.body_observes
-                    )
-
-                    is_nested_inner = (
-                        step.body_ll_var is not None
-                        and step.body_ll_var != step.var_name
-                    )
-                    prior_classes = tuple(
-                        name
-                        for name in class_sizes
-                        if name != step.var_name
-                        and any(
-                            name in grouped_dependencies.get(binding, ())
-                            for binding in (probs_var, *probs_indices)
-                        )
-                    )
-                    slot_classes = {
-                        slot: tuple(
-                            name
-                            for name in class_sizes
-                            if name in grouped_dependencies.get(slot, ())
-                        )
-                        for slot, _, _ in observe_specs
-                    }
-                    reduction_classes = tuple(
-                        name
-                        for name in class_sizes
-                        if name == step.var_name
-                        or name in prior_classes
-                        or any(name in axes for axes in slot_classes.values())
-                    )
-                    reduction_sizes = tuple(
-                        class_sizes[name] for name in reduction_classes
-                    )
-
-                    def _marginalize_grouped_callable(
-                        env: dict,
-                        _specs: tuple[
-                            tuple[str, str | None, tuple[str, ...] | None], ...
-                        ] = observe_specs,
-                        _nested: dict[
-                            str, tuple[tuple[int, ...], tuple[int, ...]]
-                        ] = nested_projections,
-                        _probs: str = probs_var,
-                        _probs_indices: tuple[str, ...] = probs_indices,
-                        _sizes: tuple[int, ...] = group_sizes,
-                        _k: int = num_classes,
-                        _reduction: str = reduction,
-                        _parameterization: str = parameterization,
-                        _product: bool = is_product,
-                        _per_group: bool = is_nested_inner,
-                        _slot_classes=slot_classes,
-                        _class_names=reduction_classes,
-                        _class_sizes=reduction_sizes,
-                        _prior_classes=prior_classes,
-                        _latent=step.var_name,
-                    ) -> torch.Tensor:
-                        # Collect per-observe (ll, idx) pairs from
-                        # env, with the shape contract that each
-                        # ll's trailing axis is the class axis.
-                        ll_list: list[torch.Tensor] = []
-                        idx_list: list[torch.Tensor | tuple[torch.Tensor, ...]] = []
-                        for slot, map_var, map_axes in _specs:
-                            ll = env[slot]
-                            if slot in _nested:
-                                # The inner block's per-position
-                                # aggregates, summed along the
-                                # projection onto this block's plate
-                                # and shared across this block's
-                                # classes (the inner block has
-                                # already integrated its own latent).
-                                inner_sizes, kept_axes = _nested[slot]
-                                ll = _project_nested_aggregates(
-                                    ll, inner_sizes, kept_axes, slot
-                                )
-                            axes = _slot_classes[slot]
-                            source_sizes = dict(zip(axes, ll.shape[1:], strict=True))
-                            ll = ll.reshape(
-                                ll.shape[0],
-                                *(source_sizes.get(name, 1) for name in _class_names),
-                            ).expand(ll.shape[0], *_class_sizes)
-                            if ll.shape[-1] != _k:
-                                raise ValueError(
-                                    f"grouped marginalize: per-row "
-                                    f"per-class log-likelihood at slot "
-                                    f"{slot!r} must end with the class "
-                                    f"axis of size {_k}; got "
-                                    f"{tuple(ll.shape)}"
-                                )
-                            ll_list.append(ll)
-                            if map_axes is not None:
-                                idx_tuple = []
-                                for axis_name in map_axes:
-                                    idx = _index_map_tensor(env, axis_name)
-                                    if idx.dim() == 2 and idx.shape[-1] == 1:
-                                        idx = idx.squeeze(-1)
-                                    idx_tuple.append(idx.to(torch.long))
-                                idx_list.append(tuple(idx_tuple))
-                            elif map_var is not None:
-                                idx = _index_map_tensor(env, map_var)
-                                if idx.dim() == 2 and idx.shape[-1] == 1:
-                                    idx = idx.squeeze(-1)
-                                idx_list.append(idx.to(torch.long))
-                            else:
-                                # Nested-marginalize entry: the
-                                # aggregates already sit at this
-                                # block's positions, so the
-                                # index map is the identity.
-                                positions = torch.arange(
-                                    int(ll.shape[0]),
-                                    dtype=torch.long,
-                                    device=ll.device,
-                                )
-                                if _product:
-                                    idx_list.append(
-                                        tuple(torch.unravel_index(positions, _sizes))
-                                    )
-                                else:
-                                    idx_list.append(positions)
-                        probs = env[_probs]
-                        for index_name in _probs_indices:
-                            probs = probs[
-                                env[index_name].to(
-                                    device=probs.device, dtype=torch.long
-                                )
-                            ]
-                        log_prior = _categorical_log_prior(probs, _parameterization)
-                        if _prior_classes:
-                            # Conditional priors retain their named enclosing
-                            # class axes. Add the prior exactly once per group;
-                            # the reducer's shared prior is then the neutral zero.
-                            class_rank = len(_prior_classes)
-                            axis_sizes = dict(
-                                zip(
-                                    _prior_classes,
-                                    log_prior.shape[:class_rank],
-                                    strict=True,
-                                )
+                        map_axes = entry.index_map_axes
+                        if is_product and (
+                            map_axes is None or len(map_axes) != len(over_tuple)
+                        ):
+                            raise CompileError(
+                                "grouped marginalize: observe writing "
+                                f"to slot {entry.ll_slot!r} must declare a "
+                                f"`via product(...)` clause of arity "
+                                f"{len(over_tuple)} matching the "
+                                "product grouping plate",
+                                step.line,
+                                step.col,
                             )
-                            axis_sizes[_latent] = _k
-                            remaining = tuple(log_prior.shape[class_rank:-1])
-                            total_groups = math.prod(_sizes)
-                            if remaining:
-                                if remaining != _sizes:
-                                    raise ValueError(
-                                        "grouped marginalize: conditional prior "
-                                        f"group axes must be {_sizes}; got {remaining}"
-                                    )
-                                log_prior = log_prior.reshape(
-                                    *log_prior.shape[:class_rank], total_groups, _k
-                                ).movedim(class_rank, 0)
-                            else:
-                                log_prior = log_prior.unsqueeze(0)
-                            prior_rows = log_prior.reshape(
-                                log_prior.shape[0],
-                                *(axis_sizes.get(name, 1) for name in _class_names),
-                            ).expand(total_groups, *_class_sizes)
-                            positions = torch.arange(total_groups, device=probs.device)
-                            ll_list.append(prior_rows)
-                            idx_list.append(
-                                tuple(torch.unravel_index(positions, _sizes))
-                                if _product
-                                else positions
+                        if not is_product and map_axes is not None:
+                            raise CompileError(
+                                "grouped marginalize: `via product(...)` "
+                                "on an observe requires the marginalize "
+                                "header to declare a product grouping "
+                                "plate `over G * H * ...`",
+                                step.line,
+                                step.col,
                             )
-                            log_prior = log_prior.new_zeros(_k)
-                        # The block's latent is indexed by its grouping
-                        # plate: one class per group, drawn from that
-                        # group's prior row when the prior is a
-                        # ``(|G|, K)`` tensor and from the one ``(K,)``
-                        # prior otherwise. Every row an index map sends to
-                        # the group is scored under that one class, so the
-                        # rows' log-likelihoods are scatter-summed into the
-                        # group before the reduction over the class.
-                        result = marginalize_grouped(
-                            ll_list,
-                            idx_list,
-                            log_prior,
-                            _sizes if _product else _sizes[0],
-                            reduction=_reduction,
-                            per_group=_per_group,
-                        )
-                        # An inner block hands its per-position
-                        # aggregates to the enclosing block; the
-                        # outermost block contributes a scalar,
-                        # wrapped in length 1 so the joint
-                        # accumulator broadcasts cleanly.
-                        if result.dim() == 0:
-                            return result.reshape(1)
-                        return result
-
-                    # In a nested-marginalize context, the outer
-                    # block's _expand_bind_steps re-points
-                    # ``body_ll_var`` at the *outer* latent name so
-                    # the inner block's reduction output is bound
-                    # there (where the outer block's runtime
-                    # callable expects to find it). Otherwise we
-                    # emit a fresh ``_marg_<var>`` slot.
-                    # Outer block: emit a score step (contributes to
-                    # log_joint). Inner block (when body_ll_var
-                    # re-points at the outer's expected slot): emit a
-                    # let so the outer's callable reads the inner's
-                    # reduction from env without double-scoring.
+                    block = open_blocks.pop()
+                    assert block.latent == step.var_name
+                    axes = block.class_axes(class_sizes)
+                    block.bind_classes({name: class_sizes[name] for name in axes})
+                    enclosing = tuple(name for name in axes if name != step.var_name)
+                    outer = block.parent
                     marg_name = (
-                        step.body_ll_var
-                        if is_nested_inner
-                        else f"_marg_{step.var_name}"
+                        f"_marg_{step.var_name}"
+                        if outer is None
+                        else cast(str, step.body_ll_var)
                     )
-                    grouped_dependencies[marg_name] = frozenset(
-                        name for name in reduction_classes if name != step.var_name
-                    )
+                    grouped_dependencies[marg_name] = frozenset(enclosing)
                     bound_vars[marg_name] = None
-                    marginal_reads: list[str] = [probs_var, *probs_indices]
-                    for slot, map_var, map_axes in observe_specs:
-                        marginal_reads.append(slot)
-                        if map_var is not None:
-                            marginal_reads.append(map_var)
-                        if map_axes is not None:
-                            marginal_reads.extend(map_axes)
+                    if outer is not None:
+                        # A block inside another hands its aggregates, one
+                        # per unit, to the block around it, which scores.
+                        def _inner_weights(
+                            env: dict[str, torch.Tensor],
+                            _block: GroupedBlock = block,
+                        ) -> torch.Tensor:
+                            """The log weight of each unit at each enclosing class.
+
+                            Parameters
+                            ----------
+                            env : dict[str, torch.Tensor]
+                                The bindings.
+
+                            Returns
+                            -------
+                            torch.Tensor
+                                ``(units, *enclosing classes)``.
+                            """
+                            return _block.unit_weights(env)
+
+                        outer.add(
+                            BlockEntry(
+                                slot=marg_name,
+                                classes=enclosing,
+                                block=block,
+                                projection=block.projection,
+                            )
+                        )
+                        steps.append(
+                            Let(
+                                name=marg_name,
+                                value=_compiled_step(_inner_weights, block.reads),
+                                under=_under(
+                                    lambda env, run, _block=block: _block.unit_weights(
+                                        env, conditions=run
+                                    ),
+                                    block.reads,
+                                ),
+                            )
+                        )
+                        continue
+
+                    def _unit_score(
+                        env: dict[str, torch.Tensor],
+                        _block: GroupedBlock = block,
+                    ) -> torch.Tensor:
+                        """The block's score.
+
+                        Parameters
+                        ----------
+                        env : dict[str, torch.Tensor]
+                            The bindings.
+
+                        Returns
+                        -------
+                        torch.Tensor
+                            ``(1,)``.
+                        """
+                        return _block.score(env)
+
                     steps.append(
-                        (
-                            Score(
-                                name=marg_name,
-                                role="likelihood",
-                                score=_compiled_step(
-                                    _marginalize_grouped_callable, marginal_reads
-                                ),
-                            )
-                            if not is_nested_inner
-                            else Let(
-                                name=marg_name,
-                                value=_compiled_step(
-                                    _marginalize_grouped_callable, marginal_reads
-                                ),
-                            )
+                        Score(
+                            name=marg_name,
+                            role="likelihood",
+                            score=_compiled_step(_unit_score, block.reads),
+                            units=block.factorization(),
+                            under=_under(block.score, block.reads),
                         )
                     )
                     continue
 
                 raise CompileError(
-                    f"marginalize {target_var!r}: an ungrouped marginalize "
+                    f"marginalize {step.var_name!r}: an ungrouped marginalize "
                     "block must reach compilation with its body captured "
                     "(see `_expand_bind_steps`); this step carries neither a "
                     "grouping plate nor a stashed body, which the current "
@@ -6557,17 +5983,45 @@ class _ProgramsMixin:
             return total.reshape(1)
 
         bound_vars[step.name] = None
+        score = _compiled_step(
+            _chain_marginal,
+            chain_reads,
+            _first_obstacle(
+                *(fn for _, fn in (*prefix, *body_lets)),
+                *(family for family, *_ in emissions),
+            ),
+            _shared_reads(fn for _, fn in (*prefix, *body_lets)),
+        )
+        # The states of a chain depend on one another, so the positions of
+        # its responses are one unit.
+        responses = {
+            source_key if response == cell.entry else response: entry_width
+            if response == cell.entry
+            else None
+            for _, _, response, _ in emissions
+        }
         return Score(
             name=step.name,
             role="likelihood",
-            score=_compiled_step(
-                _chain_marginal,
-                chain_reads,
-                _first_obstacle(
-                    *(fn for _, fn in (*prefix, *body_lets)),
-                    *(family for family, *_ in emissions),
+            score=score,
+            units=UnitFactorization(
+                latent=cell.latent,
+                axes=(),
+                sizes=(),
+                weights=score,
+                raw_weights=score,
+                rows=tuple(
+                    UnitRows(
+                        response=name,
+                        units=_single_unit(name, width),
+                        one_row_per_unit=(
+                            "The states of the chain depend on one another, so no "
+                            "change that keeps the chain gives each position a log "
+                            "likelihood of its own"
+                        ),
+                    )
+                    for name, width in responses.items()
                 ),
-                _shared_reads(fn for _, fn in (*prefix, *body_lets)),
             ),
         )
 
@@ -6673,6 +6127,101 @@ class _ProgramsMixin:
             refusal=self._call_refusals.get(decl.name),
         )
 
+    def _open_grouped_block(
+        self,
+        step: GroupedMarginalizeStep,
+        parent: GroupedBlock | None,
+        class_sizes: Mapping[str, int],
+        dependencies: Mapping[str, frozenset[str]],
+        bound_vars: Mapping[str, AnySpace | None],
+    ) -> GroupedBlock:
+        """Describe a grouped block whose body is about to be compiled.
+
+        Parameters
+        ----------
+        step : GroupedMarginalizeStep
+            The block.
+        parent : GroupedBlock or None
+            The block around it.
+        class_sizes : Mapping[str, int]
+            The extent of each latent bound so far.
+        dependencies : Mapping[str, frozenset[str]]
+            The latents each binding depends on.
+        bound_vars : Mapping[str, AnySpace | None]
+            The names bound so far.
+
+        Returns
+        -------
+        GroupedBlock
+            The block, without its contributions.
+
+        Raises
+        ------
+        CompileError
+            If an object of the grouping plate is not declared, the class
+            prior or one of its indices is not bound, or the plate lies in
+            the enclosing block's in no way the compiler reads.
+        """
+        axes = step.over_objs or (cast(str, step.over_obj),)
+        for name in axes:
+            if name not in self._objects:
+                raise CompileError(
+                    f"grouped marginalize: `over` object {name!r} is not a "
+                    "declared object",
+                    step.line,
+                    step.col,
+                )
+        if step.probs_var is None or step.probs_var not in bound_vars:
+            raise CompileError(
+                f"grouped marginalize: categorical prior {step.probs_var!r} is "
+                "not bound in program scope",
+                step.line,
+                step.col,
+            )
+        for name in step.probs_indices:
+            if name not in bound_vars:
+                raise CompileError(
+                    f"grouped marginalize: categorical prior {step.probs_var!r} "
+                    f"is indexed by {name!r}, which is not bound in program scope",
+                    step.line,
+                    step.col,
+                )
+        sizes = tuple(int(self._objects[name].size) for name in axes)
+        projection = None
+        if parent is not None:
+            projection = group_projection(axes, sizes, parent.axes, parent.sizes)
+            if projection is None:
+                raise CompileError(
+                    f"grouped marginalize: an inner block grouped over {axes!r} "
+                    f"(extent {math.prod(sizes)}) nests in a block grouped over "
+                    f"{parent.axes!r} (extent {parent.units}), but the inner "
+                    "plate must be an axis of the outer plate's extent or a "
+                    "product with the outer plate as a factor",
+                    step.line,
+                    step.col,
+                )
+        return GroupedBlock(
+            latent=step.var_name,
+            class_count=step.class_size,
+            axes=axes,
+            sizes=sizes,
+            prior=step.probs_var,
+            prior_indices=step.probs_indices,
+            prior_classes=tuple(
+                name
+                for name in class_sizes
+                if name != step.var_name
+                and any(
+                    name in dependencies.get(binding, ())
+                    for binding in (step.probs_var, *step.probs_indices)
+                )
+            ),
+            parameterization=step.parameterization,
+            reduction=cast(Reduction, step.reduction or "logsumexp"),
+            parent=parent,
+            projection=projection,
+        )
+
     def _compile_ungrouped_marginalize(
         self,
         step: GroupedMarginalizeStep,
@@ -6681,6 +6230,7 @@ class _ProgramsMixin:
             str,
             tuple[DrawArgName | DrawArgIndex | str, ...],
             tuple[ProgramStep, ...],
+            ObjectExpr | None,
         ],
         steps: list[Step],
         bound_vars: dict[str, AnySpace | None],
@@ -6709,7 +6259,7 @@ class _ProgramsMixin:
         discrete one included, has no finite support, and its marginal
         is an integral rather than a sum.
         """
-        latent_name, prior_family, prior_args, body_steps = pending
+        latent_name, prior_family, prior_args, body_steps, index = pending
 
         # Split the body into its deterministic `let` prefix and the
         # single terminal `observe`.
@@ -6881,137 +6431,104 @@ class _ProgramsMixin:
                 step.line,
                 step.col,
             )
-        reduction = step.reduction or "logsumexp"
+        # A family with a fixed set of atoms has no alphabet for the index to
+        # name, so the index replicates the latent, one per element. The
+        # index of a class family names its classes, and the latent is one.
+        unit_axes: tuple[str, ...] = ()
+        unit_sizes: tuple[int, ...] = ()
+        if _BERNOULLI and index is not None:
+            plate = self._resolve_plate_index(
+                index, f"marginalize {latent_name!r}", step.line, step.col
+            )
+            unit_axes = (self._object_expr_text(index),)
+            unit_sizes = (int(plate.size),)
+        observation: EnumeratedObservation | None = None
+        if obs_family is not None and response_var is not None:
+            assert observe_step is not None
+            rows: int | None = unit_sizes[0] if unit_sizes else None
+            index_map: str | None = None
+            if isinstance(observe_step, VectorisedObserveStep):
+                rows = int(
+                    self._resolve_plate_index(
+                        observe_step.index_set,
+                        f"indexed observe {response_var!r}",
+                        step.line,
+                        step.col,
+                    ).size
+                )
+                if observe_step.index_map_axes is not None:
+                    raise CompileError(
+                        f"observation {response_var!r} maps its rows to a product "
+                        f"of objects, and the block over {latent_name!r} is not "
+                        "grouped over one",
+                        observe_step.line,
+                        observe_step.col,
+                    )
+                index_map = observe_step.index_map_var if unit_axes else None
+            extents = self._value_extents_stack[-1] if self._value_extents_stack else {}
+            unit_indexed = {
+                name for name, shape in extents.items() if shape[:1] == unit_sizes
+            }
+            latent_dependent = {latent_name}
+            for name, fn in body_lets:
+                reads = reads_of(fn) or frozenset()
+                if reads & unit_indexed:
+                    unit_indexed.add(name)
+                if reads & latent_dependent:
+                    latent_dependent.add(name)
+            arguments = set(_arg_names(obs_args or ()))
+            observation = EnumeratedObservation(
+                response=response_var,
+                family=obs_family,
+                arguments=obs_args,
+                shared_vector=shared_vector_theta,
+                row_axis=self._object_expr_text(observe_step.index_set)
+                if isinstance(observe_step, VectorisedObserveStep)
+                else (unit_axes[0] if unit_axes else None),
+                placeholder=None
+                if rows is None
+                else torch.zeros(
+                    rows, *observed_array_shape, *_response_event(obs_family)
+                ),
+                array_shape=observed_array_shape,
+                index_map=index_map,
+                unit_names=frozenset(arguments & unit_indexed),
+                latent_names=frozenset(arguments & latent_dependent),
+                units=math.prod(unit_sizes),
+                weights=observation_weights,
+                event=observe_step.event,
+            )
+        body_names = {latent_name, *(name for name, _ in body_lets)}
+        body_reads: set[str] = set()
+        for _, fn in body_lets:
+            declared = reads_of(fn)
+            assert declared is not None
+            body_reads |= declared
+        block = EnumeratedBlock(
+            latent=latent_name,
+            axes=unit_axes,
+            sizes=unit_sizes,
+            prior=prior_arg,
+            binary=_BERNOULLI,
+            parameterization=prior_parameterization,
+            reduction=cast(Reduction, step.reduction or "logsumexp"),
+            lets=tuple(body_lets),
+            observation=observation,
+            body_reads=frozenset(body_reads - body_names),
+        )
 
-        def _ungrouped_marginal(
-            env: dict[str, torch.Tensor],
-            _latent: str = latent_name,
-            _lets: tuple[tuple[str, Callable], ...] = tuple(body_lets),
-            _obs_family: ContinuousMorphism | None = obs_family,
-            _obs_args: tuple | None = obs_args,
-            _response: str | None = response_var,
-            _prior_arg: StepArgument = prior_arg,
-            _categorical: bool = _CATEGORICAL,
-            _parameterization: str | None = prior_parameterization,
-            _reduction: str = reduction,
-            _shared_vector: bool = shared_vector_theta,
-            _weights: str | float | None = observation_weights,
-            _event=observe_step.event if observe_step is not None else None,
-            _plated: bool = isinstance(observe_step, VectorisedObserveStep),
-            _array_shape: tuple[int, ...] = observed_array_shape,
-        ) -> torch.Tensor:
-            probs = _lookup_arg(env, _prior_arg)
-            if _categorical:
-                class_count = int(probs.shape[-1])
-                class_values: list[torch.Tensor] = [
-                    torch.tensor(k, dtype=torch.long, device=probs.device)
-                    for k in range(class_count)
-                ]
-                log_prior = _categorical_log_prior(probs, _parameterization)
-            else:
-                class_values = [
-                    torch.zeros((), dtype=probs.dtype, device=probs.device),
-                    torch.ones((), dtype=probs.dtype, device=probs.device),
-                ]
-                log_prior = _binary_log_prior(probs, _parameterization)
-            if _obs_family is None or _response is None:
-                # No observed likelihood gates the latent: the block
-                # contributes only the reduced log-prior over the
-                # support (a zero per-class log-likelihood).
-                weighted = log_prior
-            else:
-                response = env[_response]
-                ll_cols: list[torch.Tensor] = []
-                for value in class_values:
-                    local = dict(env)
-                    local[_latent] = value
-                    for name, fn in _lets:
-                        local[name] = fn(local)
-                    theta = _observation_parameter(local, _obs_args, _shared_vector)
-                    if _weights is None and _event is None:
-                        ll_cols.append(_obs_family.log_prob(theta, response))
-                    else:
-                        from quivers.effects._observation_weights import (
-                            WeightedObservation,
-                        )
-                        from quivers.effects._observation_events import (
-                            RecordedObservation,
-                            resolve_event,
-                        )
-
-                        declared = (
-                            VectorisedObserve(
-                                _obs_family, response, array_shape=_array_shape
-                            )
-                            if _plated
-                            else _obs_family
-                        )
-                        family = declared
-                        if _event is not None:
-                            family = RecordedObservation(
-                                family, declared, resolve_event(_event, local)
-                            )
-                        if _weights is not None:
-                            weights = (
-                                local[_weights]
-                                if isinstance(_weights, str)
-                                else _weights
-                            )
-                            family = WeightedObservation(
-                                family, declared, weights, theta
-                            )
-                        pointwise = getattr(family, "log_prob_pointwise", None)
-                        ll_cols.append(
-                            pointwise(theta, response)
-                            if callable(pointwise)
-                            else family.log_prob(theta, response)
-                        )
-                per_class = torch.stack(ll_cols, dim=-1)
-                if log_prior.dim() < per_class.dim():
-                    # One latent for the whole body. The block
-                    # declares no index and no grouping plate, so the
-                    # rows of the enclosed observe are conditioned on
-                    # a single draw and the pushforward reduces the
-                    # body's *accumulated* log-likelihood
-                    # (`docs/semantics/programs.md` §2.6), which is
-                    # `aggr_k [log pi(k) + sum_n l(n, k)]`. Reducing
-                    # per row and summing would instead give each row
-                    # its own draw, which is what an indexed
-                    # `marginalize c : A` or a grouping `over =`
-                    # clause asks for.
-                    row_axes = tuple(range(per_class.dim() - 1))
-                    weighted = log_prior + per_class.sum(dim=row_axes)
-                else:
-                    # A per-row prior carries the rows' own latents,
-                    # so each row reduces on its own.
-                    weighted = log_prior + per_class
-            if _reduction == "logsumexp":
-                per_row = torch.logsumexp(weighted, dim=-1)
-            elif _reduction == "sum":
-                per_row = weighted.sum(dim=-1)
-            else:
-                per_row = weighted.mean(dim=-1)
-            return per_row.sum().reshape(1)
-
-        # Emit the block's runtime steps in order: the latent
-        # coordinate, the body's deterministic lets, the score-
-        # suppressed observe, then the integrated marginal score.
-        #
-        # The latent is bound as a deterministic let whose callable
-        # draws from the prior. A forward trace still produces a
-        # concrete coordinate (so the terminal observe can sample a
-        # response and synthetic-data generation stays intact), but the
-        # site reads as deterministic rather than as a free latent: its
-        # density is carried by the marginal score, and the reference
-        # probe must not flag it as an unclamped, resampled latent. The
-        # observe is wrapped in a `MarginalizedFactor` so its clamped /
-        # sampled response contributes nothing to the joint either.
+        # The block's steps in order: the latent, the body's deterministic
+        # lets, the response, then the integrated score. A run draws the
+        # latent from its prior, so the lets and a drawn response agree with
+        # one value of it. The latent is a deterministic binding rather than
+        # a site, since the score holds its density, and the response is a
+        # site that scores nothing for the same reason.
         def _latent_prior_sample(
             env: dict[str, torch.Tensor],
             _prior: ContinuousMorphism = prior_morph,
-            _arg: StepArgument = prior_arg,
+            _block: EnumeratedBlock = block,
         ) -> torch.Tensor:
-            return _prior.rsample(_lookup_arg(env, _arg))
+            return _prior.rsample(_block.prior_value(env))
 
         bound_vars[latent_name] = None
         steps.append(
@@ -7022,39 +6539,52 @@ class _ProgramsMixin:
                 ),
             )
         )
-        marginal_reads: set[str] = {*_arg_names((prior_arg,)), "_x_input"}
-        if isinstance(observation_weights, str):
-            marginal_reads.add(observation_weights)
-        if observe_step is not None and observe_step.event is not None:
-            marginal_reads.update(observe_step.event.names())
         for name, fn in body_lets:
             bound_vars[name] = None
             steps.append(Let(name=name, value=fn))
-            declared = reads_of(fn)
-            assert declared is not None
-            marginal_reads |= declared
-        if obs_family is not None and response_var is not None:
-            bound_vars[response_var] = None
+        if observation is not None:
+            assert obs_family is not None
+            bound_vars[observation.response] = None
             steps.append(
                 Observe(
-                    names=(response_var,),
-                    morphism=MarginalizedFactor(obs_family),
-                    args=obs_args,
-                    event=observe_step.event if observe_step is not None else None,
+                    names=(observation.response,),
+                    morphism=MarginalizedFactor(
+                        obs_family,
+                        len(_response_event(obs_family))
+                        if observation.placeholder is None
+                        else observation.placeholder.dim(),
+                    ),
+                    args=(),
+                    law=block.response_law(),
                 )
             )
-            marginal_reads.add(response_var)
-            if obs_args is not None:
-                marginal_reads |= set(_arg_names(obs_args))
         marg_name = f"_marg_{latent_name}"
         bound_vars[marg_name] = None
+
+        def _enumerated_score(
+            env: dict[str, torch.Tensor], _block: EnumeratedBlock = block
+        ) -> torch.Tensor:
+            """The block's score.
+
+            Parameters
+            ----------
+            env : dict[str, torch.Tensor]
+                The bindings.
+
+            Returns
+            -------
+            torch.Tensor
+                ``(1,)``.
+            """
+            return _block.score(env)
+
         steps.append(
             Score(
                 name=marg_name,
                 role="likelihood",
                 score=_compiled_step(
-                    _ungrouped_marginal,
-                    marginal_reads,
+                    _enumerated_score,
+                    block.score_reads,
                     _first_obstacle(
                         *(fn for _, fn in body_lets),
                         *(() if obs_family is None else (obs_family,)),
@@ -7066,6 +6596,8 @@ class _ProgramsMixin:
                         else set()
                     ),
                 ),
+                units=block.factorization(),
+                under=_under(block.score, block.score_reads),
             )
         )
 

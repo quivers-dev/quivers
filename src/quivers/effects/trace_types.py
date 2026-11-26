@@ -14,6 +14,7 @@ import torch
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.effects.sites import TorchSampleable
+from quivers.effects.units import SiteUnits
 
 type SiteAddress = tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
 """The kernel's dynamic address of one occurrence of a site."""
@@ -52,6 +53,9 @@ class SampleSite(ValueModel):
         it.
     metadata : dict[str, HeldValue]
         Annotations handlers attached to the site.
+    units : tuple[SiteUnits, ...]
+        For a score step that declares a factorization, its units in each
+        of the runs the trace holds; empty for any other site.
     """
 
     name: str
@@ -70,6 +74,9 @@ class SampleSite(ValueModel):
     )
     metadata: dict[str, HeldValue] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    units: tuple[SiteUnits, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     @dx.model_validator()

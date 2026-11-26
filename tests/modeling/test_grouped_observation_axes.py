@@ -641,7 +641,7 @@ export main
 
 @pytest.mark.parametrize("kept_axes", [(0,), (1,), (1, 0)])
 def test_nested_group_projection_preserves_unequal_enclosing_class_axes(kept_axes):
-    from quivers.dsl.compiler.programs import _project_nested_aggregates
+    from quivers.dsl.compiler._marginal_blocks import _project_nested_aggregates
 
     values = torch.arange(48, dtype=torch.float64).reshape(6, 2, 4).requires_grad_()
     actual = _project_nested_aggregates(values, (2, 3), kept_axes, "nested")
