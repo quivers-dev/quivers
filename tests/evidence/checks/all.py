@@ -6,6 +6,7 @@ from functools import partial
 
 from tests.evidence import runs
 from tests.evidence.checks import (
+    checked,
     closure,
     consumers,
     contraction,
@@ -22,6 +23,7 @@ from tests.evidence.checks._registry import CHECKS, add
 from tests.evidence import newton_controls, span_controls
 
 MODULES = (
+    checked,
     closure,
     consumers,
     contraction,

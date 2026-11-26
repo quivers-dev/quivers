@@ -251,6 +251,29 @@ export drawn
 """
 """A program that draws a tree."""
 
+FLIPS = """
+instance random : Random
+instance score : Score
+object Unit : FinSet 1
+object B : FinSet 2
+define flips(n : Int) : Int !{random, score} =
+    if n <= 0 then
+        return 0
+    else
+        let c <- perform random.sample[Bool](site("coin"), Bernoulli(0.3))
+        if c then
+            let rest <- flips(n - 1)
+            return rest + 1
+        else
+            return 0
+program counted : Unit -> B
+    sample first <- Bernoulli(probs=0.6)
+    let heads <- flips(2)
+    return first
+export counted
+"""
+"""A program whose recursion flips a coin until a tail, at most twice."""
+
 SOURCES: dict[str, str] = {
     "lexical": LEXICAL,
     "normalized": NORMALIZED,
@@ -269,6 +292,7 @@ SOURCES: dict[str, str] = {
     "parsed": PARSED,
     "recursive": RECURSIVE,
     "structured": STRUCTURED,
+    "flips": FLIPS,
 }
 """The sources by name."""
 

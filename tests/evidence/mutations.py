@@ -1017,6 +1017,77 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
+        name="machine-occurrences-share-one-draw",
+        defect_class="effect sharing",
+        provenance="a drawing handler keys its draws by label, so every "
+        "occurrence of a site in a recursion reuses the first draw",
+        target=f"{BUILTINS}:draw_scoring_handler",
+        rewrites=(
+            Rewrite(
+                old='    definition = _handler_def(\n        "Random.draw-scoring",',
+                new='    shared = {}\n    definition = _handler_def(\n        "Random.draw-scoring",',
+            ),
+            Rewrite(
+                old="            else _default_draw(sampleable)\n",
+                new="            else shared.setdefault(site, _default_draw(sampleable))\n",
+            ),
+        ),
+        also_in=("quivers.effects.checked_program",),
+        rejected_by=("checked/forward/flips",),
+        min_effect=0.036,
+    ),
+    Mutation(
+        name="machine-draw-scored-twice",
+        defect_class="effect sharing",
+        provenance="a drawing handler sends one draw's density twice, so the "
+        "joint holds the draw as two",
+        target=f"{BUILTINS}:draw_scoring_handler",
+        rewrites=(
+            Rewrite(
+                old='            role="draw-score",\n        )\n',
+                new=(
+                    '            role="draw-score",\n        )\n'
+                    "        _emit_score(context, request, score_instance, "
+                    "_log_density(sampleable, value), weight_validator, "
+                    'role="draw-score-repeated")\n'
+                ),
+            ),
+        ),
+        also_in=("quivers.effects.checked_program",),
+        rejected_by=("checked/forward/flips",),
+        min_effect=0.17,
+    ),
+    Mutation(
+        name="machine-occurrence-address-reused",
+        defect_class="site address",
+        provenance="a trace names every occurrence of a site by its label, so a "
+        "later occurrence takes the earlier one's address",
+        target="quivers.effects.trace_handler:_occurrences",
+        rewrites=(
+            Rewrite(
+                old='named.append(site.with_(name=f"{site.name}@{occurrence}"))',
+                new="named.append(site)",
+            ),
+        ),
+        rejected_by=("checked/sites/flips",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="machine-density-detached",
+        defect_class="gradient path",
+        provenance="a tensor backend scores a draw without the gradient of its "
+        "arguments and its point",
+        target="quivers.continuous.tensor_backend:TensorBackend.log_prob",
+        rewrites=(
+            Rewrite(
+                old="return density.to(distribution.numbers.real_dtype)",
+                new="return density.detach().to(distribution.numbers.real_dtype)",
+            ),
+        ),
+        rejected_by=("evaluator/gradient/program",),
+        min_effect=1.0,
+    ),
+    Mutation(
         name="replayed-site-dropped",
         defect_class="site address",
         provenance="a replay that loses one recorded site draws it again",
