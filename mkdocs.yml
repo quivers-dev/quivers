@@ -300,6 +300,7 @@ nav:
     - Core:
       - Overview: api/core/objects.md
       - Algebras: api/core/algebras.md
+      - Laws: api/core/laws.md
       - Morphisms: api/core/morphisms.md
       - Tensor Operations: api/core/tensor_ops.md
       - Utilities: api/core/util.md

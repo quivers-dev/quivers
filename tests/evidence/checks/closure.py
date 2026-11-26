@@ -15,12 +15,18 @@ from quivers.core.algebras import (
     LogProbAlgebra,
     MarkovAlgebra,
     MaxPlusAlgebra,
+    ClosureWork,
     RealAlgebra,
     Semiring,
+    Star,
 )
 from quivers.core.morphisms import observed
 from quivers.core.objects import CoproductSet, FinSet
-from quivers.stochastic._kleene import DivergentClosureError, kleene_star
+from quivers.stochastic._kleene import (
+    DivergentClosureError,
+    UndecidedClosureError,
+    kleene_star,
+)
 from quivers.stochastic.semiring import (
     BOOLEAN,
     COUNTING,
@@ -37,7 +43,7 @@ from tests.evidence.compare import (
     compare_gradients,
     compare_tensor,
 )
-from tests.evidence.oracles import closed_forms, exact
+from tests.evidence.oracles import closed_forms, exact, gradients
 from tests.evidence.problems import logarithm
 
 MATRICES: dict[str, tuple[tuple[str, ...], ...]] = {
@@ -71,6 +77,7 @@ DIVERGENT: dict[str, tuple[tuple[str, ...], ...]] = {
     "cycle_at_one": (("0", "2"), ("1/2", "0")),
 }
 """Nonnegative matrices whose powers do not sum to a finite value."""
+
 
 CLOSURES: dict[str, ChartSemiring] = {
     "logprob": LOG_PROB,
@@ -464,7 +471,10 @@ def check_trace_refuses_signed() -> None:
         If a trace is built or the diagnostic differs.
     """
     algebra = RealAlgebra()
-    wanted = f"no coproduct Kleene-star trace is declared for {algebra!r}"
+    wanted = (
+        f"no coproduct Kleene-star trace is declared for {algebra!r}: it does not "
+        "establish a closure"
+    )
     try:
         KleeneStarTrace(algebra)
     except TypeError as refusal:
@@ -472,6 +482,288 @@ def check_trace_refuses_signed() -> None:
             return
         raise Mismatch("refusal", math.inf, str(refusal)) from refusal
     raise Mismatch("refusal", math.inf, "a trace over the signed reals was built")
+
+
+class Forwarded(ChartSemiring, Star):
+    """A semiring that forwards every operation, its closure too, to the log semiring."""
+
+    @property
+    def name(self) -> str:
+        """A name of its own.
+
+        Returns
+        -------
+        str
+            The name.
+        """
+        return "ForwardedLogProb"
+
+    def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Forward a product.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            The first factor.
+        b : torch.Tensor
+            The second factor.
+
+        Returns
+        -------
+        torch.Tensor
+            The product.
+        """
+        return LOG_PROB.tensor_op(a, b)
+
+    def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Forward a reduction.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The terms.
+        dim : int or tuple of int
+            The axes.
+
+        Returns
+        -------
+        torch.Tensor
+            The sum.
+        """
+        return LOG_PROB.join(t, dim)
+
+    def join_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Forward a binary sum.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            The first term.
+        b : torch.Tensor
+            The second term.
+
+        Returns
+        -------
+        torch.Tensor
+            The sum.
+        """
+        return LOG_PROB.join_pair(a, b)
+
+    def meet(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Forward a meet.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The terms.
+        dim : int or tuple of int
+            The axes.
+
+        Returns
+        -------
+        torch.Tensor
+            The meet.
+        """
+        return LOG_PROB.meet(t, dim)
+
+    def negate(self, t: torch.Tensor) -> torch.Tensor:
+        """Forward a negation.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The values.
+
+        Returns
+        -------
+        torch.Tensor
+            The negation.
+        """
+        return LOG_PROB.negate(t)
+
+    def contains(self, t: torch.Tensor) -> torch.Tensor:
+        """Forward membership.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The values.
+
+        Returns
+        -------
+        torch.Tensor
+            Membership in the log carrier.
+        """
+        return LOG_PROB.contains(t)
+
+    @property
+    def zero(self) -> float:
+        """The forwarded zero.
+
+        Returns
+        -------
+        float
+            The zero.
+        """
+        return LOG_PROB.zero
+
+    @property
+    def unit(self) -> float:
+        """The forwarded unit.
+
+        Returns
+        -------
+        float
+            The unit.
+        """
+        return LOG_PROB.unit
+
+    @property
+    def star_domain(self) -> str:
+        """The forwarded domain.
+
+        Returns
+        -------
+        str
+            The domain of the log semiring's closure.
+        """
+        return LOG_PROB.star_domain
+
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
+        """Forward a closure.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            The matrix.
+
+        Returns
+        -------
+        tuple of (torch.Tensor, ClosureWork)
+            The closure and its work.
+        """
+        return LOG_PROB.star_with_work(matrix)
+
+
+#: A cycle whose weights, as exact numbers of float64, sum to zero, while
+#: their sum from left to right is the spacing of float64 near two fifths.
+ROUNDED = (0.2, 0.4, -0.2, -0.4)
+
+
+def rounded_cycle(weights: tuple[float, ...]) -> torch.Tensor:
+    """A max-plus matrix with one cycle.
+
+    Parameters
+    ----------
+    weights : tuple of float
+        The weights along the cycle.
+
+    Returns
+    -------
+    torch.Tensor
+        The matrix.
+    """
+    size = len(weights)
+    matrix = torch.full((size, size), -math.inf, dtype=torch.float64)
+    for state, weight in enumerate(weights):
+        matrix[state, (state + 1) % size] = weight
+    return matrix
+
+
+def check_rounded_zero_cycle() -> None:
+    """Compare the closure of a cycle whose exact score is zero.
+
+    The best path from ``i`` to ``j`` goes forward along the cycle, so its
+    score is the exact sum of the weights between them; going round adds
+    zero. Rounding makes one order of the sum positive, which must not
+    make the closure divergent.
+    """
+    size = len(ROUNDED)
+    wanted = torch.tensor(
+        [
+            [
+                float(
+                    sum(
+                        (
+                            Fraction(ROUNDED[(i + step) % size])
+                            for step in range((j - i) % size)
+                        ),
+                        Fraction(0),
+                    )
+                )
+                for j in range(size)
+            ]
+            for i in range(size)
+        ],
+        dtype=torch.float64,
+    )
+    compare_tensor(
+        kleene_star(rounded_cycle(ROUNDED), VITERBI),
+        wanted,
+        Accuracy(domain="log", operations=4 * size, magnitude=2.0),
+        "best-path closure of a cycle of exact score zero",
+    )
+
+
+def check_zero_entry_gradient() -> None:
+    """Compare the derivative of a closure at entries that are zero now.
+
+    The weight of the walks from 0 to 1 in ``[[a, b], [0, 0]]`` is
+    ``b / (1 - a)``; at ``a = b = 0`` its derivative in the entry from 0
+    to 1 is the one the gradient oracle declares.
+    """
+    case = gradients.BOUNDARY_CASES[0]
+    for semiring in ("counting",):
+        leaf = torch.zeros(2, 2, dtype=torch.float64, requires_grad=True)
+        value = kleene_star(leaf, CLOSURES[semiring])[0, 1]
+        (found,) = torch.autograd.grad(value, leaf)
+        compare_gradients(
+            {"a": found[0, 0], "b": found[0, 1]},
+            dict(zip(("a", "b"), case.gradient, strict=True)),
+            Accuracy(domain="linear", operations=8),
+            f"{semiring} closure at zero entries",
+        )
+
+
+def check_undecided_cycle() -> None:
+    """Require a cycle whose weight rounding cannot place to be refused as undecided.
+
+    The cycle 2, 0, 1 has log weights ``1``, ``-2^-60`` and ``-1``;
+    elimination of state 0 rounds the partial sum ``1 - 2^-60`` to ``1``,
+    so the cycle's computed log weight is ``0``.
+    The exact one is ``-2^-60``: the closure converges, and no
+    computation in float64 with these roundings can tell. The closure
+    has to refuse as undecided, not return a number and not call the
+    cycle divergent.
+    """
+    matrix = torch.full((3, 3), -math.inf, dtype=torch.float64)
+    matrix[2, 0], matrix[0, 1], matrix[1, 2] = 1.0, -(2.0**-60), -1.0
+    try:
+        value = kleene_star(matrix, LOG_PROB)
+    except UndecidedClosureError:
+        return
+    except DivergentClosureError as refusal:
+        raise Mismatch(
+            "refusal", math.inf, "a convergent cycle was refused"
+        ) from refusal
+    raise Mismatch(
+        "refusal", math.inf, f"an undecided closure returned {value.tolist()}"
+    )
+
+
+def check_forwarded_closure() -> None:
+    """Require a semiring with the closure capability to have a closure.
+
+    The forwarding semiring is of no class the library names; it has the
+    capability, so its closure is the log semiring's.
+    """
+    matrix = torch.tensor([[-1.0]], dtype=torch.float64)
+    compare_tensor(
+        kleene_star(matrix, Forwarded()),
+        torch.tensor([[-math.log(1 - math.exp(-1))]], dtype=torch.float64),
+        Accuracy(domain="log", operations=12),
+        "closure in a forwarding semiring",
+    )
 
 
 def _register() -> None:
@@ -488,13 +780,12 @@ def _register() -> None:
                 "Q7",
                 partial(check_star, name, semiring),
             )
-        if semiring != "viterbi":
-            add(
-                f"closure/empty/{semiring}",
-                "kleene-star",
-                "Q7",
-                partial(check_empty, semiring),
-            )
+        add(
+            f"closure/empty/{semiring}",
+            "kleene-star",
+            "Q7",
+            partial(check_empty, semiring),
+        )
     for name in ("one_loop", "acyclic", "two_cycle", "dense", "near_one", "long_cycle"):
         add(
             f"closure/gradient/logprob/{name}",
@@ -525,6 +816,10 @@ def _register() -> None:
     )
     add("closure/near_boundary", "kleene-star", "Q8", check_near_boundary)
     add("closure/tiny_edge", "kleene-star", "Q8", check_tiny_edge)
+    add("closure/rounded_zero_cycle", "kleene-star", "Q8", check_rounded_zero_cycle)
+    add("closure/zero_entry_gradient", "kleene-star", "Q1g", check_zero_entry_gradient)
+    add("closure/forwarded", "kleene-star", "Q7", check_forwarded_closure)
+    add("closure/undecided", "kleene-star", "Q8", check_undecided_cycle)
     for algebra in TRACES:
         add(
             f"closure/trace/{algebra}",

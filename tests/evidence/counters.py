@@ -99,6 +99,8 @@ ADDITIVE = frozenset(
         "min",
         "amax",
         "amin",
+        "argmax",
+        "argmin",
         "scatter_add",
         "scatter_add_",
         "index_add",

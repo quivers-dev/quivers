@@ -145,17 +145,35 @@ class InsideAlgorithm(nn.Module):
 
     @property
     def n_nonterminals(self) -> int:
-        """Number of nonterminal symbols."""
+        """Number of nonterminal symbols.
+
+        Returns
+        -------
+        int
+            The count.
+        """
         return self._n_nonterm
 
     @property
     def n_terminals(self) -> int:
-        """Number of terminal symbols."""
+        """Number of terminal symbols.
+
+        Returns
+        -------
+        int
+            The count.
+        """
         return self._n_term
 
     @property
     def start(self) -> int:
-        """Index of the start symbol."""
+        """Index of the start symbol.
+
+        Returns
+        -------
+        int
+            The index.
+        """
         return self._start
 
     def _fill_chart(self, tokens: torch.Tensor) -> torch.Tensor:
@@ -205,17 +223,18 @@ class InsideAlgorithm(nn.Module):
                         + left.unsqueeze(1).unsqueeze(3)
                         + right.unsqueeze(1).unsqueeze(2)
                     )
-                    split_score = _masked_logsumexp(
-                        combined.reshape(batch, N, -1), dim=-1
-                    )
+                    split_score = LOG_PROB.join(combined.reshape(batch, N, -1), -1)
                     parts.append(split_score)
                 stacked = torch.stack(parts, dim=0)
-                cell = _masked_logsumexp(stacked, dim=0)
+                cell = LOG_PROB.join(stacked, 0)
                 if log_star is not None:
                     cell = _apply_unary_closure(cell, log_star)
                 cells[i][j] = cell
         chart = torch.full(
-            (batch, N, seq_len, seq_len + 1), float("-inf"), device=tokens.device
+            (batch, N, seq_len, seq_len + 1),
+            float("-inf"),
+            dtype=log_lexical.dtype,
+            device=log_lexical.device,
         )
         for i in range(seq_len):
             for j in range(i + 1, seq_len + 1):
@@ -292,30 +311,14 @@ class InsideAlgorithm(nn.Module):
         return chart
 
     def __repr__(self) -> str:
+        """The sizes of the grammar.
+
+        Returns
+        -------
+        str
+            The representation.
+        """
         return f"InsideAlgorithm(N={self._n_nonterm}, T={self._n_term}, start={self._start})"
-
-
-def _masked_logsumexp(scores: torch.Tensor, dim: int) -> torch.Tensor:
-    """``logsumexp`` whose empty rows carry no gradient.
-
-    Replace negative infinities with the dtype floor during reduction,
-    then restore all-empty rows to negative infinity. This avoids NaN
-    gradients for unreachable chart entries. Existing NaN inputs are
-    unchanged.
-
-    Parameters
-    ----------
-    scores : torch.Tensor
-        Log-space scores to reduce.
-    dim : int
-        Axis to reduce.
-    """
-    empty = torch.isneginf(scores)
-    floor = torch.finfo(scores.dtype).min
-    bounded = torch.where(empty, torch.full_like(scores, floor), scores)
-    reduced = torch.logsumexp(bounded, dim=dim)
-    all_empty = empty.all(dim=dim)
-    return torch.where(all_empty, torch.full_like(reduced, float("-inf")), reduced)
 
 
 def _log_star(unary: torch.Tensor) -> torch.Tensor:
@@ -363,7 +366,7 @@ def _apply_unary_closure(
     torch.Tensor
         Shape ``(batch, N)``: ``log Σ_B exp(cell[B]) U*[B, A]``.
     """
-    return _masked_logsumexp(log_cell.unsqueeze(2) + log_star.unsqueeze(0), dim=1)
+    return LOG_PROB.join(log_cell.unsqueeze(2) + log_star.unsqueeze(0), 1)
 
 
 __all__ = [

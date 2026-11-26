@@ -1,6 +1,7 @@
 """Support preserves the declared algebra operations on their carriers."""
 
 import itertools
+import math
 
 import pytest
 import torch
@@ -16,6 +17,7 @@ from quivers.core import (
     PROBABILITY,
     PRODUCT_FUZZY,
     REAL,
+    TROPICAL,
     Algebra,
     AlgebraHomomorphism,
     BooleanAlgebra,
@@ -167,16 +169,14 @@ def test_support_checks_each_specific_carrier(algebra: Algebra, bad: float) -> N
         SupportMap(algebra).apply(torch.tensor([bad]))
 
 
-@pytest.mark.parametrize(
-    "algebra", (REAL, LUKASIEWICZ, LOG_PROB, MAX_PLUS), ids=lambda q: q.name
-)
+@pytest.mark.parametrize("algebra", (REAL, LUKASIEWICZ), ids=lambda q: q.name)
 def test_support_refuses_undeclared_sources(algebra: Algebra) -> None:
-    """Do not infer homomorphism laws from sampled values.
+    """Refuse a source that does not claim both laws support needs.
 
     Parameters
     ----------
     algebra
-        Algebra for which literal positivity is not declared a homomorphism.
+        Algebra whose sum cancels or whose product has zero divisors.
     """
     with pytest.raises(TypeError, match="declared homomorphism"):
         SupportMap(algebra)
@@ -232,5 +232,42 @@ def test_support_preserves_shape_device_and_declared_dtype(dtype: torch.dtype) -
     values = torch.tensor([[0, 1], [1, 0]], dtype=dtype)
     result = SupportMap(BOOLEAN).apply(values)
     assert result.shape == values.shape and result.device == values.device
-    assert result.dtype == (dtype if values.is_floating_point() else torch.float32)
-    assert result.tolist() == [[0.0, 1.0], [1.0, 0.0]]
+    assert result.dtype == dtype
+    assert result.tolist() == [[0, 1], [1, 0]]
+
+
+@pytest.mark.parametrize(
+    "algebra,zero,bad",
+    (
+        (LOG_PROB, -math.inf, math.inf),
+        (MAX_PLUS, -math.inf, math.nan),
+        (TROPICAL, math.inf, -1.0),
+    ),
+    ids=lambda v: getattr(v, "name", str(v)),
+)
+def test_support_of_log_and_tropical_sources(
+    algebra: Algebra, zero: float, bad: float
+) -> None:
+    """Support maps exactly the algebra's own zero to false.
+
+    Parameters
+    ----------
+    algebra
+        A source whose zero is infinite.
+    zero
+        Its zero.
+    bad
+        A value outside its carrier.
+    """
+    support = SupportMap(algebra)
+    values = torch.tensor([zero, 0.0, 1.0], dtype=torch.float64)
+    assert support.apply(values).tolist() == [0.0, 1.0, 1.0]
+    left, right = torch.meshgrid(values, values, indexing="ij")
+    torch.testing.assert_close(
+        support.apply(algebra.tensor_op(left, right)),
+        support.apply(left) * support.apply(right),
+        rtol=0,
+        atol=0,
+    )
+    with pytest.raises(ValueError, match="carrier"):
+        support.apply(torch.tensor([bad], dtype=torch.float64))

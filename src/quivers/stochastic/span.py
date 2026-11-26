@@ -29,7 +29,7 @@ from typing import cast
 import torch
 import torch.nn as nn
 
-from quivers.stochastic._kleene import apply_star, kleene_star, semiring_sum
+from quivers.stochastic._kleene import apply_star, kleene_star
 from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.deduction import Axiom, Deduction, Goal, Schedule
 from quivers.stochastic.semiring import ChartSemiring
@@ -151,10 +151,9 @@ class SpanChart:
         torch.Tensor
             Shape ``(batch, n_categories, seq_len, seq_len+1)``.
         """
-        chart = torch.full(
-            (self.batch, self.n_categories, self.seq_len, self.seq_len + 1),
-            self.semiring.zero,
-            device=self.device,
+        like = next(iter(self.cells.values()), torch.empty(0, device=self.device))
+        chart = self.semiring.zero_like(
+            (self.batch, self.n_categories, self.seq_len, self.seq_len + 1), like
         )
 
         for (i, j), cell in self.cells.items():
@@ -177,11 +176,7 @@ def _scatter_semiring(
     semiring: ChartSemiring,
 ) -> torch.Tensor:
     """Scatter rule scores into category bins via semiring plus."""
-    result = torch.full(
-        (batch, n_categories),
-        semiring.zero,
-        device=device,
-    )
+    result = semiring.zero_like((batch, n_categories), scores.to(device=device))
 
     for cat_idx in range(n_categories):
         mask = indices == cat_idx
@@ -394,9 +389,7 @@ class UnarySpanDeduction(Deduction):
             device=weights.device,
         )
         placed = one_hot.scatter(1, flat.unsqueeze(1), weights.unsqueeze(1))
-        return semiring_sum(placed, dim=0, semiring=semiring).reshape(
-            n_categories, n_categories
-        )
+        return semiring.plus(placed, dim=0).reshape(n_categories, n_categories)
 
     def closure(self, n_categories: int, semiring: ChartSemiring) -> torch.Tensor:
         """The Kleene star ``U*`` of the unary-rule matrix.

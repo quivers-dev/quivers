@@ -26,7 +26,6 @@ from quivers.core.algebras import (
     GODEL,
     LogProbAlgebra,
     ProductFuzzyAlgebra,
-    TropicalAlgebra,
 )
 from quivers.core.morphisms import Morphism, observed
 from quivers.core.objects import FinSet, ProductSet
@@ -36,8 +35,7 @@ from quivers.dsl.ast_nodes import LetExprCall, LetExprVar, SchemaDecl, TypeName
 from quivers.dsl.compiler.programs import LetValue, _ProgramsMixin
 from quivers.effects.checked_program import CheckedProgram
 from quivers.enriched.kan_extensions import Projection, left_kan
-from quivers.inference import MCMC, AutoLaplaceApproximation, MetropolisKernel
-from quivers.inference import RandomWalkProposal
+from quivers.inference import AutoLaplaceApproximation
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import (
     deduction_item,
@@ -46,7 +44,6 @@ from quivers.qiec.program_runtime import (
     run_program,
 )
 from quivers.monadic.instances import Identity
-from quivers.stochastic._kleene import kleene_star
 from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.agenda import (
     AgendaResult,
@@ -69,8 +66,6 @@ from quivers.stochastic.semiring import (
     BOOLEAN,
     COUNTING,
     LOG_PROB,
-    VITERBI,
-    ChartSemiring,
 )
 from quivers.structural.decoder import Decoder
 from quivers.structural.signature import Signature
@@ -86,7 +81,7 @@ from tests.evidence.checks.span import (
 from tests.evidence.checks.terms import asymmetric, encoder, node, leaf, parameters
 from tests.evidence.compare import Mismatch
 from tests.evidence.counters import CallCounter, TensorCounter
-from tests.evidence.oracles import closed_forms, derivations, exact, gradients
+from tests.evidence.oracles import closed_forms, derivations, exact
 from tests.evidence.oracles.derivations import Variable
 from tests.evidence.problems import logarithm
 from tests.evidence.sources import LEXICAL as LEXICAL_SOURCE
@@ -301,122 +296,6 @@ def record(
 # -- the agenda engine ---------------------------------------------------
 
 
-def _zero_update() -> Facts:
-    """The derivative of ``3 (1 + 2 t)`` at ``t = 0`` on the agenda.
-
-    Returns
-    -------
-    Facts
-        The derivative, or ``"none"`` without a gradient path.
-    """
-    t = scalar(0.0, requires_grad=True)
-    result = run_agenda(
-        [(("X",), scalar(1.0)), (("A",), t)],
-        [rule("add", (("A",),), ("X",), 2.0), rule("scale", (("X",),), ("Y",), 3.0)],
-        semiring=COUNTING,
-    )
-    value = result.chart.get(("Y",))
-    assert value is not None
-    if not value.requires_grad:
-        return {"derivative at zero": "none"}
-    (found,) = torch.autograd.grad(value, t)
-    return {"derivative at zero": number(found)}
-
-
-def _zero_update_required() -> Facts:
-    """The derivative from the trees of the same system.
-
-    Returns
-    -------
-    Facts
-        The derivative, which is constant in ``t``.
-    """
-    trees = derivations.derivations(
-        [("x", ("X",)), ("t", ("A",))],
-        [
-            ("add", (("A",),), ("X",), "two"),
-            ("scale", (("X",),), ("Y",), "three"),
-        ],
-        ("Y",),
-    )
-    fixed = {"two": Fraction(2), "three": Fraction(3), "x": Fraction(1)}
-    at = [
-        derivations.total(trees, {**fixed, "t": t}, Fraction(0), Fraction(1))
-        for t in (Fraction(0), Fraction(1))
-    ]
-    assert float(at[1] - at[0]) == gradients.BOUNDARY_CASES[1].gradient[0]
-    return {"derivative at zero": number(float(at[1] - at[0]))}
-
-
-record(
-    "zero-update-stops",
-    "stochastic/agenda.py: HashChart.insert_or_aggregate, run_agenda",
-    "an update that leaves a number unchanged stops propagating, so a "
-    "parameter whose current weight is zero loses its gradient",
-    {"derivative at zero": "none"},
-    {"derivative at zero": "6"},
-    _zero_update,
-    _zero_update_required,
-)
-
-
-def _impossible_gradient() -> Facts:
-    """The gradient of an all-impossible sum in four executors.
-
-    Returns
-    -------
-    Facts
-        One derivative of each.
-    """
-    a = scalar(-math.inf, requires_grad=True)
-    b = scalar(-math.inf, requires_grad=True)
-    result = run_agenda(
-        [(("A",), a), (("B",), b)],
-        [rule("a", (("A",),), ("X",)), rule("b", (("B",),), ("X",))],
-        semiring=LOG_PROB,
-    )
-    value = result.chart.get(("X",))
-    assert value is not None
-    (found,) = torch.autograd.grad(value, a)
-    with double_precision():
-        torch.manual_seed(0)
-        parser = ChartParser(
-            RuleSystem(binary_rules=((0, 1, 2), (0, 0, 0)), n_categories=3),
-            n_terminals=2,
-            start_idx=0,
-        )
-        score = parser(torch.tensor((0, 1, 0)))
-        gradient = torch.autograd.grad(score, list(parser.parameters()))[0]
-    return {
-        "agenda derivative": number(found),
-        "chart parser derivatives that are not numbers": str(
-            bool(torch.isnan(gradient).any())
-        ),
-    }
-
-
-record(
-    "impossible-sum-gradient",
-    "stochastic/semiring.py: LogProbSemiring.plus, as used by the agenda and by "
-    "stochastic/span.py: BinarySpanDeduction",
-    "the gradient of a sum of impossible alternatives is not a number; a chart "
-    "parser with a category no rule derives loses every gradient of a sentence "
-    "it parses with positive weight",
-    {
-        "agenda derivative": "nan",
-        "chart parser derivatives that are not numbers": "True",
-    },
-    {
-        "agenda derivative": "0",
-        "chart parser derivatives that are not numbers": "False",
-    },
-    _impossible_gradient,
-    lambda: {
-        "agenda derivative": number(gradients.BOUNDARY_CASES[2].gradient[0]),
-        "chart parser derivatives that are not numbers": "False",
-    },
-)
-
 #: The turns of the cycles whose sums stop on a residual.
 RESIDUAL_TURNS = ("9/10", "99/100", "999/1000")
 
@@ -502,71 +381,6 @@ record(
     },
     _residual,
     _residual_required,
-)
-
-
-def _rounded_cycle(weights: tuple[float, ...]) -> torch.Tensor:
-    """A max-plus matrix with one cycle.
-
-    Parameters
-    ----------
-    weights : tuple of float
-        The weights along the cycle.
-
-    Returns
-    -------
-    torch.Tensor
-        The matrix.
-    """
-    size = len(weights)
-    matrix = torch.full((size, size), -math.inf, dtype=torch.float64)
-    for state, weight in enumerate(weights):
-        matrix[state, (state + 1) % size] = weight
-    return matrix
-
-
-#: A cycle whose weights, as exact numbers of float64, sum to zero, while
-#: their sum from left to right is the spacing of float64 near two fifths.
-ROUNDED = (0.2, 0.4, -0.2, -0.4)
-
-record(
-    "rounded-cycle-diverges",
-    "stochastic/_kleene.py: _max_plus_star",
-    "a cycle of exact weight zero is reported as divergent because the sum of "
-    "its weights in one order rounds up",
-    {"closure of a zero cycle": "DivergentClosureError"},
-    {"closure of a zero cycle": "0"},
-    lambda: {
-        "closure of a zero cycle": raised(
-            lambda: kleene_star(_rounded_cycle(ROUNDED), VITERBI)[0, 0]
-        )
-    },
-    lambda: {
-        "closure of a zero cycle": number(
-            max(0.0, float(sum((Fraction(w) for w in ROUNDED), Fraction(0))))
-        )
-    },
-)
-
-record(
-    "none-is-unbound",
-    "stochastic/agenda.py: match",
-    "a variable bound to None counts as unbound, so two premises with different "
-    "values match",
-    {"p(x, x) matches p(None, 3)": "True"},
-    {"p(x, x) matches p(None, 3)": "False"},
-    lambda: {
-        "p(x, x) matches p(None, 3)": str(
-            match(("p", make_wildcard("x"), make_wildcard("x")), ("p", None, 3))
-            is not None
-        )
-    },
-    lambda: {
-        "p(x, x) matches p(None, 3)": str(
-            derivations.bind(("p", Variable("x"), Variable("x")), ("p", None, 3), {})
-            is not None
-        )
-    },
 )
 
 
@@ -724,66 +538,6 @@ record(
 )
 
 
-def _merged_occurrences() -> Facts:
-    """The provenance of two equal axioms and of two rules with one name.
-
-    Returns
-    -------
-    Facts
-        The numbers of proofs that can be told apart.
-    """
-    twice = run_agenda(
-        [(("A",), scalar(1.0)), (("A",), scalar(1.0))],
-        [rule("r", (("A",),), ("X",))],
-        semiring=COUNTING,
-    )
-    named = run_agenda(
-        [(("A",), scalar(1.0))],
-        [rule("r", (("A",),), ("X",)), rule("r", (("A",),), ("X",))],
-        semiring=COUNTING,
-    )
-    return {
-        "proofs from two equal axioms": str(len(twice.applications)),
-        "proofs by two rules of one name": str(
-            len(set(ChartView(named).derivations(("X",))))
-        ),
-    }
-
-
-def _merged_occurrences_required() -> Facts:
-    """The same numbers from enumerated derivations.
-
-    Returns
-    -------
-    Facts
-        The numbers of trees.
-    """
-    twice = derivations.derivations(
-        [("one", ("A",)), ("two", ("A",))], [("r", (("A",),), ("X",), None)], ("X",)
-    )
-    named = derivations.derivations(
-        [("one", ("A",))],
-        [("r", (("A",),), ("X",), "first"), ("r", (("A",),), ("X",), "second")],
-        ("X",),
-    )
-    return {
-        "proofs from two equal axioms": str(len(set(twice))),
-        "proofs by two rules of one name": str(len(set(named))),
-    }
-
-
-record(
-    "occurrences-merge",
-    "stochastic/agenda.py: run_agenda, ChartView.derivations",
-    "equal axioms are one antecedent of one application, and applications of "
-    "two rules with one name are equal",
-    {"proofs from two equal axioms": "1", "proofs by two rules of one name": "1"},
-    {"proofs from two equal axioms": "2", "proofs by two rules of one name": "2"},
-    _merged_occurrences,
-    _merged_occurrences_required,
-)
-
-
 def _steps(shape: str, size: int, discipline: str) -> int:
     """The number of items an agenda pops on an acyclic graph.
 
@@ -880,75 +634,6 @@ record(
 )
 
 
-def _default_precision() -> Facts:
-    """The precisions of results of float64 computations.
-
-    Returns
-    -------
-    Facts
-        The type of each result.
-    """
-    empty = ChartView(
-        run_agenda(
-            [(("A",), scalar(1.0))],
-            [],
-            semiring=LOG_PROB,
-            goal=lambda item: item == ("Z",),
-        )
-    )
-    parser = chart_parser(LOG_PROB, {})
-    algorithm, _ = inside_algorithm({})
-    problem = PROBLEMS["beta"]
-    with double_precision():
-        x, data = problem.data()
-        result = MCMC(
-            MetropolisKernel(RandomWalkProposal(0.5)),
-            num_warmup=1,
-            num_samples=1,
-            num_chains=1,
-            seed=0,
-        ).run(problem.model(), x, data)
-        assert result.samples["theta"].dtype == torch.float64
-    return {
-        "goal weight of no goal": str(empty.goal_weight().dtype),
-        "weight of an absent item": str(empty.try_weight(("Z",)).dtype),
-        "chart parser score": str(parser(torch.tensor((0, 1))).dtype),
-        "inside score": str(algorithm(torch.tensor((0, 1))).dtype),
-        "recorded log density of a chain": str(result.log_densities.dtype),
-    }
-
-
-record(
-    "default-precision",
-    "stochastic/agenda.py: goal_weight, try_weight; stochastic/span.py: "
-    "SpanChart.to_tensor; stochastic/inside.py: _fill_chart; "
-    "inference/mcmc/driver.py: log_densities",
-    "zeros and charts take the default type, and recorded log densities are "
-    "single precision, so a double-precision run returns single precision",
-    dict.fromkeys(
-        (
-            "goal weight of no goal",
-            "weight of an absent item",
-            "chart parser score",
-            "inside score",
-            "recorded log density of a chain",
-        ),
-        "torch.float32",
-    ),
-    dict.fromkeys(
-        (
-            "goal weight of no goal",
-            "weight of an absent item",
-            "chart parser score",
-            "inside score",
-            "recorded log density of a chain",
-        ),
-        "torch.float64",
-    ),
-    _default_precision,
-)
-
-
 def _nullary() -> Facts:
     """The weight of an item derived by a rule without premises.
 
@@ -993,87 +678,6 @@ record(
     },
 )
 
-
-class _SizedChart(HashChart):
-    """A chart with a length."""
-
-    def __len__(self) -> int:
-        """The number of items.
-
-        Returns
-        -------
-        int
-            The number.
-        """
-        return len(self._store)
-
-
-def _chart_choice() -> Facts:
-    """Which chart and which tolerance a run uses.
-
-    Returns
-    -------
-    Facts
-        Whether the given chart is used, and the tolerance that reaches it.
-    """
-    given = _SizedChart()
-    result = run_agenda([(("A",), scalar(1.0))], [], semiring=COUNTING, chart=given)
-    built: list[HashChart] = []
-
-    def factory(tolerance: float = 0.0) -> HashChart:
-        """Build a chart, failing on its first call.
-
-        Parameters
-        ----------
-        tolerance : float
-            The tolerance.
-
-        Returns
-        -------
-        HashChart
-            The chart.
-
-
-        Raises
-        ------
-        TypeError
-            On the first call, for a reason of its own.
-        """
-        if not built:
-            built.append(HashChart())
-            raise TypeError("an error inside the factory")
-        return HashChart(tolerance)
-
-    run = DeductionSystem(
-        rules=(),
-        semiring=COUNTING,
-        axiom_injector=lambda value: [(("A",), scalar(1.0))],
-        goal=lambda item: True,
-        chart_factory=factory,
-        tolerance=1e-3,
-    ).run((1,))
-    assert isinstance(run.chart, HashChart)
-    return {
-        "the given empty chart is used": str(result.chart is given),
-        "tolerance after an error in the factory": number(run.chart._tolerance),
-    }
-
-
-record(
-    "chart-argument-dropped",
-    "stochastic/agenda.py: run_agenda, DeductionSystem._run",
-    "an empty chart with a length is replaced, and a type error inside a chart "
-    "factory drops the tolerance and is lost",
-    {
-        "the given empty chart is used": "False",
-        "tolerance after an error in the factory": "0",
-    },
-    {
-        "the given empty chart is used": "True",
-        "tolerance after an error in the factory": "TypeError",
-    },
-    _chart_choice,
-)
 
 #: A rule whose weight is keyed by the categories it binds.
 BINDING_WEIGHTS = """
@@ -1140,108 +744,6 @@ record(
 )
 
 
-def _named_goal(head: str) -> str:
-    """The weight of a goal read off a chart whose items have a given head.
-
-    Parameters
-    ----------
-    head : str
-        The items' first slot.
-
-    Returns
-    -------
-    str
-        The weight.
-    """
-    system = DeductionSystem(
-        rules=(),
-        semiring=COUNTING,
-        axiom_injector=lambda value: [
-            ((head, 0, 1, "S"), scalar(1.0)),
-            ((head, 0, 2, "S"), scalar(3.0)),
-        ],
-        goal=lambda item: item[-1] == "S",
-    )
-    return number(ChartView(system.run(("a", "b"))).goal_weight())
-
-
-class _Forwarded(ChartSemiring):
-    """A semiring that forwards every operation to the log semiring."""
-
-    def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Forward a product.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            The first factor.
-        b : torch.Tensor
-            The second factor.
-
-        Returns
-        -------
-        torch.Tensor
-            The product.
-        """
-        return LOG_PROB.times(a, b)
-
-    def plus(self, scores: torch.Tensor, dim: int) -> torch.Tensor:
-        """Forward a reduction.
-
-        Parameters
-        ----------
-        scores : torch.Tensor
-            The terms.
-        dim : int
-            The axis.
-
-        Returns
-        -------
-        torch.Tensor
-            The sums.
-        """
-        return LOG_PROB.plus(scores, dim)
-
-    def plus_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Forward a binary sum.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            The first term.
-        b : torch.Tensor
-            The second term.
-
-        Returns
-        -------
-        torch.Tensor
-            The sum.
-        """
-        return LOG_PROB.plus_pair(a, b)
-
-    @property
-    def zero(self) -> float:
-        """The forwarded zero.
-
-        Returns
-        -------
-        float
-            The zero.
-        """
-        return LOG_PROB.zero
-
-    @property
-    def one(self) -> float:
-        """The forwarded one.
-
-        Returns
-        -------
-        float
-            The one.
-        """
-        return LOG_PROB.one
-
-
 def _renamed_handlers() -> str:
     """How many handlers of a deduction keep their meaning under renaming.
 
@@ -1263,33 +765,12 @@ def _renamed_handlers() -> str:
 
 record(
     "names-decide-semantics",
-    "stochastic/agenda.py: _full_extent_goal; stochastic/_kleene.py: kleene_star; "
     "qiec/program_runtime.py: _deduction_handler",
-    "the first slot of an item restricts its goal, the class of a semiring "
-    "decides whether it has a closure, and the name of a handler decides what "
-    "it computes",
-    {
-        "goal weight of items headed span": "3",
-        "closure in a forwarding semiring": "TypeError",
-        "configured handlers after renaming": "0",
-    },
-    {
-        "goal weight of items headed span": "4",
-        "closure in a forwarding semiring": "0.458675",
-        "configured handlers after renaming": "2",
-    },
+    "the name of a handler decides what it computes",
+    {"configured handlers after renaming": "0"},
+    {"configured handlers after renaming": "2"},
+    lambda: {"configured handlers after renaming": _renamed_handlers()},
     lambda: {
-        "goal weight of items headed span": _named_goal("span"),
-        "closure in a forwarding semiring": raised(
-            lambda: kleene_star(
-                torch.tensor([[-1.0]], dtype=torch.float64), _Forwarded()
-            )
-        ),
-        "configured handlers after renaming": _renamed_handlers(),
-    },
-    lambda: {
-        "goal weight of items headed span": _named_goal("part"),
-        "closure in a forwarding semiring": number(-math.log(1 - math.exp(-1))),
         "configured handlers after renaming": str(
             len(
                 foreign_handler_configuration(module_of("lexical", SEMIRING="Counting"))
@@ -1299,178 +780,6 @@ record(
 )
 
 # -- closures, algebras, and contractions --------------------------------
-
-
-def _zero_entry() -> Facts:
-    """The derivative of a closure at a zero entry.
-
-    Returns
-    -------
-    Facts
-        The derivative of the entry from 0 to 1 in its own weight.
-    """
-    matrix = torch.zeros(2, 2, dtype=torch.float64, requires_grad=True)
-    (found,) = torch.autograd.grad(kleene_star(matrix, COUNTING)[0, 1], matrix)
-    return {"derivative at a zero entry": number(found[0, 1])}
-
-
-def _zero_entry_required() -> Facts:
-    """The same derivative from ``A* dA A*`` in exact arithmetic.
-
-    Returns
-    -------
-    Facts
-        The derivative.
-    """
-    star = exact.linear_star([[Fraction(0), Fraction(0)], [Fraction(0), Fraction(0)]])
-    value = star[0][0] * star[1][1]
-    assert float(value) == gradients.BOUNDARY_CASES[0].gradient[1]
-    return {"derivative at a zero entry": number(float(value))}
-
-
-record(
-    "zero-entry-gradient",
-    "stochastic/_kleene.py: _linear_star",
-    "the support is read from the current numbers, so an entry that is zero now "
-    "has no gradient",
-    {"derivative at a zero entry": "0"},
-    {"derivative at a zero entry": "1"},
-    _zero_entry,
-    _zero_entry_required,
-)
-
-record(
-    "max-plus-rounds",
-    "stochastic/_kleene.py: _max_plus_star",
-    "the best-path closure repeats a cubic product once per edge of the longest "
-    "best path, so it is quartic",
-    {
-        "scalar work at 8": "8704",
-        "scalar work at 16": "135168",
-        "scalar work at 32": "2129920",
-    },
-    {
-        "scalar work at 8": "1024",
-        "scalar work at 16": "8192",
-        "scalar work at 32": "65536",
-    },
-    lambda: {f"scalar work at {n}": str(_max_plus_work(n)) for n in (8, 16, 32)},
-    # Elimination multiplies and compares once per pair and per state.
-    lambda: {f"scalar work at {n}": str(2 * n**3) for n in (8, 16, 32)},
-)
-
-
-def _max_plus_work(size: int) -> int:
-    """The scalar work of a best-path closure on a line.
-
-    Parameters
-    ----------
-    size : int
-        The number of states.
-
-    Returns
-    -------
-    int
-        Sums and products.
-    """
-    matrix = torch.full((size, size), -math.inf, dtype=torch.float64)
-    for state in range(size - 1):
-        matrix[state, state + 1] = -1.0
-    with TensorCounter() as counter:
-        kleene_star(matrix, VITERBI)
-    return counter.counts["sums"] + counter.counts["products"]
-
-
-def _empty() -> Facts:
-    """The results of reductions and closures over nothing.
-
-    Returns
-    -------
-    Facts
-        Each result or the exception.
-    """
-    nothing = torch.zeros(0, 2, dtype=torch.float64)
-    return {
-        "tropical join": raised(lambda: TropicalAlgebra().join(nothing, 0)),
-        "best-path sum": raised(lambda: VITERBI.plus(nothing, 0)),
-        "Boolean sum": raised(lambda: BOOLEAN.plus(nothing, 0)),
-        "best-path closure": raised(
-            lambda: kleene_star(torch.zeros(0, 0, dtype=torch.float64), VITERBI)
-        ),
-        "tropical contraction": raised(
-            lambda: EinsumWiring(TropicalAlgebra(), "ij,jk->ik").apply(
-                torch.zeros(1, 0, dtype=torch.float64),
-                torch.zeros(0, 2, dtype=torch.float64),
-            )
-        ),
-    }
-
-
-record(
-    "empty-reduction-raises",
-    "core/algebras.py: TropicalAlgebra.join; stochastic/semiring.py: "
-    "ViterbiSemiring.plus, BooleanSemiring.plus; stochastic/_kleene.py: "
-    "_max_plus_star",
-    "a reduction over no terms raises instead of returning the algebra's zero",
-    dict.fromkeys(
-        (
-            "tropical join",
-            "best-path sum",
-            "Boolean sum",
-            "best-path closure",
-            "tropical contraction",
-        ),
-        "IndexError",
-    ),
-    {
-        "tropical join": "inf inf",
-        "best-path sum": "-inf -inf",
-        "Boolean sum": "0 0",
-        "best-path closure": "empty",
-        "tropical contraction": "inf inf",
-    },
-    _empty,
-)
-
-
-def _tie() -> Facts:
-    """The derivative of a maximum at a tie, as a pair operation.
-
-    Returns
-    -------
-    Facts
-        The derivative.
-    """
-    a, b = scalar(1.0, requires_grad=True), scalar(1.0, requires_grad=True)
-    pair = torch.autograd.grad(VITERBI.plus_pair(a, b), (a, b))
-    return {"pair": " ".join(number(g) for g in pair)}
-
-
-def _tie_required() -> Facts:
-    """The derivative the reduction of the same two values returns.
-
-    Returns
-    -------
-    Facts
-        The derivative, which is the declared element.
-    """
-    a, b = scalar(1.0, requires_grad=True), scalar(1.0, requires_grad=True)
-    found = torch.autograd.grad(VITERBI.plus(torch.stack([a, b]), 0), (a, b))
-    declared = gradients.BOUNDARY_CASES[3].gradient
-    assert tuple(float(g) for g in found) == declared
-    return {"pair": " ".join(number(g) for g in declared)}
-
-
-record(
-    "tie-has-two-gradients",
-    "stochastic/semiring.py: ViterbiSemiring.plus, ViterbiSemiring.plus_pair",
-    "the reduction gives the whole derivative of a tie to the first maximum and "
-    "the pair operation splits it, so a derivative depends on bracketing",
-    {"pair": "0.5 0.5"},
-    {"pair": "1 0"},
-    _tie,
-    _tie_required,
-)
 
 
 def _join_peak(length: int, size: int = 6) -> int:

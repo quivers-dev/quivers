@@ -14,7 +14,9 @@ from quivers.stochastic.agenda import (
     AgendaResult,
     Bindings,
     ChartView,
+    DeductionSystem,
     FIFOAgenda,
+    HashChart,
     InferenceRule,
     Item,
     LIFOAgenda,
@@ -40,7 +42,7 @@ from tests.evidence.compare import (
     compare_number,
     compare_tensor,
 )
-from tests.evidence.oracles import closed_forms, derivations
+from tests.evidence.oracles import closed_forms, derivations, gradients
 from tests.evidence.oracles.derivations import Term, Tree, Variable
 from tests.evidence.problems import (
     DEDUCTIONS,
@@ -509,7 +511,10 @@ def check_gradient(name: str, semiring: str, discipline: str) -> None:
 
 
 def unfoldings(result: AgendaResult, goal: Item, axioms: list[Item]) -> int:
-    """The number of trees the recorded rule applications unfold to.
+    """The number of trees the recorded provenance unfolds to.
+
+    The axiom occurrences are the run's own record of them, which has to
+    agree with the axioms given.
 
     Parameters
     ----------
@@ -524,7 +529,19 @@ def unfoldings(result: AgendaResult, goal: Item, axioms: list[Item]) -> int:
     -------
     int
         The number of trees.
+
+    Raises
+    ------
+    Mismatch
+        If the run's record of axiom occurrences differs from the axioms.
     """
+    occurrences = list(result.axiom_occurrences)
+    if sorted(map(repr, occurrences)) != sorted(map(repr, axioms)):
+        raise Mismatch(
+            "support",
+            math.inf,
+            f"axiom occurrences {occurrences} for {axioms}",
+        )
     view = ChartView(result)
     known: dict[Item, int] = {}
 
@@ -542,9 +559,9 @@ def unfoldings(result: AgendaResult, goal: Item, axioms: list[Item]) -> int:
             The number.
         """
         if item not in known:
-            known[item] = axioms.count(item) + sum(
+            known[item] = occurrences.count(item) + sum(
                 math.prod(count(premise) for premise in premises)
-                for _, premises in view.derivations(item)
+                for _, _, premises in view.derivations(item)
             )
         return known[item]
 
@@ -860,6 +877,351 @@ def check_budget(discipline: str) -> None:
     )
 
 
+def check_impossible_sum_gradient(discipline: str) -> None:
+    """Compare the derivative of a sum of absent alternatives.
+
+    Two axioms of log weight minus infinity each derive one item. Its
+    weight is minus infinity near them, so its derivative is the one the
+    gradient oracle declares for an impossible sum: zero in each axiom.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+    """
+    case = gradients.BOUNDARY_CASES[2]
+    leaves = [
+        torch.tensor(-math.inf, dtype=torch.float64, requires_grad=True)
+        for _ in range(2)
+    ]
+    result = run_agenda(
+        [(("A",), leaves[0]), (("B",), leaves[1])],
+        [
+            InferenceRule(name="a", premises=(("A",),), conclusion=("X",)),
+            InferenceRule(name="b", premises=(("B",),), conclusion=("X",)),
+        ],
+        semiring=LOG_PROB,
+        agenda=AGENDAS[discipline](),
+    )
+    value = result.chart.get(("X",))
+    if value is None:
+        raise Mismatch("missing", math.inf, f"{discipline}: the item is absent")
+    compare_number(
+        float(value),
+        case.value,
+        Accuracy(domain="log", operations=1),
+        f"{discipline} impossible sum",
+    )
+    found = torch.autograd.grad(value, leaves, allow_unused=True)
+    compare_gradients(
+        {"a": found[0], "b": found[1]},
+        dict(zip(("a", "b"), case.gradient, strict=True)),
+        Accuracy(domain="log", operations=1),
+        f"{discipline} derivative of an impossible sum",
+    )
+
+
+def check_zero_update_gradient(discipline: str) -> None:
+    """Compare the derivative of ``3 (1 + 2 t)`` at ``t = 0`` with the oracle's.
+
+    The update ``2 t`` is zero at ``t = 0`` and leaves the weight of
+    ``X`` unchanged, while its derivative does not vanish.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+    """
+    case = gradients.BOUNDARY_CASES[1]
+    t = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
+    result = run_agenda(
+        [(("X",), torch.tensor(1.0, dtype=torch.float64)), (("A",), t)],
+        [
+            InferenceRule(
+                name="add",
+                premises=(("A",),),
+                conclusion=("X",),
+                weight_fn=weighted(torch.tensor(2.0, dtype=torch.float64)),
+            ),
+            InferenceRule(
+                name="scale",
+                premises=(("X",),),
+                conclusion=("Y",),
+                weight_fn=weighted(torch.tensor(3.0, dtype=torch.float64)),
+            ),
+        ],
+        semiring=COUNTING,
+        agenda=AGENDAS[discipline](),
+    )
+    value = result.chart.get(("Y",))
+    if value is None:
+        raise Mismatch("missing", math.inf, f"{discipline}: Y is absent")
+    compare_number(
+        float(value), case.value, Accuracy(domain="linear", operations=4), "value"
+    )
+    (found,) = torch.autograd.grad(value, (t,), allow_unused=True)
+    compare_gradients(
+        {"t": found},
+        {"t": case.gradient[0]},
+        Accuracy(domain="linear", operations=4),
+        f"{discipline} derivative at a zero update",
+    )
+
+
+def check_bound_none(discipline: str) -> None:
+    """Require a variable bound to ``None`` to be bound.
+
+    The rule ``p(x, x) |- q(x)`` applies to ``p(None, None)`` and not to
+    ``p(None, 3)``; the oracle's matcher says which items match.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+
+    Raises
+    ------
+    Mismatch
+        If the derived items differ from the oracle's.
+    """
+    x = make_wildcard("x")
+    items = (("p", None, 3), ("p", None, None))
+    result = run_agenda(
+        [(item, torch.tensor(1.0, dtype=torch.float64)) for item in items],
+        [InferenceRule(name="same", premises=(("p", x, x),), conclusion=("q", x))],
+        semiring=COUNTING,
+        agenda=AGENDAS[discipline](),
+    )
+    found = sorted(repr(item) for item, _ in result.chart.items() if item[0] == "q")
+    wanted = sorted(
+        repr(("q", bound["x"]))
+        for item in items
+        if (bound := derivations.bind(("p", Variable("x"), Variable("x")), item, {}))
+        is not None
+    )
+    if found != wanted:
+        raise Mismatch(
+            "support", math.inf, f"{discipline}: derived {found} for {wanted}"
+        )
+
+
+def check_occurrences(discipline: str) -> None:
+    """Compare the proofs a run's provenance unfolds to with the oracle's.
+
+    Two equal axioms are two occurrences, and two rules of one name are
+    two rules.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+
+    Raises
+    ------
+    Mismatch
+        If a number of proofs differs.
+    """
+    one = torch.tensor(1.0, dtype=torch.float64)
+    twice = run_agenda(
+        [(("A",), one), (("A",), one)],
+        [InferenceRule(name="r", premises=(("A",),), conclusion=("X",))],
+        semiring=COUNTING,
+        agenda=AGENDAS[discipline](),
+    )
+    named = run_agenda(
+        [(("A",), one)],
+        [
+            InferenceRule(name="r", premises=(("A",),), conclusion=("X",)),
+            InferenceRule(name="r", premises=(("A",),), conclusion=("X",)),
+        ],
+        semiring=COUNTING,
+        agenda=AGENDAS[discipline](),
+    )
+    wanted_twice = len(
+        set(
+            derivations.derivations(
+                [("one", ("A",)), ("two", ("A",))],
+                [("r", (("A",),), ("X",), None)],
+                ("X",),
+            )
+        )
+    )
+    wanted_named = len(
+        set(
+            derivations.derivations(
+                [("one", ("A",))],
+                [("r", (("A",),), ("X",), "first"), ("r", (("A",),), ("X",), "second")],
+                ("X",),
+            )
+        )
+    )
+    found = (
+        unfoldings(twice, ("X",), [("A",), ("A",)]),
+        unfoldings(named, ("X",), [("A",)]),
+    )
+    if found != (wanted_twice, wanted_named):
+        raise Mismatch(
+            "value",
+            math.inf,
+            f"{discipline}: proofs {found} for {(wanted_twice, wanted_named)}",
+        )
+
+
+def check_chart_argument(discipline: str) -> None:
+    """Require a given chart to be used and a chart factory's error to surface.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+
+    Raises
+    ------
+    Mismatch
+        If an empty chart with a length is replaced, the tolerance does
+        not reach the factory, or an error inside it is lost.
+    """
+
+    class Sized(HashChart):
+        """A chart with a length, empty and so false as a number."""
+
+        def __len__(self) -> int:
+            """The number of items.
+
+            Returns
+            -------
+            int
+                The number.
+            """
+            return len(self._store)
+
+    given = Sized()
+    one = torch.tensor(1.0, dtype=torch.float64)
+    result = run_agenda(
+        [(("A",), one)],
+        [],
+        semiring=COUNTING,
+        chart=given,
+        agenda=AGENDAS[discipline](),
+    )
+    if result.chart is not given:
+        raise Mismatch(
+            "support", math.inf, f"{discipline}: the given chart is replaced"
+        )
+    seen: list[float] = []
+
+    def factory(tolerance: float) -> HashChart:
+        """Record the tolerance and fail.
+
+        Parameters
+        ----------
+        tolerance : float
+            The tolerance.
+
+        Returns
+        -------
+        HashChart
+            Never returned.
+
+        Raises
+        ------
+        TypeError
+            Always, for a reason of its own.
+        """
+        seen.append(tolerance)
+        raise TypeError("an error inside the factory")
+
+    system = DeductionSystem(
+        rules=(),
+        semiring=COUNTING,
+        axiom_injector=lambda value: [(("A",), one)],
+        goal=lambda item: True,
+        chart_factory=factory,
+        agenda_factory=AGENDAS[discipline],
+        tolerance=1e-3,
+    )
+    try:
+        system.run((1,))
+    except TypeError as error:
+        if str(error) == "an error inside the factory" and seen == [1e-3]:
+            return
+        raise Mismatch(
+            "refusal", math.inf, f"{discipline}: {error!r}, {seen}"
+        ) from error
+    raise Mismatch("refusal", math.inf, f"{discipline}: the factory's error was lost")
+
+
+def check_goal_extent(discipline: str) -> None:
+    """Require a goal's extent to be declared by the item type, not by a name.
+
+    Items headed ``span`` and items headed ``part`` give one goal weight
+    when no extent is declared; with a declared extent only the item
+    covering the whole input is a goal.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+
+    Raises
+    ------
+    Mismatch
+        If a goal weight differs from the sum of the goal items' weights.
+    """
+    found: dict[tuple[str, bool], float] = {}
+    for head in ("span", "part"):
+        for declared in (False, True):
+            system = DeductionSystem(
+                rules=(),
+                semiring=COUNTING,
+                axiom_injector=lambda value, head=head: [
+                    ((head, 0, 1, "S"), torch.tensor(1.0, dtype=torch.float64)),
+                    ((head, 0, 2, "S"), torch.tensor(3.0, dtype=torch.float64)),
+                ],
+                goal=lambda item: item[-1] == "S",
+                goal_extent=(lambda item: (item[1], item[2])) if declared else None,
+                agenda_factory=AGENDAS[discipline],
+            )
+            found[(head, declared)] = float(
+                ChartView(system.run(("a", "b"))).goal_weight()
+            )
+    wanted = {(head, declared): 3.0 if declared else 4.0 for head, declared in found}
+    if found != wanted:
+        raise Mismatch(
+            "value", math.inf, f"{discipline}: goal weights {found} for {wanted}"
+        )
+
+
+def check_precision(discipline: str) -> None:
+    """Require the zeros of a float64 run to be float64.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+
+    Raises
+    ------
+    Mismatch
+        If a zero takes another dtype.
+    """
+    view = ChartView(
+        run_agenda(
+            [(("A",), torch.tensor(1.0, dtype=torch.float64))],
+            [],
+            semiring=LOG_PROB,
+            agenda=AGENDAS[discipline](),
+            goal=lambda item: item == ("Z",),
+        )
+    )
+    for what, value in (
+        ("goal weight of no goal", view.goal_weight()),
+        ("weight of an absent item", view.try_weight(("Z",))),
+    ):
+        if value.dtype != torch.float64:
+            raise Mismatch("dtype", math.inf, f"{discipline}: {what} in {value.dtype}")
+
+
 def check_update(discipline: str) -> None:
     """Compare two runs of one rule set across a parameter update.
 
@@ -956,6 +1318,26 @@ def _register() -> None:
                     "Q11" if name == "edit_lattice" else "Q1g",
                     partial(check_gradient, name, semiring, discipline),
                 )
+        for suffix, question_name, body in (
+            ("zero_update_gradient", "Q1g", check_zero_update_gradient),
+            ("bound_none", "Q1", check_bound_none),
+            ("occurrences", "Q5", check_occurrences),
+            ("chart_argument", "Q24", check_chart_argument),
+            ("goal_extent", "Q1", check_goal_extent),
+            ("precision", "Q1", check_precision),
+        ):
+            add(
+                f"deduction/{suffix}/{discipline}",
+                row,
+                question_name,
+                partial(body, discipline),
+            )
+        add(
+            f"deduction/impossible_sum_gradient/{discipline}",
+            row,
+            "Q1g",
+            partial(check_impossible_sum_gradient, discipline),
+        )
         add(
             f"deduction/outcomes/{discipline}",
             row,

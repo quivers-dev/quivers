@@ -601,7 +601,7 @@ def test_derivation_hypergraph_counts_the_trees(grammar_name: str) -> None:
 
     def trees(item: Term) -> int:
         total = axiom_count.get(item, 0)
-        for _, antecedents in view.derivations(item):
+        for _, _, antecedents in view.derivations(item):
             product = 1
             for antecedent in antecedents:
                 product *= trees(antecedent)

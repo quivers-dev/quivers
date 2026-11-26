@@ -36,7 +36,7 @@ from quivers.stochastic.agenda import (
 )
 from quivers.stochastic.inside import InsideAlgorithm
 from quivers.stochastic.parsers import ChartParser
-from quivers.stochastic.semiring import LOG_PROB
+from quivers.stochastic.semiring import LOG_PROB, VITERBI
 from quivers.inference.mcmc import PotentialFn
 from tests.evidence.checks import terms
 from tests.evidence.checks.consumers import PROBLEMS, positions, registry_of
@@ -405,6 +405,25 @@ def star_backward(size: int) -> int:
     matrix = dense_matrix(size, requires_grad=True)
     value = kleene_star(matrix, LOG_PROB).sum()
     return measure(lambda: torch.autograd.grad(value, matrix)[0]).scalar
+
+
+def best_path_closure(size: int) -> int:
+    """The scalar work of a best-path closure on a line of states.
+
+    Parameters
+    ----------
+    size : int
+        The number of states.
+
+    Returns
+    -------
+    int
+        Sums, products and comparisons.
+    """
+    matrix = torch.full((size, size), -math.inf, dtype=torch.float64)
+    for state in range(size - 1):
+        matrix[state, state + 1] = -1.0
+    return measure(lambda: kleene_star(matrix, VITERBI)).scalar
 
 
 def star_near_one(turns: int) -> int:
@@ -951,6 +970,19 @@ FAMILIES: tuple[Family, ...] = (
         # Without a gradient a closure keeps a few matrices of eight bytes.
         claim=lambda n: 8 * n**2,
         constant=12.0,
+    ),
+    Family(
+        name="best-path closure",
+        executor="kleene-star",
+        question="Q7",
+        varies="states",
+        part="forward",
+        sizes=(4, 8, 16, 32, 64),
+        work=best_path_closure,
+        # Elimination makes, per state, n² products, n² selections between
+        # two scores and n products of the loop's closure.
+        claim=lambda n: n**3,
+        constant=4.0,
     ),
     Family(
         name="closure near one",

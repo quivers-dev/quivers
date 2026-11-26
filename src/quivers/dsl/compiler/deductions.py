@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from quivers._values import HeldValue
 from quivers.core.algebras import BOOLEAN
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
@@ -161,6 +162,35 @@ _SEQUENT_RULE_OPTION_KEYS: frozenset[str] = frozenset(
     {"learnable", "parent", "bounded"}
 )
 _LEXICON_ENTRY_OPTION_KEYS: frozenset[str] = frozenset({"learnable"})
+
+
+def _span_extent(item: tuple[HeldValue, ...]) -> tuple[int, int] | None:
+    """The positions a span item of a lexicon deduction covers.
+
+    A deduction with a lexicon builds its axioms as span items
+    ``("span", i, j, category[, form])``, and its rules derive span
+    items of the same constructor, so the item type declares its extent
+    by that constructor.
+
+    Parameters
+    ----------
+    item : tuple
+        A chart item.
+
+    Returns
+    -------
+    tuple of int or None
+        ``(i, j)`` for a span item, ``None`` for an item that covers no
+        stretch of the input.
+    """
+    if (
+        len(item) >= 4
+        and item[0] == "span"
+        and isinstance(item[1], int)
+        and isinstance(item[2], int)
+    ):
+        return (item[1], item[2])
+    return None
 
 
 def _words_display(entry: _LexiconEntryAst) -> str:
@@ -556,10 +586,7 @@ def _make_rule_weight_fn(
     def weight_fn(bindings, premise_weights, semiring):
         # 1. Premise product (the default semiring-parsing aggregation).
         if not premise_weights:
-            base = torch.tensor(
-                float(semiring.one) if hasattr(semiring.one, "__float__") else 0.0,
-                dtype=torch.get_default_dtype(),
-            )
+            base = semiring.unit_like((), torch.empty(0))
         else:
             base = premise_weights[0]
             for w in premise_weights[1:]:
@@ -573,7 +600,7 @@ def _make_rule_weight_fn(
         if semiring is SEMIRING_LOG_PROB or semiring is SEMIRING_VITERBI:
             own_w = _rule_log_weight(key, rule_name)
         else:
-            own_w = torch.tensor(float(semiring.one), dtype=torch.get_default_dtype())
+            own_w = semiring.unit_like((), base)
         total = semiring.times(base, own_w)
         # 3. Parent chain (additive composition in the LogProb / Viterbi
         # log semirings; semiring-product for general K).
@@ -1016,6 +1043,10 @@ class _DeductionsMixin:
             line=decl.line,
             col=decl.col,
         )
+        # A system whose axioms come from a lexicon has span items, whose
+        # extent the goal has to cover; other systems declare none.
+        goal_extent: Callable[[tuple[HeldValue, ...]], tuple[int, int] | None] | None
+        goal_extent = None
         if axioms_source is not None:
             # General axiom source — look up the named morphism and
             # invoke it on the input at call time. The morphism may
@@ -1331,6 +1362,7 @@ class _DeductionsMixin:
                 return out
 
             axiom_injector = _lexicon_axioms
+            goal_extent = _span_extent
         else:
             # Identity injector — input is already a list of axioms.
             def _given_axioms(input_value):
@@ -1451,6 +1483,7 @@ class _DeductionsMixin:
             semiring=semiring,
             axiom_injector=axiom_injector,
             goal=_goal,
+            goal_extent=goal_extent,
             agenda_factory=agenda_factory,
             max_iterations=(
                 int(max_iters_opt) if max_iters_opt is not None else 100_000

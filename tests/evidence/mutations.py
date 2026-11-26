@@ -215,8 +215,7 @@ def _keyword_defaults(target: str) -> dict[str, str | int | float | bool | None]
 
 
 AGENDA = "quivers.stochastic.agenda"
-SEMIRING = "quivers.stochastic.semiring"
-KLEENE = "quivers.stochastic._kleene"
+ALGEBRAS = "quivers.core.algebras"
 SPAN = "quivers.stochastic.span"
 INSIDE = "quivers.stochastic.inside"
 WIRING = "quivers.core.wiring"
@@ -315,11 +314,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="sum-replaced-by-maximum",
         defect_class="aggregation",
         provenance="a best-path reduction in a partition computation",
-        target=f"{SEMIRING}:LogProbSemiring.plus",
+        target=f"{ALGEBRAS}:LogProbAlgebra.join",
         rewrites=(
             Rewrite(
-                old="torch.logsumexp(scores, dim=dim)",
-                new="scores.max(dim=dim).values",
+                old="total = torch.logsumexp(safe, dim=axes)",
+                new="total = safe.amax(dim=axes)",
             ),
         ),
         rejected_by=(
@@ -334,11 +333,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="maximum-replaced-by-sum",
         defect_class="aggregation",
         provenance="a partition reduction in a best-path computation",
-        target=f"{SEMIRING}:ViterbiSemiring.plus",
+        target=f"{ALGEBRAS}:Selective.join",
         rewrites=(
             Rewrite(
-                old="scores.max(dim=dim).values",
-                new="torch.logsumexp(scores, dim=dim)",
+                old="return self.select(t, axes).value",
+                new="return torch.logsumexp(t, dim=axes)",
             ),
         ),
         rejected_by=(
@@ -351,7 +350,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="contraction-keeps-the-largest-term",
         defect_class="aggregation",
         provenance="a maximum over the contracted axes of a sum",
-        target="quivers.core.algebras:RealAlgebra.join",
+        target=f"{ALGEBRAS}:RealAlgebra.join",
         rewrites=(
             Rewrite(
                 old="result = result.sum(dim=d)", new="result = result.amax(dim=d)"
@@ -401,8 +400,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-gradient-cut",
         defect_class="gradient path",
         provenance="a closure computed without its gradient",
-        target=f"{KLEENE}:_log_star",
-        rewrites=(Rewrite(old="star = matrix\n", new="star = matrix.detach()\n"),),
+        target=f"{ALGEBRAS}:LogProbAlgebra.star_with_work",
+        rewrites=(
+            Rewrite(
+                old="star, work = _eliminate(self, matrix, repeat)",
+                new="star, work = _eliminate(self, matrix.detach(), repeat)",
+            ),
+        ),
         rejected_by=("span/inside/gradient", "span/chart-parser/gradient"),
         min_effect=1.0,
     ),
@@ -457,11 +461,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-stops-on-a-residual",
         defect_class="stopping rule",
         provenance="a truncated series whose last term is small",
-        target=f"{KLEENE}:_log_star",
+        target=f"{ALGEBRAS}:LogProbAlgebra.star_with_work",
         rewrites=(
             Rewrite(
-                old="repeat = -torch.log(-torch.expm1(loop))",
-                new="repeat = torch.logsumexp("
+                old="return -torch.log(-torch.expm1(loop))",
+                new="return torch.logsumexp("
                 "loop * torch.arange(64, dtype=loop.dtype), 0)",
             ),
         ),
@@ -475,8 +479,17 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="divergence-test-removed",
         defect_class="stopping rule",
         provenance="a divergent cycle returns a number",
-        target=f"{KLEENE}:_linear_star",
-        rewrites=(Rewrite(old="if not radius < 1.0:", new="if False:"),),
+        target=f"{ALGEBRAS}:_linear_star",
+        rewrites=(
+            Rewrite(
+                old="loop * (1 - relative_error) >= 1,",
+                new='loop * (1 - relative_error) >= float("inf"),',
+            ),
+            Rewrite(
+                old="loop * (1 + relative_error) < 1,",
+                new='loop * (1 + relative_error) < float("inf"),',
+            ),
+        ),
         rejected_by=("closure/divergence/counting/above_one",),
         min_effect=1.0,
     ),
@@ -631,11 +644,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="empty-reduction-loses-its-type",
         defect_class="empty reduction",
         provenance="the zero of an empty reduction is made in the default type",
-        target="quivers.core.algebras:LogProbAlgebra.join",
+        target=f"{ALGEBRAS}:LogProbAlgebra.join",
         rewrites=(
             Rewrite(
-                old="return reduced + torch.full_like(reduced, self.zero)",
-                new="return torch.full(reduced.shape, self.zero)",
+                old="return self.empty_join(t, axes)",
+                new="return torch.full(reduced_shape(t, axes), self.zero)",
             ),
         ),
         rejected_by=("contraction/empty/logprob",),
@@ -645,10 +658,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="empty-reduction-loses-an-axis",
         defect_class="empty reduction",
         provenance="an empty reduction returns a scalar",
-        target="quivers.core.algebras:LogProbAlgebra.join",
+        target=f"{ALGEBRAS}:LogProbAlgebra.join",
         rewrites=(
             Rewrite(
-                old="return reduced + torch.full_like(reduced, self.zero)",
+                old="return self.empty_join(t, axes)",
                 new="return torch.tensor(self.zero, dtype=t.dtype)",
             ),
         ),
@@ -659,11 +672,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="impossible-sum-without-a-mask",
         defect_class="empty reduction",
         provenance="an impossible sum takes the logarithm of zero",
-        target="quivers.core.algebras:LogProbAlgebra.join",
+        target=f"{ALGEBRAS}:LogProbAlgebra.join",
         rewrites=(
             Rewrite(
-                old="safe_total = torch.where(empty, torch.ones_like(total), total)",
-                new="safe_total = total",
+                old="safe = torch.where(impossible, torch.zeros_like(t), t)",
+                new="safe = t",
             ),
         ),
         rejected_by=("contraction/impossible_row",),
@@ -673,11 +686,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="log-weights-exponentiated",
         defect_class="scaling",
         provenance="a sum in the linear domain",
-        target=f"{SEMIRING}:LogProbSemiring.plus",
+        target=f"{ALGEBRAS}:LogProbAlgebra.join",
         rewrites=(
             Rewrite(
-                old="torch.logsumexp(scores, dim=dim)",
-                new="scores.exp().sum(dim=dim).log()",
+                old="total = torch.logsumexp(safe, dim=axes)",
+                new="total = safe.exp().sum(dim=axes).log()",
             ),
         ),
         rejected_by=("deduction/value/fifo/logprob/tiny",),
@@ -687,12 +700,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-in-the-linear-domain",
         defect_class="scaling",
         provenance="a closure computed from exponentials of the weights",
-        target=f"{KLEENE}:_log_star",
+        target=f"{ALGEBRAS}:LogProbAlgebra.star_with_work",
         rewrites=(
             Rewrite(
-                old="star = matrix\n",
-                new="return torch.linalg.inv(torch.eye(n, dtype=matrix.dtype)"
-                " - matrix.exp()).log()\n    star = matrix\n",
+                old="largest = _largest_finite(matrix)\n",
+                new="return torch.linalg.inv(torch.eye(matrix.shape[0], "
+                "dtype=matrix.dtype) - matrix.exp()).log(), ClosureWork("
+                "pivots=0, sums=0, products=0)\n",
             ),
         ),
         rejected_by=("closure/tiny_edge",),

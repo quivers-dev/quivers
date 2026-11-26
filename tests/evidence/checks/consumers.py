@@ -1010,6 +1010,12 @@ def check_kernel(name: str, kernel: str) -> None:
         ).run(problem.model(), x, data)
         if set(result.samples) != set(problem.latents):
             raise Mismatch("support", math.inf, f"draws of {sorted(result.samples)}")
+        if result.log_densities.dtype != torch.float64:
+            raise Mismatch(
+                "dtype",
+                math.inf,
+                f"{kernel} recorded log densities in {result.log_densities.dtype}",
+            )
         moved = set()
         for step in range(6):
             draw = {key: value[0, step] for key, value in result.samples.items()}

@@ -20,13 +20,21 @@ Relation to the enrichment algebras
 -----------------------------------
 A semiring is the structure that makes the chart's sum over
 derivations of products of rule weights well defined and independent
-of evaluation order (Goodman 1999). ``LogProbSemiring`` is the log
-semiring ``([-∞, ∞), logsumexp, +, -∞, 0)``, isomorphic to the
-probability semiring ``([0, ∞), +, ·)`` through ``exp``. Its addition
-is not idempotent (``logsumexp(a, a) = a + log 2``), so it is not a
-lattice join and the log semiring is not a quantale; ``ViterbiSemiring``
-and ``BooleanSemiring`` are idempotent. The corresponding enrichment
-algebras are the `quivers.core.algebras.Semiring` instances.
+of evaluation order (Goodman 1999). A chart semiring is a member of
+the one hierarchy of `quivers.core.algebras`: `ChartSemiring` is a
+`quivers.core.algebras.Semiring`, and each chart semiring is the core
+algebra of the same name read through the chart vocabulary, so its
+``times``, ``plus``, ``plus_pair``, ``zero`` and ``one`` are the core
+``tensor_op``, ``join``, ``join_pair``, ``zero`` and ``unit``. A sum
+over no terms is the zero, a sum of impossible log weights has
+derivative zero, and a best-derivation sum gives the whole derivative
+of a tie to its first operand in every operation.
+``LogProbSemiring`` is the log semiring
+``([-∞, ∞), logsumexp, +, -∞, 0)``, isomorphic to the probability
+semiring ``([0, ∞), +, ·)`` through ``exp``. Its addition is not
+idempotent (``logsumexp(a, a) = a + log 2``), so it is not a lattice
+join and the log semiring is not a quantale; ``ViterbiSemiring`` and
+``BooleanSemiring`` are idempotent.
 
 References
 ----------
@@ -36,22 +44,29 @@ Goodman, J. (1999). Semiring parsing. *Computational Linguistics*,
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-
 import torch
 
+from quivers.core.algebras import (
+    BooleanAlgebra,
+    CountingAlgebra,
+    LogProbAlgebra,
+    MaxPlusAlgebra,
+    Semiring,
+)
 
-class ChartSemiring(ABC):
-    """Abstract semiring for chart parsing.
 
-    Subclasses implement the four semiring operations. All operations
-    must be differentiable (where applicable) to support gradient-based
-    learning.
+class ChartSemiring(Semiring):
+    """A commutative semiring read through the chart vocabulary.
+
+    The chart names of the operations are the core operations of the
+    `quivers.core.algebras.Semiring` it is: ``times`` is ``tensor_op``,
+    ``plus`` is ``join``, ``plus_pair`` is ``join_pair`` and ``one`` is
+    ``unit``. All operations are differentiable where the carrier
+    allows, to support gradient-based learning.
     """
 
-    @abstractmethod
     def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Multiplicative combination (⊗).
+        """Multiplicative combination (⊗), the core ``tensor_op``.
 
         Combines scores from two chart cells being joined by a rule.
 
@@ -67,10 +82,10 @@ class ChartSemiring(ABC):
         torch.Tensor
             Combined scores.
         """
+        return self.tensor_op(a, b)
 
-    @abstractmethod
     def plus(self, scores: torch.Tensor, dim: int) -> torch.Tensor:
-        """Additive aggregation (⊕) over a dimension.
+        """Additive aggregation (⊕) over a dimension, the core ``join``.
 
         Marginalizes over multiple derivations of the same span.
 
@@ -84,12 +99,12 @@ class ChartSemiring(ABC):
         Returns
         -------
         torch.Tensor
-            Aggregated scores.
+            Aggregated scores, the zero over no terms.
         """
+        return self.join(scores, dim)
 
-    @abstractmethod
     def plus_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Binary additive combination (⊕) of two tensors.
+        """Binary additive combination (⊕), the core ``join_pair``.
 
         Used for combining a cell with unary rule contributions.
 
@@ -105,19 +120,21 @@ class ChartSemiring(ABC):
         torch.Tensor
             Combined scores.
         """
+        return self.join_pair(a, b)
 
     @property
-    @abstractmethod
-    def zero(self) -> float:
-        """Additive identity: the score of an impossible derivation."""
-
-    @property
-    @abstractmethod
     def one(self) -> float:
-        """Multiplicative identity: the score of a trivial derivation."""
+        """Multiplicative identity, the score of a trivial derivation.
+
+        Returns
+        -------
+        float
+            The core ``unit``.
+        """
+        return self.unit
 
 
-class LogProbSemiring(ChartSemiring):
+class LogProbSemiring(ChartSemiring, LogProbAlgebra):
     """Log-probability semiring: (logsumexp, +, -∞, 0).
 
     This is the default semiring for marginal parsing. ``times`` is
@@ -125,291 +142,43 @@ class LogProbSemiring(ChartSemiring):
     ``plus`` is logsumexp (= addition of probabilities in log-space).
     """
 
-    def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Multiply probabilities by adding log-probabilities.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            Left operand scores.
-        b : torch.Tensor
-            Right operand scores.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        return a + b
-
-    def plus(self, scores: torch.Tensor, dim: int) -> torch.Tensor:
-        """Sum probabilities over ``dim`` by logsumexp.
-
-        Parameters
-        ----------
-        scores : torch.Tensor
-            Scores to aggregate.
-        dim : int
-            Dimension to aggregate over.
-
-        Returns
-        -------
-        torch.Tensor
-            The aggregated scores, with ``dim`` removed.
-        """
-        return torch.logsumexp(scores, dim=dim)
-
-    def plus_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Sum two log-probabilities by logaddexp.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            First operand.
-        b : torch.Tensor
-            Second operand.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        return torch.logaddexp(a, b)
-
-    @property
-    def zero(self) -> float:
-        """Negative infinity, the log-probability of an impossible derivation."""
-        return float("-inf")
-
-    @property
-    def one(self) -> float:
-        """Zero, the log-probability of a certain derivation."""
-        return 0.0
-
-    def __repr__(self) -> str:
-        return "LogProbSemiring()"
+    proof = LogProbAlgebra.proof
+    tested = LogProbAlgebra.tested
 
 
-class ViterbiSemiring(ChartSemiring):
+class ViterbiSemiring(ChartSemiring, MaxPlusAlgebra):
     """Viterbi semiring: (max, +, -∞, 0).
 
     Finds the single best derivation. ``plus`` takes the max over
-    derivations rather than summing. Useful for Viterbi parsing
-    and best-first decoding.
+    derivations rather than summing, and gives the whole derivative of
+    a tie to the first best operand. Useful for Viterbi parsing and
+    best-first decoding.
     """
 
-    def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Multiply probabilities by adding log-probabilities.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            Left operand scores.
-        b : torch.Tensor
-            Right operand scores.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        return a + b
-
-    def plus(self, scores: torch.Tensor, dim: int) -> torch.Tensor:
-        """Take the best score over ``dim``.
-
-        Parameters
-        ----------
-        scores : torch.Tensor
-            Scores to aggregate.
-        dim : int
-            Dimension to aggregate over.
-
-        Returns
-        -------
-        torch.Tensor
-            The aggregated scores, with ``dim`` removed.
-        """
-        return scores.max(dim=dim).values
-
-    def plus_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Take the elementwise best of two scores.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            First operand.
-        b : torch.Tensor
-            Second operand.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        return torch.maximum(a, b)
-
-    @property
-    def zero(self) -> float:
-        """Negative infinity, the score of an impossible derivation."""
-        return float("-inf")
-
-    @property
-    def one(self) -> float:
-        """Zero, the score of a trivial derivation."""
-        return 0.0
-
-    def __repr__(self) -> str:
-        return "ViterbiSemiring()"
+    proof = MaxPlusAlgebra.proof
+    tested = MaxPlusAlgebra.tested
 
 
-class BooleanSemiring(ChartSemiring):
+class BooleanSemiring(ChartSemiring, BooleanAlgebra):
     """Boolean semiring: (or, and, 0, 1).
 
     For recognition only: determines whether a parse exists without
     computing scores. Values are 0.0 (false) and 1.0 (true).
     """
 
-    def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Conjoin truth values in {0, 1} by multiplication.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            Left operand scores.
-        b : torch.Tensor
-            Right operand scores.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        # and in {0, 1}: min or product
-        return a * b
-
-    def plus(self, scores: torch.Tensor, dim: int) -> torch.Tensor:
-        """Disjoin truth values in {0, 1} over ``dim`` by max.
-
-        Parameters
-        ----------
-        scores : torch.Tensor
-            Scores to aggregate.
-        dim : int
-            Dimension to aggregate over.
-
-        Returns
-        -------
-        torch.Tensor
-            The aggregated scores, with ``dim`` removed.
-        """
-        # or in {0, 1}: clamp of sum or max
-        return scores.max(dim=dim).values
-
-    def plus_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Disjoin two truth values by elementwise max.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            First operand.
-        b : torch.Tensor
-            Second operand.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        return torch.maximum(a, b)
-
-    @property
-    def zero(self) -> float:
-        """``0.0``, false."""
-        return 0.0
-
-    @property
-    def one(self) -> float:
-        """``1.0``, true."""
-        return 1.0
-
-    def __repr__(self) -> str:
-        return "BooleanSemiring()"
+    proof = BooleanAlgebra.proof
+    tested = BooleanAlgebra.tested
 
 
-class CountingSemiring(ChartSemiring):
+class CountingSemiring(ChartSemiring, CountingAlgebra):
     """Counting semiring: (+, ×, 0, 1).
 
     Counts the number of derivations. ``plus`` sums counts and
     ``times`` multiplies them (product rule for independent choices).
-
-    Note: Not differentiable in a useful sense for gradient-based
-    learning, but useful for analysis.
     """
 
-    def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Multiply derivation counts.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            Left operand scores.
-        b : torch.Tensor
-            Right operand scores.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        return a * b
-
-    def plus(self, scores: torch.Tensor, dim: int) -> torch.Tensor:
-        """Sum derivation counts over ``dim``.
-
-        Parameters
-        ----------
-        scores : torch.Tensor
-            Scores to aggregate.
-        dim : int
-            Dimension to aggregate over.
-
-        Returns
-        -------
-        torch.Tensor
-            The aggregated scores, with ``dim`` removed.
-        """
-        return scores.sum(dim=dim)
-
-    def plus_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Add two derivation counts.
-
-        Parameters
-        ----------
-        a : torch.Tensor
-            First operand.
-        b : torch.Tensor
-            Second operand.
-
-        Returns
-        -------
-        torch.Tensor
-            The combined scores.
-        """
-        return a + b
-
-    @property
-    def zero(self) -> float:
-        """``0.0``, the count of an impossible derivation."""
-        return 0.0
-
-    @property
-    def one(self) -> float:
-        """``1.0``, the count of a trivial derivation."""
-        return 1.0
-
-    def __repr__(self) -> str:
-        return "CountingSemiring()"
+    proof = CountingAlgebra.proof
+    tested = CountingAlgebra.tested
 
 
 LOG_PROB = LogProbSemiring()

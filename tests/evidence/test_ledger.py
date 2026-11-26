@@ -49,7 +49,7 @@ def _with(entry: Entry, **changes: dict[str, str]) -> Entry:
 
 def test_a_repaired_defect_fails_its_entry() -> None:
     """Require an entry whose library now gives the required facts to fail."""
-    entry = ENTRIES["none-is-unbound"]
+    entry = ENTRIES["dense-join"]
     repaired = entry.with_(observe=entry.require)
     with pytest.raises(Mismatch, match="repaired"):
         verify(repaired)
@@ -65,13 +65,13 @@ def test_a_changed_defect_fails_its_entry() -> None:
 
 def test_a_fact_that_is_right_cannot_be_recorded_as_wrong() -> None:
     """Require every recorded fact to differ from its requirement."""
-    entry = ENTRIES["zero-entry-gradient"]
+    entry = ENTRIES["dense-join"]
     with pytest.raises(Mismatch, match="not wrong"):
         verify(_with(entry, wrong=dict(entry.right)))
 
 
 def test_a_wrong_requirement_fails() -> None:
     """Require the recorded requirement to be the computed one."""
-    entry = ENTRIES["zero-update-stops"]
+    entry = ENTRIES["residual-is-the-value"]
     with pytest.raises(Mismatch, match="required"):
-        verify(_with(entry, right={"derivative at zero": "5"}))
+        verify(_with(entry, right=dict.fromkeys(entry.right, "-1")))
