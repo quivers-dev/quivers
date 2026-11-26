@@ -1076,7 +1076,7 @@ def response_observation(response: _ResponseEmission) -> Observation:
         raise ValueError(
             f"response {response.formula.response_name!r} has no observation"
         )
-    return observed.renamed(response.names)
+    return observed.renamed(response.names, objects=response.objects)
 
 
 def recursion_kernel(

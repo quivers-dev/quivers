@@ -113,8 +113,11 @@ def has_location_reference(formula: Formula) -> bool:
     return any(column.is_intercept for column in formula.fixed_columns)
 
 
-def threshold_family(family: Family, formula: Formula) -> Family:
-    """Score a response with threshold groups on category log masses.
+def check_threshold_groups(family: Family, formula: Formula) -> None:
+    """Require a family whose thresholds can be grouped.
+
+    Group thresholds are scored on category log masses, which the ordinal
+    kernel forms whenever the formula declares threshold groups.
 
     Parameters
     ----------
@@ -123,12 +126,6 @@ def threshold_family(family: Family, formula: Formula) -> Family:
     formula : Formula
         Evaluated response formula.
 
-    Returns
-    -------
-    Family
-        The family, observed through category log masses when the formula
-        declares threshold groups.
-
     Raises
     ------
     ValueError
@@ -136,7 +133,7 @@ def threshold_family(family: Family, formula: Formula) -> Family:
         for a mixture whose components mix hurdle and other ordinal families.
     """
     if formula.modifiers.threshold_groups is None:
-        return family
+        return
     if family.mixture is not None and all(
         component.ordinal is not None for component in family.mixture.components
     ):
@@ -151,21 +148,12 @@ def threshold_family(family: Family, formula: Formula) -> Family:
                 "the hurdle category or all lack it, since a group's threshold "
                 "count is read from one coding of the response"
             )
-        # brms gives every ordinal component its own group thresholds.
-        return family.with_(
-            mixture=family.mixture.with_(
-                components=tuple(
-                    component.with_(observe_family="Categorical")
-                    for component in family.mixture.components
-                )
-            )
-        )
+        return
     if family.ordinal is None:
         raise ValueError(
             "thres(gr = ...) requires an ordinal response family (cumulative, "
             "sratio, cratio, acat, or hurdle_cumulative) or a mixture of them"
         )
-    return family.with_(observe_family="Categorical")
 
 
 def threshold_kinds(family: Family) -> tuple[str, ...]:

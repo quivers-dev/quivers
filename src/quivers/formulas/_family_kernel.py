@@ -172,7 +172,7 @@ class OrdinalMasses(KernelPart):
             emission.formula, cutpoints, emission.statements, emission.steps, emission
         )
         emission.arguments = KernelArguments(
-            kernel=kernel, values=("ordinal_logits",), parameters=("logits",)
+            kernel="Categorical", values=("ordinal_logits",), parameters=("logits",)
         )
 
 
@@ -1102,7 +1102,9 @@ def family_kernel(
         body.append(BindSlot(slot="mu"))
         body.append(
             OrdinalMasses(
-                cutpoint_law=family.scores_cutpoints,
+                # Grouped thresholds are scored on category log masses.
+                cutpoint_law=family.scores_cutpoints
+                and formula.modifiers.threshold_groups is None,
                 unit_discrimination=inputs.fixed.get("disc", 1.0) == 1.0
                 and "disc" not in inputs.distributional
                 and "disc" not in inputs.priors

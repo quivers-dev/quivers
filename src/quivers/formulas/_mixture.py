@@ -1004,7 +1004,7 @@ def _sub_emission(
     observed = sub._observation
     if observed is None:
         raise ValueError("a mixture component emitted no observation")
-    observation = observed.renamed(names, morphisms)
+    observation = observed.renamed(names, morphisms, objects)
     # The component's own observation is the last step it writes; the
     # mixture scores the component law instead.
     written = steps.pop()

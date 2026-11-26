@@ -229,7 +229,10 @@ class Observation(ValueModel):
         )
 
     def renamed(
-        self, names: Mapping[str, str], kernels: Mapping[str, str] | None = None
+        self,
+        names: Mapping[str, str],
+        kernels: Mapping[str, str] | None = None,
+        objects: Mapping[str, str] | None = None,
     ) -> Observation:
         """Return the observation in another program's names.
 
@@ -239,12 +242,15 @@ class Observation(ValueModel):
             New name of each binding; others are kept.
         kernels : Mapping[str, str] or None
             New name of each compilation-local law; others are kept.
+        objects : Mapping[str, str] or None
+            New name of each finite axis; others are kept.
 
         Returns
         -------
         Observation
-            The observation with renamed site, bindings, and laws.
+            The observation with renamed site, bindings, laws, and axes.
         """
+        axes = objects or {}
 
         def named(value: str | int | float) -> str | int | float:
             return names.get(value, value) if isinstance(value, str) else value
@@ -252,6 +258,8 @@ class Observation(ValueModel):
         return self.with_(
             site=names.get(self.site, self.site),
             kernel=(kernels or {}).get(self.kernel, self.kernel),
+            plate=axes.get(self.plate, self.plate),
+            event=None if self.event is None else axes.get(self.event, self.event),
             values=tuple(named(value) for value in self.values),
             weights=None
             if self.weights is None
@@ -260,7 +268,8 @@ class Observation(ValueModel):
                 names.get(column, column) for column in self.event_columns
             ),
             components=tuple(
-                component.renamed(names, kernels) for component in self.components
+                component.renamed(names, kernels, objects)
+                for component in self.components
             ),
         )
 
