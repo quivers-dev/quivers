@@ -53,7 +53,9 @@ def test_residual_correlation_keeps_response_and_native_component_axes_distinct(
 
 
 def test_residual_correlation_refuses_heterogeneous_and_nonelliptical_families():
-    frame = pd.DataFrame({"y": [0.1, 0.4, -0.2, 0.3], "z": [1, 0, 1, 1], "x": [0.0, 1.0, 2.0, 3.0]})
+    frame = pd.DataFrame(
+        {"y": [0.1, 0.4, -0.2, 0.3], "z": [1, 0, 1, 1], "x": [0.0, 1.0, 2.0, 3.0]}
+    )
     for second in ("student_t", "bernoulli"):
         spec = MultivariateFormula(
             responses={
