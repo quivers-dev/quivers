@@ -227,6 +227,31 @@ def _value_expression(
     )
 
 
+def _unknown_parameters(
+    names: frozenset[str], family_parameters: frozenset[str]
+) -> ValueError:
+    """The refusal of distributional formulas that nothing reads.
+
+    Parameters
+    ----------
+    names : frozenset[str]
+        Names given distributional formulas that are no family parameter
+        and that no nonlinear formula reads.
+    family_parameters : frozenset[str]
+        Parameters of the family.
+
+    Returns
+    -------
+    ValueError
+        The error naming the unknown parameters and the choices.
+    """
+    return ValueError(
+        f"unknown distributional parameters {sorted(names)}; choices are "
+        f"{sorted(family_parameters)}, or a nonlinear parameter read by a "
+        "nonlinear formula"
+    )
+
+
 def _value_names(value):
     """Collect dependencies from every coordinate of one typed graph value.
 
@@ -346,7 +371,12 @@ def build_predictor_graph(
         raise ValueError(
             "an explicit nonlinear mu root requires a response formula with '~0'"
         )
+    # A formula of a name that is no family parameter is a nonlinear
+    # parameter only when a nonlinear formula reads it.
+    named = frozenset(distributional or {}) - family_parameters
     if not roots and nonlinear is None:
+        if named:
+            raise _unknown_parameters(named, family_parameters)
         return None
     unknown_roots = roots.keys() - family_parameters
     if unknown_roots:
@@ -407,6 +437,8 @@ def build_predictor_graph(
                 reachable.add(dependency)
                 pending.append(dependency)
     unused = declarations.keys() - reachable
+    if unused & named:
+        raise _unknown_parameters(unused & named, family_parameters)
     if unused:
         raise ValueError(f"unused nonlinear parameters {sorted(unused)}")
     raw_names = (

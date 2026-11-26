@@ -677,3 +677,31 @@ def test_nonlinear_leaf_stateful_transforms_and_factor_coding_reuse_fitted_desig
     assert result.posterior_epred(new_data=fresh, num_samples=2).shape == (1, 2, 2)
     with pytest.raises(ValueError, match="unknown levels"):
         result.posterior_epred(new_data=fresh.assign(c="unfitted"), num_samples=1)
+
+
+@pytest.mark.parametrize(
+    "distributional",
+    [
+        {"bogus": "~ x"},
+        {
+            "sigma": NonlinearExpression(expression="exp(a * x)"),
+            "a": "~ 1",
+            "b": "~ 1",
+        },
+    ],
+    ids=["no nonlinear formula", "not read by the nonlinear formula"],
+)
+def test_a_formula_no_nonlinear_formula_reads_is_an_unknown_parameter(
+    distributional,
+):
+    with pytest.raises(ValueError, match=r"unknown distributional parameters \["):
+        formula_to_qvr("y ~ x", data=_frame(), distributional=distributional)
+
+
+def test_a_formula_a_nonlinear_formula_reads_is_a_nonlinear_parameter():
+    distributional = {
+        "sigma": NonlinearExpression(expression="exp(a * x)"),
+        "a": "~ 1",
+    }
+    source = formula_to_qvr("y ~ x", data=_frame(), distributional=distributional)
+    assert "nlpar_a_intercept" in source
