@@ -15,13 +15,14 @@ handler boundary.
 
 from __future__ import annotations
 
-import math
 from functools import cached_property, lru_cache
 from collections.abc import Callable, Hashable, Mapping
 from typing import cast
 
 import didactic.api as dx
+import torch
 
+from quivers._positions import demand
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec._models import QiecModel
 from quivers.qiec.effects import (
@@ -81,8 +82,22 @@ from quivers.qiec.terms import (
     Var,
 )
 from quivers.qiec.canonical import sampled_element, tensor_shape
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.core.algebras import LOG_PROB
+from quivers.qiec.distributions import (
+    DistributionBackend,
+    RuntimeDistribution,
+    distribution_backend,
+)
 from quivers.qiec.families import family
+from quivers.qiec.numbers import (
+    NumberDomain,
+    decide,
+    discrete_key,
+    host_index,
+    machine_value,
+    number_kind,
+    static_shape,
+)
 from quivers.qiec.primitives import IMPLEMENTATIONS
 from quivers.qiec.substitution import (
     instantiate_telescope,
@@ -282,6 +297,9 @@ def _runtime_field_value(value: HeldValue) -> HeldValue:
         return value
     if value is None:
         return None
+    if isinstance(value, torch.Tensor) and not value.is_floating_point():
+        # An integer or truth value is discrete data and keys an item.
+        return discrete_key(value)
     if isinstance(value, tuple):
         return tuple(_runtime_field_value(item) for item in value)
     return (type(value), id(value))
@@ -290,8 +308,9 @@ def _runtime_field_value(value: HeldValue) -> HeldValue:
 class RuntimeConstructor(QiecModel):
     """Erased runtime representation of a checked constructor value.
 
-    Constructor metadata, scalar fields, tuples, and nested models compare
-    by value. Live host objects retain identity, including tensor gradients.
+    Constructor metadata, scalar fields, tuples, nested models, and tensors
+    of integers or truth values compare by value. Real tensors and live host
+    objects retain identity, so a gradient is never merged.
 
     Parameters
     ----------
@@ -562,6 +581,9 @@ class RuntimeAttachments(QiecModel):
     """Process-local values and handlers keyed by stable core identifiers.
 
     Each record owns fresh mutable tables whose identities survive updates.
+    It also fixes what the invocation's numbers are and what samples and
+    scores its distributions, so every provider attached to it and every
+    clause running in it read the same.
 
     Parameters
     ----------
@@ -569,6 +591,12 @@ class RuntimeAttachments(QiecModel):
         Attached host values by attachment identity.
     handlers
         Runtime handlers by handler identity.
+    numbers
+        The dtype and device of the invocation's numbers; torch's default
+        floating dtype on the CPU unless given.
+    distributions
+        The backend that samples and scores the invocation's
+        distributions; the installed backend unless given.
     """
 
     values: dict[AttachmentId, AttachmentBinding] = dx.field(
@@ -576,6 +604,10 @@ class RuntimeAttachments(QiecModel):
     )
     handlers: dict[HandlerId, RuntimeHandler] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    numbers: NumberDomain = dx.field(default_factory=NumberDomain.default)
+    distributions: DistributionBackend = dx.field(
+        default_factory=distribution_backend, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     def bind_value(
@@ -1770,267 +1802,124 @@ def _extent(axis: PlateAxis) -> int:
     raise EvaluationError(f"plate axis {axis.name!r} has no literal extent")
 
 
-def _broadcast(
-    implementation: Callable[..., object], arguments: tuple[object, ...]
-) -> object:
-    """Apply a scalar primitive entrywise over tensor arguments.
-
-    Parameters
-    ----------
-    implementation : Callable[..., object]
-        The scalar implementation.
-    arguments : tuple[object, ...]
-        The host arguments: scalars, or nested tuples of one shape.
-
-    Returns
-    -------
-    object
-        The scalar result when no argument is a tensor, else nested
-        tuples of results shaped like the tensor arguments, scalars
-        broadcast over every position.
-
-    Raises
-    ------
-    EvaluationError
-        If two tensor arguments differ in length at some level.
-    """
-    tensors = [argument for argument in arguments if isinstance(argument, tuple)]
-    if not tensors:
-        return implementation(*arguments)
-    length = len(tensors[0])
-    if any(len(tensor) != length for tensor in tensors):
-        raise EvaluationError("primitive applied to tensors of differing shapes")
-    return tuple(
-        _broadcast(
-            implementation,
-            tuple(
-                argument[index] if isinstance(argument, tuple) else argument
-                for argument in arguments
-            ),
-        )
-        for index in range(length)
-    )
-
-
-def _flat(value: object) -> list[float]:
-    """Every entry of a host tensor in row-major order.
+def _tensor_operand(value: object, what: str) -> torch.Tensor:
+    """Require a machine value to be a tensor of numbers.
 
     Parameters
     ----------
     value : object
-        A number or nested tuples of numbers.
+        The value.
+    what : str
+        What takes it, for the diagnostic.
 
     Returns
     -------
-    list[float]
-        The entries.
-    """
-    if isinstance(value, tuple):
-        return [entry for item in value for entry in _flat(item)]
-    return [value]  # type: ignore[list-item]
-
-
-def _reduce(operator: str, value: object) -> object:
-    """Summarize every entry of a host tensor.
-
-    Parameters
-    ----------
-    operator : str
-        The reduction.
-    value : object
-        The tensor.
-
-    Returns
-    -------
-    object
-        The number.
-
-    Raises
-    ------
-    EvaluationError
-        If mean, minimum, or maximum is requested for an empty tensor.
-    """
-    entries = _flat(value)
-    if not entries:
-        if operator == "sum":
-            return 0
-        if operator == "prod":
-            return 1
-        if operator == "logsumexp":
-            return -math.inf
-        raise EvaluationError(f"{operator} of an empty tensor")
-    if operator == "sum":
-        return (
-            sum(entries)
-            if all(isinstance(e, int) for e in entries)
-            else math.fsum(entries)
-        )
-    if operator == "mean":
-        return math.fsum(entries) / len(entries)
-    if operator == "max":
-        return max(entries)
-    if operator == "min":
-        return min(entries)
-    if operator == "prod":
-        result: float = 1
-        for entry in entries:
-            result *= entry
-        return result
-    peak = max(entries)
-    if peak == float("-inf"):
-        return peak
-    return peak + math.log(math.fsum(math.exp(entry - peak) for entry in entries))
-
-
-def _rowwise(operator: str, value: object) -> object:
-    """Apply an operation along a host tensor's last axis.
-
-    Parameters
-    ----------
-    operator : str
-        The operation.
-    value : object
-        The tensor.
-
-    Returns
-    -------
-    object
-        A tensor of the same shape.
+    torch.Tensor
+        The value.
 
     Raises
     ------
     EvaluationError
         If the value is not a tensor.
     """
-    if not isinstance(value, tuple):
-        raise EvaluationError(f"{operator} takes a tensor")
-    if value and isinstance(value[0], tuple):
-        return tuple(_rowwise(operator, item) for item in value)
-    row = [float(item) for item in value]  # type: ignore[arg-type]
-    if operator == "softmax":
-        peak = max(row)
-        weights = [math.exp(item - peak) for item in row]
-        total = math.fsum(weights)
-        return tuple(weight / total for weight in weights)
-    if operator == "log_softmax":
-        peak = max(row)
-        normalizer = peak + math.log(math.fsum(math.exp(item - peak) for item in row))
-        return tuple(item - normalizer for item in row)
-    if operator == "cumsum":
-        running = 0.0
-        out = []
-        for item in row:
-            running += item
-            out.append(running)
-        return tuple(out)
-    if operator == "sort":
-        return tuple(sorted(row))
-    total = math.fsum(row)
-    return tuple(item / total for item in row)
+    if not isinstance(value, torch.Tensor):
+        raise EvaluationError(f"{what} takes a tensor of numbers")
+    return value
 
 
-def _cholesky(value: object) -> object:
-    """Factor each symmetric positive-definite matrix of a host tensor.
-
-    The Cholesky-Banachiewicz recursion computes the lower factor row by row
-    in O(n^3) operations for an ``n``-by-``n`` matrix, reading only the lower
-    triangle, as `torch.linalg.cholesky` does.
+def _require_indices(index: torch.Tensor, extent: int, what: str) -> None:
+    """Require every entry of an index tensor to select one of ``extent`` slices.
 
     Parameters
     ----------
-    value : object
-        A matrix, or a tensor whose last two axes are matrices.
-
-    Returns
-    -------
-    object
-        Lower-triangular factors of the same shape.
+    index : torch.Tensor
+        Integer indices.
+    extent : int
+        The number of slices.
+    what : str
+        What indexes, for the diagnostic.
 
     Raises
     ------
     EvaluationError
-        If the value is not a square matrix, or a matrix is not positive
-        definite.
+        If the index is not of integers or an entry is outside the range.
     """
-    if not isinstance(value, tuple) or not value or not isinstance(value[0], tuple):
-        raise EvaluationError("cholesky takes a square matrix")
-    if value[0] and isinstance(value[0][0], tuple):
-        return tuple(_cholesky(item) for item in value)
-    size = len(value)
-    rows = [[float(entry) for entry in row] for row in value]  # type: ignore[union-attr]
-    if any(len(row) != size for row in rows):
-        raise EvaluationError("cholesky takes a square matrix")
-    factor = [[0.0] * size for _ in range(size)]
-    for i in range(size):
-        for j in range(i + 1):
-            partial = rows[i][j] - math.fsum(
-                factor[i][k] * factor[j][k] for k in range(j)
-            )
-            if i == j:
-                if not partial > 0:
-                    raise EvaluationError(
-                        "cholesky takes a positive-definite matrix; the leading "
-                        f"minor of order {i + 1} is not positive definite"
-                    )
-                factor[i][j] = math.sqrt(partial)
-            else:
-                factor[i][j] = partial / factor[j][j]
-    return tuple(tuple(row) for row in factor)
+    if index.dtype.is_floating_point or index.dtype == torch.bool:
+        raise EvaluationError(f"{what} index is not an Int")
+    demand(
+        (index >= 0) & (index < extent),
+        lambda: EvaluationError(f"{what} index is outside {extent} slices"),
+    )
 
 
 def _gather(source: object, index: object) -> object:
-    """Select along a host tensor's outermost axis.
+    """Select along a tensor's outermost axis.
 
     Parameters
     ----------
     source : object
-        The tensor, a tuple.
+        A tensor of numbers, or nested tuples of structured values.
     index : object
-        An integer, or a nested tuple of integers.
+        An Int, or a tensor of them.
 
     Returns
     -------
     object
-        The selected slice, or nested tuples of slices shaped like the
-        index.
+        The selected slices, shaped like the index followed by the
+        source's inner axes; for structured values, nested tuples of
+        slices shaped like the index.
 
     Raises
     ------
     EvaluationError
-        If the source is not a tuple or an index is out of range.
+        If the source is not a tensor or an index is out of range.
     """
+    selector = _tensor_operand(index, "gather")
+    if isinstance(source, torch.Tensor):
+        if source.dim() == 0:
+            raise EvaluationError("gather selects from a scalar")
+        _require_indices(selector, int(source.shape[0]), "gather")
+        return source[selector]
     if not isinstance(source, tuple):
         raise EvaluationError("gather selects from a non-tensor runtime value")
-    if isinstance(index, tuple):
-        return tuple(_gather(source, item) for item in index)
-    if not isinstance(index, int) or not 0 <= index < len(source):
-        raise EvaluationError(f"gather index {index!r} is outside {len(source)} slices")
-    return source[index]
+    if selector.dim() > 0:
+        return tuple(_gather(source, entry) for entry in selector.unbind(0))
+    position = host_index(selector, "gather index")
+    if not 0 <= position < len(source):
+        raise EvaluationError(
+            f"gather index {position!r} is outside {len(source)} slices"
+        )
+    return source[position]
 
 
-def _total(value: object) -> float:
-    """Sum every entry of a host tensor of weights.
+def _transformed(value: torch.Tensor, transform: str) -> torch.Tensor:
+    """Apply the transform of an affine or table head.
 
     Parameters
     ----------
-    value : object
-        A float or nested tuples of floats.
+    value : torch.Tensor
+        The head's raw coordinates.
+    transform : str
+        ``"identity"``, ``"exp"``, or ``"exp_floor"``.
 
     Returns
     -------
-    float
-        The total.
+    torch.Tensor
+        The coordinates; ``exp_floor`` keeps every scale at least
+        `SCALE_FLOOR`.
     """
-    if isinstance(value, tuple):
-        return math.fsum(_total(item) for item in value)
-    return float(value)  # type: ignore[arg-type]
+    if transform == "exp":
+        return torch.exp(value)
+    if transform == "exp_floor":
+        return torch.clamp(torch.exp(value), min=SCALE_FLOOR)
+    return value
 
 
 def _affine(
     head: AffineMap,
     evaluate: Callable[[Value, Mapping[Local, object]], object],
     environment: Mapping[Local, object],
-) -> object:
+) -> torch.Tensor:
     """Apply one head of an affine map to its sources.
 
     Parameters
@@ -2044,46 +1933,39 @@ def _affine(
 
     Returns
     -------
-    object
-        The head's coordinates as a tuple, or a float for a one-row head.
+    torch.Tensor
+        The head's coordinates, a scalar for a one-row head.
 
     Raises
     ------
     EvaluationError
         If the weight, bias, or a source is not shaped as typed.
     """
-    weight = evaluate(head.weight, environment)
-    bias = evaluate(head.bias, environment)
-    row: list[float] = []
-    for source in head.sources:
-        entry = evaluate(source, environment)
-        if isinstance(entry, tuple):
-            row.extend(float(item) for item in entry)  # type: ignore[arg-type]
-        else:
-            row.append(float(entry))  # type: ignore[arg-type]
-    if not isinstance(weight, tuple) or not isinstance(bias, tuple):
+    weight = _tensor_operand(evaluate(head.weight, environment), "an affine map")
+    bias = _tensor_operand(evaluate(head.bias, environment), "an affine map")
+    sources = [
+        _tensor_operand(evaluate(source, environment), "an affine map").reshape(-1)
+        for source in head.sources
+    ]
+    row = torch.cat(sources) if sources else weight.new_zeros(0)
+    if weight.dim() != 2 or bias.dim() != 1:
         raise EvaluationError("an affine map's weight and bias are tensors")
-    coordinates = []
-    for offset in range(head.rows):
-        index = head.row_offset + offset
-        weights = weight[index]
-        if not isinstance(weights, tuple) or len(weights) != len(row):
-            raise EvaluationError("an affine map's weight row does not fit its sources")
-        total = math.fsum(float(w) * x for w, x in zip(weights, row, strict=True))  # type: ignore[arg-type]
-        total += float(bias[index])  # type: ignore[arg-type]
-        if head.transform == "exp":
-            total = math.exp(total)
-        elif head.transform == "exp_floor":
-            total = max(math.exp(total), SCALE_FLOOR)
-        coordinates.append(total)
-    return coordinates[0] if head.rows == 1 else tuple(coordinates)
+    rows = slice(head.row_offset, head.row_offset + head.rows)
+    if int(weight.shape[1]) != int(row.shape[0]) or head.row_offset + head.rows > int(
+        weight.shape[0]
+    ):
+        raise EvaluationError("an affine map's weight row does not fit its sources")
+    coordinates = _transformed(
+        torch.mv(weight[rows], row.to(weight.dtype)) + bias[rows], head.transform
+    )
+    return coordinates[0] if head.rows == 1 else coordinates
 
 
 def _table(
     head: TableMap,
     evaluate: Callable[[Value, Mapping[Local, object]], object],
     environment: Mapping[Local, object],
-) -> object:
+) -> torch.Tensor:
     """Read one head of a table-indexed map at its index.
 
     Parameters
@@ -2097,36 +1979,176 @@ def _table(
 
     Returns
     -------
-    object
-        The head's coordinates as a tuple, or a float for a one-column
-        head.
+    torch.Tensor
+        The head's coordinates, a scalar for a one-column head.
 
     Raises
     ------
     EvaluationError
-        If the table is not a matrix, the index not an integer within
-        it, or the block not within a row.
+        If the table is not a matrix, the index not an Int within it, or
+        the block not within a row.
     """
-    table = evaluate(head.table, environment)
-    index = evaluate(head.index, environment)
-    if not isinstance(table, tuple) or not isinstance(index, int):
-        raise EvaluationError("a table map reads a tensor at an Int index")
-    if index < 0 or index >= len(table):
-        raise EvaluationError(
-            f"a table map's index {index} lies outside its {len(table)} rows"
-        )
-    row = table[index]
-    if not isinstance(row, tuple) or head.row_offset + head.rows > len(row):
+    table = _tensor_operand(evaluate(head.table, environment), "a table map")
+    index = _tensor_operand(evaluate(head.index, environment), "a table map")
+    if table.dim() != 2 or index.dim() != 0:
+        raise EvaluationError("a table map reads a matrix at an Int index")
+    if head.row_offset + head.rows > int(table.shape[1]):
         raise EvaluationError("a table map's block does not fit its table row")
-    coordinates = []
-    for offset in range(head.rows):
-        total = float(row[head.row_offset + offset])  # type: ignore[arg-type]
-        if head.transform == "exp":
-            total = math.exp(total)
-        elif head.transform == "exp_floor":
-            total = max(math.exp(total), SCALE_FLOOR)
-        coordinates.append(total)
-    return coordinates[0] if head.rows == 1 else tuple(coordinates)
+    _require_indices(index, int(table.shape[0]), "a table map's")
+    block = table[index][head.row_offset : head.row_offset + head.rows]
+    coordinates = _transformed(block, head.transform)
+    return coordinates[0] if head.rows == 1 else coordinates
+
+
+def _reduce(operator: str, value: torch.Tensor, domain: NumberDomain) -> torch.Tensor:
+    """Summarize every entry of a tensor.
+
+    Parameters
+    ----------
+    operator : str
+        The reduction.
+    value : torch.Tensor
+        The tensor.
+    domain : NumberDomain
+        The run's numbers, which hold the mean of integers.
+
+    Returns
+    -------
+    torch.Tensor
+        The number. An empty sum is zero, an empty product one, and an
+        empty log-sum-exp negative infinity, each with zero gradient. A
+        maximum or minimum selects the first of tied entries, which
+        receives the whole gradient.
+
+    Raises
+    ------
+    EvaluationError
+        If mean, minimum, or maximum is requested for an empty tensor.
+    """
+    flat = value.reshape(-1)
+    if operator == "sum":
+        return flat.sum()
+    if operator == "prod":
+        return flat.prod()
+    if operator == "logsumexp":
+        return LOG_PROB.join(flat, 0)
+    if int(flat.shape[0]) == 0:
+        raise EvaluationError(f"{operator} of an empty tensor")
+    if operator == "mean":
+        real = flat if flat.is_floating_point() else flat.to(domain.real_dtype)
+        return real.mean()
+    if operator == "max":
+        return flat.max(dim=0).values
+    if operator == "min":
+        return flat.min(dim=0).values
+    raise EvaluationError(f"unknown reduction {operator!r}")
+
+
+def _rowwise(operator: str, value: torch.Tensor) -> torch.Tensor:
+    """Apply an operation along a tensor's last axis.
+
+    Parameters
+    ----------
+    operator : str
+        The operation.
+    value : torch.Tensor
+        The tensor.
+
+    Returns
+    -------
+    torch.Tensor
+        A tensor of the same shape.
+
+    Raises
+    ------
+    EvaluationError
+        If the value has no axis.
+    """
+    if value.dim() == 0:
+        raise EvaluationError(f"{operator} takes a tensor")
+    if operator == "softmax":
+        return torch.softmax(value, dim=-1)
+    if operator == "log_softmax":
+        return torch.log_softmax(value, dim=-1)
+    if operator == "cumsum":
+        return torch.cumsum(value, dim=-1)
+    if operator == "sort":
+        return torch.sort(value, dim=-1).values
+    return value / value.sum(dim=-1, keepdim=True)
+
+
+def _cholesky(value: torch.Tensor) -> torch.Tensor:
+    """Factor each symmetric positive-definite matrix of a tensor.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        A matrix, or a tensor whose last two axes are matrices.
+
+    Returns
+    -------
+    torch.Tensor
+        Lower-triangular factors of the same shape, differentiable; only
+        the lower triangle is read.
+
+    Raises
+    ------
+    EvaluationError
+        If the value is not a square matrix, or a matrix is not positive
+        definite.
+    """
+    if value.dim() < 2 or int(value.shape[-1]) != int(value.shape[-2]):
+        raise EvaluationError("cholesky takes a square matrix")
+    factor, info = torch.linalg.cholesky_ex(value)
+    demand(
+        info == 0,
+        lambda: EvaluationError(
+            "cholesky takes a positive-definite matrix; a leading minor is not "
+            "positive definite"
+        ),
+    )
+    return factor
+
+
+def _stacked(
+    items: list[object], result_type: TypeExpr, domain: NumberDomain
+) -> object:
+    """Entries along a new outermost axis, as the machine holds the tensor.
+
+    Parameters
+    ----------
+    items : list[object]
+        The entries, in order.
+    result_type : TypeExpr
+        The tensor's type.
+    domain : NumberDomain
+        The run's numbers.
+
+    Returns
+    -------
+    object
+        A stacked tensor when the element type is numeric, nested tuples
+        otherwise.
+
+    Raises
+    ------
+    EvaluationError
+        If numeric entries are not tensors of one shape, or an empty
+        tensor's shape is not static.
+    """
+    kind = number_kind(result_type)
+    if kind is None:
+        return tuple(items)
+    if not items:
+        shape = static_shape(result_type)
+        if shape is None:
+            raise EvaluationError("an empty tensor needs a literal shape")
+        return torch.zeros(shape, dtype=domain.dtype(kind), device=domain.torch_device)
+    tensors = [_tensor_operand(item, "a tensor of numbers") for item in items]
+    try:
+        return torch.stack(tensors)
+    except RuntimeError as error:
+        raise EvaluationError(f"tensor entries differ in shape: {error}") from error
 
 
 class Evaluator:
@@ -2171,6 +2193,9 @@ class Evaluator:
         type_validator: Callable[[TypeExpr], RuntimeValidator | None] | None = None,
     ) -> None:
         self.attachments = attachments or RuntimeAttachments()
+        self.numbers = self.attachments.numbers
+        self.distributions = self.attachments.distributions
+        self._literals: dict[LiteralValue, object] = {}
         self.handler_manifest = handler_manifest
         self.trace_hook = trace_hook
         self.fuel = fuel
@@ -2237,7 +2262,7 @@ class Evaluator:
         try:
             return self._drive_computation(
                 computation,
-                dict(environment or {}),
+                self._machine_environment(environment),
                 stack,
                 (),
             )
@@ -2278,7 +2303,7 @@ class Evaluator:
         EvaluationError
             If execution fails, as in `evaluate`.
         """
-        runtime_environment: dict[Local, HeldValue] = dict(environment or {})
+        runtime_environment = self._machine_environment(environment)
         context = CheckContext()
         for local in runtime_environment:
             context = context.extend(local)
@@ -2353,9 +2378,31 @@ class Evaluator:
         Returns
         -------
         object
-            The host representation of the value.
+            The value as the machine holds it.
         """
-        return self._value(value, environment or {})
+        return self._value(value, self._machine_environment(environment))
+
+    def _machine_environment(
+        self, environment: Mapping[Local, object] | None
+    ) -> dict[Local, HeldValue]:
+        """Host values for free locals, as the machine holds them.
+
+        Parameters
+        ----------
+        environment : Mapping[Local, object] or None
+            Host values by local.
+
+        Returns
+        -------
+        dict[Local, HeldValue]
+            Each value converted by its local's type, so a number given as
+            a Python scalar or a nested list becomes a tensor of the run's
+            dtype and a tensor keeps its gradient.
+        """
+        return {
+            local: machine_value(local.type, value, self.numbers)
+            for local, value in (environment or {}).items()
+        }
 
     def _value(self, value: Value, environment: Mapping[Local, object]) -> object:
         """Reduce a core value to its host representation.
@@ -2391,7 +2438,7 @@ class Evaluator:
                     f"unbound QIEC local {value.local.name!r}"
                 ) from error
         if isinstance(value, LiteralValue):
-            return value.value
+            return self._literal(value)
         if isinstance(value, ConstructorValue):
             return RuntimeConstructor(
                 constructor=value.constructor,
@@ -2426,11 +2473,13 @@ class Evaluator:
             return self._value(value.value, environment)
         if isinstance(value, ConditionalValue):
             condition = self._value(value.condition, environment)
-            if type(condition) is not bool:
-                raise EvaluationError("conditional value requires a scalar Boolean")
-            return self._value(
-                value.then if condition else value.otherwise, environment
-            )
+            try:
+                taken = decide(condition, "a conditional value's condition")
+            except TypeError as error:
+                raise EvaluationError(
+                    "conditional value requires a scalar Boolean"
+                ) from error
+            return self._value(value.then if taken else value.otherwise, environment)
         if isinstance(value, PrimitiveApplication):
             implementation = IMPLEMENTATIONS.get(value.name)
             if implementation is None:
@@ -2439,13 +2488,19 @@ class Evaluator:
                 self._value(argument, environment) for argument in value.arguments
             )
             try:
-                return _broadcast(implementation, arguments)
+                return implementation(self.numbers, *arguments)
             except (ArithmeticError, ValueError) as error:
                 raise EvaluationError(
                     f"primitive {value.name!r} failed: {error}"
                 ) from error
-        if isinstance(value, TupleValue | TensorValue):
+        if isinstance(value, TupleValue):
             return tuple(self._value(item, environment) for item in value.items)
+        if isinstance(value, TensorValue):
+            return _stacked(
+                [self._value(item, environment) for item in value.items],
+                value.result_type,
+                self.numbers,
+            )
         if isinstance(value, Projection):
             source = self._value(value.value, environment)
             if not isinstance(source, tuple) or value.position >= len(source):
@@ -2475,6 +2530,7 @@ class Evaluator:
 
             batch = tuple(_extent(axis) for axis in distribution_axes(value)[0])
             return RuntimeDistribution(
+                backend=self.distributions,
                 family=value.name,
                 arguments=arguments,
                 batch=batch,
@@ -2516,49 +2572,68 @@ class Evaluator:
                 self._value(value.index, environment),
             )
         if isinstance(value, WeightSum):
-            return _total(self._value(value.value, environment))
+            return _tensor_operand(
+                self._value(value.value, environment), "a weight sum"
+            ).sum()
         if isinstance(value, SegmentSum):
             groups = _extent(PlateAxis(name="groups", size=value.groups))
-            totals = [0.0] * groups
-            weights = self._value(value.value, environment)
-            index = self._value(value.index, environment)
-            if not isinstance(weights, tuple) or not isinstance(index, tuple):
-                raise EvaluationError("segment sum takes two vectors")
-            for weight, group in zip(weights, index, strict=True):
-                if not isinstance(group, int) or not 0 <= group < groups:
-                    raise EvaluationError(
-                        f"segment sum index {group!r} is outside {groups} groups"
-                    )
-                totals[group] += weight  # type: ignore[operator]
-            return tuple(totals)
-        if isinstance(value, KernelMatrix):
-            inputs = self._value(value.inputs, environment)
-            if not isinstance(inputs, tuple):
-                raise EvaluationError("a kernel matrix takes a vector of inputs")
-            points = [float(item) for item in inputs]  # type: ignore[arg-type]
-            return tuple(
-                tuple(
-                    math.exp(-0.5 * ((a - b) / value.length_scale) ** 2)
-                    + (value.jitter if i == j else 0.0)
-                    for j, b in enumerate(points)
-                )
-                for i, a in enumerate(points)
+            weights = _tensor_operand(
+                self._value(value.value, environment), "a segment sum"
             )
+            index = _tensor_operand(
+                self._value(value.index, environment), "a segment sum"
+            )
+            if weights.dim() != 1 or index.shape != weights.shape:
+                raise EvaluationError("segment sum takes two vectors of one length")
+            _require_indices(index, groups, "segment sum")
+            return weights.new_zeros(groups).index_add(0, index, weights)
+        if isinstance(value, KernelMatrix):
+            inputs = _tensor_operand(
+                self._value(value.inputs, environment), "a kernel matrix"
+            )
+            if inputs.dim() != 1:
+                raise EvaluationError("a kernel matrix takes a vector of inputs")
+            scaled = (inputs[:, None] - inputs[None, :]) / value.length_scale
+            jitter = value.jitter * torch.eye(
+                int(inputs.shape[0]), dtype=inputs.dtype, device=inputs.device
+            )
+            return torch.exp(-0.5 * scaled**2) + jitter
         if isinstance(value, AffineMap):
             return _affine(value, self._value, environment)
         if isinstance(value, TableMap):
             return _table(value, self._value, environment)
         if isinstance(value, Reduction):
-            return _reduce(value.operator, self._value(value.value, environment))
+            return _reduce(
+                value.operator,
+                _tensor_operand(self._value(value.value, environment), "a reduction"),
+                self.numbers,
+            )
         if isinstance(value, Rowwise):
-            return _rowwise(value.operator, self._value(value.value, environment))
+            return _rowwise(
+                value.operator,
+                _tensor_operand(
+                    self._value(value.value, environment), value.operator
+                ),
+            )
         if isinstance(value, CholeskyFactor):
-            return _cholesky(self._value(value.value, environment))
+            return _cholesky(
+                _tensor_operand(self._value(value.value, environment), "cholesky")
+            )
         if isinstance(value, Comprehension):
             extent = _extent(PlateAxis(name="comprehension", size=value.extent))
-            return tuple(
-                self._value(value.body, {**environment, value.binder: index})
-                for index in range(extent)
+            return _stacked(
+                [
+                    self._value(
+                        value.body,
+                        {
+                            **environment,
+                            value.binder: self.numbers.number("integer", index),
+                        },
+                    )
+                    for index in range(extent)
+                ],
+                value.result_type,
+                self.numbers,
             )
         if isinstance(value, LetValue):
             scope = dict(environment)
@@ -2566,6 +2641,29 @@ class Evaluator:
                 scope[binding.binder] = self._value(binding.value, scope)
             return self._value(value.body, scope)
         raise TypeError(f"unsupported QIEC value {type(value).__name__}")
+
+    def _literal(self, value: LiteralValue) -> object:
+        """A literal as the machine holds it.
+
+        Parameters
+        ----------
+        value : LiteralValue
+            The literal.
+
+        Returns
+        -------
+        object
+            A tensor of the run's dtype for a literal of a numeric type,
+            converted once per literal node and evaluator; the literal's
+            data otherwise.
+        """
+        if number_kind(value.type) is None:
+            return value.value
+        cached = self._literals.get(value)
+        if cached is None:
+            cached = machine_value(value.type, value.value, self.numbers)
+            self._literals[value] = cached
+        return cached
 
     def _validate_handler_manifest(self, manifest: HandlerManifest) -> None:
         """Require every attached handler to match its declared signature.
@@ -2926,11 +3024,13 @@ class Evaluator:
                 continue
             if isinstance(current, If):
                 condition = self._value(current.condition, env)
-                if not isinstance(condition, bool):
+                try:
+                    taken = decide(condition, "an if condition")
+                except TypeError as error:
                     raise EvaluationError(
                         "QIEC if condition did not evaluate to a Boolean"
-                    )
-                current = current.then if condition else current.otherwise
+                    ) from error
+                current = current.then if taken else current.otherwise
                 continue
             if isinstance(current, Case):
                 scrutinee = self._value(current.scrutinee, env)
@@ -3620,11 +3720,14 @@ class Evaluator:
         Returns
         -------
         bool
-            True when the value is a scalar, or an attachment explicitly marked
+            True when the value is a scalar or a tensor, which the machine
+            never mutates, or an attachment explicitly marked
             duplicable. Duplicability is asserted rather than inferred, because
             `copy.copy` succeeding says nothing about whether copying is sound.
         """
-        if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        if value is None or isinstance(
+            value, (bool, int, float, str, bytes, torch.Tensor)
+        ):
             return True
         if isinstance(value, tuple):
             return all(self._duplicable_value(item) for item in value)

@@ -154,9 +154,9 @@ def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
     if lower > upper or lower == upper and not (lower_closed and upper_closed):
         return -math.inf
     from itertools import product
-    from quivers.qiec.distributions import RuntimeDistribution
+    from quivers.qiec.distributions import HostLaw
 
-    if isinstance(base, RuntimeDistribution) and base.plated:
+    if isinstance(base, HostLaw) and base.plated:
         return sum(
             log_interval_mass(
                 base.at(position),

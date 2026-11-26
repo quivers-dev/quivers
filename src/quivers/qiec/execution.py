@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Literal, NoReturn, Protocol, cast
 
 import didactic.api as dx
+import torch
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
@@ -74,7 +75,16 @@ from quivers.qiec.kinds import (
     TypeBinder,
     UserIndexSort,
 )
+from quivers.qiec.distributions import DistributionBackend
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
+from quivers.qiec.numbers import (
+    NumberDomain,
+    NumberKind,
+    PositionDependentControl,
+    host_value,
+    machine_value,
+    number_kind,
+)
 from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_telescope,
@@ -86,9 +96,6 @@ from quivers.qiec.terms import (
     Local,
 )
 from quivers.qiec.types import (
-    BOOL,
-    INT,
-    REAL,
     STRING,
     UNIT,
     EqualityType,
@@ -363,44 +370,6 @@ def _replay_score_instance(options: Mapping[str, object]) -> EffectInstanceId | 
     return instance
 
 
-def _weights(value: object) -> bool:
-    """Whether a host value is a log weight or a tensor of them.
-
-    Parameters
-    ----------
-    value : object
-        The host value.
-
-    Returns
-    -------
-    bool
-        ``True`` for a float, an integer, or nested tuples of them.
-    """
-    if isinstance(value, tuple):
-        return all(_weights(item) for item in value)
-    return isinstance(value, int | float) and not isinstance(value, bool)
-
-
-def _weights_validator(type_: TypeExpr) -> RuntimeValidator:
-    """The validator of a weight type a collecting handler may leave open.
-
-    Parameters
-    ----------
-    type_ : TypeExpr
-        The declared type: ``LogWeight``, a tensor of it, a unit answer,
-        or a type variable a telescope binds.
-
-    Returns
-    -------
-    RuntimeValidator
-        The core validator when the type is closed; otherwise a
-        structural check that the value is a weight or a tensor of
-        weights, since the shape is fixed only at instantiation.
-    """
-    validator = _core_validator(type_)
-    return validator if validator is not None else _weights
-
-
 def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
     """Re-key a prelude handler under a module's declaration.
 
@@ -542,6 +511,7 @@ class CoreRuntimeProvider(QiecModel):
             handler by the semantics its declaration states (with the
             options ``on_failure`` and ``reports`` for a settlement).
         """
+        numbers = attachments.numbers
         configured = self.options.get("handlers", {})
         if not isinstance(configured, Mapping):
             raise ValueError("core runtime option 'handlers' must be an object")
@@ -592,6 +562,7 @@ class CoreRuntimeProvider(QiecModel):
                     definition,
                     lambda result_validator, answer_type: replay_handler(
                         _replay_values(raw_options, definition.name),
+                        host_numbers=numbers,
                         result_validator=result_validator,
                         policy=_replay_policy(raw_options, definition.name),
                         score_instance=_replay_score_instance(raw_options),
@@ -601,13 +572,14 @@ class CoreRuntimeProvider(QiecModel):
                     "Random",
                 )
             elif kind == "declared":
-                runtime = self._declared(definition, raw_options)
+                runtime = self._declared(definition, raw_options, numbers)
             elif kind == "param":
-                runtime = self._param(definition, raw_options)
+                runtime = self._param(definition, raw_options, numbers)
             elif kind == "score":
                 runtime = self._prelude(
                     definition,
                     lambda **_: score_handler(
+                        identity=numbers.zero(),
                         weight_validator=_require_core_handler_validator(
                             LOG_WEIGHT, definition.name, "weight"
                         ),
@@ -625,7 +597,10 @@ class CoreRuntimeProvider(QiecModel):
             attachments.bind_handler(runtime)
 
     def _declared(
-        self, definition: HandlerDef, options: Mapping[str, object]
+        self,
+        definition: HandlerDef,
+        options: Mapping[str, object],
+        numbers: NumberDomain,
     ) -> RuntimeHandler:
         """Serve a foreign handler by the semantics its declaration states.
 
@@ -638,6 +613,8 @@ class CoreRuntimeProvider(QiecModel):
             The configuration: for a settlement, ``on_failure`` (a
             `FailurePolicy`, refusing when absent) and ``reports`` (the
             list an unestablished stop's report goes to).
+        numbers
+            The invocation's numbers, which hold a collector's unit.
 
         Returns
         -------
@@ -673,12 +650,12 @@ class CoreRuntimeProvider(QiecModel):
             return self._prelude(
                 definition,
                 lambda **_: weight_handler(
-                    semiring.unit(),
-                    semiring.times,  # type: ignore[arg-type]
-                    _weights_validator(weight_type),
+                    semiring.unit(numbers),
+                    lambda left, right: semiring.times(left, right, numbers),  # type: ignore[arg-type]
+                    _kernel_validator(weight_type),
                     weight_type=weight_type,
                     answer_type=definition.input_type,
-                    answer_validator=_weights_validator(definition.input_type),
+                    answer_validator=_kernel_validator(definition.input_type),
                     forkable=semantics.forkable,
                 )[0],
                 "Weight",
@@ -743,7 +720,10 @@ class CoreRuntimeProvider(QiecModel):
         return definition.clauses[0].operation
 
     def _param(
-        self, definition: HandlerDef, options: Mapping[str, object]
+        self,
+        definition: HandlerDef,
+        options: Mapping[str, object],
+        numbers: NumberDomain,
     ) -> RuntimeHandler:
         """Serve a module's parameter store with the prelude implementation.
 
@@ -753,8 +733,11 @@ class CoreRuntimeProvider(QiecModel):
             The module's handler declaration over ``Param``.
         options
             The configuration, whose ``values`` map parameter names to
-            their values; an absent name reads as zero, which is how a
-            learned weight starts.
+            their values, host numbers or tensors; an absent name reads as
+            zero, which is how a learned weight starts.
+        numbers
+            The invocation's numbers, in which each value is answered; a
+            tensor keeps its gradient.
 
         Returns
         -------
@@ -786,10 +769,11 @@ class CoreRuntimeProvider(QiecModel):
             Returns
             -------
             object
-                The stored value, or zero.
+                The stored value, or zero, as the machine holds it.
             """
-            del request
-            return store.get(name, 0.0)
+            return machine_value(
+                request.core.result_type, store.get(name, 0.0), numbers
+            )
 
         return self._prelude(
             definition,
@@ -965,7 +949,9 @@ class CoreRuntimeProvider(QiecModel):
                     raise ValueError(
                         f"passthrough handler needs a response for {operation_name!r}"
                     )
-                return _checked_resume(request, resume, response)
+                return _checked_resume(
+                    request, resume, response, _context.attachments.numbers
+                )
 
             return RuntimeClause(invoke=invoke, result_validator=lambda _value: True)
 
@@ -1069,7 +1055,12 @@ class CoreRuntimeProvider(QiecModel):
                         raise ValueError(
                             f"scripted responses exhausted for {operation_name!r}"
                         )
-                    return _checked_resume(_request, resume, _tuplify(queue.pop(0)))
+                    return _checked_resume(
+                        _request,
+                        resume,
+                        _tuplify(queue.pop(0)),
+                        _context.attachments.numbers,
+                    )
 
                 return RuntimeClause(
                     invoke=invoke, result_validator=lambda _value: True
@@ -1174,13 +1165,14 @@ class CoreRuntimeProvider(QiecModel):
                         If ``put`` is given anything other than one argument, or if the
                         operation is neither ``get`` nor ``put``.
                     """
+                    numbers = _context.attachments.numbers
                     if operation_name == "get":
-                        return _checked_resume(request, resume, state[0])
+                        return _checked_resume(request, resume, state[0], numbers)
                     if operation_name == "put":
                         if len(request.arguments) != 1:
                             raise ValueError("state.put expects one runtime argument")
                         state[0] = request.arguments[0]
-                        return _checked_resume(request, resume, None)
+                        return _checked_resume(request, resume, None, numbers)
                     raise ValueError(
                         f"state provider does not implement operation {operation_name!r}"
                     )
@@ -1657,6 +1649,8 @@ def run_named(
     observer: TraceObserver | None = None,
     record_trace: bool = True,
     fuel: int | None = None,
+    numbers: NumberDomain | None = None,
+    distributions: DistributionBackend | None = None,
 ) -> ExecutionResult:
     """Validate and execute one named computation from ``module``.
 
@@ -1690,6 +1684,15 @@ def run_named(
         The number of machine steps the run may take, or ``None`` for no
         bound. General recursion may diverge, and a bound is the only way
         a caller can be sure a run ends.
+    numbers
+        The dtype and device of the run's numbers. Python numbers are
+        double precision, so a run of host values defaults to ``float64``
+        on the CPU; a run of tensors passes their domain. Every argument
+        is converted to it by its parameter's type where it enters, and a
+        tensor keeps its gradient.
+    distributions
+        The backend that samples and scores the run's distributions; the
+        installed backend when ``None``.
 
     Returns
     -------
@@ -1778,7 +1781,10 @@ def run_named(
         )
 
     providers = config.instantiate()
-    attachments = RuntimeAttachments()
+    attachments = RuntimeAttachments(
+        numbers=numbers if numbers is not None else NumberDomain(),
+        **({} if distributions is None else {"distributions": distributions}),
+    )
     try:
         for provider in providers:
             provider.attach(module, attachments)
@@ -1793,6 +1799,10 @@ def run_named(
             selected.origin,
         )
 
+    arguments = tuple(
+        machine_value(parameter.type, value, attachments.numbers)
+        for parameter, value in zip(specialized_parameters, arguments, strict=True)
+    )
     for position, (parameter, specialized_parameter, value) in enumerate(
         zip(selected.parameters, specialized_parameters, arguments, strict=True)
     ):
@@ -1857,7 +1867,7 @@ def run_named(
     )
     try:
         value = evaluator.evaluate_checked(specialized_body, registry, environment)
-    except ExecutionFailure, ContractNotMet:
+    except ExecutionFailure, ContractNotMet, PositionDependentControl:
         raise
     except FuelExhaustedError as error:
         emit("run.failed", {"error": type(error).__name__, "steps": error.steps})
@@ -2309,6 +2319,7 @@ def _checked_resume(
     request: RuntimeRequest,
     resume: Resumption,
     value: object,
+    numbers: NumberDomain,
 ) -> object:
     """Resume with a configured response after checking its type.
 
@@ -2320,7 +2331,10 @@ def _checked_resume(
     resume
         The continuation into the handled computation.
     value
-        The host value to resume with.
+        The host value to resume with, converted to the machine's numbers
+        by that type.
+    numbers
+        The invocation's numbers.
 
     Returns
     -------
@@ -2333,6 +2347,7 @@ def _checked_resume(
         If the core runtime cannot validate the operation's result type, the
         validator raises, or the value does not inhabit the type.
     """
+    value = machine_value(request.core.result_type, value, numbers)
     validator = _core_validator(request.core.result_type)
     if validator is None:
         raise RuntimeTypeMismatch(
@@ -2390,21 +2405,12 @@ def _core_validator(type_: TypeExpr) -> RuntimeValidator | None:
     """
     if type_ == UNIT:
         return lambda value: value is None
-    if type_ == BOOL:
-        return lambda value: isinstance(value, bool)
-    if type_ == INT:
-        return lambda value: isinstance(value, int) and not isinstance(value, bool)
-    if type_ == REAL:
-        return lambda value: (
-            isinstance(value, int | float) and not isinstance(value, bool)
-        )
+    kind = number_kind(type_)
+    if kind is not None and tensor_shape(type_) is None:
+        return _number_validator(kind, ())
     if type_ == STRING:
         return lambda value: isinstance(value, str)
     if isinstance(type_, TypeApplication):
-        if type_ == LOG_WEIGHT:
-            return lambda value: (
-                isinstance(value, int | float) and not isinstance(value, bool)
-            )
         if type_.constructor == SAMPLEABLE_CONSTRUCTOR:
             return lambda value: (
                 callable(getattr(value, "log_prob", None))
@@ -2417,6 +2423,8 @@ def _core_validator(type_: TypeExpr) -> RuntimeValidator | None:
             return lambda value: isinstance(value, str) and bool(value)
         shape = tensor_shape(type_)
         if shape is not None:
+            if kind is not None:
+                return _number_validator(kind, shape[1])
             element_validator = _core_validator(shape[0])
             if element_validator is None:
                 return None
@@ -2480,6 +2488,83 @@ def _core_validator(type_: TypeExpr) -> RuntimeValidator | None:
     if isinstance(type_, TypeVariable):
         return None
     return None
+
+
+def _number_validator(
+    kind: NumberKind, dimensions: tuple[IndexTerm, ...]
+) -> RuntimeValidator:
+    """Build the validator for a number or a tensor of numbers.
+
+    Parameters
+    ----------
+    kind : NumberKind
+        The kind of number.
+    dimensions : tuple[IndexTerm, ...]
+        The static shape; a literal dimension fixes an extent, any other
+        index term leaves it open.
+
+    Returns
+    -------
+    RuntimeValidator
+        A predicate accepting a tensor of the dimensions' rank whose
+        extents match the literal dimensions and whose dtype holds the
+        kind: floating for reals, ``int64`` for integers, ``bool`` for
+        truth values.
+    """
+
+    def validate(value: object) -> bool:
+        """Check a machine value against the kind and the shape.
+
+        Parameters
+        ----------
+        value
+            The value.
+
+        Returns
+        -------
+        bool
+            Whether it is such a tensor.
+        """
+        if not isinstance(value, torch.Tensor) or value.dim() != len(dimensions):
+            return False
+        if kind == "real":
+            dtype_fits = value.is_floating_point()
+        elif kind == "integer":
+            dtype_fits = value.dtype == torch.int64
+        else:
+            dtype_fits = value.dtype == torch.bool
+        if not dtype_fits:
+            return False
+        return all(
+            not isinstance(dimension, IndexLiteral)
+            or not isinstance(dimension.value, int)
+            or int(extent) == dimension.value
+            for dimension, extent in zip(dimensions, value.shape, strict=True)
+        )
+
+    return validate
+
+
+def _kernel_validator(type_: TypeExpr) -> RuntimeValidator:
+    """The validator of a kernel value a collecting handler may leave open.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The declared type: a kernel scalar type, a tensor of one, a unit
+        answer, or a type variable a telescope binds.
+
+    Returns
+    -------
+    RuntimeValidator
+        The core validator when the type is closed; otherwise a check that
+        the value is a tensor of numbers, since the shape and kind are
+        fixed only at instantiation.
+    """
+    validator = _core_validator(type_)
+    if validator is not None:
+        return validator
+    return lambda value: isinstance(value, torch.Tensor)
 
 
 def _tensor_validator(
@@ -2647,6 +2732,8 @@ def _json_value(value: object) -> object:
     """
     if value is None or isinstance(value, bool | int | float | str):
         return value
+    if isinstance(value, torch.Tensor):
+        return host_value(value)
     if isinstance(value, bytes):
         return {"bytes": value.hex()}
     if isinstance(value, tuple):

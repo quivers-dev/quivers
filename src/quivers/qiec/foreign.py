@@ -11,9 +11,10 @@ the kernel type that holds its elements. The provider asks the member
 for the laws the handler relies on and refuses a member that does not
 establish them.
 
-The elements of a kernel semiring are kernel values, so the operations
-convert them to ``float64`` tensors, apply the member's own operations,
-and convert back. The conversion is exact or refused: a natural number
+The elements of a kernel semiring are numbers of the machine, so the
+operations apply the member's own operations to them: a real or log weight
+in its own dtype, keeping its gradient, and a truth value or a count in
+``float64`` and back. The conversion is exact or refused: a natural number
 is exact in ``float64`` below ``2 / eps``, the bound beyond which the
 counting algebra refuses its own closure, and a truth value is ``0`` or
 ``1``.
@@ -49,12 +50,11 @@ from quivers.core.laws import (
     ClaimSubject,
     Law,
 )
+from quivers._positions import demand
 from quivers.qiec._models import QiecModel
+from quivers.qiec.numbers import NumberDomain
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.types import BOOL, INT, REAL as REAL_TYPE, TypeExpr
-
-type KernelValue = bool | int | float | tuple[KernelValue, ...]
-"""An element of a kernel scalar type, or a tensor of them as nested tuples."""
 
 KERNEL_ALGEBRAS: Mapping[str, Semiring] = MappingProxyType(
     {
@@ -130,8 +130,8 @@ class KernelSemiring(QiecModel):
             )
         member = KERNEL_ALGEBRAS[self.algebra.name]
         try:
-            self.value(torch.tensor(member.zero, dtype=torch.float64))
-            self.value(torch.tensor(member.unit, dtype=torch.float64))
+            self.value(torch.tensor(member.zero, dtype=torch.float64), NumberDomain())
+            self.value(torch.tensor(member.unit, dtype=torch.float64), NumberDomain())
         except InexactKernelValue as error:
             raise ValueError(
                 f"{member.name} has no zero and unit in the carrier: {error}"
@@ -218,47 +218,70 @@ class KernelSemiring(QiecModel):
                     f"does not establish ({status})"
                 )
 
-    def tensor(self, value: KernelValue) -> torch.Tensor:
-        """The ``float64`` tensor of a kernel value.
+    def tensor(self, value: torch.Tensor) -> torch.Tensor:
+        """An element as the member's operations take it.
 
         Parameters
         ----------
-        value : KernelValue
-            An element of the carrier, or a tensor of them.
+        value : torch.Tensor
+            An element of the carrier, or a tensor of them, as the
+            machine holds it.
 
         Returns
         -------
         torch.Tensor
-            The same numbers.
+            The same numbers: a real or log weight in its own dtype, so
+            its gradient is kept; a truth value or a count in ``float64``,
+            exact below `EXACT_COUNT`.
 
         Raises
         ------
         InexactKernelValue
-            If a natural number is beyond `EXACT_COUNT`, or an entry is
-            not in the semiring's carrier.
+            If the value is not a tensor of the carrier's kind, a count
+            reaches `EXACT_COUNT`, or an entry is not in the semiring's
+            carrier.
         """
-        if self.carrier == INT:
-            _require_exact_counts(value)
-        found = torch.tensor(value, dtype=torch.float64)
-        if not bool(self.member.contains(found).all()):
-            raise InexactKernelValue(
-                f"{value!r} is not an element of {self.member.name}"
-            )
+        if not isinstance(value, torch.Tensor):
+            raise InexactKernelValue(f"{value!r} is not a number of the machine")
+        if self.carrier in (BOOL, INT):
+            if value.is_floating_point():
+                raise InexactKernelValue(f"{value!r} is not a truth value or a count")
+            found = value.to(torch.float64)
+            if self.carrier == INT:
+                demand(
+                    found.abs() < EXACT_COUNT,
+                    lambda: InexactKernelValue(
+                        f"a count reaches {EXACT_COUNT:.0f}, beyond which it is "
+                        "not exact"
+                    ),
+                )
+        else:
+            if not value.is_floating_point():
+                raise InexactKernelValue(f"{value!r} is not a real number")
+            found = value
+        member = self.member
+        demand(
+            member.contains(found),
+            lambda: InexactKernelValue(f"an entry is not an element of {member.name}"),
+        )
         return found
 
-    def value(self, found: torch.Tensor) -> KernelValue:
-        """The kernel value of a tensor of elements.
+    def value(self, found: torch.Tensor, numbers: NumberDomain) -> torch.Tensor:
+        """The element of the carrier a tensor of the member holds.
 
         Parameters
         ----------
         found : torch.Tensor
             Elements of the semiring.
+        numbers : NumberDomain
+            The run's numbers.
 
         Returns
         -------
-        KernelValue
-            A scalar of the carrier for a zero-dimensional tensor, else
-            nested tuples of them.
+        torch.Tensor
+            The elements in the carrier's dtype: ``bool`` for truth values,
+            ``int64`` for counts, and the run's real dtype otherwise, which
+            keeps the gradient.
 
         Raises
         ------
@@ -267,124 +290,100 @@ class KernelSemiring(QiecModel):
             other than ``0`` or ``1``, or a number that is not a natural
             number below `EXACT_COUNT`.
         """
-        return _kernel_value(found.tolist(), self.carrier)
+        if self.carrier == BOOL:
+            demand(
+                (found == 0) | (found == 1),
+                lambda: InexactKernelValue("an entry is not a truth value"),
+            )
+            return found != 0
+        if self.carrier == INT:
+            demand(
+                (found == torch.round(found)) & (found.abs() < EXACT_COUNT),
+                lambda: InexactKernelValue(
+                    f"an entry is not a count below {EXACT_COUNT:.0f}"
+                ),
+            )
+            return found.to(torch.int64)
+        return found.to(numbers.real_dtype)
 
-    def zero(self) -> KernelValue:
+    def zero(self, numbers: NumberDomain) -> torch.Tensor:
         """The additive identity.
 
+        Parameters
+        ----------
+        numbers : NumberDomain
+            The run's numbers.
+
         Returns
         -------
-        KernelValue
+        torch.Tensor
             The semiring's zero in the carrier.
         """
-        return self.value(torch.tensor(self.member.zero, dtype=torch.float64))
+        return self.value(
+            torch.tensor(self.member.zero, dtype=torch.float64), numbers
+        )
 
-    def unit(self) -> KernelValue:
+    def unit(self, numbers: NumberDomain) -> torch.Tensor:
         """The multiplicative identity.
+
+        Parameters
+        ----------
+        numbers : NumberDomain
+            The run's numbers.
 
         Returns
         -------
-        KernelValue
+        torch.Tensor
             The semiring's unit in the carrier.
         """
-        return self.value(torch.tensor(self.member.unit, dtype=torch.float64))
+        return self.value(
+            torch.tensor(self.member.unit, dtype=torch.float64), numbers
+        )
 
-    def plus(self, values: Sequence[KernelValue]) -> KernelValue:
+    def plus(
+        self, values: Sequence[torch.Tensor], numbers: NumberDomain
+    ) -> torch.Tensor:
         """The sum of elements in their order.
 
         Parameters
         ----------
-        values : Sequence of KernelValue
+        values : Sequence of torch.Tensor
             Elements of one shape.
+        numbers : NumberDomain
+            The run's numbers.
 
         Returns
         -------
-        KernelValue
+        torch.Tensor
             Their sum, by the member's ``join``; the zero for none.
         """
         if not values:
-            return self.zero()
+            return self.zero(numbers)
         stacked = torch.stack([self.tensor(value) for value in values])
-        return self.value(self.member.join(stacked, 0))
+        return self.value(self.member.join(stacked, 0), numbers)
 
-    def times(self, left: KernelValue, right: KernelValue) -> KernelValue:
+    def times(
+        self, left: torch.Tensor, right: torch.Tensor, numbers: NumberDomain
+    ) -> torch.Tensor:
         """The product of two elements, entrywise over tensors of them.
 
         Parameters
         ----------
-        left : KernelValue
+        left : torch.Tensor
             The left factor; a scalar broadcasts over a tensor.
-        right : KernelValue
+        right : torch.Tensor
             The right factor.
+        numbers : NumberDomain
+            The run's numbers.
 
         Returns
         -------
-        KernelValue
+        torch.Tensor
             ``left * right`` by the member's ``tensor_op``.
         """
-        return self.value(self.member.tensor_op(self.tensor(left), self.tensor(right)))
-
-
-def _require_exact_counts(value: KernelValue) -> None:
-    """Require every natural number of a value to be exact in ``float64``.
-
-    Parameters
-    ----------
-    value : KernelValue
-        A kernel value.
-
-    Raises
-    ------
-    InexactKernelValue
-        If an entry's magnitude reaches `EXACT_COUNT`.
-    """
-    if isinstance(value, tuple):
-        for entry in value:
-            _require_exact_counts(entry)
-        return
-    if not isinstance(value, bool) and abs(value) >= EXACT_COUNT:
-        raise InexactKernelValue(
-            f"the count {value} reaches {EXACT_COUNT:.0f}, beyond which it is not exact"
+        return self.value(
+            self.member.tensor_op(self.tensor(left), self.tensor(right)), numbers
         )
-
-
-type _Listed = float | list[_Listed]
-"""What ``torch.Tensor.tolist`` returns for a ``float64`` tensor."""
-
-
-def _kernel_value(entry: _Listed, carrier: TypeExpr) -> KernelValue:
-    """Convert listed tensor entries to kernel values.
-
-    Parameters
-    ----------
-    entry : float or list
-        A number, or a list of them.
-    carrier : TypeExpr
-        The kernel type of an element.
-
-    Returns
-    -------
-    KernelValue
-        The value.
-
-    Raises
-    ------
-    InexactKernelValue
-        If a number has no exact element of the carrier.
-    """
-    if isinstance(entry, list):
-        return tuple(_kernel_value(item, carrier) for item in entry)
-    if carrier == BOOL:
-        if entry not in (0.0, 1.0):
-            raise InexactKernelValue(f"{entry!r} is not a truth value")
-        return entry == 1.0
-    if carrier == INT:
-        if not entry.is_integer() or abs(entry) >= EXACT_COUNT:
-            raise InexactKernelValue(
-                f"{entry!r} is not a count below {EXACT_COUNT:.0f}"
-            )
-        return int(entry)
-    return float(entry)
 
 
 SUM_LAWS: tuple[Law, ...] = (PLUS_ASSOCIATIVE, PLUS_COMMUTATIVE, PLUS_UNIT)
@@ -524,7 +523,6 @@ __all__ = [
     "KERNEL_ALGEBRAS",
     "KERNEL_CARRIERS",
     "KernelSemiring",
-    "KernelValue",
     "MissingLaw",
     "PRODUCT_LAWS",
     "SUM_LAWS",

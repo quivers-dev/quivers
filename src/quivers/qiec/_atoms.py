@@ -13,7 +13,7 @@ def atomicity(distribution):
 
     Parameters
     ----------
-    distribution : RuntimeDistribution
+    distribution : HostLaw
         Reference distribution or measure construction.
 
     Returns
@@ -52,7 +52,7 @@ def atom_reference(distribution, value):
 
     Parameters
     ----------
-    distribution : RuntimeDistribution
+    distribution : HostLaw
         Unplated scalar reference distribution. Compositions supply their own hook.
     value : float
         Scalar observation.
@@ -115,7 +115,7 @@ def log_atom_mass(distribution, value):
 
     Parameters
     ----------
-    distribution : RuntimeDistribution
+    distribution : HostLaw
         Unplated scalar reference distribution.
     value : float
         Scalar observation.

@@ -1,12 +1,20 @@
-"""Runtime distributions for the reference evaluator.
+"""Runtime distributions for the reference machine.
 
-A :class:`DistributionValue` evaluates to a :class:`RuntimeDistribution`: the
-family's name and its named arguments as host values, with no host library
-behind it. Sampling and log densities go through a backend. The reference
-backend here implements the scalar and simplex families in plain Python, so
-the reference machine can run a model end to end and be compared against
-an independent oracle; a host provider may install a backend that covers
-every family through its own library.
+A :class:`DistributionValue` evaluates to a :class:`RuntimeDistribution`:
+the family's name, its named arguments as the machine holds them (numbers
+as tensors, nested distributions as runtime distributions), the plate it is
+constructed over, and the backend that samples and scores it. A backend
+takes the whole plated distribution, so a backend over a tensor library
+samples and scores every position of a plate at once.
+
+Two backends ship. The reference backend here computes in plain Python,
+position by position, through family tables written independently of any
+tensor library, so a run can be compared against an independent oracle; it
+reads its arguments as host numbers and so has no derivative, and it refuses
+an argument that carries a gradient rather than detach it. The tensor
+backend of `quivers.continuous.tensor_backend` builds the family's torch
+distribution, as the compiled runtime does, and keeps every gradient; a
+run that is differentiated uses it.
 """
 
 from __future__ import annotations
@@ -18,9 +26,18 @@ from types import MappingProxyType
 from typing import Literal, Protocol, overload
 
 import didactic.api as dx
+import torch
 
+from quivers._positions import depends_on_position
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.qiec.families import family as family_record
+from quivers.qiec.numbers import (
+    NumberDomain,
+    PositionDependentControl,
+    host_value,
+    machine_value,
+)
 from quivers.qiec._gaussian_tails import (
     log_erfcx_positive as _log_erfcx_positive,
     exgaussian_log_component as _exgaussian_log_component,
@@ -87,71 +104,6 @@ from quivers.qiec.reference_support import (
 SHAPE_FROM_EVENT: frozenset[str] = frozenset({"LKJCholesky", "LKJCorrelationFactor"})
 
 
-class DistributionBackend(Protocol):
-    """What a host must supply to sample and score a family."""
-
-    def sample(
-        self, family: str, arguments: Mapping[str, object], rng: random.Random
-    ) -> object:
-        """Draw one value.
-
-        Parameters
-        ----------
-        family : str
-            The family's source name.
-        arguments : Mapping[str, object]
-            The named parameters as host values.
-        rng : random.Random
-            The generator to draw from.
-
-        Returns
-        -------
-        object
-            The drawn host value.
-        """
-        ...
-
-    def log_prob(
-        self, family: str, arguments: Mapping[str, object], value: object
-    ) -> float:
-        """Evaluate the log density at a value.
-
-        Parameters
-        ----------
-        family : str
-            The family's source name.
-        arguments : Mapping[str, object]
-            The named parameters as host values.
-        value : object
-            The point evaluated.
-
-        Returns
-        -------
-        float
-            The log density.
-        """
-        ...
-
-    def log_mass(self, family: str, arguments: Mapping[str, object]) -> float:
-        """The log of the total mass of a construction.
-
-        Parameters
-        ----------
-        family : str
-            The family's source name.
-        arguments : Mapping[str, object]
-            The named parameters as host values.
-
-        Returns
-        -------
-        float
-            Zero for a probability measure; the log mass of a restriction
-            or of a mixture of restrictions, which ``Normalize`` divides
-            by.
-        """
-        ...
-
-
 def tensor_rank(value: object) -> int:
     """The nesting depth of a host tensor.
 
@@ -202,7 +154,7 @@ def _slice_at(
     while isinstance(leaf, tuple) and leaf:
         depth += 1
         leaf = leaf[0]
-    if isinstance(leaf, RuntimeDistribution):
+    if isinstance(leaf, HostLaw):
         container_batch = max(depth - rank, 0)
         leading = container_batch + len(leaf.batch)
         selected = position[max(full_rank - leading, 0) :]
@@ -214,7 +166,7 @@ def _slice_at(
                 _slice_at(item, remaining, rank - 1, plate_rank=len(leaf.batch))
                 for item in value
             )
-        if isinstance(value, RuntimeDistribution) and remaining:
+        if isinstance(value, HostLaw) and remaining:
             return value.at(tuple(remaining))
         return value
     leading = tensor_rank(value) - rank
@@ -288,12 +240,15 @@ def _nest(entries: Mapping[tuple[int, ...], object], shape: Sequence[int]) -> ob
     return build((), 0)
 
 
-class RuntimeDistribution(QiecModel):
-    """A constructed distribution, as host data.
+class HostLaw(QiecModel):
+    """A constructed distribution whose arguments are host numbers.
 
-    Parameter mappings are owned snapshots compared by identity. Their
-    host values retain identity, including tensors and their gradients.
-    Plate extents and parameter ranks compare by value.
+    The reference backend computes with Python numbers: it reads a
+    `RuntimeDistribution` as a host law, whose arguments are numbers and
+    nested tuples of numbers, and whose nested distributions are host laws
+    too, and samples and scores it position by position through the family
+    tables of this module. Parameter mappings are owned snapshots compared
+    by identity. Plate extents and parameter ranks compare by value.
 
     Parameters
     ----------
@@ -399,7 +354,7 @@ class RuntimeDistribution(QiecModel):
             result = tuple(result for _ in range(extent))
         return result
 
-    def at(self, position: tuple[int, ...]) -> RuntimeDistribution:
+    def at(self, position: tuple[int, ...]) -> HostLaw:
         """The distribution at one position of the plate, unplated.
 
         Parameters
@@ -410,7 +365,7 @@ class RuntimeDistribution(QiecModel):
 
         Returns
         -------
-        RuntimeDistribution
+        HostLaw
             The family with its arguments selected at the position and
             the selected axes dropped from the plate.
 
@@ -436,7 +391,7 @@ class RuntimeDistribution(QiecModel):
         remaining = len(position)
         batch = self.batch[remaining:] if remaining < len(self.batch) else ()
         event = self.event[max(remaining - len(self.batch), 0) :]
-        return RuntimeDistribution(
+        return HostLaw(
             family=self.family,
             arguments=arguments,
             batch=batch,
@@ -446,7 +401,7 @@ class RuntimeDistribution(QiecModel):
         )
 
     def sample(self, rng: random.Random | None = None) -> object:
-        """Draw one value through the installed backend.
+        """Draw one value from the family tables.
 
         Parameters
         ----------
@@ -467,11 +422,11 @@ class RuntimeDistribution(QiecModel):
         """
         generator = rng or _RNG
         if not self.plated:
-            return _backend.sample(self.family, self._at(()), generator)
+            return _family_sample(self.family, self._at(()), generator)
         shape = (*self.batch, *self.event)
         return _nest(
             {
-                position: _backend.sample(self.family, self._at(position), generator)
+                position: _family_sample(self.family, self._at(position), generator)
                 for position in _positions(shape)
             },
             shape,
@@ -508,7 +463,7 @@ class RuntimeDistribution(QiecModel):
         """
 
     def log_mass(self, batch_axes: int = 0) -> object:
-        """The log of the distribution's total mass through the installed backend.
+        """The log of the distribution's total mass by the family tables.
 
         Parameters
         ----------
@@ -537,7 +492,7 @@ class RuntimeDistribution(QiecModel):
                 "log_mass retained axes must be an integer within the batch rank"
             )
         if not self.plated:
-            return _backend.log_mass(self.family, self._at(()))
+            return _family_log_mass(self.family, self._at(()))
         shape = (*self.batch, *self.event)
 
         def total(prefix: tuple[int, ...]) -> float:
@@ -554,7 +509,7 @@ class RuntimeDistribution(QiecModel):
                 Log mass of the remaining independent product.
             """
             return math.fsum(
-                _backend.log_mass(self.family, self._at((*prefix, *position)))
+                _family_log_mass(self.family, self._at((*prefix, *position)))
                 for position in _positions(shape[batch_axes:])
             )
 
@@ -618,7 +573,7 @@ class RuntimeDistribution(QiecModel):
         ...
 
     def log_prob(self, value: object, keep_batch: bool = False) -> object:
-        """Evaluate the log density at a value through the installed backend.
+        """Evaluate the log density at a value by the family tables.
 
         Parameters
         ----------
@@ -642,7 +597,7 @@ class RuntimeDistribution(QiecModel):
             shaped like the plate.
         """
         if not self.plated:
-            return _backend.log_prob(self.family, self._at(()), value)
+            return _family_log_prob(self.family, self._at(()), value)
         shape = (*self.batch, *self.event)
         if tensor_rank(value) < len(shape):
             raise DistributionError(
@@ -662,6 +617,225 @@ class RuntimeDistribution(QiecModel):
         if keep_batch:
             return _nest(totals, self.batch)
         return math.fsum(totals.values())
+
+
+class DistributionBackend(Protocol):
+    """What samples and scores the runtime distributions of a run."""
+
+    @property
+    def differentiable(self) -> bool:
+        """Whether densities and reparameterized draws keep their gradients.
+
+        Returns
+        -------
+        bool
+            ``True`` for a backend whose results are differentiable in the
+            arguments.
+        """
+        ...
+
+    def sample(self, distribution: RuntimeDistribution, rng: random.Random) -> object:
+        """Draw one value at every position of the plate.
+
+        Parameters
+        ----------
+        distribution : RuntimeDistribution
+            The distribution.
+        rng : random.Random
+            The host generator, for a backend that draws in host numbers.
+
+        Returns
+        -------
+        object
+            The draw as the machine holds it: a tensor shaped by the
+            plate's batch and event axes followed by the family's own.
+        """
+        ...
+
+    def log_prob(
+        self, distribution: RuntimeDistribution, value: object, keep_batch: bool
+    ) -> torch.Tensor:
+        """Evaluate the log density at a value.
+
+        Parameters
+        ----------
+        distribution : RuntimeDistribution
+            The distribution.
+        value : object
+            The point, shaped like a draw.
+        keep_batch : bool
+            Whether to keep one density per batch position rather than
+            total them; event axes are always totalled.
+
+        Returns
+        -------
+        torch.Tensor
+            The log density, of the run's real dtype.
+        """
+        ...
+
+    def log_mass(
+        self, distribution: RuntimeDistribution, batch_axes: int
+    ) -> torch.Tensor:
+        """The log of the total mass of a construction.
+
+        Parameters
+        ----------
+        distribution : RuntimeDistribution
+            The distribution.
+        batch_axes : int
+            The leading batch axes kept in the result.
+
+        Returns
+        -------
+        torch.Tensor
+            Zero for a probability measure; the log mass of a restriction
+            or of a mixture of restrictions, which ``Normalize`` divides
+            by.
+        """
+        ...
+
+
+class RuntimeDistribution(QiecModel):
+    """A constructed distribution, as the machine holds it.
+
+    The backend, the argument mapping and its values retain identity, so
+    a tensor argument keeps its gradient; plate extents and parameter ranks
+    compare by value.
+
+    Parameters
+    ----------
+    backend
+        What samples and scores the distribution.
+    numbers
+        The run's numbers, which hold its draws and densities.
+    family
+        The family's source name.
+    arguments
+        The named parameters: tensors, or runtime distributions for a
+        family built from other distributions; frozen on construction.
+    batch
+        The plate's batch extents, outermost first; each position is an
+        independent draw scored on its own.
+    event
+        The plate's extended event extents, outermost first; draws along
+        them join one event and are scored together.
+    ranks
+        Each parameter's own tensor rank, from the family registry, so
+        an argument carrying plate dimensions can be told from one that
+        does not.
+    natural
+        The family's own event extents, so a scalar given for a tensor
+        parameter can be broadcast to the shape the family expects.
+    """
+
+    backend: DistributionBackend = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    numbers: NumberDomain
+    family: str
+    arguments: Mapping[str, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    batch: tuple[int, ...] = ()
+    event: tuple[int, ...] = ()
+    ranks: Mapping[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    natural: tuple[int, ...] = ()
+
+    @dx.model_validator()
+    def _freeze_arguments(self) -> None:
+        """Snapshot the parameter mapping while retaining its values."""
+        self._normalize_field("arguments", MappingProxyType(dict(self.arguments)))
+
+    @property
+    def plated(self) -> bool:
+        """Whether the distribution is constructed over a plate.
+
+        Returns
+        -------
+        bool
+            ``True`` when it has batch or extended event axes.
+        """
+        return bool(self.batch or self.event)
+
+    def sample(self, rng: random.Random | None = None) -> object:
+        """Draw one value at every position of the plate.
+
+        Parameters
+        ----------
+        rng : random.Random | None
+            The host generator a backend drawing in host numbers uses; the
+            module generator by default, which :func:`seed_reference_rng`
+            controls.
+
+        Returns
+        -------
+        object
+            The draw as the machine holds it.
+
+        Raises
+        ------
+        DistributionError
+            If the backend cannot sample the family.
+        """
+        return self.backend.sample(self, rng or _RNG)
+
+    def log_mass(self, batch_axes: int = 0) -> torch.Tensor:
+        """The log of the distribution's total mass.
+
+        Parameters
+        ----------
+        batch_axes : int
+            Number of leading independent batch axes retained in the result.
+            The default totals the entire product measure.
+
+        Returns
+        -------
+        torch.Tensor
+            Zero for a probability measure; over a plate, the sum of the
+            masses at every position, since the plate's draw is their
+            product. Requested batch axes remain separate; event axes sum.
+
+        Raises
+        ------
+        DistributionError
+            If the retained rank is not an integer in the batch rank's range.
+        """
+        if (
+            isinstance(batch_axes, bool)
+            or not isinstance(batch_axes, int)
+            or not 0 <= batch_axes <= len(self.batch)
+        ):
+            raise DistributionError(
+                "log_mass retained axes must be an integer within the batch rank"
+            )
+        return self.backend.log_mass(self, batch_axes)
+
+    def log_prob(self, value: object, keep_batch: bool = False) -> torch.Tensor:
+        """Evaluate the log density at a value.
+
+        Parameters
+        ----------
+        value : object
+            The point evaluated; over a plate, shaped like the plate
+            followed by the family's own axes.
+        keep_batch : bool
+            Whether to keep one weight per batch position rather than
+            total them.
+
+        Returns
+        -------
+        torch.Tensor
+            The log density, or, with ``keep_batch`` over a batch, one per
+            batch position.
+
+        Raises
+        ------
+        DistributionError
+            If the backend cannot score the family, or the point is not
+            shaped like the plate.
+        """
+        return self.backend.log_prob(self, value, keep_batch)
 
 
 def _normal_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2238,14 +2412,222 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
 )
 
 
+def _family_sample(
+    family: str, arguments: Mapping[str, object], rng: random.Random
+) -> object:
+    """Draw one value of a family from host arguments.
+
+    Parameters
+    ----------
+    family : str
+        The family's source name.
+    arguments : Mapping[str, object]
+        The named parameters as host values.
+    rng : random.Random
+        The generator to draw from.
+
+    Returns
+    -------
+    object
+        The drawn value: a float, an int, a bool, or a tuple of floats.
+
+    Raises
+    ------
+    DistributionError
+        If the family is not in the tables or a parameter is missing or
+        malformed.
+    """
+    sampler = _SAMPLERS.get(family)
+    if sampler is None:
+        raise DistributionError(
+            f"the reference backend cannot sample {family}; use a backend that "
+            "covers it"
+        )
+    return sampler(arguments, rng)
+
+
+def _family_log_prob(
+    family: str, arguments: Mapping[str, object], value: object
+) -> float:
+    """Evaluate the log density of a family from host arguments.
+
+    Parameters
+    ----------
+    family : str
+        The family's source name.
+    arguments : Mapping[str, object]
+        The named parameters as host values.
+    value : object
+        The point evaluated.
+
+    Returns
+    -------
+    float
+        The log density, ``-inf`` outside the support.
+
+    Raises
+    ------
+    DistributionError
+        If the family is not in the tables or a parameter or the point is
+        malformed.
+    """
+    density = _DENSITIES.get(family)
+    if density is None:
+        raise DistributionError(
+            f"the reference backend cannot score {family}; use a backend that "
+            "covers it"
+        )
+    return density(arguments, value)
+
+
+def _family_log_mass(family: str, arguments: Mapping[str, object]) -> float:
+    """The log of the total mass of a construction from host arguments.
+
+    Parameters
+    ----------
+    family : str
+        The family's source name.
+    arguments : Mapping[str, object]
+        The named parameters as host values.
+
+    Returns
+    -------
+    float
+        The family's log mass, zero for every probability family.
+
+    Raises
+    ------
+    DistributionError
+        If the family is not in the tables.
+    """
+    if family not in _DENSITIES:
+        raise DistributionError(
+            f"the reference backend cannot weigh {family}; use a backend that "
+            "covers it"
+        )
+    mass = _LOG_MASSES.get(family)
+    return 0.0 if mass is None else mass(arguments)
+
+
+def _host_argument(value: object, family: str) -> object:
+    """An argument of a runtime distribution as the reference backend reads it.
+
+    Parameters
+    ----------
+    value : object
+        A tensor, a runtime distribution, or nested tuples of either.
+    family : str
+        The family, for the diagnostic.
+
+    Returns
+    -------
+    object
+        Host numbers for a tensor, a host law for a distribution.
+
+    Raises
+    ------
+    DistributionError
+        If a tensor carries a gradient, which host numbers cannot keep.
+    PositionDependentControl
+        If, over many positions, a tensor depends on the position, which
+        a computation in host numbers cannot follow.
+    """
+    if isinstance(value, RuntimeDistribution):
+        return _host_law(value)
+    if isinstance(value, tuple):
+        return tuple(_host_argument(item, family) for item in value)
+    if isinstance(value, torch.Tensor):
+        if depends_on_position(value):
+            raise PositionDependentControl(
+                f"an argument of {family} under the reference backend"
+            )
+        if value.requires_grad:
+            raise DistributionError(
+                f"the reference backend computes {family} in host numbers, which "
+                "keep no gradient; score it with a differentiable backend"
+            )
+    return host_value(value)
+
+
+def _host_law(distribution: RuntimeDistribution) -> HostLaw:
+    """A runtime distribution as the reference backend computes with it.
+
+    Parameters
+    ----------
+    distribution : RuntimeDistribution
+        The distribution.
+
+    Returns
+    -------
+    HostLaw
+        The same law with host arguments.
+
+    Raises
+    ------
+    DistributionError
+        If an argument carries a gradient.
+    PositionDependentControl
+        If, over many positions, an argument depends on the position.
+    """
+    return HostLaw(
+        family=distribution.family,
+        arguments={
+            name: _host_argument(value, distribution.family)
+            for name, value in distribution.arguments.items()
+        },
+        batch=distribution.batch,
+        event=distribution.event,
+        ranks=distribution.ranks,
+        natural=distribution.natural,
+    )
+
+
+def _point(value: object, family: str) -> object:
+    """A point the reference backend scores, as host numbers.
+
+    Parameters
+    ----------
+    value : object
+        The point as the machine holds it.
+    family : str
+        The family, for the diagnostic.
+
+    Returns
+    -------
+    object
+        Host numbers.
+
+    Raises
+    ------
+    DistributionError
+        If the point carries a gradient.
+    PositionDependentControl
+        If, over many positions, it depends on the position.
+    """
+    return _host_argument(value, family)
+
+
 class ReferenceBackend:
     """Plain-Python sampling and scoring for every family of the registry.
 
     The scalar core lives beside the backend and the structured and
     compositional families in :mod:`quivers.qiec.reference_families`; a
-    family outside the tables is reported by name rather than approximated,
-    so a host provider can be installed for it.
+    family outside the tables is reported by name rather than approximated.
+    It reads a runtime distribution as a `HostLaw`, computes in host numbers
+    position by position, and gives its results back as tensors of the run's
+    numbers; an argument or a point that carries a gradient is refused.
     """
+
+    @property
+    def differentiable(self) -> bool:
+        """No: the backend computes in host numbers.
+
+        Returns
+        -------
+        bool
+            ``False``.
+        """
+        return False
 
     @property
     def families(self) -> frozenset[str]:
@@ -2258,10 +2640,10 @@ class ReferenceBackend:
         """
         return frozenset(_SAMPLERS)
 
-    def sample(
+    def family_sample(
         self, family: str, arguments: Mapping[str, object], rng: random.Random
     ) -> object:
-        """Draw one value from an implemented family.
+        """Draw one value of a family from host arguments.
 
         Parameters
         ----------
@@ -2275,7 +2657,7 @@ class ReferenceBackend:
         Returns
         -------
         object
-            The drawn value: a float, an int, a bool, or a tuple of floats.
+            The drawn host value.
 
         Raises
         ------
@@ -2283,18 +2665,12 @@ class ReferenceBackend:
             If the family is not implemented here or a parameter is
             missing or malformed.
         """
-        sampler = _SAMPLERS.get(family)
-        if sampler is None:
-            raise DistributionError(
-                f"the reference backend cannot sample {family}; install a "
-                "distribution backend for it"
-            )
-        return sampler(arguments, rng)
+        return _family_sample(family, arguments, rng)
 
-    def log_prob(
+    def family_log_prob(
         self, family: str, arguments: Mapping[str, object], value: object
     ) -> float:
-        """Evaluate the log density of an implemented family.
+        """Evaluate the log density of a family from host arguments.
 
         Parameters
         ----------
@@ -2316,16 +2692,10 @@ class ReferenceBackend:
             If the family is not implemented here or a parameter or the
             point is malformed.
         """
-        density = _DENSITIES.get(family)
-        if density is None:
-            raise DistributionError(
-                f"the reference backend cannot score {family}; install a "
-                "distribution backend for it"
-            )
-        return density(arguments, value)
+        return _family_log_prob(family, arguments, value)
 
-    def log_mass(self, family: str, arguments: Mapping[str, object]) -> float:
-        """The log of the total mass of a construction.
+    def family_log_mass(self, family: str, arguments: Mapping[str, object]) -> float:
+        """The log of the total mass of a construction from host arguments.
 
         Parameters
         ----------
@@ -2344,13 +2714,95 @@ class ReferenceBackend:
         DistributionError
             If the family is not implemented here.
         """
-        if family not in _DENSITIES:
-            raise DistributionError(
-                f"the reference backend cannot weigh {family}; install a "
-                "distribution backend for it"
-            )
-        mass = _LOG_MASSES.get(family)
-        return 0.0 if mass is None else mass(arguments)
+        return _family_log_mass(family, arguments)
+
+    def sample(self, distribution: RuntimeDistribution, rng: random.Random) -> object:
+        """Draw at every position of the plate, in host numbers.
+
+        Parameters
+        ----------
+        distribution : RuntimeDistribution
+            The distribution.
+        rng : random.Random
+            The generator.
+
+        Returns
+        -------
+        object
+            The draw as a tensor of the family's element kind.
+
+        Raises
+        ------
+        DistributionError
+            If the family is not implemented here or an argument carries a
+            gradient.
+        """
+        drawn = _host_law(distribution).sample(rng)
+        element = family_record(distribution.family).element
+        return machine_value(element, drawn, distribution.numbers)
+
+    def log_prob(
+        self, distribution: RuntimeDistribution, value: object, keep_batch: bool
+    ) -> torch.Tensor:
+        """Evaluate the log density in host numbers.
+
+        Parameters
+        ----------
+        distribution : RuntimeDistribution
+            The distribution.
+        value : object
+            The point.
+        keep_batch : bool
+            Whether to keep one density per batch position.
+
+        Returns
+        -------
+        torch.Tensor
+            The density in the run's real dtype.
+
+        Raises
+        ------
+        DistributionError
+            If the family is not implemented here, or an argument or the
+            point carries a gradient.
+        """
+        density = _host_law(distribution).log_prob(
+            _point(value, distribution.family), keep_batch
+        )
+        return torch.tensor(
+            density,
+            dtype=distribution.numbers.real_dtype,
+            device=distribution.numbers.torch_device,
+        )
+
+    def log_mass(
+        self, distribution: RuntimeDistribution, batch_axes: int
+    ) -> torch.Tensor:
+        """The log total mass in host numbers.
+
+        Parameters
+        ----------
+        distribution : RuntimeDistribution
+            The distribution.
+        batch_axes : int
+            The leading batch axes kept.
+
+        Returns
+        -------
+        torch.Tensor
+            The log mass in the run's real dtype.
+
+        Raises
+        ------
+        DistributionError
+            If the family is not implemented here or an argument carries a
+            gradient.
+        """
+        return torch.tensor(
+            _host_law(distribution).log_mass(batch_axes),
+            dtype=distribution.numbers.real_dtype,
+            device=distribution.numbers.torch_device,
+        )
 
 
 _RNG = random.Random(0)
@@ -2401,6 +2853,7 @@ def install_distribution_backend(backend: DistributionBackend) -> DistributionBa
 
 __all__ = [
     "DistributionBackend",
+    "HostLaw",
     "ReferenceBackend",
     "RuntimeDistribution",
     "distribution_backend",
