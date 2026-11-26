@@ -47,6 +47,7 @@ from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.core.laws import PLUS_IDEMPOTENT, PLUS_SELECTIVE
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import Phase, WorkField, WorkReport, measuring
+from quivers.stochastic.tries import Trie, TrieCounter, descend, insert, intersect
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
 from quivers.stochastic.semiring import ChartSemiring, LOG_PROB
 from quivers.structural.encoder import Encoder
@@ -1439,6 +1440,7 @@ class _AgendaWork:
     def __init__(self) -> None:
         self.pops = 0
         self.matches = 0
+        self.hashes = 0
         self.products = 0
 
 
@@ -1511,7 +1513,7 @@ def _agenda_report(
     own = {
         WorkField.SCALAR_SUMS: 0,
         WorkField.SCALAR_PRODUCTS: work.products,
-        WorkField.HASH_OPERATIONS: 0,
+        WorkField.HASH_OPERATIONS: work.hashes,
         WorkField.KEY_COMPARISONS: work.matches,
     }
     measured = {WorkField.ITERATIONS, WorkField.PROVENANCE_RECORDS}
@@ -1654,6 +1656,9 @@ def run_agenda(
     )
 
     work = _AgendaWork()
+    joins = _RuleJoins(rules, work)
+    for present, _ in list(chart.items()):
+        joins.add(present, joins.matches(present))
     chart_before = chart.work_counts() if isinstance(chart, ReportsWork) else None
     queue_before = agenda.work_counts() if isinstance(agenda, ReportsWork) else None
     saved: list[int] = []
@@ -1666,6 +1671,7 @@ def run_agenda(
             applications,
             work,
             max_iterations,
+            joins,
         )
     iterations = work.pops
     if rule_callback is not None:
@@ -1718,6 +1724,266 @@ def run_agenda(
     )
 
 
+def _pattern_variables(pattern: Pattern) -> list[str]:
+    """The wildcard names of a pattern, in order of first occurrence.
+
+    Parameters
+    ----------
+    pattern : Pattern
+        The pattern.
+
+    Returns
+    -------
+    list of str
+        Each name once.
+    """
+    if isinstance(pattern, Wildcard):
+        return [pattern.name]
+    found: list[str] = []
+    if isinstance(pattern, tuple):
+        for element in pattern:
+            for name in _pattern_variables(element):
+                if name not in found:
+                    found.append(name)
+    return found
+
+
+type Form = tuple[HeldValue, int]
+"""The head and length of a tuple item or pattern."""
+
+
+def _form(value: Pattern) -> Form | None:
+    """The form a pattern requires of its items, or the form of an item.
+
+    Parameters
+    ----------
+    value : Pattern
+        A pattern or an item.
+
+    Returns
+    -------
+    Form or None
+        The ground head and the length of a tuple, or ``None`` when the
+        value is not a tuple or its head is a wildcard, so its items may
+        have any form.
+    """
+    if isinstance(value, tuple) and value and _ground(value[0], {}):
+        return (value[0], len(value))
+    return None
+
+
+class _RuleJoins:
+    """The premises each form of item fills, and tries of their matches.
+
+    Each rule premise is filed under the form its pattern requires, or
+    among the premises any item may fill. An item is matched only against
+    the premises of its form and those; the bindings of each match are a
+    tuple of that premise's relation. For a rule and the premise an
+    arriving item fills, every other premise has a trie of its relation
+    keyed in the order that binds the arriving premise's variables
+    first, kept up to date as items arrive, and the other premises are
+    joined by Generic Join.
+
+    Parameters
+    ----------
+    rules : tuple of InferenceRule
+        The rules.
+    work : _AgendaWork
+        The run's counts.
+    """
+
+    def __init__(self, rules: tuple[InferenceRule, ...], work: _AgendaWork) -> None:
+        self.rules = rules
+        self.work = work
+        self._by_form: dict[Form, list[tuple[int, int]]] = {}
+        self._any: list[tuple[int, int]] = []
+        for rule_index, rule in enumerate(rules):
+            for position, pattern in enumerate(rule.premises):
+                form = _form(pattern)
+                target = (
+                    self._any if form is None else self._by_form.setdefault(form, [])
+                )
+                target.append((rule_index, position))
+        self._relations: dict[tuple[int, int], list[tuple[Item, Bindings]]] = {}
+        self._tries: dict[
+            tuple[int, int, int], tuple[tuple[str, ...], Trie[HeldValue, Item]]
+        ] = {}
+        self._orders: dict[tuple[int, int], tuple[str, ...]] = {}
+
+    def matches(self, item: Item) -> list[tuple[int, int, Bindings]]:
+        """The premises an item fills, with the bindings of each.
+
+        Parameters
+        ----------
+        item : Item
+            The item.
+
+        Returns
+        -------
+        list of tuple of int, int and Bindings
+            The rule, the premise and the bindings of each match.
+        """
+        form = _form(item)
+        candidates = [*self._by_form.get(form, ()), *self._any] if form else self._any
+        found: list[tuple[int, int, Bindings]] = []
+        for rule_index, position in candidates:
+            self.work.matches += 1
+            bindings = match(self.rules[rule_index].premises[position], item)
+            if bindings is not None:
+                found.append((rule_index, position, bindings))
+        return found
+
+    def add(self, item: Item, matched: Sequence[tuple[int, int, Bindings]]) -> None:
+        """Record an item that has entered the chart in the relations it fills.
+
+        Parameters
+        ----------
+        item : Item
+            The item, new to the chart.
+        matched : Sequence of tuple of int, int and Bindings
+            Its matches.
+        """
+        for rule_index, position, bindings in matched:
+            self._relations.setdefault((rule_index, position), []).append(
+                (item, bindings)
+            )
+            for trigger in range(len(self.rules[rule_index].premises)):
+                key = (rule_index, trigger, position)
+                if trigger != position and key in self._tries:
+                    variables, root = self._tries[key]
+                    self._insert(root, variables, bindings, item)
+
+    def _insert(
+        self,
+        root: Trie[HeldValue, Item],
+        variables: tuple[str, ...],
+        bindings: Bindings,
+        item: Item,
+    ) -> None:
+        """Add one tuple to a trie, counting its accesses.
+
+        Parameters
+        ----------
+        root : Trie
+            The trie.
+        variables : tuple of str
+            Its variables in order.
+        bindings : Bindings
+            The tuple's bindings.
+        item : Item
+            The item it stands for.
+        """
+        path = [bindings[name] for name in variables] or [()]
+        self.work.hashes += len(path)
+        insert(root, path, item)
+
+    def _order(self, rule_index: int, trigger: int) -> tuple[str, ...]:
+        """The variable order of a rule's join from one premise.
+
+        Parameters
+        ----------
+        rule_index : int
+            The rule.
+        trigger : int
+            The premise the arriving item fills.
+
+        Returns
+        -------
+        tuple of str
+            The premise's variables, then the others in order of first
+            occurrence.
+        """
+        key = (rule_index, trigger)
+        if key not in self._orders:
+            rule = self.rules[rule_index]
+            order = _pattern_variables(rule.premises[trigger])
+            for pattern in rule.premises:
+                for name in _pattern_variables(pattern):
+                    if name not in order:
+                        order.append(name)
+            self._orders[key] = tuple(order)
+        return self._orders[key]
+
+    def _trie(
+        self, rule_index: int, trigger: int, position: int
+    ) -> tuple[tuple[str, ...], Trie[HeldValue, Item]]:
+        """The trie of one premise's relation in a trigger's order, built on first use.
+
+        Parameters
+        ----------
+        rule_index : int
+            The rule.
+        trigger : int
+            The premise the arriving item fills.
+        position : int
+            The premise of the trie.
+
+        Returns
+        -------
+        tuple of tuple of str and Trie
+            The premise's variables in order, and the trie.
+        """
+        key = (rule_index, trigger, position)
+        found = self._tries.get(key)
+        if found is None:
+            order = self._order(rule_index, trigger)
+            names = set(_pattern_variables(self.rules[rule_index].premises[position]))
+            variables = tuple(name for name in order if name in names)
+            root: Trie[HeldValue, Item] = {}
+            for item, bindings in self._relations.get((rule_index, position), ()):
+                self._insert(root, variables, bindings, item)
+            found = (variables, root)
+            self._tries[key] = found
+        return found
+
+    def instances(
+        self, rule_index: int, trigger: int, bindings: Bindings
+    ) -> Iterator[Bindings]:
+        """The bindings of every instance an arriving item completes at one premise.
+
+        Parameters
+        ----------
+        rule_index : int
+            The rule.
+        trigger : int
+            The premise the arriving item fills.
+        bindings : Bindings
+            The bindings of its match.
+
+        Yields
+        ------
+        Bindings
+            Each instance's bindings of every premise's variables.
+        """
+        rule = self.rules[rule_index]
+        others = [p for p in range(len(rule.premises)) if p != trigger]
+        tries = [self._trie(rule_index, trigger, p) for p in others]
+        nodes: list[Trie[HeldValue, Item] | Item] = []
+        for variables, root in tries:
+            path = [bindings[name] for name in variables if name in bindings] or (
+                [()] if not variables else []
+            )
+            self.work.hashes += max(len(path), 1)
+            node = descend(root, path)
+            if node is None:
+                return
+            nodes.append(node)
+        order = self._order(rule_index, trigger)
+        free = [name for name in order if name not in bindings]
+        containing = [
+            [index for index, (variables, _) in enumerate(tries) if name in variables]
+            for name in free
+        ]
+        counter = TrieCounter()
+        counted = 0
+        for full, _ in intersect(free, containing, nodes, dict(bindings), counter):
+            seen = counter.iterated + counter.probes
+            self.work.matches += seen - counted
+            counted = seen
+            yield full
+        self.work.matches += counter.iterated + counter.probes - counted
+
+
 def _drain(
     agenda: Agenda,
     chart: Chart,
@@ -1726,6 +1992,7 @@ def _drain(
     applications: dict[tuple[int, tuple[Item, ...]], _Application],
     work: _AgendaWork,
     max_iterations: int,
+    joins: _RuleJoins,
 ) -> None:
     """Pop and fire until the agenda is empty.
 
@@ -1745,6 +2012,8 @@ def _drain(
         The counts, extended in place.
     max_iterations : int
         The bound on pops.
+    joins : _RuleJoins
+        The premises each item fills and the tries of their relations.
 
     Raises
     ------
@@ -1766,25 +2035,21 @@ def _drain(
         if old is not None:
             delta = chart.propagated(old, item, delta, semiring)
         update = _Update(item=item, delta=delta, old=old)
-        # Fire every rule for which this item could be a premise.
-        for rule_index, rule in enumerate(rules):
-            for premise_idx, premise_pattern in enumerate(rule.premises):
-                work.matches += 1
-                bindings = match(premise_pattern, item)
-                if bindings is None:
-                    continue
-                _fire_remaining_premises(
+        matched = joins.matches(item)
+        if old is None:
+            joins.add(item, matched)
+        for rule_index, premise_idx, bindings in matched:
+            rule = rules[rule_index]
+            for full in joins.instances(rule_index, premise_idx, bindings):
+                _fire(
                     rule=rule,
                     rule_index=rule_index,
-                    bindings=bindings,
+                    bindings=full,
+                    fixed_idx=premise_idx,
+                    update=update,
                     chart=chart,
                     semiring=semiring,
                     agenda=agenda,
-                    remaining_indices=[
-                        i for i in range(len(rule.premises)) if i != premise_idx
-                    ],
-                    fixed_idx=premise_idx,
-                    update=update,
                     applications=applications,
                     work=work,
                 )
@@ -1918,88 +2183,6 @@ class _Application:
         self.bindings = bindings
         self.antecedents = antecedents
         self.conclusion = conclusion
-
-
-def _fire_remaining_premises(
-    *,
-    rule: InferenceRule,
-    rule_index: int,
-    bindings: Bindings,
-    chart: Chart,
-    semiring: ChartSemiring,
-    agenda: Agenda,
-    remaining_indices: list[int],
-    fixed_idx: int,
-    update: _Update,
-    applications: dict[tuple[int, tuple[Item, ...]], _Application],
-    work: _AgendaWork,
-) -> None:
-    """Match the remaining premise patterns against the chart, then fire.
-
-    Picks the next remaining premise, scans the chart for items
-    consistent with the running bindings, and recurses until every
-    premise is matched.
-
-    Parameters
-    ----------
-    rule : InferenceRule
-        The rule being fired.
-    rule_index : int
-        The rule's position in the system, which identifies its
-        applications.
-    bindings : Bindings
-        The pattern variables bound so far.
-    chart : Chart
-        The chart, already holding the popped item's new weight.
-    semiring : ChartSemiring
-        The semiring of the run.
-    agenda : Agenda
-        The agenda that receives the conclusion's increment.
-    remaining_indices : list of int
-        The premise positions still to match.
-    fixed_idx : int
-        The premise position the popped item fills.
-    update : _Update
-        The popped item, its increment, and its old weight.
-    applications : dict
-        The rule applications seen so far.
-    work : _AgendaWork
-        The run's counts.
-    """
-    if not remaining_indices:
-        _fire(
-            rule=rule,
-            rule_index=rule_index,
-            bindings=bindings,
-            fixed_idx=fixed_idx,
-            update=update,
-            chart=chart,
-            semiring=semiring,
-            agenda=agenda,
-            applications=applications,
-            work=work,
-        )
-        return
-    next_idx = remaining_indices[0]
-    next_pattern = rule.premises[next_idx]
-    for sibling, _ in chart.lookup(next_pattern, bindings):
-        work.matches += 1
-        sub_bindings = match(next_pattern, sibling, bindings)
-        if sub_bindings is None:
-            continue
-        _fire_remaining_premises(
-            rule=rule,
-            rule_index=rule_index,
-            bindings=sub_bindings,
-            chart=chart,
-            semiring=semiring,
-            agenda=agenda,
-            remaining_indices=remaining_indices[1:],
-            fixed_idx=fixed_idx,
-            update=update,
-            applications=applications,
-            work=work,
-        )
 
 
 def _conclusion_weight(
