@@ -173,9 +173,14 @@ installed `quivers.qiec_runtime` entry point:
 ```
 
 The core provider accepts `passthrough`, `scripted`, and `state` handler
-configurations, and the prelude kinds `draw`, `draw-scoring`, `enumerate`,
-`replay`, `collect`, `score`, `search`, and `param`. These options give the
-clause behavior, which lives only in the running Python process. The source
+configurations, the prelude kinds `draw`, `draw-scoring`, `replay`, `score`,
+and `param`, and the kind `declared`, which serves a
+[foreign handler](qiec/foreign.md) by the semantics its declaration states: a
+search, a collector, an enumeration, or a settlement, whose options
+`on_failure` and `reports` give its
+[`FailurePolicy`][quivers.qiec.contracts.FailurePolicy] and the list its
+report goes to. These options give the clause behavior, which lives only in
+the running Python process. The source
 handler still fixes the checked effect, coverage, forwarding policy, clause
 set, and resumption grades.
 Runtime plugins are discoverable by name but are loaded only when the

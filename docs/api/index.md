@@ -20,11 +20,14 @@ shared by the other packages.
 
 - **[Objects](core/objects.md)**: finite and enumerated sets, products, coproducts, free monoids, and the categorial (Lambek) types over a set of atoms up to a fixed depth
 - **[Laws](core/laws.md)**: the catalogue of algebraic laws, the evidence for a claim (an argument, a decision procedure, a test, or a declaration), and the claims every member of the algebra hierarchy reports
-- **[Algebras](core/algebras.md)**: the `Algebra`, `Semiring`, and `IdempotentSemiring` classes and the eleven built-in instances, each a [semiring](https://en.wikipedia.org/wiki/Semiring), a [t-norm](https://en.wikipedia.org/wiki/T-norm) with its t-conorm, or a product with capped sum, plus duals and user-defined instances
+- **[Algebras](core/algebras.md)**: the `Algebra`, `Semiring`, and `IdempotentSemiring` classes and the twelve built-in instances, each a [semiring](https://en.wikipedia.org/wiki/Semiring), a [t-norm](https://en.wikipedia.org/wiki/T-norm) with its t-conorm, or a product with capped sum, plus duals and user-defined instances
 - **[Transformations](core/transformations.md)**: entrywise maps between `Algebra` instances and row normalizations, applied by [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
+- **[Carriers](core/carriers.md)**: expectation, second-order expectation, and product semirings, which carry statistics of derivations beside their weight
+- **[Spanning trees](core/spanning.md)**: the partition function and edge marginals of directed spanning trees, by elimination without subtraction
 - **[Morphisms](core/morphisms.md)**: base morphism classes and their composition
 - **[Tensor Operations](core/tensor_ops.md)**: noisy-OR contraction and reduction, noisy-AND reduction, and componentwise lifting of tensors
 - **[Utilities](core/util.md)**: clamping and logarithm helpers for fuzzy computations
+- **[Contractions](core/elimination.md)**: the evaluation of a contraction by variable elimination or in the written order, with its work
 - **[Wiring](core/wiring.md)**: [einsum](https://en.wikipedia.org/wiki/Einstein_notation) contractions of many morphisms under one composition rule
 
 ## Categorical Package
@@ -89,6 +92,8 @@ weighted deduction systems.
 - **[Queries](stochastic/queries.md)**: probabilities, marginals, and expectations
 - **[Giry Monad](stochastic/giry.md)**: the [distribution monad](https://ncatlab.org/nlab/show/distribution+monad) on finite sets (class `GiryMonad`) and its Kleisli category `FinStoch`
 - **[Weighted Deduction](stochastic/deduction.md)**: rule schemas, chart semirings, and chart parsers
+- **[Agenda](stochastic/agenda.md)**, **[Indexed Charts](stochastic/indexed.md)**, **[Joins](stochastic/joins.md)**, **[Tries](stochastic/tries.md)**: the evaluation of deduction rules by keyed lookups, Generic Join, and variable elimination
+- **[Plans](stochastic/planning.md)**, **[Packed Forests](stochastic/forest.md)**, **[Linear Cyclic Systems](stochastic/recursion.md)**: the executor chosen from declared contracts, the derived hypergraph of a run, and cyclic systems solved through the algebra's closure
 
 ## Continuous Package
 
@@ -154,7 +159,7 @@ graph autoencoders over terms. The `effects` package gives handler stacks for co
 intervention, reweighting, tracing, replay, and reparameterization.
 
 - **[Signatures](structural/signature.md)**, **[Encoders](structural/encoder.md)**, **[Decoders](structural/decoder.md)**, **[Loss Registry](structural/losses.md)**, **[Shapes](structural/shapes.md)**
-- **[Effects overview](effects/index.md)**, **[Handler base](effects/base.md)**, **[Handlers](effects/handlers.md)**, **[Traces](effects/trace.md)**, **[Checked programs](effects/checked_program.md)**
+- **[Effects overview](effects/index.md)**, **[Handler base](effects/base.md)**, **[Handlers](effects/handlers.md)**, **[Traces](effects/trace.md)**, **[Checked programs](effects/checked_program.md)**, **[Score units](effects/units.md)**, **[Batched evaluation](effects/batching.md)**
 
 ## Transpilation and QIEC
 
@@ -165,6 +170,7 @@ elaboration, execution, tooling, and structural computations share.
 
 - **[Transpilation overview](transpile/index.md)**, **[Plan](transpile/plan.md)**, **[Renderers](transpile/renderers.md)**
 - **[QIEC overview](qiec/index.md)**, **[Checking](qiec/checking.md)**, **[Evaluator](qiec/evaluator.md)**, **[Execution](qiec/execution.md)**
+- **[Contracts](qiec/contracts.md)**, **[Rule presentations](qiec/rules.md)**, **[Foreign handler semantics](qiec/foreign.md)**: queries, accuracy, recursion, and work records, deduction rules as QIEC declarations, and the semantics a foreign handler declares
 
 ## Root Module
 
