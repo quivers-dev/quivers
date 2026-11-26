@@ -100,13 +100,13 @@ CLAIMS = tuple(claim(law) for law in ALL_LAWS)
 
 
 def query(
-    **changes: c.Observable | c.Retention | tuple[c.ParameterId, ...],
+    **changes: c.Observable | c.Retention | tuple[c.ParameterId | c.OccurrenceId, ...],
 ) -> c.QuerySpec:
     """The weight query, with changes.
 
     Parameters
     ----------
-    **changes : Observable or Retention or tuple of ParameterId
+    **changes : Observable or Retention or tuple of ParameterId or OccurrenceId
         Fields to replace.
 
     Returns
