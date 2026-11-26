@@ -197,7 +197,7 @@ def test_formula_point_contrasts_reuse_joint_hierarchical_prior_streams(hierarch
     )
     state = torch.random.get_rng_state()
     with patch(
-        "quivers.formulas._posterior.posterior_draws", wraps=posterior_draws
+        "quivers.formulas._fit.posterior_draws", wraps=posterior_draws
     ) as collect:
         actual = result.hypothesis(
             "x-z", num_samples=7, seed=8, prior=True, point=PointNullSpec(bandwidth=0.3)
@@ -206,7 +206,7 @@ def test_formula_point_contrasts_reuse_joint_hierarchical_prior_streams(hierarch
     assert torch.equal(state, torch.random.get_rng_state())
     torch.testing.assert_close(actual.point_evidence.log_ratio, oracle.log_ratio)
     with patch(
-        "quivers.formulas._posterior.posterior_draws",
+        "quivers.formulas._fit.posterior_draws",
         side_effect=AssertionError("must validate prior request before drawing"),
     ):
         with pytest.raises(ValueError, match="prior=True"):
