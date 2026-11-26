@@ -26,7 +26,7 @@ from quivers.effects.reparam.base import (
 )
 from quivers.effects.reparam.conjugate import ConjugateReparam
 from quivers.effects.reparam.loc_scale import LocScaleReparam
-from quivers.effects.reparam.neutra import NeuTraReparam
+from quivers.effects.reparam.neutra import NeuTraDraw, NeuTraReparam
 from quivers.effects.reparam.transform import TransformReparam
 
 __all__ = [
@@ -37,5 +37,6 @@ __all__ = [
     "LocScaleReparam",
     "TransformReparam",
     "NeuTraReparam",
+    "NeuTraDraw",
     "ConjugateReparam",
 ]

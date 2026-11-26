@@ -1247,6 +1247,7 @@ def test_flow_statistics_update_from_the_inputs_each_layer_sees() -> None:
     base = torch.randn(32, 1 + 2 + _SUBJECTS)
     with torch.no_grad():
         inputs = linear(base)
+    assert isinstance(inputs, torch.Tensor)
     torch.manual_seed(21)
     guide.update_statistics(32)
     torch.testing.assert_close(

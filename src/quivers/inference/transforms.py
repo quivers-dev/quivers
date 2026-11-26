@@ -167,16 +167,16 @@ class AffineCouplingTransform(TransformModule):
         self.register_buffer("_mask", mask, persistent=True)
 
     def _split(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x_a = x[..., self._mask]
-        x_b = x[..., ~self._mask]
+        x_a = x[..., self.get_buffer("_mask")]
+        x_b = x[..., ~self.get_buffer("_mask")]
         return x_a, x_b
 
     def _join(self, x_a: torch.Tensor, x_b: torch.Tensor) -> torch.Tensor:
         out = torch.empty(
             *x_a.shape[:-1], self._dim, device=x_a.device, dtype=x_a.dtype
         )
-        out[..., self._mask] = x_a
-        out[..., ~self._mask] = x_b
+        out[..., self.get_buffer("_mask")] = x_a
+        out[..., ~self.get_buffer("_mask")] = x_b
         return out
 
     def _params(self, x_a: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -270,7 +270,7 @@ class _MaskedLinear(nn.Linear):
         self.register_buffer("mask", mask.float(), persistent=True)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return F.linear(input, self.weight * self.mask, self.bias)
+        return F.linear(input, self.weight * self.get_buffer("mask"), self.bias)
 
 
 class MADE(nn.Module):
@@ -656,14 +656,14 @@ class NeuralSplineCouplingTransform(TransformModule):
         self.register_buffer("_mask", mask, persistent=True)
 
     def _split(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return x[..., self._mask], x[..., ~self._mask]
+        return x[..., self.get_buffer("_mask")], x[..., ~self.get_buffer("_mask")]
 
     def _join(self, x_a: torch.Tensor, x_b: torch.Tensor) -> torch.Tensor:
         out = torch.empty(
             *x_a.shape[:-1], self._dim, device=x_a.device, dtype=x_a.dtype
         )
-        out[..., self._mask] = x_a
-        out[..., ~self._mask] = x_b
+        out[..., self.get_buffer("_mask")] = x_a
+        out[..., ~self.get_buffer("_mask")] = x_b
         return out
 
     def _spline_params(
@@ -769,14 +769,16 @@ class LULinearTransform(TransformModule):
         self.register_buffer("_eye", torch.eye(dim), persistent=True)
 
     def _L(self) -> torch.Tensor:
-        return self._lower * self._lower_mask + self._eye
+        return self._lower * self.get_buffer("_lower_mask") + self.get_buffer("_eye")
 
     def _U(self) -> torch.Tensor:
-        return self._upper * self._upper_mask + torch.diag(self._log_diag.exp())
+        return self._upper * self.get_buffer("_upper_mask") + torch.diag(
+            self._log_diag.exp()
+        )
 
     def _call(self, x: torch.Tensor) -> torch.Tensor:
         # y = P L U x
-        y = x[..., self._perm]
+        y = x[..., self.get_buffer("_perm")]
         y = y @ self._U().T
         y = y @ self._L().T
         return y
@@ -787,8 +789,10 @@ class LULinearTransform(TransformModule):
         U = self._U()
         z = torch.linalg.solve_triangular(L, y.unsqueeze(-1), upper=False)
         x = torch.linalg.solve_triangular(U, z, upper=True).squeeze(-1)
-        inv_perm = torch.empty_like(self._perm)
-        inv_perm[self._perm] = torch.arange(self._dim, device=self._perm.device)
+        inv_perm = torch.empty_like(self.get_buffer("_perm"))
+        inv_perm[self.get_buffer("_perm")] = torch.arange(
+            self._dim, device=self.get_buffer("_perm").device
+        )
         return x[..., inv_perm]
 
     def log_abs_det_jacobian(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
