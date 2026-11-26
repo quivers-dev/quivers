@@ -129,11 +129,18 @@ from quivers.qiec.discharge import (
 )
 from quivers.qiec.distributions import (
     DistributionBackend,
+    HostLaw,
     ReferenceBackend,
     RuntimeDistribution,
     distribution_backend,
     install_distribution_backend,
     seed_reference_rng,
+)
+from quivers.qiec.numbers import (
+    NumberDomain,
+    PositionDependentControl,
+    host_value,
+    machine_value,
 )
 from quivers.qiec.effects import (
     ArgumentDef,
@@ -821,6 +828,11 @@ __all__ = [
     "validate_telescope",
     "weight_effect",
     "weight_handler",
+    "HostLaw",
+    "NumberDomain",
+    "PositionDependentControl",
+    "host_value",
+    "machine_value",
 ]
 __all__ += contracts.__all__
 __all__ += foreign.__all__

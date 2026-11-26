@@ -33,6 +33,7 @@ from quivers.qiec.execution import (
     run_named,
 )
 from quivers.qiec.distributions import seed_reference_rng
+from quivers.qiec.numbers import host_value
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.kinds import IndexBinder
 from quivers.qiec.program_runtime import (
@@ -124,7 +125,8 @@ class EntryRun(QiecModel):
     entry
         The entry invoked.
     value
-        The validated host value the entry returned.
+        The value the entry returned, as host data: numbers and nested
+        tuples of numbers where the machine held tensors.
     log_joint
         The log joint density a program run accumulated, or ``None`` for
         a computation.
@@ -391,7 +393,7 @@ def invoke_entry(
         )
         return EntryRun(
             entry=entry,
-            value=result.value,
+            value=host_value(result.value),
             log_joint=None,
             result=result,
         )
@@ -486,10 +488,12 @@ def invoke_entry(
             ),
         ),
     )
+    log_joint = host_value(run.log_joint)
+    assert isinstance(log_joint, float)
     return EntryRun(
         entry=entry,
-        value=run.value,
-        log_joint=run.log_joint,
+        value=host_value(run.value),
+        log_joint=log_joint,
         result=result,
     )
 

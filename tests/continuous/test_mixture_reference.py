@@ -15,11 +15,11 @@ from quivers.continuous.measure import (
     Pushforward,
     Restrict,
 )
-from quivers.qiec import RuntimeDistribution
+from quivers.qiec import HostLaw
 
 
 def _ref(name, **arguments):
-    return RuntimeDistribution(family=name, arguments=arguments)
+    return HostLaw(family=name, arguments=arguments)
 
 
 @pytest.mark.parametrize("weight", [0.0, 0.3, 1.0])

@@ -4,7 +4,7 @@ import math
 
 import pytest
 import torch
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import HostLaw
 from scipy.special import betaln
 
 from quivers.continuous._zip_hurdle import ZeroOneInflatedBeta
@@ -15,7 +15,7 @@ from quivers.continuous._zip_hurdle import ZeroOneInflatedBeta
 def test_reference_inflated_beta_scores_impossible_branches(
     zoi: float, coi: float, value: float
 ) -> None:
-    dist = RuntimeDistribution(
+    dist = HostLaw(
         family="ZeroOneInflatedBeta",
         arguments={"mu": 0.5, "phi": 2.0, "zoi": zoi, "coi": coi},
     )
@@ -26,7 +26,7 @@ def test_reference_inflated_beta_scores_impossible_branches(
 
 @pytest.mark.parametrize("mu", [0.0, 1.0, -0.1, 1.1])
 def test_reference_inflated_beta_refuses_invalid_means_even_at_atoms(mu: float) -> None:
-    dist = RuntimeDistribution(
+    dist = HostLaw(
         family="ZeroOneInflatedBeta",
         arguments={"mu": mu, "phi": 2.0, "zoi": 1.0, "coi": 0.5},
     )

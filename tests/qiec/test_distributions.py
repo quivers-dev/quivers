@@ -19,7 +19,7 @@ from quivers.qiec import (
     LogDensity,
     ReferenceBackend,
     Return,
-    RuntimeDistribution,
+    HostLaw,
     SiteValue,
     TensorValue,
     TupleValue,
@@ -76,7 +76,7 @@ def _normal(loc: float = 0.0, scale: float = 1.0) -> DistributionValue:
 def test_a_scalar_family_infers_its_sampleable_type() -> None:
     assert infer_value(_normal(), KernelRegistry()) == sampleable_type(REAL)
     value = Evaluator().evaluate(Return(value=_normal(1.0, 2.0)))
-    assert isinstance(value, RuntimeDistribution)
+    assert isinstance(value, HostLaw)
     assert value.family == "Normal"
     assert dict(value.arguments) == {"loc": 1.0, "scale": 2.0}
 
@@ -310,7 +310,7 @@ def test_log_density_evaluates_through_the_reference_backend() -> None:
 def test_reference_densities_match_closed_forms(
     name: str, arguments: dict[str, object], point: object, expected: float
 ) -> None:
-    assert RuntimeDistribution(family=name, arguments=arguments).log_prob(
+    assert HostLaw(family=name, arguments=arguments).log_prob(
         point
     ) == pytest.approx(expected)
 
@@ -318,30 +318,30 @@ def test_reference_densities_match_closed_forms(
 def test_reference_samples_land_in_the_support_and_are_seeded() -> None:
     rng = random.Random(3)
     draws = [
-        RuntimeDistribution(
+        HostLaw(
             family="Beta", arguments={"concentration1": 2.0, "concentration0": 3.0}
         ).sample(rng)
         for _ in range(20)
     ]
     assert all(0.0 < draw < 1.0 for draw in draws)
     assert (
-        RuntimeDistribution(
+        HostLaw(
             family="Categorical", arguments={"probs": (0.0, 1.0)}
         ).sample(rng)
         == 1
     )
     assert (
-        RuntimeDistribution(family="Bernoulli", arguments={"probs": 1.0}).sample(rng)
+        HostLaw(family="Bernoulli", arguments={"probs": 1.0}).sample(rng)
         is True
     )
-    simplex = RuntimeDistribution(
+    simplex = HostLaw(
         family="Dirichlet", arguments={"concentration": (1.0, 2.0, 3.0)}
     ).sample(rng)
     assert sum(simplex) == pytest.approx(1.0)  # type: ignore[arg-type]
-    first = RuntimeDistribution(
+    first = HostLaw(
         family="Normal", arguments={"loc": 0.0, "scale": 1.0}
     ).sample(random.Random(9))
-    second = RuntimeDistribution(
+    second = HostLaw(
         family="Normal", arguments={"loc": 0.0, "scale": 1.0}
     ).sample(random.Random(9))
     assert first == second
@@ -349,22 +349,22 @@ def test_reference_samples_land_in_the_support_and_are_seeded() -> None:
 
 def test_unknown_families_and_bad_parameters_are_reported() -> None:
     with pytest.raises(DistributionError, match="cannot sample Unheard"):
-        RuntimeDistribution(family="Unheard", arguments={"df": 3.0}).sample(
+        HostLaw(family="Unheard", arguments={"df": 3.0}).sample(
             random.Random(0)
         )
     with pytest.raises(DistributionError, match="cannot score Unheard"):
-        RuntimeDistribution(family="Unheard", arguments={"df": 3.0}).log_prob(1.0)
+        HostLaw(family="Unheard", arguments={"df": 3.0}).log_prob(1.0)
     with pytest.raises(
         DistributionError,
         match="Wishart needs covariance_matrix, precision_matrix, or scale_tril",
     ):
-        RuntimeDistribution(family="Wishart", arguments={"df": 3.0}).log_prob(
+        HostLaw(family="Wishart", arguments={"df": 3.0}).log_prob(
             ((1.0, 0.0), (0.0, 1.0))
         )
     with pytest.raises(DistributionError, match="needs parameter 'scale'"):
-        RuntimeDistribution(family="Normal", arguments={"loc": 0.0}).log_prob(0.0)
+        HostLaw(family="Normal", arguments={"loc": 0.0}).log_prob(0.0)
     with pytest.raises(DistributionError, match="probs or logits"):
-        RuntimeDistribution(family="Bernoulli", arguments={}).log_prob(True)
+        HostLaw(family="Bernoulli", arguments={}).log_prob(True)
 
 
 def test_a_backend_can_be_installed_and_restored() -> None:
@@ -380,11 +380,11 @@ def test_a_backend_can_be_installed_and_restored() -> None:
         assert isinstance(previous, ReferenceBackend)
         assert distribution_backend().__class__ is Constant
         assert (
-            RuntimeDistribution(family="Wishart", arguments={"df": 3.0}).sample()
+            HostLaw(family="Wishart", arguments={"df": 3.0}).sample()
             == 42.0
         )
         assert (
-            RuntimeDistribution(family="Wishart", arguments={"df": 3.0}).log_prob(0.0)
+            HostLaw(family="Wishart", arguments={"df": 3.0}).log_prob(0.0)
             == -1.0
         )
     finally:

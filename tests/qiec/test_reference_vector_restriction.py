@@ -6,7 +6,7 @@ import random
 import pytest
 import torch
 
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import HostLaw
 from quivers.qiec._interval import log_interval_mass
 
 
@@ -15,17 +15,17 @@ def test_vector_restriction_density_mass_and_sampling_match_independent_product(
     batch, event
 ):
     loc = torch.tensor([[-0.4, 0.1, 0.7], [0.2, -0.3, 0.8]], dtype=torch.double)
-    base = RuntimeDistribution(
+    base = HostLaw(
         family="Normal",
         arguments={"loc": tuple(tuple(row) for row in loc.tolist()), "scale": 0.7},
         batch=batch,
         event=event,
         ranks={"loc": 0, "scale": 0},
     )
-    restricted = RuntimeDistribution(
+    restricted = HostLaw(
         family="Restrict", arguments={"base": base, "low": -1.0, "high": 1.0}
     )
-    normalized = RuntimeDistribution(family="Normalize", arguments={"base": restricted})
+    normalized = HostLaw(family="Normalize", arguments={"base": restricted})
     law = torch.distributions.Normal(loc, 0.7)
     logmass = (
         (law.cdf(loc.new_tensor(1.0)) - law.cdf(loc.new_tensor(-1.0)))
@@ -46,7 +46,7 @@ def test_vector_restriction_density_mass_and_sampling_match_independent_product(
 
 
 def test_plated_discrete_singleton_mass_is_product_of_original_count_atoms():
-    base = RuntimeDistribution(
+    base = HostLaw(
         family="Binomial",
         arguments={"total_count": (0, 1, 2, 3), "probs": 0.5},
         event=(4,),
@@ -58,8 +58,8 @@ def test_plated_discrete_singleton_mass_is_product_of_original_count_atoms():
 
 @pytest.mark.parametrize("value", [(0.0, 0.5), ((0.0, 0.5), (0.25, 0.75)), True])
 def test_point_mass_rectangle_uses_the_same_coordinate_membership(value):
-    point = RuntimeDistribution(family="PointMass", arguments={"value": value})
-    restricted = RuntimeDistribution(
+    point = HostLaw(family="PointMass", arguments={"value": value})
+    restricted = HostLaw(
         family="Restrict", arguments={"base": point, "low": 0.0, "high": 1.0}
     )
     assert restricted.log_mass() == 0.0
@@ -70,8 +70,8 @@ def test_point_mass_rectangle_uses_the_same_coordinate_membership(value):
 
 
 def test_point_mass_reference_uses_exact_singletons_without_float_rounding():
-    atom = RuntimeDistribution(family="PointMass", arguments={"value": 0.0})
+    atom = HostLaw(family="PointMass", arguments={"value": 0.0})
     assert atom.log_prob(1e-13) == -math.inf
-    large = RuntimeDistribution(family="PointMass", arguments={"value": 2**53 + 1})
+    large = HostLaw(family="PointMass", arguments={"value": 2**53 + 1})
     assert large.sample(random.Random(1)) == 2**53 + 1
     assert large.log_prob(2**53) == -math.inf

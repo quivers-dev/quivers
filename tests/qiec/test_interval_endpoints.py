@@ -7,13 +7,13 @@ import pytest
 
 from quivers.dsl import parse
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec, QiecDiagnosticError
-from quivers.qiec import run_named, RuntimeDistribution
+from quivers.qiec import run_named, HostLaw
 from quivers.qiec._interval import log_interval_mass
 from quivers.qiec.reference_support import DistributionError
 
 
 def _distribution(family, **arguments):
-    return RuntimeDistribution(family=family, arguments=arguments)
+    return HostLaw(family=family, arguments=arguments)
 
 
 @pytest.mark.parametrize("lower_closed", [False, True])

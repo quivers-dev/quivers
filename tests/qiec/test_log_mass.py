@@ -16,7 +16,7 @@ from quivers.qiec import (
     LiteralValue,
     LogMass,
     Return,
-    RuntimeDistribution,
+    HostLaw,
     dumps,
     loads,
     family,
@@ -95,9 +95,9 @@ def test_mass_substitution_preserves_origin_and_specializes_both_axis_records():
 def test_reference_mass_preserves_requested_batch_prefix_and_sums_events(
     retained, expected_shape
 ):
-    base = RuntimeDistribution(family="Uniform", arguments={"low": 0.0, "high": 1.0})
+    base = HostLaw(family="Uniform", arguments={"low": 0.0, "high": 1.0})
     high = (((0.1, 0.2, 0.3), (0.4, 0.5, 0.6)), ((0.7, 0.8, 0.9), (0.2, 0.4, 0.8)))
-    measure = RuntimeDistribution(
+    measure = HostLaw(
         family="Restrict",
         arguments={"base": base, "low": 0.0, "high": high},
         batch=(2, 2),
@@ -131,7 +131,7 @@ def test_reference_mass_preserves_requested_batch_prefix_and_sums_events(
 
 @pytest.mark.parametrize("rank", [-1, 3, True, 1.5])
 def test_reference_mass_rejects_invalid_retained_rank(rank):
-    measure = RuntimeDistribution(
+    measure = HostLaw(
         family="Normal", arguments={"loc": 0.0, "scale": 1.0}, batch=(2,)
     )
     with pytest.raises(ValueError, match="batch rank"):

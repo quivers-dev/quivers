@@ -172,12 +172,12 @@ def test_existing_scalar_reference_trials_and_events_are_not_truncated(
     from quivers.qiec.distributions import ReferenceBackend
 
     backend = ReferenceBackend()
-    assert backend.log_prob(family, {"total_count": 3, **parameters}, 1.5) == -math.inf
+    assert backend.family_log_prob(family, {"total_count": 3, **parameters}, 1.5) == -math.inf
     for bad in [1.5, -1, True, 2**53 + 1]:
         with pytest.raises(DistributionError, match="trials|capacity"):
-            backend.sample(family, {"total_count": bad, **parameters}, random.Random(1))
+            backend.family_sample(family, {"total_count": bad, **parameters}, random.Random(1))
         with pytest.raises(DistributionError, match="trials|capacity"):
-            backend.log_prob(family, {"total_count": bad, **parameters}, 1)
+            backend.family_log_prob(family, {"total_count": bad, **parameters}, 1)
 
 
 @pytest.mark.parametrize(
@@ -195,7 +195,7 @@ def test_zero_trial_beta_binomial_validates_concentrations_before_skipping_rng(a
     with pytest.raises(ValueError):
         BetaBinomial(0, a, b)
     with pytest.raises(DistributionError, match="concentrations"):
-        ReferenceBackend().sample(
+        ReferenceBackend().family_sample(
             "BetaBinomial",
             {"total_count": 0, "concentration1": a, "concentration0": b},
             NoDraws(),

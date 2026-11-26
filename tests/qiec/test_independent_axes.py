@@ -19,7 +19,7 @@ from quivers.qiec import (
     KernelRegistry,
     LiteralValue,
     Return,
-    RuntimeDistribution,
+    HostLaw,
     dumps,
     loads as load_qiec,
     family,
@@ -94,7 +94,7 @@ def test_checked_reference_batch_event_partition_and_wire_roundtrip(shape, count
     assert infer_value(term, KernelRegistry()) == term.result_type
     assert load_qiec(dumps(Return(value=term))) == Return(value=term)
     runtime = Evaluator().evaluate(Return(value=term))
-    assert isinstance(runtime, RuntimeDistribution)
+    assert isinstance(runtime, HostLaw)
     assert runtime.batch == tuple(a.size.value for a in batch)
     values = (
         torch.arange(math.prod(shape) or 1, dtype=torch.float64).reshape(shape) / 10
@@ -116,10 +116,10 @@ def test_invalid_axis_counts_fail_native_reference_and_checked_kernel(count):
     base = torch.distributions.Normal(torch.zeros(2, 3), torch.ones(2, 3))
     with pytest.raises((TypeError, ValueError)):
         Independent(base, count)
-    runtime_base = RuntimeDistribution(
+    runtime_base = HostLaw(
         family="Normal", arguments={"loc": 0.0, "scale": 1.0}, batch=(2, 3)
     )
-    runtime = RuntimeDistribution(
+    runtime = HostLaw(
         family="Independent",
         arguments={"base": runtime_base, "reinterpreted_batch_ndims": count},
     )
@@ -135,7 +135,7 @@ def test_invalid_axis_counts_fail_native_reference_and_checked_kernel(count):
 
 
 def test_prefix_selection_preserves_unselected_trailing_broadcast_parameters():
-    base = RuntimeDistribution(
+    base = HostLaw(
         family="Normal", arguments={"loc": (1.0, 2.0, 3.0), "scale": 1.0}, batch=(2, 3)
     )
     first = base.at((1,))

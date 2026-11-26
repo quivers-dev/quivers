@@ -480,14 +480,32 @@ def host_value(value: object) -> object:
     Returns
     -------
     object
-        A number for a zero-dimensional tensor, nested lists of numbers for
+        A number for a zero-dimensional tensor, nested tuples of numbers for
         a tensor of higher rank, the components of a tuple converted, and
         any other value itself.
     """
     if isinstance(value, torch.Tensor):
-        return value.detach().cpu().tolist()
+        return _tuples(value.detach().cpu().tolist())
     if isinstance(value, tuple):
         return tuple(host_value(item) for item in value)
+    return value
+
+
+def _tuples(value: object) -> object:
+    """Nested lists as nested tuples.
+
+    Parameters
+    ----------
+    value : object
+        A number or nested lists of numbers.
+
+    Returns
+    -------
+    object
+        The same with every list a tuple.
+    """
+    if isinstance(value, list):
+        return tuple(_tuples(item) for item in value)
     return value
 
 

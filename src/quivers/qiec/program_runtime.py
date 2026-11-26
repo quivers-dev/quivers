@@ -48,7 +48,7 @@ from quivers.qiec.execution import (
 )
 from quivers.qiec.distributions import DistributionBackend
 from quivers.qiec.evaluator import RuntimeConstructor
-from quivers.qiec.numbers import NumberDomain
+from quivers.qiec.numbers import NumberDomain, machine_value
 from quivers.qiec.foreign import Settlement
 from quivers.qiec.identifiers import ComputationId, HandlerId, SourceOrigin
 from quivers.qiec.module import NamedComputation, QiecModule
@@ -1259,7 +1259,7 @@ def deduction_item(
         The atom or constructor symbol, as the deduction spells it.
     *fields : object
         The constructor's fields: integers for position slots, items for
-        the rest.
+        the rest; numbers become the machine's tensors.
 
     Returns
     -------
@@ -1286,10 +1286,14 @@ def deduction_item(
             f"field(s), not {len(fields)}"
         )
     family = next(item for item in module.families if item.id == constructor.family)
+    numbers = NumberDomain()
     return RuntimeConstructor(
         constructor=constructor.id,
         static_arguments=(),
-        fields=tuple(fields),
+        fields=tuple(
+            machine_value(declared.type, field, numbers)
+            for declared, field in zip(constructor.fields, fields, strict=True)
+        ),
         result_type=TypeApplication(constructor=family.type_constructor, arguments=()),
     )
 

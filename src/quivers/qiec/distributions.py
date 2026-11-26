@@ -611,7 +611,7 @@ class HostLaw(QiecModel):
             point = value
             for index in position:
                 point = point[index]  # type: ignore[index]
-            totals[position[: len(self.batch)]] += _backend.log_prob(
+            totals[position[: len(self.batch)]] += _family_log_prob(
                 self.family, self._at(position), point
             )
         if keep_batch:

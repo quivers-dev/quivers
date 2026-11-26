@@ -13,14 +13,14 @@ from quivers.continuous._interval import log_interval_mass
 from quivers.continuous._ordered import OrderedLogistic, OrderedProbit
 from quivers.qiec._count_tails import log_count_tails
 from quivers.qiec._interval import log_interval_mass as reference_interval
-from quivers.qiec.distributions import ReferenceBackend, RuntimeDistribution
+from quivers.qiec.distributions import ReferenceBackend, HostLaw
 
 
 @pytest.mark.parametrize("q,power", [(0.4, 1e-20), (0.7, 0.1), (0.9, 2.0), (0.0, 1.3)])
 def test_discrete_weibull_full_mass_does_not_use_negligible_individual_term_heuristic(
     q, power
 ):
-    base = RuntimeDistribution(
+    base = HostLaw(
         family="DiscreteWeibull", arguments={"probs": q, "concentration": power}
     )
     assert reference_interval(base, None, None) == 0.0
@@ -72,7 +72,7 @@ def test_ordinal_host_log_scores_keep_extreme_probabilities_and_all_head_gradien
     parameters = torch.tensor([eta, -1.0, 1.0], dtype=torch.double, requires_grad=True)
     law = cls(parameters[0], parameters[1:])
     args = {"eta": eta, "cutpoints": [-1.0, 1.0]}
-    scores = [backend.log_prob(family, args, point) for point in range(3)]
+    scores = [backend.family_log_prob(family, args, point) for point in range(3)]
     torch.testing.assert_close(
         torch.tensor(scores, dtype=torch.double),
         law.log_prob(torch.arange(3)).detach(),
@@ -101,10 +101,10 @@ def test_ordinal_host_log_scores_keep_extreme_probabilities_and_all_head_gradien
         negative = positive.copy()
         positive[index] += step
         negative[index] -= step
-        plus = backend.log_prob(
+        plus = backend.family_log_prob(
             family, {"eta": float(positive[0]), "cutpoints": positive[1:].tolist()}, 1
         )
-        minus = backend.log_prob(
+        minus = backend.family_log_prob(
             family, {"eta": float(negative[0]), "cutpoints": negative[1:].tolist()}, 1
         )
         differences.append((plus - minus) / (2 * step))
@@ -132,9 +132,9 @@ def test_ordinal_density_and_sampling_share_native_parameter_validation(
     args = {"eta": eta, "cutpoints": cuts}
     backend = ReferenceBackend()
     with pytest.raises(ValueError):
-        backend.log_prob(family, args, 0)
+        backend.family_log_prob(family, args, 0)
     with pytest.raises(ValueError):
-        backend.sample(family, args, random.Random(2))
+        backend.family_sample(family, args, random.Random(2))
 
 
 @pytest.mark.parametrize(
@@ -145,7 +145,7 @@ def test_ordinal_host_sampling_uses_the_same_log_probability_vector(family, cls)
     backend = ReferenceBackend()
     args = {"eta": 0.3, "cutpoints": [-1.0, 0.5, 2.0]}
     rng = random.Random(101)
-    draws = [backend.sample(family, args, rng) for _ in range(20000)]
+    draws = [backend.family_sample(family, args, rng) for _ in range(20000)]
     expected = (
         cls(
             torch.tensor(0.3, dtype=torch.double),
@@ -192,7 +192,7 @@ def test_factored_weibull_intervals_retain_mass_between_rounded_equal_tails(
     native = DiscreteWeibull(
         torch.tensor(q, dtype=torch.double), torch.tensor(power, dtype=torch.double)
     )
-    reference = RuntimeDistribution(family="DiscreteWeibull", arguments=args)
+    reference = HostLaw(family="DiscreteWeibull", arguments=args)
     expected = _decimal_interval(q, power, first, last)
     assert log_interval_mass(native, first, last).item() == pytest.approx(
         expected, abs=3e-11, rel=5e-13
@@ -217,11 +217,11 @@ def test_weibull_endpoint_membership_matches_explicit_finite_count_sum(
     native = DiscreteWeibull(
         torch.tensor(q, dtype=torch.double), torch.tensor(power, dtype=torch.double)
     )
-    reference = RuntimeDistribution(family="DiscreteWeibull", arguments=args)
+    reference = HostLaw(family="DiscreteWeibull", arguments=args)
     start = first + (not lower_closed)
     stop = last - (not upper_closed)
     masses = [
-        math.exp(ReferenceBackend().log_prob("DiscreteWeibull", args, k))
+        math.exp(ReferenceBackend().family_log_prob("DiscreteWeibull", args, k))
         for k in range(start, stop + 1)
     ]
     expected = math.log(math.fsum(masses)) if masses else -math.inf
@@ -304,7 +304,7 @@ def test_weibull_interval_batch_flags_and_zero_endpoint_derivatives():
 
 def test_probit_unrepresentable_log_tail_remains_impossible_without_nan_difference():
     args = {"eta": 1e200, "cutpoints": [-1.0, 1.0]}
-    assert ReferenceBackend().log_prob("OrderedProbit", args, 1) == -math.inf
+    assert ReferenceBackend().family_log_prob("OrderedProbit", args, 1) == -math.inf
     assert torch.isneginf(
         OrderedProbit(
             torch.tensor(1e200, dtype=torch.double),

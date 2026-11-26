@@ -10,7 +10,7 @@ from quivers.continuous import ExGaussian, InverseGaussian
 from quivers.continuous._gaussian_tails import log_scaled_erfcx_difference
 from quivers.qiec._gaussian_tails import log_scaled_erfcx_difference as host_difference
 from quivers.qiec._response_time import log_response_time_tails
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import HostLaw
 from quivers.qiec._interval import log_interval_mass as host_interval
 from quivers.continuous._interval import log_interval_mass
 
@@ -228,7 +228,7 @@ def test_tail_support_endpoints_and_nan(cls, parameters):
 def test_native_reference_interval_tails_retain_extreme_mass(family, params, lower):
     names = ("loc", "scale", "rate") if family == "ExGaussian" else ("mu", "shape")
     arguments = dict(zip(names, params))
-    base = RuntimeDistribution(family=family, arguments=arguments)
+    base = HostLaw(family=family, arguments=arguments)
     cls = ExGaussian if family == "ExGaussian" else InverseGaussian
     law = cls(*(torch.tensor(p, dtype=torch.double) for p in params))
     upper = lower + (0.00001 if lower < 1 else 0.01)
@@ -284,7 +284,7 @@ def test_adjacent_bounds_use_shared_local_density_instead_of_tail_subtraction(
     names = ("loc", "scale", "rate") if family == "ExGaussian" else ("mu", "shape")
     args = dict(zip(names, (p.item() for p in parameters)))
     host = host_interval(
-        RuntimeDistribution(family=family, arguments=args),
+        HostLaw(family=family, arguments=args),
         low.item(),
         high.item(),
         lower_closed=False,
@@ -388,7 +388,7 @@ export model
     cls = ExGaussian if family == "ExGaussian" else InverseGaussian
     law = cls(*(torch.tensor(p, dtype=torch.double) for p in parameters.values()))
     mass = host_interval(
-        RuntimeDistribution(family=family, arguments=parameters), low, high
+        HostLaw(family=family, arguments=parameters), low, high
     )
     expected = law.log_prob(torch.tensor(point, dtype=torch.double)).item() - mass
     assert native.item() == pytest.approx(expected, abs=2e-10)

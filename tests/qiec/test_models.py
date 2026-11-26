@@ -29,7 +29,7 @@ from quivers.qiec import (
 from quivers.qiec._models import QiecModel, validate_shape
 from quivers.qiec.serialization import SerializationError, dumps, loads
 from quivers.qiec.entries import EntryPoint, EntryRun
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import HostLaw
 from quivers.qiec.execution import ExecutionResult
 from quivers.qiec.program_runtime import DeductionRun, ProgramRun
 
@@ -192,7 +192,7 @@ def test_runtime_distribution_owns_parameters_without_detaching_tensors() -> Non
     value = parameter * 3.0
     arguments = {"loc": value, "scale": 1.0}
     ranks = {"loc": 0, "scale": 0}
-    distribution = RuntimeDistribution(
+    distribution = HostLaw(
         family="Normal", arguments=arguments, ranks=ranks
     )
     arguments["loc"] = -1.0
