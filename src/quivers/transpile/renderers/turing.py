@@ -914,6 +914,7 @@ class TuringRenderer(RendererBase):
                 own_event=own_event,
                 residual_event=residual_event,
                 index_dep=index_dep,
+                observed=observed,
             )
 
         # A parameter whose every axis the site replicates over, such as
@@ -1227,6 +1228,7 @@ class TuringRenderer(RendererBase):
         own_event: tuple[Dim, ...],
         residual_event: tuple[Dim, ...],
         index_dep: bool,
+        observed: bool,
     ) -> SchemaFragment:
         """Emit a batch-major plated draw from a family with its own
         event shape:
@@ -1243,6 +1245,11 @@ class TuringRenderer(RendererBase):
         produces itself. Arguments that index a batch-shaped name pick
         up the innermost loop variable, so a per-row concentration
         reads `alpha[m_State]`.
+
+        A latent site is allocated first, as above. An observed site is
+        the model's argument, which holds the data each `~` scores, so it
+        is not allocated: rebinding the name to an uninitialized array
+        would make Turing score whatever that memory holds.
         """
         sb, counter = ctx.sb, ctx.counter
         loop_dims = (*plate.batch_dims, *residual_event)
@@ -1279,19 +1286,20 @@ class TuringRenderer(RendererBase):
                     body_stmts=stmts,
                 ),
             )
-        alloc = _array_alloc(
-            sb,
-            counter,
-            elem_type="Float64",
-            sizes=tuple(
-                _dim_to_size(sb, counter, dim) for dim in (*loop_dims, *own_event)
-            ),
-        )
-        sb.edge(
-            ctx.body,
-            _assignment(sb, counter, _identifier(sb, counter, name), alloc),
-            "child_of",
-        )
+        if not observed:
+            alloc = _array_alloc(
+                sb,
+                counter,
+                elem_type="Float64",
+                sizes=tuple(
+                    _dim_to_size(sb, counter, dim) for dim in (*loop_dims, *own_event)
+                ),
+            )
+            sb.edge(
+                ctx.body,
+                _assignment(sb, counter, _identifier(sb, counter, name), alloc),
+                "child_of",
+            )
         sb.edge(ctx.body, stmts[0], "child_of")
         return ""
 
