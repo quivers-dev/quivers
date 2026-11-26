@@ -40,7 +40,7 @@ from tests.evidence.compare import (
     compare_number,
     compare_tensor,
 )
-from tests.evidence.oracles import closed_forms, derivations
+from tests.evidence.oracles import closed_forms, derivations, gradients
 from tests.evidence.oracles.derivations import Term, Tree, Variable
 from tests.evidence.problems import (
     DEDUCTIONS,
@@ -860,6 +860,50 @@ def check_budget(discipline: str) -> None:
     )
 
 
+def check_impossible_sum_gradient(discipline: str) -> None:
+    """Compare the derivative of a sum of absent alternatives.
+
+    Two axioms of log weight minus infinity each derive one item. Its
+    weight is minus infinity near them, so its derivative is the one the
+    gradient oracle declares for an impossible sum: zero in each axiom.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda's name.
+    """
+    case = gradients.BOUNDARY_CASES[2]
+    leaves = [
+        torch.tensor(-math.inf, dtype=torch.float64, requires_grad=True)
+        for _ in range(2)
+    ]
+    result = run_agenda(
+        [(("A",), leaves[0]), (("B",), leaves[1])],
+        [
+            InferenceRule(name="a", premises=(("A",),), conclusion=("X",)),
+            InferenceRule(name="b", premises=(("B",),), conclusion=("X",)),
+        ],
+        semiring=LOG_PROB,
+        agenda=AGENDAS[discipline](),
+    )
+    value = result.chart.get(("X",))
+    if value is None:
+        raise Mismatch("missing", math.inf, f"{discipline}: the item is absent")
+    compare_number(
+        float(value),
+        case.value,
+        Accuracy(domain="log", operations=1),
+        f"{discipline} impossible sum",
+    )
+    found = torch.autograd.grad(value, leaves, allow_unused=True)
+    compare_gradients(
+        {"a": found[0], "b": found[1]},
+        dict(zip(("a", "b"), case.gradient, strict=True)),
+        Accuracy(domain="log", operations=1),
+        f"{discipline} derivative of an impossible sum",
+    )
+
+
 def check_update(discipline: str) -> None:
     """Compare two runs of one rule set across a parameter update.
 
@@ -956,6 +1000,12 @@ def _register() -> None:
                     "Q11" if name == "edit_lattice" else "Q1g",
                     partial(check_gradient, name, semiring, discipline),
                 )
+        add(
+            f"deduction/impossible_sum_gradient/{discipline}",
+            row,
+            "Q1g",
+            partial(check_impossible_sum_gradient, discipline),
+        )
         add(
             f"deduction/outcomes/{discipline}",
             row,

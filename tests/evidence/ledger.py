@@ -360,63 +360,6 @@ record(
 )
 
 
-def _impossible_gradient() -> Facts:
-    """The gradient of an all-impossible sum in four executors.
-
-    Returns
-    -------
-    Facts
-        One derivative of each.
-    """
-    a = scalar(-math.inf, requires_grad=True)
-    b = scalar(-math.inf, requires_grad=True)
-    result = run_agenda(
-        [(("A",), a), (("B",), b)],
-        [rule("a", (("A",),), ("X",)), rule("b", (("B",),), ("X",))],
-        semiring=LOG_PROB,
-    )
-    value = result.chart.get(("X",))
-    assert value is not None
-    (found,) = torch.autograd.grad(value, a)
-    with double_precision():
-        torch.manual_seed(0)
-        parser = ChartParser(
-            RuleSystem(binary_rules=((0, 1, 2), (0, 0, 0)), n_categories=3),
-            n_terminals=2,
-            start_idx=0,
-        )
-        score = parser(torch.tensor((0, 1, 0)))
-        gradient = torch.autograd.grad(score, list(parser.parameters()))[0]
-    return {
-        "agenda derivative": number(found),
-        "chart parser derivatives that are not numbers": str(
-            bool(torch.isnan(gradient).any())
-        ),
-    }
-
-
-record(
-    "impossible-sum-gradient",
-    "stochastic/semiring.py: LogProbSemiring.plus, as used by the agenda and by "
-    "stochastic/span.py: BinarySpanDeduction",
-    "the gradient of a sum of impossible alternatives is not a number; a chart "
-    "parser with a category no rule derives loses every gradient of a sentence "
-    "it parses with positive weight",
-    {
-        "agenda derivative": "nan",
-        "chart parser derivatives that are not numbers": "True",
-    },
-    {
-        "agenda derivative": "0",
-        "chart parser derivatives that are not numbers": "False",
-    },
-    _impossible_gradient,
-    lambda: {
-        "agenda derivative": number(gradients.BOUNDARY_CASES[2].gradient[0]),
-        "chart parser derivatives that are not numbers": "False",
-    },
-)
-
 #: The turns of the cycles whose sums stop on a residual.
 RESIDUAL_TURNS = ("9/10", "99/100", "999/1000")
 
@@ -1382,94 +1325,28 @@ def _max_plus_work(size: int) -> int:
 
 
 def _empty() -> Facts:
-    """The results of reductions and closures over nothing.
+    """The result of a best-path closure over no states.
 
     Returns
     -------
     Facts
-        Each result or the exception.
+        The result or the exception.
     """
-    nothing = torch.zeros(0, 2, dtype=torch.float64)
     return {
-        "tropical join": raised(lambda: TropicalAlgebra().join(nothing, 0)),
-        "best-path sum": raised(lambda: VITERBI.plus(nothing, 0)),
-        "Boolean sum": raised(lambda: BOOLEAN.plus(nothing, 0)),
         "best-path closure": raised(
             lambda: kleene_star(torch.zeros(0, 0, dtype=torch.float64), VITERBI)
-        ),
-        "tropical contraction": raised(
-            lambda: EinsumWiring(TropicalAlgebra(), "ij,jk->ik").apply(
-                torch.zeros(1, 0, dtype=torch.float64),
-                torch.zeros(0, 2, dtype=torch.float64),
-            )
         ),
     }
 
 
 record(
     "empty-reduction-raises",
-    "core/algebras.py: TropicalAlgebra.join; stochastic/semiring.py: "
-    "ViterbiSemiring.plus, BooleanSemiring.plus; stochastic/_kleene.py: "
-    "_max_plus_star",
-    "a reduction over no terms raises instead of returning the algebra's zero",
-    dict.fromkeys(
-        (
-            "tropical join",
-            "best-path sum",
-            "Boolean sum",
-            "best-path closure",
-            "tropical contraction",
-        ),
-        "IndexError",
-    ),
-    {
-        "tropical join": "inf inf",
-        "best-path sum": "-inf -inf",
-        "Boolean sum": "0 0",
-        "best-path closure": "empty",
-        "tropical contraction": "inf inf",
-    },
+    "stochastic/_kleene.py: _max_plus_star",
+    "a best-path closure over no states raises instead of returning the empty "
+    "closure",
+    {"best-path closure": "IndexError"},
+    {"best-path closure": "empty"},
     _empty,
-)
-
-
-def _tie() -> Facts:
-    """The derivative of a maximum at a tie, as a pair operation.
-
-    Returns
-    -------
-    Facts
-        The derivative.
-    """
-    a, b = scalar(1.0, requires_grad=True), scalar(1.0, requires_grad=True)
-    pair = torch.autograd.grad(VITERBI.plus_pair(a, b), (a, b))
-    return {"pair": " ".join(number(g) for g in pair)}
-
-
-def _tie_required() -> Facts:
-    """The derivative the reduction of the same two values returns.
-
-    Returns
-    -------
-    Facts
-        The derivative, which is the declared element.
-    """
-    a, b = scalar(1.0, requires_grad=True), scalar(1.0, requires_grad=True)
-    found = torch.autograd.grad(VITERBI.plus(torch.stack([a, b]), 0), (a, b))
-    declared = gradients.BOUNDARY_CASES[3].gradient
-    assert tuple(float(g) for g in found) == declared
-    return {"pair": " ".join(number(g) for g in declared)}
-
-
-record(
-    "tie-has-two-gradients",
-    "stochastic/semiring.py: ViterbiSemiring.plus, ViterbiSemiring.plus_pair",
-    "the reduction gives the whole derivative of a tie to the first maximum and "
-    "the pair operation splits it, so a derivative depends on bracketing",
-    {"pair": "0.5 0.5"},
-    {"pair": "1 0"},
-    _tie,
-    _tie_required,
 )
 
 

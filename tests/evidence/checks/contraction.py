@@ -555,8 +555,7 @@ def _register() -> None:
                     "Q6",
                     partial(check_contraction, network, rule, zeros),
                 )
-        if rule != "tropical":
-            add(f"contraction/empty/{rule}", row, "Q6", partial(check_empty, rule))
+        add(f"contraction/empty/{rule}", row, "Q6", partial(check_empty, rule))
     for rule in ("real", "markov"):
         for network in NETWORKS:
             add(

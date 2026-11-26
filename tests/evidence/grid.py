@@ -127,7 +127,7 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
                 "names-decide-semantics",
                 "chart-view-promises",
             ),
-            "Q1g": ("zero-update-stops", "impossible-sum-gradient"),
+            "Q1g": ("zero-update-stops",),
             "Q5": ("occurrences-merge", "provenance-always-kept"),
             "Q6": ("rule-matching-scans",),
             "Q8": ("residual-is-the-value",),
@@ -141,7 +141,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         for discipline in deduction.AGENDAS
     },
     "chart-parser": {
-        "Q1g": ("impossible-sum-gradient",),
         "Q2": ("linear-semiring-reads-logarithms",),
         "Q3": ("default-precision", "row-rebuilt-per-category"),
         "Q10": ("linear-semiring-reads-logarithms",),
@@ -166,7 +165,7 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         "Q24": ("module-traversed-per-run",),
     },
     "kleene-star": {
-        "Q1g": ("zero-entry-gradient", "tie-has-two-gradients"),
+        "Q1g": ("zero-entry-gradient",),
         "Q7": (
             "max-plus-rounds",
             "empty-reduction-raises",
@@ -182,7 +181,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         "Q6": (
             "dense-join",
             "certain-entry-clamped",
-            "empty-reduction-raises",
             "dense-is-the-contract",
             "kan-extension-detaches",
         ),

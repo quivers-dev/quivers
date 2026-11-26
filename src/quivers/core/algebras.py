@@ -3854,21 +3854,40 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Semiring):
         # ``torch.logsumexp`` has the right value for an all-``-inf``
         # reduction but differentiates that value as ``NaN``. Impossible
         # dynamic-programming cells are represented by exactly such rows, so
-        # make the empty sum an explicit constant branch. Replacing the zero
-        # before ``log`` is essential: masking the result afterwards leaves
-        # ``log(0)`` in the autograd graph.
-        peak = t.amax(dim=axes, keepdim=True)
-        empty = torch.isneginf(peak)
-        shift = torch.where(empty, torch.zeros_like(peak), peak)
-        total = (t - shift).exp().sum(dim=axes, keepdim=True)
-        safe_total = torch.where(empty, torch.ones_like(total), total)
-        combined = safe_total.log() + shift
-        result = torch.where(
-            empty,
-            torch.full_like(combined, -float("inf")),
-            combined,
+        # the impossible rows are replaced by zeros before the reduction and
+        # their result is a constant. Replacing them before the reduction
+        # is essential: masking the result afterwards leaves the ``NaN`` of
+        # the reduction in the autograd graph.
+        impossible = torch.isneginf(t).all(dim=axes, keepdim=True)
+        safe = torch.where(impossible, torch.zeros_like(t), t)
+        total = torch.logsumexp(safe, dim=axes)
+        return torch.where(
+            impossible.squeeze(axes), torch.full_like(total, -float("inf")), total
         )
-        return result.squeeze(axes)
+
+    def join_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """The binary sum ``log(e^a + e^b)``, with zero masked.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            The first log weight.
+        b : torch.Tensor
+            The second log weight, broadcastable with ``a``.
+
+        Returns
+        -------
+        torch.Tensor
+            The sum, which equals `join` over the pair; when both are
+            ``-∞`` it is ``-∞`` with derivative zero.
+        """
+        a, b = torch.broadcast_tensors(a, b)
+        impossible = torch.isneginf(a) & torch.isneginf(b)
+        zero = torch.zeros_like(a)
+        total = torch.logaddexp(
+            torch.where(impossible, zero, a), torch.where(impossible, zero, b)
+        )
+        return torch.where(impossible, torch.full_like(total, -float("inf")), total)
 
     def meet(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
         """The minimum, refused over no terms.

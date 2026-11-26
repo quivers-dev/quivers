@@ -611,6 +611,36 @@ def check_impossible_cell_gradient() -> None:
     )
 
 
+def check_underivable_category_gradient() -> None:
+    """Require every derivative of a parse to be a number.
+
+    Category two of the grammar is derived by no rule, so every chart
+    cell of it over a span longer than one word is a sum of no
+    derivations. The sentence parses with positive weight, so its score
+    is finite and its derivative in every parameter is a number.
+    """
+    with double_precision():
+        torch.manual_seed(0)
+        parser = ChartParser(
+            RuleSystem(binary_rules=((0, 1, 2), (0, 0, 0)), n_categories=3),
+            n_terminals=2,
+            start_idx=0,
+        )
+        score = parser(torch.tensor((0, 1, 0)))
+        if not math.isfinite(float(score)):
+            raise Mismatch(
+                "infinite", math.inf, f"chart parser score {float(score)} is not finite"
+            )
+        found = differentiate(score, list(parser.parameters()), "chart parser")
+    for position, gradient in enumerate(found):
+        if bool(torch.isnan(gradient).any()):
+            raise Mismatch(
+                "not-a-number",
+                math.inf,
+                f"chart parser: the derivative in parameter {position} is not a number",
+            )
+
+
 def check_divergent_unary(executor: str) -> None:
     """Require a refusal for unary rules whose chains do not sum.
 
@@ -713,6 +743,12 @@ def _register() -> None:
     add("span/chart-parser/batch", "chart-parser", "Q3", check_parser_batch)
     add("span/chart-parser/gradient", "chart-parser", "Q1g", check_parser_gradient)
     add("span/chart-parser/counts", "chart-parser", "Q11", check_parser_gradient)
+    add(
+        "span/chart-parser/underivable_category_gradient",
+        "chart-parser",
+        "Q1g",
+        check_underivable_category_gradient,
+    )
     add("span/chart-parser/update", "chart-parser", "Q24", check_update)
     for unary in ("none", "acyclic", "cyclic"):
         add(f"span/inside/{unary}", "inside", "Q3", partial(check_inside, unary))
