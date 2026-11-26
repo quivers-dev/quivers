@@ -45,14 +45,17 @@ without an import cycle.
 from __future__ import annotations
 
 import hashlib
+import operator
 import struct
 import sys
 from collections.abc import Callable, Hashable, Mapping
 from enum import Enum
+from functools import cache
 from types import MappingProxyType
 from typing import Literal, Protocol, Self, cast
 
 import didactic.api as dx
+from didactic.models._storage import DictStorage
 
 __all__: list[str] = []
 
@@ -103,6 +106,7 @@ def opaque_by_value[V: HeldValue](
 
 
 _HASH_ATTR = "_quivers_value_hash"
+_KEY_ATTR = "_quivers_value_key"
 
 
 class HeldValue(Protocol):
@@ -120,6 +124,34 @@ class _Marker(Enum):
 
 
 _SCALAR_TYPES: tuple[type, ...] = (str, bytes, bool, int, float, complex, type(None))
+
+#: The exact types whose values are immutable and export no buffer, so a
+#: value of one is its own frozen form.
+_PLAIN_TYPES = frozenset({str, bool, int, float, complex, type(None)})
+
+
+def _is_settled(value: HeldValue) -> bool:
+    """Whether a decoded field value can be shared between reads.
+
+    Parameters
+    ----------
+    value : HeldValue
+        The decoded value.
+
+    Returns
+    -------
+    bool
+        ``True`` when nothing reachable from the value through tuples and
+        frozensets can be changed in place: a plain scalar, bytes, an enum
+        member, or a model, whose own fields are read the same way. A
+        mutable container is decoded afresh on every read instead, so a
+        caller that edits one does not edit the model.
+    """
+    if type(value) in _PLAIN_TYPES or isinstance(value, (bytes, Enum, dx.Model)):
+        return True
+    if type(value) in {tuple, frozenset}:
+        return all(_is_settled(item) for item in cast("tuple[HeldValue, ...]", value))
+    return False
 
 
 #: The struct codes of integer elements, signed and unsigned. Codes of
@@ -329,6 +361,8 @@ def _freeze(value: HeldValue) -> HeldValue:
         If the value is a mutable list or set, a writable buffer, or has
         no content key.
     """
+    if type(value) in _PLAIN_TYPES or isinstance(value, dx.Model):
+        return value
     view = _buffer(value)
     if view is not None:
         if not view.readonly:
@@ -341,8 +375,14 @@ def _freeze(value: HeldValue) -> HeldValue:
         return value
     if isinstance(value, tuple):
         items = cast("tuple[HeldValue, ...]", value)
-        return tuple(_freeze(v) for v in items)
-    if isinstance(value, Mapping) and not isinstance(value, dx.Model):
+        plain = type(value) is tuple
+        if plain and _PLAIN_TYPES.issuperset(map(type, items)):
+            return value
+        frozen = tuple(_freeze(v) for v in items)
+        if plain and all(map(operator.is_, frozen, items)):
+            return value
+        return frozen
+    if isinstance(value, Mapping):
         mapping = cast("Mapping[str, HeldValue]", value)
         return MappingProxyType({k: _freeze(v) for k, v in mapping.items()})
     _value_key(value, [])
@@ -397,6 +437,46 @@ def opaque_policy(model_cls: type[dx.Model], field_name: str) -> OpaquePolicy | 
     return None
 
 
+@cache
+def _value_fields(
+    model_cls: type[dx.Model],
+) -> tuple[tuple[str, Freezer | None], ...]:
+    """The fields a model class compares by value, with their freezers.
+
+    Parameters
+    ----------
+    model_cls : type[dx.Model]
+        The model class.
+
+    Returns
+    -------
+    tuple[tuple[str, Freezer | None], ...]
+        Each opaque field compared by value, in declaration order, and the
+        function its extras freeze it with, if any.
+
+    Raises
+    ------
+    TypeError
+        If an opaque field declares no policy.
+    """
+    fields: list[tuple[str, Freezer | None]] = []
+    for name, spec in model_cls.__field_specs__.items():
+        if not spec.is_opaque:
+            continue
+        policy = opaque_policy(model_cls, name)
+        if policy is None:
+            raise TypeError(
+                f"{model_cls.__name__}.{name} is opaque but declares no equality "
+                "policy; pass extras=OPAQUE_BY_VALUE or extras=OPAQUE_BY_IDENTITY"
+            )
+        if policy == "value":
+            freezer = spec.extras.get(FREEZE_KEY)
+            fields.append(
+                (name, cast("Freezer", freezer) if callable(freezer) else None)
+            )
+    return tuple(fields)
+
+
 def _rebuild(model_cls: type[ValueModel], fields: dict[str, HeldValue]) -> ValueModel:
     """Construct a model from its declared field values.
 
@@ -415,6 +495,68 @@ def _rebuild(model_cls: type[ValueModel], fields: dict[str, HeldValue]) -> Value
     return model_cls(**fields)
 
 
+class _DirectPlan:
+    """How to build a model that has nothing to encode.
+
+    Parameters
+    ----------
+    fields
+        Each field's name and specification, in declaration order.
+    storage
+        The encoded storage every instance of the class shares.
+    validators
+        The names of the model validators, in the order didactic runs them.
+    """
+
+    __slots__ = ("fields", "names", "storage", "validators")
+
+    def __init__(
+        self,
+        fields: tuple[tuple[str, dx.FieldSpec], ...],
+        storage: DictStorage,
+        validators: tuple[str, ...],
+    ) -> None:
+        self.fields = fields
+        self.names = frozenset(name for name, _ in fields)
+        self.storage = storage
+        self.validators = validators
+
+
+@cache
+def _direct_plan(model_cls: type[dx.Model]) -> _DirectPlan | None:
+    """Plan the direct construction of a model, where that is all there is.
+
+    Parameters
+    ----------
+    model_cls : type[dx.Model]
+        The model class.
+
+    Returns
+    -------
+    _DirectPlan or None
+        The plan for a class whose every field is opaque and whose values are
+        constrained by model validators alone; ``None`` for a class with an
+        encoded, computed, derived, or indexed field, an axiom, or a
+        construction policy of its own.
+    """
+    specs = model_cls.__field_specs__
+    if (
+        not all(spec.is_opaque for spec in specs.values())
+        or any("IndexedBy" in spec.extras for spec in specs.values())
+        or model_cls.__class_axioms__
+        or model_cls.__computed_fields__
+        or model_cls.__derived_field_names__
+        or model_cls.__model_config__ != dx.Model.__model_config__
+        or model_cls._validate_instance is not dx.Model._validate_instance
+    ):
+        return None
+    return _DirectPlan(
+        tuple(specs.items()),
+        DictStorage(dict.fromkeys(specs, "null")),
+        model_cls.__model_validators__,
+    )
+
+
 class ValueModel(dx.Model):
     """A didactic model whose equality, hashing, copying, and pickling
     cover every declared field, opaque fields included.
@@ -427,7 +569,64 @@ class ValueModel(dx.Model):
     module docstring for what each policy compares. Construction rejects
     an opaque field without a declared policy, applies each field's
     freezer, and freezes every field compared by value.
+
+    A model whose every field is opaque has nothing to encode, so its
+    construction only stores the fields and runs the model validators. One
+    that a validator refuses, or that lacks a field or has an unknown one, is
+    built again by didactic, which reports every failure.
     """
+
+    def __init__(self, **kwargs: HeldValue) -> None:
+        """Build a model from its fields.
+
+        Parameters
+        ----------
+        **kwargs
+            One value per declared field; a field with a default may be
+            left out.
+
+        Raises
+        ------
+        didactic.ValidationError
+            If a field is missing or unknown, or a validator refuses a value.
+        """
+        plan = _direct_plan(type(self))
+        if plan is None or not plan.names.issuperset(kwargs):
+            self._construct(kwargs)
+            return
+        held: dict[str, HeldValue] = {}
+        for name, spec in plan.fields:
+            if name in kwargs:
+                held[name] = kwargs[name]
+            elif spec.is_required:
+                self._construct(kwargs)
+                return
+            else:
+                held[name] = cast("HeldValue", spec.make_default())
+        object.__setattr__(self, "_storage", plan.storage)
+        object.__setattr__(self, "_derived_cache", {})
+        object.__setattr__(self, "_opaque_storage", held)
+        try:
+            for validator in plan.validators:
+                getattr(self, validator)()
+        except ValueError, TypeError:
+            self.__dict__.clear()
+            self._construct(kwargs)
+
+    def _construct(self, fields: dict[str, HeldValue]) -> None:
+        """Build a model through didactic.
+
+        Parameters
+        ----------
+        fields : dict[str, HeldValue]
+            The values given for its fields.
+
+        Raises
+        ------
+        didactic.ValidationError
+            If a field is missing or unknown, or a value is refused.
+        """
+        cast("Callable[..., None]", super().__init__)(**fields)
 
     @dx.model_validator()
     def _freeze_value_fields(self) -> None:
@@ -443,24 +642,61 @@ class ValueModel(dx.Model):
         side_table = cast(
             "dict[str, HeldValue]", object.__getattribute__(self, "_opaque_storage")
         )
-        for name, spec in cls.__field_specs__.items():
-            if not spec.is_opaque:
-                continue
-            policy = opaque_policy(cls, name)
-            if policy is None:
-                raise TypeError(
-                    f"{cls.__name__}.{name} is opaque but declares no equality "
-                    "policy; pass extras=OPAQUE_BY_VALUE or extras=OPAQUE_BY_IDENTITY"
-                )
-            if policy == "value":
-                freezer = spec.extras.get(FREEZE_KEY)
-                try:
-                    value = side_table[name]
-                    if callable(freezer):
-                        value = cast("Freezer", freezer)(value)
-                    side_table[name] = _freeze(value)
-                except TypeError as exc:
-                    raise TypeError(f"{cls.__name__}.{name}: {exc}") from exc
+        for name, freezer in _value_fields(cls):
+            try:
+                held = side_table[name]
+                value = held if freezer is None else freezer(held)
+                frozen = _freeze(value)
+            except TypeError as exc:
+                raise TypeError(f"{cls.__name__}.{name}: {exc}") from exc
+            if frozen is not held:
+                self._store_opaque(name, frozen)
+
+    def __getattr__(self, name: str) -> HeldValue:
+        """Read one field, keeping the value for the next read.
+
+        The encoded form of a field does not change after construction, so
+        a decoded value that cannot be changed in place is the answer to
+        every later read. It is kept in the instance dictionary, where
+        ordinary attribute lookup finds it without reaching this method.
+
+        Parameters
+        ----------
+        name : str
+            The field name.
+
+        Returns
+        -------
+        HeldValue
+            The decoded value, or the object an opaque field holds.
+
+        Raises
+        ------
+        AttributeError
+            If ``name`` is not a declared field.
+        """
+        value = cast("HeldValue", super().__getattr__(name))
+        if type(self).__field_specs__[name].is_opaque or _is_settled(value):
+            self.__dict__[name] = value
+        return value
+
+    def _store_opaque(self, name: str, value: HeldValue) -> None:
+        """Replace the object an opaque field holds, during validation.
+
+        Parameters
+        ----------
+        name : str
+            The opaque field.
+        value : HeldValue
+            The object later reads return.
+        """
+        storage = cast(
+            "dict[str, HeldValue]", object.__getattribute__(self, "_opaque_storage")
+        )
+        storage[name] = value
+        self.__dict__[name] = value
+        self.__dict__.pop(_KEY_ATTR, None)
+        self.__dict__.pop(_HASH_ATTR, None)
 
     def with_(self, **changes: HeldValue) -> Self:
         """Return a validated update, including live opaque field values.
@@ -505,6 +741,23 @@ class ValueModel(dx.Model):
                 key.append(_value_key(value, children))
         return tuple(key), tuple(children)
 
+    def _comparison(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """The local key and nested models, kept from the first request.
+
+        A model is immutable once built and holds every value its key
+        mentions, so the key of one instance is computed once.
+
+        Returns
+        -------
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            What `_local_key` returns.
+        """
+        kept = self.__dict__.get(_KEY_ATTR)
+        if kept is None:
+            kept = self._local_key()
+            self.__dict__[_KEY_ATTR] = kept
+        return kept
+
     def __hash__(self) -> int:
         """Hash the model over every declared field, consistently with `__eq__`.
 
@@ -522,7 +775,7 @@ class ValueModel(dx.Model):
             node, expanded = stack.pop()
             if _HASH_ATTR in node.__dict__:
                 continue
-            key, children = node._local_key()
+            key, children = node._comparison()
             if not expanded:
                 stack.append((node, True))
                 stack.extend(
@@ -557,8 +810,8 @@ class ValueModel(dx.Model):
                 continue
             if type(left) is not type(right) or hash(left) != hash(right):
                 return False
-            left_key, left_children = left._local_key()
-            right_key, right_children = right._local_key()
+            left_key, left_children = left._comparison()
+            right_key, right_children = right._comparison()
             if left_key != right_key:
                 return False
             stack.extend(zip(left_children, right_children, strict=True))

@@ -105,6 +105,7 @@ from quivers.transpile.renderers._qiec import (
     qiec_helper_roots,
     render_computations_dynamic,
 )
+from quivers.transpile.renderers._subtree import vertex_kinds
 
 
 _TARGET = "pyro"
@@ -1972,12 +1973,12 @@ def _emit_runtime_helper(pctx: _PyroCtx, class_name: str) -> None:
     subtree = _RUNTIME_PYRO_HELPER_SUBTREES[class_name]
     root = _RUNTIME_PYRO_HELPER_ROOTS[class_name]
     id_map: dict[str, str] = {}
+    kinds = vertex_kinds(src_schema)
 
     for old in subtree:
         new = pctx.fresh("rh")
         id_map[old] = new
-        kind = next(v.kind for v in src_schema.vertices if v.id == old)
-        pctx.v(new, kind)
+        pctx.v(new, kinds[old])
         for cstr in src_schema.constraints_for(old):
             pctx.constraint(new, cstr.sort, cstr.value)
     for edge in src_schema.edges:

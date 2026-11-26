@@ -11,12 +11,15 @@ from quivers._values import OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 
 import json
+import re
 from enum import Enum
-from functools import total_ordering
+from functools import cached_property, total_ordering
 from hashlib import sha256
 from typing import Literal, Self
 
 import didactic.api as dx
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 QIEC_ABI = "qiec-core/v1alpha1"
 """The kernel ABI tag a module records, so a reader can reject a module built against another kernel."""
@@ -134,9 +137,7 @@ class StableId(dx.Model):
             If the digest is the wrong length or contains a character
             outside ``0-9a-f``.
         """
-        if len(self.digest) != 64 or any(
-            c not in "0123456789abcdef" for c in self.digest
-        ):
+        if _DIGEST.fullmatch(self.digest) is None:
             raise ValueError(f"invalid {self.namespace} digest: {self.digest!r}")
 
     @classmethod
@@ -376,6 +377,17 @@ class SourceOrigin(QiecModel):
             path, and role. The file, line, and column are deliberately
             excluded, so reformatting a source file does not change the
             identity of the sites within it.
+        """
+        return self._site_id
+
+    @cached_property
+    def _site_id(self) -> SiteId:
+        """The identity `site_id` returns, derived on the first request.
+
+        Returns
+        -------
+        SiteId
+            The identity.
         """
         return SiteId.derive(
             self.source_protocol,

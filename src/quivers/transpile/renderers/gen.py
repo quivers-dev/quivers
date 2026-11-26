@@ -129,6 +129,7 @@ from quivers.transpile.renderers._qiec import (
     render_computations_dynamic,
     qiec_helper_families_used,
 )
+from quivers.transpile.renderers._subtree import subtree_vertices, vertex_kinds
 
 
 # ---------------------------------------------------------------------------
@@ -2100,20 +2101,7 @@ _RUNTIME_GEN_SCHEMA, _RUNTIME_GEN_SOURCE_ID, _RUNTIME_GEN_TOP_LEVEL = (
 )
 
 
-def _subtree_vertex_ids(schema: panproto.Schema, roots: tuple[str, ...]) -> set[str]:
-    """Return every vertex id reachable from `roots` via outgoing edges."""
-    seen: set[str] = set(roots)
-    frontier: list[str] = list(roots)
-    while frontier:
-        src = frontier.pop()
-        for edge in schema.edges:
-            if edge.src == src and edge.tgt not in seen:
-                seen.add(edge.tgt)
-                frontier.append(edge.tgt)
-    return seen
-
-
-_RUNTIME_GEN_SUBTREE = _subtree_vertex_ids(_RUNTIME_GEN_SCHEMA, _RUNTIME_GEN_TOP_LEVEL)
+_RUNTIME_GEN_SUBTREE = subtree_vertices(_RUNTIME_GEN_SCHEMA, _RUNTIME_GEN_TOP_LEVEL)
 
 
 #: The address namespace factor choices are traced under, so a reader
@@ -2189,12 +2177,12 @@ def _graft_runtime_gen_helper(gx: _GenCtx, source_vid: str) -> None:
     src_schema = _RUNTIME_GEN_SCHEMA
     subtree = _RUNTIME_GEN_SUBTREE
     id_map: dict[str, str] = {}
+    kinds = vertex_kinds(src_schema)
 
     for old in subtree:
         new = gx.fresh("rg")
         id_map[old] = new
-        kind = next(v.kind for v in src_schema.vertices if v.id == old)
-        gx.sb.vertex(new, kind)
+        gx.sb.vertex(new, kinds[old])
         for cstr in src_schema.constraints_for(old):
             gx.sb.constraint(new, cstr.sort, cstr.value)
     for edge in src_schema.edges:
