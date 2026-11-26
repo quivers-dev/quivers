@@ -35,6 +35,11 @@ it. A derivation is a proof of an [`Item`][quivers.qiec.rules.Item], not the ite
 many derivations, and a nonlinear function of an aggregate over an item's derivations is not in
 general a function of the derivations.
 
+A host interpretation is an algebra of the signature functor $F_A$: a carrier per judgment and an
+operation per rule. It is neither a weight algebra of [`quivers.core`][quivers.core] (a semiring of
+weights, with laws) nor an Eilenberg-Moore algebra of a monad in [`quivers.monadic`][quivers.monadic];
+a weight algebra interprets the rules only through the weights of their applications.
+
 ## The reference interpretation
 
 [`ReferenceInterpretation`][quivers.qiec.rules.ReferenceInterpretation] grounds every rule against
