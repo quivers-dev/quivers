@@ -33,15 +33,26 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from fractions import Fraction
 from functools import cached_property
 from types import MappingProxyType
+from weakref import WeakKeyDictionary
 
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import (
+    WORD_RAM_EXPECTED_HASHING,
     Acyclic,
+    BestKnown,
+    Citation,
+    ComplexityBound,
+    ComplexityClaim,
+    ComplexityParameter,
+    Phase,
+    ProvedOptimal,
+    Unresolved,
     InterpretationId,
     LawClaim,
     LinearCyclic,
@@ -54,7 +65,7 @@ from quivers.qiec.contracts import (
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.effects import EMPTY_ROW
 from quivers.qiec.evaluator import Evaluator
-from quivers.qiec.identifiers import ComputationId, ConstructorId, FamilyId
+from quivers.qiec.identifiers import ComputationId, ConstructorId, FamilyId, TypeId
 from quivers.qiec.kinds import (
     IndexBinder,
     NatSort,
@@ -63,10 +74,14 @@ from quivers.qiec.kinds import (
     validate_telescope,
 )
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
+from quivers.structural.signature import Signature
 from quivers.qiec.types import (
     BOOL,
     INT,
+    REAL,
     STRING,
+    TypeConstructorRef,
+    TypeExpr,
     IndexConstructor,
     IndexLiteral,
     IndexSum,
@@ -283,7 +298,7 @@ class AxiomSlot(QiecModel):
 # items
 
 
-class Item(ValueModel):
+class Item(QiecModel):
     """A ground judgment instance: a family with ground arguments.
 
     An item is a conclusion, not a proof: one item may have many
@@ -372,7 +387,7 @@ class AxiomOccurrence(QiecModel):
     )
 
 
-class Derivation(ValueModel):
+class Derivation(QiecModel):
     """A derivation tree: a proof of an item, not the item.
 
     Parameters
@@ -1322,6 +1337,295 @@ def _analyse(presentation: RulePresentation) -> PresentationAnalysis:
 
 
 # ---------------------------------------------------------------------------
+# the cost of presentation work
+
+
+_READING = Citation(
+    reference="every symbol of the input is read, by an adversary argument",
+    locator="complexity claims, Q24",
+)
+
+PRESENTATION_WORK = ComplexityClaim(
+    query="presentation work: construction, matching, hashing, folding",
+    parameters=(
+        ComplexityParameter(name="P", meaning="index-term nodes over all judgments"),
+        ComplexityParameter(name="R", meaning="rules and axiom slots"),
+        ComplexityParameter(name="N", meaning="nodes of the derivation folded"),
+    ),
+    model=WORD_RAM_EXPECTED_HASHING,
+    bounds=(
+        ComplexityBound(
+            phase=Phase.CONSTRUCTION,
+            resource="time",
+            expression="P + R",
+            status=ProvedOptimal(
+                lower_bound="P + R",
+                model=WORD_RAM_EXPECTED_HASHING,
+                sources=(_READING,),
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.CONSTRUCTION,
+            resource="space",
+            expression="P + R",
+            status=ProvedOptimal(
+                lower_bound="P + R",
+                model=WORD_RAM_EXPECTED_HASHING,
+                sources=(_READING,),
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="time",
+            expression="N",
+            status=ProvedOptimal(
+                lower_bound="N", model=WORD_RAM_EXPECTED_HASHING, sources=(_READING,)
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="space",
+            expression="N",
+            status=BestKnown(sources=(_READING,)),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="time",
+            expression="N",
+            status=BestKnown(
+                sources=(
+                    Citation(
+                        reference=(
+                            "Baur and Strassen 1983, The complexity of partial "
+                            "derivatives"
+                        ),
+                        locator="the cheap gradient theorem",
+                        doi="10.1016/0304-3975(83)90110-X",
+                    ),
+                )
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="space",
+            expression="N",
+            status=Unresolved(
+                obligation=(
+                    "whether a fold can be differentiated in less than linear "
+                    "space without recomputation"
+                )
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.REFIT,
+            resource="time",
+            expression="N",
+            status=ProvedOptimal(
+                lower_bound="N", model=WORD_RAM_EXPECTED_HASHING, sources=(_READING,)
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.REFIT,
+            resource="space",
+            expression="N",
+            status=BestKnown(sources=(_READING,)),
+        ),
+    ),
+    conditions=(
+        "a presentation is validated and indexed once, when it is built and on "
+        "first use, and never again per firing, fold or refit",
+        "matching a premise costs the size of its pattern",
+        "an interned item hashes in constant time",
+        "operations of the interpretation cost one unit",
+    ),
+)
+"""The cost of building, matching and folding a presentation."""
+
+
+# ---------------------------------------------------------------------------
+# structural signatures
+
+
+_SIGNATURE_PRESENTATIONS: WeakKeyDictionary[Signature, RulePresentation] = (
+    WeakKeyDictionary()
+)
+"""The presentation of each signature, built once."""
+
+
+def _sort_family(signature: Signature, sort: str) -> FamilyId:
+    """The judgment form of an object sort of a signature.
+
+    Parameters
+    ----------
+    signature : Signature
+        The signature.
+    sort : str
+        The sort.
+
+    Returns
+    -------
+    FamilyId
+        Its identity.
+    """
+    return FamilyId.derive("signature", signature.name, "sort", sort)
+
+
+def _value_type(signature: Signature, sort: str) -> TypeExpr:
+    """The value type of a data or index position.
+
+    Parameters
+    ----------
+    signature : Signature
+        The signature.
+    sort : str
+        A data or index sort.
+
+    Returns
+    -------
+    TypeExpr
+        ``Int`` for an index sort; for a data sort, ``String``, ``Int`` or
+        ``Real`` when its vocabulary is of one kind, and otherwise a type
+        named after the sort.
+    """
+    declared = signature.sorts[sort]
+    if declared.kind == "index":
+        return INT
+    kinds = {entry.kind for entry in declared.vocab}
+    by_kind: dict[str, TypeExpr] = {"string": STRING, "integer": INT, "float": REAL}
+    if len(kinds) == 1:
+        return by_kind[next(iter(kinds))]
+    return TypeApplication(
+        constructor=TypeConstructorRef(
+            id=TypeId.derive("signature", signature.name, "data", sort), name=sort
+        )
+    )
+
+
+def presentation_of(signature: Signature) -> RulePresentation:
+    """The rule presentation of a structural signature.
+
+    Each object sort is a judgment form without arguments. A constructor
+    is a rule with no side condition: its object arguments are premises
+    in order and its data and index arguments are value fields. A binder
+    is a rule whose annotation arguments are premises and whose scoped
+    arguments are premises with the bound variables as hypotheses. The
+    presentation is built once per signature.
+
+    Parameters
+    ----------
+    signature : Signature
+        A term signature.
+
+    Returns
+    -------
+    RulePresentation
+        Its presentation.
+
+    Raises
+    ------
+    RuleError
+        If the signature is graph shaped, or a binder binds a variable of
+        a sort that is not an object sort.
+    """
+    known = _SIGNATURE_PRESENTATIONS.get(signature)
+    if known is not None:
+        return known
+    if signature.vertex_kinds_t or signature.edge_kinds_t:
+        raise RuleError(
+            f"signature {signature.name!r} is graph shaped; a graph is not a term "
+            "algebra and has no rule presentation here"
+        )
+    objects = [sort.name for sort in signature.sorts_t if sort.kind == "object"]
+
+    def judgment(sort: str) -> Judgment:
+        """The judgment of an object sort.
+
+        Parameters
+        ----------
+        sort : str
+            The sort.
+
+        Returns
+        -------
+        Judgment
+            Its judgment.
+        """
+        return Judgment(family=_sort_family(signature, sort))
+
+    def split(domain: Sequence[str]) -> tuple[list[Premise], list[FieldDef]]:
+        """Premises and value fields of a positional domain.
+
+        Parameters
+        ----------
+        domain : Sequence of str
+            The sorts of the positions.
+
+        Returns
+        -------
+        tuple of list of Premise and list of FieldDef
+            The premises of object positions and the fields of the others.
+        """
+        premises: list[Premise] = []
+        values: list[FieldDef] = []
+        for position, sort in enumerate(domain):
+            if signature.sorts[sort].kind == "object":
+                premises.append(Premise(judgment=judgment(sort)))
+            else:
+                values.append(
+                    FieldDef(name=f"value{position}", type=_value_type(signature, sort))
+                )
+        return premises, values
+
+    rules: list[Rule] = []
+    for constructor in signature.constructors_t:
+        premises, values = split(constructor.domain)
+        rules.append(
+            Rule(
+                id=ConstructorId.derive("signature", signature.name, constructor.name),
+                name=constructor.name,
+                premises=tuple(premises),
+                conclusion=judgment(constructor.codomain),
+                values=tuple(values),
+            )
+        )
+    for binder in signature.binders_t:
+        hypotheses = []
+        for variable in binder.binds:
+            if variable.sort not in objects:
+                raise RuleError(
+                    f"binder {binder.name!r} binds {variable.var!r} of sort "
+                    f"{variable.sort!r}, which is not an object sort"
+                )
+            hypotheses.append(judgment(variable.sort))
+        annotations = [b.annot_sort for b in binder.binds if b.annot_sort is not None]
+        premises, values = split(annotations)
+        for argument in binder.scoped:
+            premises.append(
+                Premise(judgment=judgment(argument.sort), hypotheses=tuple(hypotheses))
+            )
+        rules.append(
+            Rule(
+                id=ConstructorId.derive("signature", signature.name, binder.name),
+                name=binder.name,
+                premises=tuple(premises),
+                conclusion=judgment(binder.codomain),
+                values=tuple(values),
+            )
+        )
+    presentation = RulePresentation(
+        id=PresentationId.derive("signature", signature.name),
+        name=signature.name,
+        judgments=tuple(
+            JudgmentDecl(id=_sort_family(signature, sort), name=sort)
+            for sort in objects
+        ),
+        rules=tuple(rules),
+    )
+    _SIGNATURE_PRESENTATIONS[signature] = presentation
+    return presentation
+
+
+# ---------------------------------------------------------------------------
 # interpretations
 
 
@@ -1624,6 +1928,54 @@ class ReferenceInterpretation:
         """
         return self.items.intern(family, arguments)
 
+    def observe[N: (Fraction, float)](
+        self,
+        goal: Item,
+        weight: Callable[[Derivation], N],
+        value: Callable[[Derivation], N],
+        observer: Callable[[N], N],
+        zero: N,
+        *,
+        height: int | None = None,
+    ) -> N:
+        """The weighted sum over derivations of an observer of their values.
+
+        This is the observable ``sum_d w(d) h(fold(d))`` computed by its
+        definition: the observer is applied to each derivation's value and
+        never to an aggregate, so it may be nonlinear.
+
+        Parameters
+        ----------
+        goal : Item
+            The item.
+        weight : Callable[[Derivation], N]
+            The weight of one node of a derivation; a derivation's weight
+            is the product over its nodes.
+        value : Callable[[Derivation], N]
+            The value of a whole derivation, usually a fold.
+        observer : Callable[[N], N]
+            Any function of one value.
+        zero : N
+            The empty sum.
+        height : int or None
+            The greatest height, as for `derivations`.
+
+        Returns
+        -------
+        N
+            The sum, ``zero`` when the item has no derivation.
+        """
+        total = zero
+        for derivation in self.derivations(goal, height=height):
+            product = weight(derivation)
+            stack = list(derivation.premises)
+            while stack:
+                node = stack.pop()
+                product = product * weight(node)
+                stack.extend(node.premises)
+            total = total + product * observer(value(derivation))
+        return total
+
     def derivations(self, goal: Item, *, height: int | None = None) -> list[Derivation]:
         """Every derivation of an item.
 
@@ -1747,6 +2099,7 @@ __all__ = [
     "MatchError",
     "Operation",
     "PRESENTATION_PROTOCOL",
+    "PRESENTATION_WORK",
     "Premise",
     "PresentationAnalysis",
     "ReferenceInterpretation",
@@ -1757,4 +2110,5 @@ __all__ = [
     "evaluate_index",
     "match_index",
     "named_conditions",
+    "presentation_of",
 ]

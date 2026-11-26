@@ -95,8 +95,9 @@ from quivers.qiec.checking import (
     infer_computation,
     infer_value,
 )
-from quivers.qiec import contracts
+from quivers.qiec import contracts, rules
 from quivers.qiec.contracts import *  # noqa: F403
+from quivers.qiec.rules import *  # noqa: F403
 from quivers.qiec.coverage import (
     BranchPattern,
     BranchRefinement,
@@ -815,3 +816,4 @@ __all__ = [
     "weight_handler",
 ]
 __all__ += contracts.__all__
+__all__ += rules.__all__

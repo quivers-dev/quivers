@@ -113,6 +113,21 @@ from quivers.qiec.contracts import (
     WorkReport,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.rules import (
+    AxiomOccurrence,
+    AxiomSlot,
+    Derivation,
+    FamilyComponent,
+    InterpretationDecl,
+    Item,
+    Judgment,
+    JudgmentDecl,
+    Premise,
+    PresentationAnalysis,
+    Rule,
+    RulePresentation,
+    SideCondition,
+)
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.family_shapes import FamilyShapeSignature
 from quivers.qiec.effects import (
@@ -479,6 +494,20 @@ _NODE_CLASSES = (
     ControlReached,
     AccuracyReport,
     Refusal,
+    # rule presentations
+    JudgmentDecl,
+    Judgment,
+    Premise,
+    SideCondition,
+    Rule,
+    AxiomSlot,
+    RulePresentation,
+    Item,
+    AxiomOccurrence,
+    Derivation,
+    FamilyComponent,
+    PresentationAnalysis,
+    InterpretationDecl,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}
