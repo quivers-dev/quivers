@@ -138,7 +138,7 @@ The contracts reuse the checked family parameter and dependent-shape records;
 native factories remain runtime bindings and never enter the wire graph. This
 metadata extension preserves the existing ABI and stable identifiers. Readers require version 2 and every declared field. Older or future wire
 versions, missing or unknown fields, and incompatible ABIs are errors. Regenerate
-checked JSON from its authored source when upgrading; decoding never supplies
+checked JSON from its authored source when upgrading; decoding never adds
 missing contracts or invents a native implementation from a family name.
 
 The format and ABI identifiers belong to the serialized format. An authored effect
@@ -709,6 +709,8 @@ item.
   `<name>__choice` instance of it;
 - a `<name>__weight` instance of `Weight[K]`, where `K` is the carrier of the declared semiring
   (`LogWeight` for `LogProb` and `Viterbi`, `Bool` for `Boolean`, `Int` for `Counting`);
+- a `Settle` effect with the operation `stop`, and a `<name>__settlement` instance of it, on which an
+  iteration stops;
 - a `params` instance of `Param`, through which learned weights are read.
 
 Learned weights carry the names under which the agenda algorithm of
@@ -751,9 +753,11 @@ premises. When a search does not bound a lexical system, the system is computed 
 reads its axioms off the sentence through the lexicon (see the charts below). Goal spans cover the
 whole sentence, as the agenda algorithm's do.
 
-**The lexical run entry.** `<name>__run` handles the weight instance with a collecting handler and the
-search instance with a handler that resumes once per alternative and combines the shots by the
-semiring's addition. Its answer is the semiring sum, over derivations of the goal, of the product
+**The lexical run entry.** `<name>__run` handles the weight instance with the collecting handler
+`<name>__collect` and the search instance with `<name>__search`, which resumes once per alternative
+and combines the shots by the semiring's addition. Both are foreign handlers that declare what they
+compute, a semiring product and a semiring sum of the declared semiring, so their behavior never
+depends on their names, and the deduction requires its semiring to establish the laws they use. Its answer is the semiring sum, over derivations of the goal, of the product
 of the weights along each derivation. This is the
 [inside weight](https://en.wikipedia.org/wiki/Inside%E2%80%93outside_algorithm) that the agenda
 algorithm tabulates [@goodman1999semiring].
@@ -763,7 +767,7 @@ algorithm tabulates [@goodman1999semiring].
 (`<name>__Chain`, counted by `<name>__count`), and `<name>__inside` bounds how often a chain
 revisits an item. `<name>__converge` raises that bound until two successive inside weights agree
 within the declared `tolerance`, or exactly when no tolerance is declared. This is the search's
-counterpart of the chart's fixed-point iteration, which repeats until weights stop changing.
+counterpart of the chart's fixed-point iteration, which repeats until weights stop changing. A stop is certified when the counts of derivations stop changing, or when the arithmetic is exact, as it is for `Boolean` and `Counting`, and two successive weights agree. A stop by the declared `tolerance`, or by agreement in rounded arithmetic while derivations still grow, certifies nothing: the iteration performs `stop` on the settlement instance, the `<name>__settle` handler refuses it, and [`run_deduction`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.run_deduction) raises [`ContractNotMet`](../api/qiec/contracts.md#quivers.qiec.contracts.ContractNotMet), or returns an [`Unestablished`](../api/qiec/contracts.md#quivers.qiec.contracts.Unestablished) value with its report under `on_failure=FailurePolicy.RETURN_UNESTABLISHED`.
 
 **Depth.** The `depth` option bounds the constructor depth of each rule's conclusion category
 through `<name>__depth`, the measure the agenda algorithm uses, and never the length of a
@@ -774,10 +778,11 @@ that no search bounds takes the sentence, and `<name>__chart_lexicon` adds, at e
 span of every entry whose word is the token there, at the entry's weight. Its `<name>__Chart`
 family stores one weight and one count of derivations per item. Each round computes the sum of the
 axiom weights and all rule contributions from the preceding chart, using semiring multiplication
-for the premise and rule weights. The iteration stops when two rounds agree in every count, which
-certifies the value, or agree in every weight, within `tolerance` or exactly: in exact arithmetic
-that certifies the value, and in rounded arithmetic it stops only once more rounds have passed
-than the chart has items, which shows a cycle. `<name>__run` then sums the goal entries, which for a
+for the premise and rule weights. Agreement between two rounds in every count certifies the
+value. In exact arithmetic, equality in every weight also certifies the value. In rounded
+arithmetic, weight agreement, within `tolerance` when one is declared, stops the iteration only
+once more rounds have passed than the chart has items, which shows a cycle. The settlement handler
+applies the policy described for unary chains. `<name>__run` then sums the goal entries, which for a
 lexical system are the spans that cover the sentence and goal items of every other form.
 
 This iteration imposes no proof-height limit. Constructor depth can bound the reachable items,
