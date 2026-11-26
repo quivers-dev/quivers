@@ -342,85 +342,6 @@ def structure_layout(
     return layout, ()
 
 
-def _addition_rules(
-    term: AutocorTerm,
-    recursion: AutocorTerm | None,
-    modifiers: ResponseModifiers,
-    caller: str,
-) -> bool:
-    """Apply brms's rules for response terms beside residual structures.
-
-    brms scores a time-series covariance and a fixed covariance with one
-    multivariate density, which admits no weights, censoring, or truncation
-    (``stan_log_lik_gaussian_time`` and ``_fcor`` in ``R/stan-likelihood.R``),
-    and adds ``se()`` to a time-series covariance only, with ``sigma =
-    TRUE`` (``no_sigma`` in ``R/families.R``); the conditional ARMA
-    formulation refuses ``se()`` (``stan_ac`` in ``R/stan-predictor.R``) and
-    admits the other terms row by row. For a SAR term brms writes these
-    terms into a Stan program that does not compile, because
-    ``normal_lagsar_lpdf`` and its siblings take the whole response vector
-    and one scalar ``sigma``, so no brms model exists to match.
-
-    Parameters
-    ----------
-    term : AutocorTerm
-        Term selecting the residual law.
-    recursion : AutocorTerm or None
-        Conditional ARMA term combined with it.
-    modifiers : ResponseModifiers
-        Response-side roles of the formula.
-    caller : str
-        Entry point named in errors.
-
-    Returns
-    -------
-    bool
-        Whether known standard errors enter a time-series covariance.
-
-    Raises
-    ------
-    ValueError
-        With brms's message for each combination brms refuses, and a located
-        message for the SAR combinations brms cannot compile.
-    """
-    roles = dict(modifiers.sources)
-    conditional = recursion is not None or (term.kind == "arma" and not term.cov)
-    adjusted = [
-        name
-        for name, present in (
-            ("weights()", "weights" in roles),
-            ("cens()", modifiers.censoring is not None),
-            ("trunc()", modifiers.truncation is not None),
-        )
-        if present
-    ]
-    error = modifiers.standard_error
-    if term.kind == "sar" and (adjusted or error is not None):
-        present = ", ".join([*adjusted, *(["se()"] if error is not None else [])])
-        raise ValueError(
-            f"{caller}: {term.label} with {present} has no brms model: brms writes "
-            "these terms into a call of its SAR density, which takes the whole "
-            "response vector and one scalar sigma, and the Stan program does not "
-            "compile"
-        )
-    if error is not None:
-        if conditional:
-            raise ValueError(
-                "Please set cov = TRUE in ARMA structures when including known "
-                "standard errors."
-            )
-        if term.kind == "fcor":
-            raise ValueError("Invalid addition arguments for this model.")
-        if not error.sigma:
-            raise ValueError(
-                "Please set argument 'sigma' of function 'se' to TRUE when "
-                "modeling time-series covariance matrices."
-            )
-    if adjusted and (term.kind != "arma" or term.cov):
-        raise ValueError("Invalid addition arguments for this model.")
-    return error is not None
-
-
 def _structural_sites(
     term: AutocorTerm, recursion: AutocorTerm | None, layout: ResidualLayout
 ) -> tuple[SiteDecl, ...]:
@@ -520,6 +441,8 @@ class ResidualLaw(ValueModel):
         Response column, read as recursion history on other rows.
     catalog : FamilyCatalog
         Compilation-local catalog registering the kernel over `layout`.
+    caller : str
+        Entry point named in refusals.
     """
 
     elliptical: Elliptical
@@ -536,6 +459,7 @@ class ResidualLaw(ValueModel):
     time_levels: tuple[str, ...] = ()
     response: str = ""
     catalog: FamilyCatalog = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    caller: str = ""
 
     @property
     def name(self) -> str:
@@ -933,7 +857,16 @@ def residual_law(
             "SAR models are not implemented when predicting "
             f"{elliptical.scale!r} or 'nu'."
         )
-    known = _addition_rules(term, recursion, modifiers, caller)
+    # A time-series covariance takes known errors on its diagonal; the
+    # modifiers of the response refuse them beside any other structure.
+    error = modifiers.standard_error
+    conditional = recursion is not None or (term.kind == "arma" and not term.cov)
+    known = (
+        error is not None
+        and error.sigma
+        and not conditional
+        and term.kind not in ("fcor", "sar")
+    )
     student = elliptical.df is not None
     frame = nw.from_native(data, eager_only=True).to_pandas().reset_index(drop=True)
     rows = len(frame)
@@ -979,6 +912,7 @@ def residual_law(
         time_levels=time_levels,
         response=response_name,
         catalog=_catalog(record, layout, coefficients),
+        caller=caller,
     )
 
 

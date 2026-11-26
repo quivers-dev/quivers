@@ -105,8 +105,8 @@ from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
-from quivers.formulas.family import Domain, Family, families
-from quivers.formulas._recorded_event_families import check_recorded_event_family
+from quivers.formulas.family import Domain, Family
+from quivers.formulas._modifiers import Admission, admit_modifiers, response_modifiers
 
 from quivers.formulas._category_formulas import (
     is_category_parameter,
@@ -1353,32 +1353,21 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     "decisions must be checked integer 0/1 values aligned with response rows"
                 )
-        if formula.modifiers.standard_error is not None:
-            error = formula.modifiers.standard_error
-            residual = self._family.error_scale
-            if residual is None:
-                admitted = sorted(
-                    name
-                    for name, entry in families.items()
-                    if entry.error_scale is not None
-                )
-                raise ValueError(
-                    f"response term se() is not supported for family "
-                    f"{self._family.name!r}, which declares no error scale "
-                    f"(Family.error_scale); families admitting se() are {admitted}"
-                )
-            if not error.sigma and (
-                residual in self._distributional
-                or residual in self._fixed_parameters
-                or residual in self._user_priors
-            ):
-                raise ValueError(
-                    f"se() without sigma=True excludes a separate residual {residual}; remove its formula, fixed value, or prior, or write se(error, sigma=True)"
-                )
-        check_recorded_event_family(
-            self._family,
-            censoring=formula.modifiers.censoring,
-            truncation=formula.modifiers.truncation,
+        admit_modifiers(
+            response_modifiers(formula.modifiers, self._residual),
+            Admission(
+                family=self._family,
+                modifiers=formula.modifiers,
+                residual=self._residual,
+                scale_sources=frozenset(
+                    (
+                        *self._distributional,
+                        *self._fixed_parameters,
+                        *self._user_priors,
+                    )
+                ),
+                rows=int(formula.response_values.shape[0]),
+            ),
         )
         if (
             formula.modifiers.trials is not None
@@ -1387,16 +1376,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise ValueError(
                 "trials requires a response family with finite trial counts"
             )
-        if formula.modifiers.weights is not None:
-            weights = formula.modifiers.weights.data
-            if weights.shape != formula.response_values.shape[:1]:
-                raise ValueError("weights must align with every evaluated response row")
-            if (
-                weights.dtype.kind not in "iuf"
-                or not np.isfinite(weights).all()
-                or np.any(weights < 0)
-            ):
-                raise ValueError("weights must be finite nonnegative real values")
         reserved = {column.qvr_name for _, column in formula.modifiers.columns()}
         if formula.modifiers.decision is not None:
             reserved.add("formula_response")

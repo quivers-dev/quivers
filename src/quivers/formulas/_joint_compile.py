@@ -162,6 +162,9 @@ class _JointEmission:
         Runtime inputs bound by the joint program itself.
     families : FamilyCatalog
         Catalog extended with every custom response family.
+    joint : Observation or None
+        The vector observation of responses with correlated residuals; None
+        when each response is observed on its own.
     """
 
     module: Module
@@ -171,6 +174,7 @@ class _JointEmission:
     prior_targets: tuple[PriorTarget, ...]
     fixed_inputs: Mapping[str, torch.Tensor]
     families: FamilyCatalog
+    joint: Observation | None = None
 
     @property
     def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
@@ -866,7 +870,11 @@ def _correlated_residual(
     targets: Sequence[PriorTarget],
     fixed_inputs: Mapping[str, torch.Tensor],
 ) -> tuple[
-    ProgramDecl, list[PriorTarget], dict[str, torch.Tensor], FamilyCatalog | None
+    ProgramDecl,
+    list[PriorTarget],
+    dict[str, torch.Tensor],
+    FamilyCatalog | None,
+    Observation,
 ]:
     """Join existing scalar location/scale bindings under one vector residual law.
 
@@ -893,8 +901,8 @@ def _correlated_residual(
     tuple
         The program with one multivariate observation, its prior targets
         with the residual correlation and shared ``nu``, the inputs with the
-        stacked joint response, and the catalog of a recursive joint law or
-        None.
+        stacked joint response, the catalog of a recursive joint law or
+        None, and the joint observation.
     """
     names = tuple(responses)
     width = len(names)
@@ -1012,7 +1020,6 @@ def _correlated_residual(
             "formula_joint_response",
             elliptical.kernel,
             location if df is None else (df, *location),
-            None,
             plate=row,
             event=axis,
             parameterization=elliptical.parameterization,
@@ -1022,7 +1029,6 @@ def _correlated_residual(
             "formula_joint_response",
             recursions[0].definitions[0].name,
             (*((df,) if df is not None else ()), *location, *recursions[1]),
-            None,
             plate=row,
             event=axis,
             catalog=recursions[0],
@@ -1043,6 +1049,7 @@ def _correlated_residual(
         targets,
         fixed_inputs,
         None if recursions is None else recursions[0],
+        joint,
     )
 
 
@@ -1069,22 +1076,7 @@ def response_observation(response: _ResponseEmission) -> Observation:
         raise ValueError(
             f"response {response.formula.response_name!r} has no observation"
         )
-
-    def named(value: str | float) -> str | float:
-        return response.names.get(value, value) if isinstance(value, str) else value
-
-    return (
-        observed.with_(
-            site=response.names.get(observed.site, observed.site),
-            weights=None if observed.weights is None else str(named(observed.weights)),
-        )
-        .with_arguments(
-            tuple((parameter, named(bound)) for parameter, bound in observed.arguments)
-        )
-        .with_events(
-            tuple((key, str(named(column))) for key, column in observed.events)
-        )
-    )
+    return observed.renamed(response.names)
 
 
 def recursion_kernel(
@@ -1497,8 +1489,9 @@ def emit_joint(
         return_vars=tuple(returned),
     )
     joint_laws = None
+    joint: Observation | None = None
     if rescor:
-        program, targets, fixed_inputs, joint_laws = _correlated_residual(
+        program, targets, fixed_inputs, joint_laws, joint = _correlated_residual(
             program, responses, emitter, statements, targets, fixed_inputs
         )
     module = Module(
@@ -1558,7 +1551,7 @@ def emit_joint(
             return_vars=tuple(returned),
         )
         if rescor:
-            program, _, fixed_inputs, joint_laws = _correlated_residual(
+            program, _, fixed_inputs, joint_laws, joint = _correlated_residual(
                 program, responses, emitter, statements, targets, fixed_inputs
             )
         replacements = {
@@ -1635,6 +1628,7 @@ def emit_joint(
         tuple(targets),
         fixed_inputs,
         catalog,
+        joint,
     )
 
 

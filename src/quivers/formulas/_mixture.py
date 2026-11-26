@@ -43,19 +43,11 @@ import numpy as np
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
-    DrawArgDist,
-    DrawArgList,
-    DrawArgName,
-    DrawArgNamed,
-    DrawArgScalar,
     LetExprLiteral,
     LetExprNode,
     LetStep,
     Module,
     ObjectDecl,
-    ObserveStep,
-    OptionEntry,
-    OptionName,
     ProgramDecl,
     ProgramStep,
     QiecIndexName,
@@ -105,7 +97,8 @@ from quivers.formulas._threshold_groups import (
     MATRIX_SITE,
     THRESHOLD_GROUP_NAMES,
 )
-from quivers.formulas._response_roles import event_option_columns
+from quivers.formulas._modifiers import response_modifiers
+from quivers.formulas._observation import Observation
 from quivers.formulas.family import AuxParam, Family, MixtureSpec, families, links
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
@@ -737,8 +730,9 @@ class _SubEmission(ValueModel):
         Renamed object declarations.
     steps : tuple[ProgramStep, ...]
         Renamed program steps without the observation.
-    observation : ObserveStep or None
-        The renamed observation of a component; None for a proportion.
+    observation : Observation or None
+        The renamed observation of a component, without the response terms
+        of the mixture; None for a proportion.
     parameters : tuple[QiecValueParameter, ...]
         Renamed runtime parameters.
     prior_targets : tuple[PriorTarget, ...]
@@ -759,8 +753,8 @@ class _SubEmission(ValueModel):
     steps: tuple[ProgramStep, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    observation: ObserveStep | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    observation: Observation | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     parameters: tuple[QiecValueParameter, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -1007,8 +1001,16 @@ def _sub_emission(
         if isinstance(item, ObjectDecl) and isinstance(item.init, TypeFromExpr)
     )
     steps = [_rename_step(step, bindings, names) for step in program.draws]
-    observation = steps.pop() if isinstance(steps[-1], ObserveStep) else None
-    assert observation is None or isinstance(observation, ObserveStep)
+    observed = sub._observation
+    if observed is None:
+        raise ValueError("a mixture component emitted no observation")
+    observation = observed.renamed(names, morphisms)
+    # The component's own observation is the last step it writes; the
+    # mixture scores the component law instead.
+    written = steps.pop()
+    if written != observation.step():
+        raise ValueError("a mixture component wrote a step after its observation")
+    observation = observation.with_events(()).with_(weights=None)
     parameters = tuple(
         parameter.with_(
             name=names.get(parameter.name, parameter.name),
@@ -1141,52 +1143,6 @@ def _row_stack(
     )
 
 
-def _restricted(component: DrawArgDist, formula: Formula) -> DrawArgDist:
-    """Truncate one component on its own interval, as brms does.
-
-    brms normalizes every component on the truncation interval and then mixes
-    the normalized components, ``sum_k theta_k p_k(y) / P_k(lb <= Y <= ub)``.
-
-    Parameters
-    ----------
-    component : DrawArgDist
-        Component law.
-    formula : Formula
-        Main formula with any truncation bounds.
-
-    Returns
-    -------
-    DrawArgDist
-        ``Normalize(Restrict(component, lb, ub))``, or the component itself
-        without truncation.
-    """
-    bounds = dict(event_option_columns(formula.modifiers))
-    arguments: list[DrawArgNamed] = [DrawArgNamed(parameter="base", value=component)]
-    if "trunc_lower" in bounds:
-        arguments.append(
-            DrawArgNamed(
-                parameter="low", value=DrawArgName(text=bounds["trunc_lower"].qvr_name)
-            )
-        )
-    if "trunc_upper" in bounds:
-        arguments.append(
-            DrawArgNamed(
-                parameter="high", value=DrawArgName(text=bounds["trunc_upper"].qvr_name)
-            )
-        )
-    if len(arguments) == 1:
-        return component
-    return DrawArgDist(
-        family="Normalize",
-        args=(
-            DrawArgNamed(
-                parameter="base",
-                value=DrawArgDist(family="Restrict", args=tuple(arguments)),
-            ),
-        ),
-    )
-
-
 def row_count(lens: FormulaToQVRModule, formula: Formula) -> int:
     """Count the rows the program covers.
 
@@ -1255,38 +1211,6 @@ def _row_inputs(
             )
         )
     return tuple(result)
-
-
-def _argument(component: DrawArgDist, parameter: str) -> LetExprNode:
-    """Read one named argument of a component law as an expression.
-
-    Parameters
-    ----------
-    component : DrawArgDist
-        Component law with named arguments.
-    parameter : str
-        Constructor parameter name.
-
-    Returns
-    -------
-    LetExprNode
-        The argument as a variable or literal expression.
-
-    Raises
-    ------
-    ValueError
-        If the argument is absent or not a name or number.
-    """
-    for argument in component.args:
-        if isinstance(argument, DrawArgNamed) and argument.parameter == parameter:
-            value = argument.value
-            if isinstance(value, DrawArgName):
-                return _var(value.text)
-            if isinstance(value, DrawArgScalar):
-                return LetExprLiteral(value=float(value.value))
-    raise ValueError(
-        f"mixture component {component.family} has no {parameter!r} argument"
-    )
 
 
 def _shared_blocks(
@@ -1664,7 +1588,7 @@ def emit_mixture(
         )
     first = "dpar_mu1_intercept"
     emitted: dict[int, list[ProgramStep]] = {}
-    observations: list[DrawArgDist] = []
+    observations: list[Observation] = []
     etas: list[LetExprNode] = []
     means: list[LetExprNode] = []
     for index, component in enumerate(spec.components, start=1):
@@ -1790,10 +1714,7 @@ def emit_mixture(
             targets[:] = [target for target in targets if target.site != target_name]
         emitted[index] = component_steps
         assert emission.observation is not None
-        observation = emission.observation
-        observations.append(
-            DrawArgDist(family=observation.morphism, args=observation.args or ())
-        )
+        observations.append(emission.observation)
         etas.append(_var(f"dpar_mu{index}_eta"))
         bound = {step.name for step in component_steps if isinstance(step, LetStep)}
         means.append(
@@ -1879,66 +1800,37 @@ def emit_mixture(
         )
         steps.append(_let(WEIGHTS, _var("theta")))
         targets.append(PriorTarget(site="theta", class_="theta", event_rank=1))
-    events = event_option_columns(formula.modifiers)
     assert lens._family.mixture is not None
     native = {family.mixture_law for family in lens._family.mixture.components}
     mixture_law = native.pop() if len(native) == 1 else None
-    options = [
-        OptionEntry(key=key, value=OptionName(value=column.qvr_name))
-        for key, column in events
-        # A native mixture law truncates component-wise itself.
-        if mixture_law is not None or key not in {"trunc_lower", "trunc_upper"}
-    ]
-    if formula.modifiers.weights is not None:
-        options.insert(
-            0, OptionEntry(key="weights", value=OptionName(value="formula_weights"))
-        )
+    site = _qvr_name(formula.response_name)
     if mixture_law is not None:
         # The native law of the mixture takes the stacked component arguments.
-        stacked = tuple(
-            argument.parameter
-            for argument in observations[0].args
-            if isinstance(argument, DrawArgNamed)
-        )
+        stacked = observations[0].parameters
         for parameter in stacked:
             _row_stack(
                 f"mixture_{parameter}",
-                [_argument(component, parameter) for component in observations],
+                [component.argument(parameter) for component in observations],
                 steps,
             )
-        family_name = mixture_law
-        arguments: tuple[DrawArgNamed, ...] = (
-            DrawArgNamed(parameter="weights", value=DrawArgName(text=WEIGHTS)),
-            *(
-                DrawArgNamed(
-                    parameter=parameter,
-                    value=DrawArgName(text=f"mixture_{parameter}"),
-                )
-                for parameter in stacked
-            ),
+        mixed = Observation(
+            site=site,
+            kernel=mixture_law,
+            parameters=("weights", *stacked),
+            values=(WEIGHTS, *(f"mixture_{parameter}" for parameter in stacked)),
         )
     else:
-        family_name = "Mixture"
-        arguments = (
-            DrawArgNamed(parameter="weights", value=DrawArgName(text=WEIGHTS)),
-            DrawArgNamed(
-                parameter="components",
-                value=DrawArgList(
-                    items=tuple(
-                        _restricted(component, formula) for component in observations
-                    )
-                ),
-            ),
+        mixed = Observation(
+            site=site,
+            kernel="Mixture",
+            parameters=("weights",),
+            values=(WEIGHTS,),
+            components=tuple(observations),
         )
-    steps.append(
-        ObserveStep(
-            vars=(_qvr_name(formula.response_name),),
-            morphism=family_name,
-            args=arguments,
-            index=TypeName(name="Resp"),
-            options=tuple(options),
-        )
-    )
+    for modifier in response_modifiers(formula.modifiers, None):
+        mixed = modifier.observe(mixed)
+    lens._observation = mixed
+    steps.append(mixed.step())
     lens._names = ProgramNames(inputs=inputs, bindings=bindings)
     check_names(laws)
     for parameter in declare_inputs(law_inputs(laws)):

@@ -185,6 +185,11 @@ class KernelArguments(ValueModel):
     log_location : str or None
         Parameter that takes the linear predictor on the log scale in place
         of the location; None when the location is passed as it is.
+    lets : tuple[ProgramStep, ...]
+        Bindings written before the observation: the map from the formula
+        parameterization to the native one.
+    factorized : bool
+        Whether the rows are independent given the parameters.
     """
 
     kernel: str
@@ -192,6 +197,10 @@ class KernelArguments(ValueModel):
     parameters: tuple[str, ...] | None = None
     event: str | None = None
     log_location: str | None = None
+    lets: tuple[ProgramStep, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    factorized: bool = True
 
 
 class KernelPart(dx.TaggedUnion, discriminator="kind"):
@@ -744,7 +753,7 @@ class KernelInputs(ValueModel):
         Training responses.
     """
 
-    family: Family
+    family: Family = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     response: str
     labels: tuple[str, ...] = ()
     categories: int = 0

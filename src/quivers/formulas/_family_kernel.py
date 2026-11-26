@@ -18,7 +18,6 @@ import numpy as np
 from quivers.dsl.ast_nodes import (
     LetExprLiteral,
     LetExprNode,
-    LetExprVar,
     ProgramStep,
 )
 from quivers.dsl.let_expr_traversal import free_let_names, substitute_let_expr
@@ -61,7 +60,7 @@ from quivers.formulas._kernel import (
 from quivers.formulas._observation import observation
 from quivers.formulas._predictor import response_axis
 from quivers.formulas._predictor_graph import ComponentExpression, PredictorGraph
-from quivers.formulas._rate import rate_arguments
+from quivers.formulas._modifiers import response_modifiers
 from quivers.formulas._term import AxisDecl, InputDecl, SiteDecl
 from quivers.formulas.family import AuxParam, links
 from quivers.formulas.formula import Formula, _qvr_name
@@ -181,52 +180,45 @@ class NativeArguments(KernelPart):
     """The map from the formula parameterization to the native law's.
 
     The family states it as data: an event formed from a decision, bindings
-    derived from the parameters, and the native arguments. Under known
-    errors the total scale stands wherever the family names its own.
+    derived from the parameters, and the native arguments.
     """
 
     kind: Literal["native_arguments"] = "native_arguments"
 
     def emit(self, emission: KernelEmission) -> None:
-        """Bind the derived quantities and state the native arguments.
+        """State the native arguments and the bindings they read.
 
         Parameters
         ----------
         emission : KernelEmission
             Program being emitted.
         """
-        inputs, host = emission.inputs, emission.host
+        inputs = emission.inputs
         family = inputs.family
-        formula = emission.formula
-        scale: dict[str, LetExprNode] = {}
-        if formula.modifiers.standard_error is not None:
-            assert family.error_scale is not None
-            host.known_error_scale(formula, emission.steps, emission)
-            scale[family.error_scale] = _var("formula_sigma")
-            emission.names[family.error_scale] = "formula_sigma"
-        if family.decision_event is not None:
-            emission.steps.append(
-                _let(_qvr_name(formula.response_name), _bind(family.decision_event))
-            )
-        emission.steps.extend(
-            _let(binding.name, _bind(binding.expr, **scale))
-            for binding in family.observe_lets
+        decision = (
+            ()
+            if family.decision_event is None
+            else (_let(inputs.response, _bind(family.decision_event)),)
         )
         emission.arguments = KernelArguments(
             kernel=family.observe_family,
             values=tuple(
-                _native_argument(argument, inputs, scale)
-                for argument in family.observe_args
+                _native_argument(argument, inputs) for argument in family.observe_args
             ),
             log_location=family.log_location_argument
             if family.retains_log_location
             else None,
+            lets=(
+                *decision,
+                *(
+                    _let(binding.name, _bind(binding.expr))
+                    for binding in family.observe_lets
+                ),
+            ),
         )
 
 
-def _native_argument(
-    argument: str | float, inputs: KernelInputs, scale: dict[str, LetExprNode]
-) -> str | float:
+def _native_argument(argument: str | float, inputs: KernelInputs) -> str | float:
     """Resolve one declared native constructor argument.
 
     Parameters
@@ -235,8 +227,6 @@ def _native_argument(
         A declared `Family.observe_args` entry.
     inputs : KernelInputs
         Trial counts of the response.
-    scale : dict[str, LetExprNode]
-        Bindings standing in for formula parameters under known errors.
 
     Returns
     -------
@@ -246,10 +236,6 @@ def _native_argument(
     if argument == "trials":
         assert inputs.trials is not None
         return inputs.trials
-    if isinstance(argument, str) and argument in scale:
-        replacement = scale[argument]
-        assert isinstance(replacement, LetExprVar)
-        return replacement.name
     return argument
 
 
@@ -370,15 +356,16 @@ class VectorArguments(KernelPart):
 
 
 class Observe(KernelPart):
-    """Observe the response under the native law the body states."""
+    """Observe the response under the native law the body states.
+
+    The response's modifiers are folded over the law in their fixed order
+    (exposure, known errors, residual law, recorded events, weights).
+    """
 
     kind: Literal["observe"] = "observe"
 
     def emit(self, emission: KernelEmission) -> None:
-        """Write the observation step.
-
-        A residual law correlated across the rows gives the kernel and its
-        structural sites; a ``rate()`` denominator scales a count law.
+        """Write the bindings of the native law and the observation step.
 
         Parameters
         ----------
@@ -391,30 +378,20 @@ class Observe(KernelPart):
             If no part stated the native arguments.
         """
         inputs, host = emission.inputs, emission.host
-        formula = emission.formula
         stated = emission.arguments
         if stated is None:
             raise ValueError("the response kernel states no native arguments")
-        kernel, values = stated.kernel, stated.values
-        residual = inputs.residual
-        if residual is not None:
-            for axis in residual.axes():
-                emission.declare(axis)
-            emission.steps.extend(residual.steps(emission.terms))
-            kernel = residual.name
-            scale = residual.elliptical.scale
-            values = residual.arguments("mu", emission.names.get(scale, scale))
-        kernel, values = rate_arguments(
-            inputs.family, kernel, values, emission.steps, formula.modifiers
-        )
+        modifiers = response_modifiers(emission.formula.modifiers, inputs.residual)
+        for modifier in modifiers:
+            stated = modifier.apply(stated, emission)
+        emission.steps.extend(stated.lets)
         observed = observation(
-            _qvr_name(formula.response_name),
-            kernel,
-            values,
-            formula.modifiers,
+            inputs.response,
+            stated.kernel,
+            stated.values,
             event=stated.event,
             catalog=host.response_laws,
-        )
+        ).with_(factorized=stated.factorized)
         if stated.log_location is not None:
             # The kernel takes the linear predictor on the log scale.
             observed = observed.with_arguments(
@@ -429,6 +406,8 @@ class Observe(KernelPart):
             observed = observed.with_arguments(
                 tuple(zip(stated.parameters, observed.values, strict=True))
             )
+        for modifier in modifiers:
+            observed = modifier.observe(observed)
         host.observed(observed)
         emission.steps.append(observed.step())
 
