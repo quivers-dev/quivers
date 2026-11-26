@@ -1052,6 +1052,10 @@ _DEDUCTION_CONSTRAINT_SORTS = [
     "start",
     "depth",
     "pattern",
+    "identity",
+    "weight",
+    "judgment",
+    "law",
 ]
 
 
@@ -1080,8 +1084,10 @@ Edges:
     * ``premise``: rule :math:`\\to` premise.
     * ``conclusion``: rule :math:`\\to` conclusion.
 
-Constraint sorts carry the system's semiring, start, depth, and
-each pattern's textual form. Schema morphisms over this protocol
+Constraint sorts carry the system's semiring and the status of each
+law the semiring claims, its start and depth, each pattern's textual
+form, and, from the rule presentation the rules are derived from, each
+rule's identity and weight parameter and each pattern's judgment. Schema morphisms over this protocol
 correspond to specializations of deduction systems
 (e.g., :math:`\\mathsf{CCG} \\subset \\mathsf{Lambek} \\subset \\mathsf{MultimodalLambek}`).
 """
@@ -1117,19 +1123,36 @@ def extract_deduction_schema(compiler: Compiler) -> panproto.Schema:
         builder.vertex(sys_vid, "deduction_system")
         builder.constraint(sys_vid, "name", name)
         builder.constraint(sys_vid, "semiring", system.semiring.__class__.__name__)
+        for claim in system.semiring.claims():
+            builder.constraint(sys_vid, "law", f"{claim.law.name}:{claim.status.value}")
+        presentation = system.presentation
+        presented = presentation.rules if presentation is not None else ()
         for rule_idx, rule in enumerate(system.rules):
             rule_vid = f"{sys_vid}/rule:{rule.name}"
             builder.vertex(rule_vid, "deduction_rule")
             builder.constraint(rule_vid, "name", rule.name)
+            source = presented[rule_idx] if presented else None
+            if source is not None:
+                builder.constraint(rule_vid, "identity", str(source.id))
+                if source.weight is not None:
+                    builder.constraint(rule_vid, "weight", str(source.weight))
             builder.edge(sys_vid, rule_vid, "decl")
             for prem_idx, premise in enumerate(rule.premises):
                 p_vid = f"{rule_vid}/premise:{prem_idx}"
                 builder.vertex(p_vid, "deduction_premise")
                 builder.constraint(p_vid, "pattern", repr(premise))
+                if source is not None:
+                    builder.constraint(
+                        p_vid,
+                        "judgment",
+                        repr(source.premises[prem_idx].judgment),
+                    )
                 builder.edge(rule_vid, p_vid, "premise")
             conc_vid = f"{rule_vid}/conclusion"
             builder.vertex(conc_vid, "deduction_conclusion")
             builder.constraint(conc_vid, "pattern", repr(rule.conclusion))
+            if source is not None:
+                builder.constraint(conc_vid, "judgment", repr(source.conclusion))
             builder.edge(rule_vid, conc_vid, "conclusion")
     return builder.build()
 

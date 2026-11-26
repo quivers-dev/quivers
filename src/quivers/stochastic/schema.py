@@ -37,6 +37,19 @@ from quivers.dsl.ast_nodes import (
     ObjectSlash,
     TypeName,
 )
+from quivers.qiec.contracts import ParameterId, PresentationId
+from quivers.qiec.declarations import FieldDef
+from quivers.qiec.identifiers import ConstructorId, FamilyId
+from quivers.qiec.kinds import NAT, IndexBinder, UserIndexSort
+from quivers.qiec.rules import (
+    AxiomSlot,
+    Judgment,
+    JudgmentDecl,
+    Premise,
+    Rule,
+    RulePresentation,
+)
+from quivers.qiec.types import STRING, IndexLiteral, IndexVariable
 from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.categories import (
     AtomicCategory,
@@ -1364,6 +1377,127 @@ LP = EVALUATION | COMMUTATIVE_EVALUATION | ADJUNCTION_UNITS
 # schema registry for DSL name resolution
 # ================================================================
 
+
+def schema_presentation(
+    schema: RuleSchema, system: CategorySystem, name: str
+) -> RulePresentation:
+    """The rule presentation of a schema instantiated over categories.
+
+    Each category is a constructor of one closed sort; the judgment
+    ``span(c, i, j)`` says that category ``c`` covers the input from
+    ``i`` to ``j``. A ground binary rule ``result -> left right`` is the
+    rule ``span(left, i, k), span(right, k, j) |- span(result, i, j)`` and
+    a ground unary rule ``result -> input`` is
+    ``span(input, i, j) |- span(result, i, j)``, each in the order the
+    schema generates them; a lexical entry is an occurrence of the
+    ``word`` slot, which carries its word.
+
+    Parameters
+    ----------
+    schema : RuleSchema
+        The schema.
+    system : CategorySystem
+        The categories it is instantiated over.
+    name : str
+        The presentation's name.
+
+    Returns
+    -------
+    RulePresentation
+        The presentation; a rule's weight parameter is named by its
+        position among the rules of its arity.
+    """
+    rules = schema(system)
+    labels = tuple(str(category) for category in system)
+    sort = UserIndexSort(name="Category", constructors=labels)
+    span = FamilyId.derive(name, "judgment", "span")
+
+    def judgment(category: str | IndexVariable, start: str, end: str) -> Judgment:
+        """A span judgment.
+
+        Parameters
+        ----------
+        category : str or IndexVariable
+            A category label, or a variable over categories.
+        start, end : str
+            The position variables.
+
+        Returns
+        -------
+        Judgment
+            The judgment.
+        """
+        label = (
+            category
+            if isinstance(category, IndexVariable)
+            else IndexLiteral(value=category, sort=sort)
+        )
+        return Judgment(
+            family=span,
+            arguments=(
+                label,
+                IndexVariable(name=start, sort=NAT),
+                IndexVariable(name=end, sort=NAT),
+            ),
+        )
+
+    binary = tuple(IndexBinder(name=item, sort=NAT) for item in ("i", "k", "j"))
+    unary = tuple(IndexBinder(name=item, sort=NAT) for item in ("i", "j"))
+    presented: list[Rule] = []
+    for index, (result, left, right) in enumerate(rules.binary_rules):
+        presented.append(
+            Rule(
+                id=ConstructorId.derive(name, "binary", index),
+                name=f"binary{index}",
+                telescope=binary,
+                premises=(
+                    Premise(judgment=judgment(labels[left], "i", "k")),
+                    Premise(judgment=judgment(labels[right], "k", "j")),
+                ),
+                conclusion=judgment(labels[result], "i", "j"),
+                weight=ParameterId.derive(name, "binary", index),
+            )
+        )
+    for index, (result, source) in enumerate(rules.unary_rules):
+        presented.append(
+            Rule(
+                id=ConstructorId.derive(name, "unary", index),
+                name=f"unary{index}",
+                telescope=unary,
+                premises=(Premise(judgment=judgment(labels[source], "i", "j")),),
+                conclusion=judgment(labels[result], "i", "j"),
+                weight=ParameterId.derive(name, "unary", index),
+            )
+        )
+    category = IndexVariable(name="c", sort=sort)
+    return RulePresentation(
+        id=PresentationId.derive(name),
+        name=name,
+        index_sorts=(sort,),
+        judgments=(
+            JudgmentDecl(
+                id=span,
+                name="span",
+                indices=(
+                    IndexBinder(name="c", sort=sort, refinable=True),
+                    IndexBinder(name="i", sort=NAT, refinable=True),
+                    IndexBinder(name="j", sort=NAT, refinable=True),
+                ),
+            ),
+        ),
+        rules=tuple(presented),
+        axioms=(
+            AxiomSlot(
+                id=ConstructorId.derive(name, "word"),
+                name="word",
+                telescope=(IndexBinder(name="c", sort=sort), *unary),
+                judgment=judgment(category, "i", "j"),
+                values=(FieldDef(name="word", type=STRING),),
+            ),
+        ),
+    )
+
+
 SCHEMA_REGISTRY: dict[str, RuleSchema] = {
     "evaluation": EVALUATION,
     "harmonic_composition": HARMONIC_COMPOSITION,
@@ -1428,4 +1562,5 @@ __all__ = [
     "NL",
     "LP",
     "SCHEMA_REGISTRY",
+    "schema_presentation",
 ]

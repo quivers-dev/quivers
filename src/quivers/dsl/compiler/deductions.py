@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Hashable
-from pathlib import Path
 
 import didactic.api as dx
 import torch
@@ -14,15 +13,9 @@ from quivers.core.algebras import BOOLEAN
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
     LetExprNode,
-    LetExprVar,
-    LetStep,
     LexiconCategoryFixed,
     LexiconCategoryRestricted,
     LexiconCategoryWildcard,
-    ObjectEffectApply,
-    ObjectProduct,
-    ObjectSlash,
-    ProgramDecl,
     TypeName,
 )
 from quivers.dsl.ast_nodes import (
@@ -48,7 +41,6 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.ast_nodes._shared import OptionName as _OptionName
 from quivers.dsl.compiler._deduction_positions import (
-    is_pattern_variable,
     misplaced_positions,
     position_slots,
     rule_position_variables,
@@ -78,7 +70,6 @@ from quivers.dsl.compiler._options import (
 )
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.compiler.programs import _ProgramsMixin
-from quivers.dsl.parser import parse as _parse_qvr
 from quivers.stochastic.agenda import (
     Bindings,
     DeductionSystem,
@@ -106,11 +97,17 @@ from quivers.stochastic.semiring import (
 from quivers.stochastic.semiring import (
     VITERBI as SEMIRING_VITERBI,
 )
+from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
+from quivers.dsl.compiler._deduction_presentation import (
+    DeductionPresentationError,
+    chart_category,
+    deduction_presentation,
+)
 
 # Category-side pattern carried by a lexicon entry: either a
 # wildcard variable (any identifier not declared as an atom) or a
-# nested structural pattern over atoms (the result of
-# ``_convert_pattern`` walking a ObjectExpr).
+# nested structural pattern over atoms (the chart spelling of a
+# category the deduction's presentation reads).
 type LexiconPattern = Wildcard | tuple[str | int | "LexiconPattern", ...]
 
 # Logical-form payload attached to a lexicon entry: the result of
@@ -443,102 +440,6 @@ def _with_depth_guard(rule: InferenceRule, depth_n: int) -> InferenceRule:
         return _category_depth(instantiated) <= depth_n
 
     return rule.with_(side_condition=_depth_ok)
-
-
-def load_lexicon_tsv(
-    path: str, decl: DeductionDecl
-) -> list[tuple[str, TypeName, LetExprNode]]:
-    """Read a lexicon file into words, categories, and logical forms.
-
-    Each row has three tab-separated columns: the word, the category,
-    an atom name, and the logical form, a let expression; blank lines
-    and lines starting with ``#`` are skipped. The logical form is read
-    by the live grammar, as the let step of a synthetic program, so the
-    file's syntax is the module's.
-
-    Parameters
-    ----------
-    path : str
-        The file, absolute or relative to the working directory.
-    decl : DeductionDecl
-        The declaring deduction, for diagnostics.
-
-    Returns
-    -------
-    list[tuple[str, TypeName, LetExprNode]]
-        One row per entry: the word, the category as a type name, and
-        the logical form's expression.
-
-    Raises
-    ------
-    CompileError
-        If the file is missing, a row has fewer than three columns, or
-        a logical form does not parse.
-    """
-    file = Path(path)
-    if not file.exists():
-        raise CompileError(
-            f"deduction {decl.name!r}: lexicon file {path!r} not found",
-            decl.line,
-            decl.col,
-        )
-    rows: list[tuple[str, TypeName, LetExprNode]] = []
-    with file.open("r", encoding="utf-8") as handle:
-        for lineno, raw_line in enumerate(handle, start=1):
-            line = raw_line.rstrip("\n")
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) < 3:
-                raise CompileError(
-                    f"deduction {decl.name!r}: lexicon file "
-                    f"{path!r}:{lineno}: expected 3 tab-separated "
-                    f"columns (word, category, lf), got {len(parts)}",
-                    decl.line,
-                    decl.col,
-                )
-            word, cat_text, lf_text = parts[0], parts[1], parts[2]
-            category = TypeName(name=cat_text)
-            if "(" not in lf_text:
-                rows.append((word, category, LetExprVar(name=lf_text)))
-                continue
-            syn_src = (
-                "object LexTerm : FinSet 1\n"
-                "morphism lex_source : LexTerm -> LexTerm "
-                "[role=parameter]\n"
-                "program lex_program : LexTerm -> LexTerm\n"
-                "    sample lex_value : LexTerm <- lex_source\n"
-                f"    let lex_lf = {lf_text}\n"
-                "    return lex_value\n"
-            )
-            syn_mod = _parse_qvr(syn_src.encode(), "<lex-lf>")
-            prog = next(
-                (
-                    s
-                    for s in syn_mod.statements
-                    if isinstance(s, ProgramDecl) and s.name == "lex_program"
-                ),
-                None,
-            )
-            if prog is None:
-                raise CompileError(
-                    f"deduction {decl.name!r}: lexicon file "
-                    f"{path!r}:{lineno}: LF template {lf_text!r} "
-                    f"did not parse to the synthetic program",
-                    decl.line,
-                    decl.col,
-                )
-            let_step = prog.draws[1]
-            if not isinstance(let_step, LetStep):
-                raise CompileError(
-                    f"deduction {decl.name!r}: lexicon file "
-                    f"{path!r}:{lineno}: LF template {lf_text!r} "
-                    f"did not parse to a let binding",
-                    decl.line,
-                    decl.col,
-                )
-            rows.append((word, category, let_step.value))
-    return rows
 
 
 #: The weight key of a rule binding no non-position variable.
@@ -876,80 +777,21 @@ class _DeductionsMixin:
                 decl.col,
             )
 
-        frozen_atoms = frozenset(atoms_set)
-
-        def _convert_pattern(texpr):
-            if isinstance(texpr, TypeName):
-                name = texpr.name
-                # Variable convention, shared with the QIEC elaboration:
-                # an identifier that is neither a declared atom nor a
-                # numeral is a wildcard, whatever its spelling; a
-                # declared atom's name is always that atom.
-                if is_pattern_variable(texpr, frozen_atoms):
-                    return Wildcard(name=name)
-                if name.isdigit():
-                    return ("literal", int(name))
-                return atom_term(name)
-            if isinstance(texpr, ObjectProduct):
-                return (
-                    "product",
-                    tuple(_convert_pattern(c) for c in texpr.components),
-                )
-            if isinstance(texpr, ObjectSlash):
-                # Categorial-grammar slash types: X/Y, X\Y.
-                return (
-                    texpr.direction,
-                    _convert_pattern(texpr.result),
-                    _convert_pattern(texpr.argument),
-                )
-            if isinstance(texpr, ObjectEffectApply):
-                # T(X) = ("effect_apply", T_name, *X_args). The
-                # constructor's args are recursively converted; this
-                # encodes any structured term — proof witnesses, LF
-                # constructors, dependent-type applications.
-                args = tuple(_convert_pattern(a) for a in texpr.args)
-                return (texpr.effect, *args)
-            # Fallback: a structural-equality probe.
-            return atom_term(repr(texpr))
-
-        # Detect whether this deduction's item algebra carries an
-        # LF slot. The signal: any rule pattern of the form
-        # ``span(I, J, C, F)`` (i.e. a 4-arity ``span(...)`` type
-        # expression) or any non-empty ``binders`` block. When
-        # ``_uses_lf`` is True, span items are 5-tuples and the
-        # short ``span(I, J, C)`` rule pattern is auto-extended
-        # with a fresh LF wildcard; when False, span items are
-        # 4-tuples and the surface is untouched.
-        def _span_arity(texpr) -> int:
-            if isinstance(texpr, ObjectEffectApply) and texpr.effect == "span":
-                return len(texpr.args)
-            return 0
-
-        _uses_lf = (
-            bool(decl.binders)
-            or any(_span_arity(p) >= 4 for sr in decl.rules for p in sr.premises)
-            or any(_span_arity(sr.conclusion) >= 4 for sr in decl.rules)
-        )
+        # The one reading of the patterns: the deduction's rule
+        # presentation, whose judgments this engine spells as chart
+        # items. Identifiers that are not declared atoms are variables
+        # (the Prolog and Datalog convention), and a span pattern gains
+        # a logical form slot when any rule or the ``binders`` block
+        # uses one.
+        try:
+            presented = deduction_presentation(decl)
+        except DeductionPresentationError as refusal:
+            raise CompileError(str(refusal), refusal.line, refusal.col) from refusal
+        _uses_lf = presented.uses_forms
 
         # A deduction's span items are those its lexicon builds and its
         # span patterns match; any other item is its own category.
         item_type = SpanItems()
-
-        _lf_wildcard_counter = {"n": 0}
-
-        def _normalise_span(pat):
-            if not _uses_lf:
-                return pat
-            if isinstance(pat, tuple) and pat and pat[0] == "span":
-                children = tuple(_normalise_span(c) for c in pat[1:])
-                if len(children) == 3:
-                    _lf_wildcard_counter["n"] += 1
-                    fresh = Wildcard(name=f"_lf_{_lf_wildcard_counter['n']}")
-                    return ("span", *children, fresh)
-                return ("span", *children)
-            if isinstance(pat, tuple):
-                return tuple(_normalise_span(c) for c in pat)
-            return pat
 
         semiring_registry = {
             "LogProb": SEMIRING_LOG_PROB,
@@ -1058,7 +900,9 @@ class _DeductionsMixin:
                 or find_option(sr.options, "parent") is not None
             )
         )
-        for rule_index, sr in enumerate(decl.rules):
+        for rule_index, (sr, presented_rule) in enumerate(
+            zip(decl.rules, presented.rules, strict=True)
+        ):
             check_option_keys(
                 sr.options,
                 _SEQUENT_RULE_OPTION_KEYS,
@@ -1066,8 +910,11 @@ class _DeductionsMixin:
                 line=sr.line,
                 col=sr.col,
             )
-            premises = tuple(_normalise_span(_convert_pattern(p)) for p in sr.premises)
-            conclusion = _normalise_span(_convert_pattern(sr.conclusion))
+            premises = tuple(
+                presented.chart_pattern(premise.judgment)
+                for premise in presented_rule.rule.premises
+            )
+            conclusion = presented.chart_pattern(presented_rule.rule.conclusion)
             is_learnable = get_option_flag(sr.options, "learnable")
             parent_entry = find_option(sr.options, "parent")
             parent_name: str | None = None
@@ -1349,7 +1196,7 @@ class _DeductionsMixin:
                 # validating each appears in the deduction's atom set).
                 candidate_atoms = _candidate_atoms(entry, decl, atoms_set)
                 fixed_category = (
-                    _convert_pattern(entry.category.category)
+                    chart_category(presented, entry.category.category)
                     if isinstance(entry.category, LexiconCategoryFixed)
                     else None
                 )
@@ -1584,6 +1431,7 @@ class _DeductionsMixin:
             production_refusal=(
                 analysis.refusals[0].message if analysis.refusals else None
             ),
+            presentation=presented.presentation,
         )
         # Stash the axiom-module on the system so Programs that
         # reach it (via `parse(NAME, …)`) can include its

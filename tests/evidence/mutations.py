@@ -223,6 +223,7 @@ PLATE = "quivers.continuous.plate"
 CHART_FIFO = "deduction/value/fifo"
 BUILTINS = "quivers.qiec.builtins"
 EXECUTION = "quivers.qiec.execution"
+PRESENTATION = "quivers.dsl.compiler._deduction_presentation"
 
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
@@ -551,6 +552,24 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         also_in=("quivers.qiec.program_runtime",),
         rejected_by=("machine/budget/cycle", "machine/budget/chained"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="rule-parameters-share-one-name",
+        defect_class="parameter identity",
+        provenance=(
+            "the parameter of a rule is named by its deduction alone, so the "
+            "rules' weights collapse into one when the presentation is stored"
+        ),
+        target=f"{PRESENTATION}:deduction_presentation",
+        rewrites=(
+            Rewrite(
+                old='ParameterId.derive(decl.name, "rule", rule.name)',
+                new='ParameterId.derive(decl.name, "rule")',
+            ),
+        ),
+        also_in=("tests.evidence.checks.presented",),
+        rejected_by=("presented/codec",),
         min_effect=1.0,
     ),
     Mutation(

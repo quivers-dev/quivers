@@ -99,7 +99,6 @@ from quivers.dsl.compiler._options import (
     get_option_name,
 )
 from quivers.dsl.compiler._deduction_positions import (
-    is_pattern_variable,
     misplaced_positions,
     position_slots,
 )
@@ -107,7 +106,15 @@ from quivers.dsl.compiler._deduction_productions import (
     normalization_mode,
     production_groups,
 )
-from quivers.dsl.compiler.deductions import load_lexicon_tsv
+from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
+from quivers.dsl.compiler._deduction_presentation import (
+    DeductionPresentation,
+    DeductionPresentationError,
+    DeductionRule,
+    category_term,
+    deduction_presentation,
+)
+from quivers.qiec.rules import Judgment
 from quivers.stochastic.categories import (
     AtomicCategory,
     Category,
@@ -192,7 +199,9 @@ from quivers.qiec.types import (
     STRING,
     UNIT,
     IndexBinder,
+    IndexConstructor,
     IndexLiteral,
+    IndexTerm,
     IndexVariable,
     TypeApplication,
     TypeBinder,
@@ -334,30 +343,65 @@ type Pattern = _Atom | _Wild | _Lit | _Bound | _App
 
 
 class _Rule(QiecModel):
-    """One rule of a deduction, in pattern form.
+    """One rule of a deduction, with the patterns its presentation rule reads as.
 
     Parameters
     ----------
-    source
-        The declaration.
+    presented
+        The rule of the deduction's presentation and its options.
     premises
-        The premise patterns.
+        The premise patterns, read from the presentation's judgments.
     conclusion
-        The conclusion pattern.
-    learnable
-        Whether the rule reads a learned weight keyed by its bindings.
-    bounded
-        Whether that weight is bounded below one per firing.
-    parent
-        The rule whose weight on the same bindings is added, if any.
+        The conclusion pattern, read likewise.
     """
 
-    source: SequentRule = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    presented: DeductionRule = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     premises: tuple[Pattern, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     conclusion: Pattern = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    learnable: bool
-    bounded: bool
-    parent: str | None
+
+    @property
+    def source(self) -> SequentRule:
+        """The declaration.
+
+        Returns
+        -------
+        SequentRule
+            The rule as written.
+        """
+        return self.presented.source
+
+    @property
+    def learnable(self) -> bool:
+        """Whether the rule reads a learned weight keyed by its bindings.
+
+        Returns
+        -------
+        bool
+            The option.
+        """
+        return self.presented.learnable
+
+    @property
+    def bounded(self) -> bool:
+        """Whether that weight is bounded below one per firing.
+
+        Returns
+        -------
+        bool
+            The option.
+        """
+        return self.presented.bounded
+
+    @property
+    def parent(self) -> str | None:
+        """The rule whose weight on the same bindings is added, if any.
+
+        Returns
+        -------
+        str or None
+            The parent's name.
+        """
+        return self.presented.parent
 
 
 class _Entry(QiecModel):
@@ -441,7 +485,7 @@ class _System(QiecModel):
         Owned one-element cell.
         The declared derivation depth bound, if any.
     rules
-        The rules in pattern form.
+        The rules in pattern form, read from the presentation.
     entries
         The expanded lexicon, empty for a system that takes its axioms
         as input.
@@ -518,6 +562,9 @@ class _System(QiecModel):
     settle_cell
         Owned one-element cell.
         The ``Settle`` instance.
+    presentation_cell
+        Owned one-element cell.
+        The deduction's rule presentation, which its rules are read from.
     fresh_cell
         Owned one-element cell.
         The count of fresh locals minted so far.
@@ -600,6 +647,9 @@ class _System(QiecModel):
         default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     settle_cell: list[NamedEffectInstance | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    presentation_cell: list[DeductionPresentation | None] = dx.field(
         default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     fresh_cell: list[int] = dx.field(
@@ -1729,13 +1779,6 @@ class _DeductionElaboration:
         atoms = set(declaration.atoms)
         for atom in declaration.atoms:
             system.symbols.setdefault(atom, [])
-        system.uses_forms_cell[0] = bool(declaration.binders) or any(
-            isinstance(pattern, ObjectEffectApply)
-            and pattern.effect == SPAN
-            and len(pattern.args) >= 4
-            for rule in declaration.rules
-            for pattern in (*rule.premises, rule.conclusion)
-        )
         for misplaced in misplaced_positions(declaration, position_slots(declaration)):
             rule_node = next(
                 rule for rule in declaration.rules if rule.name == misplaced.rule
@@ -1743,17 +1786,19 @@ class _DeductionElaboration:
             self._fail(
                 rule_node, misplaced.message(declaration.name), code="qiec-program"
             )
-        counter = [0]
-        for rule in declaration.rules:
+        try:
+            presented = deduction_presentation(declaration)
+        except DeductionPresentationError as refusal:
+            self._fail(declaration, str(refusal), code="qiec-program")
+        system.presentation_cell[0] = presented
+        system.uses_forms_cell[0] = presented.uses_forms
+        for item in presented.rules:
+            rule = item.source
             premises = tuple(
-                self._span_form(
-                    self._object_pattern(item, atoms, system), system, counter
-                )
-                for item in rule.premises
+                self._judgment_pattern(premise.judgment, system)
+                for premise in item.rule.premises
             )
-            conclusion = self._span_form(
-                self._object_pattern(rule.conclusion, atoms, system), system, counter
-            )
+            conclusion = self._judgment_pattern(item.rule.conclusion, system)
             bound = {
                 name for premise in premises for name in _pattern_variables(premise)
             }
@@ -1767,16 +1812,6 @@ class _DeductionElaboration:
                     "which no premise binds",
                     code="qiec-program",
                 )
-            parent = find_option(rule.options, "parent")
-            parent_name: str | None = None
-            if parent is not None:
-                if not isinstance(parent.value, OptionName):
-                    self._fail(
-                        rule,
-                        f"rule {rule.name!r} option parent must name a rule",
-                        code="qiec-program",
-                    )
-                parent_name = parent.value.value
             if find_option(rule.options, "weight") is not None:
                 self._fail(
                     rule,
@@ -1785,25 +1820,8 @@ class _DeductionElaboration:
                     code="qiec-program-gap",
                 )
             system.rules.append(
-                _Rule(
-                    source=rule,
-                    premises=premises,
-                    conclusion=conclusion,
-                    learnable=get_option_flag(rule.options, "learnable"),
-                    bounded=get_option_flag(rule.options, "bounded"),
-                    parent=parent_name,
-                )
+                _Rule(presented=item, premises=premises, conclusion=conclusion)
             )
-        for rule in system.rules:
-            if rule.parent is not None and rule.parent not in {
-                item.source.name for item in system.rules
-            }:
-                self._fail(
-                    rule.source,
-                    f"rule {rule.source.name!r} names the parent {rule.parent!r}, "
-                    "which the deduction does not declare",
-                    code="qiec-program",
-                )
         self._read_lexicon(declaration, atoms, system)
         mode, mode_refusal = normalization_mode(declaration)
         if mode_refusal is not None:
@@ -2006,66 +2024,64 @@ class _DeductionElaboration:
             )
         system.heads[:] = heads
 
-    def _object_pattern(
-        self: _Elaborator, expr: ObjectExpr, atoms: set[str], system: _System
+    def _judgment_pattern(
+        self: _Elaborator, judgment: Judgment, system: _System
     ) -> Pattern:
-        """Convert a rule's object expression into a pattern.
+        """The pattern of a judgment of the deduction's presentation.
 
         Parameters
         ----------
-        expr : ObjectExpr
-            The expression.
-        atoms : set[str]
-            The declared atoms, whose names are ground; every other
-            identifier is a variable.
+        judgment : Judgment
+            A premise or conclusion.
+        system : _System
+            The system, whose symbol table the heads join.
+
+        Returns
+        -------
+        Pattern
+            An atom for a judgment form written as an atom, else the
+            head applied to the patterns of the arguments.
+        """
+        presented = system.presentation_cell[0]
+        assert presented is not None
+        head = presented.families[judgment.family].name
+        if presented.forms[head].kind == "atom":
+            self._note_atom(system, head)
+            return _Atom(name=head)
+        args = tuple(self._term_pattern(term, system) for term in judgment.arguments)
+        self._note_symbol(system, head, len(args))
+        return _App(symbol=head, args=args)
+
+    def _term_pattern(self: _Elaborator, term: IndexTerm, system: _System) -> Pattern:
+        """The pattern of an argument of the deduction's presentation.
+
+        Parameters
+        ----------
+        term : IndexTerm
+            The argument.
         system : _System
             The system, whose symbol table the applied heads join.
 
         Returns
         -------
         Pattern
-            The pattern.
-
-        Raises
-        ------
-        QiecDiagnosticError
-            If the expression has a shape the pattern language does not
-            cover.
+            A variable, a literal, an atom, or an application.
         """
-        if isinstance(expr, TypeName):
-            if is_pattern_variable(expr, frozenset(atoms)):
-                return _Wild(name=expr.name)
-            if expr.name.isdigit():
-                return _Lit(value=int(expr.name))
-            self._note_atom(system, expr.name)
-            return _Atom(name=expr.name)
-        if isinstance(expr, ObjectEffectApply):
-            args = tuple(
-                self._object_pattern(item, atoms, system) for item in expr.args
-            )
-            self._note_symbol(system, expr.effect, len(args))
-            return _App(symbol=expr.effect, args=args)
-        if isinstance(expr, ObjectSlash):
-            symbol = "fwd_slash" if expr.direction == "/" else "bwd_slash"
-            args = (
-                self._object_pattern(expr.result, atoms, system),
-                self._object_pattern(expr.argument, atoms, system),
-            )
-            self._note_symbol(system, symbol, 2)
-            return _App(symbol=symbol, args=args)
-        if isinstance(expr, ObjectProduct):
-            args = tuple(
-                self._object_pattern(item, atoms, system) for item in expr.components
-            )
-            symbol = f"product{len(args)}"
-            self._note_symbol(system, symbol, len(args))
-            return _App(symbol=symbol, args=args)
-        self._fail(
-            system.decl,
-            f"deduction {system.decl.name!r} has a rule pattern of kind "
-            f"{expr.kind!r}, which the pattern language does not cover",
-            code="qiec-program",
-        )
+        presented = system.presentation_cell[0]
+        assert presented is not None
+        if isinstance(term, IndexVariable):
+            return _Wild(name=term.name)
+        if isinstance(term, IndexLiteral):
+            if isinstance(term.value, int):
+                return _Lit(value=term.value)
+            if presented.forms[term.value].kind == "numeral":
+                return _Lit(value=int(term.value))
+            self._note_atom(system, term.value)
+            return _Atom(name=term.value)
+        assert isinstance(term, IndexConstructor)
+        args = tuple(self._term_pattern(item, system) for item in term.arguments)
+        self._note_symbol(system, term.name, len(args))
+        return _App(symbol=term.name, args=args)
 
     def _note_atom(self: _Elaborator, system: _System, atom: str) -> None:
         """Record an atom used as an item on its own.
@@ -2124,39 +2140,6 @@ class _DeductionElaboration:
                 f"{len(existing)} and {arity} arguments",
                 code="qiec-program",
             )
-
-    def _span_form(
-        self: _Elaborator, pattern: Pattern, system: _System, counter: list[int]
-    ) -> Pattern:
-        """Give a three-slot span pattern its form slot when the system has one.
-
-        Parameters
-        ----------
-        pattern : Pattern
-            The pattern.
-        system : _System
-            The system.
-        counter : list[int]
-            The count of fresh form variables minted so far.
-
-        Returns
-        -------
-        Pattern
-            The pattern, every ``span(I, J, C)`` extended with a fresh
-            variable in the form slot when the system carries forms.
-        """
-        if not system.uses_forms_cell[0]:
-            return pattern
-        if isinstance(pattern, _App):
-            args = tuple(
-                self._span_form(item, system, counter) for item in pattern.args
-            )
-            if pattern.symbol == SPAN and len(args) == 3:
-                counter[0] += 1
-                args = (*args, _Wild(name=f"_lf{counter[0]}"))
-                system.symbols[SPAN] = ["item"] * 4
-            return _App(symbol=pattern.symbol, args=args)
-        return pattern
 
     def _read_lexicon(
         self: _Elaborator, declaration: DeductionDecl, atoms: set[str], system: _System
@@ -2236,7 +2219,11 @@ class _DeductionElaboration:
                 else None
             )
             if fixed is not None:
-                category = self._object_pattern(fixed.category, atoms, system)
+                presented = system.presentation_cell[0]
+                assert presented is not None
+                category = self._term_pattern(
+                    category_term(presented, fixed.category), system
+                )
                 system.entries.append(
                     _Entry(word=word, category=category, form=form, learnable=learnable)
                 )
