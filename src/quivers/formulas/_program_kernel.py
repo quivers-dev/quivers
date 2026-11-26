@@ -284,6 +284,35 @@ class ProgramAnalysis(ValueModel):
         """
         return next((item for item in self.inputs if item.name == name), None)
 
+    def data(self, parameters: Collection[str]) -> tuple[KernelInput, ...]:
+        """The external values the program reads once parameters are replaced.
+
+        Parameters
+        ----------
+        parameters : Collection[str]
+            The sites and inputs formulas replace.
+
+        Returns
+        -------
+        tuple[KernelInput, ...]
+            The inputs the program declares, and those a step that stays
+            reads, without the observations and the replaced inputs.
+        """
+        reads = frozenset().union(
+            *(
+                _step_value_names(step)
+                for step in self.program.draws
+                if not (isinstance(step, SampleStep) and step.vars[0] in parameters)
+            )
+        )
+        return tuple(
+            item
+            for item in self.inputs
+            if item.role != "observation"
+            and item.name not in parameters
+            and (item.declared or item.name in reads)
+        )
+
     @property
     def observations(self) -> tuple[str, ...]:
         """The sites the program observes.
@@ -1313,11 +1342,7 @@ class ProgramKernelSpec(KernelLaw):
             Names of row inputs no formula replaces.
         """
         return tuple(
-            item.name
-            for item in self.analysis.inputs
-            if item.rows
-            and item.role != "observation"
-            and item.name not in self.parameters
+            item.name for item in self.analysis.data(self.parameters) if item.rows
         )
 
     def bindings(
@@ -1352,9 +1377,7 @@ class ProgramKernelSpec(KernelLaw):
         """
         extra = dict(data2 or {})
         bound: dict[str, torch.Tensor] = {}
-        for item in self.analysis.inputs:
-            if item.role == "observation" or item.name in self.parameters:
-                continue
+        for item in self.analysis.data(self.parameters):
             if item.rows:
                 if item.name not in frame.columns:
                     place = (
@@ -1582,8 +1605,7 @@ class ProgramKernelSpec(KernelLaw):
                 axes=((ROWS,) if item.rows else ()) + item.axes,
                 declared=False,
             )
-            for item in analysis.inputs
-            if item.role != "observation" and item.name not in declarations
+            for item in analysis.data(self.parameters)
         )
         assert site.name == self.response
         return (
@@ -1627,8 +1649,8 @@ def _tensor(item: KernelInput, array: np.ndarray, rows: int | None) -> torch.Ten
     rank = (1 if item.rows else 0) + len(item.sizes)
     if array.ndim != rank:
         raise ValueError(
-            f"the program input {name!r} has {rank} axes, and its value has "
-            f"{array.ndim}"
+            f"the program input {name!r} has {rank} axes by the program's "
+            f"checked type, and its value has {array.ndim}"
         )
     expected = ((rows,) if rows is not None else ()) + item.sizes
     for position, (size, wanted) in enumerate(zip(array.shape, expected)):
