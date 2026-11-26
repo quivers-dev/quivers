@@ -337,10 +337,10 @@ class Precomposition(ValueModel):
     parts : tuple[KernelPart, ...]
         Parts computing the value.
     value : LetExprNode or None
-        Value the parts compute, on the stage named by ``stage``; None when
-        the parts bind the binding of that stage themselves.
-    stage : {"free", "eta", "name"}
-        Stage of the slot the value enters at: the free coordinates of a
+        Value the parts compute, at the level named by ``level``; None when
+        the parts bind the binding of that level themselves.
+    level : {"free", "eta", "name"}
+        Level of the slot the value enters at: the free coordinates of a
         vector value, the full value on the link scale, or the value itself.
     shape : ValueShape
         Where the computed value varies.
@@ -350,14 +350,14 @@ class Precomposition(ValueModel):
     value: LetExprNode | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    stage: Literal["free", "eta", "name"] = "eta"
+    level: Literal["free", "eta", "name"] = "eta"
     shape: ValueShape = ValueShape(rows=True)
 
 
 class ParameterSlot(ValueModel):
     """A named parameter the kernel body reads.
 
-    A slot's value passes through stages: the free coordinates of a vector
+    A slot's value passes through levels: the free coordinates of a vector
     value (``free``), their completion over the full axis, the value on the
     link scale (``eta``), and the value itself (``name``), bound by the
     inverse link or materialized over the rows.
@@ -1149,7 +1149,7 @@ class KernelEmission:
             source.emit(slot, self)
 
     def bind_slot(self, name: str) -> None:
-        """Bind a slot through the stages after its source.
+        """Bind a slot through the levels after its source.
 
         Parameters
         ----------
@@ -1159,20 +1159,20 @@ class KernelEmission:
         self.emit_slot(name)
         slot = self.kernel.slot(name)
         precomposition = slot.precomposition
-        if precomposition is not None and precomposition.stage == "name":
+        if precomposition is not None and precomposition.level == "name":
             return
         if name not in self._values:
             # A site or constant bound the slot, or a modifier feeds it.
             return
         value = self._values.pop(name)
         vector = (
-            precomposition.stage == "free"
+            precomposition.level == "free"
             if precomposition is not None
             else value is None
         )
         if vector:
             if slot.free is None or slot.eta is None:
-                raise ValueError(f"parameter {name!r} has no vector stages")
+                raise ValueError(f"parameter {name!r} has no vector levels")
             if precomposition is not None and value is not None:
                 if value != _var(slot.free):
                     self.steps.append(_let(slot.free, value))

@@ -567,7 +567,7 @@ def _auxiliary_slot(aux: AuxParam, inputs: KernelInputs) -> ParameterSlot:
     Returns
     -------
     ParameterSlot
-        The slot, with vector stages for a parameter with one value per
+        The slot, with vector levels for a parameter with one value per
         component.
     """
     prefix = f"dpar_{aux.name}_"
@@ -701,7 +701,7 @@ def _scale_stack(
     return (
         Precomposition(
             parts=tuple(parts),
-            stage="name",
+            level="name",
             shape=ValueShape(rows=True, coordinates=True),
         ),
         tuple(slots),
@@ -818,7 +818,7 @@ def _category_stack(
     return (
         Precomposition(
             parts=tuple(parts),
-            stage="free",
+            level="free",
             shape=ValueShape(rows=True, coordinates=True),
         ),
         tuple(slots),
@@ -904,7 +904,7 @@ def precompose_graph(
             )
             precomposition = Precomposition(
                 parts=(step,),
-                stage="free",
+                level="free",
                 shape=ValueShape(rows=True, coordinates=True),
             )
         elif name == "mu":
