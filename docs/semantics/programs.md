@@ -162,7 +162,7 @@ rules as other program parameters. Neither declaration creates a random effect.
 `Independent` itself is a pure constructor, and its axis count must be a
 nonnegative integer literal no larger than the checked base batch rank.
 Native execution and the reference interpreter retain this partition through
-nested restrictions, normalization, and mixtures. External renderers currently
+nested restrictions, normalization, and mixtures. External renderers
 refuse the nested distribution arguments explicitly.
 
 ## 2. Steps
@@ -816,7 +816,7 @@ Matching a kernel does not identify its prior: QVR's direct GEV shape
 parameter is distinct from brms's additional scalar shape transformation.
 
 These four kernels have native and checked-reference implementations.
-All 11 external renderers currently refuse them explicitly. Their native
+All 11 external renderers refuse them explicitly. Their native
 CDFs, inverse CDFs, moments, and samplers have separate numerical and
 derivative tests; those tests do not assert a uniform error bound over
 all tail or shape regimes.
@@ -1810,7 +1810,7 @@ factors with their own latent variables, as in a hierarchical model.
 Static substitution recurses through categorical object expressions,
 including constructor dimensions such as `FinSet n` and `Real n`, products,
 coproducts, slash types, and applied effects. It is not restricted to bare
-axis names. The source program-call grammar currently admits only names
+axis names. The source program-call grammar admits only names
 and signed numeric literals as static actuals; kind checking further
 restricts which a binder accepts. This source restriction is separate from
 the semantic valuation of a general checked telescope.

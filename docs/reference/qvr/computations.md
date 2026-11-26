@@ -244,7 +244,7 @@ machine and native compiler share these distinctions. External targets
 check mass-query capability and family mappings separately: the eight
 dynamic targets query mapped probability distributions, while a raw
 measure without a target mapping is explicitly refused. Stan, BUGS,
-and JAGS currently refuse mass queries.
+and JAGS refuse mass queries.
 
 The reference machine implements every family in the
 [distribution family registry](../../api/qiec/families.md). Parameter order and support follow the

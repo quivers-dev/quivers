@@ -138,8 +138,8 @@ the features the model is meant to explain.
 Both source and formula fits expose `analysis(num_samples=100, seed=7)`.
 The returned object retains posterior draws and raw response likelihoods for
 `summary`, `waic`, `loo`, and `to_datatree`, without replaying the model for
-each operation. Recorded MCMC chains supply convergence diagnostics;
-variational draws supply uncertainty summaries without convergence claims.
+each operation. Recorded MCMC chains give convergence diagnostics;
+variational draws give uncertainty summaries without convergence claims.
 The rows of a `marginalize` block have scores of their own only when no two of
 them share a latent class. Otherwise the source fit's `analysis` raises
 [`UnfactoredObservationError`](../api/effects/units.md#quivers.effects.units.UnfactoredObservationError),
@@ -199,7 +199,7 @@ The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inferen
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
 with ArviZ-compatible groups. A formula fit's `posterior_predict` method
-supplies replicated responses on its retained training rows, or on a `new_data`
+gives replicated responses on its retained training rows, or on a `new_data`
 frame evaluated with fitted transforms and known group levels. It includes response
 noise and preserves separate chain and draw axes. The
 [new-row workflow](analysis-data-and-formulas.md#predictions-on-new-rows)
@@ -293,7 +293,7 @@ assert scores["y"].shape == (1, 3, 2)
 ```
 
 The small optimization budget illustrates the interface; inference still needs
-the checks described above. Supply the response and any authored censoring,
+the checks described above. Pass the response and any authored censoring,
 truncation, measurement-error, decision, subset, or trial columns. Subsets select
 fresh rows before response evaluation, and neural `predictor_data` follows the
 same selection. Vector count responses infer fresh row totals; an explicit

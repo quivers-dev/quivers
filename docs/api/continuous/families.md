@@ -141,7 +141,7 @@ derivatives. These derivatives do not imply that every second extension
 derivative exists at zero. A failed convergence or interval-resolution
 check raises explicitly. An inverse CDF is unavailable because the shared
 Beta base does not implement one. Native and checked-reference execution
-support this law; external renderers currently refuse it by family name.
+support this law; external renderers refuse it by family name.
 
 ::: quivers.continuous._extended_beta
 
@@ -167,7 +167,7 @@ Normal location nor its softmax is generally the simplex expectation.
 
 The checked response extent is `nat_add(d, 1)`, expressing the same
 dimension relationship used by native construction. All external targets
-currently report this family's missing rendering capability explicitly.
+report this family's missing rendering capability explicitly.
 
 ::: quivers.continuous._additive_log_ratio
 
@@ -332,7 +332,7 @@ counts, avoiding rejection from an almost-always-zero count distribution.
 The [count guide](../../guides/analysis-data-and-formulas.md#zero-inflated-and-hurdle-counts)
 relates these native parameters to regression means, precision, and links.
 Native and QIEC reference execution support all four. Each of the 11
-external renderers currently refuses them with a `family:<Family>`
+external renderers refuses them with a `family:<Family>`
 diagnostic; native registration alone does not provide a target mapping.
 
 Native Binomial, BetaBinomial, NegativeBinomial, Poisson, and these four count mixtures

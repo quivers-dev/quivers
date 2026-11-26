@@ -223,7 +223,7 @@ must match the names the program observes or reads.
 
 To state these inputs explicitly, use typed runtime parameters in the program
 header, as in `program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out`.
-The annotations constrain supplied values without drawing or scoring them.
+The annotations constrain given values without drawing or scoring them.
 `observe y` assigns the response its likelihood role. Static object, morphism,
 and extent parameters use a preceding bracketed telescope; see the
 [parameter reference](../reference/qvr/index.md#parameter-telescopes).

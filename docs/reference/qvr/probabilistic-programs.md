@@ -337,7 +337,7 @@ remains unweighted. The [semantics](../../semantics/programs.md#observation-weig
 defines the zero-weight convention and order of reductions.
 
 The native executor and QIEC reference machine support weighted observations.
-All eleven external transpilation targets currently refuse this source form
+All eleven external transpilation targets refuse this source form
 with `qiec:weighted-observe:<program>`, where the final component names the
 entry. Authored calls of the checked weight primitives have their own
 [capability boundary](computations.md#built-in-values-and-distributions);

@@ -63,7 +63,7 @@ coefficient correlations. Gaussian blocks use the existing MatrixNormal law
 on explicit support coordinates; positive-semidefinite rank declarations keep
 only genuine stochastic dimensions. Prediction shares the same layout and
 conditions new levels through the retained covariance. See the
-[supplied-covariance workflow](../../guides/analysis-data-and-formulas.md#supplied-covariance-between-grouping-levels).
+[known-covariance workflow](../../guides/analysis-data-and-formulas.md#known-covariance-between-grouping-levels).
 
 ::: quivers.formulas.GroupCovariance
 

@@ -151,9 +151,9 @@ uniform.
 
 ### Named initial values
 
-`MCMC(initial_values={"sigma": 0.5})` supplies starting values in the latent
+`MCMC(initial_values={"sigma": 0.5})` sets starting values in the latent
 sites' natural coordinates. The driver first runs `init_strategy` (`"jitter"`,
-`"prior"`, `"zero"`, or a supplied `"guide"`) with each chain's seeded generator,
+`"prior"`, `"zero"`, or a given `"guide"`) with each chain's seeded generator,
 then replaces the named sites in every chain. Unspecified sites retain the
 strategy's values, so a partial mapping can set a constrained scale while
 allowing dispersed starting locations.
@@ -206,7 +206,7 @@ since no bijector is inverted: `initial_values={"side": 1}` starts a
 `Categorical(probs=[0.5, 0.5])` site at its second category. The Gibbs sites
 left unnamed are drawn from the program given the named ones.
 
-The driver detaches and copies the supplied tensors, so later changes to the
+The driver detaches and copies the given tensors, so later changes to the
 caller's mapping or tensors do not change its initialization. Named values are
 part of [checkpoint compatibility](#checkpoints-budgets-and-sampler-statistics):
 resume with the same mapping values as the original run.

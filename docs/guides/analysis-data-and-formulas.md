@@ -344,7 +344,7 @@ saturating = fit(
 assert saturating.posterior_epred(num_samples=2).shape == (1, 2, 20)
 ```
 
-An explicit component mapping supplies a vector-valued output. For
+An explicit component mapping gives a vector-valued output. For
 `family=families["multinomial"].with_reference("A")` and response
 `cbind(A,B,C)`, use the main formula `cbind(A,B,C) ~ 0` and
 `distributional={"mu": NonlinearExpression(expression={"B": "a*x", "C": "b*x"})}`,
@@ -533,7 +533,7 @@ unnecessary. Constant roles are reused without new columns.
 
 Native execution and the checked reference support recorded-event options.
 The direct QVR form uses `observe` options `cens`, `cens_upper`,
-`trunc_lower`, and `trunc_upper`; all 11 external targets currently refuse
+`trunc_lower`, and `trunc_upper`; all 11 external targets refuse
 these options explicitly.
 
 ### Missing values
@@ -586,7 +586,7 @@ missing grouping identity is a new level, so it needs
 ### Likelihood weights
 
 Pass `weights="column"` to multiply each response log density by its row's
-weight. Priors retain their original scores. The weights keep their supplied
+weight. Priors retain their original scores. The weights keep their given
 scale; the interface does not divide them by their sum or mean. For instance,
 this count model includes both observation exposure and likelihood weights:
 
@@ -686,7 +686,7 @@ evaluated design columns, including when the corresponding fixed slope is absent
 The generated runtime telescope declares each group index array as
 `Tensor[Int]([Resp])`.
 
-### Supplied covariance between grouping levels
+### Known covariance between grouping levels
 
 `group_covariances` specifies dependence between named grouping levels. This
 covariance is separate from the learned intercept/slope or response-component
@@ -718,11 +718,11 @@ assert predictions[..., 1].equal(predictions[..., 2])
 ```
 
 For a coefficient matrix $B$, the emitted law is
-$B\sim\operatorname{MatrixNormal}(0,A,\Sigma)$, where $A$ is the supplied
+$B\sim\operatorname{MatrixNormal}(0,A,\Sigma)$, where $A$ is the known
 level covariance and $\Sigma$ retains the ordinary scale/LKJ coefficient
 hierarchy. The same construction covers independent terms, shared IDs,
 distributional and nonlinear leaves, and category or response-component
-coordinates. One supplied covariance applies consistently to every Gaussian
+coordinates. One known covariance applies consistently to every Gaussian
 block using that grouping factor. `formula_to_qvr` and `get_prior` accept the
 same mapping; fixed factors appear as typed matrix inputs rather than expanded
 per-level source expressions.
@@ -751,12 +751,12 @@ conditional Gaussian innovations. `uncertainty` resamples standardized fitted
 per draw; `old_levels` fixes those donor indices for the entire request. The
 conditional mean and Schur factor still act on those innovations. These two
 policies are empirical donor procedures rather than Gaussian draws. A
-rank-zero fitted support supplies no empirical innovations; fresh stochastic
+rank-zero fitted support gives no empirical innovations; fresh stochastic
 levels then require `gaussian`. Missing identities cannot name covariance
 rows and are refused. Repeated fresh identities share their sampled effect.
 
 Include future labels in the retained matrix, as above. An extended immutable
-mapping may be supplied by `result.with_(group_covariances=...)`; prediction
+mapping may be passed by `result.with_(group_covariances=...)`; prediction
 checks that its fitted principal submatrix is unchanged before using any new
 cross-covariances. Unknown labels or a changed fitted submatrix fail before
 sampling. The model cannot infer absent cross-covariances from a group label.
@@ -767,13 +767,13 @@ For cumulative category-specific effects, covariance transformations precede
 the existing training-domain bounds and proper conditional log-slack priors.
 Prediction retains fitted cutpoints and uses the existing explicit
 `feasible_gaussian` or `feasible_uncertainty` policy for fresh profiles that
-affect order. Supplying covariance does not replace those support checks.
+affect order. Passing a covariance does not replace those support checks.
 
 ### Inspecting priors
 
 `get_prior` evaluates the design matrices and returns the actual overrideable
 parameter names and distribution calls before inference. Default slope scales
-include column autoscaling; explicit overrides retain their supplied scale.
+include column autoscaling; explicit overrides retain their given scale.
 Conditional group draws and standard Normal innovations define the group
 parameterization and are excluded from the override mapping.
 
@@ -1319,7 +1319,7 @@ convention. The existing `negative_binomial` family calls this same
 dispersion auxiliary `disp`.
 
 `zero_inflated_binomial` and `zero_inflated_beta_binomial` use a success
-probability as location, with `binomial_trials` supplying the trial count.
+probability as location, with `binomial_trials` giving the trial count.
 The beta-binomial additionally uses precision `phi`, giving component
 concentrations `mu*phi` and `(1-mu)*phi`. For instance, this model allows a
 separate predictor for the structural-zero probability:
@@ -1392,7 +1392,7 @@ derivatives for gradients, with common tail-density factors canceled before
 evaluation. Independent SciPy densities and CDFs, numerical derivative checks,
 Monte Carlo moments and moment gradients, and SVI/HMC/NUTS execution are covered
 in `tests/continuous/test_response_time_families.py` and
-`tests/test_formula_distributional.py`. External transpilation backends currently
+`tests/test_formula_distributional.py`. External transpilation backends
 reject both families with explicit unsupported-family diagnostics.
 
 ### Joint reaction times and decisions
@@ -1478,7 +1478,7 @@ Native Torch execution and the checked reference implement the joint law.
 Sampling uses one-sided first-passage proposals with certified density-ratio
 comparisons, with explicit term, precision, and proposal budgets; exhaustion
 raises an error. There is no discretized diffusion fallback. External
-transpilation targets currently refuse Wiener explicitly. The signed kernel,
+transpilation targets refuse Wiener explicitly. The signed kernel,
 choice probabilities, and moment conventions are specified in
 [Programs as kernels](../semantics/programs.md#62-joint-reaction-time-and-decision-responses).
 
@@ -1522,7 +1522,7 @@ and hurdle weights; `posterior_linpred` reports the selected predictor.
 Fixed `hu=0` recovers the positive component, and fixed `hu=1` gives a point
 mass at zero. Native sampling draws the structural zero gate exactly, while
 likelihood derivatives remain available for fitting observed responses.
-External backend emission currently reports these native families as unsupported.
+External backend emission reports these native families as unsupported.
 
 ### Zero-inflated beta regression
 
@@ -1561,13 +1561,13 @@ point mass at zero. Observations equal to one require the
 `zero_one_inflated_beta` family. The emitted QVR reuses that native distribution
 with its conditional one-atom probability `coi` fixed at zero, so zero-only
 inflation creates no one-atom latent or prior. External backend emission follows
-the native family's capability checks and currently reports unsupported targets.
+the native family's capability checks and reports unsupported targets.
 
 ### Spline proportional hazards
 
 A `cox` regression predicts a positive hazard multiplier, with default
 `mu = exp(eta)`. Its baseline is a normalized mixture of M-splines:
-`sbhaz` supplies positive simplex weights, while the ordinary intercept
+`sbhaz` gives positive simplex weights, while the ordinary intercept
 controls the overall hazard rate. Increasing the transformed predictor
 thus increases risk at each time; it does not increase expected event time.
 
@@ -1605,7 +1605,7 @@ An explicit immutable
 `MSplineBasis` can instead be passed to `with_baseline(basis)`. The generated
 QVR retains one coefficient table and contracts it with `sbhaz`, independently
 of the number of observation rows. `priors={"sbhaz": "Dirichlet(2.0)"}`
-changes every concentration; a vector prior supplies separate concentrations.
+changes every concentration; a vector prior gives separate concentrations.
 `get_prior` reports the resulting source call.
 
 The baseline's finite-interval integral is one. Beyond the final knot,
@@ -1736,7 +1736,7 @@ reparameterized draws through a difference of two exponential variables.
 These parameterizations are checked against
 [brms's definition](https://paulbuerkner.com/brms/articles/brms_families.html#quantile-regression)
 and an independent SciPy density in `tests/continuous/test_asymmetric_laplace.py`.
-External transpilation backends currently reject this family with an explicit
+External transpilation backends reject this family with an explicit
 unsupported-family diagnostic.
 
 Fixed parameters cannot also have distributional formulas or prior overrides.
@@ -1836,7 +1836,7 @@ softit_bernoulli = families["bernoulli"].with_links(mu="softit")
 
 Use `positive_scale` with a distributional scale predictor such as
 `distributional={"sigma": "~ z"}`. A scalar scale prior is unchanged
-when no scale predictor is supplied. Link selection changes the
+when no scale predictor is given. Link selection changes the
 deterministic value map, without introducing a new program-header form.
 
 For binomial, beta-binomial, and their zero-inflated variants,
@@ -1862,7 +1862,7 @@ Zero trials are allowed; their observed and predicted counts must be zero.
 Native Binomial, BetaBinomial, NegativeBinomial, Poisson, and the four count-mixture
 kernels use float64 parameters, log scores, and moments. Learned heads may
 remain float32: promotion retains their autograd connections, and gradients
-return in the heads' original dtype. Supply large trial counts as integer
+return in the heads' original dtype. Pass large trial counts as integer
 arrays or integer source literals so their original values reach validation;
 promoting an already-rounded float32 count preserves its rounded value.
 Scores still use floating-point arithmetic. Native arithmetic-count kernels
@@ -2059,7 +2059,7 @@ vector differs from sampling a minimal contrast representation.
 
 `cs(expr)` gives a fixed or group coefficient one value per
 transition, including cumulative and hurdle-cumulative models. In
-noncumulative models, `cs(1)` supplies a transition intercept;
+noncumulative models, `cs(1)` gives a transition intercept;
 `cs(x)` gives transition-specific slopes, and `cs(s(x))`, `cs(mo(x))`, and
 `cs(gp(x))` give one smooth, monotonic effect, or Gaussian process per
 transition. Shared correlation
@@ -2127,7 +2127,7 @@ by cumulative positive spacings and centered to separate their location
 from the formula intercept. `thresholds_by` constructs a complete partially
 pooled profile for each group: a centered shape and one varying location.
 It reuses an existing ordinary varying intercept for that factor, or adds
-one when absent. For a binary cumulative response, location alone supplies
+one when absent. For a binary cumulative response, location alone gives
 the single cutpoint. This is one identified construction, without a duplicate free
 location parameter:
 
@@ -2156,7 +2156,7 @@ Normal distributions. Both choices retain the centered profile shape and
 the same prior on it. Profile centering identifies location; it does not
 select inference coordinates. Override the shared hyperpriors through
 `priors={"cutpoint_log_spacing_mean": "Normal(0, 0.5)",
-"cutpoint_log_spacing_scale": "Gamma(2, 3)"}`. A supplied scale prior is
+"cutpoint_log_spacing_scale": "Gamma(2, 3)"}`. A given scale prior is
 conditioned on nonnegative values through the existing `Restrict` measure;
 `get_prior` reports that normalized call. Conditional log-slack draws and
 standard Normal innovations remain part of the parameterization.
@@ -2260,7 +2260,7 @@ Existing mapping overrides use the latent names shown by `formula_to_qvr`.
 Typed `PriorSpec`/`PriorSet` rules instead select retained parameter roles and
 authored labels; the [selector workflow](#prior-selectors-and-shared-shrinkage)
 explains their scopes, precedence, sampled hierarchies, and bounds. An explicit
-prior retains its supplied scale without default column autoscaling. Prior calls
+prior retains its given scale without default column autoscaling. Prior calls
 may reference upstream latents and compose existing measure constructors.
 Canonical QVR calls and parsed nested priors retain integer lexemes where an
 integer carrier is required; the current simple-call prior adapter still
@@ -2311,15 +2311,15 @@ scale_coefficients = posterior_fit.fixed_effects(parameter="sigma", num_samples=
 assert "z" in scale_coefficients
 ```
 
-Arrays retain separate `chain` and `draw` axes. An SVI guide supplies one
-pseudo-chain; it does not supply an MCMC convergence diagnostic. MCMC results
+Arrays retain separate `chain` and `draw` axes. An SVI guide gives one
+pseudo-chain; it does not give an MCMC convergence diagnostic. MCMC results
 retain their actual chains. `num_samples` caps retained draws per chain, or
 selects the number of fresh guide samples; its default keeps every MCMC draw
 and draws 100 guide samples. Guide draws are reproducible under `seed` and
 preserve the caller's CPU random state.
 
 `posterior_linpred` returns the native linear predictor on the retained training
-rows, or on `new_data` when supplied. `transform=True` instead returns the inverse-link binding. These differ
+rows, or on `new_data` when given. `transform=True` instead returns the inverse-link binding. These differ
 from `posterior_epred`, which evaluates the native response expectation. For
 instance, a binomial transformed predictor is a success probability, while its
 expected response multiplies that probability by the actual trial count. An
@@ -2335,7 +2335,7 @@ scale whatever `transform` is, as brms's `dpar = "sigma"` does. `fitted`
 summarizes the same draws.
 
 `posterior_predict` returns a tensor of replicated responses with shape
-`(chain, draw, row)`. Each posterior draw supplies an independent response
+`(chain, draw, row)`. Each posterior draw gives an independent response
 for each requested row, including when rows share all distribution parameters.
 It uses the native response sampler, so binomial draws respect each row's trial
 count and hurdle draws include the zero atom. Categorical and ordinal draws are
@@ -2400,7 +2400,7 @@ All ordinary prediction options apply, including `new_data`, selected varying
 effects, new-group policies, and draw counts. The model definition needs no
 response columns in new data. The residual definition evaluates the retained
 response transform on those rows, or accepts a tensor through `observed` in
-that transformed measurement scale. Recorded censoring bounds do not supply
+that transformed measurement scale. Recorded censoring bounds do not give
 actual training responses; provide their actual values explicitly. Likelihood
 weights affect the fitted posterior but do not reweight either diagnostic's
 row variances. Constant predictions with positive unexplained variance give
@@ -2443,7 +2443,7 @@ criterion = analysis.waic(var_name="y")
 assert criterion.num_samples == 32
 ```
 
-The single variational pseudo-chain supplies uncertainty summaries, with no
+The single variational pseudo-chain gives uncertainty summaries, with no
 MCMC convergence diagnostic. An MCMC fit retains its recorded chains and attaches
 convergence summaries. `analysis.to_datatree()` and `analysis.loo(var_name="y")`
 use the optional `diagnostics` extra. PSIS-LOO results expose `elpd`, `elpd_i`,
@@ -2457,7 +2457,7 @@ WAIC convention and observation-unit requirements.
 
 Pass `new_data` to `posterior_linpred`, `posterior_epred`, or
 `posterior_predict` to change the prediction rows while retaining the fitted
-coefficients and group effects. The frame supplies predictors used by
+coefficients and group effects. The frame gives predictors used by
 the retained location and auxiliary terms. It does not need the response or
 likelihood-weight column:
 
@@ -2575,7 +2575,7 @@ A neural fit additionally requires `predictor_data` for the new rows:
 `neural_fit.posterior_epred(new_data=future, predictor_data=new_features)`.
 The input must have the required row count and produce finite predictor
 values. Evaluation temporarily uses the fitted module's evaluation mode
-and restores its prior mode. Supplying `predictor_data` without `new_data`,
+and restores its prior mode. Passing `predictor_data` without `new_data`,
 or for a fit without a neural predictor, raises an error.
 
 The fitted evaluator prepares the new design columns once per request and
@@ -2654,7 +2654,7 @@ intersect a prior with the target domain and emit a normalized
 restriction. For a sampled hierarchy, this normalizes each conditional
 coefficient law at its current scale, preserving the authored hyperprior
 marginals. Conditioning the entire joint hierarchy on the bounds would
-produce a different prior. Explicit priors retain their supplied scales; only default
+produce a different prior. Explicit priors retain their given scales; only default
 population priors receive design-column autoscaling.
 
 `RegularizedHorseshoe` samples global, local, and slab variables. `R2D2`
