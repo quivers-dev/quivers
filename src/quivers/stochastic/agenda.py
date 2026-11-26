@@ -47,6 +47,7 @@ from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.core.laws import PLUS_IDEMPOTENT, PLUS_SELECTIVE
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import Phase, WorkField, WorkReport, measuring
+from quivers.qiec.rules import RulePresentation
 from quivers.stochastic.tries import Trie, TrieCounter, descend, insert, intersect
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
 from quivers.stochastic.semiring import ChartSemiring, LOG_PROB
@@ -2362,6 +2363,11 @@ class DeductionSystem(QiecModel):
         pass: the order of the agenda, the rules that fire, and the axioms
         depend on the items alone, and the weights are computed by tensor
         operations. The DSL compiler declares it of the systems it builds.
+    presentation : RulePresentation | None
+        The rule presentation the rules are derived from: each rule is
+        the rule of the presentation at its position, spelled in the
+        chart representation. ``None`` for a system built from rules
+        directly.
     """
 
     rules: tuple[InferenceRule, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -2398,6 +2404,9 @@ class DeductionSystem(QiecModel):
     )
     losses: dict[str, LossRegistry] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    presentation: RulePresentation | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     def production_groups(self) -> tuple[ProductionGroup, ...]:

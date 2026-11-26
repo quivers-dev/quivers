@@ -917,7 +917,7 @@ class _Chart:
                 )
 
             if self.s.normalized_cell[0]:
-                result = c.production_weight(("rule", index), weighted)
+                result = c.production_weight(("rule", rule.presented.index), weighted)
             elif self.s.semiring.log_weights and (
                 rule.learnable or rule.parent is not None
             ):

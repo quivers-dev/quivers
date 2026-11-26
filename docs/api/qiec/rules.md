@@ -66,6 +66,30 @@ are values, and a binder is a rule whose scoped arguments are premises with the 
 hypotheses. A signature builds each of its name-keyed tables once, so folding a term costs the size
 of the term.
 
+## Deductions and rule schemata
+
+A `deduction` declaration is read once into its presentation, which the compiled
+[`DeductionSystem`][quivers.stochastic.agenda.DeductionSystem] keeps as `presentation`. A slot
+that holds a chart position is a natural number, and every other argument is a term of one closed
+sort, `Term`, whose constructors are the atoms and applied symbols the declaration writes. A
+deduction `T -> T` derives terms, so every item whose head holds no position, such as `X/Y` or an
+atom, is an instance of one judgment form whose argument is the term, and a variable that is an
+item is the same variable wherever it occurs inside a term. An item whose head holds positions,
+such as a lexicon's `span(i, j, c)`, is a judgment form of its own. Each sequent is a rule, and
+each kind of input is an axiom slot. The
+agenda's [`InferenceRule`][quivers.stochastic.agenda.InferenceRule] patterns and the reference
+machine's computations are both derived from these rules, so a pattern is read from the source in
+one place. A learnable rule's weight is a parameter named by the deduction and the rule.
+Judgments partition by form, so a premise or conclusion that is a bare variable, and does not
+occur inside a term, ranges over the term form and every form that holds positions: the rule is the
+family of its instances, one per choice of a form for each such variable, which becomes the term
+itself or the form's head applied to fresh variables (positions where the form has them). One
+variable takes one form wherever it occurs, and every instance keeps the rule's weight parameter.
+A bare numeral is likewise a term or the position of a form of a single position slot.
+[`schema_presentation`][quivers.stochastic.schema.schema_presentation] gives the presentation of a
+rule schema instantiated over a category system: one `span` judgment, and one rule per ground
+binary or unary instance.
+
 ## Contexts and open derivations
 
 An [`OpenDerivation`][quivers.qiec.rules.OpenDerivation] derives an item from a context of

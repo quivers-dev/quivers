@@ -240,6 +240,7 @@ if TYPE_CHECKING:
         MODAL_INTRODUCTION,
         NL,
         SCHEMA_REGISTRY,
+        schema_presentation,
         TENSOR_INTRODUCTION,
         TENSOR_PROJECTION,
         UNIT_ELIMINATION,
@@ -395,6 +396,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "NL": "quivers.stochastic.schema",
     "LP": "quivers.stochastic.schema",
     "SCHEMA_REGISTRY": "quivers.stochastic.schema",
+    "schema_presentation": "quivers.stochastic.schema",
     "RuleSystem": "quivers.stochastic.rules",
     "ccg_rules": "quivers.stochastic.rules",
     "lambek_rules": "quivers.stochastic.rules",
@@ -675,6 +677,7 @@ __all__ = [
     "NL",
     "LP",
     "SCHEMA_REGISTRY",
+    "schema_presentation",
     # rules
     "RuleSystem",
     "ccg_rules",
