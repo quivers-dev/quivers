@@ -241,23 +241,59 @@ class WiringRule(ABC):
     @property
     @abstractmethod
     def composition_rule(self) -> CompositionRule:
-        """The underlying binary composition rule used as the
-        enriching algebra for this n-ary contraction."""
+        """The underlying binary composition rule of this contraction.
+
+        Returns
+        -------
+        CompositionRule
+            The enriching algebra.
+        """
 
     @property
     @abstractmethod
     def input_arity(self) -> int:
-        """Number of input tensors this wiring expects."""
+        """Number of input tensors this wiring expects.
+
+        Returns
+        -------
+        int
+            The number of inputs.
+        """
 
     @abstractmethod
     def apply(self, *tensors: torch.Tensor) -> torch.Tensor:
-        """Run the contraction on the given input tensors."""
+        """Run the contraction on the given input tensors.
+
+        Parameters
+        ----------
+        *tensors : torch.Tensor
+            The inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            The contraction.
+        """
 
     @property
     def name(self) -> str:
+        """The class name.
+
+        Returns
+        -------
+        str
+            The name.
+        """
         return type(self).__name__
 
     def __repr__(self) -> str:
+        """The class name and arity.
+
+        Returns
+        -------
+        str
+            The representation.
+        """
         return f"{type(self).__name__}(arity={self.input_arity})"
 
 
@@ -297,6 +333,20 @@ class EinsumWiring(WiringRule):
     whose elements have axes of their own, such as a
     `quivers.core.algebras.MatrixSemiring`, keeps them last in every
     tensor.
+
+    Parameters
+    ----------
+    composition_rule : CompositionRule
+        The rule supplying ``tensor_op`` and ``join``.
+    spec : str
+        The einsum specification.
+
+    Raises
+    ------
+    TypeError
+        If ``composition_rule`` is not a `CompositionRule`.
+    ValueError
+        If the specification is malformed.
     """
 
     def __init__(self, composition_rule: CompositionRule, spec: str) -> None:

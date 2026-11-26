@@ -209,6 +209,7 @@ from quivers.core.elimination import (
     ContractionPlan,
     ContractionStep,
     elimination_order,
+    fiber_join,
     plan_contraction,
     run_contraction,
 )
@@ -430,6 +431,7 @@ __all__ = [
     "ContractionPlan",
     "ContractionStep",
     "elimination_order",
+    "fiber_join",
     "plan_contraction",
     "run_contraction",
     # wiring

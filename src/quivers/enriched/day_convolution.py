@@ -31,47 +31,11 @@ import torch
 
 from quivers.core.objects import SetObject
 from quivers.core.algebras import IdempotentSemiring
+from quivers.core.elimination import fiber_join
 from quivers.core.wiring import EinsumWiring
 from quivers.enriched._lattice import require_lattice
 from quivers.categorical.monoidal import MonoidalStructure
 from quivers.enriched.profunctors import Profunctor
-
-
-def _fiber_join(
-    algebra: IdempotentSemiring,
-    values: torch.Tensor,
-    fibers: Sequence[Sequence[int]],
-) -> torch.Tensor:
-    """The sum of a table over each fiber of a map.
-
-    Every fiber is padded with the zero to the length of the largest, so
-    one reduction over a dense axis sums them all; the zero is the unit of
-    the sum, so padding changes no value.
-
-    Parameters
-    ----------
-    algebra : IdempotentSemiring
-        The algebra.
-    values : torch.Tensor
-        Shape ``(P,)``: the table.
-    fibers : Sequence of Sequence of int
-        For each target, the positions of the table it sums.
-
-    Returns
-    -------
-    torch.Tensor
-        Shape ``(len(fibers),)``: the sum of each fiber, the zero for an
-        empty one.
-    """
-    width = max((len(fiber) for fiber in fibers), default=0)
-    padded = torch.cat([values, algebra.zero_like((1,), values)])
-    index = torch.full(
-        (len(fibers), width), values.shape[0], dtype=torch.long, device=values.device
-    )
-    for target, fiber in enumerate(fibers):
-        if fiber:
-            index[target, : len(fiber)] = torch.tensor(fiber, device=values.device)
-    return algebra.join(padded[index], 1)
 
 
 def day_convolution(
@@ -158,7 +122,7 @@ def day_convolution(
                     )
                 fibers[matches[0]].append(i * n + j)
         pairs = EinsumWiring(q, "a,b->ab").apply(f_values, g_values)
-        return _fiber_join(q, pairs.reshape(-1), fibers)
+        return fiber_join(q, pairs.reshape(-1), fibers, q.zero_like((1,), pairs))
 
     unit = q.unit_like((), f_values)
     weights: list[torch.Tensor] = []
@@ -173,7 +137,7 @@ def day_convolution(
             weights.append(hom.to(dtype=f_values.dtype, device=f_values.device))
     table = torch.stack(weights).reshape(n, n)
     pairs = EinsumWiring(q, "ab,a,b->ab").apply(table, f_values, g_values)
-    return _fiber_join(q, pairs.reshape(-1), fibers)
+    return fiber_join(q, pairs.reshape(-1), fibers, q.zero_like((1,), pairs))
 
 
 def day_unit(

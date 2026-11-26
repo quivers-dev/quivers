@@ -69,6 +69,7 @@ __all__ = [
     "ContractionPlan",
     "ContractionStep",
     "elimination_order",
+    "fiber_join",
     "plan_contraction",
     "run_contraction",
 ]
@@ -813,3 +814,53 @@ def run_contraction(
     left = list(factors.values())
     total = _product(algebra, left, plan.output, element_rank, tally)
     return total, tally.counts()
+
+
+def fiber_join(
+    algebra: ContractionAlgebra,
+    values: torch.Tensor,
+    fibers: Sequence[Sequence[int]],
+    zero: torch.Tensor,
+    axis: int = -1,
+) -> torch.Tensor:
+    """The sum of a table over each fiber of a map from one of its axes.
+
+    This is the contraction of the table with the graph of a map: entry
+    ``p`` of the axis is summed into target ``q`` when ``p`` lies in
+    fiber ``q``. Every fiber is padded with the zero to the length of the
+    largest, so one sum over a dense axis takes them all; the zero is the
+    unit of the sum, so padding changes no value. The work is the number
+    of targets times the largest fiber, never the table times the
+    targets.
+
+    Parameters
+    ----------
+    algebra : ContractionAlgebra
+        The algebra.
+    values : torch.Tensor
+        The table.
+    fibers : Sequence of Sequence of int
+        For each target, the entries of the axis it sums; each entry in at
+        most one fiber.
+    zero : torch.Tensor
+        The algebra's zero, of the table's shape with extent one on the
+        axis.
+    axis : int
+        The axis mapped; the last by default.
+
+    Returns
+    -------
+    torch.Tensor
+        The table with the axis replaced by one of ``len(fibers)``
+        targets: the sum of each fiber, the zero for an empty one.
+    """
+    axis = axis % values.dim()
+    width = max((len(fiber) for fiber in fibers), default=0)
+    padded = torch.cat([values, zero.to(values.dtype)], dim=axis)
+    flat = [values.shape[axis]] * (len(fibers) * width)
+    for target, fiber in enumerate(fibers):
+        flat[target * width : target * width + len(fiber)] = list(fiber)
+    index = torch.tensor(flat, dtype=torch.long, device=values.device)
+    gathered = padded.index_select(axis, index)
+    shape = (*values.shape[:axis], len(fibers), width, *values.shape[axis + 1 :])
+    return algebra.join(gathered.reshape(shape), axis + 1)
