@@ -41,7 +41,6 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.ast_nodes._shared import OptionName as _OptionName
 from quivers.dsl.compiler._deduction_positions import (
-    misplaced_positions,
     position_slots,
     rule_position_variables,
 )
@@ -830,10 +829,6 @@ class _DeductionsMixin:
         # reduces to the standard semiring-parsing default (semiring
         # product of premise weights only).
         slots = position_slots(decl)
-        for misplaced in misplaced_positions(decl, slots):
-            raise CompileError(
-                misplaced.message(decl.name), misplaced.line, misplaced.col
-            )
         rule_positions = {
             sr.name: rule_position_variables(decl, slots, sr) for sr in decl.rules
         }

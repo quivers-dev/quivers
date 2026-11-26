@@ -37,11 +37,13 @@ from quivers.qiec.rules import (
     closed_values,
 )
 from quivers.qiec.serialization import SerializationError, dumps, loads
+from quivers.stochastic.categories import CategorySystem
+from quivers.stochastic.schema import EVALUATION, schema_presentation
 from tests.evidence.checks._registry import add
 from tests.evidence.checks.machine import SENTENCES, module_of, parses
 from tests.evidence.compare import Mismatch
 from tests.evidence.oracles.derivations import Term, Tree
-from tests.evidence.sources import SOURCES, program
+from tests.evidence.sources import SOURCES, deduction, program
 
 LEXICON = (("a", "S"), ("b", "V"), ("a", "V"))
 """The lexicon of the grammar: word and category."""
@@ -188,7 +190,7 @@ def check_one_presentation() -> None:
     """
     presented = deduction_presentation(declaration())
     compiled = program("lexical", SEMIRING="Counting")
-    system = compiled.deductions["G"]
+    system = deduction(compiled, "G")
     if system.presentation != presented.presentation:
         raise Mismatch(
             "value", math.inf, "the agenda's rules come from another presentation"
@@ -291,10 +293,61 @@ def check_presentation_codec() -> None:
         raise Mismatch("value", float(max(lost, 1)), f"{lost} identities changed")
 
 
+SCHEMA_SENTENCES: tuple[tuple[tuple[str, ...], int], ...] = (
+    (("NP", "S\\NP"), 1),
+    (("S/NP", "NP"), 1),
+    (("NP/NP", "NP", "S\\NP"), 1),
+    (("S/S", "S/NP", "NP"), 1),
+    (("NP", "S\\NP", "S\\S"), 1),
+    (("S/S", "NP", "S\\NP"), 1),
+    (("NP", "NP"), 0),
+)
+"""Category sequences and their numbers of application derivations of ``S``,
+counted by hand: forward and backward application over atoms ``NP`` and
+``S`` with slashes of depth one. ``S/S NP S\\NP`` has one derivation,
+since ``S/S`` needs an ``S`` on its right."""
+
+
+def check_schema_presentation() -> None:
+    """Require the presentation of the application schema to count derivations.
+
+    Raises
+    ------
+    Mismatch
+        If the reference interpretation of the presentation lists another
+        number of derivations of ``S`` than the hand count.
+    """
+    system = CategorySystem.from_atoms_and_slash_depth(["NP", "S"], 1)
+    presentation = schema_presentation(EVALUATION, system, "application")
+    (slot,) = presentation.axioms
+    (span,) = presentation.judgments
+    names = [binder.name for binder in slot.telescope]
+    for categories, wanted in SCHEMA_SENTENCES:
+        axioms = [
+            AxiomOccurrence(
+                slot=slot.id,
+                occurrence=OccurrenceId.derive("application", str(index)),
+                binding=tuple(zip(names, (category, index, index + 1), strict=True)),
+                values=(category,),
+            )
+            for index, category in enumerate(categories)
+        ]
+        reference = ReferenceInterpretation(presentation, axioms)
+        goal = reference.item(span.id, ("S", 0, len(categories)))
+        found = len(reference.derivations(goal))
+        if found != wanted:
+            raise Mismatch(
+                "value",
+                float(abs(found - wanted)),
+                f"{categories} has {found} derivations, not {wanted}",
+            )
+
+
 def _register() -> None:
     """Register every check of this module."""
     add("presented/one_presentation", "machine-lexical", "Q24", check_one_presentation)
     add("presented/codec", "machine-lexical", "Q24", check_presentation_codec)
+    add("presented/schema", "chart-parser", "Q24", check_schema_presentation)
 
 
 _register()

@@ -15,6 +15,11 @@ judgment form or of a ``Term`` constructor, keeps the `TermForm` it was
 written in, which says how the chart representation of
 `quivers.dsl.compiler._deduction_terms` spells it: an atom, a numeral, a
 slash, a product, or an application.
+
+Reading costs time linear in the size of the declaration, after the
+fixed point of `position_slots`, and the presentation is then validated
+once by `RulePresentation`; spelling a judgment costs the size of its
+arguments.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from quivers.dsl.ast_nodes import (
     DeductionDecl,
     LexiconCategoryFixed,
     ObjectEffectApply,
+    OptionName,
     ObjectExpr,
     ObjectProduct,
     ObjectSlash,
@@ -40,6 +46,7 @@ from quivers.dsl.compiler._deduction_positions import (
     PositionSlots,
     has_lexicon,
     is_pattern_variable,
+    misplaced_positions,
     pattern_arguments,
     pattern_symbol,
     position_slots,
@@ -165,6 +172,8 @@ class DeductionPresentation(QiecModel):
         Which slot of each applied symbol holds a position.
     uses_forms : bool
         Whether span items carry a logical form slot.
+    atoms : frozenset of str
+        The declared atoms; every other identifier is a variable.
     """
 
     presentation: RulePresentation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -172,6 +181,7 @@ class DeductionPresentation(QiecModel):
     forms: Mapping[str, TermForm] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     slots: PositionSlots = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     uses_forms: bool
+    atoms: frozenset[str] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
     @property
     def families(self) -> Mapping[FamilyId, JudgmentDecl]:
@@ -203,7 +213,7 @@ class DeductionPresentation(QiecModel):
             head, tuple(self.chart_term(term) for term in judgment.arguments)
         )
 
-    def chart_term(self, term: IndexTerm) -> Pattern:
+    def chart_term(self, term: IndexTerm) -> Pattern | int:
         """The chart representation of an index term.
 
         Parameters
@@ -213,7 +223,7 @@ class DeductionPresentation(QiecModel):
 
         Returns
         -------
-        Pattern
+        Pattern or int
             A position, a `Wildcard`, or a spelled term.
 
         Raises
@@ -233,14 +243,14 @@ class DeductionPresentation(QiecModel):
             )
         raise TypeError(f"a deduction writes no index term {term!r}")
 
-    def _spelled(self, head: str, arguments: tuple[Pattern, ...]) -> Pattern:
+    def _spelled(self, head: str, arguments: tuple[Pattern | int, ...]) -> Pattern:
         """Spell a head symbol applied to arguments as it was written.
 
         Parameters
         ----------
         head : str
             The head symbol.
-        arguments : tuple of Pattern
+        arguments : tuple of Pattern or int
             Its spelled arguments.
 
         Returns
@@ -584,16 +594,37 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
         rule's parent is not declared.
     """
     reader = _Reader(decl)
-    read: list[tuple[SequentRule, list, tuple, dict[str, IndexSort]]] = []
+    for misplaced in misplaced_positions(decl, reader.slots):
+        raise DeductionPresentationError(
+            misplaced.message(decl.name), misplaced.line, misplaced.col
+        )
+    read: list[
+        tuple[
+            SequentRule,
+            list[tuple[str, tuple[_Read, ...]]],
+            tuple[str, tuple[_Read, ...]],
+            dict[str, bool],
+        ]
+    ] = []
     for rule in decl.rules:
         variables: dict[str, bool] = {}
         premises = [reader.judgment(item, variables, rule) for item in rule.premises]
+        bound = set(variables)
         conclusion = reader.judgment(rule.conclusion, variables, rule)
+        unbound = [name for name in variables if name not in bound]
+        if unbound:
+            reader.fail(
+                f"rule {rule.name!r} concludes with {', '.join(unbound)!r}, which "
+                "no premise binds",
+                rule,
+            )
         read.append((rule, premises, conclusion, variables))
     names = {rule.name for rule in decl.rules}
     for rule in decl.rules:
         parent = find_option(rule.options, "parent")
-        if parent is not None and getattr(parent.value, "value", None) not in names:
+        if parent is not None and (
+            not isinstance(parent.value, OptionName) or parent.value.value not in names
+        ):
             reader.fail(
                 f"rule {rule.name!r} names a parent the deduction does not declare",
                 rule,
@@ -683,7 +714,9 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
         learnable = get_option_flag(rule.options, "learnable")
         parent = find_option(rule.options, "parent")
         parent_name = (
-            str(getattr(parent.value, "value")) if parent is not None else None
+            parent.value.value
+            if parent is not None and isinstance(parent.value, OptionName)
+            else None
         )
         presented = Rule(
             id=ConstructorId.derive(decl.name, "rule", rule.name),
@@ -749,11 +782,12 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
         forms=dict(reader.forms),
         slots=reader.slots,
         uses_forms=reader.uses_forms,
+        atoms=reader.atoms,
     )
 
 
 def category_term(presentation: DeductionPresentation, expr: ObjectExpr) -> IndexTerm:
-    """The ``Term`` of a ground category the lexicon names.
+    """The ``Term`` of a category the lexicon names.
 
     Parameters
     ----------
@@ -766,9 +800,13 @@ def category_term(presentation: DeductionPresentation, expr: ObjectExpr) -> Inde
     Returns
     -------
     IndexTerm
-        The category.
+        The category; an identifier that is not a declared atom is a
+        variable over categories.
     """
     (sort,) = presentation.presentation.index_sorts
+    if is_pattern_variable(expr, presentation.atoms):
+        assert isinstance(expr, TypeName)
+        return IndexVariable(name=expr.name, sort=sort)
     if isinstance(expr, TypeName):
         return IndexLiteral(value=expr.name, sort=sort)
     symbol = pattern_symbol(expr)
@@ -783,7 +821,7 @@ def category_term(presentation: DeductionPresentation, expr: ObjectExpr) -> Inde
 
 
 def chart_category(presentation: DeductionPresentation, expr: ObjectExpr) -> Pattern:
-    """The chart representation of a ground category the lexicon names.
+    """The chart representation of a category the lexicon names.
 
     Parameters
     ----------
@@ -795,9 +833,12 @@ def chart_category(presentation: DeductionPresentation, expr: ObjectExpr) -> Pat
     Returns
     -------
     Pattern
-        The category in the chart representation.
+        The category in the chart representation; a ``Term`` is never a
+        position.
     """
-    return presentation.chart_term(category_term(presentation, expr))
+    spelled = presentation.chart_term(category_term(presentation, expr))
+    assert not isinstance(spelled, int)
+    return spelled
 
 
 __all__: list[str] = []

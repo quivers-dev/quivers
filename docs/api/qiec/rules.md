@@ -66,6 +66,20 @@ are values, and a binder is a rule whose scoped arguments are premises with the 
 hypotheses. A signature builds each of its name-keyed tables once, so folding a term costs the size
 of the term.
 
+## Deductions and rule schemata
+
+A `deduction` declaration is read once into its presentation, which the compiled
+[`DeductionSystem`][quivers.stochastic.agenda.DeductionSystem] keeps as `presentation`. Each item
+head is a judgment form, each sequent is a rule, and each kind of input is an axiom slot. A slot
+that holds a chart position is a natural number, and every other argument is a term of one closed
+sort, `Term`, whose constructors are the atoms and applied symbols the declaration writes. The
+agenda's [`InferenceRule`][quivers.stochastic.agenda.InferenceRule] patterns and the reference
+machine's computations are both derived from these rules, so a pattern is read from the source in
+one place. A learnable rule's weight is a parameter named by the deduction and the rule.
+[`schema_presentation`][quivers.stochastic.schema.schema_presentation] gives the presentation of a
+rule schema instantiated over a category system: one `span` judgment, and one rule per ground
+binary or unary instance.
+
 ## Contexts and open derivations
 
 An [`OpenDerivation`][quivers.qiec.rules.OpenDerivation] derives an item from a context of

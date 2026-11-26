@@ -409,7 +409,11 @@ A compiled `DeductionDecl` can also be exported as a
 [panproto](https://github.com/panproto/panproto) schema under the protocol
 `QVR_DEDUCTION_PROTOCOL`, whose vertex kinds are `deduction_system`,
 `deduction_rule`, `deduction_atom`, `deduction_premise`, and `deduction_conclusion`.
-panproto's diff and lens tools then apply to grammars.
+panproto's diff and lens tools then apply to grammars. The export reads the deduction's
+[rule presentation](../api/qiec/rules.md#deductions-and-rule-schemata), the one reading of its
+rules that the chart engine and the reference machine both derive theirs from. Each rule keeps
+its identity and its weight parameter, each pattern its judgment, and the system the status of
+every law its semiring claims.
 
 ```python
 from quivers.dsl import Compiler
