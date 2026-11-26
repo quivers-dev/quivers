@@ -171,8 +171,8 @@ class AutoLaplaceApproximation(Guide):
         sigma = 0.5 * (sigma + sigma.t())
         sigma = sigma + jitter * torch.eye(self._D, device=sigma.device)
         L = torch.linalg.cholesky(sigma)
-        self._scale_tril.copy_(L)
-        self._hessian_fitted.fill_(True)
+        self.get_buffer("_scale_tril").copy_(L)
+        self.get_buffer("_hessian_fitted").fill_(True)
 
     # ------------------------------------------------------------------
     # Sampling
@@ -182,7 +182,9 @@ class AutoLaplaceApproximation(Guide):
         if not bool(self._hessian_fitted):
             # MAP phase: return the point estimate.
             return self.map_z
-        return D.MultivariateNormal(self.map_z, scale_tril=self._scale_tril).rsample()
+        return D.MultivariateNormal(
+            self.map_z, scale_tril=self.get_buffer("_scale_tril")
+        ).rsample()
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """Sample from the Laplace posterior, unflatten, and biject."""
@@ -241,7 +243,9 @@ class AutoLaplaceApproximation(Guide):
         if not bool(self._hessian_fitted):
             return torch.zeros(runs, device=x.device)
         z_flat = self._registry.flatten_unconstrained(coordinates.unconstrained)
-        gauss = D.MultivariateNormal(self.map_z, scale_tril=self._scale_tril)
+        gauss = D.MultivariateNormal(
+            self.map_z, scale_tril=self.get_buffer("_scale_tril")
+        )
         return gauss.log_prob(z_flat) + coordinates.total_log_abs_det()
 
     @property

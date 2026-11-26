@@ -61,6 +61,34 @@ from quivers.inference.transforms import (
 )
 
 
+def _tensor(value: torch.Tensor | None, layer: TransformModule) -> torch.Tensor:
+    """Check that a flow layer returned a tensor.
+
+    Parameters
+    ----------
+    value : torch.Tensor | None
+        What the layer returned.
+    layer : TransformModule
+        The layer, for the message.
+
+    Returns
+    -------
+    torch.Tensor
+        The value.
+
+    Raises
+    ------
+    TypeError
+        If the layer returned something other than a tensor.
+    """
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(
+            f"flow layer {type(layer).__name__} returned "
+            f"{type(value).__name__}, not a tensor"
+        )
+    return value
+
+
 class AutoNormalizingFlow(Guide):
     """Normalising-flow variational guide over the flat latent vector.
 
@@ -109,6 +137,7 @@ class AutoNormalizingFlow(Guide):
             )
         self._D = D_total
         self.flow = nn.ModuleList(transforms)
+        self._layers: list[TransformModule] = list(transforms)
         self.register_buffer("base_loc", torch.zeros(D_total))
         self.register_buffer("base_scale", torch.ones(D_total))
 
@@ -120,8 +149,8 @@ class AutoNormalizingFlow(Guide):
         """Push ``z0`` through the flow; return ``(z_K, sum log|det|)``."""
         log_det_total = torch.zeros(z0.shape[:-1], device=z0.device)
         z = z0
-        for layer in self.flow:
-            z_next = layer(z)
+        for layer in self._layers:
+            z_next = _tensor(layer(z), layer)
             log_det_total = log_det_total + layer.log_abs_det_jacobian(z, z_next)
             z = z_next
         return z, log_det_total
@@ -132,14 +161,16 @@ class AutoNormalizingFlow(Guide):
         it to ``log p_0(z_0)`` produces the correct ``log q(z_K)``."""
         log_det_total = torch.zeros(z_K.shape[:-1], device=z_K.device)
         z = z_K
-        for layer in reversed(self.flow):
-            z_prev = layer.inv(z)
+        for layer in reversed(self._layers):
+            z_prev = _tensor(layer.inv(z), layer)
             log_det_total = log_det_total + layer.log_abs_det_jacobian(z_prev, z)
             z = z_prev
         return z, log_det_total
 
     def _base_dist(self) -> D.Distribution:
-        return D.Independent(D.Normal(self.base_loc, self.base_scale), 1)
+        return D.Independent(
+            D.Normal(self.get_buffer("base_loc"), self.get_buffer("base_scale")), 1
+        )
 
     # ------------------------------------------------------------------
     # Sample / log-prob
@@ -225,13 +256,13 @@ class _ReversePermutation(TransformModule):
         self.domain = _constraints.real_vector
         self.codomain = _constraints.real_vector
         self.register_buffer("perm", torch.arange(dim - 1, -1, -1, dtype=torch.long))
-        self.register_buffer("inv_perm", torch.argsort(self.perm))
+        self.register_buffer("inv_perm", torch.argsort(self.get_buffer("perm")))
 
     def _call(self, x: torch.Tensor) -> torch.Tensor:
-        return x.index_select(-1, self.perm)
+        return x.index_select(-1, self.get_buffer("perm"))
 
     def _inverse(self, y: torch.Tensor) -> torch.Tensor:
-        return y.index_select(-1, self.inv_perm)
+        return y.index_select(-1, self.get_buffer("inv_perm"))
 
     def log_abs_det_jacobian(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         del y

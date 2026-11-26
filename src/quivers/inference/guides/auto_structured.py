@@ -290,6 +290,9 @@ class AutoStructured(Guide):
                     )
             dep_modules[child] = per_parent
         self.deps = nn.ModuleDict(dep_modules)
+        self._dependency_maps: dict[str, dict[str, nn.Module]] = {
+            child: dict(per_parent.items()) for child, per_parent in dep_modules.items()
+        }
         self._dep_spec: dict[str, dict[str, DependencyKind]] = {
             child: dict(parents) for child, parents in deps.items()
         }
@@ -383,9 +386,7 @@ class AutoStructured(Guide):
         """
         loc = self._loc(site.name)
         shift = loc.new_zeros(runs, _site_flat_length(site))
-        if site.name not in self.deps:
-            return shift
-        for parent, dep_mod in self.deps[site.name].items():
+        for parent, dep_mod in self._dependency_maps.get(site.name, {}).items():
             parent_draws = z_flat_by_site[parent]
             contribution = torch.func.vmap(dep_mod)(parent_draws)
             if tuple(contribution.shape) != tuple(shift.shape):

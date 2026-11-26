@@ -62,6 +62,7 @@ from quivers.inference.transforms import (
     MADE,
     InverseAutoregressiveTransform,
     LULinearTransform,
+    TransformModule,
 )
 
 # Tolerances of the float64 comparisons, fixed before the tests were run.
@@ -97,7 +98,7 @@ def _model() -> MonadicProgram:
         ``theta`` on the unit interval, ``w`` on the 3-simplex, and
         ``tau``, three positive plate latents.
     """
-    return loads(
+    program = loads(
         f"object Subj : FinSet {_SUBJECTS}\n"
         "object Resp : FinSet 6\n"
         "program p : Resp -> Resp\n"
@@ -108,6 +109,8 @@ def _model() -> MonadicProgram:
         "    return theta\n"
         "export p\n"
     ).morphism
+    assert isinstance(program, MonadicProgram)
+    return program
 
 
 def _responses() -> torch.Tensor:
@@ -407,6 +410,7 @@ def _unconstrain(name: str, value: torch.Tensor) -> tuple[torch.Tensor, torch.Te
     if name == "w":
         inverse = StickBreakingTransform().inv
         z = inverse(value)
+        assert isinstance(z, torch.Tensor)
         return z, inverse.log_abs_det_jacobian(value, z).reshape(1)
     return torch.log(value), -torch.log(value)
 
@@ -518,15 +522,52 @@ def _oracle(guide: Guide, run: dict[str, torch.Tensor], data: _Runs) -> torch.Te
     return _ORACLES[type(guide)](guide, run, data)
 
 
+def _parameter(guide: Guide, name: str) -> torch.Tensor:
+    """A guide's parameter or buffer by its dotted name.
+
+    Parameters
+    ----------
+    guide : Guide
+        The guide.
+    name : str
+        The name.
+
+    Returns
+    -------
+    torch.Tensor
+        The tensor, still in the guide's graph.
+    """
+    if name in dict(guide.named_buffers()):
+        return guide.get_buffer(name)
+    return guide.get_parameter(name)
+
+
 def _oracle_normal(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
+    """Independent Normals over every site's coordinates.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoNormalGuide`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        Unused.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
     del data
     names = tuple(guide.latent_names)
     coordinates, total = _coordinates(run, names)
     for name in names:
-        loc = getattr(guide, f"loc_{name}").reshape(-1)
-        scale = getattr(guide, f"log_scale_{name}").exp().clamp(min=1e-6).reshape(-1)
+        loc = _parameter(guide, f"loc_{name}").reshape(-1)
+        log_scale = _parameter(guide, f"log_scale_{name}").reshape(-1)
+        scale = log_scale.exp().clamp(min=1e-6)
         total = total + _normal(coordinates[name].reshape(-1), loc, scale)
     return total
 
@@ -534,6 +575,22 @@ def _oracle_normal(
 def _oracle_zero(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
+    """The density a point-mass guide reports by convention: zero.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoDeltaGuide`.
+    run : dict[str, torch.Tensor]
+        Unused.
+    data : _Runs
+        Unused.
+
+    Returns
+    -------
+    torch.Tensor
+        Zero.
+    """
     del guide, run, data
     return torch.zeros(())
 
@@ -563,41 +620,114 @@ def _flat(
 def _oracle_mvn(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
+    """A full-covariance Gaussian over the flat point.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoMultivariateNormalGuide`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        Unused.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
     del data
     z, total = _flat(guide, run)
-    chol = _cholesky(guide.scale_offdiag, guide.scale_diag_raw)
-    return total + _gaussian(z, guide.loc, chol @ chol.T)
+    chol = _cholesky(
+        _parameter(guide, "scale_offdiag"), _parameter(guide, "scale_diag_raw")
+    )
+    return total + _gaussian(z, _parameter(guide, "loc"), chol @ chol.T)
 
 
 def _oracle_low_rank(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
+    """A Gaussian with low-rank-plus-diagonal covariance, made dense.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoLowRankMultivariateNormalGuide`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        Unused.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
     del data
     z, total = _flat(guide, run)
-    factor = guide.cov_factor
-    cov = factor @ factor.T + torch.diag(F.softplus(guide.cov_diag_raw) + 1e-6)
-    return total + _gaussian(z, guide.loc, cov)
+    factor = _parameter(guide, "cov_factor")
+    diagonal = F.softplus(_parameter(guide, "cov_diag_raw")) + 1e-6
+    cov = factor @ factor.T + torch.diag(diagonal)
+    return total + _gaussian(z, _parameter(guide, "loc"), cov)
 
 
 def _oracle_laplace(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
+    """The Laplace Gaussian once fitted, zero before.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoLaplaceApproximation`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        Unused.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
     del data
-    if not guide.hessian_fitted:
+    if not bool(_parameter(guide, "_hessian_fitted")):
         return torch.zeros(())
     z, total = _flat(guide, run)
-    chol = guide.get_buffer("_scale_tril")
-    return total + _gaussian(z, guide.map_z, chol @ chol.T)
+    chol = _parameter(guide, "_scale_tril")
+    return total + _gaussian(z, _parameter(guide, "map_z"), chol @ chol.T)
 
 
 def _oracle_flow(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
+    """The flow's density, pulling one run's point back layer by layer.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoNormalizingFlow` or a subclass.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        Unused.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
     del data
     z, total = _flat(guide, run)
+    layers = [
+        layer
+        for layer in guide.get_submodule("flow").children()
+        if isinstance(layer, TransformModule)
+    ]
     flow_log_det = torch.zeros(())
-    for layer in reversed(list(guide.flow)):
+    for layer in reversed(layers):
         previous = layer.inv(z)
+        assert isinstance(previous, torch.Tensor)
         flow_log_det = flow_log_det + layer.log_abs_det_jacobian(previous, z)
         z = previous
     base = _normal(z, torch.zeros_like(z), torch.ones_like(z))
@@ -607,7 +737,24 @@ def _oracle_flow(
 def _oracle_structured(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
+    """The structured guide's directed law over its sites.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoStructured`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        Unused.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
     del data
+    assert isinstance(guide, AutoStructured)
     names = tuple(guide.latent_names)
     coordinates, total = _coordinates(run, names)
     flats = {name: coordinates[name].reshape(-1) for name in names}
@@ -617,47 +764,123 @@ def _oracle_structured(
         kind = guide.conditionals[name]
         if kind == "delta":
             continue
-        loc = getattr(guide, f"loc_{name}").reshape(-1)
+        loc = _parameter(guide, f"loc_{name}").reshape(-1)
         for parent, dependency in guide.dependencies.get(name, {}).items():
-            if dependency == "linear":
-                loc = loc + guide.deps[name][parent].weight @ flats[parent]
+            if isinstance(dependency, str):
+                weight = _parameter(guide, f"deps.{name}.{parent}.weight")
+                loc = loc + weight @ flats[parent]
             else:
                 loc = loc + dependency(flats[parent])
         if kind == "normal":
-            scale = getattr(guide, f"log_scale_{name}").exp().clamp(min=1e-6)
-            total = total + _normal(flats[name], loc, scale.reshape(-1))
+            log_scale = _parameter(guide, f"log_scale_{name}").reshape(-1)
+            total = total + _normal(flats[name], loc, log_scale.exp().clamp(min=1e-6))
         else:
             joint_z.append(flats[name])
             joint_loc.append(loc)
     if joint_z:
-        chol = _cholesky(guide.mvn_scale_offdiag, guide.mvn_scale_diag_raw)
+        chol = _cholesky(
+            _parameter(guide, "mvn_scale_offdiag"),
+            _parameter(guide, "mvn_scale_diag_raw"),
+        )
         total = total + _gaussian(
             torch.cat(joint_z), torch.cat(joint_loc), chol @ chol.T
         )
     return total
 
 
+def _components(guide: AutoMixtureGuide) -> list[Guide]:
+    """The components of a mixture guide.
+
+    Parameters
+    ----------
+    guide : AutoMixtureGuide
+        The mixture.
+
+    Returns
+    -------
+    list[Guide]
+        The components, in order.
+    """
+    return [
+        component
+        for component in guide.get_submodule("components").children()
+        if isinstance(component, Guide)
+    ]
+
+
 def _oracle_mixture(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
-    log_pi = torch.log_softmax(guide.mixture_logits, dim=-1)
-    components = torch.stack([_oracle(c, run, data) for c in guide.components])
+    """The mixture of the components' hand-written densities.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoMixtureGuide`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        The run alone.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
+    assert isinstance(guide, AutoMixtureGuide)
+    log_pi = torch.log_softmax(_parameter(guide, "mixture_logits"), dim=-1)
+    components = torch.stack([_oracle(c, run, data) for c in _components(guide)])
     return torch.logsumexp(log_pi + components, dim=0)
 
 
 def _oracle_list(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
-    return sum(
-        (_oracle(guide.part(label), run, data) for label in guide.part_labels),
-        torch.zeros(()),
-    )
+    """The sum of the parts' hand-written densities.
+
+    Parameters
+    ----------
+    guide : Guide
+        An `AutoGuideList`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        The run alone.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
+    assert isinstance(guide, AutoGuideList)
+    total = torch.zeros(())
+    for label in guide.part_labels:
+        total = total + _oracle(guide.part(label), run, data)
+    return total
 
 
 def _oracle_amortized(
     guide: Guide, run: dict[str, torch.Tensor], data: _Runs
 ) -> torch.Tensor:
-    theta_encoder, tau_encoder = guide.encoders
+    """The encoders' densities at the run's own data rows.
+
+    Parameters
+    ----------
+    guide : Guide
+        The `AmortizedGuide` of `_BUILDERS`.
+    run : dict[str, torch.Tensor]
+        One run's values.
+    data : _Runs
+        The run alone, whose ``y`` and ``u`` the encoders read.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
+    theta_encoder, tau_encoder = guide.get_submodule("encoders").children()
+    assert isinstance(theta_encoder, ConditionalNormal)
+    assert isinstance(tau_encoder, ConditionalNormal)
     total = torch.zeros(())
     mean, scale = theta_encoder._get_params(data.data["y"])
     z, log_det = _unconstrain("theta", run["theta"])
@@ -862,6 +1085,13 @@ def test_mixture_strata_score_a_mean_field_component_run_by_run(count: int) -> N
             torch.testing.assert_close(
                 draw.log_density[b], single, rtol=_RTOL, atol=_ATOL
             )
+            for component in _components(guide):
+                torch.testing.assert_close(
+                    component.log_prob(x, draw.sites)[b],
+                    component.log_prob(torch.zeros(1, 1), alone)[0],
+                    rtol=_RTOL,
+                    atol=_ATOL,
+                )
 
 
 # ---------------------------------------------------------------------------
