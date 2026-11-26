@@ -216,8 +216,8 @@ Inputs over empty spans $(i, i)$ make categories *nullable*. Over each empty spa
 solve $e = s \oplus e\,U \oplus \bigoplus_r e(B) \otimes e(C) \otimes w_r$, a polynomial system in the
 categories; its strongly connected components are solved in order, a component without a cycle
 by its constant and a linear one as $b M^*$ by the algebra's star, which needs the linear cyclic
-contract. A nonlinear cycle of nullable categories is a monotone polynomial system and is refused
-here. A binary rule with an empty premise then joins the unary rules of its cell: $A(i, j)
+contract. A nonlinear cycle of nullable categories is a monotone polynomial system: the span
+executor refuses it, and the plan for the monotone polynomial contract solves it by Newton. A binary rule with an empty premise then joins the unary rules of its cell: $A(i, j)
 \leftarrow B(i, j), C(j, j)$ is the step from $B$ to $A$ with weight $e_j(C) \otimes w$, and $A(i, j)
 \leftarrow B(i, i), C(i, j)$ the step from $C$ with weight $e_i(B) \otimes w$, which moves $e_i(B)$
 past the cell's value and so needs a commutative product. A cell with such steps is closed on its
@@ -237,11 +237,13 @@ is not called optimal.
 
 Under [`MonotonePolynomial`][quivers.qiec.contracts.MonotonePolynomial] the plan selects
 [`NEWTON_ALGORITHM`][quivers.stochastic.planning.NEWTON_ALGORITHM]: the components of the derived
-hypergraph are solved by decomposed Newton with certified intervals, as
-[Cyclic systems](recursion.md#monotone-polynomial-systems) describes. The contract needs the
-algebra's claim of a [`RealEmbedding`][quivers.core.algebras.RealEmbedding] and of a commutative
-product, and its guarantee is at best certified, since no finite method computes the solution
-exactly. Each run carries an [`AccuracyReport`][quivers.qiec.contracts.AccuracyReport]: the
+hypergraph are solved by decomposed Newton, as
+[Cyclic systems](recursion.md#monotone-polynomial-systems) describes. The plan needs the
+algebra's claim of a commutative product, and either of a
+[`RealEmbedding`][quivers.core.algebras.RealEmbedding], for Newton with certified intervals, or
+of an idempotent sum with a [`Star`][quivers.core.algebras.Star], for Newton that is exact after
+as many steps as a component has items. The contract asks for at most a certified guarantee,
+since no finite method computes a real solution exactly. Each run carries an [`AccuracyReport`][quivers.qiec.contracts.AccuracyReport]: the
 certified bound of its widest interval in the contract's metric with that interval as the
 certificate, or no guarantee with the conditioning where an upper end did not certify, why it
 stopped (completed, or the iteration budget spent), and the implicit derivative when the spectral

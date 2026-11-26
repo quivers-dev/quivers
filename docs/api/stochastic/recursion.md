@@ -111,6 +111,19 @@ point of a strongly connected clean system the spectral radius is below one (Esp
 Luttenberger 2010, section 4), so a spectral radius certified at least one there shows $\mu$
 infinite, and the plan refuses it as divergent.
 
+**Idempotent algebras.** In an algebra without an embedding whose sum is idempotent, whose
+product commutes and which has a [`Star`][quivers.core.algebras.Star], such as
+[`TropicalAlgebra`][quivers.core.algebras.TropicalAlgebra] or
+[`MaxPlusAlgebra`][quivers.core.algebras.MaxPlusAlgebra], the Newton sequence is
+$\nu^{(0)} = f(0)$ and $\nu^{(i+1)} = Df|_{\nu^{(i)}}^*\,(f(\nu^{(i)}))$ (Esparza, Kiefer and
+Luttenberger 2010, *Newtonian program analysis*, Proposition 7.1), and for a system of $n$
+variables $\nu^{(n)} = \mu f$ (their Theorem 7.7), in the omega-continuous completion of the
+weights. With a commutative product $Df|_v$ is the matrix $J(v)$ of formal derivatives, whose
+repeated occurrences add to one occurrence, so each step is $J(v)^* f(v)$ by the algebra's star on
+its declared domain; a star outside it is refused, so a returned value is the completion's least
+fixed point and lies in the carrier. Each component of $n$ items takes $n$ steps, and the report
+states the result exact; a budget that ends the steps first leaves it without a guarantee.
+
 **Derivative.** At the fixed point $x = F(x, w)$ the implicit derivative is
 $dx = (I - J)^{-1}\,\partial F / \partial w \; dw$, which exists when the spectral radius at
 $\mu$ is below one; the solver certifies it from $J(u)\,v < v$, since $J$ grows with its argument.
@@ -122,6 +135,9 @@ derivative.
 - Etessami, K., and Yannakakis, M. (2009). Recursive Markov chains, stochastic grammars, and
   monotone systems of nonlinear equations. *Journal of the ACM* 56(1), 1-66.
   [doi:10.1145/1462153.1462154](https://doi.org/10.1145/1462153.1462154)
+- Esparza, J., Kiefer, S., and Luttenberger, M. (2010). Newtonian program analysis. *Journal of
+  the ACM* 57(6), 33:1-33:47.
+  [doi:10.1145/1857914.1857917](https://doi.org/10.1145/1857914.1857917)
 - Esparza, J., Kiefer, S., and Luttenberger, M. (2010). Computing the least fixed point of
   positive polynomial systems. *SIAM Journal on Computing* 39(6), 2282-2335.
   [doi:10.1137/090749591](https://doi.org/10.1137/090749591)

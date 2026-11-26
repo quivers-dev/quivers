@@ -63,7 +63,7 @@ implementation satisfies no algebraic law exactly, and its rounding belongs to
 |---|---|---|---|
 | [`Acyclic`][quivers.qiec.contracts.Acyclic] | unique, one relaxation per hyperedge | yes | reverse accumulation |
 | [`LinearCyclic`][quivers.qiec.contracts.LinearCyclic] | least solution $A^* b$, needs the star law | yes | $A^* \, dA \, A^*$ on the open domain of convergence |
-| [`MonotonePolynomial`][quivers.qiec.contracts.MonotonePolynomial] | least fixed point in the completion of the nonnegative reals, needs the real embedding | no: at best certified | implicit, if the spectral radius of the Jacobian at the solution is below one; or unrolled |
+| [`MonotonePolynomial`][quivers.qiec.contracts.MonotonePolynomial] | least fixed point in the omega-continuous completion; Newton needs a real embedding (certified) or an idempotent star (exact) | no: at best certified | implicit, if the spectral radius of the Jacobian at the solution is below one; or unrolled |
 | [`Bounded`][quivers.qiec.contracts.Bounded] | the bound is part of the model | yes | exact for the bounded model |
 | [`Unrolled`][quivers.qiec.contracts.Unrolled] | the first $k$ iterates, a lower bound in an ordered algebra | no | of the $k$ iterates and of nothing else |
 

@@ -45,7 +45,7 @@ from quivers.stochastic.semiring import LOG_PROB
 from tests.evidence.checks import closure, consumers, contraction, deduction
 from tests.evidence.checks import machine, mixture, span, terms
 from tests.evidence.checks.span import double_precision
-from tests.evidence import span_controls
+from tests.evidence import newton_controls, span_controls
 from tests.evidence.compare import Mismatch
 from tests.evidence.problems import DEDUCTIONS, logarithm
 from tests.evidence.sources import program
@@ -499,6 +499,7 @@ RUNS: dict[str, Run] = {
     "einsum-wiring": _wiring,
     "contraction-plan": _contraction_plan,
     "span-plan": span_controls.run,
+    "newton-plan": newton_controls.run,
     "chart-parser": _parser,
     "inside": _inside,
     "marginalize-grouped": _mixture("grouped"),

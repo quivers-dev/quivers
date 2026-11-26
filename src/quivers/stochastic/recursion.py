@@ -24,7 +24,11 @@ several premises inside them, is solved in the reals of the algebra's
 `quivers.core.algebras.RealEmbedding` by `solve_polynomial`: Newton's
 method from zero on each component keeps a certified lower bound, a
 pre-fixed point bounds it from above, both in outward rounded arithmetic,
-and the value carries the implicit derivative of the fixed point.
+and the value carries the implicit derivative of the fixed point. In an
+algebra without an embedding whose sum is idempotent and which has a
+star, each component of ``n`` items is solved exactly by ``n`` Newton
+steps (Esparza, Kiefer and Luttenberger 2010, Newtonian program analysis,
+theorem 7.7).
 
 References
 ----------
@@ -37,6 +41,10 @@ Esparza, J., Kiefer, S., and Luttenberger, M. (2010). Computing the least
 fixed point of positive polynomial systems. *SIAM Journal on Computing*
 39(6), 2282-2335.
 [doi:10.1137/090749591](https://doi.org/10.1137/090749591)
+
+Esparza, J., Kiefer, S., and Luttenberger, M. (2010). Newtonian program
+analysis. *Journal of the ACM* 57(6), 33:1-33:47.
+[doi:10.1145/1857914.1857917](https://doi.org/10.1145/1857914.1857917)
 
 Lehmann, D. J. (1977). Algebraic structures for transitive closure.
 *Theoretical Computer Science*, 4(1), 59-76.
@@ -62,7 +70,7 @@ from quivers.core.algebras import (
     Star,
     UndecidedClosureError,
 )
-from quivers.core.laws import TIMES_COMMUTATIVE
+from quivers.core.laws import PLUS_IDEMPOTENT, TIMES_COMMUTATIVE
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import OccurrenceId, ParameterId
 from quivers.qiec.rules import Item, Rule, RulePresentation
@@ -118,7 +126,13 @@ class CyclicRefused(ValueError):
 
 
 class _Work:
-    """Counts of the algebra's operations, in elements of the algebra."""
+    """Counts of the algebra's operations, in elements of the algebra.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra, whose element shape sizes one element.
+    """
 
     def __init__(self, algebra: OrderPreservingSemiring) -> None:
         self.size = math.prod(algebra.element_shape)
@@ -640,6 +654,9 @@ class PolynomialSolution(ValueModel):
     stopped : str
         ``"completed"`` when every component's iteration stopped making
         progress, ``"budget"`` when the iteration budget ended it.
+    decided : bool
+        Whether the values are exact, by Newton's method in an idempotent
+        semiring; then there are no intervals.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -653,6 +670,7 @@ class PolynomialSolution(ValueModel):
     products: int = 0
     exact: int = 0
     stopped: Literal["completed", "budget"] = "completed"
+    decided: bool = False
 
 
 def _down(value: float) -> float:
@@ -1386,12 +1404,17 @@ def solve_polynomial(
     last iterate, inside its interval, and carries the implicit
     derivative ``(I - J)^-1 dF`` of the fixed point in the inputs.
 
+    In an idempotent algebra with a star and no embedding, each component
+    of ``n`` items is solved exactly by ``n`` Newton steps instead
+    (`_idempotent`).
+
     Parameters
     ----------
     forest : DerivationForest
         The derived hypergraph, every instance and input an edge.
     algebra : OrderPreservingSemiring
-        The algebra: a `RealEmbedding` whose product commutes.
+        The algebra: a `RealEmbedding`, or a `Star` whose sum is idempotent,
+        whose product commutes.
     inputs : Mapping of InputId to torch.Tensor
         The weights.
     like : torch.Tensor
@@ -1406,21 +1429,31 @@ def solve_polynomial(
 
     Raises
     ------
+    TypeError
+        If the forest is not a derivation forest.
     CyclicRefused
-        If the algebra has no real embedding or its product is not
-        established to commute, or a component's least fixed point is
-        certified infinite.
+        If the product is not established to commute, the algebra has
+        neither a real embedding nor an idempotent sum with a star, or a
+        component's least fixed point is certified infinite.
     """
-    if not isinstance(algebra, RealEmbedding):
-        raise CyclicRefused(
-            CyclicRefusal.NONLINEAR,
-            f"{algebra.subject.name} has no embedding in the nonnegative reals",
+    if not isinstance(forest, DerivationForest):
+        raise TypeError(
+            f"a monotone polynomial system is read from a derivation forest, not a "
+            f"{type(forest).__name__}"
         )
     if not algebra.establishes(TIMES_COMMUTATIVE):
         raise CyclicRefused(
             CyclicRefusal.SIDES,
             "a polynomial's monomials multiply premises in any order, and the "
             "product is not established to commute",
+        )
+    if not isinstance(algebra, RealEmbedding):
+        if isinstance(algebra, Star) and algebra.establishes(PLUS_IDEMPOTENT):
+            return _idempotent(forest, algebra, inputs, like, budget)
+        raise CyclicRefused(
+            CyclicRefusal.NONLINEAR,
+            f"{algebra.subject.name} has neither an embedding in the nonnegative "
+            "reals nor an idempotent sum with a star",
         )
     rounding = algebra.embedding_rounding
     count = _Count()
@@ -1553,3 +1586,192 @@ def _implicit(
         return [fixed[index] for index in range(size)]
     values = fixed + inverse @ (image - image.detach())
     return [values[index] for index in range(size)]
+
+
+def _idempotent(
+    forest: DerivationForest,
+    algebra: OrderPreservingSemiring,
+    inputs: Mapping[InputId, torch.Tensor],
+    like: torch.Tensor,
+    budget: int | None,
+) -> PolynomialSolution:
+    """Newton's method in a commutative idempotent algebra with a star, exact.
+
+    In an idempotent semiring the Newton sequence is ``v_0 = f(0)`` and
+    ``v_(i+1) = Df(v_i)^* (f(v_i))`` (Esparza, Kiefer and Luttenberger 2010,
+    Newtonian program analysis, proposition 7.1), and in a commutative one
+    ``v_n`` is the least fixed point of a system of ``n`` variables
+    (theorem 7.7), in the omega-continuous completion. With a commutative
+    product ``Df(v)`` is the matrix of formal derivatives, so each step is
+    ``J* f(v)``, the star of the algebra on its declared domain: a star
+    outside it is refused, so a value returned is the completion's.
+
+    Parameters
+    ----------
+    forest : DerivationForest
+        The derived hypergraph.
+    algebra : OrderPreservingSemiring
+        The algebra: a `Star` whose sum is idempotent and product commutes.
+    inputs : Mapping of InputId to torch.Tensor
+        The weights.
+    like : torch.Tensor
+        The dtype and device.
+    budget : int or None
+        The most Newton steps.
+
+    Returns
+    -------
+    PolynomialSolution
+        The exact values, without intervals.
+
+    Raises
+    ------
+    CyclicRefused
+        If a star is outside its domain or undecided.
+    """
+    assert isinstance(algebra, Star)
+    count = _Count()
+    values: dict[Item, torch.Tensor] = {}
+    solved: list[NewtonComponent] = []
+    stopped: Literal["completed", "budget"] = "completed"
+    zero = algebra.zero_like((), like)
+    for members in components(forest):
+        position = {item: index for index, item in enumerate(members)}
+        terms: list[list[tuple[torch.Tensor, tuple[int, ...]]]] = []
+        for item in members:
+            monomials: list[tuple[torch.Tensor, tuple[int, ...]]] = []
+            for edge in forest.edges.get(item, ()):
+                coefficient = edge_weight(forest, edge, algebra, inputs, like=like)
+                inside: list[int] = []
+                for premise in edge.premises:
+                    if premise in position:
+                        inside.append(position[premise])
+                    else:
+                        coefficient = algebra.tensor_op(coefficient, values[premise])
+                        count.products += 1
+                monomials.append((coefficient, tuple(inside)))
+            terms.append(monomials)
+        size = len(members)
+        point = _image(algebra, terms, [zero] * size, count)
+        steps = 0
+        for _ in range(size):
+            if budget is not None and count.iterations >= budget:
+                stopped = "budget"
+                break
+            matrix = _derivative(algebra, terms, point, zero, count)
+            try:
+                closure, work = algebra.star_with_work(matrix)
+            except (DivergentClosureError, UndecidedClosureError) as error:
+                raise CyclicRefused(CyclicRefusal.DIVERGENT, str(error)) from error
+            count.products += work.products
+            count.sums += work.sums
+            image = torch.stack(_image(algebra, terms, point, count))
+            point = list(
+                algebra.join(algebra.tensor_op(closure, image.unsqueeze(0)), 1).unbind(
+                    0
+                )
+            )
+            count.products += size * size
+            count.sums += size * size
+            count.iterations += 1
+            steps += 1
+        for index, item in enumerate(members):
+            values[item] = point[index]
+        solved.append(
+            NewtonComponent(items=tuple(members), iterations=steps, certified=True)
+        )
+    return PolynomialSolution(
+        values=values,
+        lower={},
+        upper={},
+        components=tuple(solved),
+        iterations=count.iterations,
+        sums=count.sums,
+        products=count.products,
+        stopped=stopped,
+        decided=stopped == "completed",
+    )
+
+
+def _image(
+    algebra: OrderPreservingSemiring,
+    terms: Sequence[Sequence[tuple[torch.Tensor, tuple[int, ...]]]],
+    point: Sequence[torch.Tensor],
+    count: _Count,
+) -> list[torch.Tensor]:
+    """The polynomials at a point, in the algebra.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra.
+    terms : Sequence of Sequence of tuple
+        Each member's monomials: coefficient and the members multiplied.
+    point : Sequence of torch.Tensor
+        The members' values.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    list of torch.Tensor
+        Each member's polynomial; the zero for one without monomials.
+    """
+    found: list[torch.Tensor] = []
+    for monomials in terms:
+        total: torch.Tensor | None = None
+        for coefficient, inside in monomials:
+            value = coefficient
+            for index in inside:
+                value = algebra.tensor_op(value, point[index])
+                count.products += 1
+            total = value if total is None else algebra.join_pair(total, value)
+            count.sums += total is not value
+        found.append(total if total is not None else algebra.zero_like((), point[0]))
+    return found
+
+
+def _derivative(
+    algebra: OrderPreservingSemiring,
+    terms: Sequence[Sequence[tuple[torch.Tensor, tuple[int, ...]]]],
+    point: Sequence[torch.Tensor],
+    zero: torch.Tensor,
+    count: _Count,
+) -> torch.Tensor:
+    """The matrix of formal derivatives of the polynomials at a point.
+
+    The derivative of a monomial in a member is the sum over its
+    occurrences of the product of the other factors; in an idempotent
+    sum repeated occurrences add to one.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra, its product commutative.
+    terms : Sequence of Sequence of tuple
+        The monomials.
+    point : Sequence of torch.Tensor
+        The members' values.
+    zero : torch.Tensor
+        The zero.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    torch.Tensor
+        ``J[x, y]``: the derivative of member ``x``'s polynomial in ``y``.
+    """
+    size = len(point)
+    entries: list[list[torch.Tensor]] = [[zero] * size for _ in range(size)]
+    for row, monomials in enumerate(terms):
+        for coefficient, inside in monomials:
+            for place, column in enumerate(inside):
+                value = coefficient
+                for other, index in enumerate(inside):
+                    if other != place:
+                        value = algebra.tensor_op(value, point[index])
+                        count.products += 1
+                entries[row][column] = algebra.join_pair(entries[row][column], value)
+                count.sums += 1
+    return torch.stack([torch.stack(row) for row in entries])

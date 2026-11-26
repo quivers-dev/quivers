@@ -20,7 +20,14 @@ from fractions import Fraction
 
 import torch
 
-from quivers.core.algebras import COUNTING, LOG_PROB, MARKOV, OrderPreservingSemiring
+from quivers.core.algebras import (
+    COUNTING,
+    LOG_PROB,
+    MARKOV,
+    MAX_PLUS,
+    TROPICAL,
+    OrderPreservingSemiring,
+)
 from quivers.qiec.contracts import (
     NOT_DIFFERENTIATED,
     SPECTRAL_RADIUS_BELOW_ONE,
@@ -70,10 +77,11 @@ from quivers.stochastic.planning import (
     plan,
 )
 from tests.evidence import scaling
-from tests.evidence.checks._registry import Check
+from tests.evidence.checks._registry import Check, add
 from tests.evidence.compare import Accuracy, Mismatch, compare_number
 from tests.evidence.mutations import Mutation, Rewrite
-from tests.evidence.oracles import closed_forms, enclosures
+from tests.evidence.oracles import closed_forms, enclosures, fixed_points
+from tests.evidence.span_controls import span_presentation
 
 LIKE = torch.zeros((), dtype=torch.float64)
 """The dtype and device of scalar runs."""
@@ -824,6 +832,223 @@ def check_work() -> None:
     )
 
 
+# -- idempotent systems ------------------------------------------------------
+
+_INAME = "idempotent"
+
+
+def _irule(name: str, premises: Sequence[str], conclusion: str) -> Rule:
+    """A weighted rule of the idempotent system.
+
+    Parameters
+    ----------
+    name : str
+        The rule.
+    premises : Sequence of str
+        The premises' variables.
+    conclusion : str
+        The conclusion's variable.
+
+    Returns
+    -------
+    Rule
+        The rule.
+    """
+    return Rule(
+        id=ConstructorId.derive(_INAME, name),
+        name=name,
+        premises=tuple(Premise(judgment=_v(p)) for p in premises),
+        conclusion=_v(conclusion),
+        weight=ParameterId.derive(_INAME, name),
+    )
+
+
+_ISLOTS = tuple(
+    AxiomSlot(id=ConstructorId.derive(_INAME, name), name=name, judgment=_v(name))
+    for name in ("x", "y")
+)
+IDEMPOTENT = RulePresentation(
+    id=PresentationId.derive(_INAME),
+    name=_INAME,
+    index_sorts=(_SORT,),
+    judgments=DECOMPOSED.judgments,
+    rules=(
+        _irule("xy", ("y",), "x"),
+        _irule("yx", ("x",), "y"),
+        _irule("zz", ("z", "z"), "z"),
+        _irule("zx", ("x",), "z"),
+    ),
+    axioms=_ISLOTS,
+)
+"""``x = q + a y``, ``y = r + b x``, ``z = c z z + e x`` in an idempotent algebra."""
+
+_IOCCURRENCES = [
+    AxiomOccurrence(
+        slot=slot.id, occurrence=OccurrenceId.derive(_INAME, slot.name), binding=()
+    )
+    for slot in _ISLOTS
+]
+
+
+def _idempotent_system(
+    weights: dict[str, Fraction],
+) -> list[list[fixed_points.Monomial]]:
+    """The idempotent system for the Kleene oracle, in the order x, y, z.
+
+    Parameters
+    ----------
+    weights : dict of str to Fraction
+        The weights of the rules and of the inputs ``x`` and ``y``.
+
+    Returns
+    -------
+    list of list of Monomial
+        The polynomials.
+    """
+    return [
+        [(weights["x"], ()), (weights["xy"], (1,))],
+        [(weights["y"], ()), (weights["yx"], (0,))],
+        [(weights["zz"], (2, 2)), (weights["zx"], (0,))],
+    ]
+
+
+_MAX_PLUS = {
+    "x": Fraction(0),
+    "y": Fraction(1),
+    "xy": Fraction(-1, 2),
+    "yx": Fraction(-1),
+    "zz": Fraction(-1),
+    "zx": Fraction(0),
+}
+"""Max-plus weights with every cycle at most zero: ``x = 1/2`` needs a step."""
+
+_TROPICAL = {
+    "x": Fraction(3),
+    "y": Fraction(1),
+    "xy": Fraction(1),
+    "yx": Fraction(2),
+    "zz": Fraction(1),
+    "zx": Fraction(0),
+}
+"""Min-plus weights, all nonnegative."""
+
+
+def _idempotent_inputs(weights: dict[str, Fraction]) -> Inputs:
+    """The weights as inputs.
+
+    Parameters
+    ----------
+    weights : dict of str to Fraction
+        The weights.
+
+    Returns
+    -------
+    Inputs
+        Rule parameters and input occurrences.
+    """
+    found: Inputs = {}
+    for name, value in weights.items():
+        key: ParameterId | OccurrenceId = (
+            OccurrenceId.derive(_INAME, name)
+            if name in ("x", "y")
+            else ParameterId.derive(_INAME, name)
+        )
+        found[key] = torch.tensor(float(value), dtype=torch.float64)
+    return found
+
+
+def check_idempotent() -> None:
+    """Require the exact least fixed point in max-plus and min-plus (O6).
+
+    Newton's method in a commutative idempotent semiring reaches the least
+    fixed point after as many steps as a component has items, which the
+    report states as exact; Kleene's iteration in exact arithmetic is the
+    oracle. A max-plus cycle of positive weight has no finite solution and
+    is refused.
+
+    Raises
+    ------
+    Mismatch
+        If a value differs, the report is not exact, or the divergent
+        system is admitted.
+    """
+    for algebra, weights, plus in (
+        (MAX_PLUS, _MAX_PLUS, fixed_points.max_plus),
+        (TROPICAL, _TROPICAL, fixed_points.min_plus),
+    ):
+        current = _plan(IDEMPOTENT, algebra, _contract())
+        evaluation = current.run(_IOCCURRENCES, _idempotent_inputs(weights), like=LIKE)
+        expected = fixed_points.least(
+            _idempotent_system(weights), plus, fixed_points.plus_times
+        )
+        for index, name in enumerate("xyz"):
+            wanted = expected[index]
+            assert wanted is not None
+            compare_number(
+                float(evaluation.value(Item(family=_V, arguments=(name,)))),
+                float(wanted),
+                Accuracy(domain="linear", operations=16),
+                f"{algebra.name} {name}",
+            )
+        report = evaluation.accuracy
+        _require(
+            report is not None and report.attainment.guarantee.tag == "exact",
+            f"{algebra.name}: the report is not exact",
+        )
+    divergent = {**_MAX_PLUS, "yx": Fraction(1)}
+    _refused(
+        lambda: _plan(IDEMPOTENT, MAX_PLUS, _contract()).run(
+            _IOCCURRENCES, _idempotent_inputs(divergent), like=LIKE
+        ),
+        PlanRefusal.DIVERGENT,
+        "a max-plus cycle of positive weight",
+    )
+
+
+def check_nullable() -> None:
+    """Require a nonlinear nullable category of a span presentation by Newton (O6).
+
+    ``E(i, j) <- E(i, k), E(k, j)`` with ``E(0, 0)`` an input of weight
+    ``1/3`` and the rule of weight ``2/3``: the empty span's weight solves
+    ``e = 1/3 + (2/3) e^2``, whose least root is ``1/2``. The span
+    executor refuses it as a nonlinear cycle; the monotone polynomial plan
+    solves it.
+
+    Raises
+    ------
+    Mismatch
+        If the value differs or the interval misses the root.
+    """
+    squared, slot, family, _ = span_presentation(
+        "squared", ("E",), (("pair", "E", "E", "E"),)
+    )
+    occurrence = AxiomOccurrence(
+        slot=slot.id,
+        occurrence=OccurrenceId.derive("squared", "e"),
+        binding=(("c", "E"), ("i", 0), ("j", 0)),
+    )
+    inputs: Inputs = {
+        ParameterId.derive("squared", "pair"): torch.tensor(2 / 3, dtype=torch.float64),
+        occurrence.occurrence: torch.tensor(1 / 3, dtype=torch.float64),
+    }
+    evaluation = _plan(squared, MARKOV, _contract()).run(
+        [occurrence], inputs, like=LIKE
+    )
+    item = Item(family=family, arguments=("E", 0, 0))
+    compare_number(
+        float(evaluation.value(item)),
+        0.5,
+        Accuracy(domain="linear", operations=64),
+        "a nonlinear nullable category",
+    )
+    _require(
+        enclosures.encloses(
+            evaluation.lower[item], evaluation.upper[item], Fraction(1, 2)
+        ),
+        "the interval misses the root",
+    )
+
+
 CHECKS: dict[str, Check] = {
     name: Check(name=name, executor="newton", question="Q9", run=run)
     for name, run in (
@@ -835,9 +1060,55 @@ CHECKS: dict[str, Check] = {
         ("newton/divergent", check_divergent),
         ("newton/refusals", check_refusals),
         ("newton/work", check_work),
+        ("newton/idempotent", check_idempotent),
+        ("newton/nullable", check_nullable),
     )
 }
 """Every check of monotone polynomial plans by name."""
+
+COLUMNS: dict[str, str] = {
+    "newton/closed-form": "Q9",
+    "newton/decomposed": "Q9",
+    "newton/gradient": "Q1g",
+    "newton/critical": "Q9",
+    "newton/budget": "Q9",
+    "newton/divergent": "Q9",
+    "newton/refusals": "Q9",
+    "newton/work": "Q9",
+    "newton/idempotent": "Q9",
+    "newton/nullable": "Q9",
+}
+"""The column of the grid each check of monotone polynomial plans answers."""
+
+
+def register() -> None:
+    """Register every check in the grid's row ``newton-plan``."""
+    for name, check in CHECKS.items():
+        add(
+            f"newton-plan/{name.removeprefix('newton/')}",
+            "newton-plan",
+            COLUMNS[name],
+            check.run,
+        )
+
+
+def run() -> list[torch.Tensor]:
+    """The representative run of Newton's method: ``x = (2/3) x^2 + 1/3``.
+
+    Returns
+    -------
+    list of torch.Tensor
+        The value and its implicit derivatives.
+    """
+    inputs = {
+        key: value.requires_grad_()
+        for key, value in _weights(Fraction(2, 3), True).items()
+    }
+    current = _plan(QUADRATIC, LOG_PROB, _contract(implicit=True), tuple(inputs))
+    value = current.run(OCCURRENCES, inputs, like=LIKE).value(GOAL)
+    found = torch.autograd.grad(value, list(inputs.values()))
+    return [value.detach(), *found]
+
 
 RECURSION = "quivers.stochastic.recursion"
 
@@ -891,6 +1162,15 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         rejected_by=("newton/divergent",),
         min_effect=1.0,
+    ),
+    Mutation(
+        name="idempotent-newton-without-steps",
+        defect_class="premature stop",
+        provenance="the first Newton approximant f(0) is returned as the solution",
+        target=f"{RECURSION}:_idempotent",
+        rewrites=(Rewrite(old="for _ in range(size):", new="for _ in range(0):"),),
+        rejected_by=("newton/idempotent",),
+        min_effect=0.25,
     ),
     Mutation(
         name="newton-implicit-without-inverse",

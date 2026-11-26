@@ -306,7 +306,11 @@ chart of §6, whatever the order [@goodman1999semiring]. For a cyclic system und
 semiring such as `Boolean` or `Viterbi`, the chart is the least fixed point of the equation of §6,
 which exists by the [Knaster–Tarski theorem](https://en.wikipedia.org/wiki/Knaster%E2%80%93Tarski_theorem)
 when the weights form a complete lattice and the rules are monotone. For a cyclic system under a
-semiring that is not idempotent, the chart is the limit of §5, which depends on convergence. Pruning
+semiring that is not idempotent, the chart is the limit of §5, which depends on convergence. The
+[plans](../api/stochastic/planning.md#monotone-polynomial-plans) of a rule presentation under the
+monotone polynomial contract compute that least fixed point by Newton's method instead: with a
+certified interval in an algebra embedded in the nonnegative reals, exactly in an idempotent
+algebra with a closure, and with a refusal when it is infinite. Pruning
 an item removes its derivations from the sum, and stopping early leaves some unprocessed, so neither
 preserves the chart.
 

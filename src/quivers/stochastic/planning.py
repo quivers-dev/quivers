@@ -42,6 +42,9 @@ from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring, RealEmbedding, Star
 from quivers.core.elimination import fiber_join
 from quivers.core.laws import (
+    PLUS_IDEMPOTENT,
+    REAL_EMBEDDING,
+    STAR_LEAST_SOLUTION,
     TIMES_COMMUTATIVE,
     NO_ZERO_DIVISORS,
     ZERO_SUM_FREE,
@@ -71,6 +74,7 @@ from quivers.qiec.contracts import (
     DerivativeReport,
     DerivativeSemantics,
     Enclosure,
+    Exact,
     Heuristic,
     FailurePolicy,
     MonotonePolynomial,
@@ -135,6 +139,7 @@ from quivers.stochastic.recursion import (
     CyclicRefusal,
     CyclicRefused,
     NewtonComponent,
+    PolynomialSolution,
     solve,
     solve_polynomial,
 )
@@ -1997,7 +2002,7 @@ def plan(
             algebra=algebra.subject,
             claims=(*algebra.claims(), *claims),
             uses=requirements(
-                (*TWO_PASS_LAWS, TIMES_COMMUTATIVE)
+                (*TWO_PASS_LAWS, *_newton_laws(algebra))
                 if isinstance(recursion, MonotonePolynomial)
                 else TWO_PASS_LAWS,
                 algebra.subject,
@@ -2890,6 +2895,25 @@ def _value_seed(
     return summed.reshape(rows, size, *stacked.shape[1:])
 
 
+def _newton_laws(algebra: OrderPreservingSemiring) -> tuple[Law, ...]:
+    """The laws Newton's method uses in an algebra.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra.
+
+    Returns
+    -------
+    tuple of Law
+        A commutative product, and the real embedding for certified Newton
+        or, without one, an idempotent sum with a star for exact Newton.
+    """
+    if isinstance(algebra, RealEmbedding):
+        return (TIMES_COMMUTATIVE, REAL_EMBEDDING)
+    return (TIMES_COMMUTATIVE, PLUS_IDEMPOTENT, STAR_LEAST_SOLUTION)
+
+
 def _rounding(algebra: OrderPreservingSemiring) -> int:
     """The rounding of an algebra's embedding in the reals.
 
@@ -2905,6 +2929,95 @@ def _rounding(algebra: OrderPreservingSemiring) -> int:
     """
     assert isinstance(algebra, RealEmbedding)
     return algebra.embedding_rounding
+
+
+def _exact_newton(
+    plan: Plan, forest: DerivationForest, solution: PolynomialSolution
+) -> Evaluation:
+    """The evaluation and report of exact Newton in an idempotent algebra.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+    forest : DerivationForest
+        The derived hypergraph.
+    solution : PolynomialSolution
+        The solution.
+
+    Returns
+    -------
+    Evaluation
+        The values and the report: exact when every component took its
+        steps, without a guarantee when the budget ended one first.
+    """
+    contract = plan.record.accuracy
+    stop = (
+        BudgetExhausted(
+            resource="iterations", limit=Rational.of(contract.budget.iterations or 0)
+        )
+        if solution.stopped == "budget"
+        else Completed()
+    )
+    guarantee = attained_guarantee(stop, Exact(), None)
+    wanted = contract.gradient
+    derivative = (
+        NOT_DIFFERENTIATED
+        if wanted.missing
+        else DerivativeSemantics.none(
+            "the least fixed point of an idempotent system is piecewise in its "
+            "weights; no implicit derivative is claimed"
+        )
+    )
+    derivatives = (
+        DerivativeReport()
+        if wanted.missing
+        else DerivativeReport(
+            entries=tuple(
+                DerivativeEntry(
+                    output="least fixed point", wrt=key, semantics=derivative
+                )
+                for key in plan.record.query.differentiate_with_respect_to
+            )
+        )
+    )
+    work = WorkReport(
+        phase=Phase.EXECUTION,
+        iterations=solution.iterations,
+        scalar_sums=solution.sums,
+        scalar_products=solution.products,
+        hash_operations=forest.work.lookups,
+        key_comparisons=forest.work.candidates,
+        measured=NEWTON_MEASURES,
+    )
+    attainment = Attainment(
+        guarantee=guarantee,
+        metric=contract.target.metric,
+        rounding=Rational.of(0),
+        derivative=derivative,
+    )
+    report = AccuracyReport(
+        attainment=attainment,
+        stop=stop,
+        unmet=unmet_fields(contract, attainment, (work,)),
+        derivatives=derivatives,
+        work=(work,),
+        claims=tuple(
+            plan.algebra.claim(law)
+            for law in (*TWO_PASS_LAWS, *_newton_laws(plan.algebra))
+        ),
+    )
+    return Evaluation(
+        values=solution.values,
+        order=tuple(solution.values),
+        work=forest.work,
+        sums=solution.sums,
+        products=solution.products,
+        iterations=solution.iterations,
+        measures=NEWTON_MEASURES,
+        newton=solution.components,
+        accuracy=report,
+    )
 
 
 def _solve_monotone(
@@ -2953,6 +3066,8 @@ def _solve_monotone(
         )
     except CyclicRefused as refused:
         raise PlanRefused(_CYCLIC_CODES[refused.code], refused.reason) from refused
+    if solution.decided or not isinstance(plan.algebra, RealEmbedding):
+        return _exact_newton(plan, forest, solution)
     metric = contract.target.metric
     logarithmic = not isinstance(metric, AbsoluteError)
     widest: tuple[float, float] | None = None
@@ -3057,8 +3172,7 @@ def _solve_monotone(
         derivative=derivative,
     )
     used = tuple(
-        plan.algebra.claim(law)
-        for law in (*TWO_PASS_LAWS, TIMES_COMMUTATIVE, *plan.record.recursion.laws())
+        plan.algebra.claim(law) for law in (*TWO_PASS_LAWS, *_newton_laws(plan.algebra))
     )
     report = AccuracyReport(
         attainment=attainment,
