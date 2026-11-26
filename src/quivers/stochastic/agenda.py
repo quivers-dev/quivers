@@ -256,6 +256,28 @@ def match(
 # ---------------------------------------------------------------------------
 
 
+def _ground(pattern: Pattern, bindings: Bindings) -> bool:
+    """Whether a pattern has no wildcard left once bindings are substituted.
+
+    Parameters
+    ----------
+    pattern : Pattern
+        The pattern.
+    bindings : Bindings
+        Values of some wildcards.
+
+    Returns
+    -------
+    bool
+        True when every wildcard in it is bound.
+    """
+    if isinstance(pattern, Wildcard):
+        return pattern.name in bindings
+    if isinstance(pattern, tuple):
+        return all(_ground(element, bindings) for element in pattern)
+    return True
+
+
 @runtime_checkable
 class ReportsWork(Protocol):
     """A chart or agenda queue that reports the work it has done.
@@ -330,13 +352,18 @@ class Chart(ABC):
     """
 
     @abstractmethod
-    def lookup(self, pattern: Pattern) -> Iterable[tuple[Item, torch.Tensor]]:
-        """Enumerate (item, weight) pairs matching a pattern.
+    def lookup(
+        self, pattern: Pattern, bindings: Bindings | None = None
+    ) -> Iterable[tuple[Item, torch.Tensor]]:
+        """Enumerate the (item, weight) pairs that match a pattern under bindings.
 
         Parameters
         ----------
         pattern : Pattern
             The pattern to match stored items against.
+        bindings : Bindings or None
+            Values of some of the pattern's wildcards; an item matches
+            when it matches the pattern with those wildcards fixed.
 
         Returns
         -------
@@ -433,12 +460,12 @@ class Chart(ABC):
 class HashChart(Chart):
     """Dictionary-backed chart for arbitrary item algebras.
 
-    Stores items as keys in a Python dict; supports linear-scan
-    pattern matching. Suitable for Datalog atoms, MLTT
-    judgments, and any deduction whose items don't have a dense
-    integer encoding. Falls back to O(|chart| · |pattern|) match
-    cost per lookup; faster specializations should override
-    `lookup` with an indexed structure.
+    Stores items as keys in a Python dict, with indexes of the items of
+    each length keyed on the positions a lookup finds bound. Suitable for
+    Datalog atoms, MLTT judgments, and any deduction whose items don't
+    have a dense integer encoding. A lookup costs its key and the items
+    that agree with it on the bound positions, each matched against the
+    whole pattern, so bindings pushed into it select the candidates.
 
     Weights are stored as `torch.Tensor` values; autograd
     flows through ``insert_or_aggregate``'s
@@ -458,6 +485,9 @@ class HashChart(Chart):
         self._store: dict[Item, torch.Tensor] = {}
         self._tolerance: float = float(tolerance)
         self._work = _ComponentWork()
+        self._indexes: dict[
+            tuple[int, tuple[int, ...]], dict[tuple[HeldValue, ...], list[Item]]
+        ] = {}
 
     def work_counts(self) -> Mapping[WorkField, int]:
         """The chart's work since it was made.
@@ -471,24 +501,81 @@ class HashChart(Chart):
         """
         return self._work.counts()
 
-    def lookup(self, pattern: Pattern) -> Iterable[tuple[Item, torch.Tensor]]:
-        """Scan the stored items for those matching a pattern.
+    def lookup(
+        self, pattern: Pattern, bindings: Bindings | None = None
+    ) -> Iterable[tuple[Item, torch.Tensor]]:
+        """The stored items that match a pattern under bindings, by a keyed index.
+
+        A tuple pattern of length ``L`` is looked up in the index of the
+        items of length ``L`` keyed on the positions whose pattern is
+        ground once the bindings are substituted; with no such position
+        the key is empty and the index holds every item of that length.
+        Indexes are built on first use and kept up to date as items
+        arrive, so a lookup costs its key and the items that agree with
+        it, each then matched against the whole pattern.
 
         Parameters
         ----------
         pattern : Pattern
-            The pattern to match stored items against.
+            The pattern.
+        bindings : Bindings or None
+            Values of some of its wildcards.
 
         Returns
         -------
         Iterable of (Item, torch.Tensor)
             The matching items with their weights.
         """
-        for item, w in self._store.items():
+        fixed = {} if bindings is None else bindings
+        if isinstance(pattern, Wildcard) and pattern.name in fixed:
+            self._work.hashes += 1
+            value = fixed[pattern.name]
+            stored = self._store.get(value)
+            return [] if stored is None else [(value, stored)]
+        if not isinstance(pattern, tuple):
+            candidates: Iterable[Item] = list(self._store)
+        else:
+            positions = tuple(
+                index
+                for index, element in enumerate(pattern)
+                if _ground(element, fixed)
+            )
+            key = tuple(instantiate(pattern[index], fixed) for index in positions)
+            self._work.hashes += 1
+            candidates = self._index(len(pattern), positions).get(key, [])
+        found: list[tuple[Item, torch.Tensor]] = []
+        for item in candidates:
             self._work.comparisons += 1
-            b = match(pattern, item)
-            if b is not None:
-                yield item, w
+            if match(pattern, item, fixed) is not None:
+                found.append((item, self._store[item]))
+        return found
+
+    def _index(
+        self, length: int, positions: tuple[int, ...]
+    ) -> dict[tuple[HeldValue, ...], list[Item]]:
+        """The index of the items of one length keyed on some positions.
+
+        Parameters
+        ----------
+        length : int
+            The items' length.
+        positions : tuple of int
+            The positions of the key.
+
+        Returns
+        -------
+        dict of tuple to list of Item
+            The items by their values at the positions, built on first use.
+        """
+        found = self._indexes.get((length, positions))
+        if found is None:
+            found = {}
+            for item in self._store:
+                if isinstance(item, tuple) and len(item) == length:
+                    self._work.hashes += 1
+                    found.setdefault(tuple(item[i] for i in positions), []).append(item)
+            self._indexes[(length, positions)] = found
+        return found
 
     def insert_or_aggregate(
         self,
@@ -538,6 +625,7 @@ class HashChart(Chart):
         if item not in self._store:
             self._store[item] = weight
             self._work.hashes += 1
+            self._indexed(item)
             return True
         existing = self._store[item]
         stacked = torch.stack([existing, weight])
@@ -546,6 +634,21 @@ class HashChart(Chart):
         self._work.hashes += 2
         self._store[item] = merged
         return anywhere(self._changed(existing, merged) | _carries(weight, semiring))
+
+    def _indexed(self, item: Item) -> None:
+        """Add a new item to every index of its length.
+
+        Parameters
+        ----------
+        item : Item
+            The item, new to the chart.
+        """
+        if not isinstance(item, tuple):
+            return
+        for (length, positions), index in self._indexes.items():
+            if len(item) == length:
+                self._work.hashes += 1
+                index.setdefault(tuple(item[i] for i in positions), []).append(item)
 
     def _changed(self, before: torch.Tensor, after: torch.Tensor) -> torch.Tensor:
         """Whether a stored weight changed by more than the tolerance.
@@ -1879,7 +1982,7 @@ def _fire_remaining_premises(
         return
     next_idx = remaining_indices[0]
     next_pattern = rule.premises[next_idx]
-    for sibling, _ in chart.lookup(next_pattern):
+    for sibling, _ in chart.lookup(next_pattern, bindings):
         work.matches += 1
         sub_bindings = match(next_pattern, sibling, bindings)
         if sub_bindings is None:

@@ -8,8 +8,8 @@ recorded applications. A run with a rule weight
 function does not claim its products, one without the tape measured
 does not claim it, and a chart or queue that reports no work leaves its
 counters unmeasured. A priority agenda's comparisons are compared with a
-fresh heap replaying its pushes and pops. The agenda's own work on chains, diamonds and skip
-graphs is recorded by the ledger entry ``agenda-work-quadratic``.
+fresh heap replaying its pushes and pops. A run's work is linear on
+chains, diamonds and skip graphs.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from quivers.qiec.contracts import WorkField
 from quivers.stochastic.agenda import (
     COMPONENT_FIELDS,
     AgendaResult,
+    Bindings,
     Chart,
     FIFOAgenda,
     InferenceRule,
@@ -96,13 +97,17 @@ class _PlainChart(Chart):
     def __init__(self) -> None:
         self._store: dict[Item, torch.Tensor] = {}
 
-    def lookup(self, pattern: Pattern) -> Iterable[tuple[Item, torch.Tensor]]:
-        """The stored items that match a pattern.
+    def lookup(
+        self, pattern: Pattern, bindings: Bindings | None = None
+    ) -> Iterable[tuple[Item, torch.Tensor]]:
+        """The stored items that match a pattern under bindings.
 
         Parameters
         ----------
         pattern : Pattern
             The pattern.
+        bindings : Bindings or None
+            Values of some of its wildcards.
 
         Returns
         -------
@@ -112,7 +117,7 @@ class _PlainChart(Chart):
         return [
             (item, weight)
             for item, weight in self._store.items()
-            if match(pattern, item) is not None
+            if match(pattern, item, bindings) is not None
         ]
 
     def insert_or_aggregate(
@@ -408,11 +413,10 @@ def _work(edges: Sequence[tuple[int, int]]) -> float:
 LINEAR_SIZES = (8, 16, 32, 64, 128)
 """The sizes of the families."""
 
-LINEAR_CONSTANT = 16.0
-"""The constant of the linear bound on the agenda's own work per edge."""
-
-WITHIN = f"within {LINEAR_CONSTANT:g} per edge"
-"""The fact of a family whose work meets the linear bound."""
+LINEAR_CONSTANT = 32.0
+"""The constant of the linear bound on a run's work per edge: a fixed number
+of operations, two pops, four premise matches, the chart's and the queue's
+dictionary accesses and the candidates a keyed lookup returns."""
 
 
 def _families() -> tuple[tuple[str, Callable[[int], list[tuple[int, int]]]], ...]:
@@ -430,37 +434,12 @@ def _families() -> tuple[tuple[str, Callable[[int], list[tuple[int, int]]]], ...
     )
 
 
-def linear_facts() -> dict[str, str]:
-    """Whether the agenda's own work per edge meets the linear bound, per family.
-
-    Returns
-    -------
-    dict of str to str
-        For each family, `WITHIN` when the linear bound accepts its work,
-        else its work per edge at each size, to two decimals.
-    """
-    facts: dict[str, str] = {}
-    for name, build in _families():
-        work = [_work(build(size)) for size in LINEAR_SIZES]
-        edges = [float(len(build(size)) + 1) for size in LINEAR_SIZES]
-        try:
-            scaling.accept(LINEAR_SIZES, work, edges, LINEAR_CONSTANT, name)
-        except Mismatch:
-            facts[f"{name}, work per edge"] = " ".join(
-                f"{count / bound:.2f}" for count, bound in zip(work, edges, strict=True)
-            )
-            continue
-        facts[f"{name}, work per edge"] = WITHIN
-    return facts
-
-
 def check_linear() -> None:
     """Require the agenda's own work linear on chains, diamonds and skip graphs.
 
-    The agenda looks up a premise's form by its pattern alone, so this
-    fails today; the ledger entry ``agenda-work-quadratic`` records the
-    measured work, and removing that entry with its repair registers
-    this check.
+    A lookup is keyed on the positions its premise finds bound, so a run
+    does a fixed number of operations per edge; the control of the next
+    order has to fail.
 
     Raises
     ------
@@ -485,7 +464,10 @@ def check_linear() -> None:
 
 CHECKS: dict[str, Check] = {
     name: Check(name=name, executor="agenda", question="Q1", run=run)
-    for name, run in (("agenda/work-counts", check_counts),)
+    for name, run in (
+        ("agenda/work-counts", check_counts),
+        ("agenda/work-linear", check_linear),
+    )
 }
 """Every check of agenda work reports by name."""
 
@@ -529,6 +511,15 @@ MUTATIONS: tuple[Mutation, ...] = (
             Rewrite(old="self.work.comparisons += 1", new="self.work.comparisons += 0"),
         ),
         rejected_by=("agenda/work-counts",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="agenda-lookup-not-keyed",
+        defect_class="graph work",
+        provenance="a lookup ignores the bound positions and scans the form",
+        target=f"{AGENDA}:HashChart.lookup",
+        rewrites=(Rewrite(old="if _ground(element, fixed)", new="if False"),),
+        rejected_by=("agenda/work-linear",),
         min_effect=1.0,
     ),
     Mutation(

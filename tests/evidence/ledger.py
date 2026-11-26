@@ -69,7 +69,6 @@ from quivers.stochastic.semiring import (
 )
 from quivers.structural.decoder import Decoder
 from quivers.structural.signature import Signature
-from tests.evidence import agenda_work_controls as agenda_work
 from tests.evidence.checks.consumers import GUIDES, PROBLEMS
 from tests.evidence.checks.deduction import weighted
 from tests.evidence.checks.machine import module_of
@@ -451,16 +450,18 @@ def hub(size: int) -> tuple[int, int]:
 record(
     "rule-matching-scans",
     "stochastic/agenda.py: HashChart.lookup, _fire_remaining_premises",
-    "every premise scans the whole chart and bindings are not pushed into the "
-    "scan, so matching along a line is quadratic, and a triangle over a hub "
-    "costs the product of the relations",
+    "each popped item is matched against every premise of every rule, and a "
+    "lookup keyed on the bound positions still tries every candidate agreeing "
+    "with them, so a line costs a constant number of matches per application "
+    "and a triangle over a hub, binding one variable per lookup, costs the "
+    "product of the hub's neighbours",
     {
-        "matches at 20": "1363",
-        "matches at 40": "5123",
-        "matches at 80": "19843",
-        "hub matches at 2": "172",
-        "hub matches at 4": "1070",
-        "hub matches at 8": "6970",
+        "matches at 20": "122",
+        "matches at 40": "242",
+        "matches at 80": "482",
+        "hub matches at 2": "58",
+        "hub matches at 4": "162",
+        "hub matches at 8": "466",
     },
     {
         "matches at 20": "20",
@@ -524,27 +525,6 @@ def _hub_instances(size: int) -> int:
         for b in range(size)
         for c in range(size)
     )
-
-
-record(
-    "agenda-work-quadratic",
-    "stochastic/agenda.py: HashChart.lookup, _fire_remaining_premises",
-    "the work of an agenda run, measured by its work report (its pops and "
-    "matches, and the chart's and queue's hashing and comparisons), grows faster "
-    "than the edges on chains, diamonds and skip graphs, since each premise "
-    "looks up its whole form and the chart compares every item of it",
-    {
-        "chains, work per edge": "40.89 65.41 113.70 209.85 401.92",
-        "diamonds, work per edge": "33.89 52.59 89.33 162.46 308.53",
-        "skip graphs, work per edge": "27.25 40.50 66.62 118.69 222.72",
-    },
-    {
-        "chains, work per edge": agenda_work.WITHIN,
-        "diamonds, work per edge": agenda_work.WITHIN,
-        "skip graphs, work per edge": agenda_work.WITHIN,
-    },
-    agenda_work.linear_facts,
-)
 
 
 record(

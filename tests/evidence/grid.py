@@ -120,7 +120,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
             "Q1": (
                 "nullary-rule-never-fires",
                 "rule-matching-scans",
-                "agenda-work-quadratic",
                 "repeated-propagation",
                 "parameters-created-by-runs",
                 "chart-view-promises",
