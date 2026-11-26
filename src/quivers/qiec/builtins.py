@@ -2738,8 +2738,8 @@ def search_handler(
     )
 
 
-#: The quantity a settled deduction's value approximates.
 SETTLED_QUANTITY = "the weight of the goal, the least solution of the rule equations"
+"""The quantity a settled deduction's value approximates."""
 
 
 def settlement_contract(
