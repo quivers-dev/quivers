@@ -35,14 +35,16 @@ from quivers.qiec.contracts import (
     NoRetention,
     OccurrenceId,
     ParameterId,
+    Phase,
     PresentationId,
+    measured_total,
 )
 from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.rules import Judgment, Premise, Rule, RulePresentation
 from quivers.qiec.types import IndexVariable
 from quivers.stochastic.planning import Evaluation, Plan, PlanRefusal, PlanRefused, plan
-from tests.evidence import graphs
+from tests.evidence import graphs, scaling
 from tests.evidence.checks._registry import Check
 from tests.evidence.compare import Accuracy, Mismatch, compare_number
 from tests.evidence.mutations import Mutation, Rewrite
@@ -499,6 +501,74 @@ def check_refusals() -> None:
     )
 
 
+def _ring(size: int) -> list[tuple[int, int]]:
+    """A ring ``0 -> 1 -> ... -> size - 1 -> 0``: one component of ``size`` items.
+
+    Parameters
+    ----------
+    size : int
+        The number of nodes.
+
+    Returns
+    -------
+    list of tuple of int and int
+        The edges.
+    """
+    return [(i, (i + 1) % size) for i in range(size)]
+
+
+def _closure_work(size: int) -> float:
+    """The measured time of solving a ring.
+
+    Parameters
+    ----------
+    size : int
+        The number of nodes.
+
+    Returns
+    -------
+    float
+        The time counters' total.
+    """
+    edges = _ring(size)
+    inputs: Inputs = {**graphs.edge_weights(edges, [0.5] * len(edges))}
+    current = _plan(graphs.LEFT, MARKOV)
+    report = current.run(graphs.occurrences(edges), inputs, like=LIKE).report()
+    time = next(
+        bound
+        for bound in current.record.complexity.bounds
+        if bound.phase is Phase.EXECUTION and bound.resource == "time"
+    )
+    return float(measured_total(time, report))
+
+
+def check_closure_work() -> None:
+    """Require the measured closure work within the ``S^3`` claim on rings.
+
+    A ring of ``n`` nodes is one component of ``n`` items, whose closure
+    eliminates ``n`` states with ``n^2`` operations each; the control of
+    the next order has to fail.
+
+    Raises
+    ------
+    Mismatch
+        If the work breaks the bound, or the control does not.
+    """
+    scaling.check_family(
+        scaling.Family(
+            name="cyclic closure on rings",
+            executor="cyclic",
+            question="Q8",
+            varies="component size",
+            part="forward",
+            sizes=(4, 8, 16, 32, 64),
+            work=_closure_work,
+            claim=lambda size: float(size**3 + 3 * size),
+            constant=4.0,
+        )
+    )
+
+
 CHECKS: dict[str, Check] = {
     name: Check(name=name, executor="cyclic", question="Q8", run=run)
     for name, run in (
@@ -507,6 +577,7 @@ CHECKS: dict[str, Check] = {
         ("cyclic/acyclic-agrees", check_acyclic_agrees),
         ("cyclic/one-sided", check_one_sided),
         ("cyclic/refusals", check_refusals),
+        ("cyclic/closure-work", check_closure_work),
     )
 }
 """Every check of linear cyclic plans by name."""
@@ -558,7 +629,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=f"{RECURSION}:solve",
         also_in=("quivers.stochastic.planning",),
         rewrites=(
-            Rewrite(old="closure = algebra.star(filled)", new="closure = filled"),
+            Rewrite(
+                old="closure = _closure(algebra, filled, like, work)",
+                new="closure = filled",
+            ),
         ),
         rejected_by=("cyclic/closed-form",),
         min_effect=1e-6,

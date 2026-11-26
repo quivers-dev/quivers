@@ -27,6 +27,7 @@ Lehmann, D. J. (1977). Algebraic structures for transitive closure.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Literal
@@ -51,6 +52,7 @@ __all__ = [
     "Component",
     "CyclicRefusal",
     "CyclicRefused",
+    "CyclicWork",
     "Side",
     "components",
     "solve",
@@ -89,6 +91,46 @@ class CyclicRefused(ValueError):
         super().__init__(f"{code.value}: {reason}")
         self.code = code
         self.reason = reason
+
+
+class _Work:
+    """Counts of the algebra's operations, in elements of the algebra."""
+
+    def __init__(self, algebra: OrderPreservingSemiring) -> None:
+        self.size = math.prod(algebra.element_shape)
+        self.sums = 0
+        self.products = 0
+        self.pivots = 0
+
+    def count(self, kind: Literal["sums", "products"], result: torch.Tensor) -> None:
+        """Count one operation over a batch of elements.
+
+        Parameters
+        ----------
+        kind : {"sums", "products"}
+            The operation.
+        result : torch.Tensor
+            Its result, one element per operation.
+        """
+        setattr(self, kind, getattr(self, kind) + result.numel() // self.size)
+
+
+class CyclicWork(QiecModel):
+    """The algebra's operations a cyclic solve performed.
+
+    Parameters
+    ----------
+    sums : int
+        Sums, one per element summed into another.
+    products : int
+        Products, one per element.
+    pivots : int
+        Closures of one element, one per state eliminated.
+    """
+
+    sums: int = 0
+    products: int = 0
+    pivots: int = 0
 
 
 class Component(QiecModel):
@@ -177,7 +219,9 @@ def components(forest: DerivationForest) -> list[list[Item]]:
 
 
 def _product(
-    algebra: OrderPreservingSemiring, factors: Sequence[torch.Tensor]
+    algebra: OrderPreservingSemiring,
+    factors: Sequence[torch.Tensor],
+    work: _Work,
 ) -> torch.Tensor | None:
     """The product of factors in order, ``None`` for none.
 
@@ -187,6 +231,8 @@ def _product(
         The algebra.
     factors : Sequence of torch.Tensor
         The factors.
+    work : _Work
+        The counts.
 
     Returns
     -------
@@ -198,11 +244,39 @@ def _product(
     total = factors[0]
     for factor in factors[1:]:
         total = algebra.tensor_op(total, factor)
+        work.count("products", total)
     return total
 
 
+def _times(
+    algebra: OrderPreservingSemiring, a: torch.Tensor, b: torch.Tensor, work: _Work
+) -> torch.Tensor:
+    """One counted product.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra.
+    a, b : torch.Tensor
+        The factors, broadcast together.
+    work : _Work
+        The counts.
+
+    Returns
+    -------
+    torch.Tensor
+        ``a ⊗ b``.
+    """
+    result = algebra.tensor_op(a, b)
+    work.count("products", result)
+    return result
+
+
 def _add(
-    algebra: OrderPreservingSemiring, current: torch.Tensor | None, term: torch.Tensor
+    algebra: OrderPreservingSemiring,
+    current: torch.Tensor | None,
+    term: torch.Tensor,
+    work: _Work,
 ) -> torch.Tensor:
     """Add a term to a running sum.
 
@@ -214,6 +288,8 @@ def _add(
         The sum so far.
     term : torch.Tensor
         The term.
+    work : _Work
+        The counts.
 
     Returns
     -------
@@ -222,7 +298,63 @@ def _add(
     """
     if current is None:
         return term
-    return algebra.join(torch.stack(torch.broadcast_tensors(current, term)), 0)
+    result = algebra.join(torch.stack(torch.broadcast_tensors(current, term)), 0)
+    work.count("sums", result)
+    return result
+
+
+def _closure(
+    algebra: Star, matrix: torch.Tensor, like: torch.Tensor, work: _Work
+) -> torch.Tensor:
+    """The closure ``A*`` of a square matrix of elements, by eliminating states.
+
+    For each state ``k`` in turn, with ``s = (A_kk)*`` the closure of one
+    element, every entry becomes ``A_ij ⊕ A_ik ⊗ s ⊗ A_kj`` from the
+    matrix before the step; after the last step the matrix is ``A⁺``,
+    the sum of the paths of positive length, and ``A* = I ⊕ A⁺``
+    (Lehmann 1977). Each step closes one element and does ``n + n²``
+    products and ``n²`` sums, and ``I ⊕ A⁺`` ``n²`` sums more, so the
+    closure is ``n`` closures of one element, ``n³ + n²`` products and
+    ``n³ + n²`` sums. The closure of one
+    element is the algebra's own, which refuses outside its domain.
+
+    Parameters
+    ----------
+    algebra : Star
+        The algebra.
+    matrix : torch.Tensor
+        Shape ``(n, n, *element_shape)``.
+    like : torch.Tensor
+        The dtype and device of the unit.
+    work : _Work
+        The counts.
+
+    Returns
+    -------
+    torch.Tensor
+        The closure.
+
+    Raises
+    ------
+    DivergentClosureError
+        If an element's closure has no value.
+    UndecidedClosureError
+        If rounding cannot decide whether it has.
+    """
+    n = matrix.shape[0]
+    current = matrix
+    for k in range(n):
+        star = algebra.star(current[k : k + 1, k : k + 1])[0, 0]
+        work.pivots += 1
+        column = _times(algebra, current[:, k], star.unsqueeze(0), work)
+        update = _times(algebra, column.unsqueeze(1), current[k].unsqueeze(0), work)
+        current = _add(algebra, current, update, work)
+    zero = algebra.zero_like((n, n), like)
+    unit = algebra.unit_like((n,), like)
+    identity = zero.clone()
+    for i in range(n):
+        identity[i, i] = unit[i]
+    return _add(algebra, identity, current, work)
 
 
 def _unit_or(
@@ -253,7 +385,7 @@ def solve(
     inputs: Mapping[InputId, torch.Tensor],
     *,
     like: torch.Tensor,
-) -> tuple[dict[Item, torch.Tensor], tuple[Component, ...]]:
+) -> tuple[dict[Item, torch.Tensor], tuple[Component, ...], CyclicWork]:
     """The least solution of a linear system over a derived hypergraph.
 
     Parameters
@@ -269,8 +401,10 @@ def solve(
 
     Returns
     -------
-    tuple of dict and tuple of Component
-        The value of every item, and each component with its side.
+    tuple of dict, tuple of Component and CyclicWork
+        The value of every item, each component with its side, and the
+        algebra's operations: building each component's system, its
+        closure, and the product of the closure with the constants.
 
     Raises
     ------
@@ -288,6 +422,7 @@ def solve(
         for claim in algebra.claims()
     )
     presentation = forest.presentation
+    work = _Work(algebra)
     values: dict[Item, torch.Tensor] = {}
     solved: list[Component] = []
     for members in components(forest):
@@ -301,15 +436,15 @@ def solve(
             for edge in forest.edges.get(item, ()):
                 weight = edge_weight(forest, edge, algebra, inputs, like=like)
                 if edge.occurrence is not None:
-                    constants[item] = _add(algebra, constants.get(item), weight)
+                    constants[item] = _add(algebra, constants.get(item), weight, work)
                     continue
                 places = [k for k, p in enumerate(edge.premises) if p in inside]
                 if not places:
                     term = _product(
-                        algebra, [*(values[p] for p in edge.premises), weight]
+                        algebra, [*(values[p] for p in edge.premises), weight], work
                     )
                     assert term is not None
-                    constants[item] = _add(algebra, constants.get(item), term)
+                    constants[item] = _add(algebra, constants.get(item), term, work)
                     continue
                 if len(places) > 1:
                     raise CyclicRefused(
@@ -321,11 +456,11 @@ def solve(
                 (k,) = places
                 rule = presentation.constructors_by_id[edge.constructor]
                 assert isinstance(rule, Rule)
-                before = _product(algebra, [values[p] for p in edge.premises[:k]])
+                before = _product(algebra, [values[p] for p in edge.premises[:k]], work)
                 after_factors = [values[p] for p in edge.premises[k + 1 :]]
                 if rule.weight is not None:
                     after_factors.append(weight)
-                after = _product(algebra, after_factors)
+                after = _product(algebra, after_factors, work)
                 loops.append((item, edge.premises[k], before, after, edge))
         if not loops:
             for item in members:
@@ -344,17 +479,20 @@ def solve(
                 key, term = (y, x), _unit_or(algebra, after, like)
             else:
                 key = (x, y)
-                term = algebra.tensor_op(
-                    _unit_or(algebra, before, like), _unit_or(algebra, after, like)
+                term = _times(
+                    algebra,
+                    _unit_or(algebra, before, like),
+                    _unit_or(algebra, after, like),
+                    work,
                 )
-            entries[key] = _add(algebra, entries.get(key), term)
+            entries[key] = _add(algebra, entries.get(key), term, work)
         rows = [
             torch.stack([entries.get((i, j), matrix[i, j]) for j in range(n)])
             for i in range(n)
         ]
         filled = torch.stack(rows)
         try:
-            closure = algebra.star(filled)
+            closure = _closure(algebra, filled, like, work)
         except DivergentClosureError as error:
             raise CyclicRefused(CyclicRefusal.DIVERGENT, str(error)) from error
         except UndecidedClosureError as error:
@@ -365,14 +503,18 @@ def solve(
             total: torch.Tensor | None = None
             for j in range(n):
                 if side == "left":
-                    term = algebra.tensor_op(constant[j], closure[j, i])
+                    term = _times(algebra, constant[j], closure[j, i], work)
                 else:
-                    term = algebra.tensor_op(closure[i, j], constant[j])
-                total = _add(algebra, total, term)
+                    term = _times(algebra, closure[i, j], constant[j], work)
+                total = _add(algebra, total, term, work)
             assert total is not None
             values[item] = total
         solved.append(Component(items=tuple(members), side=side))
-    return values, tuple(solved)
+    return (
+        values,
+        tuple(solved),
+        CyclicWork(sums=work.sums, products=work.products, pivots=work.pivots),
+    )
 
 
 def _name(presentation: RulePresentation, edge: ForestEdge) -> str:

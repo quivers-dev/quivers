@@ -1008,9 +1008,18 @@ EVALUATION_MEASURES: tuple[WorkField, ...] = measuring(
 """The counters a two-pass evaluation counts: it divides and closes nothing."""
 
 CYCLIC_MEASURES: tuple[WorkField, ...] = measuring(
-    {WorkField.HASH_OPERATIONS, WorkField.KEY_COMPARISONS}
+    {
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.SCALAR_DIVISIONS,
+        WorkField.STAR_PIVOTS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+    }
 )
-"""The counters a cyclic run counts: its chart's lookups and candidates."""
+"""The counters a cyclic run counts: the algebra's operations of building,
+closing and applying each component's system, its closures of one element,
+and its chart's lookups and candidates; it divides nothing."""
 
 
 class Evaluation(ValueModel):
@@ -1034,6 +1043,8 @@ class Evaluation(ValueModel):
         Products of the algebra computed.
     counts : int
         Parent counts kept during the run, one per item.
+    pivots : int
+        Closures of one element, one per state a cyclic run eliminates.
     evidence : dict of Item to tuple of ForestEdge, or None
         Under requested evidence, the edges of every derived item of a
         requested form: its input occurrences, then its rule instances;
@@ -1043,8 +1054,7 @@ class Evaluation(ValueModel):
         and the side it was solved on; none otherwise.
     measures : tuple of WorkField
         The counters the run counted: `EVALUATION_MEASURES` for two-pass
-        runs, the chart's lookups and candidates for cyclic ones, whose
-        closures are not counted here.
+        runs and `CYCLIC_MEASURES` for cyclic ones.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1054,6 +1064,7 @@ class Evaluation(ValueModel):
     sums: int = 0
     products: int = 0
     counts: int = 0
+    pivots: int = 0
     evidence: dict[Item, tuple[ForestEdge, ...]] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -1097,6 +1108,7 @@ class Evaluation(ValueModel):
             phase=Phase.EXECUTION,
             scalar_sums=self.sums,
             scalar_products=self.products,
+            star_pivots=self.pivots,
             hash_operations=self.work.lookups,
             key_comparisons=self.work.candidates,
             provenance_records=self.counts + self.retained,
@@ -2008,7 +2020,7 @@ def _solve_cyclic(
     """
     forest = build_forest(plan.presentation, axioms)
     try:
-        values, parts = solve(forest, plan.algebra, inputs, like=like)
+        values, parts, closures = solve(forest, plan.algebra, inputs, like=like)
     except CyclicRefused as refused:
         raise PlanRefused(_CYCLIC_CODES[refused.code], refused.reason) from refused
     requested = _requested(plan)
@@ -2017,6 +2029,9 @@ def _solve_cyclic(
         order=tuple(item for part in parts for item in part.items),
         work=forest.work,
         counts=0,
+        sums=closures.sums,
+        products=closures.products,
+        pivots=closures.pivots,
         components=parts,
         measures=CYCLIC_MEASURES,
         evidence=None

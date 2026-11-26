@@ -20,6 +20,7 @@ from quivers.core.algebras import (
     LOG_PROB,
     MAX_PLUS,
     REAL,
+    MarkovAlgebra,
     MatrixSemiring,
     RealAlgebra,
     OrderPreservingSemiring,
@@ -30,6 +31,7 @@ from quivers.qiec.contracts import (
     Bounded,
     InterpretationId,
     JudgmentPattern,
+    LinearCyclic,
     NonlinearFold,
     NoRetention,
     Outcome,
@@ -529,6 +531,112 @@ class _CountingReals(RealAlgebra):
         return super().join(t, dim)
 
 
+class _CountingMarkov(MarkovAlgebra):
+    """Probabilities with a closure, counting the operations a plan asks of them."""
+
+    proof = MarkovAlgebra.proof
+    tested = MarkovAlgebra.tested
+    counted: ClassVar[dict[str, int]] = {"products": 0, "sums": 0, "closures": 0}
+
+    def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Count and forward products, one per element.
+
+        Parameters
+        ----------
+        a, b : torch.Tensor
+            The factors.
+
+        Returns
+        -------
+        torch.Tensor
+            Their products.
+        """
+        result = super().tensor_op(a, b)
+        self.counted["products"] += result.numel()
+        return result
+
+    def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Count and forward sums of two terms, one per element.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The stacked terms.
+        dim : int or tuple of int
+            The axis.
+
+        Returns
+        -------
+        torch.Tensor
+            Their sums.
+        """
+        result = super().join(t, dim)
+        self.counted["sums"] += result.numel()
+        return result
+
+    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+        """Count and forward a closure of one element.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(1, 1)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Its closure.
+        """
+        self.counted["closures"] += 1
+        return super().star(matrix)
+
+
+def _check_cyclic_counts() -> None:
+    """Require a cyclic plan's measured counters to be independent counts.
+
+    Raises
+    ------
+    Mismatch
+        If a measured counter differs from the algebra's own count, or the
+        closure's work is not ``n^3 + n^2`` products and sums for a
+        component of ``n``.
+    """
+    _CountingMarkov.counted.update(products=0, sums=0, closures=0)
+    edges = [(i, (i + 1) % 5) for i in range(5)]
+    inputs: Inputs = {**graphs.edge_weights(edges, [0.5] * len(edges))}
+    current = plan(
+        graphs.query().with_(presentation=graphs.LEFT.id),
+        graphs.LEFT,
+        _CountingMarkov(),
+        LinearCyclic(),
+        graphs.contract(),
+        NoRetention(),
+    )
+    report = current.run(graphs.occurrences(edges), inputs, like=LIKE).report()
+    counted = _CountingMarkov.counted
+    for field, count in (
+        (WorkField.SCALAR_PRODUCTS, counted["products"]),
+        (WorkField.SCALAR_SUMS, counted["sums"]),
+        (WorkField.STAR_PIVOTS, counted["closures"]),
+        (WorkField.SCALAR_DIVISIONS, 0),
+    ):
+        _require(
+            field in report.measured, f"a cyclic run does not measure {field.value}"
+        )
+        found = getattr(report, field.value)
+        if found != count:
+            raise Mismatch(
+                "value",
+                float(abs(found - count)) or 1.0,
+                f"cyclic {field.value}: reported {found}, counted {count}",
+            )
+    _require(report.star_pivots == 5, f"{report.star_pivots} closures for five states")
+    _require(
+        report.scalar_products >= 5**3 + 5**2 and report.scalar_sums >= 5**3 + 5**2,
+        "the closure did fewer than n^3 + n^2 products and sums",
+    )
+
+
 def check_measured_counts() -> None:
     """Require every measured counter of a plan's report to be an independent count.
 
@@ -600,6 +708,7 @@ def check_measured_counts() -> None:
         == report.scalar_work + report.hash_operations + report.key_comparisons,
         "the time total is not the sum of the time counters",
     )
+    _check_cyclic_counts()
 
 
 def check_constant_rule() -> None:
