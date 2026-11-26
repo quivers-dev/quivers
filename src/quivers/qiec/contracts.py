@@ -4275,7 +4275,7 @@ class ContractNotMet(ValueError):
         self.report = report
 
 
-def settle[T: HeldValue](
+def settle[T](
     contract: AccuracyContract, value: T, report: AccuracyReport
 ) -> T | Unestablished:
     """Apply a contract's failure policy to a run's result.
