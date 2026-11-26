@@ -39,8 +39,28 @@ from quivers.qiec.effects import (
     ResumptionGrade,
     RowEntry,
 )
+from quivers.qiec.contracts import (
+    AbsoluteError,
+    AbsoluteLogError,
+    AccuracyContract,
+    AccuracyReport,
+    Attainment,
+    Completed,
+    ControlReached,
+    Exact,
+    FailurePolicy,
+    Numerics,
+    Rational,
+    StopReason,
+    Target,
+    Unestablished,
+    attained_guarantee,
+    settle,
+    unmet_fields,
+)
 from quivers.qiec.distributions import RuntimeDistribution
 from quivers.qiec.families import family
+from quivers.qiec.foreign import KernelValue, SemiringSum, Settlement
 from quivers.qiec.evaluator import (
     ClauseContext,
     Forward,
@@ -2586,52 +2606,25 @@ def choose_handler(
     )
 
 
-SEARCH_REDUCTIONS: tuple[str, ...] = ("logsumexp", "max", "or", "sum")
-"""The semiring additions :func:`search_handler` may combine its shots by."""
-
-
-def _search_combine(reduction: str, weights: list[object]) -> object:
-    """Combine the collected weights of a search's shots.
-
-    Parameters
-    ----------
-    reduction : str
-        One of ``SEARCH_REDUCTIONS``.
-    weights : list[object]
-        One weight per shot: floats for the log reductions, Booleans
-        for ``or``, integers for ``sum``.
-
-    Returns
-    -------
-    object
-        The semiring sum; the semiring's zero for no shots.
-    """
-    if reduction == "logsumexp":
-        return _log_sum_exp([cast(float, weight) for weight in weights])
-    if reduction == "max":
-        return max((cast(float, weight) for weight in weights), default=float("-inf"))
-    if reduction == "or":
-        return any(cast(bool, weight) for weight in weights)
-    return sum(cast(int, weight) for weight in weights)
-
-
 def search_handler(
     definition: HandlerDef,
     operation: OperationId,
     *,
-    reduction: str,
+    semantics: SemiringSum,
     alternative_validator: RuntimeValidator,
 ) -> RuntimeHandler:
     """Enumerate a tensor of alternatives, summing the shots' weights.
 
     The handled computation answers with a unit paired with the weight
     a collecting handler inside it accumulated, which the return clause
-    reduces to the weight. The clause resumes once per entry of the
-    tensor it is asked to choose from and answers the semiring sum of
-    what the resumptions answer, so an empty choice contributes the
-    semiring's zero; a resumption's answer is itself a semiring sum when
-    the continuation chooses again, and the sum is associative, so the
-    nesting does not matter.
+    reduces to that weight with the count one. The clause resumes once
+    per entry of the tensor it is asked to choose from and answers the
+    semiring sum of the weights the resumptions answer with the sum of
+    their counts, so an empty choice contributes the zero and the count
+    zero; a resumption's answer is itself such a pair when the
+    continuation chooses again, and both sums are associative and
+    commutative, so the nesting does not matter. The answer is the sum
+    over the completed derivations and their number.
 
     Parameters
     ----------
@@ -2640,8 +2633,8 @@ def search_handler(
         handles the choosing operation with an unrestricted resumption.
     operation
         The choosing operation.
-    reduction
-        The semiring addition, one of ``SEARCH_REDUCTIONS``.
+    semantics
+        The semiring the shots are summed in.
     alternative_validator
         Checks the value each resumption carries.
 
@@ -2652,14 +2645,11 @@ def search_handler(
 
     Raises
     ------
-    ValueError
-        If the reduction is unknown.
+    MissingLaw
+        If the semiring does not establish the laws of `SUM_LAWS`.
     """
-    if reduction not in SEARCH_REDUCTIONS:
-        raise ValueError(
-            f"a search combines its shots by one of {', '.join(SEARCH_REDUCTIONS)}, "
-            f"not {reduction!r}"
-        )
+    semiring = semantics.semiring
+    semiring.require(semantics.laws, f"search {definition.name!r}")
 
     def choose(
         request: RuntimeRequest,
@@ -2680,22 +2670,37 @@ def search_handler(
         Returns
         -------
         object
-            The semiring sum of the shots' weights.
+            The semiring sum of the shots' weights and the sum of their
+            counts.
 
         Raises
         ------
         InvalidHandlerError
-            If the request does not carry one tensor of alternatives.
+            If the request does not carry one tensor of alternatives, or
+            a shot does not answer a weight and a count.
         """
         (alternatives,) = _expect_arguments(request, 1, definition.name)
         if not isinstance(alternatives, tuple):
             raise InvalidHandlerError("a search chooses among the entries of a tensor")
-        return _search_combine(
-            reduction, [resume(alternative) for alternative in alternatives]
-        )
+        shots = [resume(alternative) for alternative in alternatives]
+        weights: list[KernelValue] = []
+        count = 0
+        for shot in shots:
+            if (
+                not isinstance(shot, tuple)
+                or len(shot) != 2
+                or isinstance(shot[1], bool)
+                or not isinstance(shot[1], int)
+            ):
+                raise InvalidHandlerError(
+                    "a search's shot answers its weight and its count"
+                )
+            weights.append(cast(KernelValue, shot[0]))
+            count += shot[1]
+        return (semiring.plus(weights), count)
 
     def finish(value: object, _context: ClauseContext) -> object:
-        """Reduce the handled computation's answer to its weight.
+        """Reduce the handled computation's answer to its weight and count.
 
         Parameters
         ----------
@@ -2707,7 +2712,7 @@ def search_handler(
         Returns
         -------
         object
-            The weight.
+            The weight, with the count one.
 
         Raises
         ------
@@ -2719,7 +2724,7 @@ def search_handler(
                 "a search expects the handled computation to answer with a value "
                 "and its accumulated weight"
             )
-        return value[1]
+        return (value[1], 1)
 
     return RuntimeHandler(
         definition=definition,
@@ -2730,6 +2735,173 @@ def search_handler(
         },
         return_clause=finish,
         duplicable_context=True,
+    )
+
+
+#: The quantity a settled deduction's value approximates.
+SETTLED_QUANTITY = "the weight of the goal, the least solution of the rule equations"
+
+
+def settlement_contract(
+    semantics: Settlement, on_failure: FailurePolicy
+) -> AccuracyContract:
+    """The contract a settled value is held to.
+
+    Parameters
+    ----------
+    semantics
+        The settlement, whose semiring fixes the metric.
+    on_failure
+        What a stop by a control does.
+
+    Returns
+    -------
+    AccuracyContract
+        The exact value of `SETTLED_QUANTITY` in ``float64``, measured
+        in log weights for log weights and linearly otherwise.
+    """
+    log = semantics.semiring.log_weights
+    return AccuracyContract(
+        numerics=Numerics(dtype="float64", domain="log" if log else "linear"),
+        target=Target(
+            quantity=SETTLED_QUANTITY,
+            metric=AbsoluteLogError() if log else AbsoluteError(),
+        ),
+        on_failure=on_failure,
+    )
+
+
+def settlement_report(
+    contract: AccuracyContract, certified: bool, residual: float
+) -> AccuracyReport:
+    """The report of one stop of an iteration.
+
+    Parameters
+    ----------
+    contract
+        The contract the value is held to.
+    certified
+        Whether the stop certifies the value.
+    residual
+        The largest difference of the last two iterates.
+
+    Returns
+    -------
+    AccuracyReport
+        A completed method's exact value when certified; otherwise a stop
+        at the ``tolerance`` control with the residual as its diagnostic,
+        which guarantees nothing and so fails the guarantee.
+    """
+    stop: StopReason = (
+        Completed()
+        if certified
+        else ControlReached(control="tolerance", value=Rational.of(residual))
+    )
+    attainment = Attainment(
+        guarantee=attained_guarantee(stop, Exact(), None),
+        metric=contract.target.metric,
+    )
+    return AccuracyReport(
+        attainment=attainment,
+        stop=stop,
+        unmet=unmet_fields(contract, attainment, ()),
+    )
+
+
+def settlement_handler(
+    definition: HandlerDef,
+    operation: OperationId,
+    *,
+    semantics: Settlement,
+    on_failure: FailurePolicy = FailurePolicy.REFUSE,
+    reports: list[AccuracyReport] | None = None,
+) -> RuntimeHandler:
+    """Answer the stop of an iteration with its value only when certified.
+
+    Parameters
+    ----------
+    definition
+        The module's declaration, whose one clause handles the stopping
+        operation and resumes once.
+    operation
+        The operation, carrying the value, whether the stop certifies
+        it, and the residual of the last two iterates.
+    semantics
+        The settlement.
+    on_failure
+        `FailurePolicy.REFUSE` raises on a stop by a control;
+        `FailurePolicy.RETURN_UNESTABLISHED` records its report in
+        ``reports`` and resumes with the value, which the caller then
+        holds as unestablished.
+    reports
+        Where an unestablished stop's report goes; needed for
+        `FailurePolicy.RETURN_UNESTABLISHED`.
+
+    Returns
+    -------
+    RuntimeHandler
+        The attachment.
+
+    Raises
+    ------
+    ValueError
+        If the policy returns unestablished values and there is nowhere
+        to record their reports.
+    """
+    if on_failure is FailurePolicy.RETURN_UNESTABLISHED and reports is None:
+        raise ValueError(
+            f"settlement {definition.name!r} returns unestablished values and "
+            "needs a list for their reports"
+        )
+    contract = settlement_contract(semantics, on_failure)
+
+    def stop(
+        request: RuntimeRequest,
+        _resume: Resumption,
+        _context: ClauseContext,
+    ) -> object:
+        """Answer a stop.
+
+        Parameters
+        ----------
+        request
+            The request, carrying the value, the certificate and the
+            residual.
+        _resume
+            The continuation, resumed through the tail.
+        _context
+            Runtime services, unused by this clause.
+
+        Returns
+        -------
+        object
+            A tail resumption with the value.
+
+        Raises
+        ------
+        InvalidHandlerError
+            If the request does not carry a value, a truth value and a
+            number.
+        ContractNotMet
+            If the stop is by a control and the policy refuses.
+        """
+        value, certified, residual = _expect_arguments(request, 3, definition.name)
+        if not isinstance(certified, bool) or not isinstance(residual, float):
+            raise InvalidHandlerError(
+                "a stop carries its value, whether it is certified, and its residual"
+            )
+        report = settlement_report(contract, certified, residual)
+        settled = settle(contract, value, report)
+        if isinstance(settled, Unestablished):
+            assert reports is not None
+            reports.append(report)
+        return TailResume(value=value)
+
+    return RuntimeHandler(
+        definition=definition,
+        clauses={
+            operation: RuntimeClause(invoke=stop, result_validator=lambda _: True)
+        },
     )
 
 
@@ -3570,7 +3742,7 @@ __all__ = [
     "SCORE",
     "SCORE_ADD",
     "SCORE_EFFECT",
-    "SEARCH_REDUCTIONS",
+    "SETTLED_QUANTITY",
     "STATE_EFFECT",
     "STATE_EFFECT_REF",
     "STATE_GET",
@@ -3599,6 +3771,9 @@ __all__ = [
     "reweight_handler",
     "score_handler",
     "search_handler",
+    "settlement_contract",
+    "settlement_handler",
+    "settlement_report",
     "state_effect",
     "state_handler",
     "trace_handler",

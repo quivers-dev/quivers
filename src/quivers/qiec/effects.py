@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from enum import Enum
 from typing import Literal
 
+from quivers.qiec.foreign import ForeignSemantics
 from quivers.qiec.identifiers import (
     EffectInstanceId,
     HandlerId,
@@ -897,6 +898,10 @@ class HandlerDef(QiecModel):
         The handler's parameters, in declaration order: binders whose
         values are given where the handler is installed, are read by every
         clause body, and are given anew by each resumption.
+    foreign
+        What a foreign handler computes, which its runtime provider builds
+        it from, or ``None`` for one whose provider is configured by other
+        means. An authored handler's bodies say what it computes.
     """
 
     id: HandlerId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -920,6 +925,9 @@ class HandlerDef(QiecModel):
     parameters: tuple[Local, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
+    foreign: ForeignSemantics | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @dx.model_validator()
     def _validate_record(self) -> None:
@@ -931,8 +939,9 @@ class HandlerDef(QiecModel):
             If the telescope is malformed, if two clauses cover the same
             operation, if the handler claims to be both total and
             forwarding, if two parameters share a name or one shadows a
-            static binder, if a foreign handler declares parameters, or if its bodies disagree with its declared
-            implementation. A total handler covering every operation has
+            static binder, if a foreign handler declares parameters, if an
+            authored handler states foreign semantics, or if its bodies
+            disagree with its declared implementation. A total handler covering every operation has
             nothing left to forward. An authored handler missing a body
             has nowhere for that operation's behavior to live, and a body
             on a foreign handler would be ignored in favour of its
@@ -974,6 +983,11 @@ class HandlerDef(QiecModel):
             raise ValueError(
                 f"foreign handler {self.name!r} declares parameters; its state "
                 f"belongs to its runtime provider"
+            )
+        if authored and self.foreign is not None:
+            raise ValueError(
+                f"authored handler {self.name!r} states foreign semantics; its "
+                f"bodies say what it computes"
             )
         if not authored and self.return_clause is not None:
             raise ValueError(

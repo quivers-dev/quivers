@@ -156,6 +156,13 @@ from quivers.qiec.effects import (
     RowVariable,
 )
 from quivers.qiec.evidence import BranchGiven, Reflexivity
+from quivers.qiec.foreign import (
+    Enumeration,
+    KernelSemiring,
+    SemiringProduct,
+    SemiringSum,
+    Settlement,
+)
 from quivers.qiec.identifiers import (
     AttachmentId,
     ConstructorId,
@@ -367,6 +374,11 @@ _NODE_CLASSES = (
     HandlerClauseDef,
     HandlerReturnClauseDef,
     HandlerDef,
+    KernelSemiring,
+    SemiringSum,
+    SemiringProduct,
+    Enumeration,
+    Settlement,
     EffectRequest,
     NamedEffectInstance,
     NamedComputation,
