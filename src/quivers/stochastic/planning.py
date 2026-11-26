@@ -792,6 +792,13 @@ _SPAN_PARAMETERS = (
     ),
     ComplexityParameter(name="R", meaning="binary rule instances"),
     ComplexityParameter(name="C", meaning="side conditions evaluated"),
+    ComplexityParameter(
+        name="Z",
+        meaning=(
+            "cells next to an empty span with a nullable category, each closed "
+            "on its own"
+        ),
+    ),
 )
 
 SPAN_WORK = ComplexityClaim(
@@ -802,7 +809,7 @@ SPAN_WORK = ComplexityClaim(
         ComplexityBound(
             phase=Phase.EXECUTION,
             resource="time",
-            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + C",
+            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3 + C",
             status=Unresolved(
                 obligation=(
                     "for real weights the inside values are ring computations, so "
@@ -822,13 +829,13 @@ SPAN_WORK = ComplexityClaim(
         ComplexityBound(
             phase=Phase.DIFFERENTIATION,
             resource="time",
-            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + C",
+            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3 + C",
             status=Unresolved(obligation="as for execution"),
         ),
         ComplexityBound(
             phase=Phase.DIFFERENTIATION,
             resource="space",
-            expression="P n^3 + R n^2 + N^2 n^2 + N^3",
+            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3",
             status=Unresolved(
                 obligation="the autograd tape holds every product of every length"
             ),
@@ -854,6 +861,10 @@ SPAN_WORK = ComplexityClaim(
         "own; one reading the span masks its rule",
         "the unary closure is the algebra's star when the unary rules have a "
         "cycle and a sum in topological order of N^3 operations otherwise",
+        "inputs over empty spans make categories nullable: their weights at each "
+        "position solve a polynomial system by components, acyclic or linear by "
+        "the star, and a binary rule with an empty premise is a step of its cell "
+        "over one span; an empty first premise needs a commutative product",
     ),
 )
 """The cost of the span executor."""
@@ -866,7 +877,7 @@ SPAN_RECOGNITION_WORK = ComplexityClaim(
         ComplexityBound(
             phase=Phase.EXECUTION,
             resource="time",
-            expression="N^2 n^3 + R n^2 + N^3 log(N) + C",
+            expression="N^2 n^3 + R n^2 + N^3 log(N) + Z N^3 log(N) + n R N + C",
             status=Unresolved(
                 obligation=(
                     "Valiant's divide-and-conquer recognizes a string of a fixed "
@@ -2362,11 +2373,10 @@ def _run_span(
             )
         )
     for start, end, _, _ in placed:
-        if end <= start:
+        if end < start:
             raise PlanRefused(
                 PlanRefusal.INADMISSIBLE,
-                f"an input spans {start} to {end}; a span plan's inputs span at "
-                "least one position, so that lengths order the cells",
+                f"an input ends at {end} before its start {start}; a span runs forward",
             )
     length = max((end for _, end, _, _ in placed), default=0)
     by_length: dict[int, list[tuple[int, int, torch.Tensor]]] = {}
@@ -2385,7 +2395,9 @@ def _run_span(
         [True] * len(grammar.binary),
         [True] * len(grammar.unary),
         device=like.device,
+        empty=_empty_categories(by_length.get(0, ()), length, None),
     )
+    cyclic = isinstance(plan.record.recursion, LinearCyclic)
     if plan.record.algorithm == SPAN_RECOGNITION_ALGORITHM:
         seeds = {
             width: _support_seed(length - width + 1, size, entries, algebra, like)
@@ -2398,6 +2410,7 @@ def _run_span(
             [not bool(algebra.is_zero(weight).all()) for weight in binary],
             [not bool(algebra.is_zero(weight).all()) for weight in unary],
             device=like.device,
+            empty=_empty_categories(by_length.get(0, ()), length, algebra),
         )
     else:
         seeds = {
@@ -2406,13 +2419,21 @@ def _run_span(
         }
         try:
             chart, work = span_inside(
-                grammar, algebra, seeds, length, binary, unary, like=like
+                grammar,
+                algebra,
+                seeds,
+                length,
+                binary,
+                unary,
+                like=like,
+                empty=_empty_categories(by_length.get(0, ()), length, None),
+                cyclic=cyclic,
             )
         except SpanRefused as refused:
-            raise PlanRefused(PlanRefusal.ALGEBRA, refused.reason) from refused
+            raise PlanRefused(_SPAN_CODES[refused.code], refused.reason) from refused
     values: dict[Item, torch.Tensor] = {}
     order: list[Item] = []
-    for width in range(1, length + 1):
+    for width in range(0 if 0 in support else 1, length + 1):
         reached = support[width]
         for start in range(length - width + 1):
             for category in range(size):
@@ -2434,6 +2455,44 @@ def _run_span(
         allocated=work.allocated,
         peak=work.peak,
     )
+
+
+_SPAN_CODES = {
+    "form": PlanRefusal.INADMISSIBLE,
+    "cycle": PlanRefusal.CYCLE,
+    "nonlinear": PlanRefusal.NONLINEAR_CYCLE,
+    "sides": PlanRefusal.MIXED_SIDES,
+    "algebra": PlanRefusal.ALGEBRA,
+}
+"""The plan's refusal for each refusal of the span executor."""
+
+
+def _empty_categories(
+    entries: Sequence[tuple[int, int, torch.Tensor]],
+    length: int,
+    algebra: OrderPreservingSemiring | None,
+) -> list[set[int]]:
+    """The categories of the inputs over each empty span.
+
+    Parameters
+    ----------
+    entries : Sequence of tuple
+        Each input over an empty span: its position, category and weight.
+    length : int
+        The last position.
+    algebra : OrderPreservingSemiring or None
+        The algebra whose zero is absent; ``None`` counts every input.
+
+    Returns
+    -------
+    list of set of int
+        One set per position, all empty without such inputs.
+    """
+    found: list[set[int]] = [set() for _ in range(length + 1)] if entries else []
+    for position, category, weight in entries:
+        if algebra is None or not bool(algebra.is_zero(weight).all()):
+            found[position].add(category)
+    return found
 
 
 def _support_seed(

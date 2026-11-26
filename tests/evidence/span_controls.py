@@ -14,7 +14,7 @@ inputs.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from fractions import Fraction
 
 import torch
@@ -69,7 +69,7 @@ from quivers.stochastic.planning import (
 )
 from tests.evidence import graphs, scaling
 from tests.evidence import presentations as fixture
-from tests.evidence.checks._registry import Check
+from tests.evidence.checks._registry import Check, add
 from tests.evidence.compare import Accuracy, Mismatch, compare_number
 from tests.evidence.counters import saved_elements
 from tests.evidence.mutations import Mutation, Rewrite
@@ -762,20 +762,20 @@ def _refused(
 
 
 def check_refusals() -> None:
-    """Require an input over no position to be refused.
+    """Require an input that ends before its start to be refused.
 
     Raises
     ------
     Mismatch
         If it is admitted.
     """
-    empty = AxiomOccurrence(
-        slot=_WORD.id, occurrence=word(0), binding=(("i", 1), ("j", 1))
+    backward = AxiomOccurrence(
+        slot=_WORD.id, occurrence=word(0), binding=(("i", 2), ("j", 1))
     )
     _refused(
-        lambda: _plan(CATALAN, MARKOV).run([empty], {}, like=LIKE),
+        lambda: _plan(CATALAN, MARKOV).run([backward], {}, like=LIKE),
         PlanRefusal.INADMISSIBLE,
-        "an input over no position",
+        "an input that ends before its start",
     )
 
 
@@ -868,6 +868,318 @@ def check_work() -> None:
         )
 
 
+# -- empty spans ---------------------------------------------------------------
+
+
+def span_presentation(
+    name: str,
+    categories: tuple[str, ...],
+    binary: Sequence[tuple[str, str, str, str]],
+) -> tuple[RulePresentation, AxiomSlot, FamilyId, UserIndexSort]:
+    """A presentation in span form with binary rules and one input slot.
+
+    Parameters
+    ----------
+    name : str
+        Its name.
+    categories : tuple of str
+        The categories.
+    binary : Sequence of tuple of str
+        Each rule: name, left, right, conclusion.
+
+    Returns
+    -------
+    tuple
+        The presentation, its input slot, its family and its sort.
+    """
+    sort = UserIndexSort(name=f"{name}-category", constructors=categories)
+    family = FamilyId.derive(name, "span")
+
+    def pattern(label: str | None, start: str, end: str) -> Judgment:
+        """A pattern over a span.
+
+        Parameters
+        ----------
+        label : str or None
+            The category, or a variable for ``None``.
+        start, end : str
+            The position variables.
+
+        Returns
+        -------
+        Judgment
+            The pattern.
+        """
+        category = (
+            IndexVariable(name="c", sort=sort)
+            if label is None
+            else IndexLiteral(value=label, sort=sort)
+        )
+        return Judgment(
+            family=family,
+            arguments=(
+                category,
+                IndexVariable(name=start, sort=NAT),
+                IndexVariable(name=end, sort=NAT),
+            ),
+        )
+
+    slot = AxiomSlot(
+        id=ConstructorId.derive(name, "word"),
+        name="word",
+        telescope=(
+            IndexBinder(name="c", sort=sort),
+            IndexBinder(name="i", sort=NAT),
+            IndexBinder(name="j", sort=NAT),
+        ),
+        judgment=pattern(None, "i", "j"),
+    )
+    presentation = RulePresentation(
+        id=PresentationId.derive(name),
+        name=name,
+        index_sorts=(sort,),
+        judgments=(
+            JudgmentDecl(
+                id=family,
+                name="span",
+                indices=(
+                    IndexBinder(name="c", sort=sort, refinable=True),
+                    IndexBinder(name="i", sort=NAT, refinable=True),
+                    IndexBinder(name="j", sort=NAT, refinable=True),
+                ),
+            ),
+        ),
+        rules=tuple(
+            Rule(
+                id=ConstructorId.derive(name, rule),
+                name=rule,
+                telescope=tuple(IndexBinder(name=v, sort=NAT) for v in "ikj"),
+                premises=(
+                    Premise(judgment=pattern(left, "i", "k")),
+                    Premise(judgment=pattern(right, "k", "j")),
+                ),
+                conclusion=pattern(result, "i", "j"),
+                weight=ParameterId.derive(name, rule),
+            )
+            for rule, left, right, result in binary
+        ),
+        axioms=(slot,),
+    )
+    return presentation, slot, family, sort
+
+
+NULLABLE, _NSLOT, _NFAMILY, _ = span_presentation(
+    "nullable",
+    ("S", "A", "E", "F", "G"),
+    (
+        ("s", "E", "A", "S"),
+        ("t", "A", "E", "S"),
+        ("e", "F", "G", "E"),
+        ("u", "S", "S", "S"),
+    ),
+)
+"""``E`` is nullable through ``F`` and ``G``, recursively; ``S`` takes it on
+either side."""
+
+_NRULES = {
+    "s": Fraction(1, 2),
+    "t": Fraction(1, 3),
+    "e": Fraction(3, 4),
+    "u": Fraction(2, 5),
+}
+_NINPUTS = (
+    ("a0", "A", 0, 1, Fraction(1, 2)),
+    ("a1", "A", 1, 2, Fraction(2, 3)),
+    ("f0", "F", 0, 0, Fraction(3, 5)),
+    ("g0", "G", 0, 0, Fraction(1, 4)),
+    ("f2", "F", 2, 2, Fraction(1, 7)),
+    ("g2", "G", 2, 2, Fraction(5, 6)),
+)
+"""Inputs: two words, and the nullable parts over the empty spans at 0 and 2."""
+
+
+def _occurrences(
+    name: str, slot: AxiomSlot, inputs: Sequence[tuple[str, str, int, int, Fraction]]
+) -> list[AxiomOccurrence]:
+    """The occurrences of inputs.
+
+    Parameters
+    ----------
+    name : str
+        The presentation's name.
+    slot : AxiomSlot
+        The slot.
+    inputs : Sequence of tuple
+        Each input: name, category, start, end, weight.
+
+    Returns
+    -------
+    list of AxiomOccurrence
+        The occurrences.
+    """
+    return [
+        AxiomOccurrence(
+            slot=slot.id,
+            occurrence=OccurrenceId.derive(name, key),
+            binding=(("c", label), ("i", start), ("j", end)),
+        )
+        for key, label, start, end, _ in inputs
+    ]
+
+
+def _weights_of(
+    name: str,
+    rules: dict[str, Fraction],
+    inputs: Sequence[tuple[str, str, int, int, Fraction]],
+) -> Inputs:
+    """The log weights of rules and inputs.
+
+    Parameters
+    ----------
+    name : str
+        The presentation's name.
+    rules : dict of str to Fraction
+        The rule weights.
+    inputs : Sequence of tuple
+        The inputs.
+
+    Returns
+    -------
+    Inputs
+        The weights.
+    """
+    found: Inputs = {
+        ParameterId.derive(name, rule): torch.tensor(_log(value), dtype=torch.float64)
+        for rule, value in rules.items()
+    }
+    for key, _, _, _, value in inputs:
+        found[OccurrenceId.derive(name, key)] = torch.tensor(
+            _log(value), dtype=torch.float64
+        )
+    return found
+
+
+def check_nullable() -> None:
+    """Require values and derivatives over nullable categories to be the oracle's (O1, O7).
+
+    ``E`` over ``(0, 0)`` and ``(2, 2)`` is derived from ``F`` and ``G``
+    there; ``S(0, 1)`` takes it on the left of a word, ``S(1, 2)`` on the
+    right, and ``S(0, 2)`` combines them. Every derivation is finite.
+
+    Raises
+    ------
+    Mismatch
+        If a value or a derivative differs from the enumerated trees.
+    """
+    i, k, j = oracle.Variable("i"), oracle.Variable("k"), oracle.Variable("j")
+    rows: list[oracle.RuleRow] = [
+        (rule, ((left, i, k), (right, k, j)), (result, i, j), rule)
+        for rule, left, right, result in (
+            ("s", "E", "A", "S"),
+            ("t", "A", "E", "S"),
+            ("e", "F", "G", "E"),
+            ("u", "S", "S", "S"),
+        )
+    ]
+    axioms: list[oracle.AxiomRow] = [
+        (key, (label, start, end)) for key, label, start, end, _ in _NINPUTS
+    ]
+    weights = {**_NRULES, **{key: value for key, _, _, _, value in _NINPUTS}}
+    current = _plan(NULLABLE, LOG_PROB)
+    occurrences = _occurrences("nullable", _NSLOT, _NINPUTS)
+    inputs = _weights_of("nullable", _NRULES, _NINPUTS)
+    evaluation = current.run(occurrences, inputs, like=LIKE)
+    for cell in (("E", 0, 0), ("E", 2, 2), ("S", 0, 1), ("S", 1, 2), ("S", 0, 2)):
+        trees = oracle.derivations(axioms, rows, cell)
+        _require(bool(trees), f"the oracle derives no {cell}")
+        compare_number(
+            float(evaluation.value(Item(family=_NFAMILY, arguments=cell))),
+            _log(oracle.total(trees, weights, Fraction(0), Fraction(1))),
+            Accuracy(domain="log", operations=64),
+            f"{cell}",
+        )
+    trees = oracle.derivations(axioms, rows, ("S", 0, 2))
+    gradient = current.gradient(
+        occurrences, inputs, Item(family=_NFAMILY, arguments=("S", 0, 2)), like=LIKE
+    )
+    for key, value in inputs.items():
+        name = next(
+            label
+            for label in weights
+            if key
+            in (
+                ParameterId.derive("nullable", label),
+                OccurrenceId.derive("nullable", label),
+            )
+        )
+        del value
+        compare_number(
+            float(gradient[key]),
+            float(oracle.logarithmic_gradient(trees, weights, name)),
+            Accuracy(domain="linear", operations=256),
+            f"d log S(0, 2) / d log {name}",
+        )
+
+
+LOOPED, _LSLOT, _LFAMILY, _ = span_presentation(
+    "looped", ("S", "E"), (("loop", "S", "E", "S"),)
+)
+"""``S(i, j) <- S(i, k), E(k, j)``: with ``E`` nullable at ``j``, a step of ``S``
+to itself over one span."""
+
+
+def check_nullable_cycle() -> None:
+    """Require the geometric sum of a cycle through an empty span (O6).
+
+    With ``S(0, 1) = a`` and ``E(1, 1) = e``, ``S(0, 1) = a / (1 - e w)``;
+    the acyclic contract is refused, and so is a nonlinear nullable cycle
+    under the linear one.
+
+    Raises
+    ------
+    Mismatch
+        If the value differs or a refusal is missing.
+    """
+    inputs = (("a", "S", 0, 1, Fraction(1, 2)), ("e", "E", 1, 1, Fraction(2, 3)))
+    rules = {"loop": Fraction(3, 5)}
+    occurrences = _occurrences("looped", _LSLOT, inputs)
+    linear = {
+        key: value.exp() for key, value in _weights_of("looped", rules, inputs).items()
+    }
+    evaluation = _plan(LOOPED, MARKOV, recursion=LinearCyclic()).run(
+        occurrences, linear, like=LIKE
+    )
+    compare_number(
+        float(evaluation.value(Item(family=_LFAMILY, arguments=("S", 0, 1)))),
+        float(Fraction(1, 2) / (1 - Fraction(2, 3) * Fraction(3, 5))),
+        Accuracy(domain="linear", operations=64),
+        "S(0, 1) through an empty span",
+    )
+    _refused(
+        lambda: _plan(LOOPED, MARKOV).run(occurrences, linear, like=LIKE),
+        PlanRefusal.CYCLE,
+        "a cycle through an empty span as acyclic",
+    )
+    squared, slot, _, _ = span_presentation(
+        "squared", ("E",), (("pair", "E", "E", "E"),)
+    )
+    seeds = (("e", "E", 0, 0, Fraction(1, 3)),)
+    _refused(
+        lambda: _plan(squared, MARKOV, recursion=LinearCyclic()).run(
+            _occurrences("squared", slot, seeds),
+            {
+                key: value.exp()
+                for key, value in _weights_of(
+                    "squared", {"pair": Fraction(1, 2)}, seeds
+                ).items()
+            },
+            like=LIKE,
+        ),
+        PlanRefusal.NONLINEAR_CYCLE,
+        "a nonlinear nullable cycle under the linear contract",
+    )
+
+
 CHECKS: dict[str, Check] = {
     name: Check(name=name, executor="span", question="Q3", run=run)
     for name, run in (
@@ -880,10 +1192,59 @@ CHECKS: dict[str, Check] = {
         ("span/matrix-order", check_matrix_order),
         ("span/unary-cycle", check_unary_cycle),
         ("span/refusals", check_refusals),
+        ("span/nullable", check_nullable),
+        ("span/nullable-cycle", check_nullable_cycle),
         ("span/work", check_work),
     )
 }
 """Every check of span plans by name."""
+
+COLUMNS: dict[str, str] = {
+    "span/selected": "Q3",
+    "span/attachment": "Q3",
+    "span/attachment-gradients": "Q1g",
+    "span/exact-zero": "Q1g",
+    "span/recognition": "Q2",
+    "span/catalan": "Q3",
+    "span/matrix-order": "Q3",
+    "span/unary-cycle": "Q8",
+    "span/refusals": "Q3",
+    "span/work": "Q3",
+    "span/nullable": "Q3",
+    "span/nullable-cycle": "Q8",
+}
+"""The column of the grid each check of span plans answers."""
+
+
+def register() -> None:
+    """Register every check of span plans in the grid's row ``span-plan``."""
+    for name, check in CHECKS.items():
+        add(
+            f"span-plan/{name.removeprefix('span/')}",
+            "span-plan",
+            COLUMNS[name],
+            check.run,
+        )
+
+
+def run() -> list[torch.Tensor]:
+    """The representative run of the span executor: the attachment grammar.
+
+    Returns
+    -------
+    list of torch.Tensor
+        The goal's log weight, then its derivatives in the inputs.
+    """
+    inputs = _inputs(_log)
+    leaves = {key: value.requires_grad_() for key, value in inputs.items()}
+    value = (
+        _plan(fixture.PRESENTATION, LOG_PROB)
+        .run(fixture.OCCURRENCES, leaves, like=LIKE)
+        .value(_item(*fixture.GOAL))
+    )
+    found = torch.autograd.grad(value, list(leaves.values()), allow_unused=True)
+    return [value.detach(), *(gradient for gradient in found if gradient is not None)]
+
 
 SPAN = "quivers.stochastic.span"
 
@@ -945,6 +1306,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         rejected_by=("span/attachment",),
         min_effect=3.7,
+    ),
+    Mutation(
+        name="span-recursive-nullable-dropped",
+        defect_class="alternative omitted",
+        provenance="a nullable category derived from two nullable ones is left out",
+        target=f"{SPAN}:_nullable",
+        rewrites=(
+            Rewrite(
+                old="terms[rule.result].append(((rule.left, rule.right), weight))",
+                new="terms[rule.result].extend(())",
+            ),
+        ),
+        rejected_by=("span/nullable",),
+        min_effect=1.0,
     ),
     Mutation(
         name="span-support-from-numbers",

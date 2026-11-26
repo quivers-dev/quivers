@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
 import didactic.api as dx
@@ -44,6 +44,7 @@ import torch.nn as nn
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring, Star
 from quivers.core.elimination import fiber_join
+from quivers.core.laws import TIMES_COMMUTATIVE
 from quivers.qiec.identifiers import FamilyId
 from quivers.qiec.kinds import NAT, UserIndexSort
 from quivers.qiec.rules import (
@@ -632,11 +633,23 @@ class SpanRefused(ValueError):
     ----------
     reason : str
         Why.
+    code : str
+        ``"form"`` when the presentation is not in span form; for a run,
+        ``"cycle"`` when its cells form a cycle the contract does not
+        admit, ``"nonlinear"`` when nullable items form a nonlinear cycle,
+        ``"sides"`` when a cycle multiplies on both sides of a product that
+        does not commute, and ``"algebra"`` when a cycle needs a star the
+        algebra lacks.
     """
 
-    def __init__(self, reason: str) -> None:
+    def __init__(
+        self,
+        reason: str,
+        code: Literal["form", "cycle", "nonlinear", "sides", "algebra"] = "form",
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.code = code
 
 
 class SpanRule(ValueModel):
@@ -846,9 +859,16 @@ def span_grammar(presentation: RulePresentation) -> SpanGrammar:
 
     Raises
     ------
+    TypeError
+        If it is not a rule presentation.
     SpanRefused
         If the presentation is not in span form, with the first reason.
     """
+    if not isinstance(presentation, RulePresentation):
+        raise TypeError(
+            f"span form is read from a rule presentation, not a "
+            f"{type(presentation).__name__}"
+        )
     if len(presentation.judgments) != 1:
         raise SpanRefused("span form has one judgment family")
     (declaration,) = presentation.judgments
@@ -1240,72 +1260,27 @@ def _holds(
     return side_condition_holds(grammar.presentation, rule.rule, binding)
 
 
-def _closure(
-    grammar: SpanGrammar,
-    algebra: OrderPreservingSemiring,
-    rules: list[SpanRule],
-    weights: list[torch.Tensor],
-    like: torch.Tensor,
-    count: _Count,
-) -> torch.Tensor:
-    """The closure ``U*`` of unary rules over the categories.
+type Edge = tuple[int, int, torch.Tensor]
+"""A weighted step between categories over one span: from, to, weight."""
 
-    ``U[b, a]`` is the sum of the weights of the rules deriving ``a`` from
-    ``b``. With a cycle the closure is the algebra's star; without one,
-    each row is ``U*[b] = e_b ⊕ U[b] U*`` for the categories in an order
-    that puts every category after those it derives, which needs no star
-    and costs ``N^3``.
+
+def _order(size: int, successors: Mapping[int, set[int]]) -> list[int] | None:
+    """The categories, each after every category it reaches, when there is no cycle.
 
     Parameters
     ----------
-    grammar : SpanGrammar
-        The grammar.
-    algebra : OrderPreservingSemiring
-        The algebra.
-    rules : list of SpanRule
-        The unary instances that apply.
-    weights : list of torch.Tensor
-        Their weights.
-    like : torch.Tensor
-        The dtype and device.
-    count : _Count
-        The counts.
+    size : int
+        The categories.
+    successors : Mapping of int to set of int
+        The categories each reaches in one step.
 
     Returns
     -------
-    torch.Tensor
-        ``(N, N, *element_shape)``.
-
-    Raises
-    ------
-    SpanRefused
-        If the rules have a cycle and the algebra has no star.
+    list of int or None
+        The order, or ``None`` when the steps have a cycle.
     """
-    size = len(grammar.categories)
-    identity = algebra.identity_tensor((size,), dtype=like.dtype, device=like.device)
-    if not rules:
-        return identity
-    stacked = torch.stack(weights)
-    fibers: list[list[int]] = [[] for _ in range(size * size)]
-    for position, rule in enumerate(rules):
-        fibers[rule.left * size + rule.result].append(position)
-    matrix = fiber_join(
-        algebra, stacked, fibers, algebra.zero_like((1,), like), axis=0
-    ).reshape(size, size, *stacked.shape[1:])
-    if grammar.unary_cyclic:
-        if not isinstance(algebra, Star):
-            raise SpanRefused(
-                "the unary rules have a cycle and the algebra has no star to sum it"
-            )
-        closure, work = algebra.star_with_work(matrix)
-        count.pivots += work.pivots
-        count.exact += work.exact
-        count.products += work.products
-        count.sums += work.sums
-        return count.made(closure)
-    successors: dict[int, set[int]] = {}
-    for rule in rules:
-        successors.setdefault(rule.left, set()).add(rule.result)
+    if _cyclic(successors):
+        return None
     finished: list[int] = []
     seen: set[int] = set()
     for root in range(size):
@@ -1323,9 +1298,86 @@ def _closure(
                 continue
             stack.pop()
             finished.append(node)
+    return finished
+
+
+def _closure(
+    grammar: SpanGrammar,
+    algebra: OrderPreservingSemiring,
+    edges: Sequence[Edge],
+    like: torch.Tensor,
+    count: _Count,
+    cyclic: bool,
+) -> torch.Tensor:
+    """The closure ``U*`` of weighted steps between categories over one span.
+
+    ``U[b, a]`` is the sum of the weights of the steps from ``b`` to
+    ``a``. With a cycle the closure is the algebra's star, which the
+    linear cyclic contract admits; without one, each row is
+    ``U*[b] = e_b ⊕ U[b] U*`` for the categories in an order that puts
+    every category after those it reaches, which needs no star and costs
+    ``N^3``.
+
+    Parameters
+    ----------
+    grammar : SpanGrammar
+        The grammar.
+    algebra : OrderPreservingSemiring
+        The algebra.
+    edges : Sequence of Edge
+        The steps.
+    like : torch.Tensor
+        The dtype and device.
+    count : _Count
+        The counts.
+    cyclic : bool
+        Whether the contract admits a cycle.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(N, N, *element_shape)``.
+
+    Raises
+    ------
+    SpanRefused
+        If the steps have a cycle the contract does not admit, or one the
+        algebra has no star to sum.
+    """
+    size = len(grammar.categories)
+    identity = algebra.identity_tensor((size,), dtype=like.dtype, device=like.device)
+    if not edges:
+        return identity
+    stacked = torch.stack([weight for _, _, weight in edges])
+    fibers: list[list[int]] = [[] for _ in range(size * size)]
+    successors: dict[int, set[int]] = {}
+    for position, (source, target, _) in enumerate(edges):
+        fibers[source * size + target].append(position)
+        successors.setdefault(source, set()).add(target)
+    matrix = fiber_join(
+        algebra, stacked, fibers, algebra.zero_like((1,), like), axis=0
+    ).reshape(size, size, *stacked.shape[1:])
+    order = _order(size, successors)
+    if order is None:
+        if not cyclic:
+            raise SpanRefused(
+                "the steps over one span have a cycle; the system is linear cyclic",
+                "cycle",
+            )
+        if not isinstance(algebra, Star):
+            raise SpanRefused(
+                "the steps over one span have a cycle and the algebra has no star",
+                "algebra",
+            )
+        closure, work = algebra.star_with_work(matrix)
+        count.pivots += work.pivots
+        count.exact += work.exact
+        count.products += work.products
+        count.sums += work.sums
+        return count.made(closure)
     rows: dict[int, torch.Tensor] = {}
     zero_row = algebra.zero_like((size,), like)
-    for node in finished:
+    for node in order:
         table = torch.stack([rows.get(other, zero_row) for other in range(size)])
         through = algebra.compose(matrix[node].unsqueeze(0), table, 1)[0]
         count.products += size * size
@@ -1333,6 +1385,353 @@ def _closure(
         rows[node] = algebra.join_pair(identity[node], through)
         count.sums += size
     return count.made(torch.stack([rows[node] for node in range(size)]))
+
+
+def _support(
+    grammar: SpanGrammar,
+    present: set[int],
+    position: int,
+    binary: Sequence[bool],
+    unary: Sequence[bool],
+    count: _Count,
+) -> set[int]:
+    """The categories derivable over the empty span at a position.
+
+    Parameters
+    ----------
+    grammar : SpanGrammar
+        The grammar.
+    present : set of int
+        The categories of the inputs there.
+    position : int
+        The position.
+    binary : Sequence of bool
+        Whether each binary instance is present.
+    unary : Sequence of bool
+        Whether each unary instance is present.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    set of int
+        Every category with a derivation over ``(position, position)``.
+    """
+    found = set(present)
+    changed = True
+    while changed:
+        changed = False
+        for rule, kept in zip(grammar.unary, unary, strict=True):
+            if (
+                kept
+                and rule.result not in found
+                and rule.left in found
+                and _holds(grammar, rule, (position, position), count)
+            ):
+                found.add(rule.result)
+                changed = True
+        for rule, kept in zip(grammar.binary, binary, strict=True):
+            if (
+                kept
+                and rule.result not in found
+                and rule.left in found
+                and rule.right in found
+                and _holds(grammar, rule, (position,) * 3, count)
+            ):
+                found.add(rule.result)
+                changed = True
+    return found
+
+
+def _nullable(
+    grammar: SpanGrammar,
+    algebra: OrderPreservingSemiring,
+    seeds: torch.Tensor,
+    support: Sequence[set[int]],
+    binary: Sequence[torch.Tensor],
+    unary: Sequence[torch.Tensor],
+    like: torch.Tensor,
+    count: _Count,
+    cyclic: bool,
+) -> torch.Tensor:
+    """The weights of the categories over every empty span.
+
+    Over ``(i, i)`` the weights solve ``e = s ⊕ e U ⊕ sum_r e(B) e(C) w_r``:
+    a polynomial system in the categories, solved by its strongly
+    connected components in order. A component without a cycle is its
+    constant; a linear one is ``b M*`` with the algebra's star, which the
+    linear cyclic contract admits. A nonlinear cycle is a monotone
+    polynomial system, which this executor does not solve.
+
+    Parameters
+    ----------
+    grammar : SpanGrammar
+        The grammar.
+    algebra : OrderPreservingSemiring
+        The algebra.
+    seeds : torch.Tensor
+        ``(n + 1, N, *element_shape)``: the inputs over each empty span.
+    support : Sequence of set of int
+        The categories derivable over each empty span.
+    binary : Sequence of torch.Tensor
+        The binary instances' weights.
+    unary : Sequence of torch.Tensor
+        The unary instances' weights.
+    like : torch.Tensor
+        The dtype and device.
+    count : _Count
+        The counts.
+    cyclic : bool
+        Whether the contract admits a cycle.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(n + 1, N, *element_shape)``.
+
+    Raises
+    ------
+    SpanRefused
+        If a component is a nonlinear cycle, a cycle the contract does not
+        admit, or a cycle multiplied on both sides of a product that does
+        not commute.
+    """
+    size = len(grammar.categories)
+    commutes = algebra.establishes(TIMES_COMMUTATIVE)
+    zero = algebra.zero_like((), like)
+    rows: list[torch.Tensor] = []
+    for position, nullable in enumerate(support):
+        terms: dict[int, list[tuple[tuple[int, ...], torch.Tensor]]] = {
+            category: [] for category in nullable
+        }
+        for rule, weight in zip(grammar.unary, unary, strict=True):
+            if (
+                rule.result in nullable
+                and rule.left in nullable
+                and _holds(grammar, rule, (position, position), count)
+            ):
+                terms[rule.result].append(((rule.left,), weight))
+        for rule, weight in zip(grammar.binary, binary, strict=True):
+            if (
+                rule.result in nullable
+                and rule.left in nullable
+                and rule.right in nullable
+                and _holds(grammar, rule, (position,) * 3, count)
+            ):
+                terms[rule.result].append(((rule.left, rule.right), weight))
+        successors: dict[int, set[int]] = {}
+        for result, monomials in terms.items():
+            for premises, _ in monomials:
+                for premise in premises:
+                    successors.setdefault(premise, set()).add(result)
+        values: dict[int, torch.Tensor] = {}
+        for members in _components(sorted(nullable), successors):
+            inside = set(members)
+            constants: dict[int, torch.Tensor] = {
+                category: seeds[position, category] for category in members
+            }
+            edges: list[tuple[int, int, torch.Tensor]] = []
+            for result in members:
+                for premises, weight in terms[result]:
+                    places = [
+                        p for p, category in enumerate(premises) if category in inside
+                    ]
+                    if len(places) > 1:
+                        raise SpanRefused(
+                            "nullable categories form a nonlinear cycle, a monotone "
+                            "polynomial system",
+                            "nonlinear",
+                        )
+                    factors = [
+                        values[category] if index not in places else None
+                        for index, category in enumerate(premises)
+                    ]
+                    if not places:
+                        term = weight
+                        for factor in reversed(factors):
+                            assert factor is not None
+                            term = count.times(algebra, factor, term)
+                        constants[result] = count.made(
+                            algebra.join_pair(constants[result], term)
+                        )
+                        count.sums += 1
+                        continue
+                    (place,) = places
+                    if place > 0 and not commutes:
+                        raise SpanRefused(
+                            "a nullable cycle multiplies its item after another "
+                            "premise, and the product is not established to commute",
+                            "sides",
+                        )
+                    coefficient = weight
+                    for index in reversed(range(len(premises))):
+                        factor = factors[index]
+                        if factor is not None:
+                            coefficient = count.times(algebra, factor, coefficient)
+                    edges.append((premises[place], result, coefficient))
+            if not edges:
+                values.update(constants)
+                continue
+            local = {category: index for index, category in enumerate(members)}
+            closure = _closure(
+                grammar,
+                algebra,
+                [(local[a], local[b], weight) for a, b, weight in edges],
+                like,
+                count,
+                cyclic,
+            )
+            constant = torch.stack([constants[category] for category in members])
+            solved = algebra.compose(
+                constant.unsqueeze(0), closure[: len(members), : len(members)], 1
+            )[0]
+            count.products += len(members) ** 2
+            for category, value in zip(members, solved, strict=True):
+                values[category] = value
+        rows.append(
+            torch.stack([values.get(category, zero) for category in range(size)])
+        )
+    return count.made(torch.stack(rows))
+
+
+def _components(
+    nodes: Sequence[int], successors: Mapping[int, set[int]]
+) -> list[list[int]]:
+    """Strongly connected components, each after those that reach it.
+
+    Parameters
+    ----------
+    nodes : Sequence of int
+        The nodes.
+    successors : Mapping of int to set of int
+        The edges.
+
+    Returns
+    -------
+    list of list of int
+        The components in an order that puts a component after every
+        component with an edge into it.
+    """
+    index: dict[int, int] = {}
+    low: dict[int, int] = {}
+    stack: list[int] = []
+    on_stack: set[int] = set()
+    found: list[list[int]] = []
+    counter = 0
+    for root in nodes:
+        if root in index:
+            continue
+        work: list[tuple[int, list[int]]] = [(root, sorted(successors.get(root, ())))]
+        index[root] = low[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            node, rest = work[-1]
+            if rest:
+                nxt = rest.pop()
+                if nxt not in index:
+                    index[nxt] = low[nxt] = counter
+                    counter += 1
+                    stack.append(nxt)
+                    on_stack.add(nxt)
+                    work.append((nxt, sorted(successors.get(nxt, ()))))
+                elif nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[node])
+            if low[node] == index[node]:
+                component: list[int] = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                found.append(sorted(component))
+    found.reverse()
+    return found
+
+
+def _empty_steps(
+    grammar: SpanGrammar,
+    algebra: OrderPreservingSemiring,
+    empty: torch.Tensor,
+    support: Sequence[set[int]],
+    binary: Sequence[torch.Tensor],
+    start: int,
+    end: int,
+    count: _Count,
+) -> list[Edge]:
+    """The steps a cell takes through binary rules with an empty premise.
+
+    ``A(i, j) <- B(i, i), C(i, j)`` is the step from ``C`` to ``A`` with
+    weight ``e_i(B) w``, which moves ``e_i(B)`` past ``x(C)`` and so needs
+    a commutative product; ``A(i, j) <- B(i, j), C(j, j)`` is the step
+    from ``B`` with weight ``e_j(C) w``, in premise order.
+
+    Parameters
+    ----------
+    grammar : SpanGrammar
+        The grammar.
+    algebra : OrderPreservingSemiring
+        The algebra.
+    empty : torch.Tensor
+        ``(n + 1, N, *element_shape)``: the weights over the empty spans.
+    support : Sequence of set of int
+        The categories derivable over each empty span.
+    binary : Sequence of torch.Tensor
+        The binary instances' weights.
+    start : int
+        The cell's start.
+    end : int
+        Its end.
+    count : _Count
+        The counts.
+
+    Returns
+    -------
+    list of Edge
+        The steps.
+
+    Raises
+    ------
+    SpanRefused
+        If a step with an empty left premise is needed and the product is
+        not established to commute.
+    """
+    edges: list[Edge] = []
+    commutes = algebra.establishes(TIMES_COMMUTATIVE)
+    for rule, weight in zip(grammar.binary, binary, strict=True):
+        if rule.left in support[start] and _holds(
+            grammar, rule, (start, start, end), count
+        ):
+            if not commutes:
+                raise SpanRefused(
+                    f"{rule.rule.name} has an empty first premise before its item, "
+                    "and the product is not established to commute",
+                    "sides",
+                )
+            edges.append(
+                (
+                    rule.right,
+                    rule.result,
+                    count.times(algebra, empty[start, rule.left], weight),
+                )
+            )
+        if rule.right in support[end] and _holds(
+            grammar, rule, (start, end, end), count
+        ):
+            edges.append(
+                (
+                    rule.left,
+                    rule.result,
+                    count.times(algebra, empty[end, rule.right], weight),
+                )
+            )
+    return edges
 
 
 def _unary_closure(
@@ -1344,10 +1743,13 @@ def _unary_closure(
     like: torch.Tensor,
     count: _Count,
     closures: dict[tuple[bool, ...], torch.Tensor],
+    extra: Mapping[int, list[Edge]],
+    cyclic: bool,
 ) -> torch.Tensor:
-    """Close every cell of one length under the unary rules: ``cell ⊗ U*``.
+    """Close every cell of one length under its steps over one span: ``cell ⊗ U*``.
 
-    Cells whose conditioned unary rules hold alike share one closure.
+    Cells whose conditioned unary rules hold alike share one closure; a
+    cell with steps through empty premises is closed on its own.
 
     Parameters
     ----------
@@ -1367,49 +1769,70 @@ def _unary_closure(
         The counts.
     closures : dict
         The closures made so far, by which conditioned rules hold.
+    extra : Mapping of int to list of Edge
+        The steps through empty premises of each cell that has some.
+    cyclic : bool
+        Whether the contract admits a cycle.
 
     Returns
     -------
     torch.Tensor
         The closed cells.
     """
-    if not grammar.unary:
+    if not grammar.unary and not extra:
         return cells
+    size = len(grammar.categories)
     conditioned = [
         position for position, rule in enumerate(grammar.unary) if rule.reads != "none"
     ]
     groups: dict[tuple[bool, ...], list[int]] = {}
+    keys: dict[int, tuple[bool, ...]] = {}
     for start in range(cells.shape[0]):
         key = tuple(
             _holds(grammar, grammar.unary[position], (start, start + length), count)
             for position in conditioned
         )
-        groups.setdefault(key, []).append(start)
+        keys[start] = key
+        if start not in extra:
+            groups.setdefault(key, []).append(start)
+
+    def steps(key: tuple[bool, ...]) -> list[Edge]:
+        """The unary rules that hold for a pattern of conditions.
+
+        Parameters
+        ----------
+        key : tuple of bool
+            Whether each conditioned unary rule holds.
+
+        Returns
+        -------
+        list of Edge
+            Their steps.
+        """
+        holding = dict(zip(conditioned, key, strict=True))
+        return [
+            (rule.left, rule.result, unary[position])
+            for position, rule in enumerate(grammar.unary)
+            if holding.get(position, True)
+        ]
+
     results: dict[int, torch.Tensor] = {}
     for key, starts in groups.items():
         if key not in closures:
-            holding = dict(zip(conditioned, key, strict=True))
-            chosen = [
-                position
-                for position in range(len(grammar.unary))
-                if holding.get(position, True)
-            ]
-            closures[key] = _closure(
-                grammar,
-                algebra,
-                [grammar.unary[position] for position in chosen],
-                [unary[position] for position in chosen],
-                like,
-                count,
-            )
+            closures[key] = _closure(grammar, algebra, steps(key), like, count, cyclic)
         index = torch.tensor(starts, dtype=torch.long, device=cells.device)
-        chosen_cells = cells.index_select(0, index)
-        closed = algebra.compose(chosen_cells, closures[key], 1)
-        size = len(grammar.categories)
+        closed = algebra.compose(cells.index_select(0, index), closures[key], 1)
         count.products += len(starts) * size * size
         count.sums += len(starts) * size * (size - 1)
         for row, start in enumerate(starts):
             results[start] = closed[row]
+    for start, edges in extra.items():
+        closure = _closure(
+            grammar, algebra, [*steps(keys[start]), *edges], like, count, cyclic
+        )
+        results[start] = algebra.compose(cells[start].unsqueeze(0), closure, 1)[0]
+        count.products += size * size
+        count.sums += size * (size - 1)
     return count.made(torch.stack([results[start] for start in range(cells.shape[0])]))
 
 
@@ -1422,6 +1845,8 @@ def span_inside(
     unary: list[torch.Tensor],
     *,
     like: torch.Tensor,
+    empty: Sequence[set[int]] = (),
+    cyclic: bool = False,
 ) -> tuple[dict[int, torch.Tensor], SpanWork]:
     """The inside values of every span, by span length.
 
@@ -1435,6 +1860,11 @@ def span_inside(
     distributivity, so the products keep the premises' order and the
     rule weight last, and no product over categories, rules and split
     points together is formed.
+
+    Inputs over empty spans make categories nullable. Their weights over
+    each empty span are solved first (`_nullable`), and a binary rule with
+    an empty premise becomes a step of its cell over one span, closed with
+    the unary rules: the standard treatment of empty spans, exact.
 
     Parameters
     ----------
@@ -1454,17 +1884,26 @@ def span_inside(
         The weight of each instance of `SpanGrammar.unary`.
     like : torch.Tensor
         The dtype and device.
+    empty : Sequence of set of int
+        The categories of the inputs over each empty span, by position;
+        none by default. Their weights are ``seeds[0]``.
+    cyclic : bool
+        Whether the contract admits a cycle over one span.
 
     Returns
     -------
     tuple of dict and SpanWork
         For each length ``l``, the cells ``(n - l + 1, N, *element_shape)``
-        starting at ``0 .. n - l``; and the work.
+        starting at ``0 .. n - l``, the empty spans at length zero when
+        some input is over one; and the work.
 
     Raises
     ------
     SpanRefused
-        If the unary rules have a cycle and the algebra has no star.
+        If the steps over one span have a cycle the contract does not
+        admit or the algebra cannot sum, nullable categories form a
+        nonlinear cycle, or an empty first premise needs a commutative
+        product the algebra does not establish.
     """
     rank = len(algebra.element_shape)
     count = _Count(rank)
@@ -1483,6 +1922,34 @@ def span_inside(
     weights = torch.stack(binary) if binary else None
     closures: dict[tuple[bool, ...], torch.Tensor] = {}
     chart: dict[int, torch.Tensor] = {}
+    support = [
+        _support(
+            grammar,
+            set(empty[position]) if position < len(empty) else set(),
+            position,
+            [True] * len(grammar.binary),
+            [True] * len(grammar.unary),
+            count,
+        )
+        for position in range(length + 1)
+    ]
+    nullable = any(support)
+    if nullable:
+        initial = seeds.get(0)
+        chart[0] = _nullable(
+            grammar,
+            algebra,
+            initial
+            if initial is not None
+            else algebra.zero_like((length + 1, size), like),
+            support,
+            binary,
+            unary,
+            like,
+            count,
+            cyclic,
+        )
+        count.held += count.elements(chart[0])
     for width in range(1, length + 1):
         rows = length - width + 1
         cells = seeds.get(width)
@@ -1561,8 +2028,24 @@ def span_inside(
             cells = count.made(algebra.join_pair(cells, derived))
             count.sums += rows * size
             count.temporary = 0
+        extra: dict[int, list[Edge]] = {}
+        if nullable:
+            for start in range(rows):
+                if support[start] or support[start + width]:
+                    found = _empty_steps(
+                        grammar,
+                        algebra,
+                        chart[0],
+                        support,
+                        binary,
+                        start,
+                        start + width,
+                        count,
+                    )
+                    if found:
+                        extra[start] = found
         closed = _unary_closure(
-            grammar, algebra, cells, width, unary, like, count, closures
+            grammar, algebra, cells, width, unary, like, count, closures, extra, cyclic
         )
         chart[width] = closed
         count.held += count.elements(closed)
@@ -1571,29 +2054,29 @@ def span_inside(
 
 
 def _boolean_closure(
-    size: int, rules: list[SpanRule], device: torch.device
+    size: int, edges: Sequence[tuple[int, int]], device: torch.device
 ) -> torch.Tensor:
-    """The reflexive transitive closure of unary rules, by squaring.
+    """The reflexive transitive closure of steps between categories, by squaring.
 
     Parameters
     ----------
     size : int
         The number of categories.
-    rules : list of SpanRule
-        The unary instances present.
+    edges : Sequence of tuple of int
+        The steps present, from and to.
     device : torch.device
         The device.
 
     Returns
     -------
     torch.Tensor
-        ``(N, N)`` of 0 and 1 in float64: whether a chain of the rules
-        derives the second category from the first, the empty one
+        ``(N, N)`` of 0 and 1 in float64: whether a chain of the steps
+        reaches the second category from the first, the empty one
         included.
     """
     closure = torch.eye(size, dtype=torch.float64, device=device)
-    for rule in rules:
-        closure[rule.left, rule.result] = 1.0
+    for source, target in edges:
+        closure[source, target] = 1.0
     steps = max(size - 1, 1).bit_length()
     for _ in range(steps):
         closure = (closure @ closure > 0).to(torch.float64)
@@ -1608,6 +2091,7 @@ def span_recognize(
     unary: list[bool],
     *,
     device: torch.device,
+    empty: Sequence[set[int]] = (),
 ) -> tuple[dict[int, torch.Tensor], SpanWork]:
     """Which category is derivable over which span, by Boolean matrix products.
 
@@ -1633,21 +2117,41 @@ def span_recognize(
         Whether each unary instance is present.
     device : torch.device
         The device.
+    empty : Sequence of set of int
+        The categories of the inputs present over each empty span.
 
     Returns
     -------
     tuple of dict and SpanWork
-        For each length, ``(n - l + 1, N)`` Booleans; and the work, a
-        matrix product of sizes ``a b c`` counted as ``a b c`` products.
+        For each length, ``(n - l + 1, N)`` Booleans, the empty spans at
+        length zero; and the work, a matrix product of sizes ``a b c``
+        counted as ``a b c`` products.
     """
     count = _Count(0)
     size = len(grammar.categories)
     chart: dict[int, torch.Tensor] = {}
-    closures: dict[tuple[bool, ...], torch.Tensor] = {}
+    closures: dict[tuple[tuple[int, int], ...], torch.Tensor] = {}
     conditioned = [
         position for position, rule in enumerate(grammar.unary) if rule.reads != "none"
     ]
     present = [rule for rule, kept in zip(grammar.binary, binary, strict=True) if kept]
+    support = [
+        _support(
+            grammar,
+            set(empty[position]) if position < len(empty) else set(),
+            position,
+            binary,
+            unary,
+            count,
+        )
+        for position in range(length + 1)
+    ]
+    if any(support):
+        reached = torch.zeros((length + 1, size), dtype=torch.float64, device=device)
+        for position, categories in enumerate(support):
+            for category in categories:
+                reached[position, category] = 1.0
+        chart[0] = reached
     for width in range(1, length + 1):
         rows = length - width + 1
         cells = seeds.get(width)
@@ -1700,31 +2204,34 @@ def span_recognize(
                 )
                 count.sums += rows
             cells = torch.maximum(cells, derived)
-        if grammar.unary:
-            groups: dict[tuple[bool, ...], list[int]] = {}
-            for start in range(rows):
-                key = tuple(
-                    _holds(grammar, grammar.unary[p], (start, start + width), count)
-                    for p in conditioned
-                )
-                groups.setdefault(key, []).append(start)
+        if grammar.unary or any(support):
             closed = cells.clone()
-            for key, starts in groups.items():
-                if key not in closures:
-                    holding = dict(zip(conditioned, key, strict=True))
-                    closures[key] = _boolean_closure(
-                        size,
-                        [
-                            rule
-                            for position, rule in enumerate(grammar.unary)
-                            if unary[position] and holding.get(position, True)
-                        ],
-                        device,
+            for start in range(rows):
+                end = start + width
+                edges = [
+                    (rule.left, rule.result)
+                    for position, rule in enumerate(grammar.unary)
+                    if unary[position]
+                    and (
+                        position not in conditioned
+                        or _holds(grammar, rule, (start, end), count)
                     )
+                ]
+                for rule in present:
+                    if rule.left in support[start] and _holds(
+                        grammar, rule, (start, start, end), count
+                    ):
+                        edges.append((rule.right, rule.result))
+                    if rule.right in support[end] and _holds(
+                        grammar, rule, (start, end, end), count
+                    ):
+                        edges.append((rule.left, rule.result))
+                key = tuple(sorted(set(edges)))
+                if key not in closures:
+                    closures[key] = _boolean_closure(size, key, device)
                     count.products += size**3 * max(size - 1, 1).bit_length()
-                index = torch.tensor(starts, dtype=torch.long, device=device)
-                closed[index] = (cells[index] @ closures[key] > 0).to(torch.float64)
-                count.products += len(starts) * size * size
+                closed[start] = (cells[start] @ closures[key] > 0).to(torch.float64)
+                count.products += size * size
             cells = closed
         chart[width] = cells
     return {width: cells > 0 for width, cells in chart.items()}, count.report()

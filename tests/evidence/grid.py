@@ -40,6 +40,7 @@ from quivers.inference import trace
 from quivers.qiec.program_runtime import run_deduction
 from quivers.stochastic._kleene import kleene_star
 from quivers.stochastic.agenda import InferenceRule, run_agenda
+from quivers.stochastic.span import span_grammar
 from quivers.stochastic.semiring import LOG_PROB
 from tests.evidence.checks import deduction, machine, mixture, span, terms
 from tests.evidence.checks.deduction import weighted
@@ -355,6 +356,7 @@ ENTRIES: dict[str, Entry] = {
         RealAlgebra(),
         (value,),  # type: ignore[arg-type]
     )[0],
+    "span-plan": lambda value: span_grammar(value),  # type: ignore[arg-type]
     "chart-parser": lambda value: span.chart_parser(LOG_PROB, {})(value),
     "inside": lambda value: span.inside_algorithm({})[0](value),
     "marginalize-grouped": lambda value: marginalize_grouped(

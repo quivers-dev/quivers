@@ -212,6 +212,17 @@ is reported, with the zero, as the two-pass executor reports it. The cost claim 
 of complexity claim Q3, and the run measures the counters of
 [`SPAN_MEASURES`][quivers.stochastic.planning.SPAN_MEASURES].
 
+Inputs over empty spans $(i, i)$ make categories *nullable*. Over each empty span the weights
+solve $e = s \oplus e\,U \oplus \bigoplus_r e(B) \otimes e(C) \otimes w_r$, a polynomial system in the
+categories; its strongly connected components are solved in order, a component without a cycle
+by its constant and a linear one as $b M^*$ by the algebra's star, which needs the linear cyclic
+contract. A nonlinear cycle of nullable categories is a monotone polynomial system and is refused
+here. A binary rule with an empty premise then joins the unary rules of its cell: $A(i, j)
+\leftarrow B(i, j), C(j, j)$ is the step from $B$ to $A$ with weight $e_j(C) \otimes w$, and $A(i, j)
+\leftarrow B(i, i), C(i, j)$ the step from $C$ with weight $e_i(B) \otimes w$, which moves $e_i(B)$
+past the cell's value and so needs a commutative product. A cell with such steps is closed on its
+own, and a cycle among its steps needs the linear cyclic contract and a star.
+
 The support of a value is a separate observer plan,
 [`SPAN_RECOGNITION_ALGORITHM`][quivers.stochastic.planning.SPAN_RECOGNITION_ALGORITHM], selected
 for a support query when the algebra establishes zero-sum-freeness and the absence of zero
