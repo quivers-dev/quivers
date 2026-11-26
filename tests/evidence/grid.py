@@ -168,11 +168,7 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
     "marginalize-ungrouped": {"Q6": ("nested-marginalize-asserts",)},
-    "encoder": {"Q24": ("signature-rebuilt-per-node",)},
-    "decoder": {
-        "Q14": ("depth-bound-shifts-choices",),
-        "Q24": ("signature-rebuilt-per-node",),
-    },
+    "decoder": {"Q14": ("depth-bound-shifts-choices",)},
     **{
         f"svi-{guide}": {"R1": ("guide-scores-first-row",)}
         for guide in ("mvn", "low-rank", "structured")

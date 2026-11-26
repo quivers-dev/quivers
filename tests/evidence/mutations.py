@@ -745,6 +745,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=32.0,
     ),
     Mutation(
+        name="signature-copied-per-node",
+        defect_class="graph work",
+        provenance=(
+            "an encoder copies its immutable signature at every argument, so "
+            "each node builds the signature's tables again"
+        ),
+        target="quivers.structural.encoder:Encoder._compress_arg",
+        rewrites=(
+            Rewrite(old="sig = self.signature", new="sig = self.signature.with_()"),
+        ),
+        rejected_by=("terms/encoder_tables",),
+        min_effect=8.0,
+    ),
+    Mutation(
         name="weight-read-as-a-number",
         defect_class="scalar coercion",
         provenance="a premise weight is turned into a Python number and back",

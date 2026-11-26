@@ -13,6 +13,7 @@ from quivers.structural.decoder import Decoder
 from quivers.structural.encoder import Encoder, PerOpFn
 from quivers.structural.signature import Constructor, Signature, Sort, Term
 from tests.evidence.checks._registry import add
+from tests.evidence.counters import CallCounter
 from tests.evidence.compare import (
     differentiate,
     ELEMENTARY,
@@ -498,12 +499,47 @@ def check_decoder_replay() -> None:
         )
 
 
+TABLES = ("sorts", "constructors", "binders")
+"""The name-keyed tables of a signature."""
+
+
+def check_encoder_tables() -> None:
+    """Require a signature's tables to be built once over repeated folds.
+
+    A fold reads a table at every node. If a table were built per read, or
+    the signature copied per node, a fold would cost the size of the term
+    times the size of the signature; here 64 unused constructors make that
+    visible.
+
+    Raises
+    ------
+    Mismatch
+        If a table is built more than once.
+    """
+    encode = encoder(parameters(), extra=64)
+    builders = {}
+    for name in TABLES:
+        table = vars(Signature)[name]
+        builders[name] = table.func
+    with CallCounter(builders) as calls:
+        for _ in range(3):
+            encode(asymmetric(4))
+    extra = max(calls.counts.values()) - 1
+    if extra > 0:
+        raise Mismatch(
+            "work",
+            float(extra),
+            f"tables built {calls.counts} times over three folds of one term",
+        )
+
+
 def _register() -> None:
     """Register every check of this module."""
     add("terms/encoder", "encoder", "Q24", check_encoder)
     add("terms/encoder_gradient", "encoder", "Q1g", check_encoder_gradient)
     add("terms/encoder_update", "encoder", "Q24", check_encoder_update)
     add("terms/encoder_refusal", "encoder", "Q24", check_encoder_refusal)
+    add("terms/encoder_tables", "encoder", "Q24", check_encoder_tables)
     add("terms/decoder", "decoder", "Q14", check_decoder)
     add("terms/decoder_gradient", "decoder", "Q1g", check_decoder_gradient)
     add("terms/decoder_support", "decoder", "Q24", check_decoder_support)

@@ -78,7 +78,7 @@ from tests.evidence.checks.span import (
     double_precision,
     inside_algorithm,
 )
-from tests.evidence.checks.terms import asymmetric, encoder, node, leaf, parameters
+from tests.evidence.checks.terms import encoder, node, leaf, parameters
 from tests.evidence.compare import Mismatch
 from tests.evidence.counters import CallCounter, TensorCounter
 from tests.evidence.oracles import closed_forms, derivations, exact
@@ -1412,50 +1412,6 @@ record(
 )
 
 # -- structured terms ----------------------------------------------------
-
-
-def _signature_reads(extra: int) -> int:
-    """How many declarations a fold of a small term visits.
-
-    Parameters
-    ----------
-    extra : int
-        The number of unused constructors.
-
-    Returns
-    -------
-    int
-        The number of entries of the dictionaries that are built.
-    """
-    encode = encoder(parameters(), extra)
-    reads = {
-        "constructors": Signature.constructors,
-        "sorts": Signature.sorts,
-        "binders": Signature.binders,
-    }
-    functions = {}
-    for name, member in reads.items():
-        assert isinstance(member, property)
-        assert member.fget is not None
-        functions[name] = member.fget
-    with CallCounter(functions) as calls:
-        encode(asymmetric(4))
-    sizes = {"constructors": 2 + extra, "sorts": 1, "binders": 0}
-    return sum(calls.counts[name] * sizes[name] for name in sizes)
-
-
-record(
-    "signature-rebuilt-per-node",
-    "structural/signature.py: Signature.constructors, sorts, binders",
-    "the declarations are put in a new dictionary at every read, so a fold costs "
-    "the size of the term times the size of the signature",
-    {"entries visited beside 64 unused constructors": "1196"},
-    {"entries visited beside 64 unused constructors": "44"},
-    lambda: {
-        "entries visited beside 64 unused constructors": str(_signature_reads(64))
-    },
-    lambda: {"entries visited beside 64 unused constructors": str(_signature_reads(0))},
-)
 
 
 def _depth_columns() -> Facts:

@@ -24,7 +24,9 @@ copying, and pickling.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from functools import cached_property
+from types import MappingProxyType
 from typing import Literal
 
 import didactic.api as dx
@@ -183,8 +185,9 @@ class Signature(dx.Model):
     Sort, constructor, binder, vertex_kind and edge_kind tables are
     represented as tuples of records (rather than dicts) so the
     enclosing `dx.Model` keeps a schema-bearing layout. The
-    runtime exposes O(1) name-keyed lookup methods (``sort(name)``,
-    ``constructor(name)``, etc.) on top of those tuples.
+    runtime exposes name-keyed tables (`sorts`, `constructors`, ...)
+    on top of those tuples, each built once per signature, and every
+    lookup through them takes constant time.
     """
 
     name: str
@@ -196,31 +199,77 @@ class Signature(dx.Model):
     edge_kinds_t: tuple[EdgeKind, ...] = ()
 
     # ---- dict-like lookups ----
+    #
+    # Each table is built once per signature, on first use, and shared by
+    # every later lookup, so a fold of a term costs its size and not its
+    # size times the size of the signature. A signature is immutable, so a
+    # table cannot go stale.
 
-    @property
-    def sorts(self) -> dict[str, Sort]:
-        """The sort declarations keyed by sort name."""
-        return {s.name: s for s in self.sorts_t}
+    @cached_property
+    def sorts(self) -> Mapping[str, Sort]:
+        """The sort declarations keyed by sort name.
 
-    @property
-    def constructors(self) -> dict[str, Constructor]:
-        """The constructor declarations keyed by constructor name."""
-        return {c.name: c for c in self.constructors_t}
+        Returns
+        -------
+        Mapping[str, Sort]
+            A read-only table, built once.
+        """
+        return MappingProxyType({s.name: s for s in self.sorts_t})
 
-    @property
-    def binders(self) -> dict[str, Binder]:
-        """The binder declarations keyed by binder name."""
-        return {b.name: b for b in self.binders_t}
+    @cached_property
+    def constructors(self) -> Mapping[str, Constructor]:
+        """The constructor declarations keyed by constructor name.
 
-    @property
-    def vertex_kinds(self) -> dict[str, VertexKind]:
-        """The graph vertex kinds keyed by kind name."""
-        return {v.name: v for v in self.vertex_kinds_t}
+        Returns
+        -------
+        Mapping[str, Constructor]
+            A read-only table, built once.
+        """
+        return MappingProxyType({c.name: c for c in self.constructors_t})
 
-    @property
-    def edge_kinds(self) -> dict[str, EdgeKind]:
-        """The graph edge kinds keyed by kind name."""
-        return {e.name: e for e in self.edge_kinds_t}
+    @cached_property
+    def binders(self) -> Mapping[str, Binder]:
+        """The binder declarations keyed by binder name.
+
+        Returns
+        -------
+        Mapping[str, Binder]
+            A read-only table, built once.
+        """
+        return MappingProxyType({b.name: b for b in self.binders_t})
+
+    @cached_property
+    def vertex_kinds(self) -> Mapping[str, VertexKind]:
+        """The graph vertex kinds keyed by kind name.
+
+        Returns
+        -------
+        Mapping[str, VertexKind]
+            A read-only table, built once.
+        """
+        return MappingProxyType({v.name: v for v in self.vertex_kinds_t})
+
+    @cached_property
+    def edge_kinds(self) -> Mapping[str, EdgeKind]:
+        """The graph edge kinds keyed by kind name.
+
+        Returns
+        -------
+        Mapping[str, EdgeKind]
+            A read-only table, built once.
+        """
+        return MappingProxyType({e.name: e for e in self.edge_kinds_t})
+
+    @cached_property
+    def _binder_domains(self) -> Mapping[str, tuple[str, ...]]:
+        """The positional argument sorts of every binder, built once.
+
+        Returns
+        -------
+        Mapping[str, tuple[str, ...]]
+            A read-only table.
+        """
+        return MappingProxyType({b.name: b.domain() for b in self.binders_t})
 
     # ---- shape queries ----
 
@@ -276,12 +325,12 @@ class Signature(dx.Model):
         KeyError
             If ``op`` is neither a constructor nor a binder.
         """
-        for c in self.constructors_t:
-            if c.name == op:
-                return c.codomain
-        for b in self.binders_t:
-            if b.name == op:
-                return b.codomain
+        constructor = self.constructors.get(op)
+        if constructor is not None:
+            return constructor.codomain
+        binder = self.binders.get(op)
+        if binder is not None:
+            return binder.codomain
         raise KeyError(
             f"signature {self.name!r}: op {op!r} not a constructor or binder"
         )
@@ -305,12 +354,12 @@ class Signature(dx.Model):
         KeyError
             If ``op`` is neither a constructor nor a binder.
         """
-        for c in self.constructors_t:
-            if c.name == op:
-                return c.domain
-        for b in self.binders_t:
-            if b.name == op:
-                return b.domain()
+        constructor = self.constructors.get(op)
+        if constructor is not None:
+            return constructor.domain
+        domain = self._binder_domains.get(op)
+        if domain is not None:
+            return domain
         raise KeyError(
             f"signature {self.name!r}: op {op!r} not a constructor or binder"
         )
@@ -328,7 +377,7 @@ class Signature(dx.Model):
         bool
             ``True`` when a binder of that name is declared.
         """
-        return any(b.name == op for b in self.binders_t)
+        return op in self.binders
 
     def sort_dim(self, sort: str) -> int | None:
         """Return the declared embedding dimension of a sort or vertex kind.
@@ -344,12 +393,12 @@ class Signature(dx.Model):
             The declared dimension, or ``None`` when the name is not
             declared or declares no dimension.
         """
-        for s in self.sorts_t:
-            if s.name == sort:
-                return s.dim
-        for v in self.vertex_kinds_t:
-            if v.name == sort:
-                return v.dim
+        declared = self.sorts.get(sort)
+        if declared is not None:
+            return declared.dim
+        vertex = self.vertex_kinds.get(sort)
+        if vertex is not None:
+            return vertex.dim
         return None
 
 
