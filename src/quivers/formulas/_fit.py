@@ -71,13 +71,14 @@ from quivers.formulas._predictor_graph import (
 from quivers.formulas._prediction import FormulaPredictionPlan
 from quivers.formulas._autocor import (
     AutocorMatrix,
-    autocor_binding,
-    autocor_joint,
-    autocor_linear_predictor,
-    bind_autocor_terms,
     fields_and_design,
-    autocor_log_likelihood,
     split_autocor_terms,
+)
+from quivers.formulas._residual_law import (
+    ResidualLaw,
+    bind_autocor_terms,
+    linear_predictor,
+    pointwise_scores,
 )
 
 # Joint (multivariate) formulas: typed overload contracts and dispatch target.
@@ -182,6 +183,7 @@ from quivers.formulas._posterior import (
 )
 from quivers.formulas._predictor import Predictor, response_axis
 from quivers.inference._posterior import draw_count
+from quivers.inference.trace import Trace
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 
@@ -232,6 +234,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         Parsed formula IR.
     family : Family
         Response family used at compile time.
+    residual : ResidualLaw or None
+        Residual law of the response: natural residuals correlated across
+        rows by an autocorrelation term; None for independent rows.
     program : MonadicProgram
         The compiled program.
     posterior : MCMCResult or PriorDraws or Guide
@@ -285,6 +290,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
 
     formula: Formula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     family: Family = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    residual: ResidualLaw | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     posterior: MCMCResult | PriorDraws | Guide = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -687,6 +695,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         *,
         distributional: Mapping[str, Formula] | None = None,
         nonlinear_leaves: Mapping[str, Formula] | None = None,
+        residual: ResidualLaw | None = None,
     ) -> FormulaToQVRModule:
         """Reuse fitted compiler settings with optional specialized predictors.
 
@@ -696,6 +705,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             Specialized auxiliary metadata, or the fitted metadata.
         nonlinear_leaves : Mapping[str, Formula] or None
             Group-specialized designs for the same nonlinear graph.
+        residual : ResidualLaw or None
+            The residual law over other rows, or None for the fitted one.
 
         Returns
         -------
@@ -723,6 +734,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             else self.predictor_graph.with_(leaves=dict(nonlinear_leaves)),
             default_priors=self.default_priors,
             center=self.center,
+            residual=self.residual if residual is None else residual,
             decomp=self.decomp,
         )
 
@@ -1227,20 +1239,10 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                     yield fixed.reshape(()).expand(rows)
                     continue
 
-                def read(name: str) -> torch.Tensor:
-                    """Read one row binding of the replayed program."""
-                    # brms's mu includes conditional ARMA terms.
-                    if (
-                        name == binding.site
-                        and parameter == "mu"
-                        and autocor_binding(self.family) is not None
-                    ):
-                        return autocor_linear_predictor(
-                            recorded, _qvr_name(self.formula.response_name)
-                        )
-                    return recorded.sites[name].value
-
-                yield binding.read(read, rows)
+                yield binding.read(
+                    self._row_reader(parameter, binding, recorded, lambda name: name),
+                    rows,
+                )
 
         return collect_draws(values(), shape)
 
@@ -1690,22 +1692,16 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             and actual sampler statistics. Later analysis reuses these tensors.
         """
         from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
-        from quivers.inference._likelihood import collect_log_likelihood
 
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
-            likelihood = (
-                autocor_log_likelihood(
-                    replay(self, draws, shape, score_observations=True), response, shape
-                )
-                if autocor_joint(self.family)
-                else collect_log_likelihood(
-                    replay(self, draws, shape, score_observations=True),
-                    {response},
-                    shape,
-                )
+            likelihood = pointwise_scores(
+                replay(self, draws, shape, score_observations=True),
+                {response},
+                {response} if self.residual is not None else set(),
+                shape,
             )
         return PosteriorAnalysis(
             samples=draws,
@@ -1775,7 +1771,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         TypeError
             If a hidden response needs a marginal-likelihood observer.
         """
-        from quivers.inference._likelihood import collect_log_likelihood
 
         context = None
         if new_data is not None:
@@ -1833,18 +1828,11 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
-            # Non-factorized residual structures score brms's LOO conditionals.
-            if incl_autocor and autocor_joint(self.family):
-                return autocor_log_likelihood(
-                    replay(
-                        self, draws, shape, context=context, score_observations=True
-                    ),
-                    response,
-                    shape,
-                )
-            return collect_log_likelihood(
+            # Correlated residuals score brms's leave-one-out conditionals.
+            return pointwise_scores(
                 replay(self, draws, shape, context=context, score_observations=True),
                 {response},
+                {response} if self.residual is not None else set(),
                 shape,
             )
 
@@ -2171,6 +2159,45 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             ):
                 return predictor, output.parameters.index(parameter)
         return None
+
+    def _row_reader(
+        self,
+        parameter: str,
+        binding: LinpredBinding,
+        recorded: Trace,
+        site: Callable[[str], str],
+    ) -> Callable[[str], torch.Tensor]:
+        """Read the row bindings of a linear predictor from one replay.
+
+        brms's ``mu`` includes the conditional ARMA recursion of a residual
+        law, which moves the location by lagged recorded residuals; the
+        replayed residual law states that location.
+
+        Parameters
+        ----------
+        parameter : str
+            Predictor name.
+        binding : LinpredBinding
+            Binding holding the predictor.
+        recorded : Trace
+            One replayed execution.
+        site : Callable[[str], str]
+            Program name of a binding of this response: the identity for a
+            single fit, the response namespace in a joint program.
+
+        Returns
+        -------
+        Callable[[str], torch.Tensor]
+            The value of a named binding of this response.
+        """
+        response = site(_qvr_name(self.formula.response_name))
+
+        def read(name: str) -> torch.Tensor:
+            if name == binding.site and parameter == "mu" and self.residual is not None:
+                return linear_predictor(recorded, response)
+            return recorded.sites[site(name)].value
+
+        return read
 
     def _linpred_binding(self, parameter: str, transform: bool) -> LinpredBinding:
         """Choose the row binding holding a linear predictor.
@@ -3781,6 +3808,7 @@ def _assemble_fit(
         refit_recipe=refit_recipe,
         formula=prepared.formula.formula,
         family=prepared.formula.family,
+        residual=prepared.formula.lens._residual,
         program=prepared.program,
         posterior=result.posterior,
         sample_prior=result.sample_prior,
@@ -4206,8 +4234,9 @@ def _prepare_formula(
         data = original
     data = included_data(parsed, data)
     binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
+    residual = None
     if autocor_terms:
-        family_obj, parsed = bind_autocor_terms(
+        residual, parsed = bind_autocor_terms(
             autocor_terms,
             family_obj,
             parsed,
@@ -4299,6 +4328,7 @@ def _prepare_formula(
         default_priors=default_priors,
         center=center,
         decomp=decomp,
+        residual=residual,
     )
     return _PreparedFormula(
         lens,

@@ -25,7 +25,8 @@ import torch
 
 from quivers.diagnostics.cross_validation import FoldPlan, cross_validate
 from quivers.formulas import bf, fit, formula_to_qvr, set_rescor
-from quivers.formulas._autocor import _structure_layout, split_autocor_terms
+from quivers.formulas._autocor import split_autocor_terms
+from quivers.formulas._residual_law import structure_layout
 from quivers.formulas._residual_dependence import ResidualResponse
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.mcmc.driver import MCMCResult
@@ -55,7 +56,7 @@ def _layout(text, frame, *, student=False, data2=None, se=None, history=None):
     terms = split_autocor_terms(f"y ~ x + {text}")[1]
     arma = next((term for term in terms if term.kind == "arma" and not term.cov), None)
     structural = [term for term in terms if term is not arma]
-    return _structure_layout(
+    return structure_layout(
         structural[0] if structural else arma,
         arma if structural else None,
         frame.reset_index(drop=True),
@@ -63,7 +64,7 @@ def _layout(text, frame, *, student=False, data2=None, se=None, history=None):
         history=history,
         time_levels=None,
         data2=data2,
-        known_variance=None if se is None else np.square(se),
+        variance=None if se is None else np.square(se),
         caller="test",
     )[0]
 

@@ -48,7 +48,6 @@ from quivers.diagnostics.elpd import (
 )
 from quivers.diagnostics.posterior import PosteriorAnalysis
 from quivers.formulas._group_prediction import NewLevelPolicy
-from quivers.formulas._autocor import autocor_binding, autocor_joint
 from quivers.inference.mcmc.kernel import PotentialFn
 from quivers.inference.prior import PriorDraws
 from quivers.inference.registry import LatentRegistry
@@ -811,11 +810,7 @@ def loo_subsample_estimate(
     the m subsampled rows, O(N + S m), instead of O(S N) for full PSIS-LOO.
     """
     if (joint and cast("MultivariateFit", fit).data2) or (
-        not joint
-        and (
-            autocor_joint(cast("BayesianFit", fit).family)
-            or autocor_binding(cast("BayesianFit", fit).family) is not None
-        )
+        not joint and (cast("BayesianFit", fit).residual is not None)
     ):
         raise ValueError(
             "loo_subsample requires conditionally independent rows; this fit "

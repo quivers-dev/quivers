@@ -44,11 +44,8 @@ from quivers.formulas._fit import (
     _run_inference,
     fit,
 )
-from quivers.formulas._autocor import (
-    AutocorMatrix,
-    autocor_joint,
-    autocor_log_likelihood,
-)
+from quivers.formulas._autocor import AutocorMatrix
+from quivers.formulas._residual_law import pointwise_scores
 
 # brms fitting controls, flat priors, and derived sites.
 from quivers.formulas._brms_priors import (
@@ -439,6 +436,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         view = BayesianFit(
             formula=response.formula,
             family=family,
+            residual=response.lens._residual,
             program=program,
             posterior=self.posterior,
             observations=_formula_observations(
@@ -1226,6 +1224,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         require_trials: bool = True,
         scoring: bool = False,
         data2: Mapping[str, AutocorMatrix] | None = None,
+        incl_autocor: bool = True,
     ) -> JointPredictionContext:
         """Prepare training or fresh rows for one joint request.
 
@@ -1250,6 +1249,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
             Matrices of ``sar`` and ``fcor`` terms over the rows of
             ``new_data`` (brms ``newdata2``).
+        incl_autocor : bool
+            Include the dependence of residual laws and latent residual
+            terms (brms ``incl_autocor``). False treats correlated residuals
+            as independent rows and drops latent residuals.
 
         Returns
         -------
@@ -1267,6 +1270,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             require_trials=require_trials,
             scoring=scoring,
             data2=data2,
+            incl_autocor=incl_autocor,
         )
 
     def posterior_linpred(
@@ -1282,6 +1286,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         num_samples: int | None = None,
         seed: int = 0,
         data2: Mapping[str, AutocorMatrix] | None = None,
+        incl_autocor: bool = True,
     ) -> dict[str, torch.Tensor]:
         """Replay linear predictors of the selected responses.
 
@@ -1309,6 +1314,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
             Matrices of ``sar`` and ``fcor`` terms over the rows of
             ``new_data`` (brms ``newdata2``).
+        incl_autocor : bool
+            Include the dependence of residual laws and latent residual
+            terms (brms ``incl_autocor``). False treats correlated residuals
+            as independent rows and drops latent residuals.
 
         Returns
         -------
@@ -1333,6 +1342,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             seed=seed,
             require_trials=False,
             data2=data2,
+            incl_autocor=incl_autocor,
         )
 
         def operation(recorded: Trace) -> dict[str, torch.Tensor]:
@@ -1351,12 +1361,14 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             result = {}
             for name in names:
                 response = self.emission.responses[name]
-                rows = prepared.rows[name]
                 result[name] = bindings[name].read(
-                    lambda binding, names=response.names: (
-                        recorded.sites[names[binding]].value
+                    self._response_fit(name)._row_reader(
+                        parameter,
+                        bindings[name],
+                        recorded,
+                        lambda binding, names=response.names: names[binding],
                     ),
-                    rows,
+                    prepared.rows[name],
                 )
             return result
 
@@ -1376,6 +1388,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         mc_samples: int | None = None,
         seed: int = 0,
         data2: Mapping[str, AutocorMatrix] | None = None,
+        incl_autocor: bool = True,
     ) -> dict[str, torch.Tensor]:
         """Return expected responses of the selected responses.
 
@@ -1403,6 +1416,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
             Matrices of ``sar`` and ``fcor`` terms over the rows of
             ``new_data`` (brms ``newdata2``).
+        incl_autocor : bool
+            Include the dependence of residual laws and latent residual
+            terms (brms ``incl_autocor``). False treats correlated residuals
+            as independent rows and drops latent residuals.
 
         Returns
         -------
@@ -1418,6 +1435,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             sample_new_levels=sample_new_levels,
             seed=seed,
             data2=data2,
+            incl_autocor=incl_autocor,
         )
 
         def operation(recorded: Trace) -> dict[str, torch.Tensor]:
@@ -1479,6 +1497,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         num_samples: int | None = None,
         seed: int = 0,
         data2: Mapping[str, AutocorMatrix] | None = None,
+        incl_autocor: bool = True,
     ) -> dict[str, torch.Tensor]:
         """Draw responses, keeping the residual correlation of joint events.
 
@@ -1505,6 +1524,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
             Matrices of ``sar`` and ``fcor`` terms over the rows of
             ``new_data`` (brms ``newdata2``).
+        incl_autocor : bool
+            Include the dependence of residual laws and latent residual
+            terms (brms ``incl_autocor``). False treats correlated residuals
+            as independent rows and drops latent residuals.
 
         Returns
         -------
@@ -1519,6 +1542,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             sample_new_levels=sample_new_levels,
             seed=seed,
             data2=data2,
+            incl_autocor=incl_autocor,
         )
 
         def operation(recorded: Trace) -> dict[str, torch.Tensor]:
@@ -1571,6 +1595,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         num_samples: int | None = None,
         seed: int = 0,
         data2: Mapping[str, AutocorMatrix] | None = None,
+        incl_autocor: bool = True,
     ) -> dict[str, torch.Tensor]:
         """Return pointwise log-likelihoods with brms observation units.
 
@@ -1601,6 +1626,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
             Matrices of ``sar`` and ``fcor`` terms over the rows of
             ``new_data`` (brms ``newdata2``).
+        incl_autocor : bool
+            Include the dependence of residual laws and latent residual
+            terms (brms ``incl_autocor``). False treats correlated residuals
+            as independent rows and drops latent residuals.
 
         Returns
         -------
@@ -1625,6 +1654,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             require_trials=False,
             scoring=True,
             data2=data2,
+            incl_autocor=incl_autocor,
         )
 
         def recorded_rows(scores: torch.Tensor) -> torch.Tensor:
@@ -1752,7 +1782,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         with torch.no_grad():
-            scores = collect_log_likelihood(
+            # Correlated residuals score brms's leave-one-out conditionals, as
+            # the single-response fit does.
+            scores = pointwise_scores(
                 replay(
                     cast(BayesianFit, self),
                     draws,
@@ -1761,27 +1793,14 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     score_observations=True,
                 ),
                 set(sites.values()),
+                {
+                    sites[name]
+                    for name in names
+                    if name not in events
+                    and self.emission.responses[name].lens._residual is not None
+                },
                 shape,
             )
-        for name in names:
-            # A non-factorized residual structure scores brms's leave-one-out
-            # conditionals, as the single-response fit does.
-            if name in events or not autocor_joint(
-                self.emission.responses[name].lens._family
-            ):
-                continue
-            with torch.no_grad():
-                scores |= autocor_log_likelihood(
-                    replay(
-                        cast(BayesianFit, self),
-                        draws,
-                        shape,
-                        context=prepared.context,
-                        score_observations=True,
-                    ),
-                    sites[name],
-                    shape,
-                )
         for name, spec in events.items():
             recorded = scores[sites[name]]
             full = recorded.new_full(

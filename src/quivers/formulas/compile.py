@@ -201,7 +201,7 @@ from quivers.formulas._population_coordinates import (
     CENTERED_SUFFIX,
 )
 
-from quivers.formulas._autocor import append_autocor_steps
+from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._predictor import (
     Predictor,
     PredictorOptions,
@@ -668,6 +668,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     decomp : {"none", "QR"}
         brms ``decomp``: sample the location coefficients in scaled QR
         coordinates and report them on the original scale.
+    residual : ResidualLaw or None
+        Residual law of the response: natural residuals correlated across
+        rows. It gives the native kernel of the observation and its
+        structural sites; None observes the family's own law.
 
     Raises
     ------
@@ -707,11 +711,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         default_priors: DefaultPriorPolicy = "quivers",
         center: bool | None = None,
         decomp: Literal["none", "QR"] = "none",
+        residual: ResidualLaw | None = None,
     ) -> None:
         # mixtures: the registered "mixture" family is mixture(gaussian, nmix=K).
         family = expand_mixture(family, mixture_components)
         self._mixture_targets: tuple[PriorTarget, ...] = ()
         self._family = family
+        self._residual = residual
         # brms default prior policy and population-coordinate options.
         if default_priors not in ("quivers", "brms"):
             raise ValueError("default_priors must be 'quivers' or 'brms'")
@@ -748,6 +754,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._distributional = dict(distributional or {})
         self._predictor_graph = predictor_graph
         auxiliary_names = {aux.name for aux in family.aux_params}
+        structural_names = set(residual.coefficients) if residual is not None else set()
         expression_roots = (
             set(predictor_graph.roots) - {"mu"}
             if predictor_graph is not None
@@ -770,7 +777,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         unknown_fixed = {
             name
-            for name in self._fixed_parameters.keys() - auxiliary_names
+            for name in self._fixed_parameters.keys()
+            - auxiliary_names
+            - structural_names
             if not is_scale_parameter(family, name)
         }
         if unknown_fixed:
@@ -796,6 +805,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             domain = next(
                 (aux.domain for aux in family.aux_params if aux.name == name),
+                None,
+            ) or next(
+                (
+                    Domain(lower=site.lower, upper=site.upper)
+                    for site in (residual.sites if residual is not None else ())
+                    if site.name == name
+                ),
                 Domain(),
             )
             if not domain.contains(value):
@@ -1032,8 +1048,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         FamilyCatalog or None
             The response laws joined with those of the terms.
         """
-        if response is None and self._family.custom is not None:
-            response = self._family.custom.catalog
+        if response is None:
+            response = self.response_laws
         if response is None or self._term_laws is None:
             return response if response is not None else self._term_laws
         return response.with_catalog(self._term_laws)
@@ -1696,6 +1712,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             draw=self._parse_prior,
             thresholds_by=self._thresholds_by,
             separated=frozenset(target.site for target in self._separated),
+            residual=self._residual,
         )
         # brms center = FALSE puts the location intercept in class b.
         if self._center is False:
@@ -4052,6 +4069,40 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 eta_name = f"dpar_{aux.name}_eta"
                 program_steps.append(_let(eta_name, linear_predictor))
                 _append_link(program_steps, aux.name, _var(eta_name), planned.link)
+        for site in self._residual.sites if self._residual is not None else ():
+            if site.name in self._fixed_parameters:
+                program_steps.append(
+                    _let(
+                        site.name,
+                        LetExprLiteral(value=float(self._fixed_parameters[site.name])),
+                    )
+                )
+                continue
+            program_steps.append(self.draw_site(site))
+
+    @property
+    def response_laws(self) -> FamilyCatalog | None:
+        """Return the compilation-local laws of the response.
+
+        Returns
+        -------
+        FamilyCatalog or None
+            The catalog of a custom family joined with that of the residual
+            law, or None when the response law is built in.
+        """
+        laws = [
+            catalog
+            for catalog in (
+                self._family.custom.catalog
+                if self._family.custom is not None
+                else None,
+                self._residual.catalog if self._residual is not None else None,
+            )
+            if catalog is not None
+        ]
+        if not laws:
+            return None
+        return laws[0] if len(laws) == 1 else laws[0].with_catalog(laws[1])
 
     def _named_module(
         self,
@@ -4436,17 +4487,30 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self._observe_argument(argument, scale)
                 for argument in self._family.observe_args
             )
+        observe_family = self._family.observe_family
         if self._family.custom is not None:
-            # Autocorrelation terms: structural matrices beyond scalar auxiliaries.
-            append_autocor_steps(self, statements, program_steps)
             obs_args = tuple(
                 "formula_sigma" if binding in scale else binding
                 for _, binding in self._family.custom.bindings
             )
+        if self._residual is not None:
+            # Natural residuals correlated across rows: the law gives the
+            # kernel, its structural sites, and their order.
+            for axis in self._residual.axes():
+                self._append_finite_object(statements, axis.name, axis.size)
+            program_steps.extend(
+                self._residual.steps(ProgramEmission(self, statements, {}))
+            )
+            observe_family = self._residual.name
+            elliptical = self._residual.elliptical
+            obs_args = self._residual.arguments(
+                "mu",
+                "formula_sigma" if elliptical.scale in scale else elliptical.scale,
+            )
         # brms rate(): count denominators scale the mean and NB shape.
         observe_family, obs_args = rate_arguments(
             self._family,
-            self._family.observe_family,
+            observe_family,
             obs_args,
             program_steps,
             formula.modifiers,
@@ -4457,9 +4521,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             obs_args,
             index=TypeName(name="Resp"),
             mode="score",
-            family_catalog=self._family.custom.catalog
-            if self._family.custom is not None
-            else None,
+            family_catalog=self.response_laws,
             weights="formula_weights"
             if formula.modifiers.weights is not None
             else None,

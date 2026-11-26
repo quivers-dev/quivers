@@ -70,7 +70,7 @@ def formula_r2(
         )
     if method == "auto":
         method = (
-            fit.family.r_squared
+            (fit.family if fit.residual is None else fit.residual).r_squared
             if observed is None and fit.formula.modifiers.truncation is None
             else "residual"
         )

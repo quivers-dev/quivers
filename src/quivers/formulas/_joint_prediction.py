@@ -27,7 +27,7 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     SampleStep,
 )
-from quivers.formulas._autocor import AutocorMatrix, autocor_catalog
+from quivers.formulas._autocor import AutocorMatrix
 from quivers.formulas._group_law import KnownCovariance
 from quivers.formulas._group_prediction import (
     CovarianceRemap,
@@ -53,6 +53,7 @@ from quivers.formulas._prediction import (
     OrdinalReplay,
     PredictionContext,
     prepare_prediction,
+    residual_at,
 )
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.formulas.formula import Formula, RowSelection, _qvr_name
@@ -307,6 +308,7 @@ def prepare_joint_prediction(
     require_trials: bool = True,
     scoring: bool = False,
     data2: Mapping[str, AutocorMatrix] | None = None,
+    incl_autocor: bool = True,
 ) -> JointPredictionContext:
     """Prepare one joint program and its bindings for a prediction request.
 
@@ -344,6 +346,9 @@ def prepare_joint_prediction(
     data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
         Matrices of ``sar`` and ``fcor`` terms over the rows of ``new_data``
         (brms ``newdata2``).
+    incl_autocor : bool
+        Include the dependence of residual laws and latent residual terms
+        (brms ``incl_autocor``).
 
     Returns
     -------
@@ -370,6 +375,7 @@ def prepare_joint_prediction(
     if (
         new_data is None
         and re_formula is None
+        and incl_autocor
         and (fit.missing.empty or (scoring and not factored))
     ):
         return JointPredictionContext(
@@ -412,6 +418,7 @@ def prepare_joint_prediction(
                     allow_new_levels=allow_new_levels,
                     sample_new_levels=sample_new_levels,
                     seed=seed,
+                    incl_autocor=incl_autocor,
                     data2=data2,
                 )
                 if name in recorded
@@ -424,6 +431,7 @@ def prepare_joint_prediction(
                     sample_new_levels=sample_new_levels,
                     seed=seed,
                     require_trials=require_trials,
+                    incl_autocor=incl_autocor,
                     data2=data2,
                 )
             )
@@ -439,15 +447,11 @@ def prepare_joint_prediction(
         lens = copy(response.lens)
         # Joint prior rules are resolved again on the joint catalogue.
         lens._set_prior_configuration(None)
-        # An autocorrelation term rebuilds its residual law over the new rows.
-        if frame is not None and lens._family.custom is not None:
-            residual = autocor_catalog(
-                fit._response_fit(name), frame, include=True, data2=data2
+        # A residual law is rebuilt over the requested rows.
+        if lens._residual is not None and (frame is not None or not incl_autocor):
+            lens._residual = residual_at(
+                fit._response_fit(name), frame, include=incl_autocor, data2=data2
             )
-            if residual is not None:
-                lens._family = lens._family.with_(
-                    custom=lens._family.custom.with_(catalog=residual)
-                )
         formula = response.formula
         if groups:
 
@@ -489,7 +493,7 @@ def prepare_joint_prediction(
         components[name] = (lens, formula)
 
     sources = {
-        name: RowSource(selected=selection[name])
+        name: RowSource(selected=selection[name], include=incl_autocor)
         if frame is None
         else _response_rows(contexts[name], groups, selection[name])
         for name in fit.response_names

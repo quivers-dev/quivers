@@ -572,6 +572,21 @@ class ResidualLayout(ValueModel):
     mean_lengths: tuple[int, ...] = ()
 
     @property
+    def factorized(self) -> bool:
+        """Report whether the rows are independent given the parameters.
+
+        Returns
+        -------
+        bool
+            True for independent rows and for the conditional ARMA
+            formulation alone, whose rows condition on recorded responses;
+            False for every covariance and simultaneous autoregression.
+        """
+        return self.kind == "independent" or (
+            self.kind == "arma" and not self.stationary
+        )
+
+    @property
     def conditional(self) -> bool:
         """Report whether a conditional ARMA recursion moves the location.
 

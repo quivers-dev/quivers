@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 import torch
 
 from quivers.dsl.ast_nodes import Module
-from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._brms_priors import derived_site_draws
 from quivers.formulas._formula_options import display_label
 from quivers.formulas._priors import PriorTarget
@@ -189,10 +188,9 @@ def coordinate_labels(fit: BayesianFit, target: PriorTarget) -> tuple[str, ...]:
     if target.class_ == "rescor":
         # A logistic-normal response correlates its free categories.
         return tuple(brms_rename(str(label)) for label in fit.coefficient_labels)
-    binding = autocor_binding(fit.family)
-    if binding is None:
+    if fit.residual is None:
         return ()
-    return tuple(time_label(level) for level in binding.time_levels)
+    return tuple(time_label(level) for level in fit.residual.time_levels)
 
 
 def shrinkage_scales(

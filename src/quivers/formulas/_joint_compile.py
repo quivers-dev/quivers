@@ -40,7 +40,6 @@ from quivers.dsl.program_templates import (
     draw_argument_expression,
 )
 from quivers.dsl.step_resolution import _step_value_names
-from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import (
     _add,
     _factor,
@@ -531,7 +530,7 @@ def _namespace(
         if laws is None
         else {record.name: prefix + record.name for record in laws.definitions}
     )
-    families = lens._family.custom.catalog if lens._family.custom is not None else None
+    families = lens.response_laws
     if laws is not None:
         laws = laws.renamed(morphisms)
         families = laws if families is None else families.with_catalog(laws)
@@ -792,20 +791,20 @@ def _validate_residual_rows(components: _Components) -> None:
         share one ``nu``.
     """
     laws = {lens._family.elliptical for lens, _ in components.values()}
-    # Residual autocorrelation terms replace a response's law. brms refuses
+    # A residual law correlates a response's rows. brms refuses
     # its covariance terms beside estimated residual correlations; it admits
     # the conditional ARMA formulation there, which this emission lacks.
     for label, (lens, _) in components.items():
-        binding = autocor_binding(lens._family)
-        if binding is None:
+        residual = lens._residual
+        if residual is None:
             continue
-        if binding.term.cov:
+        if residual.term.cov:
             raise ValueError(
                 "Explicit covariance terms cannot be modeled when 'rescor' is "
                 "estimated at the same time."
             )
         raise ValueError(
-            f"response {label!r}: {binding.term.label} beside estimated residual "
+            f"response {label!r}: {residual.term.label} beside estimated residual "
             "correlations is not supported; use set_rescor(False)"
         )
     elliptical = next(iter(laws))
