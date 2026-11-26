@@ -1643,6 +1643,8 @@ def run_agenda(
     rules = tuple(rules)
     applications: dict[tuple[int, tuple[Item, ...]], _Application] = {}
 
+    chart_before = chart.work_counts() if isinstance(chart, ReportsWork) else None
+    queue_before = agenda.work_counts() if isinstance(agenda, ReportsWork) else None
     occurrences: list[Item] = []
     weights_seen: list[torch.Tensor] = []
     for item, w in axioms:
@@ -1659,8 +1661,6 @@ def run_agenda(
     joins = _RuleJoins(rules, work)
     for present, _ in list(chart.items()):
         joins.add(present, joins.matches(present))
-    chart_before = chart.work_counts() if isinstance(chart, ReportsWork) else None
-    queue_before = agenda.work_counts() if isinstance(agenda, ReportsWork) else None
     saved: list[int] = []
     with _tape(saved) if measure_tape else nullcontext():
         _drain(

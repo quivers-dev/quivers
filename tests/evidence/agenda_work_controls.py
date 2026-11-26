@@ -36,11 +36,12 @@ from quivers.stochastic.agenda import (
     match,
     run_agenda,
 )
-from quivers.stochastic.semiring import LOG_PROB, ChartSemiring
+from quivers.stochastic.semiring import LOG_PROB, VITERBI, ChartSemiring
 from tests.evidence import graphs, scaling
 from tests.evidence.checks._registry import Check
 from tests.evidence.compare import Mismatch
-from tests.evidence.counters import forwarding, saved_elements
+from tests.evidence.checks.deduction import AGENDAS
+from tests.evidence.counters import CallCounter, forwarding, saved_elements
 from tests.evidence.mutations import Mutation, Rewrite
 
 X, Y = make_wildcard("x"), make_wildcard("y")
@@ -413,40 +414,71 @@ def _work(edges: Sequence[tuple[int, int]]) -> float:
 LINEAR_SIZES = (8, 16, 32, 64, 128)
 """The sizes of the families."""
 
-LINEAR_CONSTANT = 32.0
-"""The constant of the linear bound on a run's work per edge: a fixed number
-of operations, two pops, four premise matches, the chart's and the queue's
-dictionary accesses and the candidates a keyed lookup returns."""
 
-
-def _families() -> tuple[tuple[str, Callable[[int], list[tuple[int, int]]]], ...]:
-    """The chain, diamond and skip families.
+def _families() -> tuple[
+    tuple[str, Callable[[int], list[tuple[int, int]]], Callable[[int], int]], ...
+]:
+    """The chain, diamond and skip families, each with its exact work in edges.
 
     Returns
     -------
-    tuple of tuple of str and Callable
-        Each family's name and its graph at a size.
+    tuple of tuple of str, Callable and Callable
+        Each family's name, its graph at a size, and its work as a
+        function of its number of edges (see `check_linear`).
     """
     return (
-        ("chains", graphs.chain),
-        ("diamonds", lambda size: graphs.diamonds(size // 4)),
-        ("skip graphs", lambda size: graphs.skips(size // 2)),
+        ("chains", graphs.chain, lambda edges: 23 * edges + 9),
+        (
+            "diamonds",
+            lambda size: graphs.diamonds(size // 4),
+            lambda edges: 21 * edges + 8,
+        ),
+        (
+            "skip graphs",
+            lambda size: graphs.skips(size // 2),
+            lambda edges: 19 * edges + 12,
+        ),
     )
 
 
 def check_linear() -> None:
-    """Require the agenda's own work linear on chains, diamonds and skip graphs.
+    """Require a run's work to be exactly its derived count on chains, diamonds and skips.
 
-    A lookup is keyed on the positions its premise finds bound, so a run
-    does a fixed number of operations per edge; the control of the next
-    order has to fail.
+    A run of ``reach(y) <- reach(x), edge(x, y)`` with a first-in-first-out
+    queue, a hash chart and ``P`` pops, ``A`` applications, ``E`` edges,
+    ``V`` reached nodes and ``U = E + 1 + A`` pushes counts:
+
+    - ``P`` pops;
+    - in the chart, ``3P + A`` hash operations: per pop one lookup and
+      two accesses inserting a new item, and per application one lookup
+      of the premise the popped item does not fill;
+    - in the queue, ``2U + P`` hash operations: per push a lookup and a
+      store of the pending entry, and per pop the removal;
+    - in the agenda's tries, ``V + 2E + P`` hash operations: each reached
+      node enters the trie of ``reach`` under one key and each edge the
+      trie of ``edge`` under two, and each pop descends one key;
+    - ``P + A - d_0`` comparisons: each pop is matched against the one
+      premise of its form, and each application found when its ``reach``
+      premise arrives costs one value of the intersection, while the
+      ``d_0`` edges from node 0 are found when they arrive, after
+      ``reach(0)``, with no variable left to intersect.
+
+    On these families every item is popped once, as its contributions all
+    arrive while it is pending (a node's predecessors enter the queue
+    before it), and every edge is reached, so ``P = E + V`` and
+    ``A = E``, and the total is ``15 E + 8 V + 2 - d_0``: ``23 E + 9`` on
+    chains (``V = E + 1``, ``d_0 = 1``), ``21 E + 8`` on diamonds
+    (``V = 3E/4 + 1``, ``d_0 = 2``) and ``19 E + 12`` on skip graphs
+    (``E = 2L - 1``, ``V = L + 1``, ``d_0 = 2``). The bound is that count
+    with constant one, so one operation more per edge fails; its ratio
+    must not grow and the control of the next order has to fail.
 
     Raises
     ------
     Mismatch
-        If a family breaks the linear bound, or its control does not.
+        If a family's work differs from its count, or its control does not.
     """
-    for name, build in _families():
+    for name, build, count in _families():
         scaling.check_family(
             scaling.Family(
                 name=f"agenda on {name}",
@@ -456,18 +488,179 @@ def check_linear() -> None:
                 part="forward",
                 sizes=LINEAR_SIZES,
                 work=lambda size, build=build: _work(build(size)),
-                claim=lambda size, build=build: float(len(build(size)) + 1),
-                constant=LINEAR_CONSTANT,
+                claim=lambda size, build=build, count=count: float(
+                    count(len(build(size)))
+                ),
+                constant=1.0,
             )
         )
 
 
+def _items_popped(edges: Sequence[tuple[int, int]]) -> int:
+    """The distinct items of a reachability run: the edges and the reached nodes.
+
+    Parameters
+    ----------
+    edges : Sequence of tuple of int and int
+        The graph, every node reachable from 0.
+
+    Returns
+    -------
+    int
+        ``E + V``.
+    """
+    return len(edges) + len({0} | {target for _, target in edges})
+
+
+def check_dispatch() -> None:
+    """Require each item to be matched only against the premise of its form.
+
+    Along a line of ``n`` edges, ``2n + 1`` items arrive, each filling one
+    premise of the one rule, so the matches are exactly ``2n + 1``. Fewer
+    would leave an item untested against a premise it fills.
+
+    Raises
+    ------
+    Mismatch
+        If the matches differ from the items.
+    """
+    for length in (20, 40, 80):
+        edges = graphs.chain(length)
+        with CallCounter({"match": match}) as calls:
+            run_agenda(_axioms(edges), [STEP], semiring=LOG_PROB)
+        _equal(calls.counts["match"], _items_popped(edges), f"matches at {length}")
+
+
+X3, Y3, Z3 = make_wildcard("x"), make_wildcard("y"), make_wildcard("z")
+
+TRIANGLE = InferenceRule(
+    name="triangle",
+    premises=(("R", X3, Y3), ("S", Y3, Z3), ("T", Z3, X3)),
+    conclusion=("triangle",),
+)
+"""A triangle over three relations."""
+
+
+def _hub(size: int) -> list[tuple[Item, torch.Tensor]]:
+    """Three relations in which ``0`` is joined to ``size - 1`` others each way.
+
+    Parameters
+    ----------
+    size : int
+        The degree of the hub.
+
+    Returns
+    -------
+    list of tuple of Item and torch.Tensor
+        The axioms.
+    """
+    found: list[tuple[Item, torch.Tensor]] = []
+    for relation in "RST":
+        found += [((relation, 0, k), torch.tensor(0.0)) for k in range(size)]
+        found += [((relation, k, 0), torch.tensor(0.0)) for k in range(1, size)]
+    return found
+
+
+def _hub_work(size: int, discipline: str) -> float:
+    """The comparisons of a triangle run over a hub.
+
+    Parameters
+    ----------
+    size : int
+        The degree of the hub.
+    discipline : str
+        The agenda.
+
+    Returns
+    -------
+    float
+        Matches and values of the intersection.
+    """
+    report = run_agenda(
+        _hub(size), [TRIANGLE], semiring=VITERBI, agenda=AGENDAS[discipline]()
+    ).work
+    return float(report.key_comparisons)
+
+
+def _hub_bound(size: int) -> float:
+    """The bound ``m N + m^2 n AGM`` of a triangle with ``m = n = 3`` over a hub.
+
+    Parameters
+    ----------
+    size : int
+        The degree of the hub.
+
+    Returns
+    -------
+    float
+        ``3 N + 27 N^{3/2}`` for relations of ``N = 2 size - 1`` tuples.
+    """
+    tuples = 2 * size - 1
+    return 3 * tuples + 27 * tuples**1.5
+
+
+def _hub_check(discipline: str) -> Callable[[], None]:
+    """The check of a triangle over a hub under one agenda.
+
+    Parameters
+    ----------
+    discipline : str
+        The agenda.
+
+    Returns
+    -------
+    Callable[[], None]
+        The check.
+    """
+
+    def check() -> None:
+        """Require a triangle over a hub within its AGM bound.
+
+        Generic Join from each arriving tuple does at most ``m N + m^2 n
+        AGM`` comparisons over a run, ``N`` the tuples of a relation; a
+        join one premise at a time does ``N^2`` on a hub, which the same
+        bound rejects through the control of the next order.
+
+        Raises
+        ------
+        Mismatch
+            If the work breaks the bound, or its control does not.
+        """
+        scaling.check_family(
+            scaling.Family(
+                name=f"triangle over a hub, {discipline}",
+                executor=f"agenda-{discipline}",
+                question="Q6",
+                varies="hub degree",
+                part="forward",
+                sizes=LINEAR_SIZES,
+                work=lambda size: _hub_work(size, discipline),
+                claim=_hub_bound,
+                constant=1.0,
+            )
+        )
+
+    return check
+
+
 CHECKS: dict[str, Check] = {
-    name: Check(name=name, executor="agenda", question="Q1", run=run)
-    for name, run in (
-        ("agenda/work-counts", check_counts),
-        ("agenda/work-linear", check_linear),
-    )
+    **{
+        name: Check(name=name, executor="agenda", question="Q1", run=run)
+        for name, run in (
+            ("agenda/work-counts", check_counts),
+            ("agenda/work-linear", check_linear),
+            ("agenda/dispatch", check_dispatch),
+        )
+    },
+    **{
+        f"agenda/hub/{discipline}": Check(
+            name=f"agenda/hub/{discipline}",
+            executor=f"agenda-{discipline}",
+            question="Q6",
+            run=_hub_check(discipline),
+        )
+        for discipline in AGENDAS
+    },
 }
 """Every check of agenda work reports by name."""
 
@@ -514,12 +707,39 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
-        name="agenda-lookup-not-keyed",
+        name="agenda-dispatch-to-every-premise",
         defect_class="graph work",
-        provenance="a lookup ignores the bound positions and scans the form",
-        target=f"{AGENDA}:HashChart.lookup",
-        rewrites=(Rewrite(old="if _ground(element, fixed)", new="if False"),),
-        rejected_by=("agenda/work-linear",),
+        provenance="an arriving item is matched against every premise of every rule",
+        target=f"{AGENDA}:_RuleJoins.matches",
+        rewrites=(
+            Rewrite(
+                old="candidates = [*self._by_form.get(form, ()), *self._any] if form else self._any",
+                new=(
+                    "candidates = [(r, p) for r, rule in enumerate(self.rules) "
+                    "for p in range(len(rule.premises))]"
+                ),
+            ),
+        ),
+        rejected_by=("agenda/dispatch",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="intersection-iterates-the-first-set",
+        defect_class="graph work",
+        provenance="the intersection iterates the first premise's values, not the fewest",
+        target="quivers.stochastic.tries:intersect",
+        also_in=(
+            AGENDA,
+            "quivers.stochastic.joins",
+            "quivers.stochastic.indexed",
+        ),
+        rewrites=(
+            Rewrite(
+                old="smallest = min(range(len(sets)), key=lambda index: len(sets[index]))",
+                new="smallest = 0",
+            ),
+        ),
+        rejected_by=("agenda/hub/fifo",),
         min_effect=1.0,
     ),
     Mutation(

@@ -119,13 +119,11 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         f"agenda-{discipline}": {
             "Q1": (
                 "nullary-rule-never-fires",
-                "rule-matching-scans",
                 "repeated-propagation",
                 "parameters-created-by-runs",
                 "chart-view-promises",
             ),
             "Q5": ("provenance-always-kept",),
-            "Q6": ("rule-matching-scans",),
             "Q8": ("residual-is-the-value",),
             "Q10": ("repeated-propagation", "corpus-enumerates-strings"),
             "Q24": (
