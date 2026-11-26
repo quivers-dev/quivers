@@ -355,6 +355,7 @@ nav:
       - Indexed Charts: api/stochastic/indexed.md
       - Joins: api/stochastic/joins.md
       - Plans: api/stochastic/planning.md
+      - Packed Forests: api/stochastic/forest.md
       - Productions: api/stochastic/productions.md
       - Deduction Library: api/stochastic/stdlib.md
       - Deduction Systems:

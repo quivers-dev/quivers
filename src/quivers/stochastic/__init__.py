@@ -33,6 +33,7 @@ agenda : The agenda-driven weighted-deduction engine
 indexed : Charts indexed on the argument positions rule joins look up
 joins : Worst-case optimal joins and variable elimination for rule bodies
 planning : Plans for queries over rule presentations
+forest : Packed forests of derivations and folds over them
 productions : A grammar's productions grouped by left-hand side
 effect_lifts : Effect-lifted rule schemas for deduction systems
 deduction : Abstract weighted deductive system framework and its operations
@@ -100,6 +101,19 @@ if TYPE_CHECKING:
         generic_join,
         relations,
     )
+    from quivers.stochastic.forest import (
+        DerivationForest,
+        ForestEdge,
+        ForestRefusal,
+        ForestRefused,
+        build_forest,
+        edge_weight,
+        encoder_interpretation,
+        expected_embedding,
+        fold_derivations,
+        forest_fold,
+        nonlinear_fold,
+    )
     from quivers.stochastic.indexed import (
         ChartWork,
         IndexedChart,
@@ -110,6 +124,9 @@ if TYPE_CHECKING:
         side_condition_holds,
     )
     from quivers.stochastic.planning import (
+        FOREST_ALGORITHM,
+        FOREST_WORK,
+        TWO_PASS_ALGORITHM,
         RECOMPUTED_TWO_PASS_WORK,
         TWO_PASS_LAWS,
         TWO_PASS_WORK,
@@ -431,6 +448,20 @@ _LAZY_EXPORTS: dict[str, str] = {
     "generic_join": "quivers.stochastic.joins",
     "relations": "quivers.stochastic.joins",
     "side_condition_holds": "quivers.stochastic.indexed",
+    "DerivationForest": "quivers.stochastic.forest",
+    "ForestEdge": "quivers.stochastic.forest",
+    "ForestRefusal": "quivers.stochastic.forest",
+    "ForestRefused": "quivers.stochastic.forest",
+    "build_forest": "quivers.stochastic.forest",
+    "edge_weight": "quivers.stochastic.forest",
+    "encoder_interpretation": "quivers.stochastic.forest",
+    "expected_embedding": "quivers.stochastic.forest",
+    "fold_derivations": "quivers.stochastic.forest",
+    "forest_fold": "quivers.stochastic.forest",
+    "nonlinear_fold": "quivers.stochastic.forest",
+    "FOREST_ALGORITHM": "quivers.stochastic.planning",
+    "FOREST_WORK": "quivers.stochastic.planning",
+    "TWO_PASS_ALGORITHM": "quivers.stochastic.planning",
     "class_directed_lifts": "quivers.stochastic.effect_lifts",
     "make_swap_schema": "quivers.stochastic.effect_lifts",
     "swap_rule_set": "quivers.stochastic.effect_lifts",
@@ -682,6 +713,21 @@ __all__ = [
     "TWO_PASS_WORK",
     "acyclicity_certificate",
     "plan",
+    "FOREST_ALGORITHM",
+    "FOREST_WORK",
+    "TWO_PASS_ALGORITHM",
+    # forest
+    "DerivationForest",
+    "ForestEdge",
+    "ForestRefusal",
+    "ForestRefused",
+    "build_forest",
+    "edge_weight",
+    "encoder_interpretation",
+    "expected_embedding",
+    "fold_derivations",
+    "forest_fold",
+    "nonlinear_fold",
     # effect_lifts
     "class_directed_lifts",
     "make_swap_schema",
