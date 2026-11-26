@@ -365,3 +365,17 @@ def test_a_refused_model_r_squared_leaves_gradients_enabled():
     with pytest.raises(ValueError, match="analytic conditional response moments"):
         fitted.bayes_r2(method="model", num_samples=3)
     assert torch.is_grad_enabled()
+
+
+def test_incl_autocor_false_beside_residual_correlations_drops_the_recursion():
+    fitted = fit(
+        bf("y1 ~ x + ar(time = t, gr = g)") + bf("y2 ~ x") + set_rescor(True),
+        data=_frame(),
+        **SVI,
+    )
+    plain = fitted.posterior_linpred(resp="y1", num_samples=3, incl_autocor=False)
+    draws = fitted.draws(num_samples=3, seed=0)
+    eta = draws["response_y1__intercept"].reshape(1, 3, 1) + draws[
+        "response_y1__beta_x"
+    ].reshape(1, 3, 1) * torch.as_tensor(_frame()["x"].to_numpy())
+    torch.testing.assert_close(plain["y1"].double(), eta.double(), rtol=1e-5, atol=1e-6)

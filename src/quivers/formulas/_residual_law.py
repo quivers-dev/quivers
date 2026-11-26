@@ -588,8 +588,9 @@ class ResidualLaw(ValueModel):
     def factorized(self) -> bool:
         """Whether the rows are independent given the parameters.
 
-        Only a conditional ARMA recursion alone factorizes: each row's
-        density conditions on the recorded responses of earlier rows.
+        Independent rows and a conditional ARMA recursion alone factorize:
+        each row's density conditions on the recorded responses of earlier
+        rows.
 
         Returns
         -------
@@ -597,7 +598,7 @@ class ResidualLaw(ValueModel):
             True when the pointwise score of a row is its own factor of the
             likelihood.
         """
-        return self.layout.kind == "arma" and not self.layout.stationary
+        return self.layout.factorized
 
     @property
     def r_squared(self) -> Literal["residual"]:
