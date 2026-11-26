@@ -44,7 +44,7 @@ from tests.evidence.checks._registry import add
 from tests.evidence.checks.machine import SENTENCES, module_of, parses
 from tests.evidence.compare import Mismatch
 from tests.evidence.oracles import derivations
-from tests.evidence.oracles.derivations import AxiomRow, RuleRow, Term, Tree, Variable
+from tests.evidence.oracles.derivations import RuleRow, Term, Tree, Variable
 from tests.evidence.sources import SOURCES, deduction, program
 
 LEXICON = (("a", "S"), ("b", "V"), ("a", "V"))
@@ -353,8 +353,8 @@ BARE_RULES: tuple[RuleRow, ...] = (
 )
 """The rules of the deduction with a bare variable, as plain rows."""
 
-BARE_AXIOMS: tuple[AxiomRow, ...] = (("ax:A", "A"), ("ax:K", "K"))
-"""Its axioms."""
+BARE_AXIOMS: tuple[tuple[str, str], ...] = (("ax:A", "A"), ("ax:K", "K"))
+"""Its axioms: occurrence and atom."""
 
 BARE_HEIGHT = 3
 """The height the derivations are listed to: ``keep`` makes every item cyclic."""
