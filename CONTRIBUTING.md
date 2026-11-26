@@ -73,19 +73,69 @@ call, containers are anonymous, and the image build is serialised
 across workers by a file lock.
 
 ```bash
-python -m pytest tests/ -m "not slow and not probe" -n auto --dist loadfile
-python -m pytest tests/ -m "not slow and probe" -n auto
+OMP_NUM_THREADS=1 python -m pytest tests/ -m "not slow and not probe" -n 4 --dist loadfile
+OMP_NUM_THREADS=1 python -m pytest tests/ -m "not slow and probe" -n 4
 ```
 
-`--dist loadfile` is the right mode for the cheap tier. Its tests are
-individually far shorter than the cost of handing one to a worker, so
-distributing whole files wins where distributing single tests loses.
+The tensors of the suite are small, so a process gains nothing from
+several threads, and several workers with several threads each slow one
+another down.
 
-To divide the probe tier across machines, `pytest-split` takes a share:
+### What CI verifies
+
+[`.config/verification.toml`](.config/verification.toml) declares it, and
+`tools/verification.py` derives every job of `.github/workflows/ci.yml` from it.
+
+- **Buckets** hold the ordinary tests, which run on every change. A file that no
+  bucket lists belongs to the last one, so a new test file needs no entry.
+- **Gates** hold the slow tests, the probes, and the documentation blocks. A gate
+  runs on a change that can affect it: one that touches a module its tests can
+  import, a file it declares in `reads`, or a file that nothing accounts for. The
+  modules come from the import graph of the checkout
+  (`tools/import_graph.py`), and a gate that opens a file outside its closure
+  fails, so a closure that is too small does not go unnoticed.
+- A push to `main` runs every gate, and so does a dispatch of the workflow. A
+  daily run on `main` uses the newest version of every dependency instead of the
+  versions of `uv.lock`.
+
+Every test has exactly one job. A test marked `slow` or `probe` that no gate claims
+stops the job that collects it, and the `Suite coverage` job compares what every
+job collected, ran, and skipped: a test that did not run, that ran twice, or that
+was skipped for a reason the declaration does not list fails the run.
+
+Run one job locally, or check the declaration, with
 
 ```bash
-python -m pytest tests/ -m "not slow and probe" --splits 4 --group 1
+python tools/verification.py run "library 1/6"
+python tools/verification.py check
 ```
+
+A job runs whole units, longest first: a test file, a function of a long file, a
+part of a long parametrized function, one long test, or one documentation page.
+`.config/test-durations.json` holds the durations that divide and balance them. To
+refresh it, download the `verification-*` artifacts of a run into a directory:
+
+```bash
+gh run download RUN --pattern 'verification-*' --dir reports-of-a-run
+python tools/verification.py record reports-of-a-run
+```
+
+`python tools/verification.py prune` drops the durations of tests that were
+renamed or removed, which the check asks for.
+
+### Releasing
+
+A release publishes only a commit that CI certified. The `Release verification`
+check passes on a commit when the CI run of a push to `main`, or of a dispatch,
+passed with every gate run and every probe executed rather than answered from a
+stored measurement. `require-verified.yml` looks for that check and for `CI status`
+on the tagged commit before anything is built, and the release stops if either is
+missing.
+
+1. Merge the release commit to `main` and wait for its CI run to pass. To certify a
+   commit that a push did not, run `gh workflow run ci.yml --ref BRANCH`.
+2. Tag that commit `vMAJOR.MINOR.PATCH` and push the tag. If the tag was pushed before the run
+   passed, rerun the release workflow when it has.
 
 ### Caching probe measurements
 
@@ -106,8 +156,10 @@ tag is what makes a rebuilt image miss instead of answering from
 before it changed.
 
 Caching is off unless the variable is set. A memoised measurement is
-only as sound as its key, so a run that gates a release should execute
-every container for real.
+only as sound as its key, so a run that gates a release executes every
+container for real. With `QUIVERS_PROBE_CACHE_RECORD=1` the directory is
+only written: a run on `main` stores what it measured, and a pull request
+may reuse it.
 
 ## Project Structure
 

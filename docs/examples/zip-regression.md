@@ -220,6 +220,8 @@ same recovery tolerances and agree with the SVI means within 0.2 for the rate
 coefficients and 0.6 for the structural-zero coefficients.
 
 Four chains each use 1,000 warmup iterations and 2,000 retained draws.
+[`MCMCMethod`](../api/modeling.md) runs them in four worker processes, each of which
+compiles the same source, and returns the draws of the serial run.
 A dense mass matrix adapts to correlations between the zero and rate coefficients.
 Before comparing means, the example checks rank-normalized
 split $\hat R < 1.01$ and bulk and tail effective sample sizes above 400 for
@@ -229,11 +231,17 @@ precision. The density check compares the implemented likelihood with its
 closed form at the generating coefficients.
 
 ```python
+from pathlib import Path
+
 from quivers.inference import MCMC, NUTSKernel
+from quivers.modeling import MCMCMethod, Model
 
 kernel = NUTSKernel(step_size=0.05, max_tree_depth=8, target_accept=0.9, mass_matrix="dense")
 mc = MCMC(kernel, num_warmup=1000, num_samples=2000, num_chains=4, seed=2)
-result = mc.run(model, x_in, observations)
+bound = Model(Path("docs/examples/source/zip_regression.qvr").read_text()).bind(
+    {**observations, "y": y.long()}
+)
+result = MCMCMethod(sampler=mc, cores=4).run(bound).posterior
 
 for k in truth:
     print(f"{k:>10}: max R-hat {result.r_hat[k].max():.4f}, "
