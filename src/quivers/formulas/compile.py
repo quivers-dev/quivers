@@ -204,6 +204,7 @@ from quivers.formulas._row_source import RowSource
 from quivers.formulas._term_emission import ProgramEmission
 from quivers.formulas._term import (
     AxisDecl,
+    InputDecl,
     OutputAxis,
     ProgramNames,
     SiteDecl,
@@ -3262,13 +3263,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         return next(item for item in self._predictors if item.prefix == prefix)
 
-    def _runtime_parameters(self, formula: Formula) -> tuple[QiecValueParameter, ...]:
+    def _runtime_parameters(
+        self, formula: Formula, data: Sequence[InputDecl]
+    ) -> tuple[QiecValueParameter, ...]:
         """Declare checked group-index and response-weight input tensors.
 
         Parameters
         ----------
         formula : Formula
             Primary predictor, combined with configured auxiliary predictors.
+        data : Sequence[InputDecl]
+            Row columns the response kernel reads by name.
 
         Returns
         -------
@@ -3352,23 +3357,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             parameters += (
                 QiecValueParameter(name="formula_weights", type_expr=weight_type),
             )
-        if self._predictor_graph is not None:
-            for column in self._predictor_graph.inputs.values():
-                carrier = (
-                    "Bool"
-                    if column.data.dtype.kind == "b"
-                    else "Int"
-                    if column.data.dtype.kind in "iu"
-                    else "Real"
-                )
-                parameters += (
-                    QiecValueParameter(
-                        name=column.qvr_name,
-                        type_expr=index_type.with_(
-                            static_arguments=(QiecTypeName(name=carrier),)
-                        ),
-                    ),
-                )
+        parameters += tuple(
+            QiecValueParameter(
+                name=column.name,
+                type_expr=index_type.with_(
+                    static_arguments=(QiecTypeName(name=column.element),)
+                ),
+            )
+            for column in data
+        )
         existing = {parameter.name for parameter in parameters}
         for role, column in formula.modifiers.columns():
             if column.qvr_name in existing:
@@ -3781,7 +3778,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             ProgramDecl(
                 name="model",
                 params=None,
-                value_parameters=self._runtime_parameters(formula),
+                value_parameters=self._runtime_parameters(formula, kernel.data),
                 domain=TypeName(name="Resp"),
                 codomain=TypeName(name="Resp"),
                 draws=tuple(program_steps),
