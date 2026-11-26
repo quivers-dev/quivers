@@ -36,7 +36,7 @@ from quivers.qiec.contracts import (
 )
 from quivers.qiec.identifiers import ComputationId
 from quivers.qiec.rules import Item, RulePresentation
-from quivers.stochastic.plan import Plan, PlanRefusal, PlanRefused, plan
+from quivers.stochastic.planning import Plan, PlanRefusal, PlanRefused, plan
 from tests.evidence import graphs, scaling
 from tests.evidence import presentations as fixture
 from tests.evidence.checks._registry import Check
@@ -662,7 +662,7 @@ CHECKS: dict[str, Check] = {
 }
 """Every check of plans by name."""
 
-PLAN = "quivers.stochastic.plan"
+PLAN = "quivers.stochastic.planning"
 INDEXED = "quivers.stochastic.indexed"
 
 MUTATIONS: tuple[Mutation, ...] = (

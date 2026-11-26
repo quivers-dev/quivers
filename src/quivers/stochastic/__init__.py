@@ -30,6 +30,8 @@ span : Span-based CKY components (LexicalAxiom, BinarySpanDeduction, etc.)
 parsers, ccg, lambek : Chart parsers
 inside : The inside algorithm over a rule system
 agenda : The agenda-driven weighted-deduction engine
+indexed : Charts indexed on the argument positions rule joins look up
+planning : Plans for queries over rule presentations
 productions : A grammar's productions grouped by left-hand side
 effect_lifts : Effect-lifted rule schemas for deduction systems
 deduction : Abstract weighted deductive system framework and its operations
@@ -44,6 +46,7 @@ from typing import TYPE_CHECKING, TypeAliasType
 
 if TYPE_CHECKING:
     from quivers.core.algebras import MARKOV, MarkovAlgebra
+    from quivers.qiec.contracts import ComplexityClaim
     from quivers.stochastic.agenda import (
         Agenda,
         AgendaResult,
@@ -71,6 +74,28 @@ if TYPE_CHECKING:
         run_agenda,
         semi_naive_agenda,
         viterbi_agenda,
+    )
+    from quivers.stochastic.indexed import (
+        ChartWork,
+        IndexedChart,
+        JoinStep,
+        RuleJoinPlan,
+        index_variables,
+        join_plans,
+    )
+    from quivers.stochastic.planning import (
+        RECOMPUTED_TWO_PASS_WORK,
+        TWO_PASS_WORK,
+        Alternative,
+        Evaluation,
+        MeasureCertificate,
+        MeasureComponent,
+        Plan,
+        PlanRecord,
+        PlanRefusal,
+        PlanRefused,
+        acyclicity_certificate,
+        plan,
     )
     from quivers.stochastic.categories import (
         BUILTIN_CONSTRUCTOR_NAMES,
@@ -338,6 +363,24 @@ _LAZY_EXPORTS: dict[str, str] = {
     "ProductionGroup": "quivers.stochastic.productions",
     "ProductionKey": "quivers.stochastic.productions",
     "ProductionWeights": "quivers.stochastic.productions",
+    "ChartWork": "quivers.stochastic.indexed",
+    "IndexedChart": "quivers.stochastic.indexed",
+    "JoinStep": "quivers.stochastic.indexed",
+    "RuleJoinPlan": "quivers.stochastic.indexed",
+    "index_variables": "quivers.stochastic.indexed",
+    "join_plans": "quivers.stochastic.indexed",
+    "Alternative": "quivers.stochastic.planning",
+    "Evaluation": "quivers.stochastic.planning",
+    "MeasureCertificate": "quivers.stochastic.planning",
+    "MeasureComponent": "quivers.stochastic.planning",
+    "Plan": "quivers.stochastic.planning",
+    "PlanRecord": "quivers.stochastic.planning",
+    "PlanRefusal": "quivers.stochastic.planning",
+    "PlanRefused": "quivers.stochastic.planning",
+    "RECOMPUTED_TWO_PASS_WORK": "quivers.stochastic.planning",
+    "TWO_PASS_WORK": "quivers.stochastic.planning",
+    "acyclicity_certificate": "quivers.stochastic.planning",
+    "plan": "quivers.stochastic.planning",
     "class_directed_lifts": "quivers.stochastic.effect_lifts",
     "make_swap_schema": "quivers.stochastic.effect_lifts",
     "swap_rule_set": "quivers.stochastic.effect_lifts",
@@ -351,6 +394,7 @@ type _LazyExport = (
     | TypeAliasType
     | MarkovAlgebra
     | ChartSemiring
+    | ComplexityClaim
     | RuleSchema
     | frozenset[str]
     | dict[str, RuleSchema]
@@ -543,6 +587,26 @@ __all__ = [
     "ProductionGroup",
     "ProductionKey",
     "ProductionWeights",
+    # indexed
+    "ChartWork",
+    "IndexedChart",
+    "JoinStep",
+    "RuleJoinPlan",
+    "index_variables",
+    "join_plans",
+    # planning
+    "Alternative",
+    "Evaluation",
+    "MeasureCertificate",
+    "MeasureComponent",
+    "Plan",
+    "PlanRecord",
+    "PlanRefusal",
+    "PlanRefused",
+    "RECOMPUTED_TWO_PASS_WORK",
+    "TWO_PASS_WORK",
+    "acyclicity_certificate",
+    "plan",
     # effect_lifts
     "class_directed_lifts",
     "make_swap_schema",

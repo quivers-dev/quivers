@@ -24,7 +24,7 @@ from quivers.qiec.kinds import NAT
 from quivers.qiec.rules import Item
 from quivers.qiec.types import IndexLiteral, IndexSum, IndexVariable
 from quivers.stochastic.indexed import index_variables, join_plans
-from quivers.stochastic.plan import (
+from quivers.stochastic.planning import (
     RECOMPUTED_TWO_PASS_WORK,
     TWO_PASS_WORK,
     Plan,
