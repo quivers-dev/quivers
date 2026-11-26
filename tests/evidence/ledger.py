@@ -1147,68 +1147,6 @@ record(
 # -- inference consumers -------------------------------------------------
 
 
-def _first_row() -> Facts:
-    """The densities a joint guide gives two different rows.
-
-    Returns
-    -------
-    Facts
-        Whether the two densities are equal.
-    """
-    facts = {}
-    with double_precision(), torch.no_grad():
-        for guide in ("mvn", "low-rank", "structured"):
-            torch.manual_seed(0)
-            built = GUIDES[guide](PROBLEMS["beta"])
-            found = built.log_prob(
-                torch.zeros(2, 1), {"theta": torch.tensor([0.5, 0.9])}
-            )
-            facts[f"{guide}: density of 0.9 equals that of 0.5"] = str(
-                float(found[0]) == float(found[1])
-            )
-    return facts
-
-
-def _first_row_required() -> Facts:
-    """Whether the same guides give the rows equal densities one at a time.
-
-    Returns
-    -------
-    Facts
-        The comparison.
-    """
-    facts = {}
-    with double_precision(), torch.no_grad():
-        for guide in ("mvn", "low-rank", "structured"):
-            torch.manual_seed(0)
-            built = GUIDES[guide](PROBLEMS["beta"])
-            one, two = (
-                float(
-                    built.log_prob(torch.zeros(1, 1), {"theta": torch.tensor([value])})
-                )
-                for value in (0.5, 0.9)
-            )
-            facts[f"{guide}: density of 0.9 equals that of 0.5"] = str(one == two)
-    return facts
-
-
-record(
-    "guide-scores-first-row",
-    "inference/guides: _MVNCommon.log_prob, AutoStructured.log_prob",
-    "a joint guide scores only the first of several rows and repeats it",
-    {
-        f"{guide}: density of 0.9 equals that of 0.5": "True"
-        for guide in ("mvn", "low-rank", "structured")
-    },
-    {
-        f"{guide}: density of 0.9 equals that of 0.5": "False"
-        for guide in ("mvn", "low-rank", "structured")
-    },
-    _first_row,
-    _first_row_required,
-)
-
-
 def _laplace_variance() -> Facts:
     """The variance of a Laplace approximation.
 

@@ -1445,6 +1445,47 @@ def check_density(guide: str) -> None:
     compare_distribution(draws, distribution, f"{guide} draws")
 
 
+def check_rows_alone(guide: str) -> None:
+    """Require a joint guide to score each of several rows as it scores it alone.
+
+    Two rows with different values are scored together and one at a
+    time. Each joint density must equal the density of its row alone,
+    and the two rows' densities must differ, so a guide that scores
+    the first row and repeats it fails.
+
+    Parameters
+    ----------
+    guide : str
+        The guide.
+
+    Raises
+    ------
+    Mismatch
+        If a row's joint density differs from its density alone, or the
+        two rows receive the same density.
+    """
+    values = (0.5, 0.9)
+    with double_precision(), torch.no_grad():
+        torch.manual_seed(0)
+        built = GUIDES[guide](PROBLEMS["beta"])
+        joint = built.log_prob(torch.zeros(2, 1), {"theta": torch.tensor(values)})
+        alone = [
+            float(built.log_prob(torch.zeros(1, 1), {"theta": torch.tensor([value])}))
+            for value in values
+        ]
+    for row, reference in enumerate(alone):
+        compare_number(
+            float(joint[row]),
+            reference,
+            joint_accuracy(reference),
+            f"{guide}: row {row} scored with another row",
+        )
+    if alone[0] == alone[1]:
+        raise Mismatch(
+            "value", 0.0, f"{guide}: the two rows have the same density alone"
+        )
+
+
 def check_delta() -> None:
     """Require a point guide to place every draw at its point.
 
@@ -1639,6 +1680,13 @@ def _register() -> None:
                 "R1",
                 partial(check_density, guide),
             )
+    for guide in ("mvn", "low-rank", "structured"):
+        add(
+            f"consumer/rows-alone/{guide}",
+            f"svi-{guide}",
+            "R1",
+            partial(check_rows_alone, guide),
+        )
     add("consumer/delta", "svi-delta", "R1", check_delta)
     add("consumer/laplace", "svi-laplace", "R1", check_laplace)
     add("consumer/dais", "svi-dais", "R1", check_dais)

@@ -160,10 +160,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "marginalize-ungrouped": {"Q6": ("nested-marginalize-asserts",)},
     "decoder": {"Q14": ("depth-bound-shifts-choices",)},
-    **{
-        f"svi-{guide}": {"R1": ("guide-scores-first-row",)}
-        for guide in ("mvn", "low-rank", "structured")
-    },
     "svi-laplace": {"R1": ("laplace-adds-jitter",)},
     "trace": {"R6": ("checked-program-detached",)},
 }
