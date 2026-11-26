@@ -172,6 +172,56 @@ interval, $i < j$, since the conclusions of binary rules then do too; each
 measure holds on all of its items. An input spanning an empty interval breaks the condition of
 $j - i$, and a grammar with empty spans needs its own argument.
 
+## Span plans
+
+A presentation is in *span form* when it has one judgment family whose indices are a category, of
+closed sorts of nullary constructors, and two natural numbers $i \le j$, and every rule is binary,
+$A(i, j) \leftarrow B(i, k), C(k, j)$, unary, $A(i, j) \leftarrow B(i, j)$, or without premises;
+a category argument may be a variable of its sort, which stands for each constructor.
+[`span_grammar`][quivers.stochastic.span.span_grammar] finds the form or says why there is none.
+When the query keeps no provenance and asks for a value, a support or a marginal, `plan` selects
+the span executor, [`SPAN_ALGORITHM`][quivers.stochastic.planning.SPAN_ALGORITHM], and records
+the two-pass executor as the alternative; with parent counts or a forest it selects the two-pass
+or forest executor as before.
+
+The schedule comes from the presentation: a binary rule's premises are strictly shorter than its
+conclusion, so the cells of length $\ell$ are final once those of the shorter lengths are, and
+[`span_inside`][quivers.stochastic.span.span_inside] computes all cells of one length at once.
+For a cell $(i, i + \ell)$ and a premise pair $(B, C)$ it first sums over the split points,
+
+$$
+M_{BC}(i) = \bigoplus_{k} x(B, i, i + k) \otimes x(C, i + k, i + \ell),
+$$
+
+then each rule $r = (A \leftarrow B\,C)$ contributes $M_{BC}(i) \otimes w_r$ to $A$, and the
+cell is closed under the unary rules, $x \otimes U^*$. Summing over $k$ before the rule is right
+distributivity, $\bigoplus_k (a_k \otimes b_k) \otimes w = (\bigoplus_k a_k \otimes b_k) \otimes
+w$, so the premises keep their order and the weight comes last, and the plan needs only an
+[`OrderPreservingSemiring`][quivers.core.algebras.OrderPreservingSemiring]. No tensor over
+categories, rules and split points together is formed: the work is $O(P n^3 + R n^2)$ for $P$
+distinct premise pairs and $R$ rule instances, against $O(R n^3)$ for one instance at a time.
+A side condition that reads the split point makes its rule a pair of its own; one that reads only
+the span masks the rule's contribution. The unary closure is the algebra's star when the unary
+rules have a cycle, which needs the linear cyclic contract, and otherwise each row
+$U^*[b] = e_b \oplus U[b]\,U^*$ in an order that puts a category after those it derives, which
+needs no star. Zeros are the algebra's own zeros, so a cell no derivation reaches is
+$-\infty$ in the log semiring, and its derivative is zero. The cells reported are those some
+derivation reaches when every input and rule is present, so a cell whose derivations all weigh zero
+is reported, with the zero, as the two-pass executor reports it. The cost claim is
+[`SPAN_WORK`][quivers.stochastic.planning.SPAN_WORK]; its optimality is unresolved for the reasons
+of complexity claim Q3, and the run measures the counters of
+[`SPAN_MEASURES`][quivers.stochastic.planning.SPAN_MEASURES].
+
+The support of a value is a separate observer plan,
+[`SPAN_RECOGNITION_ALGORITHM`][quivers.stochastic.planning.SPAN_RECOGNITION_ALGORITHM], selected
+for a support query when the algebra establishes zero-sum-freeness and the absence of zero
+divisors, so that the support of a sum is the union of the supports and that of a product their
+intersection. [`span_recognize`][quivers.stochastic.span.span_recognize] computes $M_{BC}(i)$ for
+all pairs at once as the batched product of two 0-1 matrices over the split points, read as
+$> 0$. Valiant (1975) recognizes in $O(\mathrm{BM}(n))$ for a fixed grammar, below this cubic
+schedule, so its claim [`SPAN_RECOGNITION_WORK`][quivers.stochastic.planning.SPAN_RECOGNITION_WORK]
+is not called optimal.
+
 ## Refusals
 
 | [`PlanRefusal`][quivers.stochastic.planning.PlanRefusal] | when |
@@ -182,13 +232,16 @@ $j - i$, and a grammar with empty spans needs its own argument.
 | `observable-without-executor` | the observable does not survive aggregation, such as a fold that does not commute with sums: for alternatives $-1$ and $1$ the square of the sum is $0$ and the sum of the squares $2$ |
 | `retention-without-executor` | the retention asks for more than parent counts |
 | `algebra` | a best derivation is asked of an algebra in which no term attains an item's value |
-| `cycle` | the inputs make the derived hypergraph cyclic |
+| `cycle` | the inputs make the derived hypergraph cyclic, or the unary rules of a span plan have a cycle under the acyclic contract |
 
 ## References
 
 - Eisner, J. (2023). Time-and-space-efficient weighted deduction. *Transactions of the Association
   for Computational Linguistics* 11, 960-973.
   [doi:10.1162/tacl_a_00588](https://doi.org/10.1162/tacl_a_00588)
+- Valiant, L. G. (1975). General context-free recognition in less than cubic time. *Journal of
+  Computer and System Sciences* 10(2), 308-315.
+  [doi:10.1016/S0022-0000(75)80046-8](https://doi.org/10.1016/S0022-0000(75)80046-8)
 - Kahn, A. B. (1962). Topological sorting of large networks. *Communications of the ACM* 5(11),
   558-562. [doi:10.1145/368996.369025](https://doi.org/10.1145/368996.369025)
 

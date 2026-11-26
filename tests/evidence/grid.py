@@ -136,12 +136,7 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "chart-parser": {
         "Q2": ("linear-semiring-reads-logarithms",),
-        "Q3": ("row-rebuilt-per-category",),
         "Q10": ("linear-semiring-reads-logarithms",),
-    },
-    "inside": {
-        "Q2": ("zero-probability-clamped",),
-        "Q3": ("zero-probability-clamped",),
     },
     "machine-lexical": {
         "Q1g": ("machine-values-are-numbers",),

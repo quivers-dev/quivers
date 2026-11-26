@@ -40,7 +40,6 @@ from quivers.qiec.program_runtime import (
     run_program,
 )
 from quivers.monadic.instances import Identity
-from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.agenda import (
     AgendaResult,
     ChartView,
@@ -57,7 +56,6 @@ from quivers.stochastic.agenda import (
 )
 from quivers.stochastic.deduction import sample_corpus
 from quivers.stochastic.effect_lifts import class_directed_lifts
-from quivers.stochastic.parsers import ChartParser
 from quivers.stochastic.semiring import (
     BOOLEAN,
     COUNTING,
@@ -72,12 +70,11 @@ from tests.evidence.checks.span import (
     LEXICAL,
     chart_parser,
     double_precision,
-    inside_algorithm,
 )
 from tests.evidence.checks.terms import encoder, node, leaf, parameters
 from tests.evidence.compare import Mismatch
-from tests.evidence.counters import CallCounter, TensorCounter
-from tests.evidence.oracles import closed_forms, derivations, exact
+from tests.evidence.counters import CallCounter
+from tests.evidence.oracles import closed_forms, derivations
 from tests.evidence.oracles.derivations import Variable
 from tests.evidence.problems import logarithm
 from tests.evidence.sources import LEXICAL as LEXICAL_SOURCE
@@ -668,101 +665,6 @@ record(
 # -- span parsers --------------------------------------------------------
 
 
-def _impossible_sentence() -> Facts:
-    """The score of a sentence a grammar does not derive.
-
-    Returns
-    -------
-    Facts
-        The score.
-    """
-    categories = FinSet(name="N", cardinality=2)
-    terminals = FinSet(name="T", cardinality=2)
-    binary = torch.zeros(2, 2, 2, dtype=torch.float64)
-    binary[0, 1, 1] = 1.0
-    lexical = torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64)
-    algorithm = type(inside_algorithm({})[0])(
-        observed(categories, ProductSet(components=(categories, categories)), binary),
-        observed(categories, terminals, lexical),
-    )
-    rules = torch.zeros(2, 2, 2, dtype=torch.float64)
-    rules[0, 1, 1] = 1.0
-    rules[0, 0, 1] = 0.5
-    rules.requires_grad_()
-    words = torch.tensor([[0.5, 0.0], [0.5, 0.0]], dtype=torch.float64)
-    sloped = type(algorithm)(
-        observed(categories, ProductSet(components=(categories, categories)), rules),
-        observed(categories, terminals, words),
-    )
-    (found,) = torch.autograd.grad(sloped(torch.tensor([0, 0, 0])), rules)
-    return {
-        "score of an impossible sentence": number(algorithm(torch.tensor([0, 1]))),
-        "derivative in a rule of weight zero": number(found[1, 1, 1]),
-    }
-
-
-def _zero_rule_slope() -> str:
-    """The derivative of a log score in a rule of weight zero, exactly.
-
-    The rule derives the second category over two of three words, so the
-    score is a polynomial of degree at most two in its weight and three
-    values give its linear coefficient.
-
-    Returns
-    -------
-    str
-        The derivative at zero.
-    """
-    values = [
-        exact.inside(
-            {
-                (0, 1, 1): Fraction(1),
-                (0, 0, 1): Fraction(1, 2),
-                (1, 1, 1): Fraction(level),
-            },
-            {(0, 0): Fraction(1, 2), (1, 0): Fraction(1, 2)},
-            {},
-            (0, 0, 0),
-            2,
-        )[0]
-        for level in (0, 1, 2)
-    ]
-    slope = 2 * (values[1] - values[0]) - (values[2] - values[0]) / 2
-    return number(float(slope / values[0]))
-
-
-record(
-    "zero-probability-clamped",
-    "stochastic/inside.py: InsideAlgorithm._fill_chart",
-    "zero probabilities are replaced by a small positive number, so a sentence "
-    "without a derivation has a finite score and a rule of weight zero has no "
-    "gradient",
-    {
-        "score of an impossible sentence": "-69.0776",
-        "derivative in a rule of weight zero": "0",
-    },
-    {
-        "score of an impossible sentence": "-inf",
-        "derivative in a rule of weight zero": "3.33333",
-    },
-    _impossible_sentence,
-    lambda: {
-        "derivative in a rule of weight zero": _zero_rule_slope(),
-        "score of an impossible sentence": number(
-            logarithm(
-                exact.inside(
-                    {(0, 1, 1): Fraction(1)},
-                    {(1, 0): Fraction(1)},
-                    {},
-                    (0, 1),
-                    2,
-                )[0]
-            )
-        ),
-    },
-)
-
-
 def _linear_scores() -> Facts:
     """The scores of a sentence in the linear semirings.
 
@@ -824,46 +726,6 @@ record(
     _linear_scores_required,
 )
 
-
-def _category_cells(categories: int) -> int:
-    """Elements allocated by a parser with one rule per category.
-
-    Parameters
-    ----------
-    categories : int
-        The number of categories.
-
-    Returns
-    -------
-    int
-        Elements allocated for a sentence of two words.
-    """
-    parser = ChartParser(
-        RuleSystem(
-            binary_rules=tuple((a, a, (a + 1) % categories) for a in range(categories)),
-            n_categories=categories,
-        ),
-        n_terminals=1,
-        start_idx=0,
-    )
-    with TensorCounter() as counter:
-        parser(torch.zeros(1, 2, dtype=torch.long))
-    return counter.counts["allocated"]
-
-
-record(
-    "row-rebuilt-per-category",
-    "stochastic/span.py: _scatter_semiring",
-    "a cell copies its whole row once per category, so a grammar with a fixed "
-    "number of rules per category costs the square of its categories",
-    {"four times the categories cost more than eight times": "True"},
-    {"four times the categories cost more than eight times": "False"},
-    lambda: {
-        "four times the categories cost more than eight times": str(
-            _category_cells(64) > 8 * _category_cells(16)
-        )
-    },
-)
 
 # -- the reference machine and the checked program -----------------------
 

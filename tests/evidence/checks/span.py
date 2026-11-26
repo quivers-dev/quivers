@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from fractions import Fraction
 from functools import lru_cache, partial
@@ -23,6 +23,7 @@ from quivers.stochastic.span import (
     UnarySpanDeduction,
 )
 from tests.evidence.checks._registry import add
+from tests.evidence.counters import saved_elements
 from tests.evidence.compare import (
     differentiate,
     ELEMENTARY,
@@ -742,6 +743,170 @@ def check_update() -> None:
             )
 
 
+def _two_categories(
+    binary: Mapping[tuple[int, int, int], float],
+    lexical: Sequence[Sequence[float]],
+    *,
+    requires_grad: bool = False,
+) -> tuple[InsideAlgorithm, torch.Tensor]:
+    """An inside algorithm over two categories and two terminals.
+
+    Parameters
+    ----------
+    binary : Mapping
+        The probability of each binary rule.
+    lexical : Sequence of Sequence of float
+        ``lexical[a][t]``.
+    requires_grad : bool
+        Whether the binary tensor is differentiated.
+
+    Returns
+    -------
+    tuple of InsideAlgorithm and torch.Tensor
+        The algorithm and its binary tensor.
+    """
+    categories = FinSet(name="N", cardinality=2)
+    terminals = FinSet(name="T", cardinality=2)
+    rules = torch.zeros(2, 2, 2, dtype=torch.float64)
+    for key, weight in binary.items():
+        rules[key] = weight
+    rules.requires_grad_(requires_grad)
+    words = torch.tensor(lexical, dtype=torch.float64)
+    return (
+        InsideAlgorithm(
+            observed(
+                categories, ProductSet(components=(categories, categories)), rules
+            ),
+            observed(categories, terminals, words),
+        ),
+        rules,
+    )
+
+
+def check_impossible_sentence() -> None:
+    """Require a sentence without a derivation to score ``-inf`` with derivative zero.
+
+    The grammar derives only ``0 -> 1 1`` over words of category one, so
+    a sentence starting with the second terminal has no derivation; its
+    log weight is the log of zero, and as a constant of the parameters its
+    derivative is zero, not a number of no meaning.
+
+    Raises
+    ------
+    Mismatch
+        If the score is finite or its derivative is not zero.
+    """
+    algorithm, rules = _two_categories(
+        {(0, 1, 1): 1.0}, [[0.0, 0.0], [1.0, 0.0]], requires_grad=True
+    )
+    wanted = logarithm(
+        exact.inside({(0, 1, 1): Fraction(1)}, {(1, 0): Fraction(1)}, {}, (0, 1), 2)[0]
+    )
+    score = algorithm(torch.tensor([0, 1]))
+    if float(score.detach()) != wanted:
+        raise Mismatch(
+            "value", math.inf, f"impossible sentence scores {float(score.detach())}"
+        )
+    (found,) = torch.autograd.grad(score, rules)
+    if not bool((found == 0).all()):
+        raise Mismatch(
+            "value", math.inf, f"its derivative is {found.flatten().tolist()}"
+        )
+
+
+def check_zero_rule_derivative() -> None:
+    """Compare the derivative of a log score in a rule of weight zero with its exact value.
+
+    The rule ``1 -> 1 1`` has weight zero and derives the second category
+    over two of three words, so the sentence's weight is a polynomial of
+    degree at most two in it; three values of the closed recurrence give
+    its linear coefficient, and the derivative of the log weight is that
+    over the weight at zero.
+
+    Raises
+    ------
+    Mismatch
+        If the derivative differs.
+    """
+    algorithm, rules = _two_categories(
+        {(0, 1, 1): 1.0, (0, 0, 1): 0.5}, [[0.5, 0.0], [0.5, 0.0]], requires_grad=True
+    )
+    (found,) = torch.autograd.grad(algorithm(torch.tensor([0, 0, 0])), rules)
+    values = [
+        exact.inside(
+            {
+                (0, 1, 1): Fraction(1),
+                (0, 0, 1): Fraction(1, 2),
+                (1, 1, 1): Fraction(level),
+            },
+            {(0, 0): Fraction(1, 2), (1, 0): Fraction(1, 2)},
+            {},
+            (0, 0, 0),
+            2,
+        )[0]
+        for level in (0, 1, 2)
+    ]
+    slope = 2 * (values[1] - values[0]) - (values[2] - values[0]) / 2
+    compare_tensor(
+        found[1, 1, 1],
+        torch.tensor(float(slope / values[0]), dtype=torch.float64),
+        Accuracy(domain="linear", operations=200),
+        "derivative in a rule of weight zero",
+    )
+
+
+def inside_saved(length: int, batch: int = 2) -> int:
+    """Elements the inside algorithm keeps for its backward pass.
+
+    Parameters
+    ----------
+    length : int
+        The sentence length.
+    batch : int
+        The sentences.
+
+    Returns
+    -------
+    int
+        Elements saved.
+    """
+    with double_precision():
+        algorithm, tensors = inside_algorithm(UNARY, requires_grad=True)
+        tokens = torch.tensor(
+            [[(i + b) % TERMINALS for i in range(length)] for b in range(batch)]
+        )
+        with saved_elements() as sizes:
+            score = algorithm(tokens).sum()
+        torch.autograd.grad(score, list(tensors.values()))
+    return sum(sizes)
+
+
+def check_inside_memory() -> None:
+    """Require the inside algorithm to keep only its chart and weights for backward.
+
+    The chart has ``batch N n (n + 1) / 2`` entries; the weights ``N^3``,
+    ``N T`` and the terminals ``batch n``. No product over categories and
+    split points is kept.
+
+    Raises
+    ------
+    Mismatch
+        If more is saved.
+    """
+    for length in (3, 5):
+        found = inside_saved(length)
+        bound = (
+            2 * CATEGORIES * length * (length + 1) // 2
+            + CATEGORIES**3
+            + CATEGORIES * TERMINALS
+            + 2 * length
+        )
+        if found > bound:
+            raise Mismatch(
+                "work", found / bound, f"length {length}: {found} elements saved"
+            )
+
+
 def _register() -> None:
     """Register every check of this module."""
     for semiring in PARSERS:
@@ -781,6 +946,10 @@ def _register() -> None:
     )
     add("span/inside/counts", "inside", "Q11", check_inside_gradient)
     add("span/inside/precision", "inside", "Q3", check_inside_precision)
+    add("span/inside/impossible_sentence", "inside", "Q2", check_impossible_sentence)
+    add("span/inside/impossible_score", "inside", "Q3", check_impossible_sentence)
+    add("span/inside/zero_rule_derivative", "inside", "Q1g", check_zero_rule_derivative)
+    add("span/inside/memory", "inside", "Q3", check_inside_memory)
     for executor in ("chart-parser", "inside"):
         add(
             f"span/{executor}/divergent_unary",
