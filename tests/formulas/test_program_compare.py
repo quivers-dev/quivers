@@ -37,9 +37,10 @@ def test_loo_and_compare_of_two_programs() -> None:
         scores = fitted.log_likelihood(num_samples=40)["y"]
         assert scores.shape == (1, 40, 16)
         estimate = fitted.loo(num_samples=40)
-        # PSIS-LOO never exceeds the in-sample log predictive density.
+        # The effective number of parameters is the in-sample log predictive
+        # density less the LOO estimate, both read from the same scores.
         lppd = torch.logsumexp(scores.reshape(40, 16).double(), 0) - np.log(40)
-        assert estimate.estimate <= float(lppd.sum()) + 1e-8
+        assert estimate.p == pytest.approx(float(lppd.sum()) - estimate.elpd, rel=1e-6)
         estimates[name] = fitted.add_criterion("loo", num_samples=40)
     table = loo_compare(estimates)
     assert set(table.rows) == {"gauss", "decay"}
@@ -48,8 +49,9 @@ def test_loo_and_compare_of_two_programs() -> None:
 def test_kfold_of_a_program() -> None:
     gauss, _ = _fits()
     result = gauss.kfold(K=2, seed=0, num_samples=20)
-    assert result.pointwise.shape[-1] == 16
-    assert bool(torch.isfinite(torch.as_tensor(result.pointwise)).all())
+    pointwise = torch.as_tensor(result.estimate.pointwise_elpd)
+    assert pointwise.shape[-1] == 16
+    assert bool(torch.isfinite(pointwise).all())
 
 
 def test_a_shared_reading_has_no_pointwise_criterion() -> None:

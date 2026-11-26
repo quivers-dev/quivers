@@ -124,7 +124,7 @@ def test_the_two_class_program_is_the_gaussian_mixture_row_by_row() -> None:
             "theta": weights,
         },
     ).log_likelihood()["y"]
-    torch.testing.assert_close(scores.double(), mixed.double(), rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(scores.double(), mixed.double(), rtol=1e-10, atol=0.0)
     wider = pin(
         family,
         {

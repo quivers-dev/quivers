@@ -14,6 +14,7 @@ import pandas as pd
 import torch
 
 from quivers.dsl.emit import module_to_source
+from quivers.formulas._program_kernel import program_arguments
 from quivers.formulas._fit import (
     BayesianFit,
     _InferenceResult,
@@ -304,11 +305,27 @@ def _restore_formula(manifest: dict, codec: _Codec) -> BayesianFit:
         raise TypeError("artifact formula observations require named tensors")
     if predictor_name is not None and predictor_name not in observations:
         raise ValueError("artifact is missing its saved predictor output")
+    # A program fit stores the program's text and formulas, as it was called.
+    arguments = bound.arguments
+    formula, family, distributional = program_arguments(
+        arguments["formula"],
+        program=arguments["program"],
+        parameters=arguments["parameters"],
+        response=arguments["response"],
+        family=arguments["family"],
+        distributional=arguments["distributional"],
+        nonlinear=arguments["nonlinear"],
+        fixed_parameters=arguments["fixed_parameters"],
+        caller="load_fit",
+    )
     prepared = _prepare_formula(
         **_arguments(
             _prepare_formula,
             {
                 **options,
+                "formula": formula,
+                "family": family,
+                "distributional": distributional,
                 "data": data,
                 "predictor_name": predictor_name,
                 "caller": "load_fit",

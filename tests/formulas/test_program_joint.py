@@ -80,13 +80,14 @@ def test_readers_key_each_block_by_its_response() -> None:
             )
         )
 
-    scores = pinned(program).log_likelihood()
-    expected = pinned(formula).log_likelihood()
-    assert set(scores) == {"y", "z"}
-    for response in ("y", "z"):
-        torch.testing.assert_close(
-            scores[response].double(), expected[response].double(), rtol=1e-10, atol=0.0
-        )
+    for resp in (None, "y", "z"):
+        scores = pinned(program).log_likelihood(resp=resp)
+        expected = pinned(formula).log_likelihood(resp=resp)
+        assert set(scores) == set(expected)
+        for key, value in scores.items():
+            torch.testing.assert_close(
+                value.double(), expected[key].double(), rtol=1e-10, atol=0.0
+            )
     only = pinned(program).log_likelihood(resp="y")
     assert set(only) == {"y"}
 
