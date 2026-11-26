@@ -179,9 +179,13 @@ result = MCMC(NUTSKernel(), num_warmup=300, num_samples=500, seed=0).run(
 result.samples["effects$z"].shape  # (chains, draws, 4)
 ```
 
-The compiled runtime currently refuses `define`-computation calls that recurse,
-draw or score inside a conditional, handle an effect, use `case`, or require
-static arguments. Such calls still run on the reference machine (`Program.run`),
+A callee that installs authored handlers compiles too when its handlers can be
+[discharged](../reference/qvr/effects-and-handlers.md#discharged-handlers), each request
+replaced by its clause's answer, and a callee that returns a product is read by
+component, as `p[0]` and `p[1]`. The compiled runtime refuses `define`-computation
+calls that recurse, draw or score inside a conditional, install handlers it cannot
+discharge, use `case` on a family value, or require static arguments. Such calls
+still run on the reference machine (`Program.run`),
 and every fitting entry point raises a
 [`CompileError`](../api/dsl/compiler.md#quivers.dsl.compiler.CompileError) at the call
 saying why and what to write instead

@@ -291,12 +291,18 @@ block on the left of the closure.
 The operation is a partial trace: its equations include conditions on when each
 side is defined [@malherbe2012partially]. Here the domain requires a finite
 closure for the entire feedback block, including components unreachable from
-the external input. The supported
-[semirings](../semantics/algebras.md) have the following domains.
+the external input. `KleeneStarTrace` accepts a semiring by its capability: a
+[`Semiring`](../api/core/algebras.md#quivers.core.algebras.Semiring) with the [`Star`](../api/core/algebras.md#quivers.core.algebras.Star)
+capability whose least-solution law it establishes. `Star` computes the closure
+by eliminating one state after another, in $n^3$ operations of the algebra
+[@lehmann1977algebraic]. The shipped
+[semirings](../semantics/algebras.md) with this capability have the following domains.
 
 | Semiring | Condition for finite feedback closure |
 |----------|---------------------------------------|
 | Boolean | Every finite graph |
+| Gödel | Every finite graph |
+| Tropical | Every finite graph |
 | Counting | No directed cycle of positive-weight edges |
 | Markov | Nonnegative feedback matrix has spectral radius below one |
 | Log-probability | Exponentiated feedback matrix has spectral radius below one |
@@ -337,9 +343,11 @@ assert result.tensor.item() == 2.0
 
 Matrices must use float32 or float64 and contain only values in their semiring's
 carrier. The result retains the external objects' tensor shapes and the input
-precision. Floating-point roundoff still limits the numerical equations,
-especially near divergent feedback. An undefined closure raises
-[`DivergentClosureError`](../api/categorical/traced.md#quivers.categorical.traced.DivergentClosureError).
+precision. An undefined closure raises
+[`DivergentClosureError`](../api/categorical/traced.md#quivers.categorical.traced.DivergentClosureError),
+and a loop whose weight lies so close to the boundary of the domain that rounding
+cannot decide which side it is on raises
+[`UndecidedClosureError`](../api/core/algebras.md#quivers.core.algebras.UndecidedClosureError).
 The logarithmic implementation retains finite log weights without converting
 them to ordinary probabilities, so an edge with log weight $-1000$ remains
 present.
