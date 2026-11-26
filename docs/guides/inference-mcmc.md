@@ -85,8 +85,10 @@ those of
 [`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint),
 bit for bit. A program with a scan, whose recursion runs over its
 sequence, is scored by `log_joint` at every evaluation, and so is any
-evaluation made while an effect handler is in scope or of a program
-whose `log_joint` is overridden.
+evaluation made while an effect handler that does more than fix sites is in scope, or of
+a program whose `log_joint` is overridden. An intervention by
+[`do`](../api/effects/handlers.md#quivers.effects.do.do), which only fixes sites, is
+replayed like any other evaluation.
 
 Each chain derives an independent local generator from `seed`, and that stream
 controls initialization, momentum, tree direction, subtree
@@ -686,13 +688,14 @@ except UnbatchableProgramError as refusal:
 A few programs are refused whatever they declare, because the number of terms in their joint
 would differ between positions. These are an observation whose weights depend on a latent,
 since a zero weight removes its row, and a `filter` over values that depend on one. A program
-whose `log_joint` is overridden, and any evaluation made while effect handlers are on the
-stack, is refused as well, since its density is not its steps' alone.
+whose `log_joint` is overridden, and any evaluation made while a handler that does more than
+fix sites is on the stack, is refused as well, since its density is not its steps' alone. A
+`do` intervention only fixes sites, so a program under one is evaluated at many positions.
 
 [`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint)
 over an input of `B` rows scores its independent runs together under the same declarations,
-and one by one when a step declares neither, draws at random, or reads a host datum given per
-run.
+and one by one when a step declares neither, draws at random, reads a host datum given per
+run, or runs under a handler that does more than fix sites.
 
 The whole batch is held in memory at once, at `B` times the memory of one evaluation. A grid
 of millions of positions is split into calls of a size that fits.

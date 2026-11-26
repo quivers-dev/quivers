@@ -112,11 +112,17 @@ for name, site in sites.items():
 A `SampleSite` records:
 
 - `name`: the site's name;
-- `morphism`: the distribution it was drawn from, or `None` for a `let`;
-- `value`: the drawn or observed value;
-- `log_prob`: the value's log density, shape `(batch,)`, zero for a `let`;
+- `morphism`: the distribution it was drawn from, or `None` for a `let` or a score;
+- `value`: the drawn, observed, or computed value;
+- `log_prob`: the density the site adds to the run's score, shape `(batch,)`, zero for a
+  `let` and for a site fixed by an intervention;
 - `is_observed`: whether the site was fixed to an observed value;
-- `is_deterministic`: whether the site is a `let`.
+- `is_deterministic`: whether the site is a `let`, a score, or a site fixed by an
+  intervention;
+- `units`: for a score that factors over
+  [units](../semantics/programs.md#271-units-and-row-scores), such as a `marginalize` block,
+  its [`SiteUnits`](../api/effects/units.md#quivers.effects.units.SiteUnits) in each run,
+  and empty for any other site.
 
 ## Input rows are independent runs
 

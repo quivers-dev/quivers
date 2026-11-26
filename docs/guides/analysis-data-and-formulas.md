@@ -201,8 +201,11 @@ formula as nonlinear, and a
 so `bf("y ~ x") + lf("sigma ~ 0 + z") + brmsfamily("skew_normal")` reads as
 its brms counterpart. `acformula` is not provided: an autocorrelation term
 is written in the formula itself, as the
-[dependence guide](formula-dependence.md) describes. A parameter defined by
-`nlf` requires a nonlinear main formula.
+[dependence guide](formula-dependence.md) describes. A nonlinear parameter
+defined by `nlf` requires a nonlinear main formula. A distributional parameter
+defined by `nlf` does not: `bf("y ~ x") + nlf("sigma ~ a * exp(b * z)") + lf("a + b ~ 1")`
+gives `sigma` a nonlinear expression over the parameters `a` and `b` beside a
+linear location, and so does the same formula in a joint model.
 
 <!-- python: run -->
 ```python
@@ -671,10 +674,13 @@ This emits a single `cor_shared_effects` matrix joining the location and scale
 intercepts. Shared IDs require the same grouping factor and coding. Ambiguous
 block names and repeated coefficients across blocks fail before fitting.
 
-Categorical models expand each block over all non-reference logits, so a
-three-category `(1 + x | group)` model has a four-dimensional correlation
-matrix. This includes correlations between slopes and between response-category
-coefficients. Both parameterizations retain this full covariance.
+Categorical models expand each block over the non-reference logits, as brms does.
+Without an ID, the coefficients of different response categories are independent: a
+three-category `(1 + x | group)` model has one two-dimensional intercept and slope
+correlation for each non-reference category, `cor_group_component1` and
+`cor_group_component2`. With an ID, `(1 + x | p | group)` gives one four-dimensional
+correlation `cor_shared_p` across the slopes and the categories. Both parameterizations
+retain the chosen covariance.
 Numeric transforms and categorical slope contrasts retain their
 evaluated design columns, including when the corresponding fixed slope is absent.
 The generated runtime telescope declares each group index array as
@@ -2377,9 +2383,12 @@ residual_r2 = regression.bayes_r2(method="residual", num_samples=5, seed=7)
 assert model_r2.shape == residual_r2.shape == (1, 5)
 ```
 
-The default `method="auto"` uses model variances for ordinary Gaussian and
-Bernoulli responses and residual variances otherwise. Supplying `observed`
-selects the residual definition under auto. Model variances use the native
+The default `method="auto"` uses model variances for Gaussian and Bernoulli
+responses without truncation or a residual dependence term such as `ar()`, and
+residual variances otherwise. Passing `observed` selects the residual
+definition under auto. A joint fit's `bayes_r2` takes the same `method` and
+`observed` (a mapping by response) and returns one `R2<resp>` ratio per response,
+each read as the single-response fit reads it. Model variances use the native
 response law, including row-specific trials, auxiliary predictors, known
 standard errors, and any available conditional truncation moments. A Wiener
 model uses positive response-time moments, including nondecision delay.
@@ -2405,8 +2414,9 @@ posterior draw once.
 response names to raw conditional log densities with shape `(chain, draw, row)`.
 These scores exclude priors and likelihood weights, including for rows with
 zero fitting weight. One multivariate event is one score unit; its event
-coordinates are reduced together. An observation hidden by exact marginalization
-requires a corresponding likelihood observer and otherwise raises an error.
+coordinates are reduced together. An observation whose latent is summed out
+exactly is scored through the [units](../semantics/programs.md#271-units-and-row-scores)
+its score step declares, and an observation that nothing scores raises a `TypeError`.
 
 `analysis` retains those scores together with the same posterior draws, observed
 responses, and recorded sampler statistics. Subsequent summaries, WAIC, and
@@ -2571,10 +2581,10 @@ or for a fit without a neural predictor, raises an error.
 The fitted evaluator prepares the new design columns once per request and
 compiles one row-specialized native program, then replays it for all draws
 into one allocated output tensor. Training observations and the fitted
-source remain unchanged. These retained evaluators are live runtime state;
-the versioned prediction plan explicitly refuses serialization. Keep the
-fit in the current process until a portable fitted-artifact format is
-available.
+source remain unchanged. These retained evaluators are live runtime state,
+and pickling the prediction plan raises a `TypeError`. To keep a fit across
+processes, [`save_fit` and `load_fit`](../api/modeling.md#durable-fitted-artifacts)
+store it as a portable artifact and rebuild the evaluators when it is loaded.
 
 ## See also
 
