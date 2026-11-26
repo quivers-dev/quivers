@@ -749,7 +749,8 @@ def records_per_run(rules: int) -> int:
     Returns
     -------
     int
-        Records validated by the second of two runs.
+        Records validated by the second of two runs: the result and its
+        work report, whatever the number of rules.
     """
     system = [
         InferenceRule(name=f"r{k}", premises=(("n", k),), conclusion=("n", k + 1))
@@ -1172,7 +1173,7 @@ REPEATED: tuple[Family, ...] = (
         part="validation",
         sizes=(4, 8, 16, 32, 64),
         work=records_per_run,
-        claim=lambda rules: 1.0,
+        claim=lambda rules: 2.0,
         constant=1.0,
     ),
     Family(

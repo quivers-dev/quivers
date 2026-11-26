@@ -260,19 +260,21 @@ def match(
 class ReportsWork(Protocol):
     """A chart or agenda queue that reports the work it has done.
 
-    The report counts everything since the component was made; a run
-    takes the difference across it. A component that does not implement
-    this leaves its work unmeasured in the run's report, which is a
-    declared absence and not a count of zero.
+    The counts cover everything since the component was made; a run takes
+    the difference across it. The counters it does not return are not
+    measured, and a component that does not implement this leaves all its
+    work unmeasured in the run's report: a declared absence, not a count
+    of zero.
     """
 
-    def work_report(self) -> WorkReport:
+    def work_counts(self) -> Mapping[WorkField, int]:
         """The work done since the component was made.
 
         Returns
         -------
-        WorkReport
-            Its counters, each measured one counted.
+        Mapping of WorkField to int
+            A count for each counter it measures, of those in
+            `COMPONENT_FIELDS`.
         """
         ...
 
@@ -296,28 +298,20 @@ class _ComponentWork:
         self.hashes = 0
         self.comparisons = 0
 
-    def report(self, measured: tuple[WorkField, ...]) -> WorkReport:
-        """The counts as a work report.
-
-        Parameters
-        ----------
-        measured : tuple of WorkField
-            The counters the component counts.
+    def counts(self) -> dict[WorkField, int]:
+        """Every counter a chart or queue may contribute, as counted.
 
         Returns
         -------
-        WorkReport
-            The report.
+        dict of WorkField to int
+            Sums, products (none), hash operations and comparisons.
         """
-        return WorkReport(
-            phase=Phase.EXECUTION,
-            scalar_sums=self.sums if WorkField.SCALAR_SUMS in measured else 0,
-            hash_operations=self.hashes if WorkField.HASH_OPERATIONS in measured else 0,
-            key_comparisons=(
-                self.comparisons if WorkField.KEY_COMPARISONS in measured else 0
-            ),
-            measured=measured,
-        )
+        return {
+            WorkField.SCALAR_SUMS: self.sums,
+            WorkField.SCALAR_PRODUCTS: 0,
+            WorkField.HASH_OPERATIONS: self.hashes,
+            WorkField.KEY_COMPARISONS: self.comparisons,
+        }
 
 
 class Chart(ABC):
@@ -465,17 +459,17 @@ class HashChart(Chart):
         self._tolerance: float = float(tolerance)
         self._work = _ComponentWork()
 
-    def work_report(self) -> WorkReport:
+    def work_counts(self) -> Mapping[WorkField, int]:
         """The chart's work since it was made.
 
         Returns
         -------
-        WorkReport
+        Mapping of WorkField to int
             Sums of aggregation, one per element merged; dictionary
-            accesses; and the items a lookup matched against its pattern.
-            It multiplies nothing.
+            accesses; the items a lookup matched against its pattern; and
+            no products.
         """
-        return self._work.report(COMPONENT_FIELDS)
+        return self._work.counts()
 
     def lookup(self, pattern: Pattern) -> Iterable[tuple[Item, torch.Tensor]]:
         """Scan the stored items for those matching a pattern.
@@ -542,8 +536,8 @@ class HashChart(Chart):
         """
         self._work.hashes += 1
         if item not in self._store:
-            self._work.hashes += 1
             self._store[item] = weight
+            self._work.hashes += 1
             return True
         existing = self._store[item]
         stacked = torch.stack([existing, weight])
@@ -1002,17 +996,17 @@ class FIFOAgenda(Agenda):
         self._semiring: ChartSemiring | None = None
         self._work = _ComponentWork()
 
-    def work_report(self) -> WorkReport:
+    def work_counts(self) -> Mapping[WorkField, int]:
         """The queue's work since it was made.
 
         Returns
         -------
-        WorkReport
+        Mapping of WorkField to int
             Sums merging pending contributions, one per element, and
-            dictionary accesses; a queue in order compares nothing and
-            multiplies nothing.
+            dictionary accesses; a queue in order compares and multiplies
+            nothing.
         """
-        return self._work.report(COMPONENT_FIELDS)
+        return self._work.counts()
 
     def bind_semiring(self, semiring: ChartSemiring) -> None:
         """Bind the semiring that merges pending contributions.
@@ -1089,15 +1083,15 @@ class LIFOAgenda(Agenda):
     def __init__(self) -> None:
         self._stack: list[tuple[Item, torch.Tensor]] = []
 
-    def work_report(self) -> WorkReport:
+    def work_counts(self) -> Mapping[WorkField, int]:
         """The queue's work: none of the counted kinds.
 
         Returns
         -------
-        WorkReport
+        Mapping of WorkField to int
             A stack sums, hashes, compares and multiplies nothing.
         """
-        return WorkReport(phase=Phase.EXECUTION, measured=COMPONENT_FIELDS)
+        return dict.fromkeys(COMPONENT_FIELDS, 0)
 
     def push(self, item: Item, weight: torch.Tensor) -> None:
         """Add an item and its weight to the agenda.
@@ -1154,25 +1148,20 @@ class PriorityQueueAgenda(Agenda):
         self._heap: list[tuple[float, int, Item, torch.Tensor]] = []
         self._counter = 0  # tie-breaker for deterministic ordering
 
-    def work_report(self) -> WorkReport:
+    def work_counts(self) -> Mapping[WorkField, int]:
         """The queue's work: no sums, hashes or products; comparisons unmeasured.
 
         Returns
         -------
-        WorkReport
-            The heap's comparisons happen inside the heap and are not
-            counted, so they are not measured.
+        Mapping of WorkField to int
+            Zero sums, hashes and products; the heap's comparisons happen
+            inside the heap and are not counted, so they are absent.
         """
-        return WorkReport(
-            phase=Phase.EXECUTION,
-            measured=measuring(
-                {
-                    WorkField.SCALAR_SUMS,
-                    WorkField.SCALAR_PRODUCTS,
-                    WorkField.HASH_OPERATIONS,
-                }
-            ),
-        )
+        return {
+            WorkField.SCALAR_SUMS: 0,
+            WorkField.SCALAR_PRODUCTS: 0,
+            WorkField.HASH_OPERATIONS: 0,
+        }
 
     def push(self, item: Item, weight: torch.Tensor) -> None:
         """Add an item and its weight to the agenda.
@@ -1297,30 +1286,28 @@ class _AgendaWork:
         self.products = 0
 
 
-def _since(component: Chart | Agenda, before: WorkReport | None) -> WorkReport | None:
-    """The work a chart or queue did since an earlier report.
+def _since(
+    component: Chart | Agenda, before: Mapping[WorkField, int] | None
+) -> dict[WorkField, int] | None:
+    """The work a chart or queue did since earlier counts.
 
     Parameters
     ----------
     component : Chart or Agenda
         The component.
-    before : WorkReport or None
-        Its report before the run, ``None`` when it reports no work.
+    before : Mapping of WorkField to int or None
+        Its counts before the run, ``None`` when it reports no work.
 
     Returns
     -------
-    WorkReport or None
-        The difference of its reports, or ``None`` when it reports no work.
+    dict of WorkField to int or None
+        The difference for each counter it measures, or ``None`` when it
+        reports no work.
     """
     if before is None or not isinstance(component, ReportsWork):
         return None
-    after = component.work_report()
-    return after.with_(
-        scalar_sums=after.scalar_sums - before.scalar_sums,
-        scalar_products=after.scalar_products - before.scalar_products,
-        hash_operations=after.hash_operations - before.hash_operations,
-        key_comparisons=after.key_comparisons - before.key_comparisons,
-    )
+    after = component.work_counts()
+    return {field: count - before.get(field, 0) for field, count in after.items()}
 
 
 def _agenda_report(
@@ -1330,7 +1317,7 @@ def _agenda_report(
     occurrences: int,
     products_measured: bool,
     saved: int | None,
-    components: Sequence[WorkReport | None],
+    components: Sequence[Mapping[WorkField, int] | None],
 ) -> WorkReport:
     """The work report of an agenda run.
 
@@ -1356,7 +1343,7 @@ def _agenda_report(
     saved : int or None
         Elements saved for the backward pass, or ``None`` when not
         measured.
-    components : Sequence of WorkReport or None
+    components : Sequence of Mapping of WorkField to int, or None
         The chart's and the queue's work during the run, ``None`` for one
         that reports none.
 
@@ -1378,14 +1365,10 @@ def _agenda_report(
     for field, count in own.items():
         if field is WorkField.SCALAR_PRODUCTS and not products_measured:
             continue
-        if all(
-            report is not None and field in report.measured for report in components
-        ):
+        if all(report is not None and field in report for report in components):
             measured.add(field)
             totals[field] = count + sum(
-                getattr(report, field.value)
-                for report in components
-                if report is not None
+                report[field] for report in components if report is not None
             )
     return WorkReport(
         phase=Phase.EXECUTION,
@@ -1515,8 +1498,8 @@ def run_agenda(
     )
 
     work = _AgendaWork()
-    chart_before = chart.work_report() if isinstance(chart, ReportsWork) else None
-    queue_before = agenda.work_report() if isinstance(agenda, ReportsWork) else None
+    chart_before = chart.work_counts() if isinstance(chart, ReportsWork) else None
+    queue_before = agenda.work_counts() if isinstance(agenda, ReportsWork) else None
     saved: list[int] = []
     with _tape(saved) if measure_tape else nullcontext():
         _drain(

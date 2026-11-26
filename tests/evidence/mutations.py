@@ -497,7 +497,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="budget-returns-the-partial-chart",
         defect_class="budget",
         provenance="a spent budget ends the loop instead of refusing",
-        target=f"{AGENDA}:run_agenda",
+        target=f"{AGENDA}:_drain",
         rewrites=(
             Rewrite(
                 old="raise RuntimeError(\n"
@@ -507,7 +507,6 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="break",
             ),
         ),
-        also_in=("tests.evidence.checks.deduction",),
         rejected_by=("deduction/budget/fifo", "deduction/budget/lifo"),
         min_effect=1.0,
     ),
