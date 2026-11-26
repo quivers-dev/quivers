@@ -73,14 +73,15 @@ def test_joint_incl_autocor_false_scores_independent_rows():
     means = fitted.posterior_epred(resp="y1", **options)["y1"]
     draws = fitted.draws(num_samples=3, seed=0)
     sigma = draws["response_y1__sigma"].reshape(1, 3, 1)
-    expected = torch.distributions.Normal(means, sigma).log_prob(
+    expected = torch.distributions.Normal(means.double(), sigma.double()).log_prob(
         torch.as_tensor(frame["y1"].to_numpy())
     )
-    torch.testing.assert_close(scores, expected)
+    # The fit runs in single precision.
+    torch.testing.assert_close(scores.double(), expected, rtol=1e-5, atol=1e-6)
     eta = draws["response_y1__intercept"].reshape(1, 3, 1) + draws[
         "response_y1__beta_x"
     ].reshape(1, 3, 1) * torch.as_tensor(frame["x"].to_numpy())
-    torch.testing.assert_close(means, eta)
+    torch.testing.assert_close(means.double(), eta.double(), rtol=1e-5, atol=1e-6)
 
 
 def test_joint_unstructured_correlation_predicts_new_rows():
@@ -289,7 +290,9 @@ def _ar1_means(eta, y, phi, groups, order):
         row = order[start]
         if start and groups[order[start - 1]] == groups[row]:
             previous = order[start - 1]
-            means[..., row] = eta[..., row] + phi * (y[previous] - eta[..., previous])
+            means[..., row] = eta[..., row] + phi.reshape(-1) * (
+                y[previous] - eta[..., previous]
+            )
     return means
 
 
@@ -297,7 +300,10 @@ def test_conditional_arma_beside_residual_correlations_scores_each_rows_vector()
     frame = _frame()
     spec = bf("y1 ~ x + ar(time = t, gr = g)") + bf("y2 ~ x") + set_rescor(True)
     fitted = fit(spec, data=frame, **SVI)
-    draws = fitted.draws(num_samples=3, seed=0)
+    draws = {
+        name: value.double()
+        for name, value in fitted.draws(num_samples=3, seed=0).items()
+    }
     x = torch.as_tensor(frame["x"].to_numpy())
     y = torch.as_tensor(frame[["y1", "y2"]].to_numpy())
     order = sorted(range(ROWS), key=lambda row: (frame["g"][row], frame["t"][row]))
@@ -319,23 +325,30 @@ def test_conditional_arma_beside_residual_correlations_scores_each_rows_vector()
         torch.stack((means1, eta2), -1), scale_tril=tril
     )
     expected = law.log_prob(y).reshape(1, 3, ROWS)
+    close = {"rtol": 1e-5, "atol": 1e-6}
     torch.testing.assert_close(
-        fitted.log_likelihood(num_samples=3, seed=0)["y1__y2"], expected
+        fitted.log_likelihood(num_samples=3, seed=0)["y1__y2"].double(),
+        expected,
+        **close,
     )
     # One response's score is its coordinate's law at the same means.
     torch.testing.assert_close(
-        fitted.log_likelihood(resp="y1", num_samples=3, seed=0)["y1"],
+        fitted.log_likelihood(resp="y1", num_samples=3, seed=0)["y1"].double(),
         torch.distributions.Normal(means1, column("response_y1__sigma"))
         .log_prob(y[:, 0])
         .reshape(1, 3, ROWS),
+        **close,
     )
     # brms's mu of the response includes the recursion.
     torch.testing.assert_close(
-        fitted.posterior_linpred(resp="y1", num_samples=3, seed=0)["y1"],
+        fitted.posterior_linpred(resp="y1", num_samples=3, seed=0)["y1"].double(),
         means1.reshape(1, 3, ROWS),
+        **close,
     )
     torch.testing.assert_close(
-        fitted.posterior_epred(num_samples=3, seed=0)["y1"], means1.reshape(1, 3, ROWS)
+        fitted.posterior_epred(num_samples=3, seed=0)["y1"].double(),
+        means1.reshape(1, 3, ROWS),
+        **close,
     )
 
 

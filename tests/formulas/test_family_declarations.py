@@ -252,15 +252,14 @@ def test_a_declared_elliptical_law_correlates_responses(make, builtin):
     other = emitted(builtin)[1].variables(num_samples=1)
     assert named == set(other)
     assert "rescor__y__z" in named
-    with pytest.raises(dx.ValidationError, match=r"Family\.elliptical"):
-        _joint(make(elliptical=None))
+    # The families are checked when the joint program is built.
+    with pytest.raises(ValueError, match=r"Family\.elliptical"):
+        formula_to_qvr(_joint(make(elliptical=None)), data=_frame())
 
 
 def test_residual_correlation_needs_one_common_elliptical_law():
-    with pytest.raises(
-        dx.ValidationError, match=r"Family\.elliptical.*'bell', 'student_t'"
-    ):
-        _joint(_bell(), "student_t")
+    with pytest.raises(ValueError, match=r"Family\.elliptical.*'bell', 'student_t'"):
+        formula_to_qvr(_joint(_bell(), "student_t"), data=_frame())
 
 
 def test_declared_r_squared_selects_the_model_variance():
