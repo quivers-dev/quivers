@@ -76,6 +76,11 @@ sort, `Term`, whose constructors are the atoms and applied symbols the declarati
 agenda's [`InferenceRule`][quivers.stochastic.agenda.InferenceRule] patterns and the reference
 machine's computations are both derived from these rules, so a pattern is read from the source in
 one place. A learnable rule's weight is a parameter named by the deduction and the rule.
+Judgments partition by form, so a premise or conclusion that is a bare variable ranges over every
+judgment form: the rule is the family of its instances, one per choice of a form for each such
+variable, which becomes the form's head applied to fresh variables (positions where the form has
+them). One variable takes one form wherever it occurs, and every instance keeps the rule's weight
+parameter. A bare numeral ranges likewise over the forms of a single position slot.
 [`schema_presentation`][quivers.stochastic.schema.schema_presentation] gives the presentation of a
 rule schema instantiated over a category system: one `span` judgment, and one rule per ground
 binary or unary instance.

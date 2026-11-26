@@ -23,11 +23,12 @@ from quivers.dsl.compiler._deduction_presentation import (
 from quivers.dsl.parser import parse
 from quivers.qiec.contracts import OccurrenceId, ParameterId
 from quivers.qiec.identifiers import StableId
-from quivers.qiec.program_runtime import run_deduction
+from quivers.qiec.program_runtime import deduction_item, run_deduction
 from quivers.qiec.rules import (
     AxiomOccurrence,
     Derivation,
     HostInterpretation,
+    Item,
     OpenDerivation,
     PremiseValue,
     ReferenceInterpretation,
@@ -42,7 +43,8 @@ from quivers.stochastic.schema import EVALUATION, schema_presentation
 from tests.evidence.checks._registry import add
 from tests.evidence.checks.machine import SENTENCES, module_of, parses
 from tests.evidence.compare import Mismatch
-from tests.evidence.oracles.derivations import Term, Tree
+from tests.evidence.oracles import derivations
+from tests.evidence.oracles.derivations import AxiomRow, RuleRow, Term, Tree, Variable
 from tests.evidence.sources import SOURCES, deduction, program
 
 LEXICON = (("a", "S"), ("b", "V"), ("a", "V"))
@@ -343,11 +345,152 @@ def check_schema_presentation() -> None:
             )
 
 
+BARE_RULES: tuple[RuleRow, ...] = (
+    ("ab", ("A",), "B", "ab"),
+    ("wrap", ("K",), ("p", "K"), "wrap"),
+    ("keep", (Variable("X"), "K"), Variable("X"), "keep"),
+    ("goal", ("B", ("p", "K")), "G", "goal"),
+)
+"""The rules of the deduction with a bare variable, as plain rows."""
+
+BARE_AXIOMS: tuple[AxiomRow, ...] = (("ax:A", "A"), ("ax:K", "K"))
+"""Its axioms."""
+
+BARE_HEIGHT = 3
+"""The height the derivations are listed to: ``keep`` makes every item cyclic."""
+
+
+def _oracle_item(presented: DeductionPresentation, item: Item) -> Term:
+    """The oracle's spelling of an item of the presentation.
+
+    Parameters
+    ----------
+    presented : DeductionPresentation
+        The presentation.
+    item : Item
+        The item.
+
+    Returns
+    -------
+    Term
+        An atom's name, or the head applied to the arguments.
+    """
+    head = presented.families[item.family].name
+    return (head, *item.arguments) if item.arguments else head
+
+
+def _bare_interpretation(presented: DeductionPresentation) -> HostInterpretation[Tree]:
+    """Fold a derivation of the bare deduction into the oracle's tree.
+
+    Parameters
+    ----------
+    presented : DeductionPresentation
+        The presentation.
+
+    Returns
+    -------
+    HostInterpretation of Tree
+        A rule node is named by the sequent it instantiates.
+    """
+    sources = {item.rule.id: item.source.name for item in presented.rules}
+    leaves = {OccurrenceId.derive("bare", name): name for name, _item in BARE_AXIOMS}
+
+    def node(derivation: Derivation, children: tuple[PremiseValue[Tree], ...]) -> Tree:
+        """One node.
+
+        Parameters
+        ----------
+        derivation : Derivation
+            The node.
+        children : tuple of PremiseValue of Tree
+            The trees of its premises.
+
+        Returns
+        -------
+        Tree
+            The tree.
+        """
+        item = _oracle_item(presented, derivation.item)
+        if derivation.occurrence is not None:
+            name = leaves[derivation.occurrence]
+            return (name, item, name, ())
+        name = sources[derivation.constructor]
+        return (name, item, name, closed_values(children))
+
+    return HostInterpretation(
+        presentation=presented.presentation,
+        operations={
+            identifier: node for identifier in presented.presentation.constructors_by_id
+        },
+    )
+
+
+def check_bare_items() -> None:
+    """Require a rule over every judgment form to be the family of its instances.
+
+    Raises
+    ------
+    Mismatch
+        If the derivations of an item to the height differ from the
+        oracle's, by the number of trees that differ, or the machine does
+        not recognize the goal.
+    """
+    text = SOURCES["bare"].replace("SEMIRING", "Boolean")
+    decl = next(
+        statement
+        for statement in parse(text).statements
+        if isinstance(statement, DeductionDecl)
+    )
+    presented = deduction_presentation(decl)
+    slots = {
+        presented.families[slot.judgment.family].name: slot
+        for slot in presented.presentation.axioms
+    }
+    axioms = [
+        AxiomOccurrence(
+            slot=slots[item].id, occurrence=OccurrenceId.derive("bare", name)
+        )
+        for name, item in BARE_AXIOMS
+    ]
+    reference = ReferenceInterpretation(presented.presentation, axioms)
+    interpretation = _bare_interpretation(presented)
+    family = {form.name: identity for identity, form in presented.families.items()}
+    for goal in ("A", "B", "K", "G", ("p", "K")):
+        item = (
+            reference.item(family[goal], ())
+            if isinstance(goal, str)
+            else reference.item(family[goal[0]], goal[1:])
+        )
+        found = Counter(
+            interpretation.fold(tree)
+            for tree in reference.derivations(item, height=BARE_HEIGHT)
+        )
+        wanted = Counter(
+            derivations.derivations(BARE_AXIOMS, BARE_RULES, goal, height=BARE_HEIGHT)
+        )
+        if found != wanted:
+            differ = (found - wanted).total() + (wanted - found).total()
+            raise Mismatch(
+                "value", float(differ), f"{differ} derivations of {goal} differ"
+            )
+    module = module_of("bare", SEMIRING="Boolean")
+    recognized = run_deduction(
+        module,
+        "I",
+        axioms=[deduction_item(module, "I", name) for _occurrence, name in BARE_AXIOMS],
+        axiom_weights=[True, True],
+        fuel=200_000,
+    ).weight
+    if recognized is not True:
+        raise Mismatch("value", math.inf, f"the machine gave {recognized!r} for G")
+
+
 def _register() -> None:
     """Register every check of this module."""
     add("presented/one_presentation", "machine-lexical", "Q24", check_one_presentation)
     add("presented/codec", "machine-lexical", "Q24", check_presentation_codec)
     add("presented/schema", "chart-parser", "Q24", check_schema_presentation)
+    add("presented/bare_items", "machine-nonlexical", "Q24", check_bare_items)
 
 
 _register()

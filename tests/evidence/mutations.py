@@ -573,6 +573,23 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
+        name="bare-item-takes-the-first-form",
+        defect_class="omitted alternative",
+        provenance=(
+            "a rule whose item is a bare variable is instantiated at the first "
+            "judgment form only, as if the variable named that form"
+        ),
+        target=f"{PRESENTATION}:_instances",
+        rewrites=(
+            Rewrite(
+                old="choices[bare.name] = forms\n",
+                new="choices[bare.name] = forms[:1]\n",
+            ),
+        ),
+        rejected_by=("presented/bare_items",),
+        min_effect=1.0,
+    ),
+    Mutation(
         name="first-item-omitted",
         defect_class="omitted alternative",
         provenance="the join of a rule's other premises skips its first candidate",

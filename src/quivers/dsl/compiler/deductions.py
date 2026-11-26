@@ -42,7 +42,6 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes._shared import OptionName as _OptionName
 from quivers.dsl.compiler._deduction_positions import (
     position_slots,
-    rule_position_variables,
 )
 from quivers.dsl.compiler._deduction_productions import (
     NORMALIZE_OPTION,
@@ -97,6 +96,7 @@ from quivers.stochastic.semiring import (
     VITERBI as SEMIRING_VITERBI,
 )
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
+from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.dsl.compiler._deduction_presentation import (
     DeductionPresentationError,
     chart_category,
@@ -829,9 +829,6 @@ class _DeductionsMixin:
         # reduces to the standard semiring-parsing default (semiring
         # product of premise weights only).
         slots = position_slots(decl)
-        rule_positions = {
-            sr.name: rule_position_variables(decl, slots, sr) for sr in decl.rules
-        }
         # The productions sharing a left-hand side, when the grouping is
         # fixed at compile time; ``normalize=lhs`` requires it.
         normalize_mode, mode_refusal = normalization_mode(decl)
@@ -895,9 +892,12 @@ class _DeductionsMixin:
                 or find_option(sr.options, "parent") is not None
             )
         )
-        for rule_index, (sr, presented_rule) in enumerate(
-            zip(decl.rules, presented.rules, strict=True)
-        ):
+        # A rule whose item is a bare variable is one rule per judgment
+        # form it ranges over; its instances share its options and its
+        # parameters.
+        rule_positions: dict[str, frozenset[str]] = {}
+        for presented_rule in presented.rules:
+            sr, rule_index = presented_rule.source, presented_rule.index
             check_option_keys(
                 sr.options,
                 _SEQUENT_RULE_OPTION_KEYS,
@@ -932,16 +932,25 @@ class _DeductionsMixin:
                     )
                 rule_parent[sr.name] = parent_name
             weight_fn: Callable | None = None
+            positions = frozenset(
+                binder.name
+                for binder in presented_rule.rule.telescope
+                if isinstance(binder, IndexBinder) and binder.sort == NAT
+            )
+            rule_positions[sr.name] = (
+                rule_positions.get(sr.name, frozenset()) | positions
+            )
             if is_learnable or parent_name is not None:
-                param_dict = nn.ParameterDict()
-                rule_param_dicts[sr.name] = param_dict
-                rule_module.add_module(
-                    f"rule_{sr.name}",
-                    param_dict,
-                )
+                if sr.name not in rule_param_dicts:
+                    param_dict = nn.ParameterDict()
+                    rule_param_dicts[sr.name] = param_dict
+                    rule_module.add_module(
+                        f"rule_{sr.name}",
+                        param_dict,
+                    )
                 weight_fn = _make_rule_weight_fn(
                     rule_name=sr.name,
-                    positions=rule_positions[sr.name],
+                    positions=positions,
                     rule_parent=rule_parent,
                     rule_param_dicts=rule_param_dicts,
                     rule_learnable=rule_learnable,

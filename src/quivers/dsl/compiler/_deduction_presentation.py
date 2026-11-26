@@ -27,6 +27,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal
 
+import itertools
+
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
@@ -79,6 +81,10 @@ from quivers.stochastic.agenda import Pattern, Wildcard
 TERM_SORT = "Term"
 """The name of the closed sort of a deduction's non-position arguments."""
 
+BARE = ""
+"""The head of an item that is a bare variable or numeral, which names no
+judgment form; the presentation expands its rule over the forms."""
+
 FORM_VARIABLE = "_form"
 """The prefix of the variables a span pattern gains for its logical form."""
 
@@ -122,7 +128,12 @@ class TermForm(QiecModel):
 
 
 class DeductionRule(QiecModel):
-    """One sequent of a deduction: its presentation rule and its options.
+    """One sequent of a deduction, or one instance of it: its rule and options.
+
+    A sequent whose premise or conclusion is a bare variable ranges over
+    every judgment form, so it is the family of its instances, one per
+    choice of a form for each such variable; each instance is a rule of
+    the presentation with the sequent's weight parameter.
 
     Parameters
     ----------
@@ -130,6 +141,9 @@ class DeductionRule(QiecModel):
         The rule of the presentation.
     source : SequentRule
         The declaration.
+    index : int
+        The declaration's position among the deduction's rules; the
+        instances of a rule whose item is a bare variable share it.
     learnable : bool
         Whether the rule reads a learned weight keyed by its bindings.
     bounded : bool
@@ -140,6 +154,7 @@ class DeductionRule(QiecModel):
 
     rule: Rule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     source: SequentRule = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    index: int
     learnable: bool
     bounded: bool
     parent: str | None
@@ -449,21 +464,20 @@ class _Reader:
         Returns
         -------
         tuple of str and tuple of _Read
-            The judgment form's head and the arguments.
+            The judgment form's head and the arguments; for a bare
+            variable or numeral, which ranges over judgment forms, the
+            head `BARE` and the variable or numeral as its one argument.
 
         Raises
         ------
         DeductionPresentationError
-            If the item is a variable or a numeral, which names no
-            judgment form, or a head is applied at two arities.
+            If a head is applied at two arities.
         """
         if isinstance(expr, TypeName):
-            if is_pattern_variable(expr, self.atoms) or expr.name.isdigit():
-                self.fail(
-                    f"rule {node.name!r} has the item {expr.name!r}, which names no "
-                    "judgment; an item is an atom or an applied symbol",
-                    node,
-                )
+            if is_pattern_variable(expr, self.atoms):
+                return BARE, (_Read(kind="variable", name=expr.name),)
+            if expr.name.isdigit():
+                return BARE, (_Read(kind="numeral", name=expr.name, position=True),)
             self.form(expr.name, TermForm(kind="atom", text=expr.name), node)
             head, arguments = expr.name, ()
         else:
@@ -572,6 +586,126 @@ def _index_term(read: _Read, sort: UserIndexSort | None) -> IndexTerm:
     )
 
 
+def _bare_names(items: list[tuple[str, tuple[_Read, ...]]]) -> set[str]:
+    """The bare variables among items.
+
+    Parameters
+    ----------
+    items : list of tuple of str and tuple of _Read
+        Items as read.
+
+    Returns
+    -------
+    set of str
+        The names of the items that are bare variables.
+    """
+    return {
+        arguments[0].name
+        for head, arguments in items
+        if head == BARE and arguments[0].kind == "variable"
+    }
+
+
+def _instances(
+    reader: _Reader,
+    rule: SequentRule,
+    items: list[tuple[str, tuple[_Read, ...]]],
+    forms: list[str],
+) -> list[dict[str, str]]:
+    """Every choice of a judgment form for the bare items of a rule.
+
+    A bare variable ranges over every form and names one item, so its
+    occurrences take one form; a bare numeral is a position and ranges
+    over the forms of one position slot.
+
+    Parameters
+    ----------
+    reader : _Reader
+        The declaration's reader, whose families are complete.
+    rule : SequentRule
+        The rule.
+    items : list of tuple of str and tuple of _Read
+        Its premises and conclusion as read.
+    forms : list of str
+        The judgment forms in declaration order.
+
+    Returns
+    -------
+    list of dict of str to str
+        One assignment of a form to each bare variable or numeral, keyed
+        by its text; a single empty assignment when there is none.
+
+    Raises
+    ------
+    DeductionPresentationError
+        If a bare numeral has no form of one position slot to range over.
+    """
+    choices: dict[str, list[str]] = {}
+    for head, arguments in items:
+        if head != BARE:
+            continue
+        (bare,) = arguments
+        if bare.kind == "variable":
+            choices[bare.name] = forms
+            continue
+        single = [form for form in forms if reader.families[form] == [True]]
+        if not single:
+            reader.fail(
+                f"rule {rule.name!r} has the item {bare.name!r}, a number, and no "
+                "judgment form is a single position",
+                rule,
+            )
+        choices[bare.name] = single
+    names = sorted(choices)
+    return [
+        dict(zip(names, picked, strict=True))
+        for picked in itertools.product(*(choices[name] for name in names))
+    ]
+
+
+def _instantiated(
+    reader: _Reader,
+    item: tuple[str, tuple[_Read, ...]],
+    choice: dict[str, str],
+    telescope: dict[str, bool],
+) -> tuple[str, tuple[_Read, ...]]:
+    """An item with its bare variable or numeral given a judgment form.
+
+    A bare variable of form ``f`` becomes ``f`` applied to fresh
+    variables, one per slot, a position where ``f`` has one; the same
+    variable gets the same fresh variables wherever it occurs.
+
+    Parameters
+    ----------
+    reader : _Reader
+        The declaration's reader.
+    item : tuple of str and tuple of _Read
+        The item as read.
+    choice : dict of str to str
+        The form of each bare variable or numeral.
+    telescope : dict of str to bool
+        The instance's variables, extended in place with the fresh ones.
+
+    Returns
+    -------
+    tuple of str and tuple of _Read
+        The item's head and arguments.
+    """
+    head, arguments = item
+    if head != BARE:
+        return item
+    (bare,) = arguments
+    form = choice[bare.name]
+    if bare.kind == "numeral":
+        return form, (bare,)
+    fresh: list[_Read] = []
+    for slot, position in enumerate(reader.families[form]):
+        name = f"{bare.name}.{slot}"
+        telescope[name] = position
+        fresh.append(_Read(kind="variable", name=name, position=position))
+    return form, tuple(fresh)
+
+
 def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
     """Read a deduction into its rule presentation.
 
@@ -609,9 +743,20 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
     for rule in decl.rules:
         variables: dict[str, bool] = {}
         premises = [reader.judgment(item, variables, rule) for item in rule.premises]
-        bound = set(variables)
+        bound = set(variables) | _bare_names(premises)
         conclusion = reader.judgment(rule.conclusion, variables, rule)
-        unbound = [name for name in variables if name not in bound]
+        bare = _bare_names([*premises, conclusion])
+        if bare & set(variables):
+            reader.fail(
+                f"rule {rule.name!r} uses {', '.join(sorted(bare & set(variables)))!r} "
+                "both as an item and as an argument; an item is not a term",
+                rule,
+            )
+        unbound = [
+            name
+            for name in (*variables, *_bare_names([conclusion]))
+            if name not in bound
+        ]
         if unbound:
             reader.fail(
                 f"rule {rule.name!r} concludes with {', '.join(unbound)!r}, which "
@@ -710,7 +855,8 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
         )
 
     rules: list[DeductionRule] = []
-    for rule, premises, conclusion, variables in read:
+    forms = list(reader.families)
+    for index, (rule, premises, conclusion, variables) in enumerate(read):
         learnable = get_option_flag(rule.options, "learnable")
         parent = find_option(rule.options, "parent")
         parent_name = (
@@ -718,33 +864,42 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
             if parent is not None and isinstance(parent.value, OptionName)
             else None
         )
-        presented = Rule(
-            id=ConstructorId.derive(decl.name, "rule", rule.name),
-            name=rule.name,
-            telescope=tuple(
-                IndexBinder(name=name, sort=sort_of(position))
-                for name, position in variables.items()
-            ),
-            premises=tuple(
-                Premise(judgment=judgment(head, arguments))
-                for head, arguments in premises
-            ),
-            conclusion=judgment(*conclusion),
-            weight=(
-                ParameterId.derive(decl.name, "rule", rule.name)
-                if learnable or parent_name is not None
-                else None
-            ),
+        weight = (
+            ParameterId.derive(decl.name, "rule", rule.name)
+            if learnable or parent_name is not None
+            else None
         )
-        rules.append(
-            DeductionRule(
-                rule=presented,
-                source=rule,
-                learnable=learnable,
-                bounded=get_option_flag(rule.options, "bounded"),
-                parent=parent_name,
+        for choice in _instances(reader, rule, [*premises, conclusion], forms):
+            telescope = dict(variables)
+            items = [
+                _instantiated(reader, item, choice, telescope)
+                for item in (*premises, conclusion)
+            ]
+            suffix = tuple(choice[key] for key in sorted(choice))
+            presented = Rule(
+                id=ConstructorId.derive(decl.name, "rule", rule.name, *suffix),
+                name="@".join((rule.name, *suffix)),
+                telescope=tuple(
+                    IndexBinder(name=name, sort=sort_of(position))
+                    for name, position in telescope.items()
+                ),
+                premises=tuple(
+                    Premise(judgment=judgment(head, arguments))
+                    for head, arguments in items[:-1]
+                ),
+                conclusion=judgment(*items[-1]),
+                weight=weight,
             )
-        )
+            rules.append(
+                DeductionRule(
+                    rule=presented,
+                    source=rule,
+                    index=index,
+                    learnable=learnable,
+                    bounded=get_option_flag(rule.options, "bounded"),
+                    parent=parent_name,
+                )
+            )
     axioms: list[AxiomSlot] = []
     for decl_judgment in judgments:
         binders = tuple(

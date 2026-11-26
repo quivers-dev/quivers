@@ -61,6 +61,17 @@ deduction W : Term -> Term [semiring=SEMIRING, start=C, depth=1]
 """
 """A deduction without a lexicon, with a repeated premise."""
 
+BARE = """
+object Term : FinSet 4
+deduction I : Term -> Term [semiring=SEMIRING, start=G]
+    atoms A, B, K, G, p
+    rule ab : A |- B
+    rule wrap : K |- p(K)
+    rule keep : X, K |- X
+    rule goal : B, p(K) |- G
+"""
+"""A deduction with a rule over every judgment form: ``keep`` keeps any item."""
+
 CYCLE = """
 object Term : FinSet 2
 deduction Cycle : Term -> Term [semiring=SEMIRING, start=ATOLERANCE]
@@ -217,6 +228,7 @@ SOURCES: dict[str, str] = {
     "chained": CHAINED,
     "nonlexical": NONLEXICAL,
     "cycle": CYCLE,
+    "bare": BARE,
     "grouped": GROUPED,
     "ungrouped": UNGROUPED,
     "hmm": HMM,

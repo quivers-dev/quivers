@@ -2623,7 +2623,7 @@ class _DeductionElaboration:
                 ("lexicon", index) in reading for index in range(len(system.entries))
             )
             learned = lexical_learned or any(
-                ("rule", index) in reading
+                ("rule", system.rules[index].presented.index) in reading
                 for index in (
                     system.live if system.by_yield else range(len(system.rules))
                 )
@@ -4774,7 +4774,7 @@ class _Context:
             )
 
         if system.normalized_cell[0]:
-            return self.production_weight(("rule", index), weighted)
+            return self.production_weight(("rule", rule.presented.index), weighted)
         if not system.semiring.log_weights or not (
             rule.learnable or rule.parent is not None
         ):
@@ -6422,7 +6422,7 @@ class _Context:
         system = self.system
         if production.kind == "rule":
             return (
-                f"{system.decl.name}.rule.{system.rules[production.index].source.name}:"
+                f"{system.decl.name}.rule.{system.decl.rules[production.index].name}:"
             )
         return f"{system.decl.name}.lex.{production.index}"
 
