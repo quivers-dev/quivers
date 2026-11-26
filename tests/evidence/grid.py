@@ -155,7 +155,7 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     "marginalize-ungrouped": {"Q6": ("nested-marginalize-asserts",)},
     "decoder": {"Q14": ("depth-bound-shifts-choices",)},
     "svi-laplace": {"R1": ("laplace-adds-jitter",)},
-    "trace": {"R6": ("checked-program-detached",)},
+    "trace": {"R6": ("checked-program-runs-per-row",)},
 }
 """The cells with known defects."""
 

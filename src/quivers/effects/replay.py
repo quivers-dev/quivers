@@ -56,6 +56,7 @@ class ReplayHandler(EffectHandler):
                     extra=ExtraValuePolicy.IGNORE,
                     answer_type=run.result_type,
                     key=f"replay-{id(self):x}",
+                    at_run=run.select_run,
                 ),
             ),
         )

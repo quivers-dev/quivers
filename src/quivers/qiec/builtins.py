@@ -1678,6 +1678,7 @@ def replay_handler(
     key: str = "replay",
     type_validator: Callable[[TypeExpr], RuntimeValidator | None] = lambda _type: None,
     host_numbers: NumberDomain | None = None,
+    at_run: Callable[[object, object], object] | None = None,
 ) -> RuntimeHandler:
     """Replay selected sites under an explicit scoring/intervention policy.
 
@@ -1723,6 +1724,10 @@ def replay_handler(
         For values a host gives as host data, the run's numbers: each is
         converted by the site's type where it is replayed. ``None`` for
         values that are already the machine's.
+    at_run
+        Given a value and the site's sampleable, the value of the run being
+        executed, for values given once for every run of a call; ``None``
+        takes each value as it is.
 
     Returns
     -------
@@ -1805,6 +1810,8 @@ def replay_handler(
             if site_key is None:
                 return Forward()
             value = values[site_key]
+            if at_run is not None:
+                value = at_run(value, sampleable)
             if host_numbers is not None:
                 value = machine_value(request.core.result_type, value, host_numbers)
             _require(
@@ -3240,6 +3247,7 @@ def intervene_handler(
     on_intervene: Callable[[RuntimeRequest, object], None] | None = None,
     answer_type: TypeExpr = ANSWER,
     key: str = "intervene",
+    at_run: Callable[[object, object], object] | None = None,
 ) -> RuntimeHandler:
     """Fix selected sites to given values without scoring them.
 
@@ -3249,7 +3257,8 @@ def intervene_handler(
     Parameters
     ----------
     values
-        The value for each intervened site, keyed by site.
+        The value for each intervened site, keyed by site, or by site and
+        occurrence as ``"<site>@<n>"`` for a site reached more than once.
     result_validator
         Checks an intervened value inhabits the request's result type.
     on_intervene
@@ -3260,6 +3269,10 @@ def intervene_handler(
     key
         Distinguishes this handler from others of the same name,
         entering its derived identity.
+    at_run
+        Given a value and the site's sampleable, the value of the run being
+        executed, for values given once for every run of a call; ``None``
+        takes each value as it is.
 
     Returns
     -------
@@ -3277,54 +3290,78 @@ def intervene_handler(
         telescope=_generic_binders(answer_type=answer_type),
     )
 
-    def sample(
-        request: RuntimeRequest,
-        resume: Resumption,
-        _context: ClauseContext,
-    ) -> object:
-        """Answer a `Random.sample` request with the intervened value.
-
-        Parameters
-        ----------
-        request
-            The request being answered and its arguments.
-        resume
-            The continuation, invoked within the clause's declared grade.
-        _context
-            Runtime services, unused by this clause.
+    def make_context() -> RuntimeHandler:
+        """Build a fresh per-installation handler.
 
         Returns
         -------
-        object
-            What the resumed computation produced, or a `Forward` when
-            the site is not intervened.
-
-        Raises
-        ------
-        InvalidHandlerError
-            If the request does not carry a site and a sampleable.
-        RuntimeTypeMismatch
-            If the value does not inhabit the site's type.
+        RuntimeHandler
+            A handler counting its own occurrences of each site.
         """
-        site, _ = _site_and_sampleable(request, definition.name)
-        if site not in values:
-            return Forward()
-        value = values[site]
-        _require(
-            value, result_validator, request.core.result_type, f"intervention {site!r}"
-        )
-        if on_intervene is not None:
-            on_intervene(request, value)
-        return TailResume(value=value)
+        occurrences: dict[object, int] = {}
 
-    return RuntimeHandler(
-        definition=definition,
-        clauses={
-            RANDOM_SAMPLE: RuntimeClause(
-                invoke=sample, result_validator=result_validator
+        def sample(
+            request: RuntimeRequest,
+            resume: Resumption,
+            _context: ClauseContext,
+        ) -> object:
+            """Answer a `Random.sample` request with the intervened value.
+
+            Parameters
+            ----------
+            request
+                The request being answered and its arguments.
+            resume
+                The continuation, invoked within the clause's declared grade.
+            _context
+                Runtime services, unused by this clause.
+
+            Returns
+            -------
+            object
+                What the resumed computation produced, or a `Forward` when
+                the site is not intervened.
+
+            Raises
+            ------
+            InvalidHandlerError
+                If the request does not carry a site and a sampleable, or
+                one value keyed by the site alone is given for a site
+                reached more than once.
+            RuntimeTypeMismatch
+                If the value does not inhabit the site's type.
+            """
+            site, sampleable = _site_and_sampleable(request, definition.name)
+            occurrence = occurrences.get(site, 0)
+            occurrences[site] = occurrence + 1
+            key = _occurrence_key(site, occurrence, values, "intervention")
+            if key is None:
+                return Forward()
+            value = values[key]
+            if at_run is not None:
+                value = at_run(value, sampleable)
+            _require(
+                value,
+                result_validator,
+                request.core.result_type,
+                f"intervention {key!r}",
             )
-        },
-    )
+            if on_intervene is not None:
+                on_intervene(request, value)
+            return TailResume(value=value)
+
+        return RuntimeHandler(
+            definition=definition,
+            clauses={
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=result_validator
+                )
+            },
+            mutable_context=True,
+        )
+
+    prototype = make_context()
+    return prototype.with_(context_factory=make_context)
 
 
 def reweight_handler(

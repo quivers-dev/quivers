@@ -578,7 +578,7 @@ class CheckedProgram(MonadicProgram):
                     extra=ExtraValuePolicy.ERROR,
                     answer_type=result_type,
                     key="checked-given",
-                    at_run=partial(_at_run, row=run.run_index, runs=run.runs),
+                    at_run=run.select_run,
                 ),
             ),
         ]
@@ -683,6 +683,7 @@ class CheckedProgram(MonadicProgram):
             observations=dict(sites),
             run_index=row,
             runs=runs,
+            select_run=partial(_at_run, row=row, runs=runs),
         )
         stack = list(_handler_stack())
         installations = self._installations(run, stack, numbers)

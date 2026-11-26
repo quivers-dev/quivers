@@ -132,8 +132,16 @@ def project_prior_sites(
     Raises
     ------
     ValueError
-        If a requested base label is absent from the native program.
+        If a requested base label is absent from the native program, or
+        the program's steps do not list its sites.
     """
+    if not model.steps_list_sites:
+        raise ValueError(
+            "a prior projection keeps the draws among a program's steps, and this "
+            "program runs a checked computation whose draws and scores are not "
+            "steps; its scores state no role that separates a prior potential "
+            "from an observation, so its prior cannot be projected"
+        )
     available = _labels(model)
     selected = (
         available

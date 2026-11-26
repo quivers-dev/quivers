@@ -393,6 +393,40 @@ def _discrete_likelihood(values: Values) -> torch.Tensor:
     )
 
 
+def _recursive_prior(values: Values) -> torch.Tensor:
+    """The log density of a standard normal draw.
+
+    Parameters
+    ----------
+    values : Values
+        The draw.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density.
+    """
+    t = values["t"].reshape(()).to(torch.float64)
+    return -0.5 * t * t - 0.5 * math.log(2 * math.pi)
+
+
+def _recursive_likelihood(values: Values) -> torch.Tensor:
+    """The log density of the observation, whose mean a recursion shifts by three.
+
+    Parameters
+    ----------
+    values : Values
+        The draw.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density of ``y = 1/2`` under a normal of mean ``t + 3``.
+    """
+    t = values["t"].reshape(()).to(torch.float64)
+    return -0.5 * (0.5 - t - 3.0) ** 2 - 0.5 * math.log(2 * math.pi)
+
+
 PROBLEMS: dict[str, ConsumerProblem] = {
     problem.name: problem
     for problem in (
@@ -426,11 +460,17 @@ PROBLEMS: dict[str, ConsumerProblem] = {
             log_prior=_discrete_prior,
             log_likelihood=_discrete_likelihood,
         ),
+        ConsumerProblem(
+            name="recursive",
+            latents=("t",),
+            log_prior=_recursive_prior,
+            log_likelihood=_recursive_likelihood,
+        ),
     )
 }
 """The consumer problems by name."""
 
-CONTINUOUS = ("beta", "ungrouped", "hmm", "parsed")
+CONTINUOUS = ("beta", "ungrouped", "hmm", "parsed", "recursive")
 """Problems whose latents are continuous."""
 
 QUESTIONS = {
@@ -439,6 +479,7 @@ QUESTIONS = {
     "hmm": "R3",
     "parsed": "R4",
     "discrete": "R5",
+    "recursive": "R6",
 }
 """The consumer column of each problem."""
 
@@ -556,8 +597,12 @@ def registry_of(problem: ConsumerProblem) -> LatentRegistry:
         The registry.
     """
     x, data = problem.data()
-    del x
-    return LatentRegistry.from_model(problem.model(), set(data))
+    model = problem.model()
+    if model.steps_list_sites:
+        return LatentRegistry.from_model(model, set(data))
+    # A program whose sites a run reaches is read from a run, as the
+    # registry's own refusal directs.
+    return LatentRegistry.from_trace(model, trace(model, x, observations=data))
 
 
 def constrained(
@@ -1613,8 +1658,9 @@ def _register() -> None:
             partial(check_registry, name),
         )
         # A score step is a potential of the prior law, which a particle
-        # run refuses to draw from.
-        if name != "parsed":
+        # run refuses to draw from; a checked program's joint states no
+        # factor roles, which tempering reads.
+        if name not in ("parsed", "recursive"):
             add(
                 f"consumer/tempered/{name}",
                 "smc",
@@ -1664,7 +1710,9 @@ def _register() -> None:
             partial(check_prior, name, 4000),
             slow=True,
         )
-    for name in PROBLEMS:
+    # A checked program scores its observation as a datum it is given, so
+    # it has no draw of the observation to predict.
+    for name in (name for name in PROBLEMS if name != "recursive"):
         add(
             f"consumer/predictive/{name}",
             "predictive",
