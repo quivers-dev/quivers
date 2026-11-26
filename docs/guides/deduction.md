@@ -354,10 +354,19 @@ reads from the chart for the whole sentence. A program writes
 runs a deduction alone on the reference machine, and
 [`deduction_item`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.deduction_item)
 builds the axioms of a system without a lexicon. Such a system computes a weighted chart by
-repeatedly adding the axiom weights to rule contributions from the preceding chart. It compares
-all item weights before stopping, so a goal can depend on arbitrarily many rule applications
-within the declared constructor depth. A nonconvergent system raises an execution error when
-the caller's `fuel` budget is exhausted.
+repeatedly adding the axiom weights to rule contributions from the preceding chart. Beside each
+weight the chart counts the item's derivations, and it stops when two rounds agree in every
+weight, exactly or within `tolerance`, or in every count. Equal counts mean that no derivation is
+left, so the weight is exact up to rounding. Equal weights prove the same only when the
+arithmetic is exact, as it is for `Boolean` and `Counting`, since a fixed point reached from below
+is the least one. A `LogProb` or `Viterbi` cycle whose weights stop changing while its derivations
+keep growing has not shown its value, and neither has a stop within `tolerance`. Such a run raises
+[`ContractNotMet`](../api/qiec/contracts.md#quivers.qiec.contracts.ContractNotMet) by default.
+With `on_failure=FailurePolicy.RETURN_UNESTABLISHED`, `run_deduction` instead returns the last
+iterate as an
+[`Unestablished`](../api/qiec/contracts.md#quivers.qiec.contracts.Unestablished) value,
+whose report names the stop and its residual. A nonconvergent system raises an execution error
+when the caller's `fuel` budget is exhausted.
 
 ```python
 from quivers.dsl import Compiler
@@ -377,8 +386,13 @@ alternatives with the semiring's addition, so it expresses rule choices and weig
 as effects. In both, `depth` bounds the constructor depth of the categories in rule
 conclusions, never the length of a derivation. The search recurs on smaller spans,
 or on smaller yields for items of a
-multiple context-free grammar [@seki1991mcfg], and a cycle of unary rules runs until its weights change by less
-than `tolerance`, as the chart's iteration does. Learned weights reach the
+multiple context-free grammar [@seki1991mcfg]. A cycle of unary rules raises the number of
+times a chain may repeat an item until two weights agree or the number of derivations stops
+growing, and its stop is judged as the chart's is. The searches, collectors, and settlements a
+deduction declares state the semiring they compute in as data, a
+[`KernelSemiring`](../api/qiec/foreign.md#quivers.qiec.foreign.KernelSemiring), and the runtime
+builds them from that statement, never from their names. Each requires the laws it relies on.
+Learned weights reach the
 computation through the module's `params` instance under the names the chart engine
 gives its parameters, so a run can use the parameters of a fitted system.
 

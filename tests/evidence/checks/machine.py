@@ -6,12 +6,19 @@ import math
 from fractions import Fraction
 from functools import lru_cache, partial
 
+from quivers.qiec.contracts import (
+    ContractField,
+    ContractNotMet,
+    ControlReached,
+    FailurePolicy,
+    Unestablished,
+)
 from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.module import QiecModule
-from quivers.qiec.program_runtime import deduction_item, run_deduction
+from quivers.qiec.program_runtime import DeductionRun, deduction_item, run_deduction
 from tests.evidence.checks._registry import add
 from tests.evidence.compare import ELEMENTARY, Accuracy, Mismatch, compare_number
-from tests.evidence.oracles import derivations
+from tests.evidence.oracles import closed_forms, derivations
 from tests.evidence.oracles.derivations import RuleRow, Tree, Variable
 from tests.evidence.problems import logarithm
 from tests.evidence.sources import deduction, program
@@ -286,6 +293,187 @@ def check_budget(name: str) -> None:
     raise Mismatch("refusal", math.inf, f"a budget of 2000 steps returned {value!r}")
 
 
+#: The turn of the cycles whose rounded iterates stop changing within the
+#: budget of a fast check.
+ROUNDED_TURN = Fraction(1, 16)
+#: The tolerances the residual checks declare, by source; each stops the
+#: iteration before its weight reaches the closed form.
+RESIDUAL_TOLERANCES = {"cycle": "0.01", "chained": "0.1"}
+
+
+def residual_run(
+    name: str, tolerance: str, policy: FailurePolicy, turn: Fraction = Fraction(1, 2)
+) -> DeductionRun:
+    """Run a cycle under a declared tolerance.
+
+    Parameters
+    ----------
+    name : str
+        ``"cycle"`` (a chart) or ``"chained"`` (a search).
+    tolerance : str
+        The declared tolerance, or empty for none.
+    policy : FailurePolicy
+        What a stop by a control does.
+    turn : Fraction
+        The weight of one turn of the cycle.
+
+    Returns
+    -------
+    DeductionRun
+        The run.
+    """
+    module = module_of(
+        name,
+        SEMIRING="LogProb",
+        TOLERANCE=f", tolerance={tolerance}" if tolerance else "",
+    )
+    if name == "cycle":
+        return run_deduction(
+            module,
+            "Cycle",
+            axioms=[deduction_item(module, "Cycle", "A")],
+            axiom_weights=[0.0],
+            parameters={"Cycle.rule.loop:": logarithm(turn)},
+            fuel=300_000,
+            on_failure=policy,
+        )
+    return run_deduction(
+        module,
+        "M",
+        tokens=["a"],
+        parameters={"M.rule.there:": logarithm(turn), "M.rule.back:": 0.0},
+        fuel=300_000,
+        on_failure=policy,
+    )
+
+
+def _claimed(value: object, what: str) -> Mismatch:
+    """The mismatch of a stop by a control that returned a weight.
+
+    Parameters
+    ----------
+    value : object
+        What the run returned.
+    what : str
+        The run.
+
+    Returns
+    -------
+    Mismatch
+        A value mismatch whose deviation is the distance from the closed
+        form, infinite for a value that is not a number.
+    """
+    exact = logarithm(closed_forms.geometric(Fraction(1, 2)))
+    deviation = abs(value - exact) if isinstance(value, float) else math.inf
+    return Mismatch("value", deviation, f"{what} returned {value!r} as its weight")
+
+
+def check_residual(name: str) -> None:
+    """Require a stop at a tolerance to be refused or held as unestablished.
+
+    Parameters
+    ----------
+    name : str
+        ``"cycle"`` or ``"chained"``.
+
+    Raises
+    ------
+    Mismatch
+        If either policy returns the stopped iterate as a weight, or the
+        report does not name the control and the unmet guarantee.
+    """
+    tolerance = RESIDUAL_TOLERANCES[name]
+    try:
+        refused = residual_run(name, tolerance, FailurePolicy.REFUSE).weight
+    except ContractNotMet as refusal:
+        if refusal.report.unmet != (ContractField.GUARANTEE,):
+            raise Mismatch("refusal", math.inf, str(refusal)) from refusal
+    else:
+        raise _claimed(refused, f"machine {name} refusing")
+    held = residual_run(name, tolerance, FailurePolicy.RETURN_UNESTABLISHED).weight
+    if not isinstance(held, Unestablished):
+        raise _claimed(held, f"machine {name} returning unestablished values")
+    stop = held.report.stop
+    if not isinstance(stop, ControlReached) or stop.value.fraction > Fraction(
+        tolerance
+    ):
+        raise Mismatch("refusal", math.inf, f"machine {name} reported {stop!r}")
+    assert isinstance(held.value, float)
+    compare_number(
+        held.value,
+        # The stopped iterate is below the least fixed point.
+        min(held.value, logarithm(closed_forms.geometric(Fraction(1, 2)))),
+        Accuracy(domain="log", operations=1),
+        f"machine {name} iterate below the closed form",
+    )
+
+
+def check_rounded_agreement(name: str) -> None:
+    """Require two iterates agreeing in rounded arithmetic to certify nothing.
+
+    Without a tolerance the cycle stops when the rounded weights stop
+    changing while derivations keep growing; the value is within rounding
+    of the closed form but no argument shows it, so it is unestablished.
+
+    Parameters
+    ----------
+    name : str
+        ``"cycle"`` or ``"chained"``.
+
+    Raises
+    ------
+    Mismatch
+        If the run returns a weight, or the held value is not the closed
+        form within rounding.
+    """
+    held = residual_run(
+        name, "", FailurePolicy.RETURN_UNESTABLISHED, ROUNDED_TURN
+    ).weight
+    if not isinstance(held, Unestablished):
+        raise _claimed(held, f"machine {name} without a tolerance")
+    assert isinstance(held.value, float)
+    compare_number(
+        held.value,
+        logarithm(closed_forms.geometric(ROUNDED_TURN)),
+        Accuracy(domain="log", operations=ROUNDINGS, magnitude=1.0),
+        f"machine {name} stagnated iterate",
+    )
+
+
+def check_renamed_handlers() -> None:
+    """Require a deduction's handlers to keep their meaning under any names.
+
+    Raises
+    ------
+    Mismatch
+        If renaming the handlers changes or loses the weight.
+    """
+    for semiring in SEMIRINGS:
+        module = module_of("lexical", SEMIRING=semiring)
+        renamed = module.with_(
+            handlers=tuple(
+                handler.with_(name=f"renamed{index}")
+                for index, handler in enumerate(module.handlers)
+            )
+        )
+        weights = [
+            run_deduction(
+                candidate,
+                "G",
+                tokens=("a", "b"),
+                parameters={
+                    "G.rule.join:": logarithm(JOIN),
+                    "G.rule.lift:": logarithm(LIFT),
+                },
+            ).weight
+            for candidate in (module, renamed)
+        ]
+        if weights[0] != weights[1]:
+            raise Mismatch(
+                "value", math.inf, f"renaming {semiring} handlers gave {weights}"
+            )
+
+
 def check_wrong_input(name: str) -> None:
     """Require an input of the wrong kind to be refused by name.
 
@@ -373,12 +561,20 @@ def _register() -> None:
             partial(check_boolean_cycle, name),
         )
         add(f"machine/budget/{name}", row, "Q8", partial(check_budget, name))
+        add(f"machine/residual/{name}", row, "Q8", partial(check_residual, name))
+        add(
+            f"machine/rounded_agreement/{name}",
+            row,
+            "Q8",
+            partial(check_rounded_agreement, name),
+        )
     for name, row in (
         ("lexical", "machine-lexical"),
         ("nonlexical", "machine-nonlexical"),
     ):
         add(f"machine/wrong_input/{name}", row, "Q24", partial(check_wrong_input, name))
     add("machine/normalized", "machine-lexical", "Q14", check_normalized)
+    add("machine/renamed_handlers", "machine-lexical", "Q3", check_renamed_handlers)
 
 
 _register()

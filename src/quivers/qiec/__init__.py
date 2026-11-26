@@ -30,7 +30,7 @@ from quivers.qiec.builtins import (
     SCORE,
     SCORE_ADD,
     SCORE_EFFECT,
-    SEARCH_REDUCTIONS,
+    SETTLED_QUANTITY,
     STATE_EFFECT,
     STATE_EFFECT_REF,
     STATE_GET,
@@ -59,6 +59,9 @@ from quivers.qiec.builtins import (
     reweight_handler,
     score_handler,
     search_handler,
+    settlement_contract,
+    settlement_handler,
+    settlement_report,
     state_effect,
     state_handler,
     trace_handler,
@@ -95,8 +98,9 @@ from quivers.qiec.checking import (
     infer_computation,
     infer_value,
 )
-from quivers.qiec import contracts, rules
+from quivers.qiec import contracts, foreign, rules
 from quivers.qiec.contracts import *  # noqa: F403
+from quivers.qiec.foreign import *  # noqa: F403
 from quivers.qiec.rules import *  # noqa: F403
 from quivers.qiec.coverage import (
     BranchPattern,
@@ -653,7 +657,7 @@ __all__ = [
     "SCORE",
     "SCORE_ADD",
     "SCORE_EFFECT",
-    "SEARCH_REDUCTIONS",
+    "SETTLED_QUANTITY",
     "SHAPE",
     "SHAPE_BINDER",
     "SITE_CONSTRUCTOR",
@@ -785,6 +789,9 @@ __all__ = [
     "sampled_element",
     "score_handler",
     "search_handler",
+    "settlement_contract",
+    "settlement_handler",
+    "settlement_report",
     "seed_reference_rng",
     "site_type",
     "state_effect",
@@ -816,4 +823,5 @@ __all__ = [
     "weight_handler",
 ]
 __all__ += contracts.__all__
+__all__ += foreign.__all__
 __all__ += rules.__all__

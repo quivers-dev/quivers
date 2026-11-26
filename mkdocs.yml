@@ -503,6 +503,7 @@ nav:
       - Terms: api/qiec/terms.md
       - Evidence: api/qiec/evidence.md
       - Contracts: api/qiec/contracts.md
+      - Foreign handler semantics: api/qiec/foreign.md
       - Rule presentations: api/qiec/rules.md
       - Substitution: api/qiec/substitution.md
       - Discharge: api/qiec/discharge.md

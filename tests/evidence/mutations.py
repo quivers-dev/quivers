@@ -221,6 +221,8 @@ INSIDE = "quivers.stochastic.inside"
 WIRING = "quivers.core.wiring"
 PLATE = "quivers.continuous.plate"
 CHART_FIFO = "deduction/value/fifo"
+BUILTINS = "quivers.qiec.builtins"
+EXECUTION = "quivers.qiec.execution"
 
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
@@ -508,6 +510,44 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("deduction/budget/fifo", "deduction/budget/lifo"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="tolerance-stop-claims-completion",
+        defect_class="stopping rule",
+        provenance=(
+            "two iterates within the tolerance are read as a finished method, "
+            "so the last iterate is returned as the exact weight"
+        ),
+        target=f"{BUILTINS}:settlement_report",
+        rewrites=(
+            Rewrite(
+                old="        Completed()\n        if certified\n",
+                new="        Completed()\n        if True\n",
+            ),
+        ),
+        rejected_by=("machine/residual/cycle", "machine/residual/chained"),
+        min_effect=0.003,
+    ),
+    Mutation(
+        name="spent-budget-returns-zero",
+        defect_class="budget",
+        provenance="an exhausted step budget answers the zero instead of refusing",
+        target=f"{EXECUTION}:run_named",
+        rewrites=(
+            Rewrite(
+                old="        _fail(\n"
+                '            "qiec-run-fuel",\n'
+                '            f"computation {selected.name!r} did not finish within '
+                '{error.steps} steps",\n'
+                "            selected.name,\n"
+                "            selected.origin,\n"
+                "        )",
+                new="        value = 0",
+            ),
+        ),
+        also_in=("quivers.qiec.program_runtime",),
+        rejected_by=("machine/budget/cycle", "machine/budget/chained"),
         min_effect=1.0,
     ),
     Mutation(

@@ -20,6 +20,7 @@ from quivers.qiec._models import QiecModel
 from quivers.qiec import declarations as d
 from quivers.qiec import effects as e
 from quivers.qiec import evidence as ev
+from quivers.qiec import foreign as fo
 from quivers.qiec import identifiers as ids
 from quivers.qiec import kinds as k
 from quivers.qiec import module as m
@@ -1874,6 +1875,92 @@ class IRQiecHandlerReturnClauseDef(dx.Model):
     body: IRQiecComputation
 
 
+class IRQiecKernelSemiring(dx.Model):
+    """A semiring of the algebra hierarchy on one kernel type.
+
+    Parameters
+    ----------
+    algebra
+        The qualified name of the semiring's class, the subject of its
+        law claims.
+    carrier
+        The kernel type of its elements.
+    """
+
+    algebra: str
+    carrier: IRQiecStatic
+
+
+class IRQiecForeignSemantics(dx.TaggedUnion, discriminator="kind"):
+    """What a foreign handler computes."""
+
+
+class IRQiecSemiringSum(IRQiecForeignSemantics):
+    """A search summing its shots in a semiring.
+
+    Parameters
+    ----------
+    semiring
+        The semiring.
+    kind
+        The discriminator; always ``"semiring-sum"``.
+    """
+
+    semiring: IRQiecKernelSemiring
+    kind: Literal["semiring-sum"] = "semiring-sum"
+
+
+class IRQiecSemiringProduct(IRQiecForeignSemantics):
+    """A collector multiplying a scope's weights in a semiring.
+
+    Parameters
+    ----------
+    semiring
+        The semiring.
+    forkable
+        Whether a shot may continue from a copy of the product so far.
+    kind
+        The discriminator; always ``"semiring-product"``.
+    """
+
+    semiring: IRQiecKernelSemiring
+    forkable: bool = False
+    kind: Literal["semiring-product"] = "semiring-product"
+
+
+class IRQiecEnumeration(IRQiecForeignSemantics):
+    """An enumeration of a finite draw.
+
+    Parameters
+    ----------
+    grouped
+        Whether it answers one weight per group position.
+    reduction
+        How it aggregates its shots.
+    kind
+        The discriminator; always ``"enumeration"``.
+    """
+
+    grouped: bool = False
+    reduction: Literal["logsumexp", "sum", "mean", "table"] = "logsumexp"
+    kind: Literal["enumeration"] = "enumeration"
+
+
+class IRQiecSettlement(IRQiecForeignSemantics):
+    """The settlement of an iteration's stop.
+
+    Parameters
+    ----------
+    semiring
+        The semiring of the value.
+    kind
+        The discriminator; always ``"settlement"``.
+    """
+
+    semiring: IRQiecKernelSemiring
+    kind: Literal["settlement"] = "settlement"
+
+
 class IRQiecHandlerDef(dx.Model):
     """The type-and-coverage signature of a handler.
 
@@ -1908,6 +1995,8 @@ class IRQiecHandlerDef(dx.Model):
         a runtime provider supplies the behavior.
     parameters
         The handler's parameters, in declaration order.
+    foreign
+        What a foreign handler computes, when its declaration states it.
     """
 
     id: IRQiecId
@@ -1923,6 +2012,7 @@ class IRQiecHandlerDef(dx.Model):
     return_clause: IRQiecHandlerReturnClauseDef | None = None
     implementation: Literal["authored", "foreign"] = "foreign"
     parameters: tuple[IRQiecLocal, ...] = ()
+    foreign: IRQiecForeignSemantics | None = None
 
 
 class IRQiecNamedEffectInstance(dx.Model):
@@ -2611,6 +2701,11 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             body=cast(IRQiecComputation, _convert(value.body)),
             origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
         )
+    if isinstance(value, fo.KernelSemiring):
+        return IRQiecKernelSemiring(
+            algebra=value.algebra.name,
+            carrier=cast(IRQiecStatic, _convert(value.carrier)),
+        )
     if not isinstance(value, QiecModel):
         raise TypeError(f"unsupported QIEC kernel value {value!r}")
     model_map: dict[type[object], type[dx.Model]] = {
@@ -2623,6 +2718,10 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
         e.HandlerClauseDef: IRQiecHandlerClauseDef,
         e.HandlerReturnClauseDef: IRQiecHandlerReturnClauseDef,
         e.HandlerDef: IRQiecHandlerDef,
+        fo.SemiringSum: IRQiecSemiringSum,
+        fo.SemiringProduct: IRQiecSemiringProduct,
+        fo.Enumeration: IRQiecEnumeration,
+        fo.Settlement: IRQiecSettlement,
         m.NamedEffectInstance: IRQiecNamedEffectInstance,
         m.NamedComputation: IRQiecNamedComputation,
         m.QiecModule: IRQiecModule,
@@ -3797,6 +3896,12 @@ __all__ = [
     "IRQiecHandlerClauseDef",
     "IRQiecHandlerReturnClauseDef",
     "IRQiecHandlerDef",
+    "IRQiecKernelSemiring",
+    "IRQiecSemiringSum",
+    "IRQiecSemiringProduct",
+    "IRQiecEnumeration",
+    "IRQiecSettlement",
+    "IRQiecForeignSemantics",
     "IRQiecNamedEffectInstance",
     "IRQiecNamedComputation",
     "IRQiecProgramParameter",

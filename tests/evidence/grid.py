@@ -144,17 +144,14 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "machine-lexical": {
         "Q1g": ("machine-values-are-numbers",),
-        "Q3": ("names-decide-semantics",),
         "Q24": ("module-traversed-per-run",),
     },
     "machine-nonlexical": {
         "Q1g": ("machine-values-are-numbers",),
-        "Q8": ("residual-is-the-value",),
         "Q24": ("module-traversed-per-run",),
     },
     "machine-chained": {
         "Q1g": ("machine-values-are-numbers",),
-        "Q8": ("residual-is-the-value",),
         "Q24": ("module-traversed-per-run",),
     },
     "einsum-wiring": {

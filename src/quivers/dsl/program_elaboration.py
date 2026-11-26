@@ -105,6 +105,13 @@ from quivers.qiec.checking import (
     KernelError,
     infer_computation,
 )
+from quivers.core.algebras import LOG_PROB
+from quivers.qiec.foreign import (
+    Enumeration,
+    EnumerationReduction,
+    KernelSemiring,
+    SemiringProduct,
+)
 from quivers.qiec.effects import (
     ComputationType,
     EffectRef,
@@ -256,11 +263,11 @@ ENUMERATE_HANDLER = "enumerate_marginal"
 #: marginalization, which answers one weight per group position.
 ENUMERATE_GROUPED_HANDLER = "enumerate_grouped_marginal"
 #: The reductions a marginalization aggregates its latent's values by.
-MARGINAL_REDUCTIONS: tuple[str, ...] = ("logsumexp", "sum", "mean")
+MARGINAL_REDUCTIONS: tuple[EnumerationReduction, ...] = ("logsumexp", "sum", "mean")
 #: The enumeration handler by whether it answers per group position and
 #: by reduction: the plain names reduce by ``logsumexp``, the others carry
 #: the reduction as a suffix.
-MARGINAL_HANDLERS: dict[tuple[bool, str], str] = {
+MARGINAL_HANDLERS: dict[tuple[bool, EnumerationReduction], str] = {
     (grouped, reduction): (ENUMERATE_GROUPED_HANDLER if grouped else ENUMERATE_HANDLER)
     + ("" if reduction == "logsumexp" else f"_{reduction}")
     for grouped in (False, True)
@@ -2656,7 +2663,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         sample = next(item for item in random.operations if item.name == "sample")
         add = next(item for item in weight_effect.operations if item.name == "add")
         declared_handlers: dict[str, HandlerDef] = {}
-        for (grouped, _reduction), name in MARGINAL_HANDLERS.items():
+        for (grouped, reduction), name in MARGINAL_HANDLERS.items():
             declared_handlers[name] = HandlerDef(
                 id=HandlerId.derive(self.source.module_name, "handler", name),
                 name=name,
@@ -2672,6 +2679,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 total=True,
                 telescope=(weight_binder,),
                 implementation="foreign",
+                foreign=Enumeration(grouped=grouped, reduction=reduction),
             )
         declared_handlers[ENUMERATE_TABLE_HANDLER] = HandlerDef(
             id=HandlerId.derive(
@@ -2690,6 +2698,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             total=True,
             telescope=(weight_binder,),
             implementation="foreign",
+            foreign=Enumeration(reduction="table"),
         )
         declared_handlers[COLLECT_HANDLER] = HandlerDef(
             id=HandlerId.derive(self.source.module_name, "handler", COLLECT_HANDLER),
@@ -2702,6 +2711,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             total=True,
             telescope=(weight_binder,),
             implementation="foreign",
+            foreign=SemiringProduct(semiring=KernelSemiring.of(LOG_PROB, LOG_WEIGHT)),
         )
         for name, definition in declared_handlers.items():
             self.handlers[name] = definition

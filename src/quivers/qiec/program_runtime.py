@@ -22,6 +22,11 @@ from quivers.qiec._models import QiecModel
 
 from quivers.qiec.builtins import PARAM_GET, RANDOM_SAMPLE, SCORE_ADD
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_shape
+from quivers.qiec.contracts import (
+    AccuracyReport,
+    FailurePolicy,
+    Unestablished,
+)
 from quivers.qiec.effects import (
     ComputationType,
     EffectRow,
@@ -41,6 +46,7 @@ from quivers.qiec.execution import (
     run_named,
 )
 from quivers.qiec.evaluator import RuntimeConstructor
+from quivers.qiec.foreign import Settlement
 from quivers.qiec.identifiers import ComputationId, HandlerId, SourceOrigin
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.programs import ProgramEntry
@@ -148,37 +154,6 @@ def _computation(module: QiecModule, identity: ComputationId) -> NamedComputatio
         if computation.id == identity:
             return computation
     raise KeyError(f"module {module.module!r} has no computation {identity!r}")
-
-
-def _marginal_handler(name: str) -> tuple[bool, str] | None:
-    """Read a marginalization handler's kind off its name.
-
-    The elaborator names its enumeration handlers ``enumerate_marginal``
-    and ``enumerate_grouped_marginal``, with ``_sum`` or ``_mean``
-    appended for a reduction other than ``logsumexp``, and ``_table``
-    for the handler answering one weight per support value.
-
-    Parameters
-    ----------
-    name : str
-        The handler's name.
-
-    Returns
-    -------
-    tuple[bool, str] | None
-        Whether the handler answers per group position, and its
-        reduction; ``None`` for a handler of another kind.
-    """
-    for reduction in ("sum", "mean", "table"):
-        suffix = f"_{reduction}"
-        if name.endswith(suffix):
-            base = _marginal_handler(name[: -len(suffix)])
-            return None if base is None else (base[0], reduction)
-    if name.endswith("enumerate_grouped_marginal"):
-        return (True, "logsumexp")
-    if name.endswith("enumerate_marginal"):
-        return (False, "logsumexp")
-    return None
 
 
 def joint_module(module: QiecModule, name: str) -> tuple[QiecModule, str]:
@@ -1048,96 +1023,44 @@ def _run_wrapped(
     return ProgramRun(value=value, log_joint=float(weight), result=result)  # type: ignore[arg-type]
 
 
-def foreign_handler_configuration(module: QiecModule) -> dict[str, object]:
-    """The runtime configuration of a module's elaborated foreign handlers.
+def foreign_handler_configuration(
+    module: QiecModule,
+    *,
+    on_failure: FailurePolicy = FailurePolicy.REFUSE,
+    reports: list[AccuracyReport] | None = None,
+) -> dict[str, object]:
+    """The runtime configuration of a module's foreign handlers.
+
+    Every foreign handler whose declaration states what it computes is
+    served by that statement: the enumerations and collectors of
+    marginalization blocks, and the searches, collectors and
+    settlements of deductions. Nothing is read off a handler's name.
 
     Parameters
     ----------
     module : QiecModule
         The module.
+    on_failure : FailurePolicy
+        What a settlement does with a stop by a control: refuse, or
+        record the report and resume with the value.
+    reports : list of AccuracyReport or None
+        Where the settlements record the reports of unestablished stops.
 
     Returns
     -------
     dict[str, object]
-        By handler name: the enumeration handlers of marginalization
-        blocks, the collecting handlers of those blocks and of
-        deductions, and the search handlers of deductions, each with
-        the options its name records.
+        The configuration of each such handler, by name.
     """
     configured: dict[str, object] = {}
     for handler in module.handlers:
-        if handler.implementation != "foreign":
+        if handler.implementation != "foreign" or handler.foreign is None:
             continue
-        marginal = _marginal_handler(handler.name)
-        deduction = _deduction_handler(handler.name)
-        if handler.effect.name == "Random" and marginal is not None:
-            grouped, reduction = marginal
-            configured[handler.name] = {
-                "kind": "enumerate",
-                "grouped": grouped,
-                "reduction": reduction,
-            }
-        elif handler.effect.name == "Weight" and handler.name.endswith(
-            "collect_marginal"
-        ):
-            configured[handler.name] = {"kind": "collect"}
-        elif deduction is not None:
-            kind, semiring = deduction
-            if kind == "search":
-                configured[handler.name] = {
-                    "kind": "search",
-                    "reduction": SEARCH_REDUCTION_OF[semiring],
-                }
-            else:
-                configured[handler.name] = {
-                    "kind": "collect",
-                    "combine": COLLECT_COMBINE_OF[semiring],
-                    "forkable": True,
-                }
+        options: dict[str, object] = {"kind": "declared"}
+        if isinstance(handler.foreign, Settlement):
+            options["on_failure"] = on_failure
+            options["reports"] = reports
+        configured[handler.name] = options
     return configured
-
-
-#: The search handler's reduction per deduction semiring.
-SEARCH_REDUCTION_OF: dict[str, str] = {
-    "logprob": "logsumexp",
-    "viterbi": "max",
-    "boolean": "or",
-    "counting": "sum",
-}
-#: The collecting handler's multiplication per deduction semiring.
-COLLECT_COMBINE_OF: dict[str, str] = {
-    "logprob": "add",
-    "viterbi": "add",
-    "boolean": "and",
-    "counting": "mul",
-}
-
-
-def _deduction_handler(name: str) -> tuple[str, str] | None:
-    """Read a deduction handler's kind and semiring off its name.
-
-    The elaborator names a deduction's handlers
-    ``<deduction>__search_<semiring>`` and
-    ``<deduction>__collect_<semiring>``.
-
-    Parameters
-    ----------
-    name : str
-        The handler's name.
-
-    Returns
-    -------
-    tuple[str, str] | None
-        ``("search", semiring)`` or ``("collect", semiring)``, or
-        ``None`` for a handler of another kind.
-    """
-    for kind in ("search", "collect"):
-        marker = f"__{kind}_"
-        if marker in name:
-            semiring = name.rsplit(marker, 1)[1]
-            if semiring in SEARCH_REDUCTION_OF:
-                return kind, semiring
-    return None
 
 
 class DeductionRun(QiecModel):
@@ -1147,7 +1070,9 @@ class DeductionRun(QiecModel):
     ----------
     weight
         The inside weight of the goal in the deduction's semiring: a
-        log weight, a Boolean, or a count.
+        log weight, a Boolean, or a count; or, when an iteration stopped
+        by a control and the caller asked for it, the last iterate held
+        as `Unestablished`, which no weight-taking code accepts.
     result
         The machine's full result, with its trace when one was recorded.
     """
@@ -1167,8 +1092,17 @@ def run_deduction(
     observer: TraceObserver | None = None,
     record_trace: bool = False,
     fuel: int | None = None,
+    on_failure: FailurePolicy = FailurePolicy.REFUSE,
 ) -> DeductionRun:
     """Run a deduction's entry on the reference machine.
+
+    A deduction whose derivations may repeat an item iterates to a
+    fixed point. A stop is certified when the arithmetic is exact (a
+    fixed point reached from below is the least one) or when the
+    iteration found no further derivation; a stop because two iterates
+    agree within the declared tolerance, or agree in rounded arithmetic
+    while derivations keep growing, certifies nothing, and the run
+    refuses it or returns it as unestablished, as ``on_failure`` says.
 
     Parameters
     ----------
@@ -1193,7 +1127,10 @@ def run_deduction(
         steps while its live state grows with the sentence; they are kept
         only when asked for.
     fuel : int | None
-        A step budget for the run.
+        A step budget for the run. A run that spends it is refused.
+    on_failure : FailurePolicy
+        What a stop by a control does: refuse, or return the value as
+        `Unestablished` with the report that says why.
 
     Returns
     -------
@@ -1207,6 +1144,8 @@ def run_deduction(
     ValueError
         If the input does not fit the deduction: tokens for one that
         takes axioms, or the reverse.
+    ContractNotMet
+        If an iteration stopped by a control and the policy refuses.
     ExecutionFailure
         If the run fails.
     """
@@ -1237,7 +1176,10 @@ def run_deduction(
     configured: dict[str, object] = {}
     if wrapper_name != computation.name:
         configured[PARAMS_HANDLER] = {"kind": "param", "values": dict(parameters or {})}
-    configured.update(foreign_handler_configuration(module))
+    reports: list[AccuracyReport] = []
+    configured.update(
+        foreign_handler_configuration(module, on_failure=on_failure, reports=reports)
+    )
     result = run_named(
         extended,
         wrapper_name,
@@ -1252,6 +1194,11 @@ def run_deduction(
         record_trace=record_trace,
         fuel=fuel,
     )
+    if reports:
+        (report,) = reports
+        return DeductionRun(
+            weight=Unestablished(value=result.value, report=report), result=result
+        )
     return DeductionRun(weight=result.value, result=result)
 
 

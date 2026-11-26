@@ -39,8 +39,6 @@ from quivers.qiec.evaluator import (
 )
 from quivers.qiec.builtins import (
     BUILTIN_EFFECTS,
-    SEARCH_REDUCTIONS,
-    add_weights,
     draw_handler,
     draw_scoring_handler,
     enumerate_handler,
@@ -49,6 +47,7 @@ from quivers.qiec.builtins import (
     replay_handler,
     score_handler,
     search_handler,
+    settlement_handler,
     weight_handler,
 )
 from quivers.qiec.canonical import (
@@ -57,7 +56,14 @@ from quivers.qiec.canonical import (
     SITE_CONSTRUCTOR,
     tensor_shape,
 )
+from quivers.qiec.contracts import ContractNotMet, FailurePolicy
 from quivers.qiec.effects import HandlerDef, ResumptionGrade
+from quivers.qiec.foreign import (
+    Enumeration,
+    SemiringProduct,
+    SemiringSum,
+    Settlement,
+)
 from quivers.qiec.evidence import BranchGiven, Reflexivity
 from quivers.qiec.identifiers import EffectInstanceId, OperationId, SourceOrigin
 from quivers.qiec.kinds import (
@@ -452,99 +458,6 @@ def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
     return built.with_(**changes)
 
 
-def _collect_combine(
-    options: Mapping[str, object], name: str
-) -> tuple[object, Callable[[object, object], object]]:
-    """The identity and multiplication a collecting handler folds with.
-
-    Parameters
-    ----------
-    options : Mapping[str, object]
-        The handler's configuration.
-    name : str
-        The handler's name, for the error.
-
-    Returns
-    -------
-    tuple[object, Callable[[object, object], object]]
-        The identity and the fold: addition of log weights by default
-        (``"add"``), conjunction for ``"and"``, integer product for
-        ``"mul"``.
-
-    Raises
-    ------
-    ValueError
-        If the option is not one of the three.
-    """
-    combine = options.get("combine", "add")
-    if combine == "add":
-        return 0.0, add_weights
-    if combine == "and":
-        return True, lambda left, right: bool(left) and bool(right)
-    if combine == "mul":
-        return 1, lambda left, right: int(left) * int(right)  # type: ignore[call-overload]
-    raise ValueError(
-        f"core handler {name!r} option 'combine' must be add, and, or mul, not "
-        f"{combine!r}"
-    )
-
-
-def _enumerate_grouped(options: Mapping[str, object], name: str) -> bool:
-    """Whether an enumerating handler answers per group position.
-
-    Parameters
-    ----------
-    options : Mapping[str, object]
-        The handler's configuration.
-    name : str
-        The handler's name, for the error.
-
-    Returns
-    -------
-    bool
-        The ``grouped`` option, ``False`` when absent.
-
-    Raises
-    ------
-    ValueError
-        If the option is not a boolean.
-    """
-    grouped = options.get("grouped", False)
-    if not isinstance(grouped, bool):
-        raise ValueError(f"core handler {name!r} option 'grouped' must be a boolean")
-    return grouped
-
-
-def _enumerate_reduction(options: Mapping[str, object], name: str) -> str:
-    """The reduction an enumerating handler aggregates by.
-
-    Parameters
-    ----------
-    options : Mapping[str, object]
-        The handler's configuration.
-    name : str
-        The handler's name, for the error.
-
-    Returns
-    -------
-    str
-        The ``reduction`` option, ``"logsumexp"`` when absent.
-
-    Raises
-    ------
-    ValueError
-        If the option is not one of ``logsumexp``, ``sum``, ``mean``,
-        and ``table``.
-    """
-    reduction = options.get("reduction", "logsumexp")
-    if reduction not in ("logsumexp", "sum", "mean", "table"):
-        raise ValueError(
-            f"core handler {name!r} option 'reduction' must be logsumexp, sum, "
-            f"mean, or table, not {reduction!r}"
-        )
-    return reduction
-
-
 def _weight_type(definition: HandlerDef) -> TypeExpr:
     """The weight type a ``Weight[K]`` handler declaration accumulates.
 
@@ -624,11 +537,10 @@ class CoreRuntimeProvider(QiecModel):
             does not declare, holds a non-object configuration, or requests a
             kind other than ``passthrough``, ``scripted``, ``state``, or one
             of the prelude kinds ``draw``, ``draw-scoring`` (with the option
-            ``score_instance``), ``enumerate`` (with the options
-            ``grouped`` and ``reduction``), ``replay``, ``collect`` (with
-            the options ``combine`` and ``forkable``), ``score``, ``search`` (with the
-            option ``reduction``), and ``param`` (with the option
-            ``values``).
+            ``score_instance``), ``replay``, ``score``, ``param`` (with the
+            option ``values``), and ``declared``, which serves a foreign
+            handler by the semantics its declaration states (with the
+            options ``on_failure`` and ``reports`` for a settlement).
         """
         configured = self.options.get("handlers", {})
         if not isinstance(configured, Mapping):
@@ -675,21 +587,6 @@ class CoreRuntimeProvider(QiecModel):
                     ),
                     "Random",
                 )
-            elif kind == "enumerate":
-                runtime = self._prelude(
-                    definition,
-                    lambda result_validator, answer_type: enumerate_handler(
-                        result_validator,
-                        answer_type=answer_type,
-                        weight_type=(
-                            definition.output_type
-                            if _enumerate_grouped(raw_options, definition.name)
-                            else None
-                        ),
-                        reduction=_enumerate_reduction(raw_options, definition.name),
-                    ),
-                    "Random",
-                )
             elif kind == "replay":
                 runtime = self._prelude(
                     definition,
@@ -703,29 +600,8 @@ class CoreRuntimeProvider(QiecModel):
                     ),
                     "Random",
                 )
-            elif kind == "collect":
-                identity, combine = _collect_combine(raw_options, definition.name)
-                forkable = raw_options.get("forkable", False)
-                if not isinstance(forkable, bool):
-                    raise ValueError(
-                        f"core handler {definition.name!r} option 'forkable' must "
-                        "be a boolean"
-                    )
-                runtime = self._prelude(
-                    definition,
-                    lambda **_: weight_handler(
-                        identity,
-                        combine,
-                        _weights_validator(_weight_type(definition)),
-                        weight_type=_weight_type(definition),
-                        answer_type=definition.input_type,
-                        answer_validator=_weights_validator(definition.input_type),
-                        forkable=forkable,
-                    )[0],
-                    "Weight",
-                )
-            elif kind == "search":
-                runtime = self._search(definition, raw_options)
+            elif kind == "declared":
+                runtime = self._declared(definition, raw_options)
             elif kind == "param":
                 runtime = self._param(definition, raw_options)
             elif kind == "score":
@@ -748,20 +624,20 @@ class CoreRuntimeProvider(QiecModel):
                 )
             attachments.bind_handler(runtime)
 
-    def _search(
+    def _declared(
         self, definition: HandlerDef, options: Mapping[str, object]
     ) -> RuntimeHandler:
-        """Serve a module's search handler with the prelude implementation.
+        """Serve a foreign handler by the semantics its declaration states.
 
         Parameters
         ----------
         definition
-            The module's handler declaration: one clause, handling an
-            operation that chooses among a tensor of alternatives with an
-            unrestricted resumption.
+            The module's handler declaration, whose ``foreign`` says what
+            it computes.
         options
-            The configuration, whose ``reduction`` names the semiring
-            addition the shots combine by.
+            The configuration: for a settlement, ``on_failure`` (a
+            `FailurePolicy`, refusing when absent) and ``reports`` (the
+            list an unestablished stop's report goes to).
 
         Returns
         -------
@@ -771,28 +647,100 @@ class CoreRuntimeProvider(QiecModel):
         Raises
         ------
         ValueError
-            If the declaration has other than one unrestricted clause, or
-            the reduction is missing or unknown.
+            If the declaration states no semantics, its clauses do not fit
+            them, or a settlement's options are malformed.
+        MissingLaw
+            If the semiring does not establish the laws the handler
+            relies on.
         """
-        if len(definition.clauses) != 1 or (
-            definition.clauses[0].grade is not ResumptionGrade.UNRESTRICTED
+        semantics = definition.foreign
+        if semantics is None:
+            raise ValueError(
+                f"core handler {definition.name!r} states no foreign semantics to "
+                "serve it by"
+            )
+        if isinstance(semantics, SemiringSum):
+            return search_handler(
+                definition,
+                self._single_clause(definition, ResumptionGrade.UNRESTRICTED),
+                semantics=semantics,
+                alternative_validator=lambda value: True,
+            )
+        if isinstance(semantics, SemiringProduct):
+            semiring = semantics.semiring
+            semiring.require(semantics.laws, f"collector {definition.name!r}")
+            weight_type = _weight_type(definition)
+            return self._prelude(
+                definition,
+                lambda **_: weight_handler(
+                    semiring.unit(),
+                    semiring.times,  # type: ignore[arg-type]
+                    _weights_validator(weight_type),
+                    weight_type=weight_type,
+                    answer_type=definition.input_type,
+                    answer_validator=_weights_validator(definition.input_type),
+                    forkable=semantics.forkable,
+                )[0],
+                "Weight",
+            )
+        if isinstance(semantics, Enumeration):
+            return self._prelude(
+                definition,
+                lambda result_validator, answer_type: enumerate_handler(
+                    result_validator,
+                    answer_type=answer_type,
+                    weight_type=definition.output_type if semantics.grouped else None,
+                    reduction=semantics.reduction,
+                ),
+                "Random",
+            )
+        assert isinstance(semantics, Settlement)
+        policy = options.get("on_failure", FailurePolicy.REFUSE)
+        reports = options.get("reports")
+        if not isinstance(policy, FailurePolicy) or not (
+            reports is None or isinstance(reports, list)
         ):
             raise ValueError(
-                f"core handler {definition.name!r} must declare one unrestricted "
-                "clause to search"
+                f"core handler {definition.name!r} takes a failure policy and a "
+                "list for the reports of its unestablished stops"
             )
-        reduction = options.get("reduction")
-        if not isinstance(reduction, str) or reduction not in SEARCH_REDUCTIONS:
-            raise ValueError(
-                f"core handler {definition.name!r} option 'reduction' must be one "
-                f"of {', '.join(SEARCH_REDUCTIONS)}"
-            )
-        return search_handler(
+        return settlement_handler(
             definition,
-            definition.clauses[0].operation,
-            reduction=reduction,
-            alternative_validator=lambda value: True,
+            self._single_clause(definition, ResumptionGrade.LINEAR),
+            semantics=semantics,
+            on_failure=policy,
+            reports=reports,
         )
+
+    def _single_clause(
+        self, definition: HandlerDef, grade: ResumptionGrade
+    ) -> OperationId:
+        """The one operation a declaration handles at a grade.
+
+        Parameters
+        ----------
+        definition
+            The declaration.
+        grade
+            The resumption grade its one clause must declare.
+
+        Returns
+        -------
+        OperationId
+            The operation of that clause.
+
+        Raises
+        ------
+        ValueError
+            If the declaration has another number of clauses or another
+            grade.
+        """
+        if len(definition.clauses) != 1 or definition.clauses[0].grade is not grade:
+            raise ValueError(
+                f"core handler {definition.name!r} must declare one clause of "
+                f"grade {grade.value!r}"
+            )
+        return definition.clauses[0].operation
 
     def _param(
         self, definition: HandlerDef, options: Mapping[str, object]
@@ -1909,7 +1857,7 @@ def run_named(
     )
     try:
         value = evaluator.evaluate_checked(specialized_body, registry, environment)
-    except ExecutionFailure:
+    except ExecutionFailure, ContractNotMet:
         raise
     except FuelExhaustedError as error:
         emit("run.failed", {"error": type(error).__name__, "steps": error.steps})

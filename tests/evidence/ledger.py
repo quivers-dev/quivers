@@ -38,8 +38,6 @@ from quivers.enriched.kan_extensions import Projection, left_kan
 from quivers.inference import AutoLaplaceApproximation
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import (
-    deduction_item,
-    foreign_handler_configuration,
     run_deduction,
     run_program,
 )
@@ -319,27 +317,6 @@ def _residual() -> Facts:
         value = result.chart.get(("A",))
         assert value is not None
         facts[f"agenda at {turn}"] = number(value)
-    cycle = module_of("cycle", SEMIRING="LogProb", TOLERANCE=", tolerance=0.01")
-    found = run_deduction(
-        cycle,
-        "Cycle",
-        axioms=[deduction_item(cycle, "Cycle", "A")],
-        axiom_weights=[0.0],
-        parameters={"Cycle.rule.loop:": math.log(0.5)},
-        fuel=300_000,
-    ).weight
-    assert isinstance(found, float)
-    facts["machine chart at 1/2"] = number(found)
-    chained = module_of("chained", SEMIRING="LogProb", TOLERANCE=", tolerance=0.1")
-    found = run_deduction(
-        chained,
-        "M",
-        tokens=["a"],
-        parameters={"M.rule.there:": math.log(0.5), "M.rule.back:": 0.0},
-        fuel=300_000,
-    ).weight
-    assert isinstance(found, float)
-    facts["machine search at 1/2"] = number(found)
     return facts
 
 
@@ -351,33 +328,26 @@ def _residual_required() -> Facts:
     Facts
         The log weight for each turn.
     """
-    facts = {
+    return {
         f"agenda at {turn}": number(logarithm(closed_forms.geometric(Fraction(turn))))
         for turn in RESIDUAL_TURNS
     }
-    half = number(logarithm(closed_forms.geometric(Fraction(1, 2))))
-    return {**facts, "machine chart at 1/2": half, "machine search at 1/2": half}
 
 
 record(
     "residual-is-the-value",
-    "stochastic/agenda.py: tolerance; dsl/deduction_elaboration.py: convergence; "
-    "dsl/_deduction_chart.py: _Chart.equal",
+    "stochastic/agenda.py: tolerance",
     "a run that stops because two successive numbers are close returns the last "
     "number as the weight",
     {
         "agenda at 9/10": "2.29382",
         "agenda at 99/100": "4.51127",
         "agenda at 999/1000": "6.21581",
-        "machine chart at 1/2": "0.685304",
-        "machine search at 1/2": "0.628609",
     },
     {
         "agenda at 9/10": "2.30259",
         "agenda at 99/100": "4.60517",
         "agenda at 999/1000": "6.90776",
-        "machine chart at 1/2": "0.693147",
-        "machine search at 1/2": "0.693147",
     },
     _residual,
     _residual_required,
@@ -632,41 +602,6 @@ record(
     },
 )
 
-
-def _renamed_handlers() -> str:
-    """How many handlers of a deduction keep their meaning under renaming.
-
-    Returns
-    -------
-    str
-        The number of handlers of the module that are configured after
-        the semiring is dropped from their names.
-    """
-    module = module_of("lexical", SEMIRING="Counting")
-    renamed = module.with_(
-        handlers=tuple(
-            handler.with_(name=handler.name.replace("_counting", "_total"))
-            for handler in module.handlers
-        )
-    )
-    return str(len(foreign_handler_configuration(renamed)))
-
-
-record(
-    "names-decide-semantics",
-    "qiec/program_runtime.py: _deduction_handler",
-    "the name of a handler decides what it computes",
-    {"configured handlers after renaming": "0"},
-    {"configured handlers after renaming": "2"},
-    lambda: {"configured handlers after renaming": _renamed_handlers()},
-    lambda: {
-        "configured handlers after renaming": str(
-            len(
-                foreign_handler_configuration(module_of("lexical", SEMIRING="Counting"))
-            )
-        ),
-    },
-)
 
 # -- closures, algebras, and contractions --------------------------------
 

@@ -1,9 +1,23 @@
 """Compile nonlexical deductions to typed weighted-chart fixed points.
 
-A round computes ``axioms + rules(previous)``. Keeping the previous
-chart's keys, with zero weights before accumulation, gives a stable order
-for comparing the entire chart. No proof-height cutoff is involved;
-nonconvergent systems exhaust the caller's execution budget.
+A round computes ``axioms + rules(previous)`` in the declared semiring:
+every sum and product is the deduction's search and collector, which
+carry the semiring as data, so nothing here depends on which semiring it
+is. Keeping the previous chart's keys, with zero weights before
+accumulation, gives a stable order for comparing the entire chart.
+
+Beside its weight each entry counts the derivations of nonzero weight of
+height at most the round, a structural number in the counting semiring.
+The iteration stops when two rounds agree in every weight, exactly or
+within the declared tolerance, or in every count. Equal counts mean no
+derivation of the next height, hence none higher (a derivation's
+subderivations have nonzero weight when it has, since the zero
+annihilates), so the chart sums every derivation: a certified stop.
+Agreeing weights certify only in exact arithmetic, where a fixed point
+reached from below is the least one; in rounded arithmetic they are a
+stop by a control, which the settlement refuses or reports. No
+proof-height cutoff is involved; nonconvergent systems exhaust the
+caller's execution budget.
 """
 
 from __future__ import annotations
@@ -27,12 +41,10 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     Return,
-    TensorValue,
     Value,
     Var,
 )
-from quivers.qiec.kinds import NAT
-from quivers.qiec.types import BOOL, INT, REAL, IndexLiteral, TypeApplication, TypeExpr
+from quivers.qiec.types import BOOL, INT, REAL, TypeApplication, TypeExpr
 
 if TYPE_CHECKING:
     from quivers.dsl.deduction_elaboration import _Context, _System
@@ -67,6 +79,7 @@ def declare_chart(elaborator: _Elaborator, system: _System) -> None:
             (
                 FieldDef(name="item", type=system.item),
                 FieldDef(name="weight", type=system.carrier),
+                FieldDef(name="count", type=INT),
                 FieldDef(name="tail", type=chart),
             ),
         ),
@@ -106,15 +119,43 @@ class _Chart:
         self.cons = context.elaborator.constructors[self.s.name("chart_cons")]
 
     def integer(self, value: int) -> LiteralValue:
-        """Build an integer literal."""
+        """Build an integer literal.
+
+        Parameters
+        ----------
+        value : int
+            The value.
+
+        Returns
+        -------
+        LiteralValue
+            The literal.
+        """
         return LiteralValue(value=value, type=INT)
 
     def boolean(self, value: bool) -> LiteralValue:
-        """Build a Boolean literal."""
+        """Build a Boolean literal.
+
+        Parameters
+        ----------
+        value : bool
+            The value.
+
+        Returns
+        -------
+        LiteralValue
+            The literal.
+        """
         return LiteralValue(value=value, type=BOOL)
 
     def empty(self) -> ConstructorValue:
-        """Build an empty chart."""
+        """Build an empty chart.
+
+        Returns
+        -------
+        ConstructorValue
+            The chart with no entry.
+        """
         return ConstructorValue(
             constructor=self.nil.id,
             static_arguments=(),
@@ -122,67 +163,110 @@ class _Chart:
             result_type=self.type,
         )
 
-    def node(self, item: Value, weight: Value, tail: Value) -> ConstructorValue:
-        """Build one item-weight entry followed by a chart."""
+    def node(
+        self, item: Value, weight: Value, count: Value, tail: Value
+    ) -> ConstructorValue:
+        """Build one item-weight-count entry followed by a chart.
+
+        Parameters
+        ----------
+        item : Value
+            An item.
+        weight : Value
+            A weight of the carrier.
+        count : Value
+            A count of derivations.
+        tail : Value
+            The rest of the chart.
+
+        Returns
+        -------
+        ConstructorValue
+            The chart.
+        """
         return ConstructorValue(
             constructor=self.cons.id,
             static_arguments=(),
-            fields=(item, weight, tail),
+            fields=(item, weight, count, tail),
             result_type=self.type,
         )
 
     def call(self, suffix: str, *args: Value) -> Computation:
-        """Call a registered chart helper."""
+        """Call a registered chart helper.
+
+        Parameters
+        ----------
+        suffix : str
+            The helper's name after the deduction's.
+        *args : Value
+            Its arguments.
+
+        Returns
+        -------
+        Computation
+            The call.
+        """
         return self.c.call(self.s.name(suffix), args)
 
     def zero(self) -> Value:
-        """Build the semiring's additive identity."""
-        if self.s.semiring == "Boolean":
-            return self.boolean(False)
-        if self.s.semiring == "Counting":
-            return self.integer(0)
-        return self.c.weight_of(
-            Reduction(
-                operator="logsumexp",
-                value=TensorValue(
-                    items=(),
-                    result_type=tensor_type(REAL, (IndexLiteral(value=0, sort=NAT),)),
-                ),
-                result_type=REAL,
-            )
-        )
+        """Build the semiring's additive identity.
 
-    def equal_weight(
-        self, left: Value, right: Value, *, tolerance: bool = False
-    ) -> Value:
-        """Compare two weights, optionally using the declared tolerance."""
-        c = self.c
-        if self.s.semiring in ("Boolean", "Counting"):
-            return c.primitive(
-                "eq_bool" if self.s.semiring == "Boolean" else "eq_int", left, right
-            )
-        a, b = c.primitive("weight_value", left), c.primitive("weight_value", right)
-        equal = c.primitive("eq_real", a, b)
-        if not tolerance or not self.s.tolerance_cell[0]:
-            return equal
-        return c.primitive(
-            "or",
-            equal,
-            c.primitive(
-                "le_real",
-                c.primitive("abs_real", c.primitive("sub_real", a, b)),
-                LiteralValue(value=self.s.tolerance_cell[0], type=REAL),
-            ),
-        )
+        Returns
+        -------
+        Value
+            The zero.
+        """
+        return self.c.element(self.s.semiring.zero())
 
-    def times(self, left: Value, right: Value) -> Value:
-        """Multiply two semiring weights."""
-        return self.c.primitive(
-            {"Boolean": "and", "Counting": "mul_int"}.get(
-                self.s.semiring, "add_weight"
-            ),
-            left,
-            right,
+    def unit(self) -> Value:
+        """Build the semiring's multiplicative identity.
+
+        Returns
+        -------
+        Value
+            The unit.
+        """
+        return self.c.element(self.s.semiring.unit())
+
+    def is_zero(self, weight: Value) -> Value:
+        """Whether a weight is the semiring's zero.
+
+        Parameters
+        ----------
+        weight : Value
+            A weight of the carrier.
+
+        Returns
+        -------
+        Value
+            A ``Bool``.
+        """
+        return self.c.same_weight(weight, self.zero())
+
+    def times(
+        self, left: Value, right: Value, then: Callable[[Value], Computation]
+    ) -> Computation:
+        """Multiply two semiring weights and continue with the product.
+
+        Parameters
+        ----------
+        left : Value
+            The left operand.
+        right : Value
+            The right operand.
+        then : Callable[[Value], Computation]
+            What to run with the result.
+
+        Returns
+        -------
+        Computation
+            The product, then the continuation.
+        """
+        return self.c.bind(
+            "product",
+            self.s.carrier,
+            self.call("chart_times", left, right),
+            lambda product: then(Var(local=product)),
         )
 
     def case(
@@ -190,9 +274,26 @@ class _Chart:
         value: Value,
         result: TypeExpr,
         empty: Computation,
-        node: Callable[[Value, Value, Value], Computation],
+        node: Callable[[Value, Value, Value, Value], Computation],
     ) -> Case:
-        """Eliminate an empty chart or one item-weight entry."""
+        """Eliminate an empty chart or one item-weight-count entry.
+
+        Parameters
+        ----------
+        value : Value
+            The chart eliminated.
+        result : TypeExpr
+            The type the elimination produces.
+        empty : Computation
+            The body for the empty chart.
+        node : Callable[[Value, Value, Value, Value], Computation]
+            The body for an entry, given its fields.
+
+        Returns
+        -------
+        Case
+            The elimination.
+        """
         fields = tuple(
             self.s.local(field.name, field.type) for field in self.cons.fields
         )
@@ -224,7 +325,22 @@ class _Chart:
     def build(
         self, suffix: str, names: tuple[str, ...], body: Callable[..., Computation]
     ) -> NamedComputation:
-        """Check one helper against its predeclared signature."""
+        """Check one helper against its predeclared signature.
+
+        Parameters
+        ----------
+        suffix : str
+            The helper's name after the deduction's.
+        names : tuple[str, ...]
+            The parameter names.
+        body : Callable[..., Computation]
+            Builds the body from the parameters.
+
+        Returns
+        -------
+        NamedComputation
+            The checked helper.
+        """
         signature = self.c.signatures[self.s.name(suffix)]
         locals_ = tuple(
             Local(name=name, type=type_)
@@ -235,35 +351,83 @@ class _Chart:
         )
 
     def plus(self, left: Value, right: Value) -> Computation:
-        """Add weights without evaluating log-sum-exp at negative infinity."""
-        c = self.c
-        if self.s.semiring in ("Boolean", "Counting"):
-            return Return(
-                value=c.primitive(
-                    "or" if self.s.semiring == "Boolean" else "add_int", left, right
-                )
-            )
-        a, b = c.primitive("weight_value", left), c.primitive("weight_value", right)
-        combined = (
-            c.primitive("max_real", a, b)
-            if self.s.semiring == "Viterbi"
-            else c.log_sum_exp([a, b])
-        )
-        return If(
-            condition=self.equal_weight(left, self.zero()),
-            then=Return(value=right),
-            otherwise=If(
-                condition=self.equal_weight(right, self.zero()),
-                then=Return(value=left),
-                otherwise=Return(value=c.weight_of(combined)),
-            ),
-        )
+        """Add two weights by the deduction's search.
 
-    def add(self, chart: Value, item: Value, weight: Value) -> Computation:
-        """Merge one contribution into the entry for its item."""
+        Parameters
+        ----------
+        left : Value
+            The left operand.
+        right : Value
+            The right operand.
+
+        Returns
+        -------
+        Computation
+            The sum.
+        """
+        return self.c.semiring_sum((left, right))
+
+    def product(self, left: Value, right: Value) -> Computation:
+        """Multiply two weights by the deduction's collector.
+
+        Parameters
+        ----------
+        left : Value
+            The left operand.
+        right : Value
+            The right operand.
+
+        Returns
+        -------
+        Computation
+            The product.
+        """
+        return self.c.semiring_product((left, right))
+
+    def add(
+        self, chart: Value, item: Value, weight: Value, count: Value
+    ) -> Computation:
+        """Merge one contribution into the entry for its item.
+
+        Parameters
+        ----------
+        chart : Value
+            A chart.
+        item : Value
+            An item.
+        weight : Value
+            A weight of the carrier.
+        count : Value
+            A count of derivations.
+
+        Returns
+        -------
+        Computation
+            The chart with the contribution merged; unchanged by a zero weight.
+        """
         c = self.c
 
-        def node(head: Value, current: Value, tail: Value) -> Computation:
+        def node(
+            head: Value, current: Value, counted: Value, tail: Value
+        ) -> Computation:
+            """Merge into or rebuild one entry.
+
+            Parameters
+            ----------
+            head : Value
+                The entry's item.
+            current : Value
+                The entry's weight.
+            counted : Value
+                The entry's count.
+            tail : Value
+                The rest of the chart.
+
+            Returns
+            -------
+            ConstructorValue
+                The chart.
+            """
             return c.bind(
                 "same",
                 BOOL,
@@ -275,66 +439,127 @@ class _Chart:
                         self.s.carrier,
                         self.call("chart_plus", current, weight),
                         lambda total: Return(
-                            value=self.node(head, Var(local=total), tail)
+                            value=self.node(
+                                head,
+                                Var(local=total),
+                                c.primitive("add_int", counted, count),
+                                tail,
+                            )
                         ),
                     ),
                     otherwise=c.bind(
                         "rest",
                         self.type,
-                        self.call("chart_add", tail, item, weight),
+                        self.call("chart_add", tail, item, weight, count),
                         lambda rest: Return(
-                            value=self.node(head, current, Var(local=rest))
+                            value=self.node(head, current, counted, Var(local=rest))
                         ),
                     ),
                 ),
             )
 
         return If(
-            condition=self.equal_weight(weight, self.zero()),
+            condition=self.is_zero(weight),
             then=Return(value=chart),
             otherwise=self.case(
                 chart,
                 self.type,
-                Return(value=self.node(item, weight, self.empty())),
+                Return(value=self.node(item, weight, count, self.empty())),
                 node,
             ),
         )
 
     def clear(self, chart: Value) -> Computation:
-        """Keep keys in order while clearing the round's contributions."""
+        """Keep keys in order while clearing the round's contributions.
+
+        Parameters
+        ----------
+        chart : Value
+            A chart.
+
+        Returns
+        -------
+        Computation
+            The chart with zero weights and counts.
+        """
         return self.case(
             chart,
             self.type,
             Return(value=self.empty()),
-            lambda item, weight, tail: self.c.bind(
+            lambda item, weight, count, tail: self.c.bind(
                 "rest",
                 self.type,
                 self.call("chart_zero", tail),
                 lambda rest: Return(
-                    value=self.node(item, self.zero(), Var(local=rest))
+                    value=self.node(item, self.zero(), self.integer(0), Var(local=rest))
                 ),
             ),
         )
 
-    def equal(self, left: Value, right: Value) -> Computation:
-        """Compare support and all weights, not just the goal weight."""
+    def compare(
+        self,
+        suffix: str,
+        left: Value,
+        right: Value,
+        same: Callable[[Value, Value, Value, Value], Value],
+    ) -> Computation:
+        """Whether two charts have one support and every entry agrees.
 
-        def node(item: Value, weight: Value, tail: Value) -> Computation:
+        ``suffix`` names the helper being built, which recurses on the
+        tails; ``same`` receives the two weights and the two counts of an
+        item.
+
+        Parameters
+        ----------
+        suffix : str
+            The helper's name after the deduction's.
+        left : Value
+            The left operand.
+        right : Value
+            The right operand.
+        same : Callable[[Value, Value, Value, Value], Value]
+            Whether two entries agree, given their weights and counts.
+
+        Returns
+        -------
+        Computation
+            A ``Bool``.
+        """
+
+        def node(item: Value, weight: Value, count: Value, tail: Value) -> Computation:
+            """Merge into or rebuild one entry.
+
+            Parameters
+            ----------
+            item : Value
+                An item.
+            weight : Value
+                A weight of the carrier.
+            count : Value
+                A count of derivations.
+            tail : Value
+                The rest of the chart.
+
+            Returns
+            -------
+            ConstructorValue
+                The chart.
+            """
             return self.case(
                 right,
                 BOOL,
                 Return(value=self.boolean(False)),
-                lambda other, value, rest: self.c.bind(
+                lambda other, value, counted, rest: self.c.bind(
                     "same",
                     BOOL,
                     self.call("eq", item, other),
-                    lambda same: If(
+                    lambda same_item: If(
                         condition=self.c.primitive(
                             "and",
-                            Var(local=same),
-                            self.equal_weight(weight, value, tolerance=True),
+                            Var(local=same_item),
+                            same(weight, value, count, counted),
                         ),
-                        then=self.call("chart_equal", tail, rest),
+                        then=self.call(suffix, tail, rest),
                         otherwise=Return(value=self.boolean(False)),
                     ),
                 ),
@@ -347,18 +572,146 @@ class _Chart:
                 right,
                 BOOL,
                 Return(value=self.boolean(True)),
-                lambda item, weight, tail: Return(value=self.boolean(False)),
+                lambda item, weight, count, tail: Return(value=self.boolean(False)),
             ),
             node,
         )
 
+    def weights_agree(
+        self, weight: Value, value: Value, _count: Value, _counted: Value
+    ) -> Value:
+        """Whether two weights agree, exactly or within the declared tolerance.
+
+        Parameters
+        ----------
+        weight : Value
+            The first weight.
+        value : Value
+            The second weight.
+        _count : Value
+            The first count, unused.
+        _counted : Value
+            The second count, unused.
+
+        Returns
+        -------
+        Value
+            A ``Bool``.
+        """
+        return self.c.within_tolerance(weight, value)
+
+    def counts_agree(
+        self, _weight: Value, _value: Value, count: Value, counted: Value
+    ) -> Value:
+        """Whether two counts of derivations are equal.
+
+        Parameters
+        ----------
+        _weight : Value
+            The first weight, unused.
+        _value : Value
+            The second weight, unused.
+        count : Value
+            A count of derivations.
+        counted : Value
+            The entry's count.
+
+        Returns
+        -------
+        Value
+            A ``Bool``.
+        """
+        return self.c.primitive("eq_int", count, counted)
+
+    def equal(self, left: Value, right: Value) -> Computation:
+        """Compare support and all weights, not just the goal weight.
+
+        Parameters
+        ----------
+        left : Value
+            The left operand.
+        right : Value
+            The right operand.
+
+        Returns
+        -------
+        Computation
+            A ``Bool``.
+        """
+        return self.compare("chart_equal", left, right, self.weights_agree)
+
+    def settled(self, left: Value, right: Value) -> Computation:
+        """Compare support and every count of derivations.
+
+        Parameters
+        ----------
+        left : Value
+            The left operand.
+        right : Value
+            The right operand.
+
+        Returns
+        -------
+        Computation
+            A ``Bool``.
+        """
+        return self.compare("chart_settled", left, right, self.counts_agree)
+
+    def residual(self, left: Value, right: Value) -> Computation:
+        """The largest distance of two weights of one item in two charts.
+
+        Parameters
+        ----------
+        left : Value
+            The left operand.
+        right : Value
+            The right operand.
+
+        Returns
+        -------
+        Computation
+            A ``Real``.
+        """
+        c = self.c
+        return self.case(
+            left,
+            REAL,
+            Return(value=LiteralValue(value=0.0, type=REAL)),
+            lambda item, weight, count, tail: self.case(
+                right,
+                REAL,
+                Return(value=LiteralValue(value=0.0, type=REAL)),
+                lambda other, value, counted, rest: c.bind(
+                    "rest",
+                    REAL,
+                    self.call("chart_residual", tail, rest),
+                    lambda farthest: Return(
+                        value=c.primitive(
+                            "max_real", c.residual(weight, value), Var(local=farthest)
+                        )
+                    ),
+                ),
+            ),
+        )
+
     def goal(self, chart: Value) -> Computation:
-        """Sum the weights of all items accepted by the start pattern."""
+        """Sum the weights of all items accepted by the start pattern.
+
+        Parameters
+        ----------
+        chart : Value
+            A chart.
+
+        Returns
+        -------
+        Computation
+            The goal's weight.
+        """
         return self.case(
             chart,
             self.s.carrier,
             Return(value=self.zero()),
-            lambda item, weight, tail: self.c.bind(
+            lambda item, weight, count, tail: self.c.bind(
                 "rest",
                 self.s.carrier,
                 self.call("chart_goal", tail),
@@ -378,7 +731,24 @@ class _Chart:
     def axioms(
         self, position: Value, chart: Value, axioms: Value, weights: Value
     ) -> Computation:
-        """Accumulate each input axiom exactly once per round."""
+        """Accumulate each input axiom exactly once per round, as one derivation.
+
+        Parameters
+        ----------
+        position : Value
+            The index of the next axiom.
+        chart : Value
+            A chart.
+        axioms : Value
+            The input axioms.
+        weights : Value
+            Their weights.
+
+        Returns
+        -------
+        Computation
+            The chart with the remaining axioms added.
+        """
         length = self.length()
         return If(
             condition=self.c.primitive("lt_int", position, length),
@@ -390,6 +760,7 @@ class _Chart:
                     chart,
                     Gather(value=axioms, index=position, result_type=self.s.item),
                     Gather(value=weights, index=position, result_type=self.s.carrier),
+                    self.integer(1),
                 ),
                 lambda next_: self.call(
                     "chart_axioms",
@@ -403,7 +774,13 @@ class _Chart:
         )
 
     def length(self) -> Value:
-        """Reify the input tensor extent as a scalar integer."""
+        """Reify the input tensor extent as a scalar integer.
+
+        Returns
+        -------
+        Value
+            The number of axioms, an ``Int``.
+        """
         return Reduction(
             operator="sum",
             value=Comprehension(
@@ -423,60 +800,125 @@ class _Chart:
         cursor: Value,
         accumulated: Value,
         product: Value,
+        count: Value,
         *premises: Value,
     ) -> Computation:
-        """Fold the old chart over each ordered premise tuple of a rule."""
+        """Fold the old chart over each ordered premise tuple of a rule.
+
+        ``product`` is the product of the chosen premises' weights and
+        ``count`` the product of their counts, the number of derivations
+        of the premise tuple.
+
+        Parameters
+        ----------
+        index : int
+            The rule's index.
+        position : int
+            The premise being chosen.
+        old : Value
+            The chart of the previous round.
+        cursor : Value
+            The entries still to try at this premise.
+        accumulated : Value
+            The chart of this round so far.
+        product : Value
+            The product of the chosen premises' weights.
+        count : Value
+            A count of derivations.
+        *premises : Value
+            The chosen premise items.
+
+        Returns
+        -------
+        Computation
+            The round's chart with the rule's contributions added.
+        """
         c, rule = self.c, self.s.rules[index]
         if position < len(rule.premises):
             return self.case(
                 cursor,
                 self.type,
                 Return(value=accumulated),
-                lambda item, weight, tail: If(
-                    condition=self.equal_weight(weight, self.zero()),
+                lambda item, weight, counted, tail: If(
+                    condition=self.is_zero(weight),
                     then=self.call(
                         f"chart_rule{index}_{position}",
                         old,
                         tail,
                         accumulated,
                         product,
+                        count,
                         *premises,
                     ),
-                    otherwise=c.bind(
-                        "next",
-                        self.type,
-                        self.call(
-                            f"chart_rule{index}_{position + 1}",
-                            old,
-                            old,
-                            accumulated,
-                            self.times(product, weight),
-                            *premises,
-                            item,
-                        ),
-                        lambda next_: self.call(
-                            f"chart_rule{index}_{position}",
-                            old,
-                            tail,
-                            Var(local=next_),
-                            product,
-                            *premises,
+                    otherwise=self.times(
+                        product,
+                        weight,
+                        lambda extended: c.bind(
+                            "next",
+                            self.type,
+                            self.call(
+                                f"chart_rule{index}_{position + 1}",
+                                old,
+                                old,
+                                accumulated,
+                                extended,
+                                c.primitive("mul_int", count, counted),
+                                *premises,
+                                item,
+                            ),
+                            lambda next_: self.call(
+                                f"chart_rule{index}_{position}",
+                                old,
+                                tail,
+                                Var(local=next_),
+                                product,
+                                count,
+                                *premises,
+                            ),
                         ),
                     ),
                 ),
             )
 
         def matched(bindings: dict[str, Local]) -> Computation:
+            """Add the conclusion of a matched premise tuple.
+
+            Parameters
+            ----------
+            bindings : dict[str, Local]
+                The pattern variables bound so far.
+
+            Returns
+            -------
+            Computation
+                The chart with the conclusion added.
+            """
             conclusion = c.instantiate(rule.conclusion, bindings)
 
             def weighted(weight: Value) -> Computation:
-                return self.call(
-                    "chart_add", accumulated, conclusion, self.times(product, weight)
+                """Add the conclusion at a rule weight.
+
+                Parameters
+                ----------
+                weight : Value
+                    A weight of the carrier.
+
+                Returns
+                -------
+                Computation
+                    The chart with the conclusion added.
+                """
+                return self.times(
+                    product,
+                    weight,
+                    lambda total: self.call(
+                        "chart_add", accumulated, conclusion, total, count
+                    ),
                 )
 
             if self.s.normalized_cell[0]:
                 result = c.production_weight(("rule", index), weighted)
-            elif self.s.semiring in ("LogProb", "Viterbi") and (
+            elif self.s.semiring.log_weights and (
                 rule.learnable or rule.parent is not None
             ):
                 result = c.rule_weight(rule, index, bindings, weighted)
@@ -499,6 +941,20 @@ class _Chart:
             )
 
         def match(position_: int, bindings: dict[str, Local]) -> Computation:
+            """Match the premises from left to right.
+
+            Parameters
+            ----------
+            position_ : int
+                The next premise.
+            bindings : dict[str, Local]
+                The pattern variables bound so far.
+
+            Returns
+            -------
+            Computation
+                The matches, innermost the conclusion.
+            """
             if position_ == len(premises):
                 return matched(bindings)
             return c.bind(
@@ -521,9 +977,38 @@ class _Chart:
         return match(0, {})
 
     def step(self, old: Value, axioms: Value, weights: Value) -> Computation:
-        """Compute axioms plus the rule contributions from the old chart."""
+        """Compute axioms plus the rule contributions from the old chart.
+
+        Parameters
+        ----------
+        old : Value
+            The chart of the previous round.
+        axioms : Value
+            The input axioms.
+        weights : Value
+            Their weights.
+
+        Returns
+        -------
+        Computation
+            The next round's chart.
+        """
 
         def rules(index: int, accumulated: Value) -> Computation:
+            """Fire the rules from one index on.
+
+            Parameters
+            ----------
+            index : int
+                The rule's index.
+            accumulated : Value
+                The chart of this round so far.
+
+            Returns
+            -------
+            Computation
+                The chart with every rule's contributions.
+            """
             if index == len(self.s.rules):
                 return Return(value=accumulated)
             return self.c.bind(
@@ -534,7 +1019,8 @@ class _Chart:
                     old,
                     old,
                     accumulated,
-                    self.c.weight_of(None),
+                    self.unit(),
+                    self.integer(1),
                 ),
                 lambda next_: rules(index + 1, Var(local=next_)),
             )
@@ -554,30 +1040,103 @@ class _Chart:
         )
 
     def derive(self, old: Value, axioms: Value, weights: Value) -> Computation:
-        """Iterate until every reachable item's weight converges."""
-        return self.c.bind(
+        """Iterate until two rounds agree, and stop at the goal's weight.
+
+        Parameters
+        ----------
+        old : Value
+            The chart of the previous round.
+        axioms : Value
+            The input axioms.
+        weights : Value
+            Their weights.
+
+        Returns
+        -------
+        Computation
+            The stop at the goal's weight.
+        """
+        c = self.c
+
+        def judged(current: Value, agree: Value, settled: Value) -> Computation:
+            """Stop at the current chart's goal weight.
+
+            Parameters
+            ----------
+            current : Value
+                The entry's weight.
+            agree : Value
+                Whether the rounds agree in every weight.
+            settled : Value
+                Whether the rounds agree in every count.
+
+            Returns
+            -------
+            Computation
+                The stop.
+            """
+            return c.bind(
+                "goal",
+                self.s.carrier,
+                self.call("chart_goal", current),
+                lambda goal: c.bind(
+                    "residual",
+                    REAL,
+                    self.call("chart_residual", old, current),
+                    lambda residual: c.stop(
+                        Var(local=goal),
+                        c.certified(agree, settled),
+                        Var(local=residual),
+                    ),
+                ),
+            )
+
+        return c.bind(
             "current",
             self.type,
             self.call("chart_step", old, axioms, weights),
-            lambda current: self.c.bind(
-                "same",
+            lambda current: c.bind(
+                "agree",
                 BOOL,
                 self.call("chart_equal", old, Var(local=current)),
-                lambda same: If(
-                    condition=Var(local=same),
-                    then=Return(value=Var(local=current)),
-                    otherwise=self.call("derive", Var(local=current), axioms, weights),
+                lambda agree: c.bind(
+                    "settled",
+                    BOOL,
+                    self.call("chart_settled", old, Var(local=current)),
+                    lambda settled: If(
+                        condition=c.primitive(
+                            "or", Var(local=agree), Var(local=settled)
+                        ),
+                        then=judged(
+                            Var(local=current), Var(local=agree), Var(local=settled)
+                        ),
+                        otherwise=self.call(
+                            "derive", Var(local=current), axioms, weights
+                        ),
+                    ),
                 ),
             ),
         )
 
     def entry(self, axioms: Value, weights: Value) -> Computation:
-        """Read the goal weight from the converged chart."""
-        return self.c.bind(
-            "chart",
-            self.type,
-            self.call("derive", self.empty(), axioms, weights),
-            lambda chart: self.call("chart_goal", Var(local=chart)),
+        """Settle the goal weight of the iterated chart.
+
+        Parameters
+        ----------
+        axioms : Value
+            The input axioms.
+        weights : Value
+            Their weights.
+
+        Returns
+        -------
+        Computation
+            The settled iteration.
+        """
+        handlers = self.s.handlers_cell[0]
+        assert handlers is not None
+        return self.c.settled(
+            self.call("derive", self.empty(), axioms, weights), handlers
         )
 
 
@@ -597,9 +1156,12 @@ def elaborate_chart(context: _Context) -> list[NamedComputation]:
     chart = _Chart(context)
     result = [
         chart.build("chart_plus", ("left", "right"), chart.plus),
-        chart.build("chart_add", ("chart", "item", "weight"), chart.add),
+        chart.build("chart_times", ("left", "right"), chart.product),
+        chart.build("chart_add", ("chart", "item", "weight", "count"), chart.add),
         chart.build("chart_zero", ("chart",), chart.clear),
         chart.build("chart_equal", ("left", "right"), chart.equal),
+        chart.build("chart_settled", ("left", "right"), chart.settled),
+        chart.build("chart_residual", ("left", "right"), chart.residual),
         chart.build("chart_goal", ("chart",), chart.goal),
         chart.build(
             "chart_axioms", ("position", "chart", "axioms", "weights"), chart.axioms
@@ -620,6 +1182,7 @@ def elaborate_chart(context: _Context) -> list[NamedComputation]:
                         "cursor",
                         "accumulated",
                         "product",
+                        "count",
                         *(f"premise{k}" for k in range(position)),
                     ),
                     lambda *args, i=index, p=position: chart.rule(i, p, *args),

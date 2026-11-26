@@ -188,10 +188,12 @@ def test_a_deduction_becomes_a_checked_family_and_computations() -> None:
         "params",
         "AB__choice",
         "AB__weight",
+        "AB__settlement",
     ]
     assert [handler.name for handler in module.handlers] == [
-        "AB__search_logprob",
-        "AB__collect_logprob",
+        "AB__search",
+        "AB__collect",
+        "AB__settle",
     ]
 
 
@@ -477,8 +479,9 @@ def test_schema_chart_parser_elaborates_as_a_checked_deduction() -> None:
         "lp_parser__run",
     ]
     assert [handler.name for handler in module.handlers] == [
-        "lp_parser__search_logprob",
-        "lp_parser__collect_logprob",
+        "lp_parser__search",
+        "lp_parser__collect",
+        "lp_parser__settle",
     ]
 
 

@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from quivers.qiec import dumps, loads
+from quivers.qiec.contracts import FailurePolicy, Unestablished
 from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.program_runtime import deduction_item, run_deduction
 from tests.dsl.test_deduction_elaboration import _classic, _module
@@ -159,7 +160,12 @@ deduction Weighted : Term -> Term [semiring=LogProb, start=C, depth=1]
 
 
 def test_a_contractive_cycle_converges_in_value_and_derivative():
-    """Repeated loop proofs sum geometrically rather than being truncated."""
+    """Repeated loop proofs sum geometrically rather than being truncated.
+
+    The chart stops when two rounds agree within the tolerance while the
+    loop's derivations keep growing, which certifies nothing, so the run
+    holds its weight as unestablished.
+    """
     source = """object Term : FinSet 2
 deduction Cycle : Term -> Term [semiring=LogProb, start=A, tolerance=0.0000000001]
     atoms A
@@ -169,14 +175,18 @@ deduction Cycle : Term -> Term [semiring=LogProb, start=A, tolerance=0.000000000
     axiom = deduction_item(module, "Cycle", "A")
 
     def evaluate(log_weight):
-        return run_deduction(
+        held = run_deduction(
             module,
             "Cycle",
             axioms=[axiom],
             axiom_weights=[0.0],
             parameters={"Cycle.rule.loop:": log_weight},
             fuel=100_000,
+            on_failure=FailurePolicy.RETURN_UNESTABLISHED,
         ).weight
+        assert isinstance(held, Unestablished)
+        assert held.report.stop.tag == "control-reached"
+        return held.value
 
     log_weight = math.log(0.2)
     assert evaluate(log_weight) == pytest.approx(-math.log1p(-0.2), abs=1e-9)

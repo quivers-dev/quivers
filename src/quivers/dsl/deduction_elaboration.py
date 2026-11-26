@@ -50,8 +50,9 @@ Constructor depth does not impose a proof-height limit.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import math
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
@@ -123,7 +124,19 @@ from quivers.stochastic.schema import (
     PatternUnarySchema,
     RuleSchema,
 )
+from quivers.core.algebras import BOOLEAN, COUNTING, LOG_PROB, MAX_PLUS
+from quivers.core.laws import DISTRIBUTIVE, ZERO_ANNIHILATES, ZERO_SUM_FREE, Law
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
+from quivers.qiec.foreign import (
+    PRODUCT_LAWS,
+    SUM_LAWS,
+    KernelSemiring,
+    KernelValue,
+    MissingLaw,
+    SemiringProduct,
+    SemiringSum,
+    Settlement,
+)
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.effects import (
     ArgumentDef,
@@ -165,6 +178,7 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     Perform,
+    Projection,
     Reduction,
     Return,
     TensorValue,
@@ -198,14 +212,35 @@ SEARCH_CHOOSE = "choose"
 #: The module instance of ``Param`` every deduction reads its learned
 #: weights through.
 PARAMS_INSTANCE = "params"
-#: The semirings a deduction may declare, each with the kernel type of
-#: its carrier.
-SEMIRING_CARRIERS: dict[str, TypeExpr] = {
-    "LogProb": LOG_WEIGHT,
-    "Viterbi": LOG_WEIGHT,
-    "Boolean": BOOL,
-    "Counting": INT,
-}
+#: The module effect a deduction's iteration stops on: its operation
+#: carries the value, whether the stop certifies it, and the residual of
+#: the last two iterates, and a settlement answers it.
+SETTLE_EFFECT = "Settle"
+#: The operation of that effect.
+SETTLE_STOP = "stop"
+#: The semirings a deduction may declare: each a member of the algebra
+#: hierarchy on the kernel type of its elements. Everything the
+#: elaboration does with weights reads this record.
+DEDUCTION_SEMIRINGS: Mapping[str, KernelSemiring] = MappingProxyType(
+    {
+        "LogProb": KernelSemiring.of(LOG_PROB, LOG_WEIGHT),
+        "Viterbi": KernelSemiring.of(MAX_PLUS, LOG_WEIGHT),
+        "Boolean": KernelSemiring.of(BOOLEAN, BOOL),
+        "Counting": KernelSemiring.of(COUNTING, INT),
+    }
+)
+#: What the elaborated computations rely on beyond their handlers: a
+#: round of a chart evaluates the rule equations, which sums over
+#: derivations by distributivity; a chart drops a contribution whose
+#: weight is the zero, which loses no derivation of nonzero weight when
+#: the zero annihilates and no nonzero weights sum to it.
+DEDUCTION_LAWS: tuple[Law, ...] = (
+    *SUM_LAWS,
+    *PRODUCT_LAWS,
+    DISTRIBUTIVE,
+    ZERO_ANNIHILATES,
+    ZERO_SUM_FREE,
+)
 #: The constructor name of the ``span`` items a lexicon injects.
 SPAN = "span"
 #: The computations of a deduction that read production weights, which
@@ -373,6 +408,24 @@ class _Group(QiecModel):
     names: dict[int, dict[str, str]] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
+class _Handlers(QiecModel):
+    """The foreign handlers of one deduction.
+
+    Parameters
+    ----------
+    search
+        The ``Search`` handler, summing the shots in the semiring.
+    collect
+        The ``Weight`` handler, multiplying one derivation's weights.
+    settle
+        The ``Settle`` handler, answering a certified stop's value.
+    """
+
+    search: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    collect: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    settle: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+
 class _System(QiecModel):
     """Everything the elaboration reads off one deduction.
 
@@ -381,7 +434,7 @@ class _System(QiecModel):
     decl
         The declaration.
     semiring
-        The declared semiring's name.
+        The declared semiring.
     start
         The start symbol, if any.
     depth_cell
@@ -430,7 +483,7 @@ class _System(QiecModel):
         group of several in the table a program supplies.
     handlers_cell
         Owned one-element cell.
-        The search and collection handlers, once declared.
+        The search, collection and settlement handlers, once declared.
     heads
         For a yield-directed system, the head symbols of its items, in
         the order its derivation numbers them.
@@ -462,13 +515,16 @@ class _System(QiecModel):
     weight_cell
         Owned one-element cell.
         The ``Weight`` instance.
+    settle_cell
+        Owned one-element cell.
+        The ``Settle`` instance.
     fresh_cell
         Owned one-element cell.
         The count of fresh locals minted so far.
     """
 
     decl: DeductionDecl = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    semiring: str = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    semiring: KernelSemiring = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     start: str | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     depth_cell: list[int | None] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     rules: list[_Rule] = dx.field(
@@ -510,7 +566,7 @@ class _System(QiecModel):
     table: dict[ProductionKey, int] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    handlers_cell: list[tuple[HandlerDef, HandlerDef] | None] = dx.field(
+    handlers_cell: list[_Handlers | None] = dx.field(
         default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     heads: list[str] = dx.field(
@@ -541,6 +597,9 @@ class _System(QiecModel):
         default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     weight_cell: list[NamedEffectInstance | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    settle_cell: list[NamedEffectInstance | None] = dx.field(
         default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     fresh_cell: list[int] = dx.field(
@@ -606,10 +665,9 @@ class _System(QiecModel):
         Returns
         -------
         TypeExpr
-            ``LogWeight`` for the log semirings, ``Bool`` for the Boolean
-            one, ``Int`` for the counting one.
+            The kernel type the declared semiring's elements live in.
         """
-        return SEMIRING_CARRIERS[self.semiring]
+        return self.semiring.carrier
 
     @property
     def item(self) -> TypeApplication:
@@ -1195,7 +1253,7 @@ class _DeductionElaboration:
         declarations.extend(declaration for declaration, _ in schema_parsers)
         if not declarations:
             return
-        self._declare_search_effect()
+        self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
         for declaration in declarations:
             system = self._read_deduction(declaration)
@@ -1549,23 +1607,49 @@ class _DeductionElaboration:
             code="qiec-program-gap",
         )
 
-    def _declare_search_effect(self: _Elaborator) -> None:
-        """Declare the ``Search`` effect and register it.
+    def _declare_deduction_effects(self: _Elaborator) -> None:
+        """Declare the ``Search`` and ``Settle`` effects and register them.
 
-        Its one operation, ``choose[a : Type, n : Nat] : Tensor[a]([n])
-        -> a``, is answered by resuming once per entry of the tensor.
+        The one operation of ``Search``, ``choose[a : Type, n : Nat] :
+        Tensor[a]([n]) -> a``, is answered by resuming once per entry of
+        the tensor. The one operation of ``Settle``, ``stop[a : Type] :
+        (a, Bool, Real) -> a``, carries the value an iteration stopped
+        at, whether the stop certifies it, and the residual of its last
+        two iterates.
 
         Raises
         ------
         QiecDiagnosticError
-            If the module declares an effect of that name itself.
+            If the module declares an effect of either name itself.
         """
-        if SEARCH_EFFECT in self.effects:
-            self._fail(
-                self.source.syntax.statements[0],
-                f"effect {SEARCH_EFFECT!r} is reserved for deductions",
-                code="qiec-program",
-            )
+        for reserved in (SEARCH_EFFECT, SETTLE_EFFECT):
+            if reserved in self.effects:
+                self._fail(
+                    self.source.syntax.statements[0],
+                    f"effect {reserved!r} is reserved for deductions",
+                    code="qiec-program",
+                )
+        settle_id = EffectId.derive(self.source.module_name, "effect", SETTLE_EFFECT)
+        value = TypeVariable(name="a")
+        settle = EffectDef(
+            ref=EffectRef(id=settle_id, name=SETTLE_EFFECT),
+            telescope=(),
+            operations=(
+                OperationDef(
+                    id=OperationId.derive(settle_id, "operation", SETTLE_STOP),
+                    name=SETTLE_STOP,
+                    telescope=(TypeBinder(name="a"),),
+                    arguments=(
+                        ArgumentDef(name="value", type=value),
+                        ArgumentDef(name="certified", type=BOOL),
+                        ArgumentDef(name="residual", type=REAL),
+                    ),
+                    result_type=value,
+                ),
+            ),
+        )
+        self.effects[SETTLE_EFFECT] = settle
+        self.registry.register_effect(settle)
         effect_id = EffectId.derive(self.source.module_name, "effect", SEARCH_EFFECT)
         ref = EffectRef(id=effect_id, name=SEARCH_EFFECT)
         element = TypeVariable(name="a")
@@ -1609,13 +1693,18 @@ class _DeductionElaboration:
         )
         if semiring is None:
             semiring = "LogProb"
-        if semiring not in SEMIRING_CARRIERS:
+        if semiring not in DEDUCTION_SEMIRINGS:
             self._fail(
                 declaration,
                 f"deduction {declaration.name!r} names the semiring {semiring!r}; "
-                f"the semirings are {', '.join(SEMIRING_CARRIERS)}",
+                f"the semirings are {', '.join(DEDUCTION_SEMIRINGS)}",
                 code="qiec-program",
             )
+        declared = DEDUCTION_SEMIRINGS[semiring]
+        try:
+            declared.require(DEDUCTION_LAWS, f"deduction {declaration.name!r}")
+        except MissingLaw as missing:
+            self._fail(declaration, str(missing), code="qiec-program")
         # An ``axioms`` morphism produces the axioms the agenda engine
         # starts from; on the reference machine the caller supplies them,
         # as for any system without a lexicon. A ``signature`` or an
@@ -1635,7 +1724,7 @@ class _DeductionElaboration:
             declaration.options, "start", line=declaration.line, col=declaration.col
         )
         system = _System(
-            decl=declaration, semiring=semiring, start=start, depth_cell=[depth]
+            decl=declaration, semiring=declared, start=start, depth_cell=[depth]
         )
         atoms = set(declaration.atoms)
         for atom in declaration.atoms:
@@ -2412,7 +2501,7 @@ class _DeductionElaboration:
             self.registry.register_constructor(constructor)
 
     def _declare_deduction_instances(self: _Elaborator, system: _System) -> None:
-        """Allocate the deduction's search and weight instances.
+        """Allocate the deduction's search, weight and settlement instances.
 
         Parameters
         ----------
@@ -2450,6 +2539,20 @@ class _DeductionElaboration:
             ),
         )
         self.instances[weight_name] = system.weight_cell[0]
+        settle_name = system.name("settlement")
+        entry = instantiate_effect(
+            self.effects[SETTLE_EFFECT].ref,
+            module=self.source.module_name,
+            lexical_path=("instances", settle_name),
+        )
+        system.settle_cell[0] = NamedEffectInstance(
+            name=settle_name,
+            entry=entry,
+            origin=self._origin(
+                system.decl, ("instances", settle_name), "effect-instance"
+            ),
+        )
+        self.instances[settle_name] = system.settle_cell[0]
 
     # ------------------------------------------------------------------
     # computations
@@ -2509,7 +2612,7 @@ class _DeductionElaboration:
         # Only a log semiring reads learned weights, and only the
         # computations whose entries or rules declare one perform on
         # the parameter store.
-        logged = system.semiring in ("LogProb", "Viterbi")
+        logged = system.semiring.log_weights
         lexical_learned = logged and any(entry.learnable for entry in system.entries)
         firing = (
             [system.rules[index] for index in system.live]
@@ -2546,6 +2649,8 @@ class _DeductionElaboration:
         )
         row = EffectRow(entries=(*base, params.entry) if learned else base)
         outer = EffectRow(entries=(params.entry,) if learned else ())
+        assert system.settle_cell[0] is not None
+        stopping = EffectRow(entries=(*outer.entries, system.settle_cell[0].entry))
         pure = EffectRow()
         extent = IndexBinder(name="n", sort=NAT)
         n = IndexVariable(name="n", sort=NAT)
@@ -2710,19 +2815,20 @@ class _DeductionElaboration:
                 )
             if system.chained:
                 declare(system.name("count"), (), (item, system.chain), INT, pure)
+                counted = product_type(carrier, INT)
                 declare(
                     system.name("inside"),
                     (extent,),
                     (INT, tokens_type),
-                    carrier,
+                    counted,
                     outer,
                 )
                 declare(
                     system.name("converge"),
                     (extent,),
-                    (INT, carrier, tokens_type),
+                    (INT, counted, tokens_type),
                     carrier,
-                    outer,
+                    stopping,
                 )
             entry = declare(
                 system.name("run"), (extent,), (tokens_type,), carrier, outer
@@ -2739,17 +2845,20 @@ class _DeductionElaboration:
                 system.name("derive"),
                 (extent,),
                 (chart, axioms_type, weights_type),
-                chart,
-                outer,
+                carrier,
+                stopping,
             )
             for suffix, parameters, result, effects in (
-                ("chart_add", (chart, item, carrier), chart, pure),
+                ("chart_add", (chart, item, carrier, INT), chart, pure),
                 ("chart_zero", (chart,), chart, pure),
                 ("chart_equal", (chart, chart), BOOL, pure),
+                ("chart_settled", (chart, chart), BOOL, pure),
+                ("chart_residual", (chart, chart), REAL, pure),
                 ("chart_goal", (chart,), carrier, pure),
                 ("chart_axioms", (INT, chart, axioms_type, weights_type), chart, pure),
                 ("chart_step", (chart, axioms_type, weights_type), chart, outer),
                 ("chart_plus", (carrier, carrier), carrier, pure),
+                ("chart_times", (carrier, carrier), carrier, pure),
             ):
                 declare(system.name(suffix), (extent,), parameters, result, effects)
             for rule_index, rule in enumerate(system.rules):
@@ -2757,7 +2866,7 @@ class _DeductionElaboration:
                     declare(
                         system.name(f"chart_rule{rule_index}_{position}"),
                         (extent,),
-                        (chart, chart, chart, carrier, *((item,) * position)),
+                        (chart, chart, chart, carrier, INT, *((item,) * position)),
                         chart,
                         outer,
                     )
@@ -2831,10 +2940,11 @@ class _DeductionElaboration:
             computations.extend(elaborate_chart(context))
         return computations
 
-    def _deduction_handlers(
-        self: _Elaborator, system: _System
-    ) -> tuple[HandlerDef, HandlerDef]:
-        """Declare the search and collection handlers of one deduction.
+    def _deduction_handlers(self: _Elaborator, system: _System) -> _Handlers:
+        """Declare the search, collection and settlement handlers of one deduction.
+
+        Each is foreign and states what it computes in the declared
+        semiring, which its runtime provider builds it from.
 
         Parameters
         ----------
@@ -2843,18 +2953,21 @@ class _DeductionElaboration:
 
         Returns
         -------
-        tuple[HandlerDef, HandlerDef]
+        _Handlers
             The ``Search`` handler, answering the semiring sum of the
-            collected weights of its shots, and the ``Weight`` handler,
-            answering the scope's unit paired with its product.
+            collected weights of its shots with their number; the
+            ``Weight`` handler, answering the scope's unit paired with its
+            product; and the ``Settle`` handler, answering a stop's value
+            when the stop certifies it.
         """
         assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
         search = self.effects[SEARCH_EFFECT]
+        settle = self.effects[SETTLE_EFFECT]
         weight_effect = self._effect("Weight")
         assert weight_effect is not None
         carrier = system.carrier
         shot = product_type(UNIT, carrier)
-        search_name = system.name(f"search_{system.semiring.lower()}")
+        search_name = system.name("search")
         search_handler = HandlerDef(
             id=HandlerId.derive(self.source.module_name, "handler", search_name),
             name=search_name,
@@ -2866,12 +2979,13 @@ class _DeductionElaboration:
                 ),
             ),
             input_type=shot,
-            output_type=carrier,
+            output_type=product_type(carrier, INT),
             introduced=EffectRow(),
             total=True,
             implementation="foreign",
+            foreign=SemiringSum(semiring=system.semiring),
         )
-        collect_name = system.name(f"collect_{system.semiring.lower()}")
+        collect_name = system.name("collect")
         add = next(item for item in weight_effect.operations if item.name == "add")
         collect_handler = HandlerDef(
             id=HandlerId.derive(self.source.module_name, "handler", collect_name),
@@ -2883,11 +2997,31 @@ class _DeductionElaboration:
             introduced=EffectRow(),
             total=True,
             implementation="foreign",
+            foreign=SemiringProduct(semiring=system.semiring, forkable=True),
         )
-        for handler in (search_handler, collect_handler):
+        settle_name = system.name("settle")
+        settle_handler = HandlerDef(
+            id=HandlerId.derive(self.source.module_name, "handler", settle_name),
+            name=settle_name,
+            effect=settle.ref,
+            clauses=(
+                HandlerClauseDef(
+                    operation=settle.operations[0].id, grade=ResumptionGrade.LINEAR
+                ),
+            ),
+            input_type=carrier,
+            output_type=carrier,
+            introduced=EffectRow(),
+            total=True,
+            implementation="foreign",
+            foreign=Settlement(semiring=system.semiring),
+        )
+        for handler in (search_handler, collect_handler, settle_handler):
             self.handlers[handler.name] = handler
             self.registry.register_handler(handler)
-        return search_handler, collect_handler
+        return _Handlers(
+            search=search_handler, collect=collect_handler, settle=settle_handler
+        )
 
 
 type _Continuation = Callable[[dict[str, Local]], Computation]
@@ -3308,19 +3442,150 @@ class _Context:
         Returns
         -------
         Value
-            The carrier value: the log weight itself for the log
-            semirings, ``true`` for the Boolean one, ``1`` for the
-            counting one, which ignore learned weights.
+            The log weight itself when the semiring's elements are log
+            weights; otherwise the semiring's unit, since a semiring of
+            other elements has no element a learned log weight stands
+            for.
         """
         semiring = self.system.semiring
-        if semiring in ("LogProb", "Viterbi"):
-            return self.primitive(
-                "as_weight",
-                real if real is not None else LiteralValue(value=0.0, type=REAL),
+        if semiring.log_weights and real is not None:
+            return self.primitive("as_weight", real)
+        return self.element(semiring.unit())
+
+    def element(self, value: KernelValue) -> Value:
+        """A constant element of the semiring's carrier.
+
+        Parameters
+        ----------
+        value : KernelValue
+            The element, a scalar of the carrier.
+
+        Returns
+        -------
+        Value
+            A literal of the carrier. A log weight is a real read as a
+            weight, and a real that is not finite, which has no literal,
+            is the logarithm of the empty sum or its negation.
+        """
+        carrier = self.system.carrier
+        if carrier not in (LOG_WEIGHT, REAL):
+            return LiteralValue(value=value, type=carrier)
+        assert isinstance(value, float)
+        real: Value = LiteralValue(value=value, type=REAL)
+        if math.isinf(value):
+            real = Reduction(
+                operator="logsumexp",
+                value=TensorValue(
+                    items=(),
+                    result_type=tensor_type(REAL, (IndexLiteral(value=0, sort=NAT),)),
+                ),
+                result_type=REAL,
             )
-        if semiring == "Boolean":
-            return LiteralValue(value=True, type=BOOL)
-        return _int(1)
+            if value > 0:
+                real = self.primitive("neg_real", real)
+        if carrier == LOG_WEIGHT:
+            return self.primitive("as_weight", real)
+        return real
+
+    def real_of(self, weight: Value) -> Value:
+        """The real number an element of the carrier is, for comparing two.
+
+        Parameters
+        ----------
+        weight : Value
+            An element of the carrier.
+
+        Returns
+        -------
+        Value
+            A ``Real``: the log weight's value, the real itself, or the
+            count or truth value as a real.
+        """
+        carrier = self.system.carrier
+        if carrier == LOG_WEIGHT:
+            return self.primitive("weight_value", weight)
+        if carrier == INT:
+            return self.primitive("int_to_real", weight)
+        if carrier == BOOL:
+            return self.primitive("bool_to_real", weight)
+        return weight
+
+    def same_weight(self, left: Value, right: Value) -> Value:
+        """Whether two elements of the carrier are equal.
+
+        Parameters
+        ----------
+        left : Value
+            An element.
+        right : Value
+            Another.
+
+        Returns
+        -------
+        Value
+            The comparison, a ``Bool``, exact on every carrier.
+        """
+        carrier = self.system.carrier
+        if carrier == INT:
+            return self.primitive("eq_int", left, right)
+        if carrier == BOOL:
+            return self.primitive("eq_bool", left, right)
+        return self.primitive("eq_real", self.real_of(left), self.real_of(right))
+
+    def within_tolerance(self, left: Value, right: Value) -> Value:
+        """Whether two elements agree exactly or within the declared tolerance.
+
+        Parameters
+        ----------
+        left : Value
+            An element.
+        right : Value
+            Another.
+
+        Returns
+        -------
+        Value
+            A ``Bool``. A carrier with exact arithmetic compares exactly.
+        """
+        same = self.same_weight(left, right)
+        tolerance = self.system.tolerance_cell[0]
+        if self.system.semiring.exact or not tolerance:
+            return same
+        return self.primitive(
+            "or",
+            same,
+            self.primitive(
+                "le_real",
+                self.residual(left, right),
+                LiteralValue(value=tolerance, type=REAL),
+            ),
+        )
+
+    def residual(self, left: Value, right: Value) -> Value:
+        """The distance of two elements, the diagnostic of a stop.
+
+        Parameters
+        ----------
+        left : Value
+            An element.
+        right : Value
+            Another.
+
+        Returns
+        -------
+        Value
+            ``|left - right|`` as a ``Real``; zero when both are equal,
+            so that two equal infinities are at distance zero.
+        """
+        return self.primitive(
+            "select_real",
+            self.same_weight(left, right),
+            LiteralValue(value=0.0, type=REAL),
+            self.primitive(
+                "abs_real",
+                self.primitive("sub_real", self.real_of(left), self.real_of(right)),
+            ),
+        )
 
     # -- equality, rendering, goal --------------------------------------
 
@@ -3595,7 +3860,7 @@ class _Context:
 
             if self.system.normalized_cell[0]:
                 return self.production_weight(("lexicon", index), weighted)
-            if entry.learnable and self.system.semiring in ("LogProb", "Viterbi"):
+            if entry.learnable and self.system.semiring.log_weights:
                 return self.bind(
                     "weight",
                     REAL,
@@ -4523,7 +4788,7 @@ class _Context:
 
         if system.normalized_cell[0]:
             return self.production_weight(("rule", index), weighted)
-        if system.semiring not in ("LogProb", "Viterbi") or not (
+        if not system.semiring.log_weights or not (
             rule.learnable or rule.parent is not None
         ):
             return weighted(self.weight_of(None))
@@ -6255,28 +6520,29 @@ class _Context:
     # -- entry ------------------------------------------------------------
 
     def entry(
-        self, signature: ComputationSignature, handlers: tuple[HandlerDef, HandlerDef]
+        self, signature: ComputationSignature, handlers: _Handlers
     ) -> NamedComputation:
         """The deduction's entry: the inside weight of the goal.
 
         A cyclic system's entry iterates the closure's repeat bound from
-        zero until two successive inside weights agree within the
-        declared tolerance (exactly, without one), which is how the
-        chart's Kleene-star aggregation converges on the same cycles.
+        zero until two successive inside weights agree, exactly or within
+        the declared tolerance, or until the number of derivations stops
+        growing, and settles the last weight.
 
         Parameters
         ----------
         signature : ComputationSignature
             The computation's registered signature.
-        handlers : tuple[HandlerDef, HandlerDef]
-            The search and collection handlers.
+        handlers : _Handlers
+            The deduction's handlers.
 
         Returns
         -------
         NamedComputation
             The computation, which handles the weight instance with the
             collector and the search instance with the searcher around a
-            derivation of the goal.
+            derivation of the goal, and a cyclic system's settlement
+            instance with the settlement around the iteration.
         """
         system = self.system
         parameters = tuple(
@@ -6288,21 +6554,203 @@ class _Context:
             )
         )
         if not system.chained:
-            body = self.searched(parameters, None, handlers)
+            body = self.bind(
+                "inside",
+                product_type(system.carrier, INT),
+                self.searched(parameters, None, handlers),
+                lambda inside: Return(
+                    value=Projection(
+                        value=Var(local=inside), position=0, result_type=system.carrier
+                    )
+                ),
+            )
             return self.computation(signature, parameters, body)
         inputs = tuple(Var(local=parameter) for parameter in parameters)
-        body = self.bind(
-            "first",
-            system.carrier,
-            self.call(system.name("inside"), (_int(0), *inputs)),
-            lambda first: self.call(
-                system.name("converge"), (_int(1), Var(local=first), *inputs)
+        body = self.settled(
+            self.bind(
+                "first",
+                product_type(system.carrier, INT),
+                self.call(system.name("inside"), (_int(0), *inputs)),
+                lambda first: self.call(
+                    system.name("converge"), (_int(1), Var(local=first), *inputs)
+                ),
             ),
+            handlers,
         )
         return self.computation(signature, parameters, body)
 
+    def settled(self, iteration: Computation, handlers: _Handlers) -> Handle:
+        """Handle an iteration's stop with the settlement.
+
+        Parameters
+        ----------
+        iteration : Computation
+            A computation that stops on the ``Settle`` instance.
+        handlers : _Handlers
+            The deduction's handlers.
+
+        Returns
+        -------
+        Handle
+            The handled iteration, answering its value when its stop
+            certifies it.
+        """
+        assert self.system.settle_cell[0] is not None
+        return Handle(
+            instance=self.system.settle_cell[0].entry.instance,
+            handler=handlers.settle.id,
+            computation=iteration,
+            static_arguments=(),
+        )
+
+    def stop(self, value: Value, certified: Value, residual: Value) -> Perform:
+        """Stop an iteration at a value.
+
+        Parameters
+        ----------
+        value : Value
+            The last iterate, an element of the carrier.
+        certified : Value
+            Whether the stop certifies it, a ``Bool``.
+        residual : Value
+            The distance of the last two iterates, a ``Real``.
+
+        Returns
+        -------
+        Perform
+            The request on the ``Settle`` instance, answered with the
+            value when the stop certifies it.
+        """
+        assert self.system.settle_cell[0] is not None
+        return self.request(
+            self.system.settle_cell[0],
+            SETTLE_STOP,
+            (self.system.carrier,),
+            (value, certified, residual),
+            self.system.carrier,
+            "settle",
+        )
+
+    def certified(self, agree: Value, settled: Value) -> Value:
+        """Whether a stop certifies its value.
+
+        A stop certifies its value when the iteration found no further
+        derivation, so the value sums every derivation; or when the
+        carrier's arithmetic is exact and two iterates agree, since a
+        fixed point reached from below is the least one. Two iterates
+        that agree in rounded arithmetic certify nothing.
+
+        Parameters
+        ----------
+        agree : Value
+            Whether the last two iterates agree, a ``Bool``.
+        settled : Value
+            Whether the number of derivations stopped growing, a ``Bool``.
+
+        Returns
+        -------
+        Value
+            The certificate, a ``Bool``.
+        """
+        if self.system.semiring.exact:
+            return self.primitive("or", agree, settled)
+        return settled
+
+    def semiring_sum(self, values: tuple[Value, ...]) -> Computation:
+        """The semiring sum of elements, by the deduction's search.
+
+        Parameters
+        ----------
+        values : tuple[Value, ...]
+            Elements of the carrier; none gives the zero.
+
+        Returns
+        -------
+        Computation
+            A choice among the values under the search and the collector,
+            whose answer's weight is their sum in the declared semiring.
+        """
+        system = self.system
+        assert system.handlers_cell[0] is not None
+        handlers = system.handlers_cell[0]
+        assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
+        count = IndexLiteral(value=len(values), sort=NAT)
+        alternatives = TensorValue(
+            items=values, result_type=tensor_type(system.carrier, (count,))
+        )
+        chosen = self.bind(
+            "chosen",
+            system.carrier,
+            self.choose(alternatives, system.carrier, count, "sum"),
+            lambda chosen: Bind(
+                binder=system.local("added", UNIT),
+                first=self.add_weight(Var(local=chosen), "sum", "weight"),
+                then=Return(value=LiteralValue(value=None, type=UNIT)),
+            ),
+        )
+        return self.bind(
+            "sum",
+            product_type(system.carrier, INT),
+            Handle(
+                instance=system.choice_cell[0].entry.instance,
+                handler=handlers.search.id,
+                computation=Handle(
+                    instance=system.weight_cell[0].entry.instance,
+                    handler=handlers.collect.id,
+                    computation=chosen,
+                    static_arguments=(),
+                ),
+                static_arguments=(),
+            ),
+            lambda total: Return(
+                value=Projection(
+                    value=Var(local=total), position=0, result_type=system.carrier
+                )
+            ),
+        )
+
+    def semiring_product(self, values: tuple[Value, ...]) -> Computation:
+        """The semiring product of elements in order, by the deduction's collector.
+
+        Parameters
+        ----------
+        values : tuple[Value, ...]
+            Elements of the carrier; none gives the unit.
+
+        Returns
+        -------
+        Computation
+            The values added in order under the collector, whose answer's
+            weight is their product in the declared semiring.
+        """
+        system = self.system
+        assert system.handlers_cell[0] is not None
+        assert system.weight_cell[0] is not None
+        body: Computation = Return(value=LiteralValue(value=None, type=UNIT))
+        for position, value in reversed(tuple(enumerate(values))):
+            body = Bind(
+                binder=system.local("added", UNIT),
+                first=self.add_weight(value, "product", position),
+                then=body,
+            )
+        return self.bind(
+            "product",
+            product_type(UNIT, system.carrier),
+            Handle(
+                instance=system.weight_cell[0].entry.instance,
+                handler=system.handlers_cell[0].collect.id,
+                computation=body,
+                static_arguments=(),
+            ),
+            lambda total: Return(
+                value=Projection(
+                    value=Var(local=total), position=1, result_type=system.carrier
+                )
+            ),
+        )
+
     def inside(
-        self, signature: ComputationSignature, handlers: tuple[HandlerDef, HandlerDef]
+        self, signature: ComputationSignature, handlers: _Handlers
     ) -> NamedComputation:
         """The inside weight of the goal under a repeat bound on chains.
 
@@ -6310,13 +6758,14 @@ class _Context:
         ----------
         signature : ComputationSignature
             The computation's registered signature.
-        handlers : tuple[HandlerDef, HandlerDef]
-            The search and collection handlers.
+        handlers : _Handlers
+            The deduction's handlers.
 
         Returns
         -------
         NamedComputation
-            The computation.
+            The computation, answering the weight with the number of
+            derivations the bound admits.
         """
         repeats = Local(name="repeats", type=INT)
         tokens = Local(name="tokens", type=signature.parameters[1])
@@ -6324,7 +6773,14 @@ class _Context:
         return self.computation(signature, (repeats, tokens), body)
 
     def convergence(self, signature: ComputationSignature) -> NamedComputation:
-        """Raise the repeat bound until the inside weight converges.
+        """Raise the repeat bound until the inside weight settles.
+
+        The iteration stops when two successive weights agree, exactly or
+        within the declared tolerance, or when the bound admits no more
+        derivations than the one below it. In the second case no
+        derivation repeats an item that often, so none repeats it more
+        often (cut one repetition out of a chain and the chain is still a
+        derivation), and the weight sums every derivation.
 
         Parameters
         ----------
@@ -6334,52 +6790,57 @@ class _Context:
         Returns
         -------
         NamedComputation
-            The computation, answering the first inside weight within
-            the tolerance of the one under the bound below it.
+            The computation, stopping on the ``Settle`` instance.
         """
         system = self.system
+        pair = product_type(system.carrier, INT)
         repeats = Local(name="repeats", type=INT)
-        previous = Local(name="previous", type=system.carrier)
+        previous = Local(name="previous", type=pair)
         tokens = Local(name="tokens", type=signature.parameters[2])
 
-        def converged(current: Local) -> Value:
-            """Whether a weight is within the tolerance of the previous one.
+        def part(value: Local, position: int) -> Projection:
+            """One component of an inside weight and its count.
+
+            Parameters
+            ----------
+            value : Local
+                The pair.
+            position : int
+                ``0`` for the weight, ``1`` for the count.
+
+            Returns
+            -------
+            Projection
+                The component.
+            """
+            return Projection(
+                value=Var(local=value),
+                position=position,
+                result_type=system.carrier if position == 0 else INT,
+            )
+
+        def judged(current: Local) -> Computation:
+            """Stop at the current weight, or raise the bound again.
 
             Parameters
             ----------
             current : Local
-                The weight under the current bound.
+                The weight and count under the current bound.
 
             Returns
             -------
-            Value
-                The test.
+            Computation
+                The stop or the next iteration.
             """
-            if system.semiring == "Boolean":
-                return self.primitive(
-                    "eq_bool", Var(local=current), Var(local=previous)
-                )
-            if system.semiring == "Counting":
-                return self.primitive("eq_int", Var(local=current), Var(local=previous))
-            now = self.primitive("weight_value", Var(local=current))
-            before = self.primitive("weight_value", Var(local=previous))
-            return self.primitive(
-                "or",
-                self.primitive("eq_real", now, before),
-                self.primitive(
-                    "le_real",
-                    self.primitive("abs_real", self.primitive("sub_real", now, before)),
-                    LiteralValue(value=system.tolerance_cell[0], type=REAL),
+            agree = self.within_tolerance(part(current, 0), part(previous, 0))
+            settled = self.primitive("eq_int", part(current, 1), part(previous, 1))
+            return If(
+                condition=self.primitive("or", agree, settled),
+                then=self.stop(
+                    part(current, 0),
+                    self.certified(agree, settled),
+                    self.residual(part(current, 0), part(previous, 0)),
                 ),
-            )
-
-        body = self.bind(
-            "current",
-            system.carrier,
-            self.call(system.name("inside"), (Var(local=repeats), Var(local=tokens))),
-            lambda current: If(
-                condition=converged(current),
-                then=Return(value=Var(local=current)),
                 otherwise=self.call(
                     signature.name,
                     (
@@ -6388,7 +6849,13 @@ class _Context:
                         Var(local=tokens),
                     ),
                 ),
-            ),
+            )
+
+        body = self.bind(
+            "current",
+            pair,
+            self.call(system.name("inside"), (Var(local=repeats), Var(local=tokens))),
+            judged,
         )
         return self.computation(signature, (repeats, previous, tokens), body)
 
@@ -6396,7 +6863,7 @@ class _Context:
         self,
         parameters: tuple[Local, ...],
         repeats: Value | None,
-        handlers: tuple[HandlerDef, HandlerDef],
+        handlers: _Handlers,
     ) -> Computation:
         """Handle the search and the weights around a derivation of the goal.
 
@@ -6406,17 +6873,18 @@ class _Context:
             The entry's inputs: the tokens, or the axioms and weights.
         repeats : Value | None
             The repeat bound on unary chains, for a cyclic system.
-        handlers : tuple[HandlerDef, HandlerDef]
-            The search and collection handlers.
+        handlers : _Handlers
+            The deduction's handlers.
 
         Returns
         -------
         Computation
-            The handled derivation, answering the goal's inside weight.
+            The handled derivation, answering the goal's inside weight
+            and the number of its derivations.
         """
         system = self.system
         assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
-        search_handler, collect_handler = handlers
+        search_handler, collect_handler = handlers.search, handlers.collect
         item = system.item
         assert system.entries
         length: Value = Reduction(
