@@ -96,7 +96,7 @@ A *resumption grade* states how many times a clause may resume its continuation.
 | `1` (linear) | exactly once | answering a request, as `half_weight` does, or a state update |
 | `omega` (unrestricted) | any number | search that resumes once for each alternative |
 
-Grades `0`, `aff`, and `1` make the continuation one-shot. `omega` makes it multi-shot. Declare the most restrictive grade that the policy allows. The reference machine counts resumptions at run time, so a clause declared `1` that resumes twice fails. A multi-shot resumption also needs a context that can be copied, and an accumulator such as the chart of a generated parser ([chapter 11](11-parsing-and-search.md)) is copied for each resumption.
+Grades `0`, `aff`, and `1` make the continuation one-shot. `omega` makes it multi-shot. Declare the most restrictive grade that the policy allows. The reference machine counts resumptions at run time, so a clause declared `1` that resumes twice fails. A multi-shot resumption also needs a context that can be copied, and an accumulator such as the weight collector of a generated parser ([chapter 11](11-parsing-and-search.md)) is copied for each resumption.
 
 ## 5. Decide between authored and foreign handlers
 

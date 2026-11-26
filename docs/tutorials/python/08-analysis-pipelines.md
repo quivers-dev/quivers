@@ -175,13 +175,14 @@ object Resp : FinSet 96
 
 object g : FinSet 8
 
-program model : Resp -> Resp
+program model(g_idx : Tensor[Int]([Resp])) : Resp -> Resp
     sample intercept <- Normal(loc=0.0, scale=5.0)
     sample beta_x <- Normal(loc=0.0, scale=5.019989651784464)
     let beta_x_per_row = beta_x * x
     sample sigma_g_Intercept <- HalfNormal(scale=1.0)
     sample z_g_Intercept : g <- Normal(loc=0.0, scale=1.0)
-    let alpha_g_per_row = sigma_g_Intercept * z_g_Intercept[g_idx]
+    let alpha_g = sigma_g_Intercept * z_g_Intercept
+    let alpha_g_per_row = alpha_g[g_idx]
     sample sigma <- HalfCauchy(scale=2.0)
     let eta = intercept + beta_x_per_row + alpha_g_per_row
     let mu = eta
@@ -191,7 +192,7 @@ program model : Resp -> Resp
 export model
 ```
 
-The group intercept becomes a scale `sigma_g_Intercept` with a `HalfNormal` prior, a plate `z_g_Intercept` of standard Normal draws over the levels of `g`, and the term `sigma_g_Intercept * z_g_Intercept[g_idx]` for each row, where `g_idx` is the index map from rows to groups. This is the non-centered parameterization [@papaspiliopoulos2007parametrization]: the offsets are computed from standardized draws rather than drawn as `Normal(0, sigma_g_Intercept)`.
+The group intercept becomes a scale `sigma_g_Intercept` with a `HalfNormal` prior, a plate `z_g_Intercept` of standard Normal draws over the levels of `g`, the offsets `alpha_g = sigma_g_Intercept * z_g_Intercept`, and the term `alpha_g[g_idx]` for each row, where `g_idx`, an input of the program, is the index map from rows to groups. This is the non-centered parameterization [@papaspiliopoulos2007parametrization]: the offsets are computed from standardized draws rather than drawn as `Normal(0, sigma_g_Intercept)`.
 
 ```python
 def mean_param(res, name, n=200):
@@ -245,7 +246,7 @@ result = fit(
 The response labels must be consecutive integers starting at zero. The generated program exponentiates log spacings, sums them cumulatively, and centers each rater's thresholds, so the thresholds are ordered in every draw, the rater intercept is a shift of location, and the thresholds describe how each rater uses the scale.
 
 This combines one centered shape with one varying location per rater. The
-compiler reuses the formula's rater intercept, or supplies it when absent;
+compiler reuses the formula's rater intercept, or adds it when absent;
 a binary cumulative model needs only that location coordinate.
 `result.posterior_thresholds(num_samples=100)` exposes the effective row
 profiles with chain, draw, row, and threshold axes. For nonproportional

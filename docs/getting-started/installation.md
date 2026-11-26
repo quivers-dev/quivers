@@ -12,7 +12,7 @@ This installs PyTorch, [didactic](https://pypi.org/project/didactic/),
 [panproto](https://pypi.org/project/panproto/), `panproto-grammars-all`,
 Pygments, and the tree-sitter bindings as dependencies, along with the `qvr`
 command. To run on a GPU, install the [PyTorch build](https://pytorch.org/get-started/locally/)
-for your platform before installing quivers.
+for your platform, PyTorch 2.11 or later, before installing quivers.
 
 Wheels for Linux on x86-64, macOS on ARM64, and Windows on AMD64 include the
 compiled QVR parser. On other platforms pip builds the package from the source

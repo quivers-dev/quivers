@@ -59,7 +59,7 @@ The pointwise array retains one likelihood term per response and posterior draw;
 the first axis is the variational result's single pseudo-chain. Scoring new
 responses additionally requires their `y` values. The
 [fitting guide](../../guides/model-data-and-fitting.md#extract-pointwise-log-likelihoods)
-specifies event reductions and the current restriction on marginalized responses.
+specifies event reductions and the row and unit scores of marginalized responses.
 
 ## Report invalid inputs before inference
 

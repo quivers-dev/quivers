@@ -4,7 +4,10 @@
 
 ## The hierarchy
 
-A rule's class states which laws it claims. Only `semigroupoid(...)` tests its claim, on random inputs, and no class proves it:
+A rule's class states which laws it claims. Each claim carries its evidence in a
+[law record](../../api/core/laws.md): proved, decided, tested, or assumed. The laws of the built-in
+algebras are proved, and the associativity of a rule built with `semigroupoid(...)` is assumed after
+a test on random inputs:
 
 | Class (QVR level) | Claims | Structure of the morphisms |
 |---|---|---|
@@ -53,7 +56,7 @@ from quivers.core.algebras import (
 )
 ```
 
-Every built-in instance is an `Algebra`, and the eight semirings among them are also of class `Semiring`, and so of `Semigroupoid`. `PRODUCT_FUZZY` is an `Algebra` and not a `Semiring`: its product does not distribute over its noisy-OR, and its composition is not associative. The class records a claim that the library does not prove.
+Every built-in instance is an `Algebra`, and the semirings among them are also of class `Semiring`, and so of `Semigroupoid`. `PRODUCT_FUZZY` is an `Algebra` and not a `Semiring`: its product does not distribute over its noisy-OR, and its composition is not associative. [`claims`](../../api/core/laws.md#quivers.core.laws.Lawful.claims) lists the claims of an instance with their evidence, and [`establishes`](../../api/core/laws.md#quivers.core.laws.Lawful.establishes) asks whether given laws are proved or decided.
 
 ## Rules below `Algebra` {#building-a-semigroupoid}
 
@@ -64,7 +67,7 @@ import torch
 from quivers.core.algebras import material_implication
 
 mi = material_implication()
-print(type(mi).__mro__)        # (CustomMagmoid, Magmoid, CompositionRule, ABC, object)
+print(type(mi).__mro__)        # (CustomMagmoid, Magmoid, CompositionRule, Lawful, ABC, object)
 
 f = torch.tensor([[0.3, 0.5, 0.2]])
 g = torch.tensor([
@@ -165,14 +168,24 @@ out    = wiring.apply(arg1, arg2, kernel)
 print(out.shape)                # torch.Size([4, 2])
 ```
 
-`apply` computes in four steps:
+How `apply` evaluates the contraction depends on the laws the rule establishes, never on its name:
 
-1. Broadcast each input to the set of all axis letters, with singleton axes for missing letters.
-2. Combine the inputs from left to right with $\otimes$.
-3. Reduce the contracted axes with $\oplus$.
-4. Permute the remaining axes into the output order.
+- When the rule establishes the commutative-semiring laws of
+  [`ELIMINATION_LAWS`](../../api/core/elimination.md#quivers.core.elimination.ELIMINATION_LAWS), a
+  summed letter is removed by multiplying only the inputs that contain it and reducing it with
+  $\oplus$ ([variable elimination](https://en.wikipedia.org/wiki/Variable_elimination)), in an order
+  that [`plan`](../../api/core/wiring.md#quivers.core.wiring.EinsumWiring.plan) chooses greedily.
+  The largest intermediate tensor then has the size of the largest bag of that order, not the
+  product of every extent.
+- Any other rule is evaluated in the written order: the inputs are combined with $\otimes$ from left
+  to right over every letter, and the contracted letters are then reduced with $\oplus$. The order
+  of the inputs thus matters for a rule whose $\otimes$ is not associative.
 
-Since step 2 folds from the left, the order of the inputs matters for a rule whose $\otimes$ is not associative. `EinsumWiring` accepts any `CompositionRule`, including rules below `Algebra`:
+[`apply_with_work`](../../api/core/wiring.md#quivers.core.wiring.EinsumWiring.apply_with_work)
+returns the output with a report of the sums, products, and elements it formed, and
+[`complexity`](../../api/core/wiring.md#quivers.core.wiring.EinsumWiring.complexity) gives the cost
+claim that applies to the rule. `EinsumWiring` accepts any `CompositionRule`, including rules below
+`Algebra`:
 
 ```python
 mi    = material_implication()
@@ -192,7 +205,7 @@ out   = wmi.apply(
 - The output repeats a letter (`"ij, jk -> iik"`).
 - An output letter appears in no input (`"ij, jk -> iz"`).
 
-`apply` checks the number of tensors and the number of axes of each. A size mismatch between inputs surfaces as PyTorch's broadcasting error.
+`apply` checks the number of tensors and the number of axes of each, and raises `ValueError` when two inputs give one letter different extents.
 
 ## From QVR
 

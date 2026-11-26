@@ -43,7 +43,7 @@ is written `(a, b)`, and `pair[0]` and `pair[1]` project its components.
 
 In a program runtime header, `(count : Nat)` additionally restricts the integer
 carrier `Int` to nonnegative values. The checked input contract preserves this
-restriction and execution validates supplied values. This use differs from a
+restriction and execution validates the values given. This use differs from a
 static extent `[n : Nat]` and from the inductive index declaration below.
 
 ## Index types
@@ -75,7 +75,7 @@ define keep_padded[n : Nat](
 
 The checker folds closed additions, flattens nested sums, and preserves
 nominal variable identities. Thus the two types above agree before `n`
-is specialized. A supplied static `n=2` gives a vector of length three.
+is specialized. A static `n=2` gives a vector of length three.
 A program header may use the same shape relation; binding can infer `n`
 from exact tensor-length evidence. Coupled equations such as
 `n + m = 5` and `n + 2m = 8` determine both extents, while one equation

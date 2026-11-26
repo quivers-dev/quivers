@@ -35,7 +35,7 @@ nullary form the grammar admits. A request always names its instance, as in
 `perform left.get()`, and this is what keeps `left` and `right` apart in the row.
 
 The static arguments select an applied interface, while the operation's value
-arguments are supplied when a request runs. Programs, computations, and
+arguments are given when a request runs. Programs, computations, and
 constructors use the same distinction between static specialization and runtime
 values, as described in the [parameter reference](index.md#parameter-telescopes).
 Introducing a static parameter does not itself perform the operation.
@@ -56,9 +56,12 @@ These interfaces need no source declaration:
 | `Param` | `get[A](String) -> A` | look up a learned parameter by name |
 
 Every probabilistic `program` performs through two built-in instances, `random : Random` and
-`score : Score`. A `Search` interface is generated for each
-[deduction](../../guides/deduction.md#the-framework) and each parser built from rule schemata, because the
-number of alternatives at a choice depends on the elaborated system. Structural declarations create
+`score : Score`. A module that declares a
+[deduction](../../guides/deduction.md#the-framework) or a parser built from rule schemata gains two
+interfaces: `Search`, whose `choose[a, n]` picks one entry of a tensor of `n` alternatives, and
+`Settle`, whose `stop` carries the value an iteration stopped at, whether the stop certifies it,
+and the residual of its last two iterates. The module cannot declare an effect of either name
+itself. Structural declarations create
 `Compute` instances, which a caller reaches through `Program.run` rather than by writing the
 requests.
 
@@ -299,6 +302,14 @@ The serialized module holds the handler's type, its operation coverage, and its 
 callable. At invocation, the selected provider binds the handler's stable identifier to an
 implementation. A provider configuration file holds provider names and data only, and it cannot
 inject code.
+
+A foreign handler may also declare what its clauses compute, in the
+[`foreign`](../../api/qiec/effects.md#quivers.qiec.effects.HandlerDef) field of its checked
+definition: a semiring sum over alternatives, a semiring product of added weights, an enumeration
+of a finite draw, or the settlement of an iteration. The `core` provider builds such a handler from
+that statement and the laws of the named semiring, and never from the handler's name
+([foreign handler semantics](../../api/qiec/foreign.md)). The handlers that a deduction `D`
+generates, `D__search`, `D__collect`, and `D__settle`, are declared this way.
 
 The built-in `core` provider gives the implementations that program execution, deductions, and the
 prelude use. A structural model composes `core` with a provider that holds its compiled PyTorch

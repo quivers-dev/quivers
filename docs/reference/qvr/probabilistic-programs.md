@@ -72,11 +72,11 @@ export centered
 
 Here `raw` is the external input, and `y` is computed before it is scored.
 Guides and MCMC kernels allocate no latent coordinate for `y`. The observation
-uses the same row axes, weights, and density rules as an externally supplied
-response. It introduces no automatic change-of-variables correction; modeling
+uses the same row axes, weights, and density rules as a response given from outside the
+program. It introduces no automatic change-of-variables correction; modeling
 a transformed measurement may require an explicit Jacobian score.
 
-`object Row : FinSet _` requests specialization from supplied checked shapes or
+`object Row : FinSet _` requests specialization from given checked shapes or
 direct index evidence. See [data binding and fitting](../../guides/model-data-and-fitting.md)
 for the inference rules and [interactive inspection](../../guides/repl-and-lsp.md#checked-parameters-in-interactive-tools)
 for symbolic checking, completion, and notebook use.
@@ -99,17 +99,17 @@ parameter is not by itself a request to specialize a template.
 
 A static `Nat` is an index extent, not a runtime integer term. A family
 argument such as `Binomial(total_count=n, probs=p)` thus needs
-`n` as a runtime value, for instance `(n : Nat)`. The current checker
+`n` as a runtime value, for instance `(n : Nat)`. The checker
 does not implicitly convert `[n : Nat]` into a scalar value for that call.
 
 For instance, `program model[Row : FinSet](x : Tensor[Real]([Row])) : Row -> Out`
 abstracts over a finite row object and receives a tensor over that object.
-`model[Rows](values)` supplies the object separately from its values. A scalar
+`model[Rows](values)` gives the object separately from its values. A scalar
 hyperparameter, such as `scale : Real`, belongs in the runtime list even when a
-caller happens to supply a literal. The [parameter reference](index.md#parameter-telescopes)
+caller happens to give a literal. The [parameter reference](index.md#parameter-telescopes)
 explains this convention across declarations and its distinction from family indices.
 
-Source program calls currently accept names or signed numeric literals as
+Source program calls accept names or signed numeric literals as
 static actuals, as in `model[Rows](values)` or `prior[3]()`. The signature's
 kinds then check those actuals. Arbitrary structured types, applied effects,
 or index-constructor expressions are not accepted in that program-call
@@ -118,11 +118,11 @@ Typed `define` calls retain their own QIEC static-argument syntax.
 
 A runtime `(count : Nat)` accepts a nonnegative integer. The checked program
 retains that restriction alongside its integer arithmetic type, and both native
-and reference execution validate it when inputs are supplied. A static
+and reference execution validate it when inputs are given. A static
 `[n : Nat]` instead selects an index used by the specialized types.
-A program call can supply a nonnegative integer literal or a runtime input
+A program call can give a nonnegative integer literal or a runtime input
 already constrained as `Nat`. An arbitrary computed or sampled `Int` is
-rejected: the checker does not yet prove that an integer expression is nonnegative.
+rejected: the checker does not prove that an integer expression is nonnegative.
 
 Bare parameters, as in `program f(a, b) : A * B -> C`, remain shorthand for
 the components of the declared domain. Typed external values are additional
@@ -153,11 +153,11 @@ In a finite-object position, `n` denotes the canonical zero-based ordinal
 $\{0,\ldots,n-1\}$. In a tensor shape it denotes the same extent. The shared
 binder thus relates the input shapes, plate, and domain without introducing a
 module-level object for each size. Symbolic checking verifies this dependency
-before a concrete size is supplied; executor support for specialization is
+before a concrete size is given; executor support for specialization is
 checked separately.
 
 The Python factory can specialize only the static telescope and leave runtime
-inputs to be supplied with data:
+inputs to be given with data:
 
 ```python
 from quivers.dsl import loads
@@ -178,9 +178,9 @@ assert tuple(parameter.name for parameter in contract.parameters) == ("scale",)
 Here `n=3` fixes the plate's extent, while `scale` remains a checked runtime
 input. Named scalar partial application, such as `.sub(n=3, scale=0.7)`, may
 also fix a runtime value; it preserves that value's runtime parameter stage.
-Supply tensor values through `Model.bind` or the execution data interface.
+Give tensor values through `Model.bind` or the execution data interface.
 Standalone specialization keeps the source's site names, so an observation
-authored as `y` is supplied under `"y"`. Calls inside the specialized body
+authored as `y` is given under `"y"`. Calls inside the specialized body
 still introduce their own namespaces; two calls can thus observe distinct
 `a$y` and `b$y` sites. Substitution freshens a local when needed to avoid
 capturing an actual argument.
@@ -312,7 +312,7 @@ export weighted_regression
 Each row contributes `w[row] * log_prob(y[row])` before the observation rows
 are summed. A zero weight contributes zero even when the raw log density is
 negative infinity; its likelihood contribution has zero parameter gradient.
-The prior on `slope` retains its original score. Weights remain at the supplied
+The prior on `slope` retains its original score. Weights remain at the given
 scale, and the number of response rows is unchanged.
 
 An undeclared `w` is inferred as a `Tensor[Real]` over the observation's batch

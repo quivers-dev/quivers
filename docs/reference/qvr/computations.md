@@ -203,18 +203,18 @@ or scoring. A declaration's static `[...]` telescope and runtime `(...)`
 parameters retain their ordinary staging rules. The integer argument here is
 a distribution-constructor argument, rather than a new binder form.
 
-A constructor must supply one complete parameter schema. Pure computation
+A constructor must give one complete parameter schema. Pure computation
 calls use positional arguments in the semantic registry's order; draw and
 observe constructors use named arguments. Both routes check the same complete
 alternatives. Thus `Normal(0.0)` is a compile error, and a Bernstein hazard must
-supply exactly one of `rate` and `log_rate`. Optional parameters are accepted
+give exactly one of `rate` and `log_rate`. Optional parameters are accepted
 only where the family declares an alternative schema; host-library defaults
-do not supply missing arguments in a checked program.
+do not fill in missing arguments in a checked program.
 
 `log_mass(d)` returns the total log mass of a `Sampleable` value as a
 `LogWeight`. This **mass query** is pure: returning a mass does not score
 the model. `log_prob(d, x)` instead reads the density or probability mass
-at the supplied outcome. Both queries use the same distribution value;
+at the given outcome. Both queries use the same distribution value;
 in particular, querying a raw restriction preserves its normalizer.
 
 <!-- compile: qiec -->

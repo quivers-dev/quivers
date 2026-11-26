@@ -11,7 +11,7 @@ to the source line.
 | Source declaration | Principal QIEC graph | Runtime requirement |
 | --- | --- | --- |
 | `program` | one computation over the built-in `random` and `score` instances, with helpers for [marginalization](probabilistic-programs.md#exact-marginalization) and scans | the core handlers, and any model attachments |
-| `deduction` | a family of items, a recursive derivation, `Search`, `Weight[K]`, `Param`, handlers that collect the weights, and a run entry | the core search, semiring, and parameter providers |
+| `deduction` | a family of items, a recursive derivation, `Search`, `Settle`, `Weight[K]`, `Param`, the search, collection, and settlement handlers, and a run entry | the core search, semiring, and parameter providers |
 | `define p = parser(...)` | a finite family of items and a [deduction](../../guides/deduction.md#the-framework) instantiated from rule schemata and bundles, searched from the goal | the search runtime of a deduction |
 | `signature` | an opaque family of terms indexed by the declared sorts | structural term values held in the Python process |
 | `encoder` | a typed `Compute[Term, Code]` request and a named computation | an attached PyTorch [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) |
@@ -36,8 +36,12 @@ semiring. For a span grammar, elaboration creates:
 3. computations for structural equality and display of items;
 4. a `Search` instance for the alternatives;
 5. a `Weight[K]` instance for the rule and lexical weights;
-6. a `Param` instance for learned weights; and
-7. a run computation that handles search and accumulation.
+6. a `Param` instance for learned weights;
+7. three handlers, each declaring what it computes in the semiring: `<D>__search` answers the
+   semiring sum over the alternatives of a choice, `<D>__collect` the semiring product of the
+   weights a derivation adds, and `<D>__settle` the value at which an iteration stops, when the
+   stop certifies it ([foreign handler semantics](../../api/qiec/foreign.md)); and
+8. a run computation that installs these handlers.
 
 Pattern variables shared between premises are checked by structural equality after the recursive
 premises return, and a failed match performs an empty choice. A learned lexical or rule weight is
@@ -58,12 +62,20 @@ it, and `<D>__weighted_run` is the entry the program calls. A program that parse
 helper `<program>__<let>_corpus` that calls the entry on each sentence and multiplies the answers in
 the semiring.
 
-The result type follows the semiring: a `LogWeight` for `LogProb`, a `Bool` for `Boolean`, and an
-`Int` for `Counting`. `run_deduction` returns the goal's inside weight, the semiring sum over all
-derivations of the goal of the product of their rule weights
+The result type follows the semiring: a `LogWeight` for `LogProb` and `Viterbi`, a `Bool` for
+`Boolean`, and an `Int` for `Counting`.
+[`run_deduction`](../../api/qiec/program_runtime.md#quivers.qiec.program_runtime.run_deduction)
+returns the goal's inside weight, the semiring sum over all derivations of the goal of the product
+of their rule weights
 ([inside algorithm](https://en.wikipedia.org/wiki/Inside%E2%80%93outside_algorithm))
 [@goodman1999semiring]. Depending on the deduction's shape, it accepts tokens, explicit axioms, axiom
-weights, and parameter values.
+weights, and parameter values. A deduction whose derivations may repeat an item iterates, and its
+stop is certified when no further derivation was found, or when the arithmetic is exact and two
+iterates agree. A stop at the declared `tolerance`, or in rounded arithmetic while derivations still
+grow, raises [`ContractNotMet`](../../api/qiec/contracts.md#quivers.qiec.contracts.ContractNotMet),
+and `run_deduction(..., on_failure=FailurePolicy.RETURN_UNESTABLISHED)` returns it as an
+[`Unestablished`](../../api/qiec/contracts.md#quivers.qiec.contracts.Unestablished) value instead.
+A program that calls the deduction refuses such a stop.
 
 The [weighted deduction guide](../../guides/deduction.md) and the
 [parsing tutorial](../../tutorials/qvr/11-parsing-and-search.md) build deductions step by step.
