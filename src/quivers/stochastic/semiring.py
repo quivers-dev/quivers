@@ -44,6 +44,8 @@ Goodman, J. (1999). Semiring parsing. *Computational Linguistics*,
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import torch
 
 from quivers.core.algebras import (
@@ -64,6 +66,13 @@ class ChartSemiring(Semiring):
     ``unit``. All operations are differentiable where the carrier
     allows, to support gradient-based learning.
     """
+
+    log_weights: ClassVar[bool] = False
+    """Whether the elements are log weights, so a learned log weight is one.
+
+    A rule weight learned as a log weight enters a semiring whose
+    elements are log weights as it is; a semiring of other elements has
+    no element it stands for, and the rule contributes its unit."""
 
     def times(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Multiplicative combination (⊗), the core ``tensor_op``.
@@ -142,6 +151,7 @@ class LogProbSemiring(ChartSemiring, LogProbAlgebra):
     ``plus`` is logsumexp (= addition of probabilities in log-space).
     """
 
+    log_weights = True
     proof = LogProbAlgebra.proof
     tested = LogProbAlgebra.tested
 
@@ -155,6 +165,7 @@ class ViterbiSemiring(ChartSemiring, MaxPlusAlgebra):
     best-first decoding.
     """
 
+    log_weights = True
     proof = MaxPlusAlgebra.proof
     tested = MaxPlusAlgebra.tested
 
