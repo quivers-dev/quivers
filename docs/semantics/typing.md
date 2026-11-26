@@ -481,7 +481,7 @@ Every `program` elaborates to a named QIEC computation over the built-in instanc
 | `score` | `perform score.add(...)` |
 | pure `let` | pure binding |
 | `let x <- f(...)` | checked call and binding |
-| `marginalize` over a finite family | fresh choice and weight instances under handlers that enumerate and collect |
+| `marginalize` over a finite family | fresh choice and weight instances under foreign handlers that declare an enumeration and a log-semiring product ([Weighted deduction §11](grammar.md#authored-and-foreign-handlers)) |
 | `marginalize` over another family | one ordinary draw, with no integral |
 | `scan` | a generated recursive helper over a sequence of open extent |
 

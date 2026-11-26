@@ -72,7 +72,11 @@ addresses of requests, constructors, case analysis on indexed families, attachme
 resumption grades. Tests parse the source emitted for every target and, where the target's runtime is
 installed, compare its requests and results with the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC.
 
-Stan, BUGS, and JAGS accept a static subset, which the analysis checks: each computation has a closed,
+Stan, BUGS, and JAGS render no handlers, so
+[`project_for_target`](../api/transpile/qiec_ir.md#quivers.transpile.qiec_ir.project_for_target)
+gives them the module with its authored handlers [discharged](effects.md#82-static-discharge), and a
+computation that keeps a handler carries the obstacle that names it. They accept a static subset of
+that module, which the analysis checks: each computation has a closed,
 empty row and no static parameters, returns a scalar, and uses the scalar
 computation forms that the target's capability analysis accepts. Stan admits
 value parameters of types `Bool`, `Int`, and `Real`, including checked scalar

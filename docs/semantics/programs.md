@@ -1859,8 +1859,11 @@ denotation as steps of the caller in four cases.
 3. **Callees that request only `Random` and `Score`.** Such a body denotes an s-finite kernel built
    from the caller's own two effects, and inlining it is the substitution of §3.2: its site `s`
    becomes the caller's site `y$s`, and each `Score.add` adds its weight to the caller's joint. A
-   callee that handles an effect inside its body is refused, since its denotation is the handler's
-   fold over the body, which the caller's steps do not express.
+   callee that installs an authored handler inside its body is first
+   [discharged](effects.md#82-static-discharge): the handler's fold over the body is computed
+   before the program runs, which gives an equal body that installs no handler, and that body is
+   inlined. A call whose handler cannot be discharged, such as a foreign handler or a handled
+   request in a recursive call, is refused with the handler or clause and the reason.
 4. **`traverse` over a lambda.** When the runs $k(x_0), \ldots, k(x_{n-1})$ read only their own
    items and names bound before the traverse, the composite of §2.3.2 is the product
 
@@ -2901,7 +2904,10 @@ of $\log F_r(y_{r,i}\mid\theta_{r,i})$, as brms `log_lik` computes.
 A formula autocorrelation term replaces the independent Gaussian or Student
 response by one law over all response rows, partitioned into series $g$ by the
 grouping factor and ordered by time within each series. Write $\eta$ for the
-linear predictor, $r=y-\eta$, and $\sigma$ for the residual scale.
+linear predictor, $r=y-\eta$, and $\sigma$ for the residual scale. The family
+stays the one the formula gives, and the dependence is a residual law beside
+it, which the fit holds as `fit.residual` and single and joint fits read
+alike.
 
 The conditional ARMA formulation defines, within a series,
 $e_t=r_t-\sum_{k\le q}\theta_k e_{t-k}$ with $e_t=0$ before the series
@@ -2980,6 +2986,18 @@ $$
 
 for an exact, right-censored, left-censored, and interval-censored row with
 upper endpoint $u_t$, each event intersected with the truncation interval.
+
+Conditional ARMA terms also combine with residual correlation across the
+responses of a joint model. Row $t$ of response $k$ is
+$y_{tk}=m_{tk}+e_{tk}$, where $m_{tk}$ is the location plus the ARMA
+recursion of response $k$ over its own earlier responses, and $e_t$ has the
+elliptical law of the
+[joint model](#joint-multivariate-formula-responses). The map from $y$ to $e$ is lower
+triangular with unit diagonal in each series' order, so its Jacobian is one
+and the joint density is $\prod_t f(e_t)$. With `mi()` responses the
+recursions read the completed responses of earlier rows, and each row's
+factor is the density of its completed vector, so the joint density of the
+recorded and the missing responses is scored exactly.
 
 A conditional autoregressive term adds $r_{\ell(i)}$ to the linear predictor
 of row $i$, where $\ell(i)$ is the row's location. With adjacency $W$ (one per

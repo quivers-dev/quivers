@@ -355,7 +355,10 @@ runtime multiplies the cell that the lexical and binary rules produce, once, by 
 $U^* = I \oplus U \oplus U^2 \oplus \cdots$, the sum over every chain of the product of its
 weights [@goodman1999semiring; @mohri2002semiring]. For probabilities $U^* = (I - U)^{-1}$, which
 exists when the spectral radius of $U$ is below one. A closure whose series diverges, as for a
-row-stochastic $U$, whose spectral radius is one, has no value, and parsing raises `ValueError`.
+row-stochastic $U$, whose spectral radius is one, has no value, and parsing raises
+[`DivergentClosureError`](../api/core/algebras.md#quivers.core.algebras.DivergentClosureError).
+When a loop weight lies so close to one that rounding cannot decide whether the series converges,
+parsing raises [`UndecidedClosureError`](../api/core/algebras.md#quivers.core.algebras.UndecidedClosureError).
 
 ### 4.2 `chart_fold`
 

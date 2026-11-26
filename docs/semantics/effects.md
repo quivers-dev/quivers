@@ -242,7 +242,10 @@ allows, and a continuation resumed more than once extends the address of its tra
 
 These rules cover the interfaces of state, abort, random choice, scoring, nondeterministic choice, and
 weighted accumulation. A handler's clauses are written in QVR, or held only in the running Python process
-and given by a provider. Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church run the same typed
+and given by a provider. A foreign handler may instead declare what it computes, such as a semiring sum
+or a settlement, and the runtime builds its clauses from that declaration and the laws of the semiring it
+names, never from the handler's name
+([Weighted deduction §11](grammar.md#authored-and-foreign-handlers)). Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church run the same typed
 computations through implementations of the QIEC runtime for each target, which dispatch by the stable
 identifiers of instances and operations, so the two state cells above stay separate. Tests compare these
 implementations with the reference machine at fixed parameter values. The static targets read a

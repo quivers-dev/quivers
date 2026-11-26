@@ -55,6 +55,13 @@ several premises to one conclusion [@klein2001parsing]. It needs all its premise
 is not a set of separate rules with one premise. Each instance has a weight $\beta_r(\sigma) \in K$ in
 the deduction's semiring $K$, which is $\mathbf 1_K$ unless the rule is learnable or weighted.
 
+The compiler reads a deduction once into a rule presentation, a
+[`RulePresentation`](../api/qiec/rules.md#quivers.qiec.rules.RulePresentation): one judgment form for
+each kind of item, with its position slots typed as natural numbers, and one rule for each sequent.
+The agenda's rules and the QIEC elaboration are both derived from it, so the two read every pattern
+alike. A premise or conclusion that is a bare variable ranges over every judgment form, and the rule
+is the family of its instances, one for each form, sharing one weight.
+
 ### 2.1 Learnable rule weights (`#[learnable]`) {#21-learnable-rule-weights-learnable}
 
 A rule marked `#[learnable]`,
@@ -168,10 +175,12 @@ The `semiring` option chooses $K$:
 
 `LogProb` is the log semiring, `Viterbi` the max-plus semiring, and `Counting` the counting semiring
 ([Semirings, t-norms, and change of base](algebras.md)). They are the instances of the
-class `ChartSemiring` that a deduction accepts, a different class from the `Algebra` instances that compose morphisms. The
-same rules give the answers in the last column under the different semirings, as in semiring
-parsing [@goodman1999semiring]. A value of `semiring` outside these four is read as `LogProb`
-without an error.
+class [`ChartSemiring`](../api/stochastic/semiring.md#quivers.stochastic.semiring.ChartSemiring)
+that a deduction accepts, members of the same hierarchy as the `Algebra` instances that compose
+morphisms ([Semirings, t-norms, and change of base §5](algebras.md#5-implementation)), so a chart sums
+by the semiring's own $\oplus$. The same rules give the answers in the last column under the
+different semirings, as in semiring parsing [@goodman1999semiring]. A value of `semiring` outside
+these four is a compile error that lists the four.
 
 ## 4. Binders, logical forms, and axioms
 
@@ -257,13 +266,23 @@ still parsed in full. The checked QIEC search applies the same measure to the sa
 `tolerance = ε` controls the evaluation of cyclic rule systems. Under a semiring that is not
 idempotent, every new derivation of an item adds to its weight, so on a cycle the weight is the
 limit of a series (§2.3). The agenda stops re-deriving an item once an update changes its weight by
-less than $\varepsilon$. When the series converges, as it does under the bound of `bounded`, this
-reaches its limit to within the tolerance. When it diverges, the agenda reaches `max_iterations`
-and raises an error. With $\varepsilon = 0$, the default, any change in a stored weight counts as an
-update, so on a cycle the agenda stops only when the weights stop changing in floating point or when
-`max_iterations` is reached. The checked QIEC search computes the same limit by enumeration: it bounds how often a
-chain of unary rules may revisit an item and raises the bound until two successive goal weights
-differ by at most $\varepsilon$.
+at most $\varepsilon$. The tolerance bounds that update, and the remaining error depends on the
+weights of the recursive rules. With $\varepsilon = 0$, the default, any change in a stored weight
+counts as an update. The checked QIEC search bounds how often a chain of unary rules may revisit an
+item and raises that bound until two successive goal weights agree or the number of derivations
+stops growing. The weights are compared within the declared tolerance in rounded arithmetic.
+A deduction evaluated by its chart compares successive rounds over every item. In
+rounded arithmetic, weight agreement stops that chart only once more rounds have passed than the
+chart has items, which shows a cycle. The stop is handled by the deduction's settlement handler,
+`<D>__settle`. It certifies the value when the number of
+derivations stopped growing, so the value sums every derivation, or when the semiring's arithmetic
+is exact and the two weights agree, since a fixed point reached from below is the least one. A
+stop by the tolerance in rounded arithmetic, such as under `LogProb`, certifies nothing: the run
+raises [`ContractNotMet`](../api/qiec/contracts.md#quivers.qiec.contracts.ContractNotMet), or, with
+[`run_deduction`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.run_deduction)`(on_failure=FailurePolicy.RETURN_UNESTABLISHED)`,
+returns the stopped value as
+[`Unestablished`](../api/qiec/contracts.md#quivers.qiec.contracts.Unestablished) together with the
+report that says why.
 
 `max_iterations = N` bounds the number of items taken from the agenda, $10^5$ by default, and the
 agenda raises an error when it is exceeded.
@@ -306,13 +325,26 @@ chart of §6, whatever the order [@goodman1999semiring]. For a cyclic system und
 semiring such as `Boolean` or `Viterbi`, the chart is the least fixed point of the equation of §6,
 which exists by the [Knaster–Tarski theorem](https://en.wikipedia.org/wiki/Knaster%E2%80%93Tarski_theorem)
 when the weights form a complete lattice and the rules are monotone. For a cyclic system under a
-semiring that is not idempotent, the chart is the limit of §5, which depends on convergence. The
-[plans](../api/stochastic/planning.md#monotone-polynomial-plans) of a rule presentation under the
-monotone polynomial contract compute that least fixed point by Newton's method instead: with a
-certified interval in an algebra embedded in the nonnegative reals, exactly in an idempotent
-algebra with a closure, and with a refusal when it is infinite. Pruning
-an item removes its derivations from the sum, and stopping early leaves some unprocessed, so neither
-preserves the chart.
+semiring that is not idempotent, the chart is the limit of §5, which depends on convergence.
+
+When the system is linear, so that each rule instance has at most one premise on a cycle through
+its conclusion, the chart has a closed form.
+[`recursion.solve`](../api/stochastic/recursion.md#quivers.stochastic.recursion.solve) splits the
+derived hypergraph into strongly connected components and solves each as $M^* b$ or $b N^*$ through
+the semiring's closure ([Semirings, t-norms, and change of base §6](algebras.md#6-capabilities-and-the-status-of-laws))
+[@lehmann1977algebraic], which needs no commutative product. It refuses, with
+[`CyclicRefused`](../api/stochastic/recursion.md#quivers.stochastic.recursion.CyclicRefused), a
+component with an edge that has two premises in it, a component that mixes the two sides under a
+product that does not commute, and a closure that diverges or that rounding cannot decide.
+
+[Plans](../api/stochastic/planning.md#monotone-polynomial-plans) for the monotone polynomial
+contract use decomposed Newton when the product commutes. In algebras embedded in the nonnegative
+reals, the solver certifies the least fixed point with an enclosure. In idempotent algebras with
+a closure, it computes the least fixed point exactly. It refuses a system whose least fixed
+point is certified infinite.
+
+Pruning an item removes its derivations from the sum, and stopping early leaves some
+unprocessed, so neither preserves the chart.
 
 The compiler chooses the agenda from the semiring and the rules: a depth-first agenda for `Boolean`
 when some rule has one premise, semi-naive evaluation for `Boolean` otherwise, and a bottom-up CKY
@@ -691,5 +723,14 @@ same indentation.
 An operation clause with a `=>` body is *authored*. A clause without one is a signature, and its handler
 must say `[implementation=foreign]`, so that a missing body never means "look up a callback at run time".
 A foreign handler's clause behavior is given at run time by a provider, an arrangement close to a
-[foreign function interface](https://en.wikipedia.org/wiki/Foreign_function_interface). The full grammar,
+[foreign function interface](https://en.wikipedia.org/wiki/Foreign_function_interface). In the
+elaborated core, a foreign handler may declare what its clauses compute as data on its declaration,
+[`HandlerDef.foreign`](../api/qiec/effects.md#quivers.qiec.effects.HandlerDef): the enumeration
+of a finite draw, or a semiring sum, a semiring product, or a settlement, each of the last three
+naming its semiring as a [`KernelSemiring`](../api/qiec/foreign.md#quivers.qiec.foreign.KernelSemiring).
+The runtime builds such a handler from that declaration and the laws the semiring establishes,
+never from the handler's name, and refuses a semiring that does not establish the laws the handler
+relies on. The handlers of a deduction $D$ are declared this way: `D__search` sums the derivations,
+`D__collect` multiplies the weights of one derivation, and `D__settle` settles an iteration (§5).
+The full grammar,
 worked examples, and limits are in the [QIEC developer note](../developer/qiec.md).

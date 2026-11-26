@@ -57,7 +57,13 @@ so a module that mixes them has one call graph.
 ## 2. Extraction
 
 `extract_program_schema(compiler)` reads a compiled `Compiler` and returns a `panproto.Schema` with the
-protocol name `qvr_program`. `extract_deduction_schema(compiler)` does the same for deductions.
+protocol name `qvr_program`.
+[`extract_deduction_schema`](../api/dsl/program_theory.md#quivers.dsl.program_theory.extract_deduction_schema)`(compiler)`
+returns a schema in the
+`qvr_deduction` protocol, with a vertex for each deduction, each of its rules, and each premise and
+conclusion pattern. A deduction records its semiring and the status of each law the semiring claims,
+a rule its identity and learnable weight parameter in the deduction's
+[rule presentation](grammar.md#2-rules), and a pattern its judgment.
 
 The extraction caches emitted runtime objects by Python identity, so that two equal components that
 occur separately become two vertices. Otherwise panproto, whose edges form a set, would merge their
