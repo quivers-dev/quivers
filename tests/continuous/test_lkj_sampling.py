@@ -456,7 +456,7 @@ def test_compiled_and_reference_draws_agree_in_distribution(eta: float, d: int) 
     rng = random.Random(SEED)
     reference = torch.tensor(
         [
-            backend.sample("LKJCholesky", {"concentration": eta, "dimension": d}, rng)
+            backend.family_sample("LKJCholesky", {"concentration": eta, "dimension": d}, rng)
             for _ in range(count)
         ],
         dtype=torch.float64,

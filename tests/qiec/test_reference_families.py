@@ -426,18 +426,14 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     ),
     "Transformed": (
         {
-            "base": HostLaw(
-                family="Normal", arguments={"loc": 0.2, "scale": 0.7}
-            ),
+            "base": HostLaw(family="Normal", arguments={"loc": 0.2, "scale": 0.7}),
             "transforms": "exp, sigmoid",
         },
         (0.6, 0.9),
     ),
     "Truncated": (
         {
-            "base": HostLaw(
-                family="Normal", arguments={"loc": 0.5, "scale": 1.5}
-            ),
+            "base": HostLaw(family="Normal", arguments={"loc": 0.5, "scale": 1.5}),
             "low": -1.0,
             "high": 2.0,
         },
@@ -449,9 +445,7 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     ),
     "Restrict": (
         {
-            "base": HostLaw(
-                family="Normal", arguments={"loc": 0.5, "scale": 1.5}
-            ),
+            "base": HostLaw(family="Normal", arguments={"loc": 0.5, "scale": 1.5}),
             "low": -1.0,
             "high": 2.0,
         },
@@ -591,7 +585,10 @@ def test_reference_samples_land_in_the_support(family: str) -> None:
     rng = random.Random(3)
     for _ in range(50):
         draw = backend.family_sample(family, arguments, rng)
-        assert backend.family_log_prob(family, arguments, draw) > -math.inf, (family, draw)
+        assert backend.family_log_prob(family, arguments, draw) > -math.inf, (
+            family,
+            draw,
+        )
 
 
 _MOMENTS: dict[str, tuple[float, float]] = {
@@ -675,9 +672,7 @@ def test_transform_chains_are_the_documented_names() -> None:
     }
     backend = ReferenceBackend()
     arguments = {
-        "base": HostLaw(
-            family="Normal", arguments={"loc": 0.0, "scale": 1.0}
-        ),
+        "base": HostLaw(family="Normal", arguments={"loc": 0.0, "scale": 1.0}),
         "transforms": "cube",
     }
     with pytest.raises(Exception, match="unknown transform"):

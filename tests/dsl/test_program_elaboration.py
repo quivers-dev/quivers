@@ -40,6 +40,7 @@ from quivers.qiec import (
 from quivers.qiec.program_runtime import program_entry, run_program
 from quivers.qiec.types import IndexLiteral, render_static
 from quivers.qiec.kinds import NAT
+from quivers.qiec.numbers import host_value
 
 BETA_BERNOULLI = """\
 object Obs : FinSet 4
@@ -343,7 +344,7 @@ def test_grouped_marginalization_agrees_with_the_torch_runtime_and_closed_form()
         )
     assert run.log_joint == pytest.approx(float(closed), rel=1e-5)
     assert run.log_joint == pytest.approx(classic, rel=1e-5)
-    assert run.value == sites["probs"]
+    assert host_value(run.value) == sites["probs"]
 
 
 def test_a_kernel_morphism_reads_its_parameter_map() -> None:
@@ -451,7 +452,7 @@ def test_a_program_draw_runs_the_program_in_place_under_the_pattern() -> None:
         + td.Normal(0.8, 1.0).log_prob(torch.tensor(1.0))
     )
     assert run.log_joint == pytest.approx(float(expected), rel=1e-6)
-    assert run.value == 1.0
+    assert host_value(run.value) == 1.0
     entry = next(item for item in module.entries if item.name == "main")
     assert [site.name for site in entry.sites] == ["u", "v", "w"]
 
@@ -652,7 +653,7 @@ def test_an_input_without_a_plate_gets_a_static_extent() -> None:
     expected = td.Dirichlet(torch.tensor([1.0, 2.0, 3.0])).log_prob(
         torch.tensor([0.2, 0.3, 0.5])
     )
-    assert run.value == (0.2, 0.3, 0.5)
+    assert host_value(run.value) == (0.2, 0.3, 0.5)
     assert run.log_joint == pytest.approx(expected.item(), rel=1e-6)
     with pytest.raises(KeyError, match="alpha"):
         run_program(module, "prog", data={"alpha": 1.0}, sites={"x": (1.0,)})
@@ -710,7 +711,7 @@ def test_programs_and_computations_call_each_other() -> None:
         - math.log(0.5)
         - 1.5 * math.log(2 * math.pi)
     )
-    assert run.value == 2.35
+    assert host_value(run.value) == 2.35
     assert run.log_joint == pytest.approx(expected)
 
 
@@ -1503,7 +1504,7 @@ def test_an_embedding_fan_and_bundle_elaborate_as_sites() -> None:
         + out.log_prob(bundle, output.unsqueeze(0))
     )
     assert run.log_joint == pytest.approx(float(classic.sum()), rel=1e-5)
-    assert run.value == _nested(output)
+    assert host_value(run.value) == _nested(output)
 
 
 def test_a_stack_copies_its_morphisms_and_a_product_splits_its_input() -> None:
@@ -1693,7 +1694,7 @@ def test_a_scan_recurs_over_a_sequence() -> None:
         )
         previous = states[position]
     assert run.log_joint == pytest.approx(float(closed), rel=1e-5)
-    assert run.value == _nested(states[3])
+    assert host_value(run.value) == _nested(states[3])
     compiled = monadic.log_joint(
         inputs.unsqueeze(0),
         {f"h@{position}": states[position : position + 1] for position in range(4)},
@@ -1799,7 +1800,7 @@ def test_a_scan_step_program_carries_the_cells_inputs() -> None:
     logits = head_weight @ previous + head_bias
     closed = closed + td.Categorical(logits=logits).log_prob(torch.tensor(3))
     assert run.log_joint == pytest.approx(float(closed), rel=1e-5)
-    assert run.value == 3
+    assert host_value(run.value) == 3
 
 
 def test_a_scalar_family_broadcasts_over_a_vector_argument() -> None:

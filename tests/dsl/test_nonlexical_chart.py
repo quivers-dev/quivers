@@ -5,6 +5,8 @@ import math
 import pytest
 import torch
 
+from quivers.qiec.numbers import host_value
+
 from quivers.qiec import dumps, loads
 from quivers.qiec.contracts import FailurePolicy, Unestablished
 from quivers.qiec.execution import ExecutionFailure
@@ -56,7 +58,9 @@ def test_constructor_depth_remains_a_side_condition():
     module = _module(GROW.replace("depth=8", "depth=4"), "Boolean")
     axiom = deduction_item(module, "Grow", "P", deduction_item(module, "Grow", "A"))
     assert (
-        run_deduction(module, "Grow", axioms=[axiom], axiom_weights=[True]).weight
+        host_value(
+            run_deduction(module, "Grow", axioms=[axiom], axiom_weights=[True]).weight
+        )
         is False
     )
 
@@ -202,12 +206,14 @@ deduction Cycle : Term -> Term [semiring=Boolean, start=A]
     rule loop : A |- A
 """)
     assert (
-        run_deduction(
-            module,
-            "Cycle",
-            axioms=[deduction_item(module, "Cycle", "A")],
-            axiom_weights=[True],
-            fuel=10_000,
-        ).weight
+        host_value(
+            run_deduction(
+                module,
+                "Cycle",
+                axioms=[deduction_item(module, "Cycle", "A")],
+                axiom_weights=[True],
+                fuel=10_000,
+            ).weight
+        )
         is True
     )

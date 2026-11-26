@@ -30,12 +30,18 @@ PARAMETERS = {
     "value", [-0.5, 0.5, 1.5, float("nan"), float("inf"), -float("inf")]
 )
 def test_nonintegral_observations_have_no_counting_measure_mass(family, value):
-    assert ReferenceBackend().family_log_prob(family, PARAMETERS[family], value) == -math.inf
+    assert (
+        ReferenceBackend().family_log_prob(family, PARAMETERS[family], value)
+        == -math.inf
+    )
 
 
 @pytest.mark.parametrize("value", [-1.0, 2.0, 3.0])
 def test_bernoulli_rejects_numeric_values_outside_zero_and_one(value):
-    assert ReferenceBackend().family_log_prob("Bernoulli", {"probs": 0.3}, value) == -math.inf
+    assert (
+        ReferenceBackend().family_log_prob("Bernoulli", {"probs": 0.3}, value)
+        == -math.inf
+    )
 
 
 def test_integer_reader_preserves_exact_host_integers_and_boolean_carrier():
@@ -53,7 +59,9 @@ def test_scalar_and_inflated_poisson_share_stable_large_count_scores(count):
         oracle, abs=5e-6
     )
     for family in ("ZeroInflatedPoisson", "HurdlePoisson"):
-        actual = backend.family_log_prob(family, {"zero_prob": 0.2, "rate": count}, count)
+        actual = backend.family_log_prob(
+            family, {"zero_prob": 0.2, "rate": count}, count
+        )
         assert actual == pytest.approx(math.log(0.8) + oracle, abs=5e-6)
     rate = torch.tensor(float(count), dtype=torch.float64, requires_grad=True)
     zero = torch.tensor(0.2, dtype=torch.float64, requires_grad=True)

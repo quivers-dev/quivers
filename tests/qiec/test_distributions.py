@@ -6,7 +6,9 @@ import math
 import random
 
 import pytest
+import torch
 
+from quivers.qiec.numbers import host_value
 from quivers.qiec import (
     BOOL,
     INT,
@@ -20,6 +22,7 @@ from quivers.qiec import (
     ReferenceBackend,
     Return,
     HostLaw,
+    RuntimeDistribution,
     SiteValue,
     TensorValue,
     TupleValue,
@@ -76,9 +79,12 @@ def _normal(loc: float = 0.0, scale: float = 1.0) -> DistributionValue:
 def test_a_scalar_family_infers_its_sampleable_type() -> None:
     assert infer_value(_normal(), KernelRegistry()) == sampleable_type(REAL)
     value = Evaluator().evaluate(Return(value=_normal(1.0, 2.0)))
-    assert isinstance(value, HostLaw)
+    assert isinstance(value, RuntimeDistribution)
     assert value.family == "Normal"
-    assert dict(value.arguments) == {"loc": 1.0, "scale": 2.0}
+    assert {name: float(item) for name, item in value.arguments.items()} == {
+        "loc": 1.0,
+        "scale": 2.0,
+    }
 
 
 def test_a_vector_family_takes_its_event_shape_from_its_source_parameter() -> None:
@@ -310,9 +316,9 @@ def test_log_density_evaluates_through_the_reference_backend() -> None:
 def test_reference_densities_match_closed_forms(
     name: str, arguments: dict[str, object], point: object, expected: float
 ) -> None:
-    assert HostLaw(family=name, arguments=arguments).log_prob(
-        point
-    ) == pytest.approx(expected)
+    assert HostLaw(family=name, arguments=arguments).log_prob(point) == pytest.approx(
+        expected
+    )
 
 
 def test_reference_samples_land_in_the_support_and_are_seeded() -> None:
@@ -325,33 +331,25 @@ def test_reference_samples_land_in_the_support_and_are_seeded() -> None:
     ]
     assert all(0.0 < draw < 1.0 for draw in draws)
     assert (
-        HostLaw(
-            family="Categorical", arguments={"probs": (0.0, 1.0)}
-        ).sample(rng)
-        == 1
+        HostLaw(family="Categorical", arguments={"probs": (0.0, 1.0)}).sample(rng) == 1
     )
-    assert (
-        HostLaw(family="Bernoulli", arguments={"probs": 1.0}).sample(rng)
-        is True
-    )
+    assert HostLaw(family="Bernoulli", arguments={"probs": 1.0}).sample(rng) is True
     simplex = HostLaw(
         family="Dirichlet", arguments={"concentration": (1.0, 2.0, 3.0)}
     ).sample(rng)
     assert sum(simplex) == pytest.approx(1.0)  # type: ignore[arg-type]
-    first = HostLaw(
-        family="Normal", arguments={"loc": 0.0, "scale": 1.0}
-    ).sample(random.Random(9))
-    second = HostLaw(
-        family="Normal", arguments={"loc": 0.0, "scale": 1.0}
-    ).sample(random.Random(9))
+    first = HostLaw(family="Normal", arguments={"loc": 0.0, "scale": 1.0}).sample(
+        random.Random(9)
+    )
+    second = HostLaw(family="Normal", arguments={"loc": 0.0, "scale": 1.0}).sample(
+        random.Random(9)
+    )
     assert first == second
 
 
 def test_unknown_families_and_bad_parameters_are_reported() -> None:
     with pytest.raises(DistributionError, match="cannot sample Unheard"):
-        HostLaw(family="Unheard", arguments={"df": 3.0}).sample(
-            random.Random(0)
-        )
+        HostLaw(family="Unheard", arguments={"df": 3.0}).sample(random.Random(0))
     with pytest.raises(DistributionError, match="cannot score Unheard"):
         HostLaw(family="Unheard", arguments={"df": 3.0}).log_prob(1.0)
     with pytest.raises(
@@ -369,24 +367,28 @@ def test_unknown_families_and_bad_parameters_are_reported() -> None:
 
 def test_a_backend_can_be_installed_and_restored() -> None:
     class Constant:
-        def sample(self, family: str, arguments, rng) -> object:
-            return 42.0
+        @property
+        def differentiable(self) -> bool:
+            return False
 
-        def log_prob(self, family: str, arguments, value: object) -> float:
-            return -1.0
+        def sample(self, distribution, rng) -> object:
+            return torch.tensor(42.0, dtype=distribution.numbers.real_dtype)
+
+        def log_prob(self, distribution, value, keep_batch) -> torch.Tensor:
+            return torch.tensor(-1.0, dtype=distribution.numbers.real_dtype)
+
+        def log_mass(self, distribution, batch_axes) -> torch.Tensor:
+            return torch.tensor(0.0, dtype=distribution.numbers.real_dtype)
 
     previous = install_distribution_backend(Constant())
     try:
         assert isinstance(previous, ReferenceBackend)
         assert distribution_backend().__class__ is Constant
-        assert (
-            HostLaw(family="Wishart", arguments={"df": 3.0}).sample()
-            == 42.0
-        )
-        assert (
-            HostLaw(family="Wishart", arguments={"df": 3.0}).log_prob(0.0)
-            == -1.0
-        )
+        value = Evaluator().evaluate(Return(value=_normal(1.0, 2.0)))
+        assert isinstance(value, RuntimeDistribution)
+        assert value.backend.__class__ is Constant
+        assert float(value.sample()) == 42.0
+        assert float(value.log_prob(torch.tensor(0.0))) == -1.0
     finally:
         install_distribution_backend(previous)
     assert distribution_backend() is previous
@@ -428,7 +430,10 @@ def test_tensor_literals_type_check_evaluate_and_serialize() -> None:
         ),
     )
     assert infer_value(matrix, registry) == matrix.result_type
-    assert Evaluator().evaluate(Return(value=matrix)) == ((1.0, 2.0), (3.0, 4.0))
+    assert host_value(Evaluator().evaluate(Return(value=matrix))) == (
+        (1.0, 2.0),
+        (3.0, 4.0),
+    )
     assert loads(dumps(Return(value=matrix))) == Return(value=matrix)
     dirichlet = DistributionValue(
         family=family("Dirichlet").id,

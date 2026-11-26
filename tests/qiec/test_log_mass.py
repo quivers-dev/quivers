@@ -31,6 +31,7 @@ from quivers.qiec.terms import PlateAxis, PlateShape
 from quivers.qiec.types import IndexLiteral
 from quivers.qiec.types import IndexVariable
 from quivers.qiec.substitution import StaticSubstitution, substitute_value
+from quivers.qiec.numbers import host_value
 
 
 ORIGIN = SourceOrigin(
@@ -66,7 +67,7 @@ def test_total_and_batched_queries_check_and_roundtrip():
     )
     for term, expected in ((total, 0.0), (batched, (0.0, 0.0))):
         assert loads(dumps(Return(value=term))) == Return(value=term)
-        assert Evaluator().evaluate(Return(value=term)) == expected
+        assert host_value(Evaluator().evaluate(Return(value=term))) == expected
     with pytest.raises(KernelError, match="batch axes"):
         infer_value(total.with_(batch=(event,)), KernelRegistry())
     with pytest.raises(KernelError, match="takes a Sampleable"):
@@ -88,7 +89,7 @@ def test_mass_substitution_preserves_origin_and_specializes_both_axis_records():
     assert actual.origin == ORIGIN
     assert actual.batch == actual.sampleable.plate.batch
     assert actual.batch[0].size.value == 2
-    assert Evaluator().evaluate(Return(value=actual)) == (0.0, 0.0)
+    assert host_value(Evaluator().evaluate(Return(value=actual))) == (0.0, 0.0)
 
 
 @pytest.mark.parametrize("retained,expected_shape", [(0, ()), (1, (2,)), (2, (2, 2))])
@@ -131,9 +132,7 @@ def test_reference_mass_preserves_requested_batch_prefix_and_sums_events(
 
 @pytest.mark.parametrize("rank", [-1, 3, True, 1.5])
 def test_reference_mass_rejects_invalid_retained_rank(rank):
-    measure = HostLaw(
-        family="Normal", arguments={"loc": 0.0, "scale": 1.0}, batch=(2,)
-    )
+    measure = HostLaw(family="Normal", arguments={"loc": 0.0, "scale": 1.0}, batch=(2,))
     with pytest.raises(ValueError, match="batch rank"):
         measure.log_mass(batch_axes=rank)
 
@@ -146,8 +145,8 @@ define normalized() : LogWeight !{} =
     return log_mass(Normalize(Restrict(Uniform(0.0, 1.0), 0.2, 0.7)))
 """
     module = lower_qvr_to_qiec(parse(source), file_path="mass.qvr")
-    assert run_named(module, "mass").value == pytest.approx(math.log(0.5))
-    assert run_named(module, "normalized").value == 0.0
+    assert host_value(run_named(module, "mass").value) == pytest.approx(math.log(0.5))
+    assert host_value(run_named(module, "normalized").value) == 0.0
 
 
 @pytest.mark.parametrize(

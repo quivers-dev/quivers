@@ -20,6 +20,7 @@ from quivers.qiec import (
     LiteralValue,
     Return,
     HostLaw,
+    RuntimeDistribution,
     dumps,
     loads as load_qiec,
     family,
@@ -94,7 +95,7 @@ def test_checked_reference_batch_event_partition_and_wire_roundtrip(shape, count
     assert infer_value(term, KernelRegistry()) == term.result_type
     assert load_qiec(dumps(Return(value=term))) == Return(value=term)
     runtime = Evaluator().evaluate(Return(value=term))
-    assert isinstance(runtime, HostLaw)
+    assert isinstance(runtime, RuntimeDistribution)
     assert runtime.batch == tuple(a.size.value for a in batch)
     values = (
         torch.arange(math.prod(shape) or 1, dtype=torch.float64).reshape(shape) / 10
@@ -102,12 +103,14 @@ def test_checked_reference_batch_event_partition_and_wire_roundtrip(shape, count
     expected = torch.distributions.Independent(
         torch.distributions.Normal(torch.zeros(shape), torch.ones(shape)), count
     ).log_prob(values)
-    actual = runtime.log_prob(_tuples(values.tolist()), keep_batch=True)
-    torch.testing.assert_close(torch.tensor(actual, dtype=torch.float64), expected)
-    assert runtime.log_mass(batch_axes=len(batch)) == (
-        0.0 if not batch else _tuples(torch.zeros(runtime.batch).tolist())
+    actual = runtime.log_prob(values, keep_batch=True)
+    real = runtime.numbers.real_dtype
+    torch.testing.assert_close(actual, expected.to(real))
+    torch.testing.assert_close(
+        runtime.log_mass(batch_axes=len(batch)), torch.zeros(runtime.batch, dtype=real)
     )
-    sample = torch.tensor(runtime.sample(random.Random(4)))
+    sample = runtime.sample(random.Random(4))
+    assert isinstance(sample, torch.Tensor)
     assert sample.shape == shape
 
 

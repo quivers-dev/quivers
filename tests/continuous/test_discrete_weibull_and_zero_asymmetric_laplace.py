@@ -301,11 +301,11 @@ def test_checked_reference_density_and_sampling_follow_independent_law(
     )
     law = cls(**{k: _double(v) for k, v in parameters.items()})
     for point in points:
-        assert backend.log_prob(name, parameters, point) == pytest.approx(
+        assert backend.family_log_prob(name, parameters, point) == pytest.approx(
             law.log_prob(_double(point)).item(), abs=2e-13
         )
     rng = random.Random(7)
-    draws = np.asarray([backend.sample(name, parameters, rng) for _ in range(5000)])
+    draws = np.asarray([backend.family_sample(name, parameters, rng) for _ in range(5000)])
     if name == "DiscreteWeibull":
         assert np.mean(draws <= 1) == pytest.approx(
             law.cdf(_double(1)).item(), abs=0.025

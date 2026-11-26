@@ -171,7 +171,7 @@ def test_fixed_mixed_inline_and_reference_execution_agree(name, parameters, base
             if point == 0
             else math.log1p(-parameters[0]) + base.logpdf(point)
         )
-        assert backend.log_prob(name, arguments, point) == pytest.approx(expected)
+        assert backend.family_log_prob(name, arguments, point) == pytest.approx(expected)
         source = f"object Row : FinSet {rows}\nprogram model : Row -> Row\n    observe y : Row <- {name}({', '.join(f'{name}={value}' for name, value in zip(fields, parameters, strict=True))})\n    return y\nexport model\n"
         program = loads(source).morphism
         recorded = trace(
@@ -197,7 +197,7 @@ def test_fixed_mixed_inline_and_reference_execution_agree(name, parameters, base
         )
     generator = random.Random(17)
     samples = np.array(
-        [backend.sample(name, arguments, generator) for _ in range(10000)]
+        [backend.family_sample(name, arguments, generator) for _ in range(10000)]
     )
     mean = (1 - parameters[0]) * base.mean()
     variance = (1 - parameters[0]) * base.var() + parameters[0] * (
@@ -208,8 +208,8 @@ def test_fixed_mixed_inline_and_reference_execution_agree(name, parameters, base
         endpoint = arguments | {"zero_prob": probability}
         valid_point = 0.5 if probability == 0 else 0.0
         expected = base.logpdf(valid_point) if probability == 0 else 0.0
-        assert backend.log_prob(name, endpoint, valid_point) == pytest.approx(expected)
+        assert backend.family_log_prob(name, endpoint, valid_point) == pytest.approx(expected)
         assert (
-            backend.log_prob(name, endpoint, 0.0 if probability == 0 else 0.5)
+            backend.family_log_prob(name, endpoint, 0.0 if probability == 0 else 0.5)
             == -math.inf
         )

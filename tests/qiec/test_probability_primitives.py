@@ -10,8 +10,34 @@ from scipy.special import log_ndtr
 from quivers.dsl import loads
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.inference.trace import trace
+from quivers.qiec.numbers import NumberDomain
 from quivers.qiec.primitives import IMPLEMENTATIONS, primitive
 from quivers.qiec.types import REAL
+
+
+def _machine(name: str, *arguments: float | bool) -> float:
+    """Apply a primitive of the reference machine to host numbers.
+
+    Parameters
+    ----------
+    name : str
+        The primitive.
+    *arguments : float | bool
+        Host numbers, made ``float64`` tensors (a truth value a ``bool``
+        tensor) as the machine holds them.
+
+    Returns
+    -------
+    float
+        The result.
+    """
+    tensors = [
+        torch.tensor(argument)
+        if isinstance(argument, bool)
+        else torch.tensor(argument, dtype=torch.float64)
+        for argument in arguments
+    ]
+    return float(IMPLEMENTATIONS[name](NumberDomain(), *tensors))
 
 
 @pytest.mark.parametrize(
@@ -45,9 +71,7 @@ def test_probability_primitives_have_checked_scalar_signatures(name):
 )
 def test_normal_logcdf_standard_library_reference_matches_scipy(x):
     expected = float(log_ndtr(x))
-    assert IMPLEMENTATIONS["log_ndtr"](x) == pytest.approx(
-        expected, rel=4e-15, abs=2e-16
-    )
+    assert _machine("log_ndtr", x) == pytest.approx(expected, rel=4e-15, abs=2e-16)
 
 
 @pytest.mark.parametrize(
@@ -74,7 +98,7 @@ def test_normal_logcdf_standard_library_reference_matches_scipy(x):
 )
 def test_reference_and_eager_endpoint_values(name, values, expected):
     np.testing.assert_allclose(
-        [IMPLEMENTATIONS[name](x) for x in values], expected, rtol=1e-14
+        [_machine(name, x) for x in values], expected, rtol=1e-14
     )
     actual = EAGER_BUILTINS[name](torch.tensor(values, dtype=torch.double))
     np.testing.assert_allclose(actual, expected, rtol=1e-14)
@@ -101,7 +125,7 @@ def test_domains_match_in_reference_eager_scalar_and_tensor(name, value):
         with pytest.raises(ValueError):
             EAGER_BUILTINS[name](argument)
     with pytest.raises(ValueError):
-        IMPLEMENTATIONS[name](value)
+        _machine(name, value)
 
 
 @pytest.mark.parametrize(
@@ -154,7 +178,7 @@ export model
 """
     compiled = loads(source)
     result = compiled.run("f", value)
-    expected = IMPLEMENTATIONS[name](value)
+    expected = _machine(name, value)
     assert result.value == pytest.approx(expected)
     recorded = trace(compiled.morphism, torch.zeros(1, 1, dtype=torch.double))
     actual = recorded.output
@@ -166,7 +190,7 @@ export model
 )
 def test_positive_parameter_has_strict_finite_real_domain(value):
     with pytest.raises(ValueError):
-        IMPLEMENTATIONS["positive_parameter"](value)
+        _machine("positive_parameter", value)
     with pytest.raises(ValueError):
         EAGER_BUILTINS["positive_parameter"](value)
     with pytest.raises(ValueError):
@@ -177,7 +201,7 @@ def test_positive_parameter_retains_tensor_identity_and_derivatives():
     value = torch.tensor([0.01, 1.0, 10.0], dtype=torch.double, requires_grad=True)
     assert EAGER_BUILTINS["positive_parameter"](value) is value
     for item in value.detach().tolist():
-        assert IMPLEMENTATIONS["positive_parameter"](item) == item
+        assert _machine("positive_parameter", item) == item
     fn = EAGER_BUILTINS["positive_parameter"]
     assert torch.autograd.gradcheck(fn, (value,), check_forward_ad=True)
     assert torch.autograd.gradgradcheck(fn, (value,))

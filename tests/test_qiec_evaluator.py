@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+import torch
 
 from quivers.qiec.checking import KernelError, KernelRegistry, infer_computation
 from quivers.qiec.builtins import (
@@ -143,6 +144,21 @@ def _attach_handler(
 
 
 def _int(value: object) -> bool:
+    """Whether a value is an integer, as a host clause or the machine holds it.
+
+    Parameters
+    ----------
+    value : object
+        The value.
+
+    Returns
+    -------
+    bool
+        A Python integer that is no truth value, or a scalar ``int64``
+        tensor.
+    """
+    if isinstance(value, torch.Tensor):
+        return value.dtype == torch.int64 and value.dim() == 0
     return isinstance(value, int) and not isinstance(value, bool)
 
 

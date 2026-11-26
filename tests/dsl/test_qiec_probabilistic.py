@@ -24,6 +24,7 @@ from quivers.qiec import (
 from quivers.qiec.builtins import RANDOM, SCORE
 from quivers.qiec.kinds import NatSort
 from quivers.qiec.types import IndexLiteral
+from quivers.qiec.numbers import host_value
 
 _MODEL = """\
 instance random : Random
@@ -89,7 +90,7 @@ def test_a_sampled_and_scored_model_runs_on_the_reference_machine() -> None:
     first = run_named(module, "run", (1.5,), runtime=_RUNTIME)
     seed_reference_rng(7)
     second = run_named(module, "run", (1.5,), runtime=_RUNTIME)
-    assert first.value == second.value
+    assert host_value(first.value) == second.value
     x, weight = first.value  # type: ignore[misc]
     expected = -0.5 * (x / 2.0) ** 2 - math.log(2.0) - 0.5 * math.log(2 * math.pi)
     assert weight == pytest.approx(expected)
@@ -133,7 +134,7 @@ def test_an_annotated_binding_types_a_site() -> None:
         "    return s\n"
     )
     module = lower_qvr_to_qiec(parse(source), file_path="probe.qvr")
-    assert run_named(module, "probe").value == "count"
+    assert host_value(run_named(module, "probe").value) == "count"
 
 
 def test_list_literals_lower_to_tensors_and_fix_event_shapes() -> None:
@@ -161,10 +162,10 @@ define correlation() : Sampleable[Tensor[Real]([3, 3])] !{} =
     return LKJCholesky(2.0)
 """
     module = lower_qvr_to_qiec(parse(source), file_path="tensors.qvr")
-    assert run_named(module, "matrix").value == ((1.0, 2.0), (3.0, 4.0))
-    assert run_named(module, "counts").value == (1, 2, 3)
-    assert run_named(module, "mixed").value == (1.0, 2.5)
-    assert run_named(module, "scored").value == pytest.approx(math.log(0.8))
+    assert host_value(run_named(module, "matrix").value) == ((1.0, 2.0), (3.0, 4.0))
+    assert host_value(run_named(module, "counts").value) == (1, 2, 3)
+    assert host_value(run_named(module, "mixed").value) == (1.0, 2.5)
+    assert host_value(run_named(module, "scored").value) == pytest.approx(math.log(0.8))
     simplex = next(item for item in module.computations if item.name == "simplex")
     assert simplex.type.result == sampleable_type(
         tensor_type(REAL, (IndexLiteral(value=3, sort=NatSort()),))

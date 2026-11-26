@@ -19,6 +19,7 @@ from quivers.qiec import (
     run_program,
     tensor_shape,
 )
+from quivers.qiec.numbers import host_value
 
 IDENTITY = """define padded[n : Nat](x : Tensor[Real]([nat_add(n, 1)])) : Tensor[Real]([nat_add(1, n)]) !{} =
     return x
@@ -45,9 +46,11 @@ def test_source_fixed_point_core_serialization_and_closed_runtime_static_sum():
     )
     for static in ("n=2", "n=nat_add(1, 1)"):
         arguments = parse_static_arguments(module, "padded", (static,))
-        assert run_named(
-            module, "padded", ((1.0, 2.0, 3.0),), static_arguments=arguments
-        ).value == (1.0, 2.0, 3.0)
+        assert host_value(
+            run_named(
+                module, "padded", ((1.0, 2.0, 3.0),), static_arguments=arguments
+            ).value
+        ) == (1.0, 2.0, 3.0)
     with pytest.raises(ExecutionFailure, match="type|shape|Tensor|length"):
         run_named(module, "padded", ((1.0, 2.0),), static_arguments=arguments)
 
@@ -133,7 +136,7 @@ define tag() : Tagged(nat_add(Leaf, Leaf)) !{} =
     compiler.compile()
     module = compiler.qiec_module
     assert loads(dumps(module)) == module
-    assert run_named(module, "tag").value is not None
+    assert host_value(run_named(module, "tag").value) is not None
 
 
 def test_global_inferred_finite_object_can_be_solved_from_an_affine_input_shape():

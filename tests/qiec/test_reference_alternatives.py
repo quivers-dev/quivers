@@ -236,7 +236,10 @@ def test_a_wishart_scale_factor_sets_the_mean_it_names() -> None:
     backend = ReferenceBackend()
     draws = [
         _tensor(
-            cast(Host, backend.family_sample("Wishart", {"df": 4.0, "scale_tril": _L}, rng))
+            cast(
+                Host,
+                backend.family_sample("Wishart", {"df": 4.0, "scale_tril": _L}, rng),
+            )
         )
         for _ in range(4000)
     ]

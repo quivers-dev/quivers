@@ -205,11 +205,11 @@ def test_reference_backend_scores_and_samples_official_parameterization(
 
     backend = ReferenceBackend()
     for point in [0.05, 0.4, 2.0, 20.0]:
-        assert backend.log_prob(family, parameters, point) == pytest.approx(
+        assert backend.family_log_prob(family, parameters, point) == pytest.approx(
             reference.logpdf(point), abs=1e-10
         )
     rng = random.Random(18)
-    draws = np.array([backend.sample(family, parameters, rng) for _ in range(30000)])
+    draws = np.array([backend.family_sample(family, parameters, rng) for _ in range(30000)])
     assert draws.mean() == pytest.approx(reference.mean(), abs=0.04)
     assert draws.var() == pytest.approx(reference.var(), abs=0.06)
 

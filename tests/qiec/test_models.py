@@ -29,7 +29,8 @@ from quivers.qiec import (
 from quivers.qiec._models import QiecModel, validate_shape
 from quivers.qiec.serialization import SerializationError, dumps, loads
 from quivers.qiec.entries import EntryPoint, EntryRun
-from quivers.qiec.distributions import HostLaw
+from quivers.qiec.distributions import ReferenceBackend, RuntimeDistribution
+from quivers.qiec.numbers import NumberDomain
 from quivers.qiec.execution import ExecutionResult
 from quivers.qiec.program_runtime import DeductionRun, ProgramRun
 
@@ -162,7 +163,7 @@ def test_runtime_results_retain_live_values_and_gradients() -> None:
     result = ExecutionResult(
         computation="test", value=value, result_type=REAL, runtime="core", trace=()
     )
-    program = ProgramRun(value=value, log_joint=1.0, result=result)
+    program = ProgramRun(value=value, log_joint=value, result=result)
     deduction = DeductionRun(weight=value, result=result)
     entry = EntryPoint(
         name="test",
@@ -174,7 +175,7 @@ def test_runtime_results_retain_live_values_and_gradients() -> None:
         sites=(),
     )
     invocation = EntryRun(entry=entry, value=value, log_joint=None, result=result)
-    assert program.with_(log_joint=2.0).value is value
+    assert program.with_(log_joint=value * 2.0).value is value
     assert copy.copy(deduction).weight is value
     assert invocation.with_(value={"nested": (value,)}).value["nested"][0] is value
     assert all(item.result is result for item in (program, deduction, invocation))
@@ -190,10 +191,14 @@ def test_runtime_distribution_owns_parameters_without_detaching_tensors() -> Non
     """Mapping snapshots retain live tensors and validate replacement ranks."""
     parameter = torch.tensor(2.0, dtype=torch.float64, requires_grad=True)
     value = parameter * 3.0
-    arguments = {"loc": value, "scale": 1.0}
+    arguments = {"loc": value, "scale": torch.tensor(1.0, dtype=torch.float64)}
     ranks = {"loc": 0, "scale": 0}
-    distribution = HostLaw(
-        family="Normal", arguments=arguments, ranks=ranks
+    distribution = RuntimeDistribution(
+        backend=ReferenceBackend(),
+        numbers=NumberDomain(),
+        family="Normal",
+        arguments=arguments,
+        ranks=ranks,
     )
     arguments["loc"] = -1.0
     ranks["loc"] = 7

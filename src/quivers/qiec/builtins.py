@@ -2829,7 +2829,9 @@ def settlement_handler(
             raise InvalidHandlerError(
                 "a stop carries its value, whether it is certified, and its residual"
             ) from error
-        report = settlement_report(contract, established, host_real(residual))
+        report = settlement_report(
+            contract, established, host_real(residual, "a settlement's residual")
+        )
         settled = settle(contract, value, report)
         if isinstance(settled, Unestablished):
             assert reports is not None

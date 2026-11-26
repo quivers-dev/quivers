@@ -273,18 +273,18 @@ def test_reference_density_and_sampling_agree_with_independent_count_oracles(
     named = dict(zip(cls.arg_constraints, parameters, strict=True))
     for value in range(10):
         expected = _oracle(cls, parameters, base, np.asarray(value)).item()
-        actual = backend.log_prob(cls.__name__, named, value)
+        actual = backend.family_log_prob(cls.__name__, named, value)
         assert actual == pytest.approx(
             math.log(expected) if expected else -math.inf, abs=3e-12
         )
     rng = random.Random(712)
-    samples = np.array([backend.sample(cls.__name__, named, rng) for _ in range(12000)])
+    samples = np.array([backend.family_sample(cls.__name__, named, rng) for _ in range(12000)])
     mean = cls(
         *(torch.tensor(value, dtype=torch.float64) for value in parameters)
     ).mean.item()
     assert abs(samples.mean() - mean) < 6 * math.sqrt(samples.var() / samples.size)
     for invalid in (-1, 0.5, float("nan")):
-        assert backend.log_prob(cls.__name__, named, invalid) == -math.inf
+        assert backend.family_log_prob(cls.__name__, named, invalid) == -math.inf
 
 
 @pytest.mark.parametrize(
@@ -360,7 +360,7 @@ def test_reference_hurdle_tiny_parameters_remain_finite_and_normalized(
     backend = ReferenceBackend()
     arguments = {"zero_prob": 0.2, "total_count": shape, "probs": probability}
     for count in (0, 1, 2, 10):
-        actual = backend.log_prob("HurdleNegativeBinomial", arguments, count)
+        actual = backend.family_log_prob("HurdleNegativeBinomial", arguments, count)
         assert actual == pytest.approx(
             law.log_prob(torch.tensor(count)).item(), abs=3e-12
         )
@@ -585,13 +585,13 @@ def test_scalar_reference_large_count_densities_match_high_precision_oracles(
     n, binomial_logmass, beta_binomial_logmass, poisson_logmass
 ):
     backend = ReferenceBackend()
-    assert backend.log_prob(
+    assert backend.family_log_prob(
         "Binomial", dict(total_count=n, probs=0.5), n // 2
     ) == pytest.approx(binomial_logmass, abs=8e-14)
-    assert backend.log_prob("Poisson", dict(rate=n), n) == pytest.approx(
+    assert backend.family_log_prob("Poisson", dict(rate=n), n) == pytest.approx(
         poisson_logmass, abs=8e-14
     )
-    assert backend.log_prob(
+    assert backend.family_log_prob(
         "BetaBinomial",
         dict(total_count=n, concentration1=1.7, concentration0=2.3),
         n // 2,
@@ -604,7 +604,7 @@ def test_scalar_reference_large_count_densities_match_high_precision_oracles(
             beta_binomial_logmass,
         ),
     ]:
-        assert backend.log_prob(
+        assert backend.family_log_prob(
             family, dict(zero_prob=0.3, **arguments), n // 2
         ) == pytest.approx(expected + math.log(0.7), abs=8e-14)
 
@@ -613,11 +613,11 @@ def test_scalar_reference_large_real_negative_binomial_shape_density():
     backend = ReferenceBackend()
     expected = -5.524117052526595
     arguments = dict(total_count=1e16, probs=1e-12)
-    assert backend.log_prob("NegativeBinomial", arguments, 10000) == pytest.approx(
+    assert backend.family_log_prob("NegativeBinomial", arguments, 10000) == pytest.approx(
         expected, abs=2e-12
     )
     for family in ("ZeroInflatedNegativeBinomial", "HurdleNegativeBinomial"):
-        assert backend.log_prob(
+        assert backend.family_log_prob(
             family, dict(zero_prob=0.3, **arguments), 10000
         ) == pytest.approx(expected + math.log(0.7), abs=2e-12)
 
@@ -637,7 +637,7 @@ def test_reference_large_rate_sampling_uses_constant_work_gamma_poisson(
     backend = ReferenceBackend()
     rng = random.Random(417)
     arguments = dict(zero_prob=0.0, total_count=1e16, probs=1e-12)
-    draws = np.array([backend.sample(family, arguments, rng) for _ in range(2000)])
+    draws = np.array([backend.family_sample(family, arguments, rng) for _ in range(2000)])
     assert draws.mean() == pytest.approx(10000.0, abs=10.0)
     assert np.all(draws > 0)
 
@@ -761,10 +761,10 @@ def test_reference_sampling_refuses_unrepresentable_intensities(family, argument
     from quivers.qiec.reference_support import DistributionError
 
     with pytest.raises(DistributionError, match=r"2\*\*53"):
-        ReferenceBackend().sample(family, arguments, random.Random(71))
+        ReferenceBackend().family_sample(family, arguments, random.Random(71))
     if "zero_prob" in arguments:
         assert (
-            ReferenceBackend().sample(
+            ReferenceBackend().family_sample(
                 family, dict(arguments, zero_prob=1.0), random.Random(71)
             )
             == 0
@@ -783,7 +783,7 @@ def test_reference_large_mean_sampling_uses_correct_constant_work_law(family):
     if family in ("ZeroInflatedPoisson", "HurdlePoisson"):
         arguments["zero_prob"] = 0.0
     rng = random.Random(24)
-    draws = [ReferenceBackend().sample(family, arguments, rng) for _ in range(2000)]
+    draws = [ReferenceBackend().family_sample(family, arguments, rng) for _ in range(2000)]
     assert np.mean(draws) == pytest.approx(10000.0, abs=10.0)
 
 

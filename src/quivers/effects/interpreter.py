@@ -89,6 +89,7 @@ from quivers.qiec.builtins import (
     score_handler,
 )
 from quivers.qiec.effects import EffectRequest, EffectRow, HandlerDef
+from quivers.qiec.numbers import host_index
 from quivers.qiec.evaluator import (
     ClauseContext,
     Evaluator,
@@ -1903,8 +1904,7 @@ class _HostSteps:
         spec = step.spec
         assert isinstance(spec, Scan)
         env = _environment(step, argument)
-        visited = env[SCAN_POSITION]
-        assert isinstance(visited, int)
+        visited = host_index(env[SCAN_POSITION], "a scan's position")
         sequence = _sequence(spec, env[SCAN_SEQUENCE])
         position = int(sequence.shape[1]) - 1 - visited if spec.reverse else visited
         return sequence[:, position]

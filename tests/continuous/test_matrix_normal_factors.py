@@ -92,19 +92,19 @@ def test_reference_scores_and_seeded_draws_share_all_four_parameterizations(
     value = ((0.4, -0.1, 0.7), (-0.2, 0.8, 0.3))
     host = {name: tensor.tolist() for name, tensor in args.items()}
     backend = ReferenceBackend()
-    assert backend.log_prob("MatrixNormal", host, value) == pytest.approx(
+    assert backend.family_log_prob("MatrixNormal", host, value) == pytest.approx(
         float(MatrixNormal(**args).log_prob(torch.tensor(value, dtype=torch.double))),
         abs=1e-12,
     )
     canonical, _, _ = _parameters(False, False)
-    expected = backend.sample(
+    expected = backend.family_sample(
         "MatrixNormal",
         {name: value.tolist() for name, value in canonical.items()},
         random.Random(74),
     )
     torch.testing.assert_close(
         torch.tensor(
-            backend.sample("MatrixNormal", host, random.Random(74)), dtype=torch.double
+            backend.family_sample("MatrixNormal", host, random.Random(74)), dtype=torch.double
         ),
         torch.tensor(expected, dtype=torch.double),
         atol=1e-15,
@@ -149,7 +149,7 @@ def test_invalid_factor_contracts_match_reference(bad):
     with pytest.raises(ValueError):
         MatrixNormal(**args)
     with pytest.raises(ValueError):
-        ReferenceBackend().log_prob(
+        ReferenceBackend().family_log_prob(
             "MatrixNormal",
             {key: value.tolist() for key, value in args.items()},
             ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),

@@ -28,6 +28,7 @@ from quivers.qiec import QiecModule, dumps, loads
 from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.program_runtime import program_entry, run_program
 from quivers.modeling import Model
+from quivers.qiec.numbers import host_value
 
 HEAD = "object Row : FinSet 3\nobject Out : Real 1\n"
 TENSOR_SUB = """program sub[A : FinSet](x : Tensor[Real]([A]), s : Real) : Row -> Out
@@ -60,7 +61,7 @@ def test_returned_input_and_duplicate_return_values(
         + f"program main : Row -> Out\n    sample {pattern} <- sub(2.0)\n    return {output}\nexport main\n"
     )
     run = run_program(_module(source), "main", data={}, sites={})
-    assert run.value == result
+    assert host_value(run.value) == result
     assert run.log_joint == 0.0
 
 
@@ -82,7 +83,7 @@ export main
         -math.log(0.5 * math.sqrt(2.0 * math.pi)) - 0.5 * ((y - x) / 0.5) ** 2
         for x, y in zip(means, values, strict=True)
     )
-    assert run.value == values
+    assert host_value(run.value) == values
     assert run.log_joint == pytest.approx(expected)
     assert [
         axis.size.value for axis in program_entry(module, "main").sites[0].batch
@@ -107,7 +108,7 @@ export main
     run = run_program(
         module, "main", data={"features": (1.0, 2.0, 3.0)}, sites={"y": (1.0, 2.0, 3.0)}
     )
-    assert run.value == (1.0, 2.0, 3.0)
+    assert host_value(run.value) == (1.0, 2.0, 3.0)
 
 
 @pytest.mark.parametrize(
@@ -186,7 +187,7 @@ export main
         data={"data": (1.0, 2.0, 3.0)},
         sites={"y": (1.0, 2.0, 3.0)},
     )
-    assert run.value == (1.0, 2.0, 3.0)
+    assert host_value(run.value) == (1.0, 2.0, 3.0)
 
 
 def test_static_binders_keep_authored_interleaving() -> None:
@@ -336,7 +337,9 @@ export main
     )
     module = _module(source)
     assert program_entry(module, "main").parameters[0].constraint == "nonnegative"
-    assert run_program(module, "main", data={"count": 2}, sites={}).value == 2
+    assert (
+        host_value(run_program(module, "main", data={"count": 2}, sites={}).value) == 2
+    )
 
 
 def test_native_runtime_tensor_subprogram_matches_the_checked_reference() -> None:
@@ -396,7 +399,7 @@ export main
     run = run_program(
         module, "main", data={"features": (1.0, 2.0, 3.0)}, sites={"y": (1.0, 2.0, 3.0)}
     )
-    assert run.value == (1.0, 2.0, 3.0)
+    assert host_value(run.value) == (1.0, 2.0, 3.0)
     assert program_entry(module, "main").telescope == ()
     value = torch.tensor((1.0, 2.0, 3.0))
     torch.testing.assert_close(
@@ -428,7 +431,10 @@ def test_runtime_arguments_use_declared_value_types(
         + subprogram
         + f"program main : Row -> Out\n    sample y <- {application}\n    return y\nexport main\n"
     )
-    assert run_program(_module(source), "main", data={}, sites={}).value == expected
+    assert (
+        host_value(run_program(_module(source), "main", data={}, sites={}).value)
+        == expected
+    )
 
 
 @pytest.mark.parametrize("kind", ["FinSet", "Nat"])
@@ -449,9 +455,14 @@ export main
     )
     source = source.replace("sub[A : FinSet]", f"sub[A : {kind}]")
     module = _module(source)
-    assert run_program(
-        module, "main", data={"features": (1.0, 2.0, 3.0)}, sites={"y": (1.0, 2.0, 3.0)}
-    ).value == (1.0, 2.0, 3.0)
+    assert host_value(
+        run_program(
+            module,
+            "main",
+            data={"features": (1.0, 2.0, 3.0)},
+            sites={"y": (1.0, 2.0, 3.0)},
+        ).value
+    ) == (1.0, 2.0, 3.0)
     value = torch.tensor((1.0, 2.0, 3.0))
     torch.testing.assert_close(
         Model(source).bind({"features": value}).trace({"y": value}).output, value
