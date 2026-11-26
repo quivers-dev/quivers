@@ -2571,10 +2571,13 @@ def check_derivation(
     ]
     while pending:
         body, scope, item = pending.pop()
+        placeholders: list[Local] = []
+        value = _lower_value(
+            presentation, body, scope, pending, local, hypotheses, placeholders
+        )
         context = CheckContext()
-        for entry in scope:
+        for entry in (*scope, *placeholders):
             context = context.extend(entry)
-        value = _lower_value(presentation, body, scope, pending, local, hypotheses)
         try:
             found = infer_value(value, registry, context)
         except KernelError as error:
@@ -2592,6 +2595,7 @@ def _lower_value(
     pending: list[tuple[ProofNode, tuple[Local, ...], Item]],
     local: Callable[[Item], Local],
     hypotheses: list[Local],
+    placeholders: list[Local],
 ) -> Value:
     """A derivation as a QIEC value in a scope of hypothesis locals.
 
@@ -2609,6 +2613,9 @@ def _lower_value(
         Makes the local of a new hypothesis.
     hypotheses : list of Local
         Every local made so far, appended to.
+    placeholders : list of Local
+        The locals that stand for scoped premises, appended to; they are
+        in scope of the value but not of its holes.
 
     Returns
     -------
@@ -2643,7 +2650,9 @@ def _lower_value(
         extra = widths[position] if widths else ()
         if not extra:
             fields.append(
-                _lower_value(presentation, child, scope, pending, local, hypotheses)
+                _lower_value(
+                    presentation, child, scope, pending, local, hypotheses, placeholders
+                )
             )
             continue
         premise = rule.premises[position] if isinstance(rule, Rule) else None
@@ -2662,7 +2671,7 @@ def _lower_value(
         pending.append((child, tuple(inner), target))
         placeholder = local(target)
         hypotheses.append(placeholder)
-        scope = (*scope, placeholder)
+        placeholders.append(placeholder)
         fields.append(Var(local=placeholder))
     if len(body.values) != len(rule.values):
         raise RuleError(f"{rule.name!r} carries {len(rule.values)} values")

@@ -37,6 +37,18 @@ from quivers.qiec.rules import (
 )
 from quivers.qiec.terms import Local, PrimitiveApplication, Return, Var
 from quivers.qiec.types import BOOL, INT, STRING, IndexLiteral, IndexVariable
+from quivers.structural.signature import (
+    Binder,
+    BinderArgSpec,
+    BinderVarSpec,
+    Constructor,
+    Signature,
+    Sort,
+    SortVocabEntry,
+    bound_var,
+)
+from quivers.structural.signature import Term as StructuralTerm
+from tests.evidence.oracles import binding as binding_oracle
 from tests.evidence.oracles import derivations as tree_oracle
 from tests.evidence.oracles.derivations import (
     AxiomRow,
@@ -403,3 +415,181 @@ def node_weight(derivation: Derivation) -> Fraction:
     if derivation.occurrence is not None:
         return LEAF_WEIGHTS[NAMES[derivation.occurrence]]
     return WEIGHTS[RULE_NAMES[derivation.constructor]]
+
+
+# -- binding ------------------------------------------------------------
+
+
+LAMBDA = Signature(
+    name="Lambda",
+    sorts_t=(
+        Sort(name="T", kind="object"),
+        Sort(
+            name="Name",
+            kind="data",
+            vocab=tuple(
+                SortVocabEntry(kind="string", value=v) for v in ("a", "b", "c")
+            ),
+        ),
+    ),
+    constructors_t=(
+        Constructor(name="Const", domain=("Name",), codomain="T"),
+        Constructor(name="App", domain=("T", "T"), codomain="T"),
+    ),
+    binders_t=(
+        Binder(
+            name="Abs",
+            binds=(BinderVarSpec(var="x", sort="T"),),
+            scoped=(BinderArgSpec(arg="body", sort="T"),),
+            codomain="T",
+        ),
+    ),
+)
+"""Constants, applications and abstractions."""
+
+BINDERS = {"Abs": (1, frozenset({0}))}
+"""The binder of `LAMBDA` as the binding oracle reads it."""
+
+
+def var(index: int) -> StructuralTerm:
+    """A bound variable.
+
+    Parameters
+    ----------
+    index : int
+        Its de Bruijn index.
+
+    Returns
+    -------
+    Term
+        The variable.
+    """
+    return bound_var(index)
+
+
+def const(name: str) -> StructuralTerm:
+    """A constant.
+
+    Parameters
+    ----------
+    name : str
+        Its name.
+
+    Returns
+    -------
+    Term
+        The constant.
+    """
+    return StructuralTerm(op="Const", args=(name,))
+
+
+def app(function: StructuralTerm, argument: StructuralTerm) -> StructuralTerm:
+    """An application.
+
+    Parameters
+    ----------
+    function, argument : Term
+        The parts.
+
+    Returns
+    -------
+    Term
+        The application.
+    """
+    return StructuralTerm(op="App", args=(function, argument))
+
+
+def abs_(body: StructuralTerm) -> StructuralTerm:
+    """An abstraction.
+
+    Parameters
+    ----------
+    body : Term
+        The body, with the bound variable at index 0.
+
+    Returns
+    -------
+    Term
+        The abstraction.
+    """
+    return StructuralTerm(op="Abs", args=(body,))
+
+
+def from_tuple(data: binding_oracle.Indexed) -> StructuralTerm:
+    """A term from the binding oracle's tuples.
+
+    Parameters
+    ----------
+    data : Indexed
+        ``(op, *arguments)``.
+
+    Returns
+    -------
+    Term
+        The term.
+    """
+    op = data[0]
+    assert isinstance(op, str)
+    arguments: list[StructuralTerm | str | int | float | bool | bytes] = []
+    for item in data[1:]:
+        arguments.append(from_tuple(item) if isinstance(item, tuple) else item)
+    return StructuralTerm(op=op, args=tuple(arguments))
+
+
+TERMS = (
+    var(0),
+    var(2),
+    const("a"),
+    app(var(1), var(0)),
+    abs_(var(0)),
+    abs_(var(1)),
+    abs_(app(var(0), var(2))),
+    app(abs_(abs_(app(var(1), var(3)))), var(1)),
+    abs_(abs_(app(app(var(0), var(1)), app(var(2), var(3))))),
+)
+"""Terms in a context of three variables, under and across binders."""
+
+REPLACEMENTS = (
+    (abs_(app(var(0), var(1))), var(0), const("b")),
+    (var(1), var(0), var(2)),
+    (app(var(0), abs_(var(1))), const("c"), var(0)),
+)
+"""Replacements of the three variables, each in a context of three; a
+substitution by them keeps three variables, so its shift is three."""
+
+
+# -- ordered resources --------------------------------------------------
+
+
+FIRST, SECOND, PAIR = (FamilyId.derive("pairs", name) for name in ("a", "b", "pair"))
+
+ORDERED_PAIRS = RulePresentation(
+    id=PresentationId.derive("pairs"),
+    name="pairs",
+    judgments=(
+        JudgmentDecl(id=FIRST, name="a"),
+        JudgmentDecl(id=SECOND, name="b"),
+        JudgmentDecl(id=PAIR, name="pair"),
+    ),
+    rules=(
+        Rule(
+            id=ConstructorId.derive("pairs", "pair"),
+            name="pair",
+            premises=(
+                Premise(judgment=Judgment(family=FIRST)),
+                Premise(judgment=Judgment(family=SECOND)),
+            ),
+            conclusion=Judgment(family=PAIR),
+        ),
+        Rule(
+            id=ConstructorId.derive("pairs", "twice"),
+            name="twice",
+            premises=(
+                Premise(judgment=Judgment(family=FIRST)),
+                Premise(judgment=Judgment(family=FIRST)),
+            ),
+            conclusion=Judgment(family=PAIR),
+        ),
+    ),
+)
+"""A product of two resources in a context with no structural rule."""

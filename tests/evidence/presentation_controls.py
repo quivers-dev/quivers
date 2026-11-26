@@ -18,11 +18,31 @@ from fractions import Fraction
 from quivers.qiec import rules as rules_module
 from quivers.qiec.identifiers import StableId
 from quivers.qiec.rules import (
+    LINEAR,
+    ORDERED,
     Derivation,
+    Hole,
     HostInterpretation,
+    Item,
+    OpenDerivation,
+    PremiseValue,
     ReferenceInterpretation,
+    RuleError,
     RulePresentation,
+    StructureError,
+    check_derivation,
+    check_structure,
+    compose,
+    identity,
+    presentation_of,
+    rename,
+    required_structure,
+    substitute_hypotheses,
+    term_derivation,
 )
+from quivers.qiec.identifiers import ConstructorId
+from quivers.structural.signature import Substitution, substitute
+from tests.evidence.oracles import binding
 from quivers.qiec.serialization import SerializationError, dumps, loads
 from tests.evidence import presentations as fixture
 from tests.evidence.checks._registry import Check
@@ -289,6 +309,324 @@ def check_validated_once() -> None:
         )
 
 
+def check_substitution() -> None:
+    """Require de Bruijn substitution to agree with named substitution.
+
+    Every term and replacement of the fixture is substituted by the
+    library and by the binding oracle, which renames bound variables by
+    name; with and without a shift of the remaining variables.
+
+    Raises
+    ------
+    Mismatch
+        If any result differs, by the number of results apart.
+    """
+    apart = 0
+    for replacements in fixture.REPLACEMENTS:
+        for shift in (3, 5):
+            sigma = Substitution(replacements=replacements, shift=shift)
+            for term in fixture.TERMS:
+                found = substitute(term, sigma, fixture.LAMBDA)
+                expected = binding.substitute_indexed(
+                    term.to_tuple(),
+                    tuple(item.to_tuple() for item in replacements),
+                    shift,
+                    3,
+                    fixture.BINDERS,
+                )
+                if found.to_tuple() != expected:
+                    apart += 1
+    if apart:
+        raise Mismatch("value", float(apart), f"{apart} substitutions differ")
+
+
+def check_substitution_laws() -> None:
+    """Require identity, composition and renaming laws of substitution.
+
+    Raises
+    ------
+    Mismatch
+        If a law fails, by the number of failures.
+    """
+    failures = 0
+    identity_substitution = Substitution()
+    for term in fixture.TERMS:
+        if substitute(term, identity_substitution, fixture.LAMBDA) != term:
+            failures += 1
+        for first in fixture.REPLACEMENTS:
+            for second in fixture.REPLACEMENTS:
+                sigma = Substitution(replacements=first, shift=3)
+                tau = Substitution(replacements=second, shift=3)
+                twice = substitute(
+                    substitute(term, sigma, fixture.LAMBDA), tau, fixture.LAMBDA
+                )
+                once = substitute(term, sigma.then(tau, fixture.LAMBDA), fixture.LAMBDA)
+                if twice != once:
+                    failures += 1
+    if failures:
+        raise Mismatch("value", float(failures), f"{failures} substitution laws fail")
+
+
+def _pairs_items() -> tuple[Item, Item, Item]:
+    """The items of the ordered pairs presentation.
+
+    Returns
+    -------
+    tuple of Item
+        The two resources and their pair.
+    """
+    return (
+        Item(family=fixture.FIRST),
+        Item(family=fixture.SECOND),
+        Item(family=fixture.PAIR),
+    )
+
+
+def _pair(first: int, second: int, rule: str = "pair") -> OpenDerivation:
+    """A pair of two hypotheses of a context ``(a, b)`` or ``(a, a)``.
+
+    Parameters
+    ----------
+    first, second : int
+        The de Bruijn indices of the two premises.
+    rule : str
+        ``"pair"`` or ``"twice"``.
+
+    Returns
+    -------
+    OpenDerivation
+        The derivation.
+    """
+    a, b, pair = _pairs_items()
+    context = (a, b) if rule == "pair" else (a, a)
+    return OpenDerivation(
+        context=context,
+        body=Derivation(
+            constructor=ConstructorId.derive("pairs", rule),
+            item=pair,
+            premises=(
+                Hole(index=first, item=context[1 - first]),
+                Hole(index=second, item=context[1 - second]),
+            ),
+        ),
+    )
+
+
+def check_ordered_structure() -> None:
+    """Require an ordered context to admit uses in order and refuse a permutation.
+
+    Raises
+    ------
+    Mismatch
+        If the ordered use is refused or a permuted one admitted.
+    """
+    presentation = fixture.ORDERED_PAIRS
+    in_order = _pair(1, 0, "twice")
+    check_structure(presentation, in_order)
+    a, _, _ = _pairs_items()
+    swapped = rename(presentation, in_order, (1, 0), (a, a))
+    required = required_structure(presentation, swapped)
+    if not required.exchange:
+        raise Mismatch("refusal", math.inf, "a permuted use needs no exchange")
+    try:
+        check_structure(presentation, swapped)
+    except StructureError:
+        pass
+    else:
+        raise Mismatch("refusal", math.inf, "an ordered context admitted a permutation")
+    if not LINEAR.admits(required) or ORDERED.admits(required):
+        raise Mismatch(
+            "refusal", math.inf, "exchange is admitted by the wrong structures"
+        )
+
+
+def check_multicategory() -> None:
+    """Require the unit and associativity laws of composition, and its functoriality.
+
+    Raises
+    ------
+    Mismatch
+        If a law fails, or folding a composite differs from composing folds.
+    """
+    presentation = fixture.ORDERED_PAIRS
+    a, b, pair = _pairs_items()
+    f = _pair(1, 0)
+    failures = 0
+    try:
+        if compose(presentation, f, (identity(a), identity(b))) != f:
+            failures += 1
+        if compose(presentation, identity(pair), (f,)) != f:
+            failures += 1
+        nested = compose(
+            presentation, identity(pair), (compose(presentation, identity(pair), (f,)),)
+        )
+        flat = compose(
+            presentation, compose(presentation, identity(pair), (identity(pair),)), (f,)
+        )
+        if nested != flat:
+            failures += 1
+        lam = presentation_of(fixture.LAMBDA)
+        body = term_derivation(
+            fixture.LAMBDA,
+            fixture.app(fixture.var(0), fixture.abs_(fixture.var(2))),
+            ("T", "T"),
+        )
+        arguments = (
+            term_derivation(fixture.LAMBDA, fixture.abs_(fixture.var(1)), ("T",)),
+            term_derivation(fixture.LAMBDA, fixture.const("a"), ()),
+        )
+        composite = compose(lam, body, arguments)
+        planar = Substitution(
+            replacements=(fixture.const("a"), fixture.abs_(fixture.var(1))), shift=1
+        )
+        expected = term_derivation(
+            fixture.LAMBDA,
+            substitute(
+                fixture.app(fixture.var(0), fixture.abs_(fixture.var(2))),
+                planar,
+                fixture.LAMBDA,
+            ),
+            ("T",),
+        )
+        if composite != expected:
+            failures += 1
+        interpretation = _strings(lam)
+        whole = interpretation.fold_open(composite, ("x",))
+        parts = interpretation.fold_open(
+            body,
+            tuple(
+                interpretation.fold_open(argument, env)
+                for argument, env in zip(arguments, (("x",), ()), strict=True)
+            ),
+        )
+        if whole != parts:
+            failures += 1
+    except RuleError as error:
+        raise Mismatch("value", math.inf, f"composition refused: {error}") from error
+    if failures:
+        raise Mismatch("value", float(failures), f"{failures} multicategory laws fail")
+
+
+def check_naturality() -> None:
+    """Require derivations of terms to commute with substitution.
+
+    Raises
+    ------
+    Mismatch
+        If the derivation of a substituted term differs from substituting
+        the derivations, by the number of terms apart.
+    """
+    lam = presentation_of(fixture.LAMBDA)
+    context = ("T", "T", "T")
+    apart = 0
+    try:
+        for replacements in fixture.REPLACEMENTS:
+            sigma = Substitution(replacements=replacements, shift=3)
+            arguments = tuple(
+                term_derivation(fixture.LAMBDA, item, context)
+                for item in reversed(replacements)
+            )
+            for term in fixture.TERMS:
+                left = term_derivation(
+                    fixture.LAMBDA, substitute(term, sigma, fixture.LAMBDA), context
+                )
+                right = substitute_hypotheses(
+                    lam,
+                    term_derivation(fixture.LAMBDA, term, context),
+                    arguments,
+                    left.context,
+                )
+                check_derivation(lam, left)
+                if left != right:
+                    apart += 1
+    except RuleError as error:
+        raise Mismatch("value", math.inf, f"substitution refused: {error}") from error
+    if apart:
+        raise Mismatch("value", float(apart), f"{apart} terms do not commute")
+
+
+def _strings(presentation: RulePresentation) -> HostInterpretation[str]:
+    """Print a lambda term, naming each bound variable by its value.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation of the lambda signature.
+
+    Returns
+    -------
+    HostInterpretation of str
+        The printer.
+    """
+    names = {rule.name: rule.id for rule in presentation.rules}
+
+    def constant(node: Derivation, values: tuple[PremiseValue[str], ...]) -> str:
+        """A constant's name.
+
+        Parameters
+        ----------
+        node : Derivation
+            The node.
+        values : tuple
+            No premise values.
+
+        Returns
+        -------
+        str
+            The name.
+        """
+        del values
+        return str(node.values[0])
+
+    def application(node: Derivation, values: tuple[PremiseValue[str], ...]) -> str:
+        """An application.
+
+        Parameters
+        ----------
+        node : Derivation
+            The node.
+        values : tuple
+            The function and the argument.
+
+        Returns
+        -------
+        str
+            ``(f a)``.
+        """
+        del node
+        return f"({values[0]} {values[1]})"
+
+    def abstraction(node: Derivation, values: tuple[PremiseValue[str], ...]) -> str:
+        """An abstraction, its variable named by its depth.
+
+        Parameters
+        ----------
+        node : Derivation
+            The node.
+        values : tuple
+            The body, a function of the variable's value.
+
+        Returns
+        -------
+        str
+            ``(\\v. body)``.
+        """
+        del node
+        body = values[0]
+        assert callable(body)
+        name = "v"
+        return f"(\\{name}. {body((name,))})"
+
+    return HostInterpretation[str](
+        presentation=presentation,
+        operations={
+            names["Const"]: constant,
+            names["App"]: application,
+            names["Abs"]: abstraction,
+        },
+    )
+
+
 CHECKS: dict[str, Check] = {}
 """Every check of rule presentations by name."""
 
@@ -320,6 +658,11 @@ for _name, _run in (
     ("presentations/nonlinear-observer", check_nonlinear_observer),
     ("presentations/codec", check_codec),
     ("presentations/validated-once", check_validated_once),
+    ("binding/substitution", check_substitution),
+    ("binding/substitution-laws", check_substitution_laws),
+    ("binding/ordered-structure", check_ordered_structure),
+    ("binding/multicategory", check_multicategory),
+    ("binding/naturality", check_naturality),
 ):
     _add(_name, _run)
 
@@ -381,6 +724,48 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         rejected_by=("presentations/validated-once",),
         min_effect=2.0,
+    ),
+    Mutation(
+        name="replacement-not-shifted-under-a-binder",
+        defect_class="binding",
+        provenance="a substitution goes under a binder without weakening its replacements",
+        target="quivers.structural.signature:Substitution.lift",
+        rewrites=(
+            Rewrite(
+                old="*(substitute(item, weaken, signature) for item in self.replacements),",
+                new="*self.replacements,",
+            ),
+        ),
+        rejected_by=("binding/substitution", "binding/naturality"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="hypothesis-index-not-shifted",
+        defect_class="binding",
+        provenance="a derivation moved under new hypotheses keeps its hole indices",
+        target=f"{RULES}:_weaken",
+        rewrites=(
+            Rewrite(
+                old="return Hole(index=depth + by + outer - 1 - level, item=items[level])",
+                new="return Hole(index=depth + outer - 1 - level, item=items[level])",
+            ),
+        ),
+        rejected_by=("binding/naturality", "binding/multicategory"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="order-of-uses-ignored",
+        defect_class="order",
+        provenance="a check of structure counts uses but never compares their order",
+        target=f"{RULES}:required_structure",
+        rewrites=(
+            Rewrite(
+                old="if any(later < earlier for earlier, later in itertools.pairwise(uses)):",
+                new="if False:",
+            ),
+        ),
+        rejected_by=("binding/ordered-structure",),
+        min_effect=1.0,
     ),
     Mutation(
         name="presentation-tuples-sorted-on-the-wire",
