@@ -92,6 +92,8 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
             "    return log_probability(1.5)\n:run invalid_probability",
             reply=True,
             timeout=20,
+            # The error is expected, so later requests must not be aborted.
+            stop_on_error=False,
         )["content"]
         assert reply["status"] == "error"
         assert "probability" in reply["evalue"]
