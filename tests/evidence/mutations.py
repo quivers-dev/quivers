@@ -513,12 +513,12 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         name="first-item-omitted",
         defect_class="omitted alternative",
-        provenance="a scan of the chart skips its first item",
+        provenance="a lookup of the chart skips its first candidate",
         target=f"{AGENDA}:HashChart.lookup",
         rewrites=(
             Rewrite(
-                old="for item, w in self._store.items():",
-                new="for item, w in list(self._store.items())[1:]:",
+                old="for item in candidates:",
+                new="for item in list(candidates)[1:]:",
             ),
         ),
         rejected_by=(
