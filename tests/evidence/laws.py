@@ -30,6 +30,7 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core._carriers import reduction_axes
+from quivers.core.laws import FIRST_MAXIMIZER, LAWS
 from quivers.core.algebras import (
     BOOLEAN,
     BOOLEAN_DUAL,
@@ -37,7 +38,6 @@ from quivers.core.algebras import (
     DUAL_GODEL,
     DUAL_LUKASIEWICZ,
     GODEL,
-    LAWS,
     LOG_PROB,
     LUKASIEWICZ,
     MARKOV,
@@ -1637,7 +1637,7 @@ def _first_best(values: Sequence[float], best: str) -> int:
     return list(values).index(target)
 
 
-def check_tie_rule(member: Member, dtype: torch.dtype) -> None:
+def check_tie_rule(member: Member, dtype: torch.dtype) -> int:
     """The first best operand is the witness and receives the derivative.
 
     Checked on every pair (ties included) through the binary sum, on every
@@ -1652,6 +1652,11 @@ def check_tie_rule(member: Member, dtype: torch.dtype) -> None:
     dtype : torch.dtype
         The precision.
 
+    Returns
+    -------
+    int
+        The number of sums and reductions checked.
+
     Raises
     ------
     Mismatch
@@ -1659,9 +1664,12 @@ def check_tie_rule(member: Member, dtype: torch.dtype) -> None:
     """
     structure = member.structure
     assert isinstance(structure, Selective)
+    if structure.tie_rule != FIRST_MAXIMIZER:
+        raise Mismatch("value", math.inf, f"{member.name}: another tie rule")
     pool = samples(member, dtype)
     a, b = (part.clone().requires_grad_() for part in tuples(pool, 2))
     grads = torch.autograd.grad(structure.join_pair(a, b).sum(), (a, b))
+    cases = a.shape[0]
     for row, (x, y) in enumerate(zip(a.tolist(), b.tolist(), strict=True)):
         first = _first_best((x, y), member.best)
         wanted = (float(first == 0), float(first == 1))
@@ -1680,6 +1688,7 @@ def check_tie_rule(member: Member, dtype: torch.dtype) -> None:
         value = structure.join(leaf, axes)
         (found,) = torch.autograd.grad(value.sum(), (leaf,))
         witness = structure.select(terms, axes).witness
+        cases += terms.shape[0]
         for row, flat in enumerate(terms.reshape(-1, size).tolist()):
             first = _first_best(flat, member.best)
             derivative = found.reshape(-1, size)[row].tolist()
@@ -1692,6 +1701,7 @@ def check_tie_rule(member: Member, dtype: torch.dtype) -> None:
                     f"{derivative} and witness {int(witness[row])}, declared the "
                     f"operand at {first}",
                 )
+    return cases
 
 
 def check_zero_sum_free(member: Member, dtype: torch.dtype) -> None:
@@ -2000,6 +2010,23 @@ def check_action_annihilation(member: Member, dtype: torch.dtype) -> None:
     )
 
 
+def check_semimodule_action(member: Member, dtype: torch.dtype) -> None:
+    """The action is associative, unital, additive in both sums, and annihilated.
+
+    Parameters
+    ----------
+    member : Member
+        A module's row.
+    dtype : torch.dtype
+        The precision.
+    """
+    check_action_associativity(member, dtype)
+    check_action_unit(member, dtype)
+    check_action_over_module_sum(member, dtype)
+    check_action_over_scalar_sum(member, dtype)
+    check_action_annihilation(member, dtype)
+
+
 def _representable(element: Element, dtype: torch.dtype) -> bool:
     """Whether a dtype holds every number of a plain element exactly.
 
@@ -2032,7 +2059,7 @@ def _check_form(
     name: str,
     make: Callable[[tuple[int, ...], torch.Tensor], torch.Tensor],
     element: Element,
-) -> None:
+) -> int:
     """A constant has the requested shape, dtype, device and value.
 
     Parameters
@@ -2046,6 +2073,11 @@ def _check_form(
     element : Element
         The reference value.
 
+    Returns
+    -------
+    int
+        The number of dtypes and shapes asked for.
+
     Raises
     ------
     Mismatch
@@ -2054,11 +2086,13 @@ def _check_form(
     """
     structure = _carrier(member)
     rank = len(structure.element_shape)
+    cases = 0
     for dtype in FORM_DTYPES:
         like = torch.empty(0, dtype=dtype)
         if dtype.is_floating_point:
             like = like.requires_grad_()
         for shape in SHAPES:
+            cases += 1
             if not _representable(element, dtype):
                 try:
                     make(shape, like)
@@ -2100,9 +2134,10 @@ def _check_form(
                 raise Mismatch(
                     "support", math.inf, f"{member.name}: {name} is not in the carrier"
                 )
+    return cases
 
 
-def check_zero_form(member: Member, dtype: torch.dtype) -> None:
+def check_zero_form(member: Member, dtype: torch.dtype) -> int:
     """The zero in every requested shape, dtype and device.
 
     Parameters
@@ -2111,14 +2146,19 @@ def check_zero_form(member: Member, dtype: torch.dtype) -> None:
         The row.
     dtype : torch.dtype
         Unused: every dtype of `FORM_DTYPES` is asked for.
+
+    Returns
+    -------
+    int
+        The number of cases.
     """
     del dtype
     zero = member.reference.zero
     assert zero is not None
-    _check_form(member, "zero", _carrier(member).zero_like, zero)
+    return _check_form(member, "zero", _carrier(member).zero_like, zero)
 
 
-def check_unit_form(member: Member, dtype: torch.dtype) -> None:
+def check_unit_form(member: Member, dtype: torch.dtype) -> int:
     """The unit in every requested shape, dtype and device.
 
     Parameters
@@ -2127,14 +2167,19 @@ def check_unit_form(member: Member, dtype: torch.dtype) -> None:
         The row.
     dtype : torch.dtype
         Unused: every dtype of `FORM_DTYPES` is asked for.
+
+    Returns
+    -------
+    int
+        The number of cases.
     """
     del dtype
     unit = member.reference.unit
     assert unit is not None
-    _check_form(member, "unit", _unital(member).unit_like, unit)
+    return _check_form(member, "unit", _unital(member).unit_like, unit)
 
 
-def check_empty_join(member: Member, dtype: torch.dtype) -> None:
+def check_empty_join(member: Member, dtype: torch.dtype) -> int:
     """A join over an axis of size zero is the zero with a defined derivative.
 
     Parameters
@@ -2143,6 +2188,11 @@ def check_empty_join(member: Member, dtype: torch.dtype) -> None:
         The row.
     dtype : torch.dtype
         The precision.
+
+    Returns
+    -------
+    int
+        The number of reductions checked.
 
     Raises
     ------
@@ -2195,35 +2245,32 @@ def check_empty_join(member: Member, dtype: torch.dtype) -> None:
                 math.inf,
                 f"{member.name}: the derivative of a join over no terms is not a number",
             )
+    return len(cases)
 
 
-LAW_CHECKS: dict[str, Callable[[Member, torch.dtype], None]] = {
-    "operations stay in the carrier": check_closure,
-    "join over several axes is iterated join": check_iterated_join,
-    "additive associativity": check_additive_associativity,
-    "additive commutativity": check_additive_commutativity,
-    "additive identity": check_additive_identity,
-    "multiplicative associativity": check_multiplicative_associativity,
-    "multiplicative identity": check_multiplicative_identity,
-    "distributivity": check_distributivity,
-    "annihilation": check_annihilation,
-    "multiplicative commutativity": check_multiplicative_commutativity,
-    "composition associativity": check_composition_associativity,
-    "additive idempotence": check_additive_idempotence,
-    "selectivity": check_selectivity,
-    "first best receives the derivative": check_tie_rule,
+LAW_CHECKS: dict[str, Callable[[Member, torch.dtype], int | None]] = {
+    "operations-closed": check_closure,
+    "join-iterated": check_iterated_join,
+    "plus-associative": check_additive_associativity,
+    "plus-commutative": check_additive_commutativity,
+    "plus-unit": check_additive_identity,
+    "times-associative": check_multiplicative_associativity,
+    "times-unit": check_multiplicative_identity,
+    "distributive": check_distributivity,
+    "zero-annihilates": check_annihilation,
+    "times-commutative": check_multiplicative_commutativity,
+    "composition-associative": check_composition_associativity,
+    "plus-idempotent": check_additive_idempotence,
+    "plus-selective": check_selectivity,
+    "tie-first-maximizer": check_tie_rule,
     "zero-sum-free": check_zero_sum_free,
-    "no zero divisors": check_no_zero_divisors,
-    "division inverts the product": check_division,
-    "additive inverse": check_additive_inverse,
-    "action associativity": check_action_associativity,
-    "action unit": check_action_unit,
-    "action distributes over the module sum": check_action_over_module_sum,
-    "action distributes over the scalar sum": check_action_over_scalar_sum,
-    "action annihilation": check_action_annihilation,
-    "zero has the requested form": check_zero_form,
-    "unit has the requested form": check_unit_form,
-    "empty join is the zero": check_empty_join,
+    "no-zero-divisors": check_no_zero_divisors,
+    "division": check_division,
+    "additive-inverse": check_additive_inverse,
+    "semimodule-action": check_semimodule_action,
+    "zero-form": check_zero_form,
+    "unit-form": check_unit_form,
+    "empty-join": check_empty_join,
 }
 """The check of every law of the catalogue."""
 
@@ -2909,58 +2956,49 @@ def _lawless(name: str, structure: Lawful, like: str) -> Member:
 
 
 LAWLESS: dict[str, Member] = {
-    "operations stay in the carrier": _lawless("halving", _Halving(), "core/Counting"),
-    "join over several axes is iterated join": _lawless(
-        "collapsing", _Collapsing(), "core/Real"
-    ),
-    "additive associativity": _lawless("averaging", _Averaging(), "core/Real"),
-    "additive commutativity": _lawless("weighted", _Weighted(), "core/Real"),
-    "additive identity": _lawless("offset", _Offset(), "core/Counting"),
-    "multiplicative associativity": _lawless("squaring", _Squaring(), "core/Real"),
-    "multiplicative identity": _lawless("doubling", _Doubling(), "core/Real"),
-    "distributivity": _lawless("truncated", _Truncated(), "core/Counting"),
-    "annihilation": _lawless("absorbing", _Absorbing(), "core/Real"),
-    "multiplicative commutativity": _lawless("signed", _Signed(), "core/Real"),
-    "composition associativity": _lawless(
+    "operations-closed": _lawless("halving", _Halving(), "core/Counting"),
+    "join-iterated": _lawless("collapsing", _Collapsing(), "core/Real"),
+    "plus-associative": _lawless("averaging", _Averaging(), "core/Real"),
+    "plus-commutative": _lawless("weighted", _Weighted(), "core/Real"),
+    "plus-unit": _lawless("offset", _Offset(), "core/Counting"),
+    "times-associative": _lawless("squaring", _Squaring(), "core/Real"),
+    "times-unit": _lawless("doubling", _Doubling(), "core/Real"),
+    "distributive": _lawless("truncated", _Truncated(), "core/Counting"),
+    "zero-annihilates": _lawless("absorbing", _Absorbing(), "core/Real"),
+    "times-commutative": _lawless("signed", _Signed(), "core/Real"),
+    "composition-associative": _lawless(
         "squared",
         CustomSemigroupoid(
             "Squared", torch.mul, _squared_sum, verify_associative=False
         ),
         "core/Real",
     ),
-    "additive idempotence": _lawless("summing", _Summing(), "core/MaxPlus"),
-    "selectivity": _lawless("middle", _Middle(), "core/Godel"),
-    "first best receives the derivative": _lawless(
-        "splitting", _Splitting(), "core/MaxPlus"
-    ),
+    "plus-idempotent": _lawless("summing", _Summing(), "core/MaxPlus"),
+    "plus-selective": _lawless("middle", _Middle(), "core/Godel"),
+    "tie-first-maximizer": _lawless("splitting", _Splitting(), "core/MaxPlus"),
     "zero-sum-free": _lawless("cancelling", _CancellingReal(), "core/Real").with_(
         samples=(-1.0, 0.0, 1.0)
     ),
-    "no zero divisors": _lawless("dividing", _DividingStandardMV(), "core/Lukasiewicz"),
-    "division inverts the product": _lawless(
-        "subtracting", _Subtracting(), "core/Markov"
-    ),
-    "additive inverse": _lawless("adding", _Adding(), "core/Real"),
-    "action associativity": _lawless(
+    "no-zero-divisors": _lawless("dividing", _DividingStandardMV(), "core/Lukasiewicz"),
+    "division": _lawless("subtracting", _Subtracting(), "core/Markov"),
+    "additive-inverse": _lawless("adding", _Adding(), "core/Real"),
+    "semimodule-action": _lawless(
         "twice", _TwiceModule(COUNTING, 3), "vector/Counting"
     ),
-    "action unit": _lawless("twice-unit", _TwiceModule(COUNTING, 3), "vector/Counting"),
-    "action distributes over the module sum": _lawless(
-        "squared-element", _SquaredElement(COUNTING, 3), "vector/Counting"
-    ),
-    "action distributes over the scalar sum": _lawless(
-        "squared-scalar", _SquaredScalar(COUNTING, 3), "vector/Counting"
-    ),
-    "action annihilation": _lawless(
-        "shifted", _ShiftedModule(COUNTING, 3), "vector/Counting"
-    ),
-    "zero has the requested form": _lawless(
-        "default-zero", _DefaultZero(), "core/Real"
-    ),
-    "unit has the requested form": _lawless("scalar-unit", _ScalarUnit(), "core/Real"),
-    "empty join is the zero": _lawless("raw-tropical", _RawTropical(), "core/Tropical"),
+    "zero-form": _lawless("default-zero", _DefaultZero(), "core/Real"),
+    "unit-form": _lawless("scalar-unit", _ScalarUnit(), "core/Real"),
+    "empty-join": _lawless("raw-tropical", _RawTropical(), "core/Tropical"),
 }
 """A member that claims each law and breaks it."""
+
+ACTION_LAWLESS: tuple[Member, ...] = (
+    _lawless("twice", _TwiceModule(COUNTING, 3), "vector/Counting"),
+    _lawless("squared-element", _SquaredElement(COUNTING, 3), "vector/Counting"),
+    _lawless("squared-scalar", _SquaredScalar(COUNTING, 3), "vector/Counting"),
+    _lawless("shifted", _ShiftedModule(COUNTING, 3), "vector/Counting"),
+)
+"""Modules that break each part of the semimodule action."""
+
 
 ROWS: tuple[str, ...] = tuple(MEMBERS)
 """The rows of the grid."""
@@ -2972,7 +3010,7 @@ CELLS: tuple[str, ...] = tuple(
 )
 """Every cell: each claimed law of each row, and its declared operations."""
 
-assert set(LAW_CHECKS) == set(LAWS)
+assert set(LAW_CHECKS) <= set(LAWS)
 
 
 # -- deliberately wrong library code ----------------------------------------
@@ -2993,8 +3031,8 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=(
-            "core/MaxPlus/additive idempotence",
-            "core/MaxPlus/selectivity",
+            "core/MaxPlus/plus-idempotent",
+            "core/MaxPlus/plus-selective",
             "core/MaxPlus/declared operations",
         ),
         min_effect=0.34,
@@ -3065,8 +3103,8 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
         ),
         also_in=(ALGEBRAS,),
         rejected_by=(
-            "core/LogProb/empty join is the zero",
-            "matrix/MaxPlus/empty join is the zero",
+            "core/LogProb/empty-join",
+            "matrix/MaxPlus/empty-join",
         ),
         min_effect=1.0,
     ),
@@ -3083,8 +3121,8 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
         ),
         also_in=(ALGEBRAS,),
         rejected_by=(
-            "core/Tropical/empty join is the zero",
-            "vector/Counting/empty join is the zero",
+            "core/Tropical/empty-join",
+            "vector/Counting/empty-join",
         ),
         min_effect=1.0,
     ),
@@ -3097,7 +3135,7 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
             Rewrite(old="return fill + nothing", new="return (fill + nothing).sum()"),
         ),
         also_in=(ALGEBRAS,),
-        rejected_by=("core/Tropical/empty join is the zero",),
+        rejected_by=("core/Tropical/empty-join",),
         min_effect=1.0,
     ),
     Mutation(
@@ -3112,8 +3150,8 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=(
-            "core/MaxPlus/first best receives the derivative",
-            "chart/Viterbi/first best receives the derivative",
+            "core/MaxPlus/tie-first-maximizer",
+            "chart/Viterbi/tie-first-maximizer",
         ),
         min_effect=0.25,
     ),
@@ -3130,8 +3168,8 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
         ),
         also_in=(ALGEBRAS,),
         rejected_by=(
-            "core/Real/zero has the requested form",
-            "core/Boolean/unit has the requested form",
+            "core/Real/zero-form",
+            "core/Boolean/unit-form",
         ),
         min_effect=1.0,
     ),

@@ -16,9 +16,10 @@ unital but depends on bracketing. ``join`` names the implemented
 reduction and is a lattice supremum only for an `IdempotentSemiring`.
 
 The classes form one hierarchy. Each class states the laws its members
-satisfy as named `Law` records, and every member reports, for each law
-it claims, a `LawClaim` whose status says whether the law is proved
-from a written argument, checked on finite data, or only assumed.
+satisfy as `quivers.core.laws.Law` records, and every member reports,
+for each law it claims, a `quivers.core.laws.LawClaim` whose evidence
+is a written argument, a decision procedure, a test on finite data, or
+a declaration.
 Executors ask for a capability by type: `Selective` sums return one of
 their operands, `ZeroSumFree` and `NoZeroDivisors` make support a
 homomorphism, a `Semifield` divides, a `Ring` subtracts, and a
@@ -36,10 +37,10 @@ Golan, J. S. (1999). *Semirings and their Applications*. Springer.
 from __future__ import annotations
 
 import math
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 import didactic.api as dx
 import torch
@@ -55,314 +56,38 @@ from quivers.core._carriers import (
     validate_carrier,
 )
 from quivers.core._util import EPS
-
-type LawStatus = Literal["proved", "checked", "assumed"]
-"""How a law is established: by a written argument, on finite data, or not at all."""
-
-type LawSubject = Literal["carrier", "implementation"]
-"""What a law is about: the mathematical carrier, or the tensor implementation."""
-
-
-class Law(dx.Model):
-    """One named law of an algebraic structure.
-
-    A law about the carrier is an equation or implication over the
-    mathematical carrier; floating-point rounding is not part of it. A
-    law about the implementation states a property of the tensors the
-    code returns, such as their shape, dtype, device and derivative.
-
-    Parameters
-    ----------
-    name : str
-        The law's name, by which classes introduce it.
-    statement : str
-        The law in symbols and words.
-    subject : LawSubject
-        ``"carrier"`` or ``"implementation"``.
-    """
-
-    name: str
-    statement: str
-    subject: LawSubject
-
-
-class LawClaim(dx.Model):
-    """A member's claim that one law holds, with its status.
-
-    Parameters
-    ----------
-    law : Law
-        The law.
-    member : str
-        The name of the member that claims it.
-    status : LawStatus
-        ``"proved"`` when an argument is written and cited,
-        ``"checked"`` when a test on finite data establishes it, and
-        ``"assumed"`` when membership in a class is the only ground.
-    evidence : str
-        The argument, the check, or the declaration.
-    """
-
-    law: Law
-    member: str
-    status: LawStatus
-    evidence: str
-
-
-def _law(name: str, statement: str, subject: LawSubject = "carrier") -> Law:
-    """Build one entry of the catalogue.
-
-    Parameters
-    ----------
-    name : str
-        The name.
-    statement : str
-        The statement.
-    subject : LawSubject
-        What the law is about.
-
-    Returns
-    -------
-    Law
-        The law.
-    """
-    return Law(name=name, statement=statement, subject=subject)
-
-
-LAWS: Mapping[str, Law] = MappingProxyType(
-    {
-        law.name: law
-        for law in (
-            _law(
-                "operations stay in the carrier",
-                "a ⊕ b, and a ⊗ b when the carrier has a product, lie in the "
-                "carrier whenever a and b do",
-            ),
-            _law(
-                "join over several axes is iterated join",
-                "a reduction over several axes equals the reductions over "
-                "one axis at a time, in any order",
-            ),
-            _law("additive associativity", "(a ⊕ b) ⊕ c = a ⊕ (b ⊕ c)"),
-            _law("additive commutativity", "a ⊕ b = b ⊕ a"),
-            _law("additive identity", "a ⊕ 0 = a"),
-            _law("multiplicative associativity", "(a ⊗ b) ⊗ c = a ⊗ (b ⊗ c)"),
-            _law("multiplicative identity", "1 ⊗ a = a = a ⊗ 1"),
-            _law(
-                "distributivity",
-                "a ⊗ (b ⊕ c) = (a ⊗ b) ⊕ (a ⊗ c) and (a ⊕ b) ⊗ c = (a ⊗ c) ⊕ (b ⊗ c)",
-            ),
-            _law("annihilation", "0 ⊗ a = 0 = a ⊗ 0"),
-            _law("multiplicative commutativity", "a ⊗ b = b ⊗ a"),
-            _law(
-                "composition associativity",
-                "(f >> g) >> h = f >> (g >> h) for composable tensors",
-            ),
-            _law("additive idempotence", "a ⊕ a = a"),
-            _law("selectivity", "a ⊕ b is a or b"),
-            _law("zero-sum-free", "a ⊕ b = 0 implies a = 0 and b = 0"),
-            _law("no zero divisors", "a ⊗ b = 0 implies a = 0 or b = 0"),
-            _law(
-                "division inverts the product",
-                "(a ⊗ b) ⊘ b = a for every b other than 0",
-            ),
-            _law("additive inverse", "a ⊕ (0 ⊖ a) = 0"),
-            _law("action associativity", "(k ⊗ l) · m = k · (l · m)"),
-            _law("action unit", "1 · m = m"),
-            _law(
-                "action distributes over the module sum",
-                "k · (m ⊕ n) = (k · m) ⊕ (k · n)",
-            ),
-            _law(
-                "action distributes over the scalar sum",
-                "(k ⊕ l) · m = (k · m) ⊕ (l · m)",
-            ),
-            _law("action annihilation", "0 · m = 0 and k · 0 = 0"),
-            _law(
-                "zero has the requested form",
-                "zero_like(shape, like) is the zero with shape (*shape, "
-                "*element_shape), the dtype and device of like, and no gradient",
-                "implementation",
-            ),
-            _law(
-                "unit has the requested form",
-                "unit_like(shape, like) is the unit with shape (*shape, "
-                "*element_shape), the dtype and device of like, and no gradient",
-                "implementation",
-            ),
-            _law(
-                "empty join is the zero",
-                "a join over an axis of size zero is the zero of the remaining "
-                "shape, in the dtype and device of its input, and its "
-                "derivative is a number",
-                "implementation",
-            ),
-            _law(
-                "first best receives the derivative",
-                "a selective reduction returns as its witness the first best "
-                "operand in row-major order of the reduced axes, and that "
-                "operand receives the whole derivative, in every operation",
-                "implementation",
-            ),
-        )
-    }
+from quivers.core.laws import (
+    ADDITIVE_INVERSE,
+    COMPOSITION_ASSOCIATIVE,
+    DISTRIBUTIVE,
+    DIVISION,
+    EMPTY_JOIN,
+    FIRST_MAXIMIZER,
+    JOIN_ITERATED,
+    NO_ZERO_DIVISORS,
+    OPERATIONS_CLOSED,
+    PLUS_ASSOCIATIVE,
+    PLUS_COMMUTATIVE,
+    PLUS_IDEMPOTENT,
+    PLUS_SELECTIVE,
+    PLUS_UNIT,
+    SEMIMODULE_ACTION,
+    TIE_FIRST_MAXIMIZER,
+    TIMES_ASSOCIATIVE,
+    TIMES_COMMUTATIVE,
+    TIMES_UNIT,
+    UNIT_FORM,
+    ZERO_ANNIHILATES,
+    ZERO_FORM,
+    ZERO_SUM_FREE,
+    Citation,
+    ClaimSubject,
+    Law,
+    LawEvidence,
+    Lawful,
+    Proved,
+    TieRule,
 )
-"""The catalogue of laws, by name."""
-
-_STRENGTH: Mapping[LawStatus, int] = MappingProxyType(
-    {"assumed": 0, "checked": 1, "proved": 2}
-)
-
-
-class Lawful(ABC):
-    """A structure whose class membership claims laws.
-
-    A class lists in ``introduces`` the names of the laws (from `LAWS`)
-    that membership in it adds; `laws` collects them along the class
-    hierarchy. The status of a claim comes from declarations on the
-    member's own class, never from a parent class, since a subclass may
-    replace an operation: ``proof`` is an argument that establishes
-    every claimed law about the carrier, and ``check`` names the test
-    that establishes the laws about the implementation. A law about the
-    carrier without a proof, or about the implementation without a
-    check, is assumed.
-    """
-
-    introduces: ClassVar[tuple[str, ...]] = ()
-    proof: ClassVar[str | None] = None
-    check: ClassVar[str | None] = None
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """The structure's name.
-
-        Returns
-        -------
-        str
-            A human-readable name.
-        """
-        ...
-
-    @classmethod
-    def laws(cls) -> tuple[Law, ...]:
-        """The laws that membership in this class claims.
-
-        Returns
-        -------
-        tuple of Law
-            Each law once, in the order the hierarchy introduces them.
-        """
-        names: list[str] = []
-        for klass in reversed(cls.__mro__):
-            for name in vars(klass).get("introduces", ()):
-                if name not in names:
-                    names.append(name)
-        return tuple(LAWS[name] for name in names)
-
-    def claim(self, law: Law) -> LawClaim:
-        """The claim that one law holds, with its status.
-
-        Parameters
-        ----------
-        law : Law
-            A law of `laws`.
-
-        Returns
-        -------
-        LawClaim
-            The claim, with the status declared by the member's own class.
-
-        Raises
-        ------
-        ValueError
-            If the member does not claim the law.
-        """
-        if law not in self.laws():
-            raise ValueError(f"{self.name} does not claim {law.name!r}")
-        own = vars(type(self))
-        ground = own.get("proof" if law.subject == "carrier" else "check")
-        if isinstance(ground, str):
-            status: LawStatus = "proved" if law.subject == "carrier" else "checked"
-            return self._claim(law, status, ground)
-        return self._claim(
-            law, "assumed", f"declared by membership in {type(self).__name__}"
-        )
-
-    def claims(self) -> tuple[LawClaim, ...]:
-        """The claims of every law of `laws`.
-
-        Returns
-        -------
-        tuple of LawClaim
-            One claim per law.
-        """
-        return tuple(self.claim(law) for law in self.laws())
-
-    def establishes(self, *names: str) -> bool:
-        """Whether every named law is claimed and proved or checked.
-
-        Parameters
-        ----------
-        *names : str
-            Names of laws in `LAWS`.
-
-        Returns
-        -------
-        bool
-            True when each law is claimed with a status other than
-            ``"assumed"``.
-
-        Raises
-        ------
-        KeyError
-            If a name is not in the catalogue.
-        """
-        claimed = self.laws()
-        for name in names:
-            law = LAWS[name]
-            if law not in claimed or self.claim(law).status == "assumed":
-                return False
-        return True
-
-    def _claim(self, law: Law, status: LawStatus, evidence: str) -> LawClaim:
-        """Build a claim of this member.
-
-        Parameters
-        ----------
-        law : Law
-            The law.
-        status : LawStatus
-            Its status.
-        evidence : str
-            Its ground.
-
-        Returns
-        -------
-        LawClaim
-            The claim.
-        """
-        return LawClaim(law=law, member=self.name, status=status, evidence=evidence)
-
-
-def weakest(claims: tuple[LawClaim, ...]) -> LawStatus:
-    """The weakest status among claims.
-
-    Parameters
-    ----------
-    claims : tuple of LawClaim
-        The claims; an empty tuple is proved.
-
-    Returns
-    -------
-    LawStatus
-        The status no claim falls below.
-    """
-    status: LawStatus = "proved"
-    for claim in claims:
-        if _STRENGTH[claim.status] < _STRENGTH[status]:
-            status = claim.status
-    return status
 
 
 def _pair(
@@ -402,12 +127,7 @@ class Carrier(Lawful):
     number.
     """
 
-    introduces = (
-        "operations stay in the carrier",
-        "join over several axes is iterated join",
-        "zero has the requested form",
-        "empty join is the zero",
-    )
+    introduces = (OPERATIONS_CLOSED, JOIN_ITERATED, ZERO_FORM, EMPTY_JOIN)
 
     @property
     @abstractmethod
@@ -569,7 +289,7 @@ class UnitalCarrier(Carrier):
     computation needs.
     """
 
-    introduces = ("unit has the requested form",)
+    introduces = (UNIT_FORM,)
 
     @abstractmethod
     def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -831,7 +551,7 @@ class Semigroupoid(CompositionRule):
     [doi:10.1016/0022-4049(87)90108-3](https://doi.org/10.1016/0022-4049(87)90108-3)
     """
 
-    introduces = ("composition associativity",)
+    introduces = (COMPOSITION_ASSOCIATIVE,)
 
 
 class Magmoid(CompositionRule):
@@ -862,7 +582,7 @@ class OrderPreservingSemiring(Semigroupoid, UnitalCarrier):
 
     ``(L, ⊕, 0)`` is a commutative monoid, ``(L, ⊗, 1)`` a monoid,
     ``⊗`` distributes over ``⊕`` on both sides and ``0`` annihilates
-    ``⊗`` [Golan (1999), chapter 1]. Matrices over it compose
+    ``⊗`` [Golan (1999)]. Matrices over it compose
     associatively and unitally, but a composite keeps the order of its
     factors: a plan over such weights may reorder sums and may not
     exchange factors. Elements may have shape, as the square matrices
@@ -876,13 +596,13 @@ class OrderPreservingSemiring(Semigroupoid, UnitalCarrier):
     """
 
     introduces = (
-        "additive associativity",
-        "additive commutativity",
-        "additive identity",
-        "multiplicative associativity",
-        "multiplicative identity",
-        "distributivity",
-        "annihilation",
+        PLUS_ASSOCIATIVE,
+        PLUS_COMMUTATIVE,
+        PLUS_UNIT,
+        TIMES_ASSOCIATIVE,
+        TIMES_UNIT,
+        DISTRIBUTIVE,
+        ZERO_ANNIHILATES,
     )
 
     def compose(
@@ -1128,7 +848,7 @@ class Semiring(Algebra, OrderPreservingSemiring):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    introduces = ("multiplicative commutativity",)
+    introduces = (TIMES_COMMUTATIVE,)
 
 
 class IdempotentSemiring(Semiring):
@@ -1149,7 +869,7 @@ class IdempotentSemiring(Semiring):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    introduces = ("additive idempotence",)
+    introduces = (PLUS_IDEMPOTENT,)
 
     @property
     @abstractmethod
@@ -1257,7 +977,8 @@ class Selective(Carrier):
     bracketing.
     """
 
-    introduces = ("selectivity", "first best receives the derivative")
+    introduces = (PLUS_SELECTIVE, TIE_FIRST_MAXIMIZER)
+    tie_rule: ClassVar[TieRule] = FIRST_MAXIMIZER
 
     @abstractmethod
     def rank(self, t: torch.Tensor) -> torch.Tensor:
@@ -1340,7 +1061,7 @@ class ZeroSumFree(Carrier):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    introduces = ("zero-sum-free",)
+    introduces = (ZERO_SUM_FREE,)
 
 
 class NoZeroDivisors(UnitalCarrier):
@@ -1355,7 +1076,7 @@ class NoZeroDivisors(UnitalCarrier):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    introduces = ("no zero divisors",)
+    introduces = (NO_ZERO_DIVISORS,)
 
 
 class Semifield(NoZeroDivisors):
@@ -1373,7 +1094,7 @@ class Semifield(NoZeroDivisors):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    introduces = ("division inverts the product",)
+    introduces = (DIVISION,)
 
     @abstractmethod
     def divide(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -1424,7 +1145,7 @@ class Ring(Carrier):
     the relative accuracy of sums of nonnegative terms.
     """
 
-    introduces = ("additive inverse",)
+    introduces = (ADDITIVE_INVERSE,)
 
     @abstractmethod
     def subtract(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -1451,7 +1172,7 @@ class Semimodule(Carrier):
     A left semimodule over ``K`` is a commutative monoid ``(M, ⊕, 0)``
     with an action ``K × M → M`` that is associative, unital, and
     distributes over both sums, and in which the zero of either side
-    annihilates [Golan (1999), chapter 14]. Expectation carriers, whose
+    annihilates [Golan (1999)]. Expectation carriers, whose
     second component is acted on by probabilities, are built from this
     capability; `FreeSemimodule` is the module of vectors over ``K``.
 
@@ -1461,16 +1182,7 @@ class Semimodule(Carrier):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    introduces = (
-        "additive associativity",
-        "additive commutativity",
-        "additive identity",
-        "action associativity",
-        "action unit",
-        "action distributes over the module sum",
-        "action distributes over the scalar sum",
-        "action annihilation",
-    )
+    introduces = (PLUS_ASSOCIATIVE, PLUS_COMMUTATIVE, PLUS_UNIT, SEMIMODULE_ACTION)
 
     @property
     @abstractmethod
@@ -1731,10 +1443,60 @@ def _nonnegative(t: torch.Tensor) -> torch.Tensor:
     return torch.isfinite(t) & (t >= 0)
 
 
-_GRID_CHECK = (
-    "checked on the shipped instances by the law grid of the evidence "
-    "harness (tests/evidence/test_law_grid.py)"
+_GOLAN = Citation(
+    reference="Golan, J. S. (1999). Semirings and their Applications. Springer",
+    locator=(
+        "the definitions of a semiring, of zerosumfree and entire semirings, and "
+        "of a semifield"
+    ),
+    doi="10.1007/978-94-015-9333-5",
 )
+
+_PROOFS = "semantics/algebras.md"
+
+
+def _proved(anchor: str) -> Proved:
+    """The argument for a shipped class, written in the semantics pages.
+
+    Parameters
+    ----------
+    anchor : str
+        The anchor of the argument, after ``proof-``.
+
+    Returns
+    -------
+    Proved
+        The evidence.
+    """
+    return Proved(argument=f"{_PROOFS}#proof-{anchor}", sources=(_GOLAN,))
+
+
+def _tests(*, unital: bool, tie: int | None = None) -> Mapping[str, int]:
+    """The cases the law grid evaluates for the laws about the implementation.
+
+    Parameters
+    ----------
+    unital : bool
+        Whether the class has a unit.
+    tie : int or None
+        The cases of the tie rule, for a selective class.
+
+    Returns
+    -------
+    Mapping of str to int
+        Cases by law name.
+    """
+    cases = {ZERO_FORM.name: 20, EMPTY_JOIN.name: 12}
+    if unital:
+        cases[UNIT_FORM.name] = 20
+    if tie is not None:
+        cases[TIE_FIRST_MAXIMIZER.name] = tie
+    return MappingProxyType(cases)
+
+
+_UNITAL_TESTS = _tests(unital=True)
+_TWO_ELEMENT_SELECTIVE_TESTS = _tests(unital=True, tie=56)
+_SELECTIVE_TESTS = _tests(unital=True, tie=672)
 
 
 # ============================================================================
@@ -1775,14 +1537,14 @@ class DualAlgebra(Algebra):
     ----------
     base : Algebra
         The algebra whose operations are swapped.
-    proof : str or None
-        An argument for the dual's laws about the carrier, given by the
+    proof : Proved or None
+        The argument for the dual's laws about the carrier, given by the
         base that knows it; without one those laws are assumed.
     """
 
-    check = _GRID_CHECK
+    tested = _UNITAL_TESTS
 
-    def __init__(self, base: Algebra, proof: str | None = None) -> None:
+    def __init__(self, base: Algebra, proof: Proved | None = None) -> None:
         self._base = base
         self._name = f"Dual({base.name})"
         self._proof = proof
@@ -1809,8 +1571,23 @@ class DualAlgebra(Algebra):
         """
         return self._name
 
-    def claim(self, law: Law) -> LawClaim:
-        """The claim of a law, proved by the base's argument when given.
+    @property
+    def subject(self) -> ClaimSubject:
+        """What the dual's claims are about: the dual of its base.
+
+        Returns
+        -------
+        ClaimSubject
+            The qualified class name with the base's name.
+        """
+        cls = type(self)
+        return ClaimSubject(
+            kind="algebra",
+            name=f"{cls.__module__}.{cls.__qualname__}({self._base.name})",
+        )
+
+    def evidence(self, law: Law) -> LawEvidence:
+        """The evidence for a law: the base's argument for laws about the carrier.
 
         Parameters
         ----------
@@ -1819,19 +1596,14 @@ class DualAlgebra(Algebra):
 
         Returns
         -------
-        LawClaim
-            The claim.
-
-        Raises
-        ------
-        ValueError
-            If the dual does not claim the law.
+        LawEvidence
+            The argument given at construction, or what the class declares.
         """
-        if law.subject == "carrier" and self._proof is not None:
-            if law not in self.laws():
-                raise ValueError(f"{self.name} does not claim {law.name!r}")
-            return self._claim(law, "proved", self._proof)
-        return super().claim(law)
+        if law.scope == "carrier":
+            if self._proof is not None:
+                return self._proof
+            return self.assumption("the base gave no argument for its dual")
+        return super().evidence(law)
 
     def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """The base join of two operands, ``a`` first.
@@ -1965,7 +1737,7 @@ class DualIdempotentSemiring(DualAlgebra, IdempotentSemiring):
     lattice under its join and product.
     """
 
-    check = _GRID_CHECK
+    tested = _UNITAL_TESTS
 
     @property
     def top(self) -> float:
@@ -2055,7 +1827,7 @@ class CustomAlgebra(Algebra):
         If ``name`` is empty or a sample check fails.
     """
 
-    check = _GRID_CHECK
+    tested = _UNITAL_TESTS
 
     def __init__(
         self,
@@ -2636,14 +2408,8 @@ class ProductFuzzyAlgebra(ZeroSumFree, NoZeroDivisors, Algebra):
     is computed in log space, with each term below ``1 - EPS``.
     """
 
-    proof = (
-        "On [0, 1], 1 - (1 - a)(1 - b) and ab lie in [0, 1]; the noisy-OR "
-        "over several axes is 1 minus a product over them, which is the "
-        "iterated noisy-OR since the product is associative and "
-        "commutative; 1 - ∏(1 - x_i) = 0 forces every x_i = 0, and ab = 0 "
-        "forces a = 0 or b = 0."
-    )
-    check = _GRID_CHECK
+    proof = _proved("product-fuzzy")
+    tested = _UNITAL_TESTS
 
     @property
     def name(self) -> str:
@@ -2820,11 +2586,7 @@ class ProductFuzzyAlgebra(ZeroSumFree, NoZeroDivisors, Algebra):
         """
         return DualAlgebra(
             self,
-            proof=(
-                "On [0, 1], a + b - ab and ab lie in [0, 1], and the product "
-                "folded over several axes is the iterated product since it "
-                "is associative and commutative."
-            ),
+            proof=_proved("dual-product-fuzzy"),
         )
 
 
@@ -2845,14 +2607,8 @@ class BooleanAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
     Boolean semiring is a selective semifield.
     """
 
-    proof = (
-        "({0, 1}, or, and, 0, 1) is the two-element Boolean algebra, a bounded "
-        "distributive lattice, hence a commutative semiring with idempotent, "
-        "selective sum (Golan 1999, chapter 1); or is 0 only when both "
-        "operands are, and is 0 only when a factor is, and 1 is its own "
-        "inverse."
-    )
-    check = _GRID_CHECK
+    proof = _proved("boolean")
+    tested = _TWO_ELEMENT_SELECTIVE_TESTS
 
     @property
     def name(self) -> str:
@@ -3002,12 +2758,7 @@ class BooleanAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
         """
         return DualIdempotentSemiring(
             self,
-            proof=(
-                "Exchanging the join and meet of the Boolean algebra gives the "
-                "Boolean algebra with its order reversed, a bounded "
-                "distributive lattice, hence an idempotent commutative "
-                "semiring (Golan 1999, chapter 1)."
-            ),
+            proof=_proved("dual-boolean"),
         )
 
     @property
@@ -3074,13 +2825,8 @@ class StandardMVAlgebra(ZeroSumFree, Algebra):
     [doi:10.1007/978-94-015-9480-6](https://doi.org/10.1007/978-94-015-9480-6)
     """
 
-    proof = (
-        "On [0, 1], min(1, a + b) and max(a + b - 1, 0) lie in [0, 1]; for "
-        "nonnegative terms min(1, a + b + c) = min(1, min(1, a + b) + c), so "
-        "the bounded sum over several axes is iterated; min(1, a + b) = 0 "
-        "forces a = b = 0."
-    )
-    check = _GRID_CHECK
+    proof = _proved("lukasiewicz")
+    tested = _UNITAL_TESTS
 
     @property
     def name(self) -> str:
@@ -3208,11 +2954,7 @@ class StandardMVAlgebra(ZeroSumFree, Algebra):
         """
         return DualAlgebra(
             self,
-            proof=(
-                "On [0, 1], min(1, a + b) and max(a + b - 1, 0) lie in [0, 1], "
-                "and the Łukasiewicz t-norm is associative and commutative, so "
-                "its fold over several axes is iterated."
-            ),
+            proof=_proved("dual-lukasiewicz"),
         )
 
 
@@ -3226,13 +2968,8 @@ class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring):
     The join selects the larger operand.
     """
 
-    proof = (
-        "([0, 1], max, min, 0, 1) is a bounded chain, hence a bounded "
-        "distributive lattice and a commutative semiring with selective sum "
-        "(Golan 1999, chapter 1); max(a, b) = 0 forces a = b = 0 and "
-        "min(a, b) = 0 forces a = 0 or b = 0."
-    )
-    check = _GRID_CHECK
+    proof = _proved("godel")
+    tested = _SELECTIVE_TESTS
 
     @property
     def name(self) -> str:
@@ -3358,11 +3095,7 @@ class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring):
         """
         return DualIdempotentSemiring(
             self,
-            proof=(
-                "Exchanging max and min on [0, 1] gives the chain with its "
-                "order reversed, a bounded distributive lattice, hence an "
-                "idempotent commutative semiring (Golan 1999, chapter 1)."
-            ),
+            proof=_proved("dual-godel"),
         )
 
     @property
@@ -3409,13 +3142,8 @@ class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, IdempotentSemiring
     the algebra is not a semifield.
     """
 
-    proof = (
-        "([0, ∞], min, +, ∞, 0) with ∞ + a = ∞ is the min-plus semiring on "
-        "the extended nonnegative reals, with selective sum (Golan 1999, "
-        "chapter 1); min(a, b) = ∞ forces a = b = ∞, and a + b = ∞ on "
-        "[0, ∞] forces a = ∞ or b = ∞."
-    )
-    check = _GRID_CHECK
+    proof = _proved("tropical")
+    tested = _SELECTIVE_TESTS
 
     @property
     def name(self) -> str:
@@ -3591,13 +3319,8 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, IdempotentSemiring):
     where ``-∞`` must annihilate.
     """
 
-    proof = (
-        "(ℝ ∪ {-∞}, max, +, -∞, 0) is the max-plus semifield, image of the "
-        "tropical semifield under negation (Golan 1999, chapter 4): max "
-        "selects an operand, every finite a has inverse -a, max(a, b) = -∞ "
-        "forces a = b = -∞, and a + b = -∞ forces a = -∞ or b = -∞."
-    )
-    check = _GRID_CHECK
+    proof = _proved("max-plus")
+    tested = _SELECTIVE_TESTS
 
     @property
     def name(self) -> str:
@@ -3795,14 +3518,8 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Semiring):
     has no greatest element.
     """
 
-    proof = (
-        "log is a semiring isomorphism from the semifield ([0, ∞), +, ·, 0, 1) "
-        "onto ([-∞, ∞), logsumexp, +, -∞, 0), so every law of the former "
-        "transfers (Golan 1999, chapter 4): a sum of nonnegative reals is 0 "
-        "only when every term is, a product only when a factor is, and "
-        "division is a - b for b > -∞."
-    )
-    check = _GRID_CHECK
+    proof = _proved("log-prob")
+    tested = _UNITAL_TESTS
 
     @property
     def name(self) -> str:
@@ -4005,12 +3722,8 @@ class RealAlgebra(Semifield, Ring, Semiring):
     and sums may cancel, so support is not a homomorphism from it.
     """
 
-    proof = (
-        "(ℝ, +, ·, 0, 1) is a field: a commutative ring in which every "
-        "element other than 0 has a multiplicative inverse, hence a "
-        "semifield without zero divisors."
-    )
-    check = _GRID_CHECK
+    proof = _proved("real")
+    tested = _UNITAL_TESTS
 
     @property
     def name(self) -> str:
@@ -4197,13 +3910,8 @@ class BoundedSumProductAlgebra(ZeroSumFree, NoZeroDivisors, Algebra):
     [doi:10.1007/978-94-015-9540-7](https://doi.org/10.1007/978-94-015-9540-7)
     """
 
-    proof = (
-        "On [0, 1], ab and min(1, a + b) lie in [0, 1]; for nonnegative terms "
-        "min(1, a + b + c) = min(1, min(1, a + b) + c), so the bounded sum "
-        "over several axes is iterated; min(1, a + b) = 0 forces a = b = 0, "
-        "and ab = 0 forces a = 0 or b = 0."
-    )
-    check = _GRID_CHECK
+    proof = _proved("probability")
+    tested = _UNITAL_TESTS
 
     @property
     def name(self) -> str:
@@ -4332,12 +4040,8 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Semiring):
     nonnegative reals are `MarkovAlgebra`.
     """
 
-    proof = (
-        "(ℕ, +, ·, 0, 1) is a commutative semiring (Golan 1999, chapter 1); "
-        "a sum of naturals is 0 only when every term is, and a product only "
-        "when a factor is."
-    )
-    check = _GRID_CHECK
+    proof = _proved("counting")
+    tested = _UNITAL_TESTS
 
     @property
     def name(self) -> str:
@@ -4494,13 +4198,8 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Semiring):
     of row-stochastic matrices is row-stochastic.
     """
 
-    proof = (
-        "([0, ∞), +, ·, 0, 1) is the semifield of nonnegative reals (Golan "
-        "1999, chapter 4): every positive element has a positive inverse, a "
-        "sum of nonnegative reals is 0 only when every term is, and a "
-        "product only when a factor is."
-    )
-    check = _GRID_CHECK
+    proof = _proved("markov")
+    tested = _UNITAL_TESTS
 
     @property
     def name(self) -> str:
@@ -4645,29 +4344,29 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Semiring):
 # ============================================================================
 
 
-def _inherited(structure: Lawful, law: Law, base: Lawful, theorem: str) -> LawClaim:
-    """A carrier claim that holds by a theorem when the base's laws do.
+def _inherited(structure: Lawful, base: Lawful, anchor: str) -> LawEvidence:
+    """The evidence of a law that a theorem derives from the base's laws.
 
     Parameters
     ----------
     structure : Lawful
         The structure built from ``base``.
-    law : Law
-        A carrier law the structure claims.
     base : Lawful
         The structure it is built from.
-    theorem : str
-        The theorem that derives the law from the base's laws.
+    anchor : str
+        The anchor of the theorem's argument.
 
     Returns
     -------
-    LawClaim
-        The claim, as strong as the weakest claim of the base.
+    LawEvidence
+        The argument when every law of the base about its carrier is
+        established, else an assumption that names the base.
     """
-    support = tuple(claim for claim in base.claims() if claim.law.subject == "carrier")
-    status = weakest(support)
-    evidence = f"{theorem} The laws of {base.name} it uses are {status}."
-    return LawClaim(law=law, member=structure.name, status=status, evidence=evidence)
+    if all(
+        claim.established for claim in base.claims() if claim.law.scope == "carrier"
+    ):
+        return _proved(anchor)
+    return structure.assumption(f"the laws of {base.name} are not established")
 
 
 class MatrixSemiring(OrderPreservingSemiring):
@@ -4676,7 +4375,7 @@ class MatrixSemiring(OrderPreservingSemiring):
     An element is an ``n × n`` matrix over ``base``. The sum is the
     entrywise sum, the product the matrix product of ``base``, the zero
     the zero matrix, and the unit the identity matrix. Matrices over a
-    semiring form a semiring [Golan (1999), chapter 3], and for
+    semiring form a semiring [Golan (1999)], and for
     ``n ≥ 2`` its product does not commute, so a computation over these
     weights has to keep the order of its factors.
 
@@ -4698,7 +4397,7 @@ class MatrixSemiring(OrderPreservingSemiring):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    check = _GRID_CHECK
+    tested = _UNITAL_TESTS
 
     def __init__(self, base: OrderPreservingSemiring, size: int) -> None:
         if base.element_shape != ():
@@ -4752,8 +4451,22 @@ class MatrixSemiring(OrderPreservingSemiring):
         """
         return (self._size, self._size)
 
-    def claim(self, law: Law) -> LawClaim:
-        """The claim of a law; carrier laws hold when the base's do.
+    @property
+    def subject(self) -> ClaimSubject:
+        """What the claims are about: the construction over its base.
+
+        Returns
+        -------
+        ClaimSubject
+            The qualified class name with the structure's name.
+        """
+        cls = type(self)
+        return ClaimSubject(
+            kind="algebra", name=f"{cls.__module__}.{cls.__qualname__}({self.name})"
+        )
+
+    def evidence(self, law: Law) -> LawEvidence:
+        """The evidence for a law; laws about the carrier hold by a theorem.
 
         Parameters
         ----------
@@ -4762,23 +4475,12 @@ class MatrixSemiring(OrderPreservingSemiring):
 
         Returns
         -------
-        LawClaim
-            The claim.
-
-        Raises
-        ------
-        ValueError
-            If the structure does not claim the law.
+        LawEvidence
+            The theorem's argument when the base's laws are established.
         """
-        if law.subject == "carrier" and law in self.laws():
-            return _inherited(
-                self,
-                law,
-                self._base,
-                "Matrices over a semiring form a semiring under the entrywise "
-                "sum and the matrix product (Golan 1999, chapter 3).",
-            )
-        return super().claim(law)
+        if law.scope == "carrier":
+            return _inherited(self, self._base, "matrix")
+        return super().evidence(law)
 
     def _check(self, t: torch.Tensor) -> None:
         """Require trailing matrix axes.
@@ -4918,7 +4620,7 @@ class FreeSemimodule(Semimodule):
     An element is a vector of ``n`` scalars. The sum is entrywise, the
     zero is the zero vector, and a scalar acts on the left of every
     entry. These operations make ``K^n`` a left semimodule over ``K``
-    [Golan (1999), chapter 14].
+    [Golan (1999)].
 
     Parameters
     ----------
@@ -4938,7 +4640,7 @@ class FreeSemimodule(Semimodule):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    check = _GRID_CHECK
+    tested = _tests(unital=False)
 
     def __init__(self, scalars: OrderPreservingSemiring, size: int) -> None:
         if size < 0:
@@ -4990,33 +4692,36 @@ class FreeSemimodule(Semimodule):
         """
         return (self._size, *self._scalars.element_shape)
 
-    def claim(self, law: Law) -> LawClaim:
-        """The claim of a law; carrier laws hold when the scalars' do.
+    @property
+    def subject(self) -> ClaimSubject:
+        """What the claims are about: the construction over its base.
+
+        Returns
+        -------
+        ClaimSubject
+            The qualified class name with the structure's name.
+        """
+        cls = type(self)
+        return ClaimSubject(
+            kind="algebra", name=f"{cls.__module__}.{cls.__qualname__}({self.name})"
+        )
+
+    def evidence(self, law: Law) -> LawEvidence:
+        """The evidence for a law; laws about the carrier hold by a theorem.
 
         Parameters
         ----------
         law : Law
-            A law the module claims.
+            A law the structure claims.
 
         Returns
         -------
-        LawClaim
-            The claim.
-
-        Raises
-        ------
-        ValueError
-            If the module does not claim the law.
+        LawEvidence
+            The theorem's argument when the base's laws are established.
         """
-        if law.subject == "carrier" and law in self.laws():
-            return _inherited(
-                self,
-                law,
-                self._scalars,
-                "K^n with the entrywise sum and the left action on every entry "
-                "is a left K-semimodule (Golan 1999, chapter 14).",
-            )
-        return super().claim(law)
+        if law.scope == "carrier":
+            return _inherited(self, self._scalars, "free-semimodule")
+        return super().evidence(law)
 
     def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
         """The entrywise sum over index axes.
@@ -5128,13 +4833,6 @@ DUAL_GODEL = GODEL.dual()
 
 
 __all__ = [
-    "LawStatus",
-    "LawSubject",
-    "Law",
-    "LawClaim",
-    "LAWS",
-    "weakest",
-    "Lawful",
     "Carrier",
     "UnitalCarrier",
     "CompositionRule",

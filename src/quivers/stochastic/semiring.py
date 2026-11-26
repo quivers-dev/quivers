@@ -143,7 +143,7 @@ class LogProbSemiring(ChartSemiring, LogProbAlgebra):
     """
 
     proof = LogProbAlgebra.proof
-    check = LogProbAlgebra.check
+    tested = LogProbAlgebra.tested
 
 
 class ViterbiSemiring(ChartSemiring, MaxPlusAlgebra):
@@ -156,7 +156,7 @@ class ViterbiSemiring(ChartSemiring, MaxPlusAlgebra):
     """
 
     proof = MaxPlusAlgebra.proof
-    check = MaxPlusAlgebra.check
+    tested = MaxPlusAlgebra.tested
 
 
 class BooleanSemiring(ChartSemiring, BooleanAlgebra):
@@ -167,7 +167,7 @@ class BooleanSemiring(ChartSemiring, BooleanAlgebra):
     """
 
     proof = BooleanAlgebra.proof
-    check = BooleanAlgebra.check
+    tested = BooleanAlgebra.tested
 
 
 class CountingSemiring(ChartSemiring, CountingAlgebra):
@@ -178,7 +178,7 @@ class CountingSemiring(ChartSemiring, CountingAlgebra):
     """
 
     proof = CountingAlgebra.proof
-    check = CountingAlgebra.check
+    tested = CountingAlgebra.tested
 
 
 LOG_PROB = LogProbSemiring()

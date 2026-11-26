@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import inspect
+import re
+from pathlib import Path
 
 import pytest
 import torch
 
 from quivers.core import algebras
-from quivers.core.algebras import LAWS, Lawful
+from quivers.core.laws import LAWS, Lawful, LawStatus, Proved, Tested
 from quivers.stochastic import semiring as chart
 from tests.evidence.compare import Mismatch
 from tests.evidence.laws import (
+    ACTION_LAWLESS,
     ASSUMED,
     CELLS,
     DTYPES,
@@ -19,6 +22,7 @@ from tests.evidence.laws import (
     LAW_MUTATIONS,
     LAWLESS,
     MEMBERS,
+    Member,
     ROWS,
     cell,
     claimed,
@@ -43,12 +47,65 @@ def test_cell(name: str, dtype: torch.dtype) -> None:
     run(member, law, dtype)
 
 
-@pytest.mark.parametrize("row", ROWS)
-def test_claims_have_statuses(row: str) -> None:
-    """Require every claim of a shipped row to be proved or checked.
+DOCS = Path(__file__).resolve().parents[2] / "docs"
+"""The documentation, where the arguments of the shipped classes are written."""
 
-    The custom rows are the exception, and their laws about the carrier
-    have to be reported as assumed.
+DTYPE_FREE = frozenset({"zero-form", "unit-form"})
+"""Laws whose check asks for every dtype itself."""
+
+
+def _anchors(page: Path) -> set[str]:
+    """The explicit anchors of a documentation page.
+
+    Parameters
+    ----------
+    page : Path
+        The page.
+
+    Returns
+    -------
+    set of str
+        Every ``{#anchor}`` of a heading.
+    """
+    return set(re.findall(r"\{#([A-Za-z0-9_-]+)\}", page.read_text()))
+
+
+def _cases(row: str, law: str) -> int:
+    """The number of cases the law grid evaluates for one cell.
+
+    Parameters
+    ----------
+    row : str
+        The row.
+    law : str
+        A law about the implementation.
+
+    Returns
+    -------
+    int
+        The cases over every precision the cell runs in.
+    """
+    member = MEMBERS[row]
+    if law in DTYPE_FREE:
+        found = LAW_CHECKS[law](member, DTYPES[0])
+        assert found is not None
+        return found
+    total = 0
+    for dtype in DTYPES:
+        found = LAW_CHECKS[law](member, dtype)
+        assert found is not None
+        total += found
+    return total
+
+
+@pytest.mark.parametrize("row", ROWS)
+def test_claims_carry_their_evidence(row: str) -> None:
+    """Require the evidence of every claim of a row to be what it states.
+
+    A shipped row proves its laws about the carrier by an argument written
+    at an existing anchor of the documentation, and tests its laws about
+    the implementation on exactly as many cases as the grid evaluates. The
+    custom rows assume their laws about the carrier.
 
     Parameters
     ----------
@@ -57,17 +114,25 @@ def test_claims_have_statuses(row: str) -> None:
     """
     structure = MEMBERS[row].structure
     for claim in structure.claims():
-        assert claim.member == structure.name
-        assert claim.evidence
-        if row in ASSUMED and claim.law.subject == "carrier":
-            assert claim.status == "assumed", claim
-        else:
-            assert claim.status in ("proved", "checked"), claim
+        assert claim.subject == structure.subject
+        if claim.law.scope == "carrier":
+            if row in ASSUMED:
+                assert claim.status is LawStatus.ASSUMED, claim
+                continue
+            assert isinstance(claim.evidence, Proved), claim
+            assert claim.established
+            page, anchor = claim.evidence.argument.split("#")
+            assert anchor in _anchors(DOCS / page), claim.evidence.argument
+            continue
+        assert isinstance(claim.evidence, Tested), claim
+        assert not claim.established
+        assert claim.evidence.cases == _cases(row, claim.law.name), claim
 
 
-def test_every_law_has_a_check() -> None:
-    """Require a check for every law of the catalogue."""
-    assert set(LAW_CHECKS) == set(LAWS)
+def test_every_claimed_law_has_a_check() -> None:
+    """Require a check for every law some row claims."""
+    assert {law for row in ROWS for law in claimed(MEMBERS[row])} <= set(LAW_CHECKS)
+    assert set(LAW_CHECKS) <= set(LAWS)
 
 
 def _concrete_classes() -> set[type]:
@@ -100,7 +165,7 @@ def test_every_concrete_class_has_a_row() -> None:
     )
 
 
-@pytest.mark.parametrize("law", sorted(LAWS))
+@pytest.mark.parametrize("law", sorted(LAW_CHECKS))
 def test_a_lawless_member_is_rejected(law: str) -> None:
     """Require the check of each law to reject a member that breaks it.
 
@@ -115,9 +180,22 @@ def test_a_lawless_member_is_rejected(law: str) -> None:
         run(member, law)
 
 
-def test_every_law_has_a_lawless_member() -> None:
-    """Require a deliberately lawless member for every law."""
-    assert set(LAWLESS) == set(LAWS)
+def test_every_checked_law_has_a_lawless_member() -> None:
+    """Require a deliberately lawless member for every law the grid checks."""
+    assert set(LAWLESS) == set(LAW_CHECKS)
+
+
+@pytest.mark.parametrize("member", ACTION_LAWLESS, ids=lambda m: m.name)
+def test_each_part_of_the_action_is_checked(member: Member) -> None:
+    """Require the action check to reject a module that breaks any one part.
+
+    Parameters
+    ----------
+    member : Member
+        A lawless module.
+    """
+    with pytest.raises(Mismatch):
+        run(member, "semimodule-action")
 
 
 MUTATED = [

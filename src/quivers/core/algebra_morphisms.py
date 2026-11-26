@@ -58,6 +58,7 @@ from quivers.core.algebras import (
     NoZeroDivisors,
     ZeroSumFree,
 )
+from quivers.core.laws import NO_ZERO_DIVISORS, ZERO_SUM_FREE
 
 
 class CarrierMap(ABC):
@@ -140,7 +141,7 @@ class SupportMap(AlgebraHomomorphism):
     zero and the unit on the mathematical carrier, which is what makes
     it a homomorphism onto the Boolean algebra [Golan (1999)]. The
     source is accepted by its capabilities, not by its type: it must
-    claim both laws with a status other than assumed (see
+    establish both laws, by an argument or a decision procedure (see
     `Lawful.establishes`), so a subclass that replaces an operation
     without its own proof is refused. Floating-point products can still
     underflow to the zero.
@@ -172,7 +173,7 @@ class SupportMap(AlgebraHomomorphism):
         if not (
             isinstance(source, ZeroSumFree)
             and isinstance(source, NoZeroDivisors)
-            and source.establishes("zero-sum-free", "no zero divisors")
+            and source.establishes(ZERO_SUM_FREE, NO_ZERO_DIVISORS)
         ):
             raise TypeError(
                 f"support is not a declared homomorphism for {source!r}: the "

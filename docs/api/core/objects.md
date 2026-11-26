@@ -17,8 +17,7 @@ space types.
 ## Package constants
 
 The constants and type aliases of `quivers.core`: the terminal object,
-the numerical margin, the catalogue of algebraic laws and the words for
-their status and subject, the algebra and homomorphism singletons, the
+the numerical margin, the algebra and homomorphism singletons, the
 homomorphism registry, and the transformation alias.
 
 ::: quivers.core
@@ -26,9 +25,6 @@ homomorphism registry, and the transformation alias.
       members:
         - Unit
         - EPS
-        - LAWS
-        - LawStatus
-        - LawSubject
         - PRODUCT_FUZZY
         - BOOLEAN
         - LUKASIEWICZ
