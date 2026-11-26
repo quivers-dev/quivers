@@ -27,12 +27,14 @@ from quivers.qiec.contracts import (
     Best,
     Bounded,
     InterpretationId,
+    JudgmentPattern,
     NonlinearFold,
     NoRetention,
+    Outcome,
     OccurrenceId,
-    PackedForest,
     ParameterId,
     QuerySpec,
+    RequestedEvidence,
 )
 from quivers.qiec.identifiers import ComputationId
 from quivers.qiec.rules import Item, RulePresentation
@@ -395,27 +397,33 @@ def check_zero_weight_gradient() -> None:
 
 
 def check_premise_order() -> None:
-    """Require products in premise order over matrices that do not commute (M18).
+    """Require products in premise order, then the rule weight, over matrices (M18).
+
+    On the chain ``0 -> 1 -> 2 -> 3`` with edge matrices ``A, B, C`` and the
+    step rule's matrix ``R``, a derivation's factors read children first,
+    then the rule, so node 3 is ``A R B R C R``.
 
     Raises
     ------
     Mismatch
-        If node 3's value is not ``A B C`` for the edges in order.
+        If node 3's value is another product.
     """
     matrices = [
         torch.tensor([[1.0, 1.0], [0.0, 1.0]], dtype=torch.float64),
         torch.tensor([[1.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
         torch.tensor([[0.0, 2.0], [1.0, 0.0]], dtype=torch.float64),
     ]
+    rule = torch.tensor([[2.0, 1.0], [1.0, 1.0]], dtype=torch.float64)
     edges = graphs.chain(3)
     inputs: Inputs = {
         graphs.edge_id(index): matrix for index, matrix in enumerate(matrices)
     }
+    inputs[ParameterId.derive(graphs.NAME, "step")] = rule
     like = torch.zeros((2, 2), dtype=torch.float64)
     evaluation = _graph_plan(MatrixSemiring(COUNTING, 2)).run(
         graphs.occurrences(edges), inputs, like=like
     )
-    expected = matrices[0] @ matrices[1] @ matrices[2]
+    expected = matrices[0] @ rule @ matrices[1] @ rule @ matrices[2] @ rule
     found = evaluation.value(graphs.node(3))
     deviation = float((found - expected).abs().max())
     if deviation:
@@ -443,6 +451,7 @@ def _attempts() -> dict[PlanRefusal, Callable[[], Plan]]:
     dict of PlanRefusal to Callable
         Attempts by the refusal they have to meet.
     """
+    evidence = RequestedEvidence(patterns=(JudgmentPattern(family=graphs.REACH),))
     lambek = QuerySpec(
         presentation=fixture.LAMBEK.id,
         interpretation=InterpretationId.derive("lambek", "weight"),
@@ -469,12 +478,22 @@ def _attempts() -> dict[PlanRefusal, Callable[[], Plan]]:
             lambek, fixture.LAMBEK, REAL, Acyclic(), graphs.contract(), NoRetention()
         ),
         PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR: lambda: plan(
-            _square_query().with_(retention=PackedForest()),
+            graphs.query().with_(
+                observable=Outcome(key=ComputationId.derive(graphs.NAME, "key"))
+            ),
             graphs.PRESENTATION,
             REAL,
             Acyclic(),
             graphs.contract(),
-            PackedForest(),
+            NoRetention(),
+        ),
+        PlanRefusal.RETENTION_WITHOUT_EXECUTOR: lambda: plan(
+            graphs.query().with_(retention=evidence),
+            graphs.PRESENTATION,
+            REAL,
+            Acyclic(),
+            graphs.contract(),
+            evidence,
         ),
     }
 
@@ -484,9 +503,11 @@ def check_refusals() -> None:
 
     A fold that does not commute with sums cannot be applied to the
     aggregate a two-pass run computes: with alternatives ``-1`` and ``1``
-    the square of the sum is zero and the sum of the squares two. So it
-    is refused, as are bounded recursion, open premises, and a run whose
-    inputs make the derived hypergraph cyclic.
+    the square of the sum is zero and the sum of the squares two. So
+    without the packed forest it is refused, as are bounded recursion
+    without the forest, open premises, a pushforward, evidence restricted
+    to patterns, and a run whose inputs make the derived hypergraph
+    cyclic.
 
     Raises
     ------
@@ -736,14 +757,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=0.5,
     ),
     Mutation(
-        name="plan-nonlinear-observer-on-aggregate",
+        name="plan-observable-not-checked",
         defect_class="observer",
-        provenance="a fold that does not commute with sums is planned on the aggregate",
+        provenance="an observable no executor answers is planned as a weight",
         target=f"{PLAN}:plan",
         also_in=("tests.evidence.plan_controls",),
         rewrites=(
             Rewrite(
-                old="if not isinstance(query.observable, _SUPPORTED_OBSERVABLES):",
+                old="if not isinstance(query.observable, supported):",
                 new="if False:",
             ),
         ),

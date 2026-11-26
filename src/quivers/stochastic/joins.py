@@ -1230,8 +1230,9 @@ def enumerate_aggregate(
 ) -> Elimination:
     """The aggregate of a rule body by listing its instances.
 
-    Each instance's product is taken in premise order with the rule
-    weight first, so the product need not commute; the cost is that of
+    Each instance's product is taken in premise order, then the rule
+    weight, as a derivation's factors are read, so the product need not
+    commute; the cost is that of
     `generic_join`, the number of instances at worst.
 
     Parameters
@@ -1270,10 +1271,13 @@ def enumerate_aggregate(
     for binding, premises in generic_join(
         query, tables, presentation, order=order, work=work
     ):
-        total = weight
-        for item in premises:
+        total = weights.get(premises[0], _unit(algebra, like)) if premises else weight
+        for item in premises[1:]:
             work.products += 1
             total = algebra.tensor_op(total, weights.get(item, _unit(algebra, like)))
+        if premises:
+            work.products += 1
+            total = algebra.tensor_op(total, weight)
         _add(algebra, output, tuple(binding[v] for v in query.free), total, work)
     return Elimination(
         values=_conclusions(query, output),

@@ -397,8 +397,8 @@ def check_refusals_and_order() -> None:
 
     A premise that is a sum of two variables is not a relation of its
     items; elimination is refused for matrices, whose aggregate by
-    enumeration keeps the order of the premises; an order of other
-    variables is refused.
+    enumeration multiplies the premises in order and then the rule
+    weight; an order of other variables is refused.
 
     Raises
     ------
@@ -448,11 +448,18 @@ def check_refusals_and_order() -> None:
     ]
     weights = dict(zip(items, matrices, strict=True))
     query = body_query(bodies.TRIANGLES)
+    rule = torch.tensor([[2.0, 1.0], [1.0, 1.0]], dtype=torch.float64)
     result = enumerate_aggregate(
-        query, relations(query, items), bodies.PRESENTATION, algebra, weights, like=like
+        query,
+        relations(query, items),
+        bodies.PRESENTATION,
+        algebra,
+        weights,
+        like=like,
+        rule_weight=rule,
     )
     (value,) = result.values.values()
-    expected = matrices[0] @ matrices[1] @ matrices[2]
+    expected = matrices[0] @ matrices[1] @ matrices[2] @ rule
     deviation = float((value - expected).abs().max())
     if deviation:
         raise Mismatch("value", deviation, f"the product is {value.tolist()}")

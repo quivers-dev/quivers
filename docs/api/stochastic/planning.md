@@ -29,7 +29,7 @@ items $p_1, \dots, p_n$ in premise order, and $a(x)$ for the sum of the input oc
 The value of $x$ is
 
 $$
-v(x) = a(x) \oplus \bigoplus_{e \in \mathcal I(x)} w_r \otimes v(p_1) \otimes \cdots \otimes v(p_n).
+v(x) = a(x) \oplus \bigoplus_{e \in \mathcal I(x)} v(p_1) \otimes \cdots \otimes v(p_n) \otimes w_r.
 $$
 
 The first pass discovers every item and counts $|\mathcal I(x)|$ for each, storing no instance.
@@ -53,7 +53,7 @@ pattern against an item is deterministic, so one choice of premise items gives o
 QED
 
 One item filling several premises, as in $c \leftarrow b, b, b$, thus contributes
-$w \otimes v(b) \otimes v(b) \otimes v(b)$ once.
+$v(b) \otimes v(b) \otimes v(b) \otimes w$ once.
 
 **Theorem.** If the derived hypergraph is acyclic, the second pass makes every discovered item
 final, and $v(x)$ is the sum, over the derivations of $x$, of the product of their weights in
@@ -71,7 +71,8 @@ sums by distributivity, which keeps the order of factors, gives one product per 
 premise order. Only associativity and commutativity of $\oplus$ and the two distributive laws are
 used, so the product need not commute. QED
 
-The products are taken in premise order with the rule weight first, so the algebra may be a
+The products are taken in premise order with the rule weight last, as a derivation's factors are
+read (children first, then the rule), so the algebra may be a
 [`MatrixSemiring`][quivers.core.algebras.MatrixSemiring] whose product does not commute. Space is
 the values, the counts and the chart's indexes, $O(V)$ for a fixed presentation; parent counts
 are the only provenance kept, which is the [`ParentCounts`][quivers.qiec.contracts.ParentCounts]
