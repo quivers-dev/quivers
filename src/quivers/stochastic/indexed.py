@@ -42,6 +42,7 @@ __all__ = [
     "RuleJoinPlan",
     "index_variables",
     "join_plans",
+    "side_condition_holds",
 ]
 
 
@@ -191,6 +192,44 @@ def join_plans(
     return plans
 
 
+def side_condition_holds(
+    presentation: RulePresentation, rule: Rule, binding: Binding
+) -> bool:
+    """Evaluate a rule's side condition with the QIEC evaluator.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation, which holds the condition's computation.
+    rule : Rule
+        The rule.
+    binding : Binding
+        Its variables.
+
+    Returns
+    -------
+    bool
+        Whether the condition holds; true without one.
+
+    Raises
+    ------
+    MatchError
+        If the condition reads a variable the binding lacks.
+    """
+    condition = rule.side_condition
+    if condition is None:
+        return True
+    computation = presentation.conditions_by_id[condition.computation]
+    environment = {}
+    for name, parameter in zip(
+        condition.arguments, computation.parameters, strict=True
+    ):
+        if name not in binding:
+            raise MatchError(f"the side condition of {rule.name!r} reads {name!r}")
+        environment[parameter] = binding[name]
+    return bool(Evaluator().evaluate(computation.body, environment))
+
+
 class ChartWork(ValueModel):
     """Counters of the work of a chart.
 
@@ -232,7 +271,6 @@ class IndexedChart:
             tuple[FamilyId, tuple[int, ...]], dict[tuple[Ground, ...], list[Item]]
         ] = {}
         self.plans = join_plans(presentation)
-        self._conditions = {item.id: item for item in presentation.conditions}
         self.work = {
             "lookups": 0,
             "candidates": 0,
@@ -300,7 +338,7 @@ class IndexedChart:
         return index.get(key, [])
 
     def holds(self, rule: Rule, binding: Binding) -> bool:
-        """Evaluate a rule's side condition with the QIEC evaluator.
+        """Evaluate a rule's side condition, counting the evaluation.
 
         Parameters
         ----------
@@ -319,19 +357,9 @@ class IndexedChart:
         MatchError
             If the condition reads a variable the binding lacks.
         """
-        condition = rule.side_condition
-        if condition is None:
-            return True
-        self.work["conditions"] += 1
-        computation = self._conditions[condition.computation]
-        environment = {}
-        for name, parameter in zip(
-            condition.arguments, computation.parameters, strict=True
-        ):
-            if name not in binding:
-                raise MatchError(f"the side condition of {rule.name!r} reads {name!r}")
-            environment[parameter] = binding[name]
-        return bool(Evaluator().evaluate(computation.body, environment))
+        if rule.side_condition is not None:
+            self.work["conditions"] += 1
+        return side_condition_holds(self.presentation, rule, binding)
 
     def instances(
         self,

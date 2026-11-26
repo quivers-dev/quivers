@@ -1045,6 +1045,17 @@ class RulePresentation(QiecModel):
         """
         return MappingProxyType({judgment.id: judgment for judgment in self.judgments})
 
+    @cached_property
+    def conditions_by_id(self) -> Mapping[ComputationId, NamedComputation]:
+        """Every side condition's computation by its identity.
+
+        Returns
+        -------
+        Mapping[ComputationId, NamedComputation]
+            Read-only; built once.
+        """
+        return MappingProxyType({item.id: item for item in self.conditions})
+
     def declarations(
         self,
     ) -> tuple[tuple[FamilyDecl, ...], tuple[ConstructorDecl, ...]]:

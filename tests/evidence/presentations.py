@@ -80,36 +80,52 @@ CAT = UserIndexSort(name="Cat", constructors=CATEGORIES)
 SPAN = FamilyId.derive(NAME, "span")
 """The one judgment form: a category over a span."""
 
-ORIGIN = SourceOrigin(
-    module=NAME,
-    structural_path=("conditions", "before"),
-    role="computation",
-    source_protocol=PRESENTATION_PROTOCOL,
-)
-
 LEFT = Local(name="left", type=INT)
 RIGHT = Local(name="right", type=INT)
 
 _LT = primitive("lt_int")
 
-BEFORE = NamedComputation(
-    id=ComputationId.derive(NAME, "before"),
-    name="before",
-    telescope=(),
-    parameters=(LEFT, RIGHT),
-    body=Return(
-        value=PrimitiveApplication(
-            primitive=_LT.id,
-            name=_LT.name,
-            arguments=(Var(local=LEFT), Var(local=RIGHT)),
-            result_type=BOOL,
-            origin=ORIGIN,
-        )
-    ),
-    type=ComputationType(effects=EMPTY_ROW, result=BOOL),
-    origin=ORIGIN,
-)
-"""The side condition ``left < right``."""
+
+def before(module: str) -> NamedComputation:
+    """The side condition ``left < right`` of one module.
+
+    Parameters
+    ----------
+    module : str
+        The module that holds it.
+
+    Returns
+    -------
+    NamedComputation
+        The computation.
+    """
+    origin = SourceOrigin(
+        module=module,
+        structural_path=("conditions", "before"),
+        role="computation",
+        source_protocol=PRESENTATION_PROTOCOL,
+    )
+    return NamedComputation(
+        id=ComputationId.derive(module, "before"),
+        name="before",
+        telescope=(),
+        parameters=(LEFT, RIGHT),
+        body=Return(
+            value=PrimitiveApplication(
+                primitive=_LT.id,
+                name=_LT.name,
+                arguments=(Var(local=LEFT), Var(local=RIGHT)),
+                result_type=BOOL,
+                origin=origin,
+            )
+        ),
+        type=ComputationType(effects=EMPTY_ROW, result=BOOL),
+        origin=origin,
+    )
+
+
+BEFORE = before(NAME)
+"""The side condition ``left < right`` of the attachment grammar."""
 
 
 def position(name: str) -> IndexVariable:

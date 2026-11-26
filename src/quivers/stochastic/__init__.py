@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, TypeAliasType
 
 if TYPE_CHECKING:
     from quivers.core.algebras import MARKOV, MarkovAlgebra
+    from quivers.core.laws import Law
     from quivers.qiec.contracts import ComplexityClaim
     from quivers.stochastic.agenda import (
         Agenda,
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
     )
     from quivers.stochastic.planning import (
         RECOMPUTED_TWO_PASS_WORK,
+        TWO_PASS_LAWS,
         TWO_PASS_WORK,
         Alternative,
         Evaluation,
@@ -378,6 +380,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "PlanRefusal": "quivers.stochastic.planning",
     "PlanRefused": "quivers.stochastic.planning",
     "RECOMPUTED_TWO_PASS_WORK": "quivers.stochastic.planning",
+    "TWO_PASS_LAWS": "quivers.stochastic.planning",
     "TWO_PASS_WORK": "quivers.stochastic.planning",
     "acyclicity_certificate": "quivers.stochastic.planning",
     "plan": "quivers.stochastic.planning",
@@ -395,6 +398,7 @@ type _LazyExport = (
     | MarkovAlgebra
     | ChartSemiring
     | ComplexityClaim
+    | tuple[Law, ...]
     | RuleSchema
     | frozenset[str]
     | dict[str, RuleSchema]
@@ -604,6 +608,7 @@ __all__ = [
     "PlanRefusal",
     "PlanRefused",
     "RECOMPUTED_TWO_PASS_WORK",
+    "TWO_PASS_LAWS",
     "TWO_PASS_WORK",
     "acyclicity_certificate",
     "plan",

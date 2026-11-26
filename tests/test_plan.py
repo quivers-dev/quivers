@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from quivers.core.algebras import LOG_PROB, REAL
+from quivers.core.algebras import LOG_PROB, REAL, RealAlgebra
 from quivers.qiec.contracts import (
     ALGEBRA_OPERATIONS,
     Acyclic,
@@ -37,6 +37,10 @@ from tests.evidence import graphs
 from tests.evidence import presentations as fixture
 
 LIKE = torch.zeros((), dtype=torch.float64)
+
+
+class _Unproved(RealAlgebra):
+    """The reals with no evidence of their own, so every law is only assumed."""
 
 
 def _plan(*, recompute: bool = False, retention: Retention | None = None) -> Plan:
@@ -224,3 +228,18 @@ def test_log_domain_run_matches_the_real_one() -> None:
     assert torch.allclose(
         log.value(graphs.node(6)).exp(), real.value(graphs.node(6)), rtol=1e-12
     )
+
+
+def test_an_algebra_without_the_laws_is_refused() -> None:
+    """An algebra whose laws are only assumed is not planned for an exact result."""
+    with pytest.raises(PlanRefused) as caught:
+        plan(
+            graphs.query(),
+            graphs.PRESENTATION,
+            _Unproved(),
+            Acyclic(),
+            graphs.contract(),
+            NoRetention(),
+        )
+    assert caught.value.code is PlanRefusal.INADMISSIBLE
+    assert "claim-not-established: distributive" in caught.value.reason

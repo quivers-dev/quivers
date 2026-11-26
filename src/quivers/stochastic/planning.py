@@ -39,7 +39,18 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring
-from quivers.core.laws import Citation, ClaimSubject, LawClaim
+from quivers.core.laws import (
+    DISTRIBUTIVE,
+    PLUS_ASSOCIATIVE,
+    PLUS_COMMUTATIVE,
+    TIMES_ASSOCIATIVE,
+    TIMES_UNIT,
+    Citation,
+    ClaimSubject,
+    Law,
+    LawClaim,
+    requirements,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import (
     ALGEBRA_OPERATIONS,
@@ -94,6 +105,7 @@ __all__ = [
     "PlanRefusal",
     "PlanRefused",
     "RECOMPUTED_TWO_PASS_WORK",
+    "TWO_PASS_LAWS",
     "TWO_PASS_WORK",
     "acyclicity_certificate",
     "plan",
@@ -936,6 +948,17 @@ class Plan(ValueModel):
 # planning
 
 
+TWO_PASS_LAWS: tuple[Law, ...] = (
+    PLUS_ASSOCIATIVE,
+    PLUS_COMMUTATIVE,
+    TIMES_ASSOCIATIVE,
+    TIMES_UNIT,
+    DISTRIBUTIVE,
+)
+"""The laws two-pass evaluation uses: sums are regrouped and reordered as
+instances arrive, products of sums are expanded in premise order, and the
+unit stands for a rule or input without a weight."""
+
 _SUPPORTED_OBSERVABLES = (Weight, Support, Best, Marginal, Statistic)
 """The observables a two-pass run answers: values of items in the algebra,
 their support, best values with witnesses, and their derivatives."""
@@ -985,7 +1008,12 @@ def plan(
         )
     try:
         check_admissible(
-            query, recursion, accuracy, algebra=algebra.subject, claims=algebra.claims()
+            query,
+            recursion,
+            accuracy,
+            algebra=algebra.subject,
+            claims=algebra.claims(),
+            uses=requirements(TWO_PASS_LAWS, algebra.subject),
         )
     except InadmissibleContract as error:
         raise PlanRefused(PlanRefusal.INADMISSIBLE, str(error)) from error
