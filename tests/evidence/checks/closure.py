@@ -15,6 +15,7 @@ from quivers.core.algebras import (
     LogProbAlgebra,
     MarkovAlgebra,
     MaxPlusAlgebra,
+    ClosureWork,
     RealAlgebra,
     Semiring,
     Star,
@@ -628,7 +629,7 @@ class Forwarded(ChartSemiring, Star):
         """
         return LOG_PROB.star_domain
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """Forward a closure.
 
         Parameters
@@ -638,10 +639,10 @@ class Forwarded(ChartSemiring, Star):
 
         Returns
         -------
-        torch.Tensor
-            The closure.
+        tuple of (torch.Tensor, ClosureWork)
+            The closure and its work.
         """
-        return LOG_PROB.star(matrix)
+        return LOG_PROB.star_with_work(matrix)
 
 
 #: A cycle whose weights, as exact numbers of float64, sum to zero, while

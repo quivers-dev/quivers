@@ -1233,6 +1233,30 @@ class UndecidedClosureError(ValueError):
     """
 
 
+class ClosureWork(dx.Model):
+    """The work of one closure, counted in elements of the algebra.
+
+    Parameters
+    ----------
+    pivots : int
+        States eliminated.
+    sums : int
+        Binary sums of elements.
+    products : int
+        Binary products of elements.
+    exact : int
+        Operations of the exact or enclosed decision of the loops, which
+        runs only when a loop weight lies within the rounding bound of
+        the boundary: rational updates of an entry, or interval updates
+        of an entry. Zero when no loop entered the band.
+    """
+
+    pivots: int
+    sums: int
+    products: int
+    exact: int = 0
+
+
 class Star(UnitalCarrier):
     """A carrier whose square matrices have a closure.
 
@@ -1267,6 +1291,29 @@ class Star(UnitalCarrier):
         ...
 
     @abstractmethod
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
+        """The closure ``A* = I ⊕ A ⊕ A² ⊕ ...`` of a square matrix, and its work.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            Shape ``(n, n, *element_shape)``.
+
+        Returns
+        -------
+        tuple of (torch.Tensor, ClosureWork)
+            The closure, of the same shape, and the pivots, sums, products
+            and exact operations it took.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the matrix lies outside `star_domain`.
+        UndecidedClosureError
+            If rounding cannot decide whether it lies inside.
+        """
+        ...
+
     def star(self, matrix: torch.Tensor) -> torch.Tensor:
         """The closure ``A* = I ⊕ A ⊕ A² ⊕ ...`` of a square matrix.
 
@@ -1287,7 +1334,7 @@ class Star(UnitalCarrier):
         UndecidedClosureError
             If rounding cannot decide whether it lies inside.
         """
-        ...
+        return self.star_with_work(matrix)[0]
 
 
 # ============================================================================
@@ -1680,7 +1727,7 @@ def _eliminate(
     repeat: Callable[[torch.Tensor, int], torch.Tensor],
     *,
     unit_diagonal: bool = False,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, ClosureWork]:
     """The closure of a matrix by eliminating one state after another.
 
     At state ``k`` the loop weight ``a_kk`` gives the weight of going
@@ -1708,18 +1755,22 @@ def _eliminate(
 
     Returns
     -------
-    torch.Tensor
-        ``A*``.
+    tuple of (torch.Tensor, ClosureWork)
+        ``A*``, and the pivots, sums and products of the elimination,
+        counted in elements of the results.
     """
     n = _square(matrix)
     star = matrix
     indices = torch.arange(n, device=matrix.device)
+    sums = products = 0
     for k in range(n):
         loop_star = repeat(star[k, k], k)
         right = algebra.tensor_op(loop_star, star[None, k, :])
         left = algebra.tensor_op(star[:, k, None], loop_star)
         through = algebra.tensor_op(star[:, k, None], right)
         combined = algebra.join_pair(star, through)
+        products += right.numel() + left.numel() + through.numel()
+        sums += combined.numel()
         row = indices[:, None] == k
         column = indices[None, :] == k
         star = torch.where(
@@ -1730,7 +1781,7 @@ def _eliminate(
     if unit_diagonal and n:
         diagonal = torch.eye(n, dtype=torch.bool, device=matrix.device)
         star = torch.where(diagonal, algebra.unit_like((n, n), star), star)
-    return star
+    return star, ClosureWork(pivots=n, sums=sums, products=products)
 
 
 def _positive_cycle(matrix: torch.Tensor) -> bool:
@@ -1777,7 +1828,7 @@ def _decide(
     step: int,
     divergent: torch.Tensor,
     convergent: torch.Tensor,
-    verdicts: Callable[[], list[str]],
+    verdicts: _Verdicts,
     message: str,
 ) -> None:
     """Decide whether a loop weight lets the closure converge.
@@ -1834,22 +1885,27 @@ def _decide(
         raise undecided()
 
 
-def _cached(compute: Callable[[], list[str]]) -> Callable[[], list[str]]:
-    """Compute a list of verdicts once, when it is first asked for.
+class _Verdicts:
+    """The finer decision of every loop, computed once when first asked for.
 
     Parameters
     ----------
     compute : Callable
-        The computation.
-
-    Returns
-    -------
-    Callable
-        The cached computation.
+        The decision, one verdict per eliminated state.
+    cost : Callable
+        The number of exact operations of a computed decision.
     """
-    kept: list[list[str]] = []
 
-    def verdicts() -> list[str]:
+    def __init__(
+        self,
+        compute: Callable[[], list[str]],
+        cost: Callable[[list[str]], int],
+    ) -> None:
+        self._compute = compute
+        self._cost = cost
+        self._kept: list[list[str]] = []
+
+    def __call__(self) -> list[str]:
         """The verdicts.
 
         Returns
@@ -1857,11 +1913,36 @@ def _cached(compute: Callable[[], list[str]]) -> Callable[[], list[str]]:
         list of str
             One per eliminated state.
         """
-        if not kept:
-            kept.append(compute())
-        return kept[0]
+        if not self._kept:
+            self._kept.append(self._compute())
+        return self._kept[0]
 
-    return verdicts
+    @property
+    def operations(self) -> int:
+        """The exact operations spent, zero when the decision never ran.
+
+        Returns
+        -------
+        int
+            The count.
+        """
+        return self._cost(self._kept[0]) if self._kept else 0
+
+
+def _elimination_cost(n: int) -> Callable[[list[str]], int]:
+    """The exact operations of an elimination that decided some states.
+
+    Parameters
+    ----------
+    n : int
+        The order of the matrix.
+
+    Returns
+    -------
+    Callable
+        ``n²`` entry updates for every state the decision eliminated.
+    """
+    return lambda verdicts: n * n * sum(found == "convergent" for found in verdicts)
 
 
 def _linear_verdicts(matrix: torch.Tensor) -> list[str]:
@@ -2090,7 +2171,7 @@ def _log_verdicts(matrix: torch.Tensor) -> list[str]:
 
 def _linear_star(
     algebra: UnitalCarrier, matrix: torch.Tensor, roundings: int
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, ClosureWork]:
     """The closure ``(I - A)⁻¹`` of a nonnegative matrix, without subtraction.
 
     Elimination computes ``r = 1 / (1 - a_kk)`` and otherwise only sums
@@ -2113,8 +2194,8 @@ def _linear_star(
 
     Returns
     -------
-    torch.Tensor
-        ``(I - A)⁻¹``.
+    tuple of (torch.Tensor, ClosureWork)
+        ``(I - A)⁻¹`` and its work.
 
     Raises
     ------
@@ -2124,7 +2205,9 @@ def _linear_star(
         If a loop weight is within the rounding bound of one.
     """
 
-    verdicts = _cached(lambda: _linear_verdicts(matrix))
+    verdicts = _Verdicts(
+        lambda: _linear_verdicts(matrix), _elimination_cost(_square(matrix))
+    )
 
     def repeat(loop: torch.Tensor, step: int) -> torch.Tensor:
         """The closure of one nonnegative loop weight.
@@ -2152,7 +2235,8 @@ def _linear_star(
         )
         return 1 / (1 - loop)
 
-    return _eliminate(algebra, matrix, repeat)
+    star, work = _eliminate(algebra, matrix, repeat)
+    return star, work.with_(exact=verdicts.operations)
 
 
 # ============================================================================
@@ -3277,7 +3361,7 @@ class BooleanAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
         """
         return "every square matrix over the carrier"
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """The closure by elimination; every loop weight closes to the unit.
 
         Parameters
@@ -3287,8 +3371,8 @@ class BooleanAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
 
         Returns
         -------
-        torch.Tensor
-            ``A*``.
+        tuple of (torch.Tensor, ClosureWork)
+            ``A*`` and the work of the closure.
         """
         return _eliminate(
             self,
@@ -3669,7 +3753,7 @@ class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSemir
         """
         return "every square matrix over the carrier"
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """The closure by elimination; every loop weight closes to the unit.
 
         Parameters
@@ -3679,8 +3763,8 @@ class GodelAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSemir
 
         Returns
         -------
-        torch.Tensor
-            ``A*``.
+        tuple of (torch.Tensor, ClosureWork)
+            ``A*`` and the work of the closure.
         """
         return _eliminate(
             self,
@@ -3874,7 +3958,7 @@ class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSe
         """
         return "every square matrix over the carrier"
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """The closure by elimination; every loop weight closes to the unit.
 
         Parameters
@@ -3884,8 +3968,8 @@ class TropicalAlgebra(Selective, ZeroSumFree, NoZeroDivisors, Star, IdempotentSe
 
         Returns
         -------
-        torch.Tensor
-            ``A*``.
+        tuple of (torch.Tensor, ClosureWork)
+            ``A*`` and the work of the closure.
         """
         return _eliminate(
             self,
@@ -4082,7 +4166,7 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
         """
         return "square matrices without a cycle of positive score"
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """The best path scores, by elimination with a decided loop test.
 
         A computed loop score above the rounding bound of its path proves
@@ -4098,8 +4182,8 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
 
         Returns
         -------
-        torch.Tensor
-            ``A*``.
+        tuple of (torch.Tensor, ClosureWork)
+            ``A*`` and the work of the closure.
 
         Raises
         ------
@@ -4145,7 +4229,8 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
                 )
             return self.unit_like((), loop)
 
-        return _eliminate(self, matrix, repeat, unit_diagonal=True)
+        star, work = _eliminate(self, matrix, repeat, unit_diagonal=True)
+        return star, work.with_(exact=matrix.shape[0] ** 3 if verdict else 0)
 
     @property
     def name(self) -> str:
@@ -4433,7 +4518,7 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
         """
         return "square log-weight matrices whose weights have spectral radius below one"
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """The log of ``(I - A)⁻¹``, by elimination of states in log space.
 
         Parameters
@@ -4443,8 +4528,8 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
 
         Returns
         -------
-        torch.Tensor
-            Log weights of all paths, including empty paths.
+        tuple of (torch.Tensor, ClosureWork)
+            Log weights of all paths, including empty paths, and the work.
 
         Raises
         ------
@@ -4463,7 +4548,9 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
             ),
         )
         largest = _largest_finite(matrix)
-        verdicts = _cached(lambda: _log_verdicts(matrix))
+        verdicts = _Verdicts(
+            lambda: _log_verdicts(matrix), _elimination_cost(_square(matrix))
+        )
 
         def repeat(loop: torch.Tensor, step: int) -> torch.Tensor:
             """The log of ``1 / (1 - e^loop)``.
@@ -4496,7 +4583,8 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
             )
             return -torch.log(-torch.expm1(loop))
 
-        return _eliminate(self, matrix, repeat)
+        star, work = _eliminate(self, matrix, repeat)
+        return star, work.with_(exact=verdicts.operations)
 
     @property
     def name(self) -> str:
@@ -5033,7 +5121,7 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Star, Semiring):
         """
         return "square matrices of counts whose graph has no cycle of nonzero count"
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """The number of paths, by elimination of states.
 
         Counts below ``2 / eps`` of the dtype are exact in floating point and elimination only adds and multiplies them, so
@@ -5046,8 +5134,8 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Star, Semiring):
 
         Returns
         -------
-        torch.Tensor
-            ``A*``.
+        tuple of (torch.Tensor, ClosureWork)
+            ``A*`` and the work of the closure.
 
         Raises
         ------
@@ -5056,7 +5144,7 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Star, Semiring):
         UndecidedClosureError
             If a count reaches ``2 / eps``, beyond which it is not exact.
         """
-        star = _linear_star(self, matrix, 0)
+        star, work = _linear_star(self, matrix, 0)
         if star.is_floating_point():
             limit = 2.0 / torch.finfo(star.dtype).eps
             demand(
@@ -5066,7 +5154,7 @@ class CountingAlgebra(ZeroSumFree, NoZeroDivisors, Star, Semiring):
                     "exact"
                 ),
             )
-        return star
+        return star, work
 
     @property
     def name(self) -> str:
@@ -5237,7 +5325,7 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Star, Semiring):
         """
         return "square nonnegative matrices of spectral radius below one"
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """``(I - A)⁻¹`` by elimination of states, without subtraction.
 
         Parameters
@@ -5247,8 +5335,8 @@ class MarkovAlgebra(Semifield, ZeroSumFree, Star, Semiring):
 
         Returns
         -------
-        torch.Tensor
-            ``A*``.
+        tuple of (torch.Tensor, ClosureWork)
+            ``A*`` and the work of the closure.
 
         Raises
         ------
@@ -5717,7 +5805,12 @@ class StarMatrixSemiring(MatrixSemiring, Star):
     sums. This is the first closure whose product does not commute; it
     solves both ``X = I ⊕ A X`` and ``X = I ⊕ X A``.
 
-    The constructor takes the parameters of `MatrixSemiring`.
+    Parameters
+    ----------
+    base : OrderPreservingSemiring
+        The scalar semiring of the entries, which has a closure.
+    size : int
+        The order ``k`` of the blocks.
 
     Raises
     ------
@@ -5748,7 +5841,7 @@ class StarMatrixSemiring(MatrixSemiring, Star):
             f"domain of {base.name}: {base.star_domain}"
         )
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
+    def star_with_work(self, matrix: torch.Tensor) -> tuple[torch.Tensor, ClosureWork]:
         """The closure of a matrix of blocks, through its flat matrix.
 
         Parameters
@@ -5758,8 +5851,8 @@ class StarMatrixSemiring(MatrixSemiring, Star):
 
         Returns
         -------
-        torch.Tensor
-            ``A*``, of the same shape.
+        tuple of (torch.Tensor, ClosureWork)
+            ``A*``, of the same shape, and the base's work on the flat matrix.
 
         Raises
         ------
@@ -5779,8 +5872,8 @@ class StarMatrixSemiring(MatrixSemiring, Star):
         assert isinstance(base, Star)
         n, k = matrix.shape[0], self._size
         flat = matrix.permute(0, 2, 1, 3).reshape(n * k, n * k)
-        closed = base.star(flat)
-        return closed.reshape(n, k, n, k).permute(0, 2, 1, 3)
+        closed, work = base.star_with_work(flat)
+        return closed.reshape(n, k, n, k).permute(0, 2, 1, 3), work
 
 
 class FreeSemimodule(Semimodule):
@@ -6020,6 +6113,7 @@ __all__ = [
     "Semimodule",
     "DivergentClosureError",
     "UndecidedClosureError",
+    "ClosureWork",
     "Star",
     "DualAlgebra",
     "DualIdempotentSemiring",

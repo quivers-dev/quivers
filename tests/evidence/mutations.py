@@ -400,11 +400,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-gradient-cut",
         defect_class="gradient path",
         provenance="a closure computed without its gradient",
-        target=f"{ALGEBRAS}:LogProbAlgebra.star",
+        target=f"{ALGEBRAS}:LogProbAlgebra.star_with_work",
         rewrites=(
             Rewrite(
-                old="return _eliminate(self, matrix, repeat)",
-                new="return _eliminate(self, matrix.detach(), repeat)",
+                old="star, work = _eliminate(self, matrix, repeat)",
+                new="star, work = _eliminate(self, matrix.detach(), repeat)",
             ),
         ),
         rejected_by=("span/inside/gradient", "span/chart-parser/gradient"),
@@ -461,7 +461,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-stops-on-a-residual",
         defect_class="stopping rule",
         provenance="a truncated series whose last term is small",
-        target=f"{ALGEBRAS}:LogProbAlgebra.star",
+        target=f"{ALGEBRAS}:LogProbAlgebra.star_with_work",
         rewrites=(
             Rewrite(
                 old="return -torch.log(-torch.expm1(loop))",
@@ -700,12 +700,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="closure-in-the-linear-domain",
         defect_class="scaling",
         provenance="a closure computed from exponentials of the weights",
-        target=f"{ALGEBRAS}:LogProbAlgebra.star",
+        target=f"{ALGEBRAS}:LogProbAlgebra.star_with_work",
         rewrites=(
             Rewrite(
                 old="largest = _largest_finite(matrix)\n",
                 new="return torch.linalg.inv(torch.eye(matrix.shape[0], "
-                "dtype=matrix.dtype) - matrix.exp()).log()\n",
+                "dtype=matrix.dtype) - matrix.exp()).log(), ClosureWork("
+                "pivots=0, sums=0, products=0)\n",
             ),
         ),
         rejected_by=("closure/tiny_edge",),

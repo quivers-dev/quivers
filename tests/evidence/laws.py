@@ -66,6 +66,8 @@ from quivers.core.algebras import (
     Selective,
     Semifield,
     Star,
+    StarMatrixSemiring,
+    OrderPreservingSemiring,
     DivergentClosureError,
     UndecidedClosureError,
     Semimodule,
@@ -2339,6 +2341,9 @@ class ClosureCases(ValueModel):
         Square matrices outside it.
     undecided : tuple of Element
         Square matrices whose cycle weight rounding cannot place.
+    banded : tuple of (Element, int)
+        Matrices inside the domain whose loops enter the rounding band,
+        with the exact operations of their decision, derived by hand.
     exhaustive : bool
         Whether the samples are the whole carrier, so leastness is
         decided over every matrix of order two.
@@ -2350,6 +2355,9 @@ class ClosureCases(ValueModel):
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     undecided: tuple[Element, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    banded: tuple[tuple[Element, int], ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     exhaustive: bool = False
@@ -2376,6 +2384,22 @@ _SCORE_CLOSURES = ClosureCases(
         [[_NONE, 2.0, _NONE], [_NONE, _NONE, -1.0], [-1.5, _NONE, _NONE]],
     ),
     divergent=([[1.0]], [[_NONE, 2.0], [-1.0, _NONE]]),
+    # The cycle 0.2, 0.4, -0.2, -0.4 sums to zero exactly and rounds
+    # above it; Floyd and Warshall's exact pass visits 4³ triples.
+    banded=(
+        # A loop of score exactly zero is on the boundary: the exact pass
+        # visits 2³ triples, in either precision.
+        ([[0.0, -1.0], [-1.0, _NONE]], 8),
+        (
+            [
+                [_NONE, 0.2, _NONE, _NONE],
+                [_NONE, _NONE, 0.4, _NONE],
+                [_NONE, _NONE, _NONE, -0.2],
+                [-0.4, _NONE, _NONE, _NONE],
+            ],
+            64,
+        ),
+    ),
 )
 _LOG_CLOSURES = ClosureCases(
     kind="log",
@@ -2390,6 +2414,11 @@ _LOG_CLOSURES = ClosureCases(
     # is -2^-60.
     undecided=(
         [[_NONE, -(2.0**-60), _NONE], [_NONE, _NONE, -1.0], [1.0, _NONE, _NONE]],
+    ),
+    # With -2^-50 the partial sum 1 - 2^-50 is exact, so the enclosures
+    # decide every loop: three states of nine interval updates each.
+    banded=(
+        ([[_NONE, -(2.0**-50), _NONE], [_NONE, _NONE, -1.0], [1.0, _NONE, _NONE]], 27),
     ),
 )
 _COUNT_CLOSURES = ClosureCases(
@@ -2449,11 +2478,26 @@ CLOSURE_CASES: dict[str, ClosureCases] = {
             ],
         ),
         divergent=([[[[1.0, _NONE], [_NONE, _NONE]]]],),
+        # The first flat state has a loop of score exactly zero, on the
+        # boundary: the exact pass visits 4³ triples of the flat matrix.
+        banded=(
+            (
+                [
+                    [[[0.0, -1.0], [_NONE, -1.0]], [[_NONE, 2.0], [_NONE, _NONE]]],
+                    [[[_NONE, _NONE], [_NONE, _NONE]], [[-1.0, _NONE], [0.0, -2.0]]],
+                ],
+                64,
+            ),
+        ),
     ),
     "core/Markov": ClosureCases(
         kind="linear",
         convergent=([], [[0.5, 0.25], [0.0, 0.5]], [[0.0, 0.5], [0.5, 0.0]]),
         divergent=([[1.5]], [[0.0, 2.0], [0.5, 0.0]]),
+        # A loop weight of 0.9999999999999998 is within the rounding bound
+        # of one: the exact elimination decides both states, four rational
+        # updates each.
+        banded=(([[0.0, 2.0], [0.4999999999999999, 0.0]], 8),),
     ),
 }
 """The closure cases of every row with a closure."""
@@ -2849,6 +2893,151 @@ def check_second(member: Member, dtype: torch.dtype) -> None:
             agree(found, wanted, member, f"second derivative of the {what} at {(a, b)}")
 
 
+class _OperationCounts(dx.Model):
+    """The operations a counting algebra saw.
+
+    Parameters
+    ----------
+    pivots : int
+        Products whose left factor is one closed loop weight.
+    sums : int
+        Elements of binary sums.
+    products : int
+        Elements of binary products.
+    """
+
+    pivots: int = 0
+    sums: int = 0
+    products: int = 0
+
+
+def _counting(structure: Star) -> tuple[Star, list[_OperationCounts]]:
+    """A copy of a closure's algebra that counts its own operations.
+
+    Parameters
+    ----------
+    structure : Star
+        A shipped member, or matrices over one.
+
+    Returns
+    -------
+    tuple of (Star, list of _OperationCounts)
+        The counting member, and a one-entry list holding its counts.
+    """
+    if isinstance(structure, StarMatrixSemiring):
+        base = structure.base
+        assert isinstance(base, Star)
+        counted, counts = _counting(base)
+        assert isinstance(counted, OrderPreservingSemiring)
+        matrix = StarMatrixSemiring(counted, structure.size)
+        assert isinstance(matrix, Star)
+        return matrix, counts
+    kind = type(structure)
+    counts = [_OperationCounts()]
+
+    def tensor_op(self: Star, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Count and forward a product.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            The left factor.
+        b : torch.Tensor
+            The right factor.
+
+        Returns
+        -------
+        torch.Tensor
+            The product.
+        """
+        result = kind.tensor_op(self, a, b)
+        counts[0] = counts[0].with_(
+            products=counts[0].products + result.numel(),
+            pivots=counts[0].pivots + int(a.dim() == 0),
+        )
+        return result
+
+    def join_pair(self: Star, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Count and forward a binary sum.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            The first term.
+        b : torch.Tensor
+            The second term.
+
+        Returns
+        -------
+        torch.Tensor
+            The sum.
+        """
+        result = kind.join_pair(self, a, b)
+        counts[0] = counts[0].with_(sums=counts[0].sums + result.numel())
+        return result
+
+    counted = type(
+        f"Counted{kind.__name__}",
+        (kind,),
+        {"tensor_op": tensor_op, "join_pair": join_pair},
+    )
+    instance = counted()
+    assert isinstance(instance, Star)
+    return instance, counts
+
+
+def check_closure_work(member: Member, dtype: torch.dtype) -> None:
+    """The work a closure reports is the work its algebra counts.
+
+    The pivots, sums and products of every closure case are compared with
+    the operations a counting copy of the algebra performs; the exact
+    operations are zero outside the rounding band and the hand-derived
+    number inside it.
+
+    Parameters
+    ----------
+    member : Member
+        A row with a closure.
+    dtype : torch.dtype
+        The precision.
+
+    Raises
+    ------
+    Mismatch
+        If a reported count differs from the counted one.
+    """
+    structure = member.structure
+    assert isinstance(structure, Star)
+    cases = CLOSURE_CASES[member.name]
+    shape = element_shape(member)
+    banded = {repr(rows): operations for rows, operations in cases.banded}
+    wanted_exact = [(rows, banded.get(repr(rows), 0)) for rows in cases.convergent]
+    if dtype == torch.float64:
+        wanted_exact += [
+            (rows, operations)
+            for rows, operations in cases.banded
+            if not any(repr(rows) == repr(other) for other in cases.convergent)
+        ]
+    for rows, exact_operations in wanted_exact:
+        counted, counts = _counting(structure)
+        matrix = _matrix(rows, dtype, shape)
+        _, work = counted.star_with_work(matrix)
+        _, reported = structure.star_with_work(matrix)
+        found = (reported.pivots, reported.sums, reported.products, reported.exact)
+        wanted = (
+            counts[0].pivots,
+            counts[0].sums,
+            counts[0].products,
+            exact_operations,
+        )
+        if found != wanted or work != reported:
+            raise Mismatch(
+                "work",
+                max(abs(f - w) for f, w in zip(found, wanted, strict=True)) or 1.0,
+                f"{member.name}: the closure of {rows} reports {found}, counted {wanted}",
+            )
+
+
 # -- cells ------------------------------------------------------------------
 
 
@@ -2885,6 +3074,9 @@ def run(member: Member, law: str, dtype: torch.dtype = torch.float64) -> None:
         return
     if law == "second derivatives":
         check_second(member, dtype)
+        return
+    if law == "closure work":
+        check_closure_work(member, dtype)
         return
     LAW_CHECKS[law](member, dtype)
 
@@ -3508,6 +3700,7 @@ CELLS: tuple[str, ...] = tuple(
         *claimed(MEMBERS[row]),
         "declared operations",
         *(("second derivatives",) if MEMBERS[row].reference.second else ()),
+        *(("closure work",) if row in CLOSURE_CASES else ()),
     )
 )
 """Every cell: each claimed law of each row, its declared operations, and
@@ -3578,17 +3771,37 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
         name="block-closure-on-the-diagonal",
         defect_class="order",
         provenance="a closure of a matrix of blocks that closes each diagonal block alone",
-        target=f"{ALGEBRAS}:StarMatrixSemiring.star",
+        target=f"{ALGEBRAS}:StarMatrixSemiring.star_with_work",
         rewrites=(
             Rewrite(
-                old="closed = base.star(flat)",
-                new="closed = torch.block_diag("
-                "*(base.star(matrix[i, i]) for i in range(n)))",
+                old="closed, work = base.star_with_work(flat)",
+                new="closed, work = torch.block_diag("
+                "*(base.star(matrix[i, i]) for i in range(n))), "
+                "base.star_with_work(flat)[1]",
             ),
         ),
         rejected_by=(
             "matrix/Counting/star-least-solution",
             "matrix/MaxPlus/star-least-solution",
+        ),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="closure-under-reports-pivots",
+        defect_class="graph work",
+        provenance="a closure that counts one state fewer than it eliminates",
+        target=f"{ALGEBRAS}:_eliminate",
+        rewrites=(
+            Rewrite(
+                old="return star, ClosureWork(pivots=n, sums=sums, products=products)",
+                new="return star, ClosureWork(pivots=max(n - 1, 0), sums=sums, "
+                "products=products)",
+            ),
+        ),
+        rejected_by=(
+            "core/LogProb/closure work",
+            "core/MaxPlus/closure work",
+            "matrix/Counting/closure work",
         ),
         min_effect=1.0,
     ),
