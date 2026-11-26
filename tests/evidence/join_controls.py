@@ -14,6 +14,7 @@ import itertools
 import math
 import random
 from collections.abc import Callable, Sequence
+from typing import Literal
 
 import torch
 
@@ -488,24 +489,25 @@ def _join_work(items: Sequence[Item]) -> float:
     return float(work.iterated + work.probes + work.tuples)
 
 
-def _pairwise_work(items: Sequence[Item]) -> float:
-    """The work of listing the triangles one premise at a time on an indexed chart.
+def _chart_work(items: Sequence[Item], join: Literal["generic", "keyed"]) -> float:
+    """The work of listing the triangles on an indexed chart as items arrive.
 
     Each item is admitted in turn and completes the instances in which
-    it is the last premise admitted; lookups are keyed on the variables
-    bound so far, so two atoms are joined before the third filters.
+    it is the last premise admitted, as a plan's passes find them.
 
     Parameters
     ----------
     items : Sequence of Item
         The input.
+    join : {"generic", "keyed"}
+        Generic Join from each trigger, or premises looked up one at a time.
 
     Returns
     -------
     float
         Lookups and candidates.
     """
-    chart = IndexedChart(bodies.PRESENTATION)
+    chart = IndexedChart(bodies.PRESENTATION, join=join)
     admitted: set[Item] = set()
     rule = bodies.TRIANGLE
     for item in items:
@@ -545,41 +547,45 @@ _SIZES = (8, 16, 32, 64, 128)
 
 
 def check_triangle_work() -> None:
-    """Require Generic Join within the AGM bound, and joining two atoms first above it.
+    """Require Generic Join within the AGM bound, alone and on the chart, and keyed lookups above it.
 
-    On the hub and the skewed triangle the work of Generic Join stays
-    within a constant of ``N^{3/2}`` (and of the control of the next
-    order, which fails), while a plan that joins two atoms first does
-    ``N^2`` work, which the same bound rejects.
+    On the hub and the skewed triangle, Generic Join over the whole body,
+    and the chart that runs it from each arriving item, stay within a
+    constant of ``N^{3/2}`` (their controls of the next order fail). The
+    chart that looks premises up one at a time does ``N^2`` work, which
+    the same bound rejects.
 
     Raises
     ------
     Mismatch
-        If Generic Join breaks the bound, or joining two atoms first does not.
+        If Generic Join breaks the bound, or the keyed chart does not.
     """
     for name, build in (("hub", bodies.hub), ("skew", bodies.skew)):
-        family = scaling.Family(
-            name=f"generic join on the {name} triangle",
-            executor="joins",
-            question="Q5",
-            varies="tuples",
-            part="forward",
-            sizes=_SIZES,
-            work=lambda size, build=build: _join_work(build(size)),
-            claim=lambda size, build=build: _agm(build(size)),
-            constant=8.0,
-        )
-        scaling.check_family(family)
-        pairwise = [_pairwise_work(build(size)) for size in _SIZES]
+        for label, work in (
+            ("generic join", _join_work),
+            ("the chart's generic join", lambda items: _chart_work(items, "generic")),
+        ):
+            scaling.check_family(
+                scaling.Family(
+                    name=f"{label} on the {name} triangle",
+                    executor="joins",
+                    question="Q5",
+                    varies="tuples",
+                    part="forward",
+                    sizes=_SIZES,
+                    work=lambda size, build=build, work=work: work(build(size)),
+                    claim=lambda size, build=build: _agm(build(size)),
+                    constant=16.0,
+                )
+            )
+        keyed = [_chart_work(build(size), "keyed") for size in _SIZES]
         claim = [_agm(build(size)) for size in _SIZES]
         try:
-            scaling.accept(_SIZES, pairwise, claim, 8.0, f"pairwise on {name}")
+            scaling.accept(_SIZES, keyed, claim, 16.0, f"keyed chart on {name}")
         except Mismatch:
             continue
         raise Mismatch(
-            "support",
-            math.inf,
-            f"joining two atoms first meets the AGM bound on {name}",
+            "support", math.inf, f"the keyed chart meets the AGM bound on {name}"
         )
 
 

@@ -9,6 +9,9 @@ import torch
 
 from quivers.core.algebras import LOG_PROB, REAL, RealAlgebra
 from quivers.qiec.contracts import (
+    InterpretationId,
+    QuerySpec,
+    Weight,
     ALGEBRA_OPERATIONS,
     Acyclic,
     BestKnown,
@@ -243,3 +246,25 @@ def test_an_algebra_without_the_laws_is_refused() -> None:
         )
     assert caught.value.code is PlanRefusal.INADMISSIBLE
     assert "claim-not-established: distributive" in caught.value.reason
+
+
+def test_record_states_each_rules_join_and_bound() -> None:
+    """Each rule's join algorithm and the cover number of its body are recorded."""
+    joins = {join.name: join for join in _plan().record.joins}
+    assert joins["step"].algorithm == "generic join"
+    assert joins["step"].rho.fraction == 1
+    assert joins["tripled"].algorithm == "generic join"
+    spans = plan(
+        QuerySpec(
+            presentation=fixture.PRESENTATION.id,
+            interpretation=InterpretationId.derive(fixture.NAME, "weight"),
+            observable=Weight(),
+        ),
+        fixture.PRESENTATION,
+        LOG_PROB,
+        Acyclic(),
+        graphs.contract(),
+        NoRetention(),
+    ).record
+    assert all(join.algorithm == "generic join" for join in spans.joins)
+    assert all(join.rho.fraction == 2 for join in spans.joins)

@@ -38,6 +38,7 @@ from quivers.qiec.contracts import (
 )
 from quivers.qiec.identifiers import ComputationId
 from quivers.qiec.rules import Item, RulePresentation
+from quivers.stochastic.indexed import IndexedChart
 from quivers.stochastic.planning import Plan, PlanRefusal, PlanRefused, plan
 from tests.evidence import graphs, scaling
 from tests.evidence import presentations as fixture
@@ -308,6 +309,32 @@ def check_repeated_premise() -> None:
             Accuracy(domain="linear", operations=8),
             f"d triple(0) / d w, recompute={recompute}",
         )
+
+
+def check_repeated_premise_keyed() -> None:
+    """Require one instance from a keyed chart when one item fills three premises.
+
+    Raises
+    ------
+    Mismatch
+        If ``triple(0) <- reach(0), reach(0), reach(0)`` is produced other
+        than once.
+    """
+    for join in ("generic", "keyed"):
+        chart = IndexedChart(graphs.PRESENTATION, join=join)
+        item = graphs.node(0)
+        chart.add(item)
+        found = [
+            premises
+            for position in range(3)
+            for _, premises in chart.instances(
+                graphs.TRIPLED, position, item, lambda other: other == item
+            )
+        ]
+        if len(found) != 1:
+            raise Mismatch(
+                "value", float(abs(len(found) - 1)), f"{join}: {len(found)} instances"
+            )
 
 
 def check_constant_rule() -> None:
@@ -672,6 +699,7 @@ CHECKS: dict[str, Check] = {
         ("plan/best", check_best),
         ("plan/gradients", check_gradients),
         ("plan/repeated-premise", check_repeated_premise),
+        ("plan/repeated-premise-keyed", check_repeated_premise_keyed),
         ("plan/constant-rule", check_constant_rule),
         ("plan/alternatives", check_alternatives_are_summed),
         ("plan/zero-gradient", check_zero_weight_gradient),
@@ -691,6 +719,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="plan-repeated-premise-at-every-position",
         defect_class="repeated premise",
         provenance="an instance is produced at every premise its last item fills",
+        target=f"{INDEXED}:IndexedChart._intersect",
+        rewrites=(
+            Rewrite(
+                old="if trigger >= 0 and position < trigger and node == item:",
+                new="if False:",
+            ),
+        ),
+        rejected_by=("plan/repeated-premise",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="plan-keyed-repeated-premise-at-every-position",
+        defect_class="repeated premise",
+        provenance="the keyed join produces an instance at every premise its item fills",
         target=f"{INDEXED}:IndexedChart._extend",
         rewrites=(
             Rewrite(
@@ -698,7 +740,7 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="if False:",
             ),
         ),
-        rejected_by=("plan/repeated-premise",),
+        rejected_by=("plan/repeated-premise-keyed",),
         min_effect=1.0,
     ),
     Mutation(

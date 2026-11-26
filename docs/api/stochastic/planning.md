@@ -52,6 +52,10 @@ fill this instance. The keyed lookups return each item of a form once, and match
 pattern against an item is deterministic, so one choice of premise items gives one enumeration.
 QED
 
+How the other premises are found, by Generic Join from each trigger, and the bound that gives on
+the lookups and candidates $J$ of each rule, are on [Indexed charts](indexed.md); the record
+states both for every rule.
+
 One item filling several premises, as in $c \leftarrow b, b, b$, thus contributes
 $v(b) \otimes v(b) \otimes v(b) \otimes w$ once.
 

@@ -76,6 +76,7 @@ from quivers.qiec.contracts import (
     PhaseInapplicable,
     ProvedOptimal,
     QuerySpec,
+    Rational,
     Recursion,
     Retention,
     Statistic,
@@ -84,7 +85,7 @@ from quivers.qiec.contracts import (
     WorkReport,
     check_admissible,
 )
-from quivers.qiec.identifiers import FamilyId
+from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.kinds import IndexBinder, NatSort
 from quivers.qiec.rules import (
     AxiomOccurrence,
@@ -99,7 +100,8 @@ from quivers.qiec.rules import (
 )
 from quivers.qiec.types import IndexLiteral, IndexSum, IndexTerm, IndexVariable
 from quivers.stochastic.forest import DerivationForest, build_forest
-from quivers.stochastic.indexed import ChartWork, IndexedChart
+from quivers.stochastic.indexed import ChartWork, IndexedChart, generic_joinable
+from quivers.stochastic.joins import agm_bound, body_query
 
 __all__ = [
     "Alternative",
@@ -113,10 +115,12 @@ __all__ = [
     "FOREST_WORK",
     "PlanRefused",
     "RECOMPUTED_TWO_PASS_WORK",
+    "RuleJoin",
     "TWO_PASS_ALGORITHM",
     "TWO_PASS_LAWS",
     "TWO_PASS_WORK",
     "acyclicity_certificate",
+    "rule_joins",
     "plan",
 ]
 
@@ -629,7 +633,8 @@ def _two_pass_work(backward: Literal["autograd", "recompute"]) -> ComplexityClai
             "does not depend on the precision",
             "J counts every candidate the keyed lookups return, including those "
             "not yet final or failing a repeated variable or side condition; "
-            "a run reports J",
+            "a run reports J, and the record bounds each rule's part of it by the "
+            "AGM bound of its body",
             "space excludes the presentation, the inputs and the indexes of the "
             "chart, which hold O(V) entries per keyed premise pattern",
             tape,
@@ -714,6 +719,106 @@ FOREST_WORK = ComplexityClaim(
 """The cost of keeping the packed forest and folding over it."""
 
 
+class RuleJoin(QiecModel):
+    """How one rule's premises are joined, and the bound that gives.
+
+    Parameters
+    ----------
+    rule : ConstructorId
+        The rule.
+    name : str
+        Its name.
+    algorithm : str
+        ``"generic join"``, ``"keyed premise at a time"`` or ``"constant"``
+        for a rule without premises.
+    rho : Rational
+        The weight of a least fractional edge cover of the body's
+        variables by its premises, ``rho*``; zero for a constant.
+    bound : str
+        The bound on the join's lookups and candidates over a run.
+    reason : str
+        Why the algorithm applies.
+    """
+
+    rule: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    name: str
+    algorithm: Literal["generic join", "keyed premise at a time", "constant"]
+    rho: Rational = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    bound: str
+    reason: str
+
+
+def rule_joins(presentation: RulePresentation) -> tuple[RuleJoin, ...]:
+    """The join each rule of a presentation gets on an indexed chart.
+
+    A rule whose patterns are relations of their own variables is joined
+    by Generic Join from each trigger. Over a run, each premise's trigger
+    joins visit no more than Generic Join over the whole body below the
+    trigger's values, so the rule's lookups and candidates are
+    ``O(m N + m^2 n N^rho)`` for ``m`` premises, ``n`` variables and
+    ``N`` the most items of a premise's form. Any other rule looks its
+    premises up one at a time.
+
+    Parameters
+    ----------
+    presentation : RulePresentation
+        The presentation.
+
+    Returns
+    -------
+    tuple of RuleJoin
+        One per rule, in order.
+    """
+    found: list[RuleJoin] = []
+    for rule in presentation.rules:
+        m = len(rule.premises)
+        if not m:
+            found.append(
+                RuleJoin(
+                    rule=rule.id,
+                    name=rule.name,
+                    algorithm="constant",
+                    rho=Rational(numerator=0),
+                    bound="1",
+                    reason="a rule without premises has one ground instance",
+                )
+            )
+            continue
+        if not generic_joinable(rule):
+            found.append(
+                RuleJoin(
+                    rule=rule.id,
+                    name=rule.name,
+                    algorithm="keyed premise at a time",
+                    rho=Rational.of(m),
+                    bound=f"N^{m}",
+                    reason="a pattern is a sum of two variables, which is not a "
+                    "relation of its items alone",
+                )
+            )
+            continue
+        query = body_query(rule)
+        cover = agm_bound(
+            query.variables,
+            [atom.variables for atom in query.atoms],
+            [2] * m,
+        )
+        n = len(query.variables)
+        rho = cover.rho
+        found.append(
+            RuleJoin(
+                rule=rule.id,
+                name=rule.name,
+                algorithm="generic join",
+                rho=Rational.of(rho),
+                bound=f"{m} N + {m * m * n} N^({rho})",
+                reason="every pattern is a relation of its variables; the AGM "
+                "bound of the body holds for every trigger's join below its values",
+            )
+        )
+    return tuple(found)
+
+
 class PlanRecord(QiecModel):
     """What a plan computes, how, under which assumptions, and at what cost.
 
@@ -745,6 +850,8 @@ class PlanRecord(QiecModel):
         Algorithms considered and not selected.
     backward : str
         ``"autograd"`` or ``"recompute"``.
+    joins : tuple of RuleJoin
+        The join and bound of each rule.
     """
 
     query: QuerySpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -764,6 +871,9 @@ class PlanRecord(QiecModel):
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     backward: Literal["autograd", "recompute"] = "autograd"
+    joins: tuple[RuleJoin, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 type InputId = ParameterId | OccurrenceId
@@ -1275,6 +1385,7 @@ def plan(
             ),
         ),
         backward=backward,
+        joins=rule_joins(presentation),
     )
     return Plan(record=record, presentation=presentation, algebra=algebra)
 

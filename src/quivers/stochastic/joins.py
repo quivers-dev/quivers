@@ -93,8 +93,12 @@ from quivers.qiec.rules import (
     evaluate_index,
     match_index,
 )
-from quivers.qiec.types import IndexConstructor, IndexSum, IndexTerm
-from quivers.stochastic.indexed import index_variables, side_condition_holds
+from quivers.qiec.types import IndexTerm
+from quivers.stochastic.indexed import (
+    flat_pattern,
+    index_variables,
+    side_condition_holds,
+)
 
 __all__ = [
     "AGMBound",
@@ -148,26 +152,6 @@ class JoinRefused(ValueError):
 
 # ---------------------------------------------------------------------------
 # rule bodies as queries
-
-
-def _flat(term: IndexTerm) -> bool:
-    """Whether matching a term alone binds all its variables.
-
-    Parameters
-    ----------
-    term : IndexTerm
-        The term.
-
-    Returns
-    -------
-    bool
-        False when a sum, here or nested, has two variables.
-    """
-    if isinstance(term, IndexSum):
-        return len({item.name for item in term.terms}) <= 1
-    if isinstance(term, IndexConstructor):
-        return all(_flat(argument) for argument in term.arguments)
-    return True
 
 
 class Atom(ValueModel):
@@ -245,7 +229,7 @@ def body_query(rule: Rule) -> BodyQuery:
             )
         names: list[str] = []
         for argument in premise.judgment.arguments:
-            if not _flat(argument):
+            if not flat_pattern(argument):
                 raise JoinRefused(
                     JoinRefusal.NOT_FLAT,
                     f"premise {position} of {rule.name} has a sum of two variables",

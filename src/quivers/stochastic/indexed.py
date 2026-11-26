@@ -16,6 +16,7 @@ positions, ties in premise order.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
+from typing import Literal
 
 import didactic.api as dx
 
@@ -38,9 +39,14 @@ from quivers.qiec.types import IndexConstructor, IndexSum, IndexTerm, IndexVaria
 __all__ = [
     "ChartWork",
     "IndexedChart",
+    "TrieNode",
     "JoinStep",
     "RuleJoinPlan",
+    "flat_pattern",
+    "generic_joinable",
     "index_variables",
+    "index_variables_of",
+    "join_order",
     "join_plans",
     "side_condition_holds",
 ]
@@ -69,6 +75,125 @@ def index_variables(term: IndexTerm) -> set[str]:
     if isinstance(term, IndexSum):
         return {item.name for item in term.terms}
     return set()
+
+
+def flat_pattern(term: IndexTerm) -> bool:
+    """Whether matching a term alone binds all its variables.
+
+    Parameters
+    ----------
+    term : IndexTerm
+        The term.
+
+    Returns
+    -------
+    bool
+        False when a sum, here or nested, has two variables.
+    """
+    if isinstance(term, IndexSum):
+        return len({item.name for item in term.terms}) <= 1
+    if isinstance(term, IndexConstructor):
+        return all(flat_pattern(argument) for argument in term.arguments)
+    return True
+
+
+def _ordered_variables(arguments: Sequence[IndexTerm]) -> list[str]:
+    """The variables of a pattern in order of first occurrence.
+
+    Parameters
+    ----------
+    arguments : Sequence of IndexTerm
+        The pattern's arguments.
+
+    Returns
+    -------
+    list of str
+        Each variable once.
+    """
+    found: list[str] = []
+    for argument in arguments:
+        for name in sorted(index_variables(argument)):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def generic_joinable(rule: Rule) -> bool:
+    """Whether every premise, and the conclusion, is a relation of its own variables.
+
+    Parameters
+    ----------
+    rule : Rule
+        The rule.
+
+    Returns
+    -------
+    bool
+        True when no pattern of the rule has a sum of two variables and
+        no premise has hypotheses.
+    """
+    judgments = [premise.judgment for premise in rule.premises] + [rule.conclusion]
+    return all(not premise.hypotheses for premise in rule.premises) and all(
+        flat_pattern(argument)
+        for judgment in judgments
+        for argument in judgment.arguments
+    )
+
+
+def join_order(rule: Rule, trigger: int) -> tuple[str, ...]:
+    """The variable order of a rule's join from one trigger.
+
+    The variables the trigger binds come first, in the order they occur
+    in its pattern (the conclusion's for trigger ``-1``), then the others
+    in the order they first occur in the premises.
+
+    Parameters
+    ----------
+    rule : Rule
+        The rule.
+    trigger : int
+        The triggering premise, or ``-1`` for the conclusion.
+
+    Returns
+    -------
+    tuple of str
+        The order.
+    """
+    source = (
+        rule.conclusion.arguments
+        if trigger < 0
+        else rule.premises[trigger].judgment.arguments
+    )
+    order = _ordered_variables(source)
+    for premise in rule.premises:
+        for name in _ordered_variables(premise.judgment.arguments):
+            if name not in order:
+                order.append(name)
+    return tuple(order)
+
+
+type TrieNode = dict[Ground, TrieNode | Item]
+"""A level of a premise's trie; its leaves are items. A premise without
+variables keeps its item under the key ``()``."""
+
+
+def index_variables_of(arguments: Sequence[IndexTerm]) -> set[str]:
+    """The variables of a pattern.
+
+    Parameters
+    ----------
+    arguments : Sequence of IndexTerm
+        The pattern's arguments.
+
+    Returns
+    -------
+    set of str
+        Its variables.
+    """
+    found: set[str] = set()
+    for argument in arguments:
+        found |= index_variables(argument)
+    return found
 
 
 class JoinStep(ValueModel):
@@ -261,10 +386,27 @@ class IndexedChart:
     ----------
     presentation : RulePresentation
         The presentation.
+    join : {"generic", "keyed"}
+        How a rule's other premises are found from a trigger. ``"generic"``
+        runs Generic Join over tries of the premises in the trigger's
+        variable order, for every rule that `generic_joinable` admits,
+        and looks premises up one at a time for the others; ``"keyed"``
+        looks premises up one at a time for every rule.
     """
 
-    def __init__(self, presentation: RulePresentation) -> None:
+    def __init__(
+        self,
+        presentation: RulePresentation,
+        *,
+        join: Literal["generic", "keyed"] = "generic",
+    ) -> None:
         self.presentation = presentation
+        self.join = join
+        self._tries: dict[
+            tuple[ConstructorId, int, int], tuple[tuple[str, ...], TrieNode]
+        ] = {}
+        self._tries_by_family: dict[FamilyId, list[tuple[ConstructorId, int, int]]] = {}
+        self._orders: dict[tuple[ConstructorId, int], tuple[str, ...]] = {}
         self.items = ItemTable()
         self._members: dict[FamilyId, list[Item]] = {}
         self._indexes: dict[
@@ -298,6 +440,9 @@ class IndexedChart:
             The item, added once.
         """
         self._members.setdefault(item.family, []).append(item)
+        for key in self._tries_by_family.get(item.family, ()):
+            variables, root = self._tries[key]
+            self._insert(key, variables, root, item)
         for (family, positions), index in self._indexes.items():
             if family == item.family:
                 key = tuple(item.arguments[p] for p in positions)
@@ -399,6 +544,9 @@ class IndexedChart:
         ):
             if not match_index(pattern, value, binding):
                 return
+        if self.method(rule) == "generic":
+            yield from self._generic(rule, trigger, item, binding, admitted)
+            return
         plan = self.plans[(rule.id, trigger)]
         chosen: dict[int, Item] = {trigger: item}
         yield from self._extend(
@@ -432,8 +580,283 @@ class IndexedChart:
         ):
             if not match_index(pattern, value, binding):
                 return
+        if self.method(rule) == "generic":
+            yield from self._generic(rule, -1, item, binding, admitted)
+            return
         plan = self.plans[(rule.id, -1)]
         yield from self._extend(rule, plan.steps, 0, binding, {}, -1, item, admitted)
+
+    def method(self, rule: Rule) -> Literal["generic", "keyed"]:
+        """How this chart joins a rule's premises.
+
+        Parameters
+        ----------
+        rule : Rule
+            The rule.
+
+        Returns
+        -------
+        {"generic", "keyed"}
+            ``"generic"`` when the chart runs Generic Join and the rule
+            admits it.
+        """
+        if self.join == "generic" and generic_joinable(rule):
+            return "generic"
+        return "keyed"
+
+    def _trie(
+        self, rule: Rule, trigger: int, position: int
+    ) -> tuple[tuple[str, ...], TrieNode]:
+        """The trie of one premise in the order of one trigger, built on first use.
+
+        Parameters
+        ----------
+        rule : Rule
+            The rule.
+        trigger : int
+            The trigger, or ``-1``.
+        position : int
+            The premise.
+
+        Returns
+        -------
+        tuple of tuple of str and TrieNode
+            The premise's variables in the trigger's order, and the trie
+            of the items of its form that match it.
+        """
+        key = (rule.id, trigger, position)
+        found = self._tries.get(key)
+        if found is not None:
+            return found
+        order = self._order(rule, trigger)
+        names = index_variables_of(rule.premises[position].judgment.arguments)
+        variables = tuple(name for name in order if name in names)
+        root: TrieNode = {}
+        self._tries[key] = (variables, root)
+        family = rule.premises[position].judgment.family
+        self._tries_by_family.setdefault(family, []).append(key)
+        for member in self._members.get(family, []):
+            self._insert(key, variables, root, member)
+        return variables, root
+
+    def _order(self, rule: Rule, trigger: int) -> tuple[str, ...]:
+        """The variable order of a rule's join from one trigger, cached.
+
+        Parameters
+        ----------
+        rule : Rule
+            The rule.
+        trigger : int
+            The trigger, or ``-1``.
+
+        Returns
+        -------
+        tuple of str
+            `join_order` of the rule and trigger.
+        """
+        key = (rule.id, trigger)
+        if key not in self._orders:
+            self._orders[key] = join_order(rule, trigger)
+        return self._orders[key]
+
+    def _insert(
+        self,
+        key: tuple[ConstructorId, int, int],
+        variables: tuple[str, ...],
+        root: TrieNode,
+        item: Item,
+    ) -> None:
+        """Add an item to one premise's trie when it matches the premise.
+
+        Parameters
+        ----------
+        key : tuple of ConstructorId, int and int
+            The rule, trigger and premise of the trie.
+        variables : tuple of str
+            The trie's variables in order.
+        root : TrieNode
+            The trie.
+        item : Item
+            The item.
+        """
+        rule = self.presentation.constructors_by_id[key[0]]
+        assert isinstance(rule, Rule)
+        pattern = rule.premises[key[2]].judgment.arguments
+        binding: Binding = {}
+        if not all(
+            match_index(term, value, binding)
+            for term, value in zip(pattern, item.arguments, strict=True)
+        ):
+            return
+        self.work["index_entries"] += 1
+        values = [binding[name] for name in variables] or [()]
+        node = root
+        for depth, value in enumerate(values):
+            if depth == len(values) - 1:
+                node[value] = item
+                return
+            child = node.setdefault(value, {})
+            assert isinstance(child, dict)
+            node = child
+
+    def _generic(
+        self,
+        rule: Rule,
+        trigger: int,
+        item: Item,
+        binding: Binding,
+        admitted: Callable[[Item], bool],
+    ) -> Iterator[tuple[Binding, tuple[Item, ...]]]:
+        """The instances from a trigger by Generic Join over the other premises.
+
+        The trigger's variables are bound; every other premise's trie is
+        entered along the bound prefix of its variables, and the
+        remaining variables are bound one at a time, each to the values
+        in the intersection of the tries that contain it, iterating the
+        smallest. A complete binding determines each premise's item.
+
+        Parameters
+        ----------
+        rule : Rule
+            The rule.
+        trigger : int
+            The premise ``item`` fills, or ``-1`` when it is the conclusion.
+        item : Item
+            The trigger's item, or the conclusion.
+        binding : Binding
+            The variables the trigger binds.
+        admitted : Callable[[Item], bool]
+            Whether an item is admitted.
+
+        Yields
+        ------
+        tuple of Binding and tuple of Item
+            The binding and the premise items, in premise order.
+        """
+        order = self._order(rule, trigger)
+        others = [p for p in range(len(rule.premises)) if p != trigger]
+        tries = {p: self._trie(rule, trigger, p) for p in others}
+        nodes: dict[int, TrieNode | Item] = {}
+        for position in others:
+            variables, root = tries[position]
+            self.work["lookups"] += 1
+            node: TrieNode | Item | None = root
+            path = [binding[name] for name in variables if name in binding] or (
+                [()] if not variables else []
+            )
+            for value in path:
+                if not isinstance(node, dict):
+                    return
+                node = node.get(value)
+                if node is None:
+                    return
+            nodes[position] = node
+        free = [name for name in order if name not in binding]
+        containing = [[p for p in others if name in tries[p][0]] for name in free]
+        yield from self._intersect(
+            rule, trigger, item, admitted, free, containing, nodes, binding, 0
+        )
+
+    def _intersect(
+        self,
+        rule: Rule,
+        trigger: int,
+        item: Item,
+        admitted: Callable[[Item], bool],
+        free: list[str],
+        containing: list[list[int]],
+        nodes: dict[int, TrieNode | Item],
+        binding: Binding,
+        depth: int,
+    ) -> Iterator[tuple[Binding, tuple[Item, ...]]]:
+        """Bind the free variable at ``depth`` and recurse.
+
+        Parameters
+        ----------
+        rule : Rule
+            The rule.
+        trigger : int
+            The trigger, or ``-1``.
+        item : Item
+            The trigger's item, or the conclusion.
+        admitted : Callable[[Item], bool]
+            Whether an item is admitted.
+        free : list of str
+            The variables the trigger leaves free, in order.
+        containing : list of list of int
+            The premises containing each free variable.
+        nodes : dict of int to TrieNode or Item
+            Each other premise's trie below the bound variables.
+        binding : Binding
+            The variables bound so far.
+        depth : int
+            The next free variable.
+
+        Yields
+        ------
+        tuple of Binding and tuple of Item
+            Complete instances.
+        """
+        if depth == len(free):
+            chosen: list[Item] = []
+            for position in range(len(rule.premises)):
+                if position == trigger:
+                    chosen.append(item)
+                    continue
+                node = nodes[position]
+                assert isinstance(node, Item)
+                if trigger >= 0 and position < trigger and node == item:
+                    return
+                if not admitted(node):
+                    return
+                chosen.append(node)
+            if not self.holds(rule, binding):
+                return
+            if trigger < 0:
+                conclusion = tuple(
+                    evaluate_index(argument, binding)
+                    for argument in rule.conclusion.arguments
+                )
+                if conclusion != item.arguments:
+                    return
+            self.work["instances"] += 1
+            yield dict(binding), tuple(chosen)
+            return
+        name = free[depth]
+        positions = containing[depth]
+        sets: list[TrieNode] = []
+        for position in positions:
+            node = nodes[position]
+            assert isinstance(node, dict)
+            sets.append(node)
+        smallest = min(range(len(sets)), key=lambda index: len(sets[index]))
+        for value in list(sets[smallest]):
+            self.work["candidates"] += 1
+            children: list[TrieNode | Item] = []
+            for index, table in enumerate(sets):
+                if index != smallest:
+                    self.work["candidates"] += 1
+                child = table.get(value)
+                if child is None:
+                    break
+                children.append(child)
+            else:
+                advanced = dict(nodes)
+                for position, child in zip(positions, children, strict=True):
+                    advanced[position] = child
+                binding[name] = value
+                yield from self._intersect(
+                    rule,
+                    trigger,
+                    item,
+                    admitted,
+                    free,
+                    containing,
+                    advanced,
+                    binding,
+                    depth + 1,
+                )
+                del binding[name]
 
     def _extend(
         self,
