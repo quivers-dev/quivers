@@ -301,6 +301,8 @@ nav:
       - Overview: api/core/objects.md
       - Algebras: api/core/algebras.md
       - Laws: api/core/laws.md
+      - Spanning trees: api/core/spanning.md
+      - Carriers: api/core/carriers.md
       - Morphisms: api/core/morphisms.md
       - Tensor Operations: api/core/tensor_ops.md
       - Utilities: api/core/util.md
@@ -350,6 +352,11 @@ nav:
       - Chart Parsers: api/stochastic/parsers.md
       - Inside Algorithm: api/stochastic/inside.md
       - Agenda: api/stochastic/agenda.md
+      - Indexed Charts: api/stochastic/indexed.md
+      - Joins: api/stochastic/joins.md
+      - Plans: api/stochastic/planning.md
+      - Packed Forests: api/stochastic/forest.md
+      - Linear Cyclic Systems: api/stochastic/recursion.md
       - Productions: api/stochastic/productions.md
       - Deduction Library: api/stochastic/stdlib.md
       - Deduction Systems:
@@ -494,6 +501,8 @@ nav:
       - Effects: api/qiec/effects.md
       - Terms: api/qiec/terms.md
       - Evidence: api/qiec/evidence.md
+      - Contracts: api/qiec/contracts.md
+      - Rule presentations: api/qiec/rules.md
       - Substitution: api/qiec/substitution.md
       - Discharge: api/qiec/discharge.md
       - Coverage: api/qiec/coverage.md

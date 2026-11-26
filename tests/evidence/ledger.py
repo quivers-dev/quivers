@@ -69,6 +69,7 @@ from quivers.stochastic.semiring import (
 )
 from quivers.structural.decoder import Decoder
 from quivers.structural.signature import Signature
+from tests.evidence import agenda_work_controls as agenda_work
 from tests.evidence.checks.consumers import GUIDES, PROBLEMS
 from tests.evidence.checks.deduction import weighted
 from tests.evidence.checks.machine import module_of
@@ -78,7 +79,7 @@ from tests.evidence.checks.span import (
     double_precision,
     inside_algorithm,
 )
-from tests.evidence.checks.terms import asymmetric, encoder, node, leaf, parameters
+from tests.evidence.checks.terms import encoder, node, leaf, parameters
 from tests.evidence.compare import Mismatch
 from tests.evidence.counters import CallCounter, TensorCounter
 from tests.evidence.oracles import closed_forms, derivations, exact
@@ -523,6 +524,27 @@ def _hub_instances(size: int) -> int:
         for b in range(size)
         for c in range(size)
     )
+
+
+record(
+    "agenda-work-quadratic",
+    "stochastic/agenda.py: HashChart.lookup, _fire_remaining_premises",
+    "the work of an agenda run, measured by its work report (its pops and "
+    "matches, and the chart's and queue's hashing and comparisons), grows faster "
+    "than the edges on chains, diamonds and skip graphs, since each premise "
+    "looks up its whole form and the chart compares every item of it",
+    {
+        "chains, work per edge": "40.89 65.41 113.70 209.85 401.92",
+        "diamonds, work per edge": "33.89 52.59 89.33 162.46 308.53",
+        "skip graphs, work per edge": "27.25 40.50 66.62 118.69 222.72",
+    },
+    {
+        "chains, work per edge": agenda_work.WITHIN,
+        "diamonds, work per edge": agenda_work.WITHIN,
+        "skip graphs, work per edge": agenda_work.WITHIN,
+    },
+    agenda_work.linear_facts,
+)
 
 
 record(
@@ -1412,50 +1434,6 @@ record(
 )
 
 # -- structured terms ----------------------------------------------------
-
-
-def _signature_reads(extra: int) -> int:
-    """How many declarations a fold of a small term visits.
-
-    Parameters
-    ----------
-    extra : int
-        The number of unused constructors.
-
-    Returns
-    -------
-    int
-        The number of entries of the dictionaries that are built.
-    """
-    encode = encoder(parameters(), extra)
-    reads = {
-        "constructors": Signature.constructors,
-        "sorts": Signature.sorts,
-        "binders": Signature.binders,
-    }
-    functions = {}
-    for name, member in reads.items():
-        assert isinstance(member, property)
-        assert member.fget is not None
-        functions[name] = member.fget
-    with CallCounter(functions) as calls:
-        encode(asymmetric(4))
-    sizes = {"constructors": 2 + extra, "sorts": 1, "binders": 0}
-    return sum(calls.counts[name] * sizes[name] for name in sizes)
-
-
-record(
-    "signature-rebuilt-per-node",
-    "structural/signature.py: Signature.constructors, sorts, binders",
-    "the declarations are put in a new dictionary at every read, so a fold costs "
-    "the size of the term times the size of the signature",
-    {"entries visited beside 64 unused constructors": "1196"},
-    {"entries visited beside 64 unused constructors": "44"},
-    lambda: {
-        "entries visited beside 64 unused constructors": str(_signature_reads(64))
-    },
-    lambda: {"entries visited beside 64 unused constructors": str(_signature_reads(0))},
-)
 
 
 def _depth_columns() -> Facts:

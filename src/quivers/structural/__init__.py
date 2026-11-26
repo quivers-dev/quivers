@@ -26,6 +26,10 @@ from quivers.structural.signature import (
     ContextEntry,
     Context,
     EMPTY_CONTEXT,
+    Substitution,
+    SubstitutionError,
+    free_indices,
+    substitute,
 )
 from quivers.structural.encoder import (
     BOUND_VAR_OP,
@@ -67,6 +71,10 @@ __all__ = [
     "ContextEntry",
     "Context",
     "EMPTY_CONTEXT",
+    "Substitution",
+    "SubstitutionError",
+    "free_indices",
+    "substitute",
     # encoder
     "BOUND_VAR_OP",
     "PerOpMode",

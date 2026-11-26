@@ -33,6 +33,11 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core._carriers import reduction_axes
 from quivers.core.laws import FIRST_MAXIMIZER, LAWS
+from quivers.core.carriers import (
+    ExpectationSemiring,
+    ProductSemiring,
+    SecondOrderExpectationSemiring,
+)
 from quivers.core.algebras import (
     BOOLEAN,
     BOOLEAN_DUAL,
@@ -703,6 +708,223 @@ def vector_reference(scalars: Reference, size: int) -> Reference:
     return Reference(plus=plus, times=act, zero=[scalars.zero for _ in indices])
 
 
+def _numbers(element: Element) -> list[Element]:
+    """The packed numbers of one element.
+
+    Parameters
+    ----------
+    element : Element
+        A packed element.
+
+    Returns
+    -------
+    list of Element
+        Its numbers.
+    """
+    assert isinstance(element, list)
+    return element
+
+
+def expectation_reference(base: Reference, size: int) -> Reference:
+    """The reference of weights with statistics of a length.
+
+    Parameters
+    ----------
+    base : Reference
+        The weights' operations.
+    size : int
+        The length ``d`` of a statistic.
+
+    Returns
+    -------
+    Reference
+        ``<p1 p2, p1 r2 + p2 r1>``, componentwise sums, ``<0, 0>`` and
+        ``<1, 0>``.
+    """
+    assert base.times is not None and base.zero is not None and base.unit is not None
+    times = base.times
+
+    def plus(values: Sequence[Element]) -> Element:
+        """The componentwise sum.
+
+        Parameters
+        ----------
+        values : Sequence of Element
+            Packed elements.
+
+        Returns
+        -------
+        Element
+            Their sum.
+        """
+        return [base.plus([_numbers(v)[i] for v in values]) for i in range(1 + size)]
+
+    def product(a: Element, b: Element) -> Element:
+        """The product of two packed elements.
+
+        Parameters
+        ----------
+        a, b : Element
+            Packed elements.
+
+        Returns
+        -------
+        Element
+            ``<p1 p2, p1 r2 + p2 r1>``.
+        """
+        x, y = _numbers(a), _numbers(b)
+        return [times(x[0], y[0])] + [
+            base.plus([times(x[0], y[i]), times(y[0], x[i])])
+            for i in range(1, 1 + size)
+        ]
+
+    zero = [base.zero for _ in range(1 + size)]
+    return Reference(plus=plus, times=product, zero=zero, unit=[base.unit, *zero[1:]])
+
+
+def second_order_reference(base: Reference, first: int, second: int) -> Reference:
+    """The reference of weights with two statistics and their products.
+
+    Parameters
+    ----------
+    base : Reference
+        The weights' operations.
+    first : int
+        The length ``m`` of the first statistic.
+    second : int
+        The length ``k`` of the second statistic.
+
+    Returns
+    -------
+    Reference
+        The operations of ``<p, r, s, t>`` packed in that order.
+    """
+    assert base.times is not None and base.zero is not None and base.unit is not None
+    times = base.times
+    size = 1 + first + second + first * second
+
+    def plus(values: Sequence[Element]) -> Element:
+        """The componentwise sum.
+
+        Parameters
+        ----------
+        values : Sequence of Element
+            Packed elements.
+
+        Returns
+        -------
+        Element
+            Their sum.
+        """
+        return [base.plus([_numbers(v)[i] for v in values]) for i in range(size)]
+
+    def product(a: Element, b: Element) -> Element:
+        """The product of two packed elements.
+
+        Parameters
+        ----------
+        a, b : Element
+            Packed elements.
+
+        Returns
+        -------
+        Element
+            The second-order product.
+        """
+        x, y = _numbers(a), _numbers(b)
+        r1, s1 = x[1 : 1 + first], x[1 + first : 1 + first + second]
+        r2, s2 = y[1 : 1 + first], y[1 + first : 1 + first + second]
+        t1, t2 = x[1 + first + second :], y[1 + first + second :]
+        out: list[Element] = [times(x[0], y[0])]
+        out += [
+            base.plus([times(x[0], r2[i]), times(y[0], r1[i])]) for i in range(first)
+        ]
+        out += [
+            base.plus([times(x[0], s2[j]), times(y[0], s1[j])]) for j in range(second)
+        ]
+        for i in range(first):
+            for j in range(second):
+                k = i * second + j
+                out.append(
+                    base.plus(
+                        [
+                            times(x[0], t2[k]),
+                            times(y[0], t1[k]),
+                            times(r1[i], s2[j]),
+                            times(r2[i], s1[j]),
+                        ]
+                    )
+                )
+        return out
+
+    zero = [base.zero for _ in range(size)]
+    return Reference(plus=plus, times=product, zero=zero, unit=[base.unit, *zero[1:]])
+
+
+def product_reference(factors: Sequence[Reference]) -> Reference:
+    """The reference of scalar semirings side by side.
+
+    Parameters
+    ----------
+    factors : Sequence of Reference
+        The scalar factors' operations.
+
+    Returns
+    -------
+    Reference
+        Factor-by-factor operations.
+    """
+    for factor in factors:
+        assert factor.times is not None
+        assert factor.zero is not None and factor.unit is not None
+
+    def plus(values: Sequence[Element]) -> Element:
+        """The sum, factor by factor.
+
+        Parameters
+        ----------
+        values : Sequence of Element
+            Packed elements.
+
+        Returns
+        -------
+        Element
+            Their sum.
+        """
+        return [
+            factor.plus([_numbers(v)[i] for v in values])
+            for i, factor in enumerate(factors)
+        ]
+
+    def product(a: Element, b: Element) -> Element:
+        """The product, factor by factor.
+
+        Parameters
+        ----------
+        a, b : Element
+            Packed elements.
+
+        Returns
+        -------
+        Element
+            Their product.
+        """
+        x, y = _numbers(a), _numbers(b)
+        found: list[Element] = []
+        for i, factor in enumerate(factors):
+            assert factor.times is not None
+            found.append(factor.times(x[i], y[i]))
+        return found
+
+    zeros: list[Element] = []
+    units: list[Element] = []
+    for factor in factors:
+        assert factor.zero is not None and factor.unit is not None
+        zeros.append(factor.zero)
+        units.append(factor.unit)
+    return Reference(plus=plus, times=product, zero=zeros, unit=units)
+
+
 # -- members ---------------------------------------------------------------
 
 UNIT_INTERVAL = (0.0, 0.25, 0.5, 1.0)
@@ -938,6 +1160,35 @@ MEMBERS: dict[str, Member] = {
             MatrixSemiring(REAL, 2),
             REAL_MATRICES,
             matrix_reference(REFERENCES["Real"], 2),
+        ),
+        _row(
+            "expectation/Counting",
+            ExpectationSemiring(FreeSemimodule(COUNTING, 2)),
+            (
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [2.0, 1.0, 3.0],
+                [3.0, 0.0, 1.0],
+            ),
+            expectation_reference(COUNT_REFERENCE, 2),
+        ),
+        _row(
+            "second-order/Counting",
+            SecondOrderExpectationSemiring(COUNTING, 1, 1),
+            (
+                [0.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 1.0, 2.0, 0.0],
+                [2.0, 1.0, 0.0, 3.0],
+            ),
+            second_order_reference(COUNT_REFERENCE, 1, 1),
+        ),
+        _row(
+            "product/Counting-MaxPlus",
+            ProductSemiring([COUNTING, MAX_PLUS]),
+            ([0.0, -INFINITY], [1.0, 0.0], [2.0, -1.0], [3.0, 2.0]),
+            product_reference([COUNT_REFERENCE, REFERENCES["MaxPlus"]]),
         ),
         _row(
             "vector/Counting",

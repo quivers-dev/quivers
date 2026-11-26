@@ -14,6 +14,8 @@ import json
 import math
 from typing import cast
 
+import didactic.api as dx
+
 from quivers.qiec.coverage import (
     BranchPattern,
     BranchRefinement,
@@ -21,8 +23,120 @@ from quivers.qiec.coverage import (
     CoverageStatus,
     Reachability,
 )
-from quivers.qiec._models import QiecModel, field_types, validate_shape
+from quivers.qiec._models import field_types, validate_shape
+from quivers.core.laws import (
+    Assumed,
+    Citation,
+    ClaimSubject,
+    Decided,
+    Law,
+    LawClaim,
+    Proved,
+    Requirement,
+    Tested,
+    TieRule,
+)
+from quivers.qiec.contracts import (
+    AbsoluteError,
+    AbsoluteLogError,
+    AccuracyContract,
+    AccuracyReport,
+    Acyclic,
+    Argument,
+    ArgumentBound,
+    Attainment,
+    Best,
+    BestKnown,
+    BiasBound,
+    BiasUnknown,
+    Bounded,
+    BudgetExhausted,
+    Certified,
+    Completed,
+    ComplexityBound,
+    ComplexityClaim,
+    ComplexityParameter,
+    ComposedTerm,
+    Composition,
+    ComputationModel,
+    Condition,
+    Conditional,
+    ContractField,
+    Control,
+    ControlReached,
+    Deficient,
+    DerivativeEntry,
+    DerivativeReport,
+    DerivativeSemantics,
+    DualityGap,
+    Enclosure,
+    Exact,
+    FailurePolicy,
+    Fold,
+    Forest,
+    Heuristic,
+    InterpretationId,
+    JudgmentPattern,
+    KBest,
+    KLDivergence,
+    LinearCyclic,
+    Marginal,
+    MonotonePolynomial,
+    NoRetention,
+    NonlinearFold,
+    Numerics,
+    ObjectiveGap,
+    OccurrenceId,
+    OperationBound,
+    Outcome,
+    PackedForest,
+    ParameterId,
+    ParentCounts,
+    Phase,
+    PhaseInapplicable,
+    PresentationId,
+    Probabilistic,
+    ProvedOptimal,
+    QuerySpec,
+    Rational,
+    Refusal,
+    RefusalCode,
+    WorkField,
+    RelativeError,
+    RequestedEvidence,
+    ResourceBudget,
+    Sample,
+    SiteEstimator,
+    Statistic,
+    Support,
+    Target,
+    TotalVariation,
+    Unbiased,
+    Unresolved,
+    Unrolled,
+    Weight,
+    WorkReport,
+)
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.rules import (
+    AxiomOccurrence,
+    AxiomSlot,
+    ContextStructure,
+    Derivation,
+    Equation,
+    Hole,
+    OpenDerivation,
+    FamilyComponent,
+    InterpretationDecl,
+    Item,
+    Judgment,
+    JudgmentDecl,
+    Premise,
+    PresentationAnalysis,
+    Rule,
+    RulePresentation,
+    SideCondition,
+)
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.family_shapes import FamilyShapeSignature
 from quivers.qiec.effects import (
@@ -188,12 +302,21 @@ _ID_CLASSES = (
     RowVariableId,
     PrimitiveId,
     DistributionId,
+    PresentationId,
+    InterpretationId,
+    OccurrenceId,
+    ParameterId,
 )
 
 _ENUM_CLASSES = (
     ResumptionGrade,
     CoverageStatus,
     Reachability,
+    FailurePolicy,
+    Phase,
+    ContractField,
+    RefusalCode,
+    WorkField,
 )
 
 _NODE_CLASSES = (
@@ -300,17 +423,112 @@ _NODE_CLASSES = (
     Call,
     Resume,
     NewInstance,
+    # contract records
+    Rational,
+    Citation,
+    Law,
+    ClaimSubject,
+    Proved,
+    Decided,
+    Tested,
+    Assumed,
+    LawClaim,
+    Requirement,
+    Condition,
+    TieRule,
+    Unbiased,
+    BiasBound,
+    BiasUnknown,
+    SiteEstimator,
+    DerivativeSemantics,
+    DerivativeEntry,
+    DerivativeReport,
+    AbsoluteError,
+    AbsoluteLogError,
+    RelativeError,
+    TotalVariation,
+    KLDivergence,
+    ObjectiveGap,
+    Enclosure,
+    DualityGap,
+    Argument,
+    ComposedTerm,
+    Composition,
+    Exact,
+    Certified,
+    Probabilistic,
+    Heuristic,
+    Numerics,
+    Target,
+    Control,
+    ResourceBudget,
+    AccuracyContract,
+    Acyclic,
+    LinearCyclic,
+    MonotonePolynomial,
+    Bounded,
+    Unrolled,
+    NoRetention,
+    ParentCounts,
+    JudgmentPattern,
+    RequestedEvidence,
+    PackedForest,
+    Support,
+    Weight,
+    Best,
+    KBest,
+    Outcome,
+    Statistic,
+    Marginal,
+    Sample,
+    Fold,
+    NonlinearFold,
+    Forest,
+    QuerySpec,
+    ComputationModel,
+    ComplexityParameter,
+    ProvedOptimal,
+    Conditional,
+    BestKnown,
+    Unresolved,
+    Deficient,
+    ComplexityBound,
+    PhaseInapplicable,
+    ComplexityClaim,
+    WorkReport,
+    Attainment,
+    ArgumentBound,
+    OperationBound,
+    Completed,
+    BudgetExhausted,
+    ControlReached,
+    AccuracyReport,
+    Refusal,
+    # rule presentations
+    JudgmentDecl,
+    Judgment,
+    Premise,
+    SideCondition,
+    Rule,
+    AxiomSlot,
+    RulePresentation,
+    Item,
+    AxiomOccurrence,
+    Hole,
+    Derivation,
+    OpenDerivation,
+    Equation,
+    ContextStructure,
+    FamilyComponent,
+    PresentationAnalysis,
+    InterpretationDecl,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}
 _ENUMS = {_class_tag(class_): class_ for class_ in _ENUM_CLASSES}
-_NODES: dict[
-    str,
-    type[QiecModel]
-    | type[DistributionFamily]
-    | type[FamilyParameter]
-    | type[FamilyShapeSignature],
-] = {_class_tag(class_): class_ for class_ in _NODE_CLASSES}
+_NODES: dict[str, type[dx.Model]] = {
+    _class_tag(class_): class_ for class_ in _NODE_CLASSES
+}
 
 
 def _encode(value: object) -> JsonValue:
@@ -358,9 +576,9 @@ def _encode(value: object) -> JsonValue:
         return {"$tuple": [_encode(item) for item in value]}
     if callable(value):
         raise SerializationError("host callables cannot enter stable QIEC")
-    if isinstance(
-        value, (QiecModel, DistributionFamily, FamilyParameter, FamilyShapeSignature)
-    ):
+    if isinstance(value, dx.Model):
+        # Every record is a didactic model; the allowlist of tags, not the
+        # class hierarchy, decides which may cross.
         tag = _class_tag(type(value))
         if tag not in _NODES:
             raise SerializationError(

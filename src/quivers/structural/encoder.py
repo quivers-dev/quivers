@@ -176,10 +176,17 @@ def make_default_op_fn(
         mod = nn.Module()
         mod.register_parameter(f"const_{op}", param)
 
-        def call() -> torch.Tensor:
+        def constant() -> torch.Tensor:
+            """The constant's embedding.
+
+            Returns
+            -------
+            torch.Tensor
+                The parameter.
+            """
             return param
 
-        return mod, call
+        return mod, constant
 
     in_dim = sum(arg_dims)
     hidden = max(out_dim, 64)
@@ -394,6 +401,81 @@ class Encoder(nn.Module):
         children: list[torch.Tensor] = []
         for sort, arg in zip(cons.domain, term.args):
             children.append(self._compress_arg(arg, sort, ctx))
+        return rule.fn(*children)
+
+    def step(
+        self, op: str, arguments: tuple[torch.Tensor | DataLeaf, ...]
+    ) -> torch.Tensor:
+        """Apply one constructor's function to embedded children.
+
+        This is the algebra map of the homomorphism at one node: the
+        embedding of ``op(t_1, ..., t_n)`` from the embeddings of its
+        object arguments and the raw values of its data arguments. Folding
+        it over a term gives `forward`; folding it over a structure that
+        shares subterms, such as a packed forest, computes each shared
+        subterm's embedding once.
+
+        Parameters
+        ----------
+        op : str
+            A constructor of the signature.
+        arguments : tuple of torch.Tensor or DataLeaf
+            One per argument: the embedding at an object position, the
+            raw value at a data position.
+
+        Returns
+        -------
+        torch.Tensor
+            The embedding.
+
+        Raises
+        ------
+        RuntimeError
+            If ``op`` is not a constructor, its arity differs, it has an
+            index argument, or its function reads the whole chain of
+            arguments (attention mode), which needs the term.
+        TypeError
+            If an argument does not match the kind of its sort.
+        """
+        constructor = self.signature.constructors.get(op)
+        if constructor is None:
+            raise RuntimeError(
+                f"encoder {self.name!r}: {op!r} is not a constructor of "
+                f"signature {self.signature.name!r}"
+            )
+        if len(arguments) != constructor.arity:
+            raise RuntimeError(
+                f"encoder {self.name!r}: constructor {op!r} expects "
+                f"{constructor.arity} arguments, got {len(arguments)}"
+            )
+        rule = self._require_op_fn(op)
+        if rule.mode == "attention":
+            raise RuntimeError(
+                f"encoder {self.name!r}: {op!r} attends over its whole chain "
+                "of arguments, so it is encoded from the term"
+            )
+        children: list[torch.Tensor] = []
+        for sort, argument in zip(constructor.domain, arguments, strict=True):
+            kind = self.signature.sorts[sort].kind
+            if kind == "object":
+                if not isinstance(argument, torch.Tensor):
+                    raise TypeError(
+                        f"encoder {self.name!r}: object-sorted argument of {op!r} "
+                        f"at sort {sort!r} must be an embedding"
+                    )
+                children.append(argument)
+            elif kind == "data":
+                if isinstance(argument, torch.Tensor):
+                    raise TypeError(
+                        f"encoder {self.name!r}: data-sorted argument of {op!r} "
+                        f"at sort {sort!r} must be a raw value"
+                    )
+                children.append(self._compress_arg(argument, sort, EMPTY_CONTEXT))
+            else:
+                raise RuntimeError(
+                    f"encoder {self.name!r}: {op!r} has an index argument, "
+                    "which needs the scope of a term"
+                )
         return rule.fn(*children)
 
     def _compress_attention_chain(

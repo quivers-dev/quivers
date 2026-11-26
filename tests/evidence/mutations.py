@@ -497,7 +497,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="budget-returns-the-partial-chart",
         defect_class="budget",
         provenance="a spent budget ends the loop instead of refusing",
-        target=f"{AGENDA}:run_agenda",
+        target=f"{AGENDA}:_drain",
         rewrites=(
             Rewrite(
                 old="raise RuntimeError(\n"
@@ -507,7 +507,6 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="break",
             ),
         ),
-        also_in=("tests.evidence.checks.deduction",),
         rejected_by=("deduction/budget/fifo", "deduction/budget/lifo"),
         min_effect=1.0,
     ),
@@ -743,6 +742,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         also_in=("tests.evidence.scaling",),
         rejected_by=("work/repeated-runs-of-one-rule-set",),
         min_effect=32.0,
+    ),
+    Mutation(
+        name="signature-copied-per-node",
+        defect_class="graph work",
+        provenance=(
+            "an encoder copies its immutable signature at every argument, so "
+            "each node builds the signature's tables again"
+        ),
+        target="quivers.structural.encoder:Encoder._compress_arg",
+        rewrites=(
+            Rewrite(old="sig = self.signature", new="sig = self.signature.with_()"),
+        ),
+        rejected_by=("terms/encoder_tables",),
+        min_effect=8.0,
     ),
     Mutation(
         name="weight-read-as-a-number",

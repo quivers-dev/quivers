@@ -24,7 +24,9 @@ copying, and pickling.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from functools import cached_property
+from types import MappingProxyType
 from typing import Literal
 
 import didactic.api as dx
@@ -59,6 +61,13 @@ class SortVocabEntry(dx.Model):
     Each entry is a tagged Python value: ``kind`` is the leaf
     type (``"string" | "integer" | "float"``), ``value`` is the
     decoded Python value (``str``, ``int``, or ``float``).
+
+    Parameters
+    ----------
+    kind : str
+        The leaf type.
+    value : DataLeaf
+        The decoded value.
     """
 
     kind: Literal["string", "integer", "float"]
@@ -72,6 +81,17 @@ class Sort(dx.Model):
     A data sort may carry a ``vocab`` tuple of
     `SortVocabEntry` records. Object / index sorts must
     have an empty vocab (the framework checks at runtime).
+
+    Parameters
+    ----------
+    name : str
+        The sort's name.
+    kind : SortKind
+        ``"object"``, ``"index"`` or ``"data"``.
+    dim : int or None
+        The embedding dimension, if declared.
+    vocab : tuple of SortVocabEntry
+        The closed vocabulary of a data sort.
     """
 
     name: str
@@ -81,12 +101,28 @@ class Sort(dx.Model):
 
     @property
     def vocab_values(self) -> tuple[DataLeaf, ...]:
-        """The decoded Python values in declaration order."""
+        """The decoded Python values in declaration order.
+
+        Returns
+        -------
+        tuple of DataLeaf
+            The values.
+        """
         return tuple(e.value for e in self.vocab)
 
 
 class Constructor(dx.Model):
-    """A typed constructor symbol."""
+    """A typed constructor symbol.
+
+    Parameters
+    ----------
+    name : str
+        The constructor's name.
+    domain : tuple of str
+        The sorts of its arguments, in order.
+    codomain : str
+        The sort it produces.
+    """
 
     name: str
     domain: tuple[str, ...] = ()
@@ -94,7 +130,13 @@ class Constructor(dx.Model):
 
     @property
     def arity(self) -> int:
-        """The number of arguments the constructor takes."""
+        """The number of arguments the constructor takes.
+
+        Returns
+        -------
+        int
+            The arity.
+        """
         return len(self.domain)
 
 
@@ -105,6 +147,15 @@ class BinderVarSpec(dx.Model):
     of an optional *type annotation*, a sibling argument in the
     enclosing Term that travels alongside the variable's embedding
     in Γ. Used to track per-variable type information.
+
+    Parameters
+    ----------
+    var : str
+        The variable's name.
+    sort : str
+        Its sort.
+    annot_sort : str or None
+        The sort of its annotation, if any.
     """
 
     var: str
@@ -113,7 +164,15 @@ class BinderVarSpec(dx.Model):
 
 
 class BinderArgSpec(dx.Model):
-    """A scoped argument of a binder."""
+    """A scoped argument of a binder.
+
+    Parameters
+    ----------
+    arg : str
+        The argument's name.
+    sort : str
+        Its sort.
+    """
 
     arg: str
     sort: str
@@ -121,7 +180,19 @@ class BinderArgSpec(dx.Model):
 
 class Binder(dx.Model):
     """A binder constructor: introduces variables of given sorts into
-    the scope of given arguments."""
+    the scope of given arguments.
+
+    Parameters
+    ----------
+    name : str
+        The binder's name.
+    binds : tuple of BinderVarSpec
+        The variables it introduces.
+    scoped : tuple of BinderArgSpec
+        The arguments in their scope.
+    codomain : str
+        The sort it produces.
+    """
 
     name: str
     binds: tuple[BinderVarSpec, ...] = ()
@@ -134,6 +205,11 @@ class Binder(dx.Model):
 
         Each annotated bound variable contributes one annotation
         argument, and each scoped argument contributes one more.
+
+        Returns
+        -------
+        int
+            The arity.
         """
         n_annots = sum(1 for b in self.binds if b.annot_sort is not None)
         return n_annots + len(self.scoped)
@@ -155,7 +231,17 @@ class Binder(dx.Model):
 
 
 class VertexKind(dx.Model):
-    """A vertex kind in a graph-shaped signature."""
+    """A vertex kind in a graph-shaped signature.
+
+    Parameters
+    ----------
+    name : str
+        The kind's name.
+    kind : SortKind
+        The kind of its values.
+    dim : int or None
+        The embedding dimension, if declared.
+    """
 
     name: str
     kind: SortKind
@@ -163,7 +249,19 @@ class VertexKind(dx.Model):
 
 
 class EdgeKind(dx.Model):
-    """An edge kind in a graph-shaped signature."""
+    """An edge kind in a graph-shaped signature.
+
+    Parameters
+    ----------
+    name : str
+        The kind's name.
+    src : str
+        The vertex kind it leaves.
+    tgt : str
+        The vertex kind it enters.
+    directed : bool
+        Whether it is directed.
+    """
 
     name: str
     src: str
@@ -183,8 +281,26 @@ class Signature(dx.Model):
     Sort, constructor, binder, vertex_kind and edge_kind tables are
     represented as tuples of records (rather than dicts) so the
     enclosing `dx.Model` keeps a schema-bearing layout. The
-    runtime exposes O(1) name-keyed lookup methods (``sort(name)``,
-    ``constructor(name)``, etc.) on top of those tuples.
+    runtime exposes name-keyed tables (`sorts`, `constructors`, ...)
+    on top of those tuples, each built once per signature, and every
+    lookup through them takes constant time.
+
+    Parameters
+    ----------
+    name : str
+        The signature's name.
+    params : tuple of str
+        Its parameters.
+    sorts_t : tuple of Sort
+        Its sorts.
+    constructors_t : tuple of Constructor
+        Its constructors.
+    binders_t : tuple of Binder
+        Its binders.
+    vertex_kinds_t : tuple of VertexKind
+        Its vertex kinds, for a graph signature.
+    edge_kinds_t : tuple of EdgeKind
+        Its edge kinds, for a graph signature.
     """
 
     name: str
@@ -196,31 +312,77 @@ class Signature(dx.Model):
     edge_kinds_t: tuple[EdgeKind, ...] = ()
 
     # ---- dict-like lookups ----
+    #
+    # Each table is built once per signature, on first use, and shared by
+    # every later lookup, so a fold of a term costs its size and not its
+    # size times the size of the signature. A signature is immutable, so a
+    # table cannot go stale.
 
-    @property
-    def sorts(self) -> dict[str, Sort]:
-        """The sort declarations keyed by sort name."""
-        return {s.name: s for s in self.sorts_t}
+    @cached_property
+    def sorts(self) -> Mapping[str, Sort]:
+        """The sort declarations keyed by sort name.
 
-    @property
-    def constructors(self) -> dict[str, Constructor]:
-        """The constructor declarations keyed by constructor name."""
-        return {c.name: c for c in self.constructors_t}
+        Returns
+        -------
+        Mapping[str, Sort]
+            A read-only table, built once.
+        """
+        return MappingProxyType({s.name: s for s in self.sorts_t})
 
-    @property
-    def binders(self) -> dict[str, Binder]:
-        """The binder declarations keyed by binder name."""
-        return {b.name: b for b in self.binders_t}
+    @cached_property
+    def constructors(self) -> Mapping[str, Constructor]:
+        """The constructor declarations keyed by constructor name.
 
-    @property
-    def vertex_kinds(self) -> dict[str, VertexKind]:
-        """The graph vertex kinds keyed by kind name."""
-        return {v.name: v for v in self.vertex_kinds_t}
+        Returns
+        -------
+        Mapping[str, Constructor]
+            A read-only table, built once.
+        """
+        return MappingProxyType({c.name: c for c in self.constructors_t})
 
-    @property
-    def edge_kinds(self) -> dict[str, EdgeKind]:
-        """The graph edge kinds keyed by kind name."""
-        return {e.name: e for e in self.edge_kinds_t}
+    @cached_property
+    def binders(self) -> Mapping[str, Binder]:
+        """The binder declarations keyed by binder name.
+
+        Returns
+        -------
+        Mapping[str, Binder]
+            A read-only table, built once.
+        """
+        return MappingProxyType({b.name: b for b in self.binders_t})
+
+    @cached_property
+    def vertex_kinds(self) -> Mapping[str, VertexKind]:
+        """The graph vertex kinds keyed by kind name.
+
+        Returns
+        -------
+        Mapping[str, VertexKind]
+            A read-only table, built once.
+        """
+        return MappingProxyType({v.name: v for v in self.vertex_kinds_t})
+
+    @cached_property
+    def edge_kinds(self) -> Mapping[str, EdgeKind]:
+        """The graph edge kinds keyed by kind name.
+
+        Returns
+        -------
+        Mapping[str, EdgeKind]
+            A read-only table, built once.
+        """
+        return MappingProxyType({e.name: e for e in self.edge_kinds_t})
+
+    @cached_property
+    def _binder_domains(self) -> Mapping[str, tuple[str, ...]]:
+        """The positional argument sorts of every binder, built once.
+
+        Returns
+        -------
+        Mapping[str, tuple[str, ...]]
+            A read-only table.
+        """
+        return MappingProxyType({b.name: b.domain() for b in self.binders_t})
 
     # ---- shape queries ----
 
@@ -276,12 +438,12 @@ class Signature(dx.Model):
         KeyError
             If ``op`` is neither a constructor nor a binder.
         """
-        for c in self.constructors_t:
-            if c.name == op:
-                return c.codomain
-        for b in self.binders_t:
-            if b.name == op:
-                return b.codomain
+        constructor = self.constructors.get(op)
+        if constructor is not None:
+            return constructor.codomain
+        binder = self.binders.get(op)
+        if binder is not None:
+            return binder.codomain
         raise KeyError(
             f"signature {self.name!r}: op {op!r} not a constructor or binder"
         )
@@ -305,12 +467,12 @@ class Signature(dx.Model):
         KeyError
             If ``op`` is neither a constructor nor a binder.
         """
-        for c in self.constructors_t:
-            if c.name == op:
-                return c.domain
-        for b in self.binders_t:
-            if b.name == op:
-                return b.domain()
+        constructor = self.constructors.get(op)
+        if constructor is not None:
+            return constructor.domain
+        domain = self._binder_domains.get(op)
+        if domain is not None:
+            return domain
         raise KeyError(
             f"signature {self.name!r}: op {op!r} not a constructor or binder"
         )
@@ -328,7 +490,7 @@ class Signature(dx.Model):
         bool
             ``True`` when a binder of that name is declared.
         """
-        return any(b.name == op for b in self.binders_t)
+        return op in self.binders
 
     def sort_dim(self, sort: str) -> int | None:
         """Return the declared embedding dimension of a sort or vertex kind.
@@ -344,12 +506,12 @@ class Signature(dx.Model):
             The declared dimension, or ``None`` when the name is not
             declared or declares no dimension.
         """
-        for s in self.sorts_t:
-            if s.name == sort:
-                return s.dim
-        for v in self.vertex_kinds_t:
-            if v.name == sort:
-                return v.dim
+        declared = self.sorts.get(sort)
+        if declared is not None:
+            return declared.dim
+        vertex = self.vertex_kinds.get(sort)
+        if vertex is not None:
+            return vertex.dim
         return None
 
 
@@ -392,6 +554,13 @@ class Term(ValueModel):
 
     No wrapping such as ``Term("Data", …)`` is used at any
     position; raw values appear directly at data positions.
+
+    Parameters
+    ----------
+    op : str
+        The constructor, binder, or ``"BoundVar"``.
+    args : tuple of TermArg
+        The positional children.
     """
 
     op: str
@@ -420,6 +589,13 @@ class Term(ValueModel):
                 )
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
+        """The term written as ``op(arg, ...)``.
+
+        Returns
+        -------
+        str
+            The text.
+        """
         if not self.args:
             return self.op
         inside = ", ".join(repr(a) for a in self.args)
@@ -511,6 +687,15 @@ class ContextEntry(ValueModel):
     ``embedding`` is a runtime tensor; ``type_term`` is the binder's
     annotation term captured at scope-extension time. Tensor identity
     participates in equality and hashing, preserving live autograd state.
+
+    Parameters
+    ----------
+    var_sort : str
+        The sort of the bound variable.
+    embedding : torch.Tensor
+        Its embedding.
+    type_term : Term or None
+        The binder's annotation of it, if any.
     """
 
     var_sort: str
@@ -538,6 +723,11 @@ class Context(ValueModel):
 
     Position 0 is the most recently bound variable; lookup ``var(i)``
     returns the i-th entry from the top.
+
+    Parameters
+    ----------
+    entries : tuple of ContextEntry
+        The entries, innermost first.
     """
 
     entries: tuple[ContextEntry, ...] = dx.field(
@@ -666,6 +856,353 @@ EMPTY_CONTEXT = Context()
 """The context with no bound variables."""
 
 
+# ---------------------------------------------------------------------------
+# renaming and substitution of de-Bruijn terms
+# ---------------------------------------------------------------------------
+
+
+class SubstitutionError(ValueError):
+    """A substitution cannot be applied to a term."""
+
+
+class Substitution(ValueModel):
+    """A simultaneous substitution of the free variables of de-Bruijn terms.
+
+    The variable with index ``i`` becomes ``replacements[i]`` when ``i`` is
+    below their number ``n``, and the variable ``i - n + shift``
+    otherwise. Every substitution of terms in a context of ``n + k``
+    variables by terms in a context of ``shift + k`` variables has this
+    form. A renaming is a substitution whose replacements are variables.
+
+    Parameters
+    ----------
+    replacements : tuple of Term
+        The replacements of the innermost variables.
+    shift : int
+        Where the remaining variables go; at least zero.
+
+    Raises
+    ------
+    didactic.api.ValidationError
+        If the shift is negative.
+    """
+
+    replacements: tuple[Term, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    shift: int = 0
+
+    @dx.model_validator()
+    def _check_shift(self) -> None:
+        """Require a nonnegative shift.
+
+        Raises
+        ------
+        ValueError
+            If the shift is negative.
+        """
+        if self.shift < 0:
+            raise ValueError("a substitution's shift is at least zero")
+
+    @classmethod
+    def weakening(cls, amount: int) -> Substitution:
+        """The renaming that makes room for new innermost variables.
+
+        Parameters
+        ----------
+        amount : int
+            How many variables are added.
+
+        Returns
+        -------
+        Substitution
+            The variable ``i`` goes to ``i + amount``.
+        """
+        return cls(shift=amount)
+
+    @classmethod
+    def renaming(cls, targets: tuple[int, ...], shift: int) -> Substitution:
+        """The renaming that sends variable ``i`` to ``targets[i]``.
+
+        Parameters
+        ----------
+        targets : tuple of int
+            The new index of each of the innermost variables.
+        shift : int
+            Where the remaining variables go.
+
+        Returns
+        -------
+        Substitution
+            The renaming.
+        """
+        return cls(replacements=tuple(bound_var(i) for i in targets), shift=shift)
+
+    def image(self, index: int) -> Term:
+        """The replacement of one variable.
+
+        Parameters
+        ----------
+        index : int
+            The variable.
+
+        Returns
+        -------
+        Term
+            Its replacement.
+        """
+        if index < len(self.replacements):
+            return self.replacements[index]
+        return bound_var(index - len(self.replacements) + self.shift)
+
+    def lift(self, count: int, signature: Signature) -> Substitution:
+        """The substitution under ``count`` new innermost variables.
+
+        Parameters
+        ----------
+        count : int
+            The variables a binder introduces.
+        signature : Signature
+            The signature of the terms.
+
+        Returns
+        -------
+        Substitution
+            The new variables go to themselves, and the replacements are
+            weakened past them.
+        """
+        if count == 0:
+            return self
+        weaken = Substitution.weakening(count)
+        return Substitution(
+            replacements=(
+                *(bound_var(i) for i in range(count)),
+                *(substitute(item, weaken, signature) for item in self.replacements),
+            ),
+            shift=self.shift + count,
+        )
+
+    def then(self, other: Substitution, signature: Signature) -> Substitution:
+        """The substitution that applies this one and then another.
+
+        Parameters
+        ----------
+        other : Substitution
+            The substitution applied second.
+        signature : Signature
+            The signature of the terms.
+
+        Returns
+        -------
+        Substitution
+            ``substitute(t, self.then(other)) == substitute(substitute(t,
+            self), other)`` for every term ``t``.
+        """
+        first = tuple(substitute(item, other, signature) for item in self.replacements)
+        count = len(other.replacements)
+        extra = other.replacements[self.shift :] if self.shift < count else ()
+        return Substitution(
+            replacements=(*first, *extra),
+            shift=other.shift + max(0, self.shift - count),
+        )
+
+
+def _scopes(signature: Signature, op: str) -> tuple[tuple[str, int], ...]:
+    """The sort and the number of new variables of each argument position.
+
+    Parameters
+    ----------
+    signature : Signature
+        The signature.
+    op : str
+        A constructor or binder.
+
+    Returns
+    -------
+    tuple of tuple of str and int
+        For each position its sort and how many variables it is under.
+
+    Raises
+    ------
+    SubstitutionError
+        If the operation is not declared.
+    """
+    constructor = signature.constructors.get(op)
+    if constructor is not None:
+        return tuple((sort, 0) for sort in constructor.domain)
+    binder = signature.binders.get(op)
+    if binder is None:
+        raise SubstitutionError(
+            f"op {op!r} is not a constructor or binder of signature {signature.name!r}"
+        )
+    count = len(binder.binds)
+    annotations = tuple(
+        (b.annot_sort, 0) for b in binder.binds if b.annot_sort is not None
+    )
+    return annotations + tuple((a.sort, count) for a in binder.scoped)
+
+
+def substitute(term: Term, substitution: Substitution, signature: Signature) -> Term:
+    """Apply a substitution to the free variables of a term.
+
+    It goes under binders by lifting the substitution, so a replacement is
+    never captured. An argument at an index-sorted position names a
+    variable and may only be renamed. The cost is the size of the term
+    times the cost of weakening each replacement used under binders; the
+    traversal uses an explicit stack.
+
+    Parameters
+    ----------
+    term : Term
+        The term.
+    substitution : Substitution
+        The substitution.
+    signature : Signature
+        The signature of the term.
+
+    Returns
+    -------
+    Term
+        The substituted term.
+
+    Raises
+    ------
+    SubstitutionError
+        If an operation is undeclared, an index position would receive a
+        term that is not a variable, or an argument's kind does not match
+        its position.
+    """
+    frames: list[tuple[Term, Substitution, tuple[tuple[str, int], ...]]] = []
+    built: list[list[TermArg]] = []
+    result: Term | None = None
+
+    def deliver(value: Term) -> Term | None:
+        """Hand a finished subterm to its parent, or return it at the root.
+
+        Parameters
+        ----------
+        value : Term
+            The finished subterm.
+
+        Returns
+        -------
+        Term or None
+            The value when it is the root, else ``None``.
+        """
+        if built:
+            built[-1].append(value)
+            return None
+        return value
+
+    def enter(node: Term, sigma: Substitution) -> Term | None:
+        """Start a subterm, or finish it at once when it is a variable.
+
+        Parameters
+        ----------
+        node : Term
+            The subterm.
+        sigma : Substitution
+            The substitution in its scope.
+
+        Returns
+        -------
+        Term or None
+            The root's result when the root is a variable.
+
+        Raises
+        ------
+        SubstitutionError
+            If the operation is undeclared or has the wrong arity.
+        """
+        if node.op == "BoundVar":
+            index = node.args[0]
+            assert isinstance(index, int)
+            return deliver(sigma.image(index))
+        scopes = _scopes(signature, node.op)
+        if len(scopes) != len(node.args):
+            raise SubstitutionError(
+                f"{node.op!r} takes {len(scopes)} arguments, got {len(node.args)}"
+            )
+        frames.append((node, sigma, scopes))
+        built.append([])
+        return None
+
+    result = enter(term, substitution)
+    while frames:
+        node, sigma, scopes = frames[-1]
+        position = len(built[-1])
+        if position == len(node.args):
+            frames.pop()
+            arguments = tuple(built.pop())
+            result = deliver(Term(op=node.op, args=arguments))
+            continue
+        sort, count = scopes[position]
+        argument = node.args[position]
+        inner = sigma.lift(count, signature)
+        if isinstance(argument, Term):
+            result = enter(argument, inner)
+            continue
+        declared = signature.sorts.get(sort)
+        if declared is not None and declared.kind == "index":
+            assert isinstance(argument, int)
+            image = inner.image(argument)
+            if image.op != "BoundVar":
+                raise SubstitutionError(
+                    f"index position of {node.op!r} would receive a term that "
+                    "is not a variable"
+                )
+            built[-1].append(image.args[0])
+        else:
+            built[-1].append(argument)
+    assert result is not None
+    return result
+
+
+def free_indices(term: Term, signature: Signature) -> frozenset[int]:
+    """The free variables of a term.
+
+    Parameters
+    ----------
+    term : Term
+        The term.
+    signature : Signature
+        Its signature.
+
+    Returns
+    -------
+    frozenset of int
+        The indices of its free variables in its context.
+
+    Raises
+    ------
+    SubstitutionError
+        If an operation is undeclared.
+    """
+    found: set[int] = set()
+    stack: list[tuple[Term, int]] = [(term, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if node.op == "BoundVar":
+            index = node.args[0]
+            assert isinstance(index, int)
+            if index >= depth:
+                found.add(index - depth)
+            continue
+        for (sort, count), argument in zip(
+            _scopes(signature, node.op), node.args, strict=True
+        ):
+            if isinstance(argument, Term):
+                stack.append((argument, depth + count))
+            elif (
+                signature.sorts.get(sort) is not None
+                and signature.sorts[sort].kind == "index"
+            ):
+                assert isinstance(argument, int)
+                if argument >= depth + count:
+                    found.add(argument - depth - count)
+    return frozenset(found)
+
+
 __all__ = [
     "DataLeaf",
     "TermArg",
@@ -685,4 +1222,8 @@ __all__ = [
     "ContextEntry",
     "Context",
     "EMPTY_CONTEXT",
+    "Substitution",
+    "SubstitutionError",
+    "free_indices",
+    "substitute",
 ]

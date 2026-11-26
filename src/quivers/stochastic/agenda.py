@@ -35,9 +35,9 @@ from __future__ import annotations
 import heapq
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import nullcontext
-from typing import Any
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
+from typing import Any, Protocol, runtime_checkable
 
 import didactic.api as dx
 import torch
@@ -46,6 +46,7 @@ from quivers._positions import anywhere, depends_on_position
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.core.laws import PLUS_IDEMPOTENT, PLUS_SELECTIVE
 from quivers.qiec._models import QiecModel
+from quivers.qiec.contracts import Phase, WorkField, WorkReport, measuring
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
 from quivers.stochastic.semiring import ChartSemiring, LOG_PROB
 from quivers.structural.encoder import Encoder
@@ -255,6 +256,64 @@ def match(
 # ---------------------------------------------------------------------------
 
 
+@runtime_checkable
+class ReportsWork(Protocol):
+    """A chart or agenda queue that reports the work it has done.
+
+    The counts cover everything since the component was made; a run takes
+    the difference across it. The counters it does not return are not
+    measured, and a component that does not implement this leaves all its
+    work unmeasured in the run's report: a declared absence, not a count
+    of zero.
+    """
+
+    def work_counts(self) -> Mapping[WorkField, int]:
+        """The work done since the component was made.
+
+        Returns
+        -------
+        Mapping of WorkField to int
+            A count for each counter it measures, of those in
+            `COMPONENT_FIELDS`.
+        """
+        ...
+
+
+COMPONENT_FIELDS: tuple[WorkField, ...] = measuring(
+    {
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+    }
+)
+"""The counters a chart or a queue may contribute to a run's report."""
+
+
+class _ComponentWork:
+    """Counts a chart or queue keeps of its own operations."""
+
+    def __init__(self) -> None:
+        self.sums = 0
+        self.hashes = 0
+        self.comparisons = 0
+
+    def counts(self) -> dict[WorkField, int]:
+        """Every counter a chart or queue may contribute, as counted.
+
+        Returns
+        -------
+        dict of WorkField to int
+            Sums, products (none), hash operations and comparisons.
+        """
+        return {
+            WorkField.SCALAR_SUMS: self.sums,
+            WorkField.SCALAR_PRODUCTS: 0,
+            WorkField.HASH_OPERATIONS: self.hashes,
+            WorkField.KEY_COMPARISONS: self.comparisons,
+        }
+
+
 class Chart(ABC):
     """A finite map from derived items to their weights in a semiring K.
 
@@ -398,6 +457,19 @@ class HashChart(Chart):
     def __init__(self, tolerance: float = 0.0) -> None:
         self._store: dict[Item, torch.Tensor] = {}
         self._tolerance: float = float(tolerance)
+        self._work = _ComponentWork()
+
+    def work_counts(self) -> Mapping[WorkField, int]:
+        """The chart's work since it was made.
+
+        Returns
+        -------
+        Mapping of WorkField to int
+            Sums of aggregation, one per element merged; dictionary
+            accesses; the items a lookup matched against its pattern; and
+            no products.
+        """
+        return self._work.counts()
 
     def lookup(self, pattern: Pattern) -> Iterable[tuple[Item, torch.Tensor]]:
         """Scan the stored items for those matching a pattern.
@@ -413,6 +485,7 @@ class HashChart(Chart):
             The matching items with their weights.
         """
         for item, w in self._store.items():
+            self._work.comparisons += 1
             b = match(pattern, item)
             if b is not None:
                 yield item, w
@@ -461,12 +534,16 @@ class HashChart(Chart):
             idempotent: such an update leaves the number unchanged and
             moves its derivative, which its consequences need.
         """
+        self._work.hashes += 1
         if item not in self._store:
             self._store[item] = weight
+            self._work.hashes += 1
             return True
         existing = self._store[item]
         stacked = torch.stack([existing, weight])
         merged = semiring.plus(stacked, dim=0)
+        self._work.sums += merged.numel()
+        self._work.hashes += 2
         self._store[item] = merged
         return anywhere(self._changed(existing, merged) | _carries(weight, semiring))
 
@@ -516,6 +593,7 @@ class HashChart(Chart):
             values where the stored weight did not change, whose agenda
             would not have gone on from here.
         """
+        self._work.hashes += 1
         changed = self._changed(before, self._store[item]) | _carries(weight, semiring)
         if not depends_on_position(changed):
             return weight
@@ -534,6 +612,7 @@ class HashChart(Chart):
         torch.Tensor or None
             The stored weight, or ``None`` if the item is absent.
         """
+        self._work.hashes += 1
         return self._store.get(item)
 
     def items(self) -> Iterable[tuple[Item, torch.Tensor]]:
@@ -915,6 +994,19 @@ class FIFOAgenda(Agenda):
         self._order: deque[Item] = deque()
         self._pending: dict[Item, torch.Tensor] = {}
         self._semiring: ChartSemiring | None = None
+        self._work = _ComponentWork()
+
+    def work_counts(self) -> Mapping[WorkField, int]:
+        """The queue's work since it was made.
+
+        Returns
+        -------
+        Mapping of WorkField to int
+            Sums merging pending contributions, one per element, and
+            dictionary accesses; a queue in order compares and multiplies
+            nothing.
+        """
+        return self._work.counts()
 
     def bind_semiring(self, semiring: ChartSemiring) -> None:
         """Bind the semiring that merges pending contributions.
@@ -939,13 +1031,18 @@ class FIFOAgenda(Agenda):
         if self._semiring is None:
             self._queue.append((item, weight))
             return
+        self._work.hashes += 1
         existing = self._pending.get(item)
         if existing is None:
+            self._work.hashes += 1
             self._pending[item] = weight
             self._order.append(item)
             return
         stacked = torch.stack([existing, weight])
-        self._pending[item] = self._semiring.plus(stacked, dim=0)
+        merged = self._semiring.plus(stacked, dim=0)
+        self._work.sums += merged.numel()
+        self._work.hashes += 1
+        self._pending[item] = merged
 
     def pop(self) -> tuple[Item, torch.Tensor]:
         """Remove and return the next item under this discipline.
@@ -960,6 +1057,7 @@ class FIFOAgenda(Agenda):
         if self._queue:
             return self._queue.popleft()
         item = self._order.popleft()
+        self._work.hashes += 1
         return item, self._pending.pop(item)
 
     def empty(self) -> bool:
@@ -984,6 +1082,16 @@ class LIFOAgenda(Agenda):
 
     def __init__(self) -> None:
         self._stack: list[tuple[Item, torch.Tensor]] = []
+
+    def work_counts(self) -> Mapping[WorkField, int]:
+        """The queue's work: none of the counted kinds.
+
+        Returns
+        -------
+        Mapping of WorkField to int
+            A stack sums, hashes, compares and multiplies nothing.
+        """
+        return dict.fromkeys(COMPONENT_FIELDS, 0)
 
     def push(self, item: Item, weight: torch.Tensor) -> None:
         """Add an item and its weight to the agenda.
@@ -1039,6 +1147,21 @@ class PriorityQueueAgenda(Agenda):
         self._priority_fn = priority_fn
         self._heap: list[tuple[float, int, Item, torch.Tensor]] = []
         self._counter = 0  # tie-breaker for deterministic ordering
+
+    def work_counts(self) -> Mapping[WorkField, int]:
+        """The queue's work: no sums, hashes or products; comparisons unmeasured.
+
+        Returns
+        -------
+        Mapping of WorkField to int
+            Zero sums, hashes and products; the heap's comparisons happen
+            inside the heap and are not counted, so they are absent.
+        """
+        return {
+            WorkField.SCALAR_SUMS: 0,
+            WorkField.SCALAR_PRODUCTS: 0,
+            WorkField.HASH_OPERATIONS: 0,
+        }
 
     def push(self, item: Item, weight: torch.Tensor) -> None:
         """Add an item and its weight to the agenda.
@@ -1114,6 +1237,13 @@ class AgendaResult(QiecModel):
         An empty tensor of the dtype and device of the run's axiom
         weights, which the zeros and units the result makes take; the
         default dtype when the run had no axiom.
+    work : WorkReport
+        The run's work: its pops and recorded applications; its pattern
+        matches, sums, products and hash operations together with the
+        chart's and the queue's, each measured when the run and both
+        report it (`ReportsWork`); products only when no rule has a
+        ``weight_fn``, whose products are its own; and the elements saved
+        for the backward pass when measured.
     """
 
     chart: Chart = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1140,6 +1270,117 @@ class AgendaResult(QiecModel):
     attached_loss: torch.Tensor | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    work: WorkReport = dx.field(
+        default_factory=lambda: WorkReport(phase=Phase.EXECUTION),
+        opaque=True,
+        extras=OPAQUE_BY_VALUE,
+    )
+
+
+class _AgendaWork:
+    """The counts an agenda run keeps of its own operations."""
+
+    def __init__(self) -> None:
+        self.pops = 0
+        self.matches = 0
+        self.products = 0
+
+
+def _since(
+    component: Chart | Agenda, before: Mapping[WorkField, int] | None
+) -> dict[WorkField, int] | None:
+    """The work a chart or queue did since earlier counts.
+
+    Parameters
+    ----------
+    component : Chart or Agenda
+        The component.
+    before : Mapping of WorkField to int or None
+        Its counts before the run, ``None`` when it reports no work.
+
+    Returns
+    -------
+    dict of WorkField to int or None
+        The difference for each counter it measures, or ``None`` when it
+        reports no work.
+    """
+    if before is None or not isinstance(component, ReportsWork):
+        return None
+    after = component.work_counts()
+    return {field: count - before.get(field, 0) for field, count in after.items()}
+
+
+def _agenda_report(
+    work: _AgendaWork,
+    *,
+    applications: int,
+    occurrences: int,
+    products_measured: bool,
+    saved: int | None,
+    components: Sequence[Mapping[WorkField, int] | None],
+) -> WorkReport:
+    """The work report of an agenda run.
+
+    The run's own counts are its pops, its pattern matches, its recorded
+    provenance, its products when every product is its own, and the tape
+    when measured; it sums and hashes nothing itself. The chart's and the
+    queue's reports add their sums, products, hash operations and
+    comparisons. Each of those is measured only when the run and every
+    component measured it; a component that reports no work leaves them
+    unmeasured.
+
+    Parameters
+    ----------
+    work : _AgendaWork
+        The run's own counts.
+    applications : int
+        Applications recorded, each counting one plus its premises.
+    occurrences : int
+        The axiom occurrences.
+    products_measured : bool
+        Whether every product went through the run's own calls, which
+        holds when no rule has a ``weight_fn``.
+    saved : int or None
+        Elements saved for the backward pass, or ``None`` when not
+        measured.
+    components : Sequence of Mapping of WorkField to int, or None
+        The chart's and the queue's work during the run, ``None`` for one
+        that reports none.
+
+    Returns
+    -------
+    WorkReport
+        The report, with exactly the counters measured.
+    """
+    own = {
+        WorkField.SCALAR_SUMS: 0,
+        WorkField.SCALAR_PRODUCTS: work.products,
+        WorkField.HASH_OPERATIONS: 0,
+        WorkField.KEY_COMPARISONS: work.matches,
+    }
+    measured = {WorkField.ITERATIONS, WorkField.PROVENANCE_RECORDS}
+    if saved is not None:
+        measured.add(WorkField.ELEMENTS_SAVED_FOR_BACKWARD)
+    totals: dict[WorkField, int] = {}
+    for field, count in own.items():
+        if field is WorkField.SCALAR_PRODUCTS and not products_measured:
+            continue
+        if all(report is not None and field in report for report in components):
+            measured.add(field)
+            totals[field] = count + sum(
+                report[field] for report in components if report is not None
+            )
+    return WorkReport(
+        phase=Phase.EXECUTION,
+        iterations=work.pops,
+        scalar_sums=totals.get(WorkField.SCALAR_SUMS, 0),
+        scalar_products=totals.get(WorkField.SCALAR_PRODUCTS, 0),
+        hash_operations=totals.get(WorkField.HASH_OPERATIONS, 0),
+        key_comparisons=totals.get(WorkField.KEY_COMPARISONS, 0),
+        provenance_records=applications + occurrences,
+        elements_saved_for_backward=0 if saved is None else saved,
+        measured=measuring(measured),
+    )
 
 
 def run_agenda(
@@ -1151,6 +1392,8 @@ def run_agenda(
     max_iterations: int = 100_000,
     chart: Chart | None = None,
     rule_callback: RuleCallback | None = None,
+    *,
+    measure_tape: bool = False,
 ) -> AgendaResult:
     """Run the agenda-driven deduction engine to fixed point.
 
@@ -1219,10 +1462,15 @@ def run_agenda(
         and ``weight`` is the application's contribution to the
         conclusion computed from those weights.
 
+    measure_tape : bool, optional
+        Whether to count the elements the run saves for the backward
+        pass, by a hook on the autograd graph that costs time.
+
     Returns
     -------
     AgendaResult
-        The final chart, the goal items, and the step count.
+        The final chart, the goal items, the step count, and the work
+        report of the run.
 
     Raises
     ------
@@ -1249,43 +1497,21 @@ def run_agenda(
         else torch.empty(0)
     )
 
-    iterations = 0
-    while not agenda.empty():
-        if iterations >= max_iterations:
-            raise RuntimeError(
-                f"agenda exceeded max_iterations={max_iterations}; "
-                f"likely a non-terminating deduction"
-            )
-        iterations += 1
-        item, delta = agenda.pop()
-        old = chart.get(item)
-        changed = chart.insert_or_aggregate(item, delta, semiring)
-        if not changed:
-            continue
-        if old is not None:
-            delta = chart.propagated(old, item, delta, semiring)
-        update = _Update(item=item, delta=delta, old=old)
-        # Fire every rule for which this item could be a premise.
-        for rule_index, rule in enumerate(rules):
-            for premise_idx, premise_pattern in enumerate(rule.premises):
-                bindings = match(premise_pattern, item)
-                if bindings is None:
-                    continue
-                _fire_remaining_premises(
-                    rule=rule,
-                    rule_index=rule_index,
-                    bindings=bindings,
-                    chart=chart,
-                    semiring=semiring,
-                    agenda=agenda,
-                    remaining_indices=[
-                        i for i in range(len(rule.premises)) if i != premise_idx
-                    ],
-                    fixed_idx=premise_idx,
-                    update=update,
-                    applications=applications,
-                )
-
+    work = _AgendaWork()
+    chart_before = chart.work_counts() if isinstance(chart, ReportsWork) else None
+    queue_before = agenda.work_counts() if isinstance(agenda, ReportsWork) else None
+    saved: list[int] = []
+    with _tape(saved) if measure_tape else nullcontext():
+        _drain(
+            agenda,
+            chart,
+            rules,
+            semiring,
+            applications,
+            work,
+            max_iterations,
+        )
+    iterations = work.pops
     if rule_callback is not None:
         for application in applications.values():
             weights = tuple(_chart_weight(chart, a) for a in application.antecedents)
@@ -1294,7 +1520,12 @@ def run_agenda(
                 list(zip(application.antecedents, weights)),
                 application.conclusion,
                 _conclusion_weight(
-                    application.rule, application.bindings, weights, semiring, like
+                    application.rule,
+                    application.bindings,
+                    weights,
+                    semiring,
+                    like,
+                    work,
                 ),
             )
 
@@ -1317,7 +1548,140 @@ def run_agenda(
         ],
         axiom_occurrences=occurrences,
         like=like,
+        work=_agenda_report(
+            work,
+            applications=sum(
+                1 + len(application.antecedents)
+                for application in applications.values()
+            ),
+            occurrences=len(occurrences),
+            products_measured=all(rule.weight_fn is None for rule in rules),
+            saved=sum(saved) if measure_tape else None,
+            components=(_since(chart, chart_before), _since(agenda, queue_before)),
+        ),
     )
+
+
+def _drain(
+    agenda: Agenda,
+    chart: Chart,
+    rules: tuple[InferenceRule, ...],
+    semiring: ChartSemiring,
+    applications: dict[tuple[int, tuple[Item, ...]], _Application],
+    work: _AgendaWork,
+    max_iterations: int,
+) -> None:
+    """Pop and fire until the agenda is empty.
+
+    Parameters
+    ----------
+    agenda : Agenda
+        The agenda.
+    chart : Chart
+        The chart.
+    rules : tuple of InferenceRule
+        The rules.
+    semiring : ChartSemiring
+        The semiring.
+    applications : dict
+        The applications seen so far, extended in place.
+    work : _AgendaWork
+        The counts, extended in place.
+    max_iterations : int
+        The bound on pops.
+
+    Raises
+    ------
+    RuntimeError
+        If the agenda runs for more than ``max_iterations`` steps.
+    """
+    while not agenda.empty():
+        if work.pops >= max_iterations:
+            raise RuntimeError(
+                f"agenda exceeded max_iterations={max_iterations}; "
+                f"likely a non-terminating deduction"
+            )
+        work.pops += 1
+        item, delta = agenda.pop()
+        old = chart.get(item)
+        changed = chart.insert_or_aggregate(item, delta, semiring)
+        if not changed:
+            continue
+        if old is not None:
+            delta = chart.propagated(old, item, delta, semiring)
+        update = _Update(item=item, delta=delta, old=old)
+        # Fire every rule for which this item could be a premise.
+        for rule_index, rule in enumerate(rules):
+            for premise_idx, premise_pattern in enumerate(rule.premises):
+                work.matches += 1
+                bindings = match(premise_pattern, item)
+                if bindings is None:
+                    continue
+                _fire_remaining_premises(
+                    rule=rule,
+                    rule_index=rule_index,
+                    bindings=bindings,
+                    chart=chart,
+                    semiring=semiring,
+                    agenda=agenda,
+                    remaining_indices=[
+                        i for i in range(len(rule.premises)) if i != premise_idx
+                    ],
+                    fixed_idx=premise_idx,
+                    update=update,
+                    applications=applications,
+                    work=work,
+                )
+
+
+@contextmanager
+def _tape(saved: list[int]) -> Iterator[None]:
+    """Count the elements saved for the backward pass inside the block.
+
+    Parameters
+    ----------
+    saved : list of int
+        Receives one entry per saved tensor.
+
+    Yields
+    ------
+    None
+        While the hook is installed.
+    """
+
+    def pack(tensor: torch.Tensor) -> torch.Tensor:
+        """Count a saved tensor and keep it.
+
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            The same tensor.
+        """
+        saved.append(tensor.numel())
+        return tensor
+
+    def unpack(tensor: torch.Tensor) -> torch.Tensor:
+        """Return a saved tensor.
+
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            The same tensor.
+        """
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+        yield
 
 
 def _chart_weight(chart: Chart, item: Item) -> torch.Tensor:
@@ -1412,6 +1776,7 @@ def _fire_remaining_premises(
     fixed_idx: int,
     update: _Update,
     applications: dict[tuple[int, tuple[Item, ...]], _Application],
+    work: _AgendaWork,
 ) -> None:
     """Match the remaining premise patterns against the chart, then fire.
 
@@ -1442,6 +1807,8 @@ def _fire_remaining_premises(
         The popped item, its increment, and its old weight.
     applications : dict
         The rule applications seen so far.
+    work : _AgendaWork
+        The run's counts.
     """
     if not remaining_indices:
         _fire(
@@ -1454,11 +1821,13 @@ def _fire_remaining_premises(
             semiring=semiring,
             agenda=agenda,
             applications=applications,
+            work=work,
         )
         return
     next_idx = remaining_indices[0]
     next_pattern = rule.premises[next_idx]
     for sibling, _ in chart.lookup(next_pattern):
+        work.matches += 1
         sub_bindings = match(next_pattern, sibling, bindings)
         if sub_bindings is None:
             continue
@@ -1473,6 +1842,7 @@ def _fire_remaining_premises(
             fixed_idx=fixed_idx,
             update=update,
             applications=applications,
+            work=work,
         )
 
 
@@ -1482,6 +1852,7 @@ def _conclusion_weight(
     premise_weights: tuple[torch.Tensor, ...],
     semiring: ChartSemiring,
     like: torch.Tensor,
+    work: _AgendaWork,
 ) -> torch.Tensor:
     """The weight a rule application contributes to its conclusion.
 
@@ -1498,6 +1869,8 @@ def _conclusion_weight(
     like : torch.Tensor
         A tensor of the run's dtype and device, which the unit of an
         application without premises takes.
+    work : _AgendaWork
+        The run's counts; a ``weight_fn``'s products are its own.
 
     Returns
     -------
@@ -1512,6 +1885,7 @@ def _conclusion_weight(
     acc = premise_weights[0]
     for w in premise_weights[1:]:
         acc = semiring.times(acc, w)
+        work.products += acc.numel()
     return acc
 
 
@@ -1526,6 +1900,7 @@ def _fire(
     semiring: ChartSemiring,
     agenda: Agenda,
     applications: dict[tuple[int, tuple[Item, ...]], _Application],
+    work: _AgendaWork,
 ) -> None:
     """Push one rule application's increment onto the agenda.
 
@@ -1556,6 +1931,8 @@ def _fire(
         The agenda that receives the conclusion's increment.
     applications : dict
         The rule applications seen so far, extended with this one.
+    work : _AgendaWork
+        The run's counts.
     """
     if rule.side_condition is not None and not rule.side_condition(bindings):
         return
@@ -1590,7 +1967,9 @@ def _fire(
         return
     agenda.push(
         conclusion_item,
-        _conclusion_weight(rule, bindings, tuple(factors), semiring, update.delta),
+        _conclusion_weight(
+            rule, bindings, tuple(factors), semiring, update.delta, work
+        ),
     )
 
 
@@ -2165,6 +2544,8 @@ def semi_naive_agenda() -> Agenda:
 
 
 __all__ = [
+    "COMPONENT_FIELDS",
+    "ReportsWork",
     "Item",
     "Wildcard",
     "make_wildcard",

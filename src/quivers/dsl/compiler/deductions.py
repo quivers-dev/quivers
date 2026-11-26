@@ -6,10 +6,10 @@ import math
 from collections.abc import Callable, Hashable
 from pathlib import Path
 
+import didactic.api as dx
 import torch
 import torch.nn as nn
 
-from quivers._values import HeldValue
 from quivers.core.algebras import BOOLEAN
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
@@ -164,35 +164,6 @@ _SEQUENT_RULE_OPTION_KEYS: frozenset[str] = frozenset(
 _LEXICON_ENTRY_OPTION_KEYS: frozenset[str] = frozenset({"learnable"})
 
 
-def _span_extent(item: tuple[HeldValue, ...]) -> tuple[int, int] | None:
-    """The positions a span item of a lexicon deduction covers.
-
-    A deduction with a lexicon builds its axioms as span items
-    ``("span", i, j, category[, form])``, and its rules derive span
-    items of the same constructor, so the item type declares its extent
-    by that constructor.
-
-    Parameters
-    ----------
-    item : tuple
-        A chart item.
-
-    Returns
-    -------
-    tuple of int or None
-        ``(i, j)`` for a span item, ``None`` for an item that covers no
-        stretch of the input.
-    """
-    if (
-        len(item) >= 4
-        and item[0] == "span"
-        and isinstance(item[1], int)
-        and isinstance(item[2], int)
-    ):
-        return (item[1], item[2])
-    return None
-
-
 def _words_display(entry: _LexiconEntryAst) -> str:
     """Human-readable form of a lexicon entry's word tuple."""
     return ", ".join(repr(w) for w in entry.words)
@@ -281,6 +252,149 @@ def _category_depth(value: Hashable) -> int:
         (_category_depth(v) for v in value[1:]),
         default=0,
     )
+
+
+class SpanItems(dx.Model):
+    """The items of a deduction over spans of an input.
+
+    A span item is ``(head, i, j, category[, form])``: it covers the
+    positions ``i`` to ``j`` and derives ``category``. A lexicon builds
+    its axioms as span items and a span pattern matches them; any other
+    item derives itself.
+
+    Parameters
+    ----------
+    head : str
+        The constructor of span items.
+    """
+
+    head: str = "span"
+
+    def spans(self, item: Hashable) -> bool:
+        """Whether an item is a span item.
+
+        Parameters
+        ----------
+        item : Hashable
+            A chart item.
+
+        Returns
+        -------
+        bool
+            True for ``(head, i, j, category, ...)`` with integer positions.
+        """
+        return (
+            isinstance(item, tuple)
+            and len(item) >= 4
+            and item[0] == self.head
+            and isinstance(item[1], int)
+            and isinstance(item[2], int)
+        )
+
+    def extent(self, item: Hashable) -> tuple[int, int] | None:
+        """The positions an item covers.
+
+        Parameters
+        ----------
+        item : Hashable
+            A chart item.
+
+        Returns
+        -------
+        tuple of int or None
+            ``(i, j)`` for a span item, ``None`` for any other.
+        """
+        if not self.spans(item):
+            return None
+        assert isinstance(item, tuple)
+        start, end = item[1], item[2]
+        assert isinstance(start, int) and isinstance(end, int)
+        return (start, end)
+
+    def category(self, item: Hashable) -> Hashable:
+        """What an item derives.
+
+        Parameters
+        ----------
+        item : Hashable
+            A chart item.
+
+        Returns
+        -------
+        Hashable
+            The category of a span item; any other item is its own.
+        """
+        if self.spans(item):
+            assert isinstance(item, tuple)
+            return item[3]
+        return item
+
+
+def derives_start(category: Hashable, start: str) -> bool:
+    """Whether a category is the start symbol.
+
+    The start symbol is an atom ``(TERM_ATOM_TAG, start)``, or the head of
+    a head-keyed item ``(start, ...)``.
+
+    Parameters
+    ----------
+    category : Hashable
+        A category.
+    start : str
+        The start symbol.
+
+    Returns
+    -------
+    bool
+        Whether it names the start symbol.
+    """
+    if not isinstance(category, tuple) or not category:
+        return False
+    if category[0] == TERM_ATOM_TAG:
+        return len(category) == 2 and category[1] == start
+    return category[0] == start
+
+
+def goal_of(item_type: SpanItems, start: str | None) -> Callable[[Hashable], bool]:
+    """The goal of a deduction: the items that derive the start symbol.
+
+    An item derives it when it is the start atom or keyed by the start
+    symbol, or when it is a span item whose category is the start atom.
+
+    Parameters
+    ----------
+    item_type : SpanItems
+        The deduction's items.
+    start : str or None
+        The start symbol; without one every item is a goal.
+
+    Returns
+    -------
+    Callable[[Hashable], bool]
+        The goal predicate.
+    """
+
+    def goal(item: Hashable) -> bool:
+        """Whether an item derives the start symbol.
+
+        Parameters
+        ----------
+        item : Hashable
+            A chart item.
+
+        Returns
+        -------
+        bool
+            The decision.
+        """
+        if start is None:
+            return True
+        if derives_start(item, start):
+            return True
+        category = item_type.category(item)
+        return category is not item and category == (TERM_ATOM_TAG, start)
+
+    return goal
 
 
 def _with_depth_guard(rule: InferenceRule, depth_n: int) -> InferenceRule:
@@ -597,7 +711,7 @@ def _make_rule_weight_fn(
         key = _bindings_key(
             {name: value for name, value in bindings.items() if name not in positions}
         )
-        if semiring is SEMIRING_LOG_PROB or semiring is SEMIRING_VITERBI:
+        if semiring.log_weights:
             own_w = _rule_log_weight(key, rule_name)
         else:
             own_w = semiring.unit_like((), base)
@@ -606,9 +720,7 @@ def _make_rule_weight_fn(
         # log semirings; semiring-product for general K).
         cur = rule_name
         seen = {cur}
-        while cur in rule_parent and (
-            semiring is SEMIRING_LOG_PROB or semiring is SEMIRING_VITERBI
-        ):
+        while cur in rule_parent and semiring.log_weights:
             parent = rule_parent[cur]
             if parent in seen:
                 raise CompileError(
@@ -818,6 +930,10 @@ class _DeductionsMixin:
             or any(_span_arity(p) >= 4 for sr in decl.rules for p in sr.premises)
             or any(_span_arity(sr.conclusion) >= 4 for sr in decl.rules)
         )
+
+        # A deduction's span items are those its lexicon builds and its
+        # span patterns match; any other item is its own category.
+        item_type = SpanItems()
 
         _lf_wildcard_counter = {"n": 0}
 
@@ -1045,7 +1161,7 @@ class _DeductionsMixin:
         )
         # A system whose axioms come from a lexicon has span items, whose
         # extent the goal has to cover; other systems declare none.
-        goal_extent: Callable[[tuple[HeldValue, ...]], tuple[int, int] | None] | None
+        goal_extent: Callable[[Hashable], tuple[int, int] | None] | None
         goal_extent = None
         if axioms_source is not None:
             # General axiom source — look up the named morphism and
@@ -1353,16 +1469,17 @@ class _DeductionsMixin:
                         # ``binders`` block makes the LF visible.
                         # The shape is fixed per deduction and
                         # detected once at compile time below.
+                        head = item_type.head
                         if _uses_lf:
-                            item = ("span", pos, pos + 1, cat_pat, lf_val)
+                            item = (head, pos, pos + 1, cat_pat, lf_val)
                         else:
-                            item = ("span", pos, pos + 1, cat_pat)
+                            item = (head, pos, pos + 1, cat_pat)
                         out.append((item, weight_tensor))
                         _lf_table[item] = lf_val
                 return out
 
             axiom_injector = _lexicon_axioms
-            goal_extent = _span_extent
+            goal_extent = item_type.extent
         else:
             # Identity injector — input is already a list of axioms.
             def _given_axioms(input_value):
@@ -1384,34 +1501,7 @@ class _DeductionsMixin:
             col=decl.col,
         )
 
-        def _goal(item) -> bool:
-            if start is None:
-                return True
-            if not (isinstance(item, tuple) and len(item) > 0):
-                return False
-            # Three goal-item shapes the framework recognizes by
-            # default; users can override via a custom goal
-            # predicate (the `axioms = source_kernel` escape hatch
-            # composes with an arbitrary `goal` field on the
-            # underlying DeductionSystem).
-            head = item[0]
-            # 1. Bare atom: ("atom", "S").
-            if head == TERM_ATOM_TAG and len(item) == 2 and item[1] == start:
-                return True
-            # 2. Head-keyed (Datalog-style): ("reach", ...).
-            if isinstance(head, str) and head == start:
-                return True
-            # 3. CKY-shaped span: ("span", i, j, ("atom", "S"), lf).
-            if head == "span" and len(item) >= 4:
-                cat = item[3]
-                if (
-                    isinstance(cat, tuple)
-                    and len(cat) == 2
-                    and cat[0] == TERM_ATOM_TAG
-                    and cat[1] == start
-                ):
-                    return True
-            return False
+        _goal = goal_of(item_type, start)
 
         # Choose an agenda strategy. Default to CKY for
         # context-free-shaped systems; depth-first for proof
