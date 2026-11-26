@@ -34,6 +34,7 @@ indexed : Charts indexed on the argument positions rule joins look up
 joins : Worst-case optimal joins and variable elimination for rule bodies
 planning : Plans for queries over rule presentations
 forest : Packed forests of derivations and folds over them
+recursion : Linear cyclic systems solved through the algebra's closure
 productions : A grammar's productions grouped by left-hand side
 effect_lifts : Effect-lifted rule schemas for deduction systems
 deduction : Abstract weighted deductive system framework and its operations
@@ -128,8 +129,18 @@ if TYPE_CHECKING:
         TrieNode,
         side_condition_holds,
     )
+    from quivers.stochastic.recursion import (
+        Component,
+        CyclicRefusal,
+        CyclicRefused,
+        Side,
+        components,
+        solve,
+    )
     from quivers.stochastic.planning import (
         FOREST_ALGORITHM,
+        CYCLIC_WORK,
+        CYCLIC_ALGORITHM,
         FOREST_WORK,
         TWO_PASS_ALGORITHM,
         RECOMPUTED_TWO_PASS_WORK,
@@ -476,8 +487,16 @@ _LAZY_EXPORTS: dict[str, str] = {
     "forest_fold": "quivers.stochastic.forest",
     "nonlinear_fold": "quivers.stochastic.forest",
     "FOREST_ALGORITHM": "quivers.stochastic.planning",
+    "CYCLIC_WORK": "quivers.stochastic.planning",
+    "CYCLIC_ALGORITHM": "quivers.stochastic.planning",
     "FOREST_WORK": "quivers.stochastic.planning",
     "TWO_PASS_ALGORITHM": "quivers.stochastic.planning",
+    "Component": "quivers.stochastic.recursion",
+    "CyclicRefusal": "quivers.stochastic.recursion",
+    "CyclicRefused": "quivers.stochastic.recursion",
+    "Side": "quivers.stochastic.recursion",
+    "components": "quivers.stochastic.recursion",
+    "solve": "quivers.stochastic.recursion",
     "class_directed_lifts": "quivers.stochastic.effect_lifts",
     "make_swap_schema": "quivers.stochastic.effect_lifts",
     "swap_rule_set": "quivers.stochastic.effect_lifts",
@@ -738,6 +757,8 @@ __all__ = [
     "RuleJoin",
     "plan",
     "FOREST_ALGORITHM",
+    "CYCLIC_WORK",
+    "CYCLIC_ALGORITHM",
     "FOREST_WORK",
     "TWO_PASS_ALGORITHM",
     # forest
@@ -752,6 +773,13 @@ __all__ = [
     "fold_derivations",
     "forest_fold",
     "nonlinear_fold",
+    # recursion
+    "Component",
+    "CyclicRefusal",
+    "CyclicRefused",
+    "Side",
+    "components",
+    "solve",
     # effect_lifts
     "class_directed_lifts",
     "make_swap_schema",
