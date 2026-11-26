@@ -1417,6 +1417,60 @@ def _emit_score(
     )
 
 
+def _occurrence_key(
+    site: object,
+    occurrence: int,
+    values: Mapping[object, object],
+    handler: str,
+) -> object | None:
+    """The key a value for one occurrence of a site is given under.
+
+    A site reached more than once, as a recurrence or a recursion reaches
+    the sites of its body, takes the value keyed ``"<site>@<n>"`` at its
+    ``n``-th occurrence, counted from zero. A value keyed by the site alone
+    is for a site reached once; given for a site reached more than once, it
+    is refused rather than used at every occurrence.
+
+    Parameters
+    ----------
+    site : object
+        The site.
+    occurrence : int
+        How many times the run reached it before.
+    values : Mapping[object, object]
+        The values given, by key.
+    handler : str
+        The handler, for the diagnostic.
+
+    Returns
+    -------
+    object | None
+        The key, or ``None`` when no value is given for the occurrence.
+
+    Raises
+    ------
+    InvalidHandlerError
+        If one value is keyed by the site alone and the site is reached
+        more than once.
+    """
+    key_at = f"{site}@{occurrence}"
+    if key_at in values:
+        return key_at
+    if site not in values:
+        return None
+    if occurrence > 0 or any(
+        isinstance(key, str) and key.startswith(f"{site}@") for key in values
+    ):
+        # One value for a site reached more than once would be used at
+        # every occurrence, a trajectory the caller never gave.
+        raise InvalidHandlerError(
+            f"{handler} {site!r}: the site is reached more than once, so each "
+            f"occurrence takes its own value under '{site}@<n>', not one value "
+            f"under {site!r}"
+        )
+    return site
+
+
 def condition_handler(
     observations: Mapping[object, object],
     *,
@@ -1486,6 +1540,7 @@ def condition_handler(
             declaration do not share it.
         """
         seen: set[object] = set()
+        occurrences: dict[object, int] = {}
 
         def sample(
             request: RuntimeRequest,
@@ -1519,18 +1574,21 @@ def condition_handler(
                 If the observed value does not inhabit the site's type.
             """
             site, sampleable = _site_and_sampleable(request, definition.name)
-            if site not in observations:
+            occurrence = occurrences.get(site, 0)
+            occurrences[site] = occurrence + 1
+            key = _occurrence_key(site, occurrence, observations, "observation")
+            if key is None:
                 if missing is MissingValuePolicy.ERROR:
                     raise InvalidHandlerError(f"missing observation for site {site!r}")
                 return Forward()
-            value = observations[site]
+            value = observations[key]
             _require(
                 value,
                 result_validator,
                 request.core.result_type,
-                f"observation {site!r}",
+                f"observation {key!r}",
             )
-            seen.add(site)
+            seen.add(key)
             weight = _log_density(sampleable, value)
             _emit_score(
                 context,
@@ -1736,24 +1794,8 @@ def replay_handler(
             site, sampleable = _site_and_sampleable(request, definition.name)
             occurrence = occurrences.get(site, 0)
             occurrences[site] = occurrence + 1
-            key_at = f"{site}@{occurrence}"
-            if key_at in values:
-                site_key: object = key_at
-            elif site in values:
-                if occurrence > 0 or any(
-                    isinstance(key, str) and key.startswith(f"{site}@")
-                    for key in values
-                ):
-                    # One value for a site reached more than once would be
-                    # replayed at every occurrence, a trajectory the caller
-                    # never gave.
-                    raise InvalidHandlerError(
-                        f"replay {site!r}: the site is reached more than once, "
-                        f"so each occurrence takes its own value under "
-                        f"'{site}@<n>', not one value under {site!r}"
-                    )
-                site_key = site
-            else:
+            site_key = _occurrence_key(site, occurrence, values, "replay")
+            if site_key is None:
                 return Forward()
             value = values[site_key]
             if host_numbers is not None:

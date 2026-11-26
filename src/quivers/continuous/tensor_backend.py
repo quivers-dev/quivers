@@ -14,13 +14,19 @@ itself accounts for, and has none.
 
 from __future__ import annotations
 
+import math
 import random
 
 import torch
 from torch.distributions import Distribution
+from torch.distributions import constraints as _constraints
 
 from quivers.continuous._measure_queries import log_mass as measure_log_mass
 from quivers.continuous.inline import _raw_distribution_value
+from quivers.continuous.morphisms import ContinuousMorphism
+from quivers.continuous.plate import PlateDraw
+from quivers.continuous.spaces import Euclidean
+from quivers.core.objects import Unit
 from quivers.qiec.distributions import (
     SHAPE_FROM_EVENT,
     DistributionError,
@@ -306,4 +312,131 @@ class TensorBackend:
         return torch.as_tensor(mass).to(distribution.numbers.real_dtype)
 
 
-__all__ = ["TensorBackend", "torch_law"]
+class DrawnLaw(ContinuousMorphism):
+    """The law a site of a checked program was drawn from, as a morphism.
+
+    A site of a program that runs on the reference machine draws from a
+    `RuntimeDistribution` its run constructs. A trace records the site's
+    law as the morphism its run drew from, so a latent registry reads its
+    support and event shape, and a guide its bijector, as for a site of a
+    compiled program. The morphism has no input: its law is the one the
+    run constructed, and sampling and scoring it repeat that law.
+
+    Parameters
+    ----------
+    distribution : RuntimeDistribution
+        The distribution the site was drawn from, at one position of its
+        plate.
+    native : torch.distributions.Distribution
+        Its torch distribution.
+    """
+
+    def __init__(self, distribution: RuntimeDistribution, native: Distribution) -> None:
+        natural = tuple(int(size) for size in native.event_shape)
+        codomain = Euclidean(
+            name=distribution.family,
+            dim=math.prod(natural),
+            intrinsic_shape=natural,
+        )
+        super().__init__(Unit, codomain)
+        self._native = native
+        self._family = distribution.family
+
+    @property
+    def family_name(self) -> str:
+        """The family's source name.
+
+        Returns
+        -------
+        str
+            The name.
+        """
+        return self._family
+
+    @property
+    def support(self) -> _constraints.Constraint:
+        """The support of the law.
+
+        Returns
+        -------
+        torch.distributions.constraints.Constraint
+            The torch distribution's support.
+        """
+        support = self._native.support
+        assert support is not None
+        return support
+
+    def rsample(  # type: ignore[override]
+        self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
+    ) -> torch.Tensor:
+        """Draw from the law.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Unused: the law has no input.
+        sample_shape : torch.Size
+            Leading sample dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            Reparameterized draws when the family allows them.
+        """
+        del x
+        if self._native.has_rsample:
+            return self._native.rsample(sample_shape)
+        return self._native.sample(sample_shape)
+
+    def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """The log density of a value.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Unused: the law has no input.
+        y : torch.Tensor
+            The value.
+
+        Returns
+        -------
+        torch.Tensor
+            The density at each position of the law's batch.
+        """
+        del x
+        return self._native.log_prob(_point(y, self._native))
+
+
+def site_morphism(distribution: RuntimeDistribution) -> ContinuousMorphism:
+    """The morphism a trace records for a site drawn from a distribution.
+
+    Parameters
+    ----------
+    distribution : RuntimeDistribution
+        The distribution the site was drawn from.
+
+    Returns
+    -------
+    ContinuousMorphism
+        A `DrawnLaw` of one position, inside a `PlateDraw` over the
+        distribution's plate when it has one, so a registry reads the
+        plate's positions and each position's event as it does for a
+        plated site of a compiled program.
+
+    Raises
+    ------
+    DistributionError
+        If the family has no torch distribution for its arguments.
+    """
+    native = torch_law(distribution)
+    plate = (*distribution.batch, *distribution.event)
+    if not plate:
+        return DrawnLaw(distribution, native)
+    return PlateDraw(
+        math.prod(plate),
+        DrawnLaw(distribution, native),
+        index_shape=plate,
+    )
+
+
+__all__ = ["DrawnLaw", "TensorBackend", "site_morphism", "torch_law"]
