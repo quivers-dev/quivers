@@ -1039,7 +1039,13 @@ predictor, a positive one `exp(eta)`, one on `(a, b)` is
 first coordinate is zero. A parameter named `mu` takes the main formula, as the
 location of a family does. Every other site keeps the program's own law.
 Priors, default priors, centering and group terms follow the conventions of
-distributional formulas, with `dpar=<parameter>`.
+distributional formulas, with `dpar=<parameter>`. The program's prior of a
+replaced site is gone, and the regression's priors induce another: an
+intercept-only `noise ~ 1` on a `Beta(1, 20)` site is logit-normal, and the
+default `Normal(0, 5)` intercept puts much of its mass near 0 and 1. A prior on
+the intercept, such as `PriorSpec("Normal(-3.0, 1.0)", class_="Intercept",
+dpar="noise")`, states the intended one. The program's own sites are not prior
+targets: their laws are the program's.
 
 Data the program reads at each row are data columns of the same name. Data on
 another axis and scalars come from `data2`. A saved fit keeps the program's
