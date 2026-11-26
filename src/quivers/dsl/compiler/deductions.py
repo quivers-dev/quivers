@@ -1043,6 +1043,10 @@ class _DeductionsMixin:
             line=decl.line,
             col=decl.col,
         )
+        # A system whose axioms come from a lexicon has span items, whose
+        # extent the goal has to cover; other systems declare none.
+        goal_extent: Callable[[tuple[HeldValue, ...]], tuple[int, int] | None] | None
+        goal_extent = None
         if axioms_source is not None:
             # General axiom source — look up the named morphism and
             # invoke it on the input at call time. The morphism may
@@ -1367,7 +1371,6 @@ class _DeductionsMixin:
                 return list(input_value)
 
             axiom_injector = _given_axioms
-            goal_extent = None
 
             axiom_module = None
 

@@ -620,7 +620,9 @@ are:
   variables;
 - `chart.derivations(item)`: the rule applications that derive `item`, its incoming
   [hyperedges](https://en.wikipedia.org/wiki/Hypergraph) [@klein2001parsing], as
-  `(rule_name, antecedents)` pairs with the antecedent items in premise order;
+  `(rule_index, rule_name, antecedents)` triples with the rule's position in the
+  system, so two rules of one name stay apart, and the antecedent items in premise
+  order;
 - `chart.goal_weight()`: the weight of the goal.
 
 The weights are tensors, and their gradients reach every learnable rule and lexicon

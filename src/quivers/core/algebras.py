@@ -4318,6 +4318,79 @@ class MaxPlusAlgebra(Selective, Semifield, ZeroSumFree, Star, IdempotentSemiring
         return torch.where(torch.isposinf(x), inf, out)
 
 
+class _LogSumPair(torch.autograd.Function):
+    """``log(e^a + e^b)`` whose derivatives are numbers at an absent operand.
+
+    The forward pass is ``torch.logaddexp``. Its own derivative,
+    ``1 / (1 + e^(b - a))``, differentiates to ``∞ / ∞`` at ``a = -∞``;
+    the derivative here is ``e^(a - s)`` with ``s`` the sum, computed by
+    operations whose derivatives are numbers there, so a second
+    derivative is ``p (1 - p)`` at every point with a finite operand.
+    """
+
+    generate_vmap_rule = True
+
+    @staticmethod
+    def forward(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """The log-sum of two log weights, not both ``-∞``.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            A log weight.
+        b : torch.Tensor
+            A log weight of the same shape.
+
+        Returns
+        -------
+        torch.Tensor
+            ``log(e^a + e^b)``.
+        """
+        return torch.logaddexp(a, b)
+
+    @staticmethod
+    def setup_context(
+        ctx: torch.autograd.function.FunctionCtx,
+        inputs: tuple[torch.Tensor, torch.Tensor],
+        output: torch.Tensor,
+    ) -> None:
+        """Keep the operands for the derivative.
+
+        Parameters
+        ----------
+        ctx : FunctionCtx
+            The context.
+        inputs : tuple of torch.Tensor
+            The operands.
+        output : torch.Tensor
+            The sum, unused.
+        """
+        del output
+        ctx.save_for_backward(*inputs)
+
+    @staticmethod
+    def backward(  # type: ignore[override]
+        ctx: torch.autograd.function.FunctionCtx, grad: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """The derivative ``(e^(a - s), e^(b - s))`` times the incoming one.
+
+        Parameters
+        ----------
+        ctx : FunctionCtx
+            The context holding the operands.
+        grad : torch.Tensor
+            The incoming derivative.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The derivatives in each operand.
+        """
+        a, b = ctx.saved_tensors  # type: ignore[attr-defined]
+        total = torch.logaddexp(a, b)
+        return grad * torch.exp(a - total), grad * torch.exp(b - total)
+
+
 class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
     """Log-space sum-product semifield on [-∞, ∞).
 
@@ -4334,7 +4407,10 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
 
     A join of terms that are all ``-∞`` is ``-∞`` with derivative zero:
     the log of a sum of absent alternatives is ``-∞`` near them, so no
-    mass moves. The meet has no value over no terms, since the carrier
+    mass moves. The binary sum agrees with the join over the pair in
+    value and in first and second derivatives at every point; its
+    derivative is not ``torch.logaddexp``'s, whose second derivative is
+    not a number at an operand ``-∞``. The meet has no value over no terms, since the carrier
     has no greatest element.
     """
 
@@ -4480,7 +4556,7 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
         )
 
     def join_pair(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """The binary sum ``log(e^a + e^b)``, with zero masked.
+        """The binary sum ``log(e^a + e^b)``, equal to `join` over the pair.
 
         Parameters
         ----------
@@ -4492,13 +4568,15 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, Semiring):
         Returns
         -------
         torch.Tensor
-            The sum, which equals `join` over the pair; when both are
-            ``-∞`` it is ``-∞`` with derivative zero.
+            The sum. It agrees with `join` over the pair in value and in
+            its first and second derivatives at every point: two absent
+            operands give ``-∞`` with zero derivatives, and one gives the
+            other's derivatives exactly.
         """
         a, b = torch.broadcast_tensors(a, b)
         impossible = torch.isneginf(a) & torch.isneginf(b)
         zero = torch.zeros_like(a)
-        total = torch.logaddexp(
+        total = _LogSumPair.apply(
             torch.where(impossible, zero, a), torch.where(impossible, zero, b)
         )
         return torch.where(impossible, torch.full_like(total, -float("inf")), total)

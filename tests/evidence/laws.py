@@ -115,6 +115,9 @@ class Reference(ValueModel):
         The zero.
     unit : Element or None
         The unit, ``None`` for a module or a rule without one.
+    second : Callable or None
+        The matrix of second derivatives of ``a ⊕ b`` in ``(a, b)``, for
+        a scalar sum that has one.
     """
 
     plus: Plus = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -123,6 +126,9 @@ class Reference(ValueModel):
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     unit: Element | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    second: Callable[[float, float], list[list[float]]] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
@@ -450,6 +456,53 @@ def _multiply(a: float, b: float) -> float:
     return a * b
 
 
+def _log_sum_second(a: float, b: float) -> list[list[float]]:
+    """The second derivatives of ``log(e^a + e^b)``.
+
+    With ``p = e^a / (e^a + e^b)`` the matrix is ``p (1 - p)`` times
+    ``[[1, -1], [-1, 1]]``; an absent operand makes ``p`` zero or one,
+    and two absent operands leave the sum ``-∞`` near them, so the
+    matrix is zero.
+
+    Parameters
+    ----------
+    a : float
+        A log weight.
+    b : float
+        A log weight.
+
+    Returns
+    -------
+    list of list of float
+        The matrix.
+    """
+    if a == -INFINITY or b == -INFINITY:
+        return [[0.0, 0.0], [0.0, 0.0]]
+    peak = max(a, b)
+    share = math.exp(a - peak) / (math.exp(a - peak) + math.exp(b - peak))
+    curve = share * (1.0 - share)
+    return [[curve, -curve], [-curve, curve]]
+
+
+def _flat_second(a: float, b: float) -> list[list[float]]:
+    """The second derivatives of a sum that is linear or piecewise linear.
+
+    Parameters
+    ----------
+    a : float
+        An operand.
+    b : float
+        An operand.
+
+    Returns
+    -------
+    list of list of float
+        The zero matrix.
+    """
+    del a, b
+    return [[0.0, 0.0], [0.0, 0.0]]
+
+
 PRODUCT_FUZZY_REFERENCE = _scalar(_noisy_or, _multiply, 0.0, 1.0)
 LUKASIEWICZ_REFERENCE = _scalar(_bounded, _lukasiewicz, 0.0, 1.0)
 REFERENCES: dict[str, Reference] = {
@@ -458,17 +511,17 @@ REFERENCES: dict[str, Reference] = {
     "Lukasiewicz": LUKASIEWICZ_REFERENCE,
     "Godel": _scalar(lambda v: max(v, default=0.0), min, 0.0, 1.0),
     "Tropical": _scalar(_minimum, _add, INFINITY, 0.0),
-    "MaxPlus": _scalar(_maximum, _add, -INFINITY, 0.0),
-    "LogProb": _scalar(_log_total, _add, -INFINITY, 0.0),
-    "Real": _scalar(math.fsum, _multiply, 0.0, 1.0),
+    "MaxPlus": _scalar(_maximum, _add, -INFINITY, 0.0).with_(second=_flat_second),
+    "LogProb": _scalar(_log_total, _add, -INFINITY, 0.0).with_(second=_log_sum_second),
+    "Real": _scalar(math.fsum, _multiply, 0.0, 1.0).with_(second=_flat_second),
     "Probability": _scalar(
         lambda v: min(1.0, max(0.0, math.fsum(v))),
         lambda a, b: min(1.0, max(0.0, a * b)),
         0.0,
         1.0,
     ),
-    "Counting": _scalar(math.fsum, _multiply, 0.0, 1.0),
-    "Markov": _scalar(math.fsum, _multiply, 0.0, 1.0),
+    "Counting": _scalar(math.fsum, _multiply, 0.0, 1.0).with_(second=_flat_second),
+    "Markov": _scalar(math.fsum, _multiply, 0.0, 1.0).with_(second=_flat_second),
     "Dual(ProductFuzzy)": _scalar(
         _fold(_multiply, 1.0), lambda a, b: _noisy_or([a, b]), 1.0, 0.0
     ),
@@ -2647,6 +2700,53 @@ def check_declared(member: Member, dtype: torch.dtype) -> None:
         )
 
 
+def check_second(member: Member, dtype: torch.dtype) -> None:
+    """The binary sum and the sum over a pair agree to second order.
+
+    On every pair of samples, the value, the first derivatives and the
+    matrix of second derivatives of ``join_pair(a, b)`` and of ``join``
+    over the stacked pair are numbers, and the second derivatives are
+    the reference's formula.
+
+    Parameters
+    ----------
+    member : Member
+        A row whose reference has second derivatives.
+    dtype : torch.dtype
+        The precision.
+
+    Raises
+    ------
+    Mismatch
+        If a derivative is not a number or differs from the formula.
+    """
+    structure = _carrier(member)
+    second = member.reference.second
+    assert second is not None
+    pool = samples(member, dtype)
+    for a, b in itertools.product(pool.tolist(), repeat=2):
+        point = torch.tensor([a, b], dtype=dtype)
+        wanted = torch.tensor(second(a, b), dtype=dtype)
+        for what, function in (
+            ("binary sum", lambda t: structure.join_pair(t[0], t[1])),
+            ("sum over the pair", lambda t: structure.join(t, 0)),
+        ):
+            leaf = point.clone().requires_grad_()
+            (first,) = torch.autograd.grad(function(leaf), (leaf,), create_graph=True)
+            if bool(torch.isnan(first).any()):
+                raise Mismatch(
+                    "not-a-number", math.inf, f"{member.name}: {what} at {(a, b)}"
+                )
+            found = torch.autograd.functional.hessian(function, point)
+            if bool(torch.isnan(found).any()):
+                raise Mismatch(
+                    "not-a-number",
+                    math.inf,
+                    f"{member.name}: second derivative of the {what} at {(a, b)}",
+                )
+            agree(found, wanted, member, f"second derivative of the {what} at {(a, b)}")
+
+
 # -- cells ------------------------------------------------------------------
 
 
@@ -2680,6 +2780,9 @@ def run(member: Member, law: str, dtype: torch.dtype = torch.float64) -> None:
     """
     if law == "declared operations":
         check_declared(member, dtype)
+        return
+    if law == "second derivatives":
+        check_second(member, dtype)
         return
     LAW_CHECKS[law](member, dtype)
 
@@ -3298,9 +3401,14 @@ ROWS: tuple[str, ...] = tuple(MEMBERS)
 CELLS: tuple[str, ...] = tuple(
     f"{row}/{law}"
     for row in ROWS
-    for law in (*claimed(MEMBERS[row]), "declared operations")
+    for law in (
+        *claimed(MEMBERS[row]),
+        "declared operations",
+        *(("second derivatives",) if MEMBERS[row].reference.second else ()),
+    )
 )
-"""Every cell: each claimed law of each row, and its declared operations."""
+"""Every cell: each claimed law of each row, its declared operations, and
+the second derivatives of its sum where the reference has them."""
 
 assert set(LAW_CHECKS) <= set(LAWS)
 
@@ -3344,15 +3452,24 @@ LAW_MUTATIONS: tuple[Mutation, ...] = (
         min_effect=0.5,
     ),
     Mutation(
-        name="log-pair-replaced-by-maximum",
-        defect_class="aggregation",
-        provenance="a binary partition sum computed as a best score",
+        name="pair-sum-by-logaddexp",
+        defect_class="gradient path",
+        provenance=(
+            "a binary log-sum by torch.logaddexp, whose second derivative is not "
+            "a number at an absent operand"
+        ),
         target=f"{ALGEBRAS}:LogProbAlgebra.join_pair",
         rewrites=(
-            Rewrite(old="total = torch.logaddexp(", new="total = torch.maximum("),
+            Rewrite(
+                old="total = _LogSumPair.apply(",
+                new="total = torch.logaddexp(",
+            ),
         ),
-        rejected_by=("core/LogProb/declared operations",),
-        min_effect=0.34,
+        rejected_by=(
+            "core/LogProb/second derivatives",
+            "chart/LogProb/second derivatives",
+        ),
+        min_effect=1.0,
     ),
     Mutation(
         name="matrix-product-reversed",
