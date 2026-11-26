@@ -618,6 +618,25 @@ def parser_of(categories: int) -> ChartParser:
     )
 
 
+def parser_allocated(categories: int) -> int:
+    """Elements a chart parser with one rule per category allocates.
+
+    Parameters
+    ----------
+    categories : int
+        The number of categories.
+
+    Returns
+    -------
+    int
+        Elements allocated for a sentence of two words.
+    """
+    parser = parser_of(categories)
+    with TensorCounter() as counter:
+        parser(torch.zeros(1, 2, dtype=torch.long))
+    return counter.counts["allocated"]
+
+
 def parser_work(categories: int, batch: int, length: int) -> int:
     """The scalar work of one chart parse.
 
@@ -1113,6 +1132,17 @@ FAMILIES: tuple[Family, ...] = (
         part="forward",
         sizes=(4, 8, 16, 32, 64),
         work=lambda c: parser_work(c, 1, 4),
+        claim=lambda c: c,
+        constant=64.0,
+    ),
+    Family(
+        name="chart parser allocations over rules",
+        executor="chart-parser",
+        question="Q3",
+        varies="grammar",
+        part="memory",
+        sizes=(4, 8, 16, 32, 64),
+        work=parser_allocated,
         claim=lambda c: c,
         constant=64.0,
     ),

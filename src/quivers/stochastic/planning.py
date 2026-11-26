@@ -39,7 +39,10 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring, Star
+from quivers.core.elimination import fiber_join
 from quivers.core.laws import (
+    NO_ZERO_DIVISORS,
+    ZERO_SUM_FREE,
     DISTRIBUTIVE,
     PLUS_ASSOCIATIVE,
     PLUS_COMMUTATIVE,
@@ -67,6 +70,7 @@ from quivers.qiec.contracts import (
     Forest,
     LinearCyclic,
     Marginal,
+    NoRetention,
     NonlinearFold,
     PackedForest,
     OccurrenceId,
@@ -81,6 +85,7 @@ from quivers.qiec.contracts import (
     Retention,
     Statistic,
     Support,
+    Unresolved,
     Weight,
     WorkField,
     WorkReport,
@@ -105,6 +110,13 @@ from quivers.stochastic.forest import DerivationForest, ForestEdge, build_forest
 from quivers.stochastic.indexed import ChartWork, IndexedChart, generic_joinable
 from quivers.stochastic.recursion import Component, CyclicRefusal, CyclicRefused, solve
 from quivers.stochastic.joins import agm_bound, body_query
+from quivers.stochastic.span import (
+    SpanGrammar,
+    SpanRefused,
+    span_grammar,
+    span_inside,
+    span_recognize,
+)
 
 __all__ = [
     "Alternative",
@@ -117,6 +129,11 @@ __all__ = [
     "PlanRecord",
     "PlanRefusal",
     "CYCLIC_ALGORITHM",
+    "SPAN_ALGORITHM",
+    "SPAN_MEASURES",
+    "SPAN_RECOGNITION_ALGORITHM",
+    "SPAN_RECOGNITION_WORK",
+    "SPAN_WORK",
     "CYCLIC_WORK",
     "FOREST_ALGORITHM",
     "FOREST_WORK",
@@ -762,6 +779,143 @@ CYCLIC_WORK = ComplexityClaim(
 """The cost of solving a linear cyclic system component by component."""
 
 
+_VALIANT = Citation(
+    reference="Valiant 1975, General context-free recognition in less than cubic time",
+    locator="recognition by Boolean matrix products in O(BM(n)) for a fixed grammar",
+    doi="10.1016/S0022-0000(75)80046-8",
+)
+_SPAN_PARAMETERS = (
+    ComplexityParameter(name="n", meaning="positions of the input"),
+    ComplexityParameter(name="N", meaning="categories"),
+    ComplexityParameter(
+        name="P", meaning="distinct premise pairs of the binary rule instances"
+    ),
+    ComplexityParameter(name="R", meaning="binary rule instances"),
+    ComplexityParameter(name="C", meaning="side conditions evaluated"),
+    ComplexityParameter(
+        name="Z",
+        meaning=(
+            "cells next to an empty span with a nullable category, each closed "
+            "on its own"
+        ),
+    ),
+)
+
+SPAN_WORK = ComplexityClaim(
+    query="value of every category over every span of a presentation in span form",
+    parameters=_SPAN_PARAMETERS,
+    model=ALGEBRA_OPERATIONS,
+    bounds=(
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="time",
+            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3 + C",
+            status=Unresolved(
+                obligation=(
+                    "for real weights the inside values are ring computations, so "
+                    "Valiant's reduction to matrix products applies in exact "
+                    "arithmetic, but its subtractions break the relative accuracy "
+                    "of nonnegative sums; in a selective algebra a truly subcubic "
+                    "schedule would give one for all-pairs shortest paths"
+                )
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="space",
+            expression="N n^2 + P n^2 + R n + N^2",
+            status=Unresolved(obligation="as for time"),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="time",
+            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3 + C",
+            status=Unresolved(obligation="as for execution"),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="space",
+            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3",
+            status=Unresolved(
+                obligation="the autograd tape holds every product of every length"
+            ),
+        ),
+    ),
+    inapplicable=(
+        PhaseInapplicable(
+            phase=Phase.CONSTRUCTION,
+            reason=(
+                "the span form is read off the presentation in its size times the "
+                "categories its variables range over"
+            ),
+        ),
+        PhaseInapplicable(
+            phase=Phase.REFIT, reason="a refit is one more run at the new weights"
+        ),
+    ),
+    conditions=(
+        "the split points of a premise pair are summed before its rules, by right "
+        "distributivity, so the premises keep their order and the rule weight "
+        "comes last",
+        "a side condition reading the split point makes its rule a pair of its "
+        "own; one reading the span masks its rule",
+        "the unary closure is the algebra's star when the unary rules have a "
+        "cycle and a sum in topological order of N^3 operations otherwise",
+        "inputs over empty spans make categories nullable: their weights at each "
+        "position solve a polynomial system by components, acyclic or linear by "
+        "the star, and a binary rule with an empty premise is a step of its cell "
+        "over one span; an empty first premise needs a commutative product",
+    ),
+)
+"""The cost of the span executor."""
+
+SPAN_RECOGNITION_WORK = ComplexityClaim(
+    query="which category derives which span of a presentation in span form",
+    parameters=_SPAN_PARAMETERS,
+    model=ALGEBRA_OPERATIONS,
+    bounds=(
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="time",
+            expression="N^2 n^3 + R n^2 + N^3 log(N) + Z N^3 log(N) + n R N + C",
+            status=Unresolved(
+                obligation=(
+                    "Valiant's divide-and-conquer recognizes a string of a fixed "
+                    "grammar in O(BM(n)), below this cubic schedule; whether it "
+                    "pays at the lengths here is open and it is not implemented"
+                )
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="space",
+            expression="N n^2 + N^2 n",
+            status=Unresolved(obligation="as for time"),
+        ),
+    ),
+    inapplicable=(
+        PhaseInapplicable(
+            phase=Phase.CONSTRUCTION,
+            reason="the span form is read off the presentation",
+        ),
+        PhaseInapplicable(
+            phase=Phase.DIFFERENTIATION, reason="a support has no derivative"
+        ),
+        PhaseInapplicable(
+            phase=Phase.REFIT, reason="a refit is one more run at the new weights"
+        ),
+    ),
+    conditions=(
+        "the support of a sum is the union of the supports and that of a product "
+        "the intersection: the algebra establishes zero-sum-free and "
+        "no-zero-divisors",
+        "the products over split points are matrix products of 0-1 matrices, "
+        "counted as their multiplications",
+    ),
+)
+"""The cost of span recognition by Boolean matrix products."""
+
+
 FOREST_WORK = ComplexityClaim(
     query="the packed forest of a presentation, and folds over its derivations",
     parameters=(
@@ -1027,6 +1181,24 @@ candidates. A closure of one element is one pivot, whatever it divides
 inside, and nothing outside the closures divides."""
 
 
+SPAN_MEASURES: tuple[WorkField, ...] = measuring(
+    {
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.SCALAR_DIVISIONS,
+        WorkField.STAR_PIVOTS,
+        WorkField.EXACT_OPERATIONS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+        WorkField.ELEMENTS_ALLOCATED,
+        WorkField.PEAK_LIVE_ELEMENTS,
+    }
+)
+"""The counters a span run counts: its sums and products, the closures'
+pivots and exact decisions, and the elements it forms and holds; it looks
+up no item and compares no key, and divides nothing outside closures."""
+
+
 class Evaluation(ValueModel):
     """The values of a run, in the order they became final.
 
@@ -1061,7 +1233,12 @@ class Evaluation(ValueModel):
         and the side it was solved on; none otherwise.
     measures : tuple of WorkField
         The counters the run counted: `EVALUATION_MEASURES` for two-pass
-        runs and `CYCLIC_MEASURES` for cyclic ones.
+        runs, `CYCLIC_MEASURES` for cyclic ones and `SPAN_MEASURES` for
+        span runs.
+    allocated : int
+        Elements of the tensors a span run formed.
+    peak : int
+        Elements a span run held at once.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1082,6 +1259,8 @@ class Evaluation(ValueModel):
     measures: tuple[WorkField, ...] = dx.field(
         default=EVALUATION_MEASURES, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    allocated: int = 0
+    peak: int = 0
 
     @property
     def retained(self) -> int:
@@ -1142,6 +1321,8 @@ class Evaluation(ValueModel):
             provenance_records=kept(
                 WorkField.PROVENANCE_RECORDS, self.counts + self.retained
             ),
+            elements_allocated=kept(WorkField.ELEMENTS_ALLOCATED, self.allocated),
+            peak_live_elements=kept(WorkField.PEAK_LIVE_ELEMENTS, self.peak),
             measured=self.measures,
         )
 
@@ -1181,11 +1362,16 @@ class Plan(ValueModel):
         The presentation.
     algebra : OrderPreservingSemiring
         The weight algebra.
+    span : SpanGrammar or None
+        The presentation's span form, when a span executor is selected.
     """
 
     record: PlanRecord = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     presentation: RulePresentation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     algebra: OrderPreservingSemiring = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    span: SpanGrammar | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     def item(self, family: FamilyId, arguments: tuple[Ground, ...]) -> Item:
         """An item of the presentation.
@@ -1432,6 +1618,17 @@ FOREST_ALGORITHM = (
 )
 """The executor that keeps the packed forest."""
 
+SPAN_ALGORITHM = (
+    "span values by length: split points summed per premise pair, then the "
+    "rules, then the unary closure"
+)
+"""The executor for presentations in span form."""
+
+SPAN_RECOGNITION_ALGORITHM = (
+    "span recognition by length with Boolean matrix products over the split points"
+)
+"""The observer plan of the support of a presentation in span form."""
+
 CYCLIC_ALGORITHM = (
     "strongly connected components of the derived hypergraph, each linear "
     "component solved by the algebra's closure"
@@ -1607,6 +1804,43 @@ def plan(
         if (budget.elements is not None or budget.bytes is not None) and not cyclic
         else "autograd"
     )
+    span, declined = _span_form(query, presentation, retention, recursion, backward)
+    recognizes = (
+        span is not None
+        and isinstance(query.observable, Support)
+        and algebra.establishes(ZERO_SUM_FREE, NO_ZERO_DIVISORS)
+    )
+    if span is not None:
+        if span.unary_cyclic and not cyclic:
+            raise PlanRefused(
+                PlanRefusal.CYCLE,
+                "the unary rules have a cycle; the system is linear cyclic, not "
+                "acyclic",
+            )
+        assumptions.append(
+            "the presentation is in span form: the spans of each length are final "
+            "once the shorter ones are, so they are computed length by length"
+        )
+    algorithm = (
+        FOREST_ALGORITHM
+        if kept
+        else SPAN_RECOGNITION_ALGORITHM
+        if recognizes
+        else SPAN_ALGORITHM
+        if span is not None
+        else CYCLIC_ALGORITHM
+        if cyclic
+        else TWO_PASS_ALGORITHM
+    )
+    complexity = (
+        SPAN_RECOGNITION_WORK
+        if recognizes
+        else SPAN_WORK
+        if span is not None
+        else CYCLIC_WORK
+        if cyclic
+        else _complexity(kept, backward, retention)
+    )
     record = PlanRecord(
         query=query,
         recursion=recursion,
@@ -1614,16 +1848,19 @@ def plan(
         retention=retention,
         algebra=algebra.subject,
         claims=(*algebra.claims(), *claims),
-        algorithm=FOREST_ALGORITHM
-        if kept
-        else CYCLIC_ALGORITHM
-        if cyclic
-        else TWO_PASS_ALGORITHM,
+        algorithm=algorithm,
         assumptions=tuple(assumptions),
         structure=analysis,
         certificate=certificate,
-        complexity=CYCLIC_WORK if cyclic else _complexity(kept, backward, retention),
+        complexity=complexity,
         alternatives=(
+            Alternative(
+                algorithm=SPAN_ALGORITHM if span is None else TWO_PASS_ALGORITHM,
+                reason=declined
+                if span is None
+                else "enumerates every grounded instance one at a time; the span "
+                "form lets a length's cells be computed together",
+            ),
             Alternative(
                 algorithm=TWO_PASS_ALGORITHM if kept else FOREST_ALGORITHM,
                 reason="the observable needs the derivations, which only the forest keeps"
@@ -1642,7 +1879,52 @@ def plan(
         backward=backward,
         joins=rule_joins(presentation),
     )
-    return Plan(record=record, presentation=presentation, algebra=algebra)
+    return Plan(record=record, presentation=presentation, algebra=algebra, span=span)
+
+
+def _span_form(
+    query: QuerySpec,
+    presentation: RulePresentation,
+    retention: Retention,
+    recursion: Recursion,
+    backward: Literal["autograd", "recompute"],
+) -> tuple[SpanGrammar | None, str]:
+    """The span form of a presentation, when the span executor answers the query.
+
+    Parameters
+    ----------
+    query : QuerySpec
+        The query.
+    presentation : RulePresentation
+        The presentation.
+    retention : Retention
+        The provenance kept.
+    recursion : Recursion
+        The recursion contract.
+    backward : {"autograd", "recompute"}
+        The backward pass the accuracy contract asks for.
+
+    Returns
+    -------
+    tuple of SpanGrammar or None and str
+        The span form, or ``None`` with the reason the span executor is
+        not selected.
+    """
+    if not isinstance(retention, NoRetention):
+        return None, "keeps no provenance, which the query asks for"
+    if not isinstance(query.observable, (Weight, Support, Marginal)):
+        return (
+            None,
+            f"answers values, supports and marginals, not {query.observable.tag}",
+        )
+    if not isinstance(recursion, (Acyclic, LinearCyclic)):
+        return None, f"solves acyclic and unary cyclic systems, not {recursion.tag}"
+    if backward != "autograd":
+        return None, "its gradient is by autograd, and the contract bounds memory"
+    try:
+        return span_grammar(presentation), ""
+    except SpanRefused as refused:
+        return None, f"the presentation is not in span form: {refused.reason}"
 
 
 def _complexity(
@@ -2004,9 +2286,284 @@ def _run(
     PlanRefused
         If the run has no value under the plan.
     """
+    if plan.span is not None:
+        return _run_span(plan, plan.span, axioms, inputs, like)
     if isinstance(plan.record.recursion, LinearCyclic):
         return _solve_cyclic(plan, axioms, inputs, like)
     return _evaluate(plan, axioms, inputs, like)
+
+
+def _run_span(
+    plan: Plan,
+    grammar: SpanGrammar,
+    axioms: Sequence[AxiomOccurrence],
+    inputs: Mapping[InputId, torch.Tensor],
+    like: torch.Tensor,
+) -> Evaluation:
+    """Run the span executor, or the recognition plan for a support.
+
+    The items reported are the cells some derivation reaches when every
+    input and rule is present, which recognition with every weight
+    present finds; a cell whose derivations all weigh zero is reported
+    with the zero, as the two-pass executor reports it.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+    grammar : SpanGrammar
+        Its span form.
+    axioms : Sequence of AxiomOccurrence
+        The input occurrences.
+    inputs : Mapping of InputId to torch.Tensor
+        The input weights.
+    like : torch.Tensor
+        The dtype and device of units and zeros.
+
+    Returns
+    -------
+    Evaluation
+        The value of every derivable cell, by length; Booleans under the
+        recognition plan.
+
+    Raises
+    ------
+    PlanRefused
+        If an input names no slot or spans no position.
+    """
+    algebra = plan.algebra
+    size = len(grammar.categories)
+    placed: list[tuple[int, int, int, torch.Tensor]] = []
+    for occurrence in axioms:
+        slot = plan.presentation.constructors_by_id.get(occurrence.slot)
+        if not isinstance(slot, AxiomSlot):
+            raise PlanRefused(PlanRefusal.INADMISSIBLE, "an occurrence names no slot")
+        binding = dict(occurrence.binding)
+        item = Item(
+            family=slot.judgment.family,
+            arguments=tuple(
+                evaluate_index(argument, binding)
+                for argument in slot.judgment.arguments
+            ),
+        )
+        start, end = grammar.positions(item)
+        placed.append(
+            (
+                start,
+                end,
+                grammar.category(item),
+                _occurrence_weight(plan, occurrence, inputs, like),
+            )
+        )
+    for constant in grammar.constants:
+        item = Item(
+            family=grammar.family,
+            arguments=tuple(
+                evaluate_index(argument, constant.binding)
+                for argument in constant.rule.conclusion.arguments
+            ),
+        )
+        start, end = grammar.positions(item)
+        placed.append(
+            (
+                start,
+                end,
+                constant.result,
+                _weight(plan, constant.rule.weight, inputs, like),
+            )
+        )
+    for start, end, _, _ in placed:
+        if end < start:
+            raise PlanRefused(
+                PlanRefusal.INADMISSIBLE,
+                f"an input ends at {end} before its start {start}; a span runs forward",
+            )
+    length = max((end for _, end, _, _ in placed), default=0)
+    by_length: dict[int, list[tuple[int, int, torch.Tensor]]] = {}
+    for start, end, category, weight in placed:
+        by_length.setdefault(end - start, []).append((start, category, weight))
+    binary = [_weight(plan, rule.rule.weight, inputs, like) for rule in grammar.binary]
+    unary = [_weight(plan, rule.rule.weight, inputs, like) for rule in grammar.unary]
+    structural = {
+        width: _support_seed(length - width + 1, size, entries, None, like)
+        for width, entries in by_length.items()
+    }
+    support, _ = span_recognize(
+        grammar,
+        structural,
+        length,
+        [True] * len(grammar.binary),
+        [True] * len(grammar.unary),
+        device=like.device,
+        empty=_empty_categories(by_length.get(0, ()), length, None),
+    )
+    cyclic = isinstance(plan.record.recursion, LinearCyclic)
+    if plan.record.algorithm == SPAN_RECOGNITION_ALGORITHM:
+        seeds = {
+            width: _support_seed(length - width + 1, size, entries, algebra, like)
+            for width, entries in by_length.items()
+        }
+        chart, work = span_recognize(
+            grammar,
+            seeds,
+            length,
+            [not bool(algebra.is_zero(weight).all()) for weight in binary],
+            [not bool(algebra.is_zero(weight).all()) for weight in unary],
+            device=like.device,
+            empty=_empty_categories(by_length.get(0, ()), length, algebra),
+        )
+    else:
+        seeds = {
+            width: _value_seed(algebra, length - width + 1, size, entries, like)
+            for width, entries in by_length.items()
+        }
+        try:
+            chart, work = span_inside(
+                grammar,
+                algebra,
+                seeds,
+                length,
+                binary,
+                unary,
+                like=like,
+                empty=_empty_categories(by_length.get(0, ()), length, None),
+                cyclic=cyclic,
+            )
+        except SpanRefused as refused:
+            raise PlanRefused(_SPAN_CODES[refused.code], refused.reason) from refused
+    values: dict[Item, torch.Tensor] = {}
+    order: list[Item] = []
+    for width in range(0 if 0 in support else 1, length + 1):
+        reached = support[width]
+        for start in range(length - width + 1):
+            for category in range(size):
+                if bool(reached[start, category]):
+                    item = grammar.item(category, start, start + width)
+                    values[item] = chart[width][start, category]
+                    order.append(item)
+    certificate = plan.record.certificate
+    return Evaluation(
+        values=values,
+        order=tuple(order),
+        work=ChartWork(conditions=work.conditions),
+        certified=None if certificate is None else certificate.applies(order),
+        sums=work.sums,
+        products=work.products,
+        pivots=work.pivots,
+        exact=work.exact,
+        measures=SPAN_MEASURES,
+        allocated=work.allocated,
+        peak=work.peak,
+    )
+
+
+_SPAN_CODES = {
+    "form": PlanRefusal.INADMISSIBLE,
+    "cycle": PlanRefusal.CYCLE,
+    "nonlinear": PlanRefusal.NONLINEAR_CYCLE,
+    "sides": PlanRefusal.MIXED_SIDES,
+    "algebra": PlanRefusal.ALGEBRA,
+}
+"""The plan's refusal for each refusal of the span executor."""
+
+
+def _empty_categories(
+    entries: Sequence[tuple[int, int, torch.Tensor]],
+    length: int,
+    algebra: OrderPreservingSemiring | None,
+) -> list[set[int]]:
+    """The categories of the inputs over each empty span.
+
+    Parameters
+    ----------
+    entries : Sequence of tuple
+        Each input over an empty span: its position, category and weight.
+    length : int
+        The last position.
+    algebra : OrderPreservingSemiring or None
+        The algebra whose zero is absent; ``None`` counts every input.
+
+    Returns
+    -------
+    list of set of int
+        One set per position, all empty without such inputs.
+    """
+    found: list[set[int]] = [set() for _ in range(length + 1)] if entries else []
+    for position, category, weight in entries:
+        if algebra is None or not bool(algebra.is_zero(weight).all()):
+            found[position].add(category)
+    return found
+
+
+def _support_seed(
+    rows: int,
+    size: int,
+    entries: Sequence[tuple[int, int, torch.Tensor]],
+    algebra: OrderPreservingSemiring | None,
+    like: torch.Tensor,
+) -> torch.Tensor:
+    """The inputs of one length present in each cell.
+
+    Parameters
+    ----------
+    rows : int
+        The cells' starts.
+    size : int
+        The categories.
+    entries : Sequence of tuple
+        Each input's start, category and weight.
+    algebra : OrderPreservingSemiring or None
+        The algebra whose zero is absent; ``None`` counts every input as
+        present, its structural support.
+    like : torch.Tensor
+        The device.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(rows, size)`` Booleans.
+    """
+    present = torch.zeros((rows, size), dtype=torch.bool, device=like.device)
+    for start, category, weight in entries:
+        if algebra is None or not bool(algebra.is_zero(weight).all()):
+            present[start, category] = True
+    return present
+
+
+def _value_seed(
+    algebra: OrderPreservingSemiring,
+    rows: int,
+    size: int,
+    entries: Sequence[tuple[int, int, torch.Tensor]],
+    like: torch.Tensor,
+) -> torch.Tensor:
+    """The sum of the inputs of one length in each cell.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra.
+    rows : int
+        The cells' starts.
+    size : int
+        The categories.
+    entries : Sequence of tuple
+        Each input's start, category and weight.
+    like : torch.Tensor
+        The dtype and device.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(rows, size, *element_shape)``: each cell's inputs summed, the
+        zero where there is none.
+    """
+    fibers: list[list[int]] = [[] for _ in range(rows * size)]
+    for position, (start, category, _) in enumerate(entries):
+        fibers[start * size + category].append(position)
+    stacked = torch.stack([weight for _, _, weight in entries])
+    summed = fiber_join(algebra, stacked, fibers, algebra.zero_like((1,), like), axis=0)
+    return summed.reshape(rows, size, *stacked.shape[1:])
 
 
 _CYCLIC_CODES = {

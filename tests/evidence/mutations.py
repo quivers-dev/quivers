@@ -410,8 +410,22 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new="star, work = _eliminate(self, matrix.detach(), repeat)",
             ),
         ),
-        rejected_by=("span/inside/gradient", "span/chart-parser/gradient"),
+        rejected_by=("span/chart-parser/gradient",),
         min_effect=1.0,
+    ),
+    Mutation(
+        name="inside-unary-uses-dropped",
+        defect_class="gradient path",
+        provenance="the outside pass leaves out the unary rules' uses",
+        target="quivers.stochastic.inside:_outside",
+        rewrites=(
+            Rewrite(
+                old="_UNARY_USES.apply(closed[width], before)",
+                new="_UNARY_USES.apply(torch.full_like(closed[width], -torch.inf), before)",
+            ),
+        ),
+        rejected_by=("span/inside/gradient",),
+        min_effect=0.93,
     ),
     Mutation(
         name="wiring-gradient-cut",
@@ -711,6 +725,37 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         rejected_by=("contraction/value/product_fuzzy/chain/positive",),
         min_effect=0.065,
+    ),
+    Mutation(
+        name="inside-clamps-zero-probabilities",
+        defect_class="support",
+        provenance="probabilities are clamped below by a small number before the log",
+        target="quivers.stochastic.inside:_logarithms",
+        rewrites=(
+            Rewrite(
+                old="return torch.log(binary), torch.log(lexical), star",
+                new=(
+                    "return torch.log(binary.clamp(min=1e-30)), "
+                    "torch.log(lexical.clamp(min=1e-30)), star"
+                ),
+            ),
+        ),
+        rejected_by=("span/inside/impossible_sentence",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="inside-derivative-not-normalized",
+        defect_class="gradient path",
+        provenance="the outside derivative of P is returned as that of log P",
+        target="quivers.stochastic.inside:_cotangent",
+        rewrites=(
+            Rewrite(
+                old="ratio = torch.exp(uses - level.reshape(shape))",
+                new="ratio = torch.exp(uses)",
+            ),
+        ),
+        rejected_by=("span/inside/gradient", "span/inside/zero_rule_derivative"),
+        min_effect=0.98,
     ),
     Mutation(
         name="premise-order-permuted",

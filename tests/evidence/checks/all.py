@@ -18,6 +18,7 @@ from tests.evidence.checks import (
     work,
 )
 from tests.evidence.checks._registry import CHECKS, add
+from tests.evidence import span_controls
 
 MODULES = (
     closure,
@@ -35,7 +36,8 @@ MODULES = (
 
 
 def _register() -> None:
-    """Register the repeated runs."""
+    """Register the repeated runs and the checks of the plan executors."""
+    span_controls.register()
     for name in runs.RUNS:
         add(f"repeat/{name}", name, "Q24", partial(runs.check_repeat, name))
 

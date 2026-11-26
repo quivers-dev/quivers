@@ -34,6 +34,7 @@ from quivers.qiec.contracts import (
     LinearCyclic,
     NonlinearFold,
     NoRetention,
+    ParentCounts,
     Outcome,
     OccurrenceId,
     ParameterId,
@@ -111,7 +112,7 @@ def _attachment_plan(
     best: bool = False,
     recompute: bool = False,
 ) -> Plan:
-    """A plan of the attachment grammar.
+    """A two-pass plan of the attachment grammar, which keeps parent counts.
 
     Parameters
     ----------
@@ -131,6 +132,7 @@ def _attachment_plan(
         presentation=fixture.PRESENTATION.id,
         interpretation=InterpretationId.derive(fixture.NAME, "weight"),
         observable=Best() if best else graphs.query().observable,
+        retention=ParentCounts(),
     )
     return plan(
         query,
@@ -138,7 +140,7 @@ def _attachment_plan(
         algebra,
         Acyclic(),
         graphs.contract(recompute=recompute),
-        NoRetention(),
+        ParentCounts(),
     )
 
 
