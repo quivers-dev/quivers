@@ -14,6 +14,8 @@ import json
 import math
 from typing import cast
 
+import didactic.api as dx
+
 from quivers.qiec.coverage import (
     BranchPattern,
     BranchRefinement,
@@ -21,7 +23,19 @@ from quivers.qiec.coverage import (
     CoverageStatus,
     Reachability,
 )
-from quivers.qiec._models import QiecModel, field_types, validate_shape
+from quivers.qiec._models import field_types, validate_shape
+from quivers.core.laws import (
+    Assumed,
+    Citation,
+    ClaimSubject,
+    Decided,
+    Law,
+    LawClaim,
+    Proved,
+    Requirement,
+    Tested,
+    TieRule,
+)
 from quivers.qiec.contracts import (
     AbsoluteError,
     AbsoluteLogError,
@@ -30,7 +44,6 @@ from quivers.qiec.contracts import (
     Acyclic,
     Argument,
     ArgumentBound,
-    Assumed,
     Attainment,
     Best,
     BestKnown,
@@ -39,8 +52,6 @@ from quivers.qiec.contracts import (
     Bounded,
     BudgetExhausted,
     Certified,
-    Citation,
-    ClaimSubject,
     Completed,
     ComplexityBound,
     ComplexityClaim,
@@ -53,7 +64,6 @@ from quivers.qiec.contracts import (
     ContractField,
     Control,
     ControlReached,
-    Decided,
     Deficient,
     DerivativeEntry,
     DerivativeReport,
@@ -69,8 +79,6 @@ from quivers.qiec.contracts import (
     JudgmentPattern,
     KBest,
     KLDivergence,
-    Law,
-    LawClaim,
     LinearCyclic,
     Marginal,
     MonotonePolynomial,
@@ -88,7 +96,6 @@ from quivers.qiec.contracts import (
     PhaseInapplicable,
     PresentationId,
     Probabilistic,
-    Proved,
     ProvedOptimal,
     QuerySpec,
     Rational,
@@ -96,15 +103,12 @@ from quivers.qiec.contracts import (
     RefusalCode,
     RelativeError,
     RequestedEvidence,
-    Requirement,
     ResourceBudget,
     Sample,
     SiteEstimator,
     Statistic,
     Support,
     Target,
-    Tested,
-    TieRule,
     TotalVariation,
     Unbiased,
     Unresolved,
@@ -520,13 +524,9 @@ _NODE_CLASSES = (
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}
 _ENUMS = {_class_tag(class_): class_ for class_ in _ENUM_CLASSES}
-_NODES: dict[
-    str,
-    type[QiecModel]
-    | type[DistributionFamily]
-    | type[FamilyParameter]
-    | type[FamilyShapeSignature],
-] = {_class_tag(class_): class_ for class_ in _NODE_CLASSES}
+_NODES: dict[str, type[dx.Model]] = {
+    _class_tag(class_): class_ for class_ in _NODE_CLASSES
+}
 
 
 def _encode(value: object) -> JsonValue:
@@ -574,9 +574,9 @@ def _encode(value: object) -> JsonValue:
         return {"$tuple": [_encode(item) for item in value]}
     if callable(value):
         raise SerializationError("host callables cannot enter stable QIEC")
-    if isinstance(
-        value, (QiecModel, DistributionFamily, FamilyParameter, FamilyShapeSignature)
-    ):
+    if isinstance(value, dx.Model):
+        # Every record is a didactic model; the allowlist of tags, not the
+        # class hierarchy, decides which may cross.
         tag = _class_tag(type(value))
         if tag not in _NODES:
             raise SerializationError(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import didactic.api as dx
 import pytest
 
-from quivers.qiec.contracts import ClaimSubject, Law, LawStatus
+from quivers.core.laws import ClaimSubject, Law, LawStatus
 from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.rules import (
     AFFINE,

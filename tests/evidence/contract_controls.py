@@ -26,6 +26,7 @@ import math
 from collections.abc import Callable
 from fractions import Fraction
 
+from quivers.core import laws
 from quivers.qiec import contracts as c
 from quivers.qiec.identifiers import ComputationId, FamilyId, SiteId
 from quivers.qiec.serialization import dumps, loads
@@ -36,13 +37,13 @@ from tests.evidence.mutations import Mutation, Rewrite
 CONTRACTS = "quivers.qiec.contracts"
 SERIALIZATION = "quivers.qiec.serialization"
 
-ALGEBRA = c.ClaimSubject(kind="algebra", name="quivers.core.algebras.LogProbAlgebra")
+ALGEBRA = laws.ClaimSubject(kind="algebra", name="quivers.core.algebras.LogProbAlgebra")
 """The weight algebra of every combination."""
 
-PROOF = c.Proved(
+PROOF = laws.Proved(
     argument="docs/api/qiec/contracts.md#the-composition-law",
     sources=(
-        c.Citation(
+        laws.Citation(
             reference="Goodman 1999, Semiring Parsing",
             locator="section 2",
             doi="10.5555/973215.973218",
@@ -51,7 +52,7 @@ PROOF = c.Proved(
 )
 """Evidence of an established claim."""
 
-TEST = c.Tested(check="tests/test_algebra_laws.py", cases=64, domain="float64 grid")
+TEST = laws.Tested(check="tests/test_algebra_laws.py", cases=64, domain="float64 grid")
 """Evidence of a claim that is only tested."""
 
 PARAMETERS = (
@@ -67,7 +68,7 @@ SITES = (SiteId.derive("draw", "z"), SiteId.derive("draw", "a"))
 """Two random sites."""
 
 
-def claim(law: c.Law, evidence: c.LawEvidence = PROOF) -> c.LawClaim:
+def claim(law: laws.Law, evidence: laws.LawEvidence = PROOF) -> laws.LawClaim:
     """A claim about the weight algebra.
 
     Parameters
@@ -82,16 +83,16 @@ def claim(law: c.Law, evidence: c.LawEvidence = PROOF) -> c.LawClaim:
     LawClaim
         The claim.
     """
-    return c.LawClaim(law=law, subject=ALGEBRA, evidence=evidence)
+    return laws.LawClaim(law=law, subject=ALGEBRA, evidence=evidence)
 
 
 ALL_LAWS = (
-    *c.SEMIRING_LAWS,
-    c.PLUS_SELECTIVE,
-    c.ZERO_SUM_FREE,
-    c.NO_ZERO_DIVISORS,
-    c.STAR_LEAST_SOLUTION,
-    c.OMEGA_CONTINUOUS,
+    *laws.SEMIRING_LAWS,
+    laws.PLUS_SELECTIVE,
+    laws.ZERO_SUM_FREE,
+    laws.NO_ZERO_DIVISORS,
+    laws.STAR_LEAST_SOLUTION,
+    laws.OMEGA_CONTINUOUS,
 )
 """Every law some combination needs."""
 
@@ -162,7 +163,7 @@ QUARTER = c.Rational.of(Fraction(1, 4))
 EIGHTH = c.Rational.of(Fraction(1, 8))
 
 type Combination = tuple[
-    c.QuerySpec, c.Recursion, c.AccuracyContract, tuple[c.LawClaim, ...]
+    c.QuerySpec, c.Recursion, c.AccuracyContract, tuple[laws.LawClaim, ...]
 ]
 """A query, its recursion, its contract and the claims available."""
 
@@ -173,8 +174,8 @@ EXACT_GRADIENT = c.DerivativeSemantics.exact()
 
 
 def _replace_claim(
-    law: c.Law, evidence: c.LawEvidence | None
-) -> tuple[c.LawClaim, ...]:
+    law: laws.Law, evidence: laws.LawEvidence | None
+) -> tuple[laws.LawClaim, ...]:
     """The claims with one law's claim replaced or removed.
 
     Parameters
@@ -198,13 +199,13 @@ CONTRACT_CASES: dict[c.RefusalCode, Combination] = {
         query(),
         c.Acyclic(),
         contract(),
-        _replace_claim(c.PLUS_COMMUTATIVE, None),
+        _replace_claim(laws.PLUS_COMMUTATIVE, None),
     ),
     c.RefusalCode.CLAIM_NOT_ESTABLISHED: (
         query(),
         c.Acyclic(),
         contract(),
-        _replace_claim(c.PLUS_COMMUTATIVE, TEST),
+        _replace_claim(laws.PLUS_COMMUTATIVE, TEST),
     ),
     c.RefusalCode.EXACT_WITHOUT_FINITE_METHOD: (
         query(),
@@ -352,7 +353,7 @@ def _report(
     *,
     stop: c.StopReason = c.Completed(),
     unmet: tuple[c.ContractField, ...] = (),
-    claims: tuple[c.LawClaim, ...] = (),
+    claims: tuple[laws.LawClaim, ...] = (),
     metric: c.Metric = c.AbsoluteLogError(),
 ) -> c.AccuracyReport:
     """A report of a run without a derivative.
@@ -423,7 +424,9 @@ REPORT_CASES: dict[c.RefusalCode, ReportCase] = {
                 bound=QUARTER,
                 certificate=c.Argument(
                     value=QUARTER,
-                    claim=claim(c.Law(name="contraction", statement="rate 1/2"), TEST),
+                    claim=claim(
+                        laws.Law(name="contraction", statement="rate 1/2"), TEST
+                    ),
                 ),
             )
         ),
@@ -440,7 +443,7 @@ REPORT_CASES: dict[c.RefusalCode, ReportCase] = {
     ),
     c.RefusalCode.USED_CLAIM_NOT_ESTABLISHED: (
         contract(),
-        _report(c.Exact(), claims=(claim(c.PLUS_COMMUTATIVE, TEST),)),
+        _report(c.Exact(), claims=(claim(laws.PLUS_COMMUTATIVE, TEST),)),
         c.Acyclic(),
     ),
     c.RefusalCode.EXACT_FOR_INEXACT_RECURSION: (
@@ -521,7 +524,7 @@ def _bound(
     )
 
 
-EISNER = c.Citation(
+EISNER = laws.Citation(
     reference="Eisner 2023, Time-and-Space-Efficient Weighted Deduction",
     locator="sections 5 and 6",
     doi="10.1162/tacl_a_00588",
@@ -531,7 +534,7 @@ READING = c.ProvedOptimal(
     lower_bound="V + E",
     model=c.ALGEBRA_OPERATIONS,
     sources=(
-        c.Citation(
+        laws.Citation(
             reference="every hyperedge is read by an adversary argument",
             locator="complexity claims, Q10",
         ),

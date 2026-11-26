@@ -35,6 +35,25 @@ from typing import Literal
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, HeldValue
+from quivers.core.laws import (
+    DIVISION,
+    FOLD_LINEAR,
+    NO_ZERO_DIVISORS,
+    OMEGA_CONTINUOUS,
+    PLUS_SELECTIVE,
+    SEMIMODULE_ACTION,
+    SEMIRING_LAWS,
+    STAR_LEAST_SOLUTION,
+    SUPERIOR,
+    ZERO_SUM_FREE,
+    Citation,
+    ClaimSubject,
+    Law,
+    LawClaim,
+    Requirement,
+    TieRule,
+    requirements,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.identifiers import ComputationId, FamilyId, SiteId, StableId
 from quivers.qiec.types import TypeExpr
@@ -197,436 +216,6 @@ def _nonempty(text: str, what: str) -> None:
 # laws and their evidence
 
 
-class Citation(QiecModel):
-    """A published source and the place in it that is relied on.
-
-    Parameters
-    ----------
-    reference : str
-        Authors, year and title.
-    locator : str
-        The section, theorem, equation or page.
-    doi : str or None
-        The digital object identifier, when the source has one.
-    """
-
-    reference: str
-    locator: str
-    doi: str | None = None
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require a reference and a locator.
-
-        Raises
-        ------
-        ValueError
-            If either is empty.
-        """
-        _nonempty(self.reference, "a citation's reference")
-        _nonempty(self.locator, "a citation's locator")
-
-
-class Law(QiecModel):
-    """An equation or property that an executor may rely on.
-
-    A law is a statement about the mathematical carrier. A floating
-    point implementation satisfies no algebraic law exactly, and its
-    rounding error belongs to `Numerics`, not to the law.
-
-    Parameters
-    ----------
-    name : str
-        A short name, unique among laws.
-    statement : str
-        The statement, quantified over the carrier.
-    """
-
-    name: str
-    statement: str
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require a name and a statement.
-
-        Raises
-        ------
-        ValueError
-            If either is empty.
-        """
-        _nonempty(self.name, "a law's name")
-        _nonempty(self.statement, "a law's statement")
-
-
-PLUS_ASSOCIATIVE = Law(
-    name="plus-associative", statement="(a + b) + c = a + (b + c) for all a, b, c"
-)
-"""Associativity of the sum."""
-
-PLUS_COMMUTATIVE = Law(name="plus-commutative", statement="a + b = b + a for all a, b")
-"""Commutativity of the sum, which licenses reordering a finite sum."""
-
-PLUS_UNIT = Law(name="plus-unit", statement="0 + a = a + 0 = a for all a")
-"""Zero is the unit of the sum."""
-
-TIMES_ASSOCIATIVE = Law(
-    name="times-associative", statement="(a * b) * c = a * (b * c) for all a, b, c"
-)
-"""Associativity of the product."""
-
-TIMES_COMMUTATIVE = Law(
-    name="times-commutative", statement="a * b = b * a for all a, b"
-)
-"""Commutativity of the product, which licenses elimination orders."""
-
-TIMES_UNIT = Law(name="times-unit", statement="1 * a = a * 1 = a for all a")
-"""One is the unit of the product."""
-
-DISTRIBUTIVE = Law(
-    name="distributive",
-    statement="a * (b + c) = a * b + a * c and (a + b) * c = a * c + b * c",
-)
-"""Distributivity, which licenses merging pending contributions."""
-
-ZERO_ANNIHILATES = Law(name="zero-annihilates", statement="0 * a = a * 0 = 0 for all a")
-"""Zero annihilates the product."""
-
-PLUS_IDEMPOTENT = Law(name="plus-idempotent", statement="a + a = a for all a")
-"""Idempotence, which licenses dropping a repeated contribution."""
-
-PLUS_SELECTIVE = Law(name="plus-selective", statement="a + b is a or b for all a, b")
-"""Selectivity, which a best derivation and its witness need."""
-
-SUPERIOR = Law(
-    name="superior",
-    statement=(
-        "under the declared total order, a * b is no better than a and no better "
-        "than b, and the product is monotone in each argument"
-    ),
-)
-"""Superiority (Knuth 1977), which licenses stopping best-first at the goal."""
-
-STAR_LEAST_SOLUTION = Law(
-    name="star-least-solution",
-    statement="star(A) is the least solution X of X = I + A X on the declared domain",
-)
-"""The star of a matrix solves its linear system, which linear cycles need."""
-
-DIVISION = Law(
-    name="division", statement="(a * b) / b = a for all a and every nonzero b"
-)
-"""Division by nonzero elements, which normalizing needs."""
-
-ADDITIVE_INVERSE = Law(name="additive-inverse", statement="a + (-a) = 0 for all a")
-"""An additive inverse, which subtraction needs."""
-
-ZERO_SUM_FREE = Law(name="zero-sum-free", statement="a + b = 0 implies a = b = 0")
-"""No sum of nonzero elements is zero."""
-
-NO_ZERO_DIVISORS = Law(
-    name="no-zero-divisors", statement="a * b = 0 implies a = 0 or b = 0"
-)
-"""No product of nonzero elements is zero."""
-
-SEMIMODULE_ACTION = Law(
-    name="semimodule-action",
-    statement=(
-        "the action of the weights on the statistics is bilinear, associative "
-        "with the product, and unital"
-    ),
-)
-"""The action that carries expected statistics."""
-
-OMEGA_CONTINUOUS = Law(
-    name="omega-continuous",
-    statement=(
-        "the natural order is a complete partial order on increasing chains, and "
-        "sum and product preserve their suprema"
-    ),
-)
-"""Continuity, which gives a least fixed point of a monotone polynomial system."""
-
-FOLD_LINEAR = Law(
-    name="fold-linear",
-    statement="h(x + y) = h(x) + h(y) and h(k x) = k h(x) for weights k",
-)
-"""Linearity of a fold of the detailed meaning over the weights."""
-
-SEMIRING_LAWS: tuple[Law, ...] = (
-    PLUS_ASSOCIATIVE,
-    PLUS_COMMUTATIVE,
-    PLUS_UNIT,
-    TIMES_ASSOCIATIVE,
-    TIMES_UNIT,
-    DISTRIBUTIVE,
-    ZERO_ANNIHILATES,
-)
-"""The laws of a semiring whose product need not commute."""
-
-
-class ClaimSubject(QiecModel):
-    """What a law claim is about.
-
-    Parameters
-    ----------
-    kind : str
-        ``"algebra"``, ``"computation"``, ``"interpretation"``,
-        ``"operation"``, ``"presentation"`` or ``"estimator"``.
-    name : str
-        The subject's qualified Python name or stable identifier text.
-    """
-
-    kind: Literal[
-        "algebra",
-        "computation",
-        "interpretation",
-        "operation",
-        "presentation",
-        "estimator",
-    ]
-    name: str
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require a name.
-
-        Raises
-        ------
-        ValueError
-            If the name is empty.
-        """
-        _nonempty(self.name, "a claim subject's name")
-
-
-class Proved(QiecModel):
-    """Evidence that is a written argument.
-
-    Parameters
-    ----------
-    argument : str
-        Where the argument is written, as a documentation path and
-        anchor.
-    sources : tuple of Citation
-        The published results the argument uses.
-    tag : str
-        Always ``"proved"``.
-    """
-
-    argument: str
-    sources: tuple[Citation, ...] = dx.field(
-        default=(), opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    tag: Literal["proved"] = "proved"
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require the place of the argument.
-
-        Raises
-        ------
-        ValueError
-            If it is empty.
-        """
-        _nonempty(self.argument, "the place of an argument")
-
-
-class Decided(QiecModel):
-    """Evidence from a procedure that decides the law on the carrier.
-
-    Parameters
-    ----------
-    procedure : str
-        ``"exhaustive"`` (every tuple of a finite carrier),
-        ``"polynomial-identity"`` (a normal form of polynomial terms) or
-        ``"real-closed-field"`` (quantifier elimination over the reals).
-    domain : str
-        The carrier the decision covers.
-    check : str
-        The test that runs the procedure again.
-    tag : str
-        Always ``"decided"``.
-    """
-
-    procedure: Literal["exhaustive", "polynomial-identity", "real-closed-field"]
-    domain: str
-    check: str
-    tag: Literal["decided"] = "decided"
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require the domain and the check.
-
-        Raises
-        ------
-        ValueError
-            If either is empty.
-        """
-        _nonempty(self.domain, "the domain of a decision")
-        _nonempty(self.check, "the check of a decision")
-
-
-class Tested(QiecModel):
-    """Evidence from tests on finitely many points of a larger carrier.
-
-    A test can refute a law and cannot establish one on an infinite
-    carrier, so tested laws license no exact or certified result.
-
-    Parameters
-    ----------
-    check : str
-        The test.
-    cases : int
-        How many points it evaluates, at least one.
-    domain : str
-        Where the points come from.
-    tag : str
-        Always ``"tested"``.
-    """
-
-    check: str
-    cases: int
-    domain: str
-    tag: Literal["tested"] = "tested"
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require a check, a domain, and at least one case.
-
-        Raises
-        ------
-        ValueError
-            If the check or the domain is empty or there is no case.
-        """
-        _nonempty(self.check, "the check of a test")
-        _nonempty(self.domain, "the domain of a test")
-        if self.cases < 1:
-            raise ValueError("a test evaluates at least one case")
-
-
-class Assumed(QiecModel):
-    """A law that is declared and neither proved, decided nor tested.
-
-    Parameters
-    ----------
-    declared_by : str
-        Who or what declares it.
-    reason : str
-        Why it is assumed.
-    tag : str
-        Always ``"assumed"``.
-    """
-
-    declared_by: str
-    reason: str
-    tag: Literal["assumed"] = "assumed"
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require the declarer and the reason.
-
-        Raises
-        ------
-        ValueError
-            If either is empty.
-        """
-        _nonempty(self.declared_by, "the declarer of an assumption")
-        _nonempty(self.reason, "the reason of an assumption")
-
-
-type LawEvidence = Proved | Decided | Tested | Assumed
-"""Why a law is believed: an argument, a decision, a test, or a declaration."""
-
-
-class LawStatus(str, Enum):
-    """The status a law claim has, fixed by its evidence."""
-
-    PROVED = "proved"
-    DECIDED = "decided"
-    TESTED = "tested"
-    ASSUMED = "assumed"
-
-
-class LawClaim(QiecModel):
-    """A claim that a law holds of a subject, with its evidence.
-
-    The status is read from the evidence, so the two cannot disagree.
-    QIEC equality evidence and registrations in a type class are not law
-    evidence: they prove index equalities and record declarations.
-
-    Parameters
-    ----------
-    law : Law
-        The law.
-    subject : ClaimSubject
-        What it holds of.
-    evidence : LawEvidence
-        Why it is believed.
-    """
-
-    law: Law = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    subject: ClaimSubject = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    evidence: LawEvidence = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-
-    @property
-    def status(self) -> LawStatus:
-        """The status of the claim.
-
-        Returns
-        -------
-        LawStatus
-            Proved, decided, tested or assumed, by the kind of evidence.
-        """
-        return LawStatus(self.evidence.tag)
-
-    @property
-    def established(self) -> bool:
-        """Whether the claim is proved or decided.
-
-        Returns
-        -------
-        bool
-            True when an argument or a decision procedure stands behind
-            the claim. Only established claims license exact, certified
-            and probabilistic results.
-        """
-        return self.status in {LawStatus.PROVED, LawStatus.DECIDED}
-
-
-class Requirement(QiecModel):
-    """A law that a plan needs to hold of a subject.
-
-    Parameters
-    ----------
-    law : Law
-        The law.
-    subject : ClaimSubject
-        What it must hold of.
-    """
-
-    law: Law = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    subject: ClaimSubject = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-
-
-def _requirements(
-    laws: Iterable[Law], subject: ClaimSubject
-) -> tuple[Requirement, ...]:
-    """Pair laws with the subject they must hold of.
-
-    Parameters
-    ----------
-    laws : Iterable of Law
-        The laws.
-    subject : ClaimSubject
-        The subject.
-
-    Returns
-    -------
-    tuple of Requirement
-        One requirement per law, in order.
-    """
-    return tuple(Requirement(law=law, subject=subject) for law in laws)
-
-
 # ---------------------------------------------------------------------------
 # derivative semantics
 
@@ -666,43 +255,6 @@ SPECTRAL_RADIUS_BELOW_ONE = Condition(
     ),
 )
 """The hypothesis of the implicit derivative of a least fixed point."""
-
-
-class TieRule(QiecModel):
-    """The element of the subdifferential that a selection returns at a tie.
-
-    Parameters
-    ----------
-    name : str
-        A short name.
-    statement : str
-        Which operand receives the gradient.
-    """
-
-    name: str
-    statement: str
-
-    @dx.model_validator()
-    def _validate_record(self) -> None:
-        """Require a name and a statement.
-
-        Raises
-        ------
-        ValueError
-            If either is empty.
-        """
-        _nonempty(self.name, "a tie rule's name")
-        _nonempty(self.statement, "a tie rule's statement")
-
-
-FIRST_MAXIMIZER = TieRule(
-    name="first-maximizer",
-    statement=(
-        "the first maximizer in declared order receives the whole subgradient, and "
-        "the value carries it as the witness"
-    ),
-)
-"""The one tie rule of every selective sum."""
 
 
 class Unbiased(QiecModel):
@@ -2533,7 +2085,7 @@ class _Observable(QiecModel):
         tuple of Requirement
             The semiring laws of the algebra.
         """
-        return _requirements(SEMIRING_LAWS, algebra)
+        return requirements(SEMIRING_LAWS, algebra)
 
 
 class Support(_Observable):
@@ -2574,7 +2126,7 @@ class Support(_Observable):
         tuple of Requirement
             The semiring laws, no zero sums and no zero divisors.
         """
-        return _requirements((*SEMIRING_LAWS, ZERO_SUM_FREE, NO_ZERO_DIVISORS), algebra)
+        return requirements((*SEMIRING_LAWS, ZERO_SUM_FREE, NO_ZERO_DIVISORS), algebra)
 
 
 class Weight(_Observable):
@@ -2624,7 +2176,7 @@ class Best(_Observable):
         tuple of Requirement
             The semiring laws and a selective sum.
         """
-        return _requirements((*SEMIRING_LAWS, PLUS_SELECTIVE), algebra)
+        return requirements((*SEMIRING_LAWS, PLUS_SELECTIVE), algebra)
 
 
 class KBest(_Observable):
@@ -2677,7 +2229,7 @@ class KBest(_Observable):
         tuple of Requirement
             The semiring laws, a selective sum and superior rules.
         """
-        return _requirements((*SEMIRING_LAWS, PLUS_SELECTIVE, SUPERIOR), algebra)
+        return requirements((*SEMIRING_LAWS, PLUS_SELECTIVE, SUPERIOR), algebra)
 
 
 class Outcome(_Observable):
@@ -2723,7 +2275,7 @@ class Statistic(_Observable):
         tuple of Requirement
             The semiring laws and the semimodule action.
         """
-        return _requirements((*SEMIRING_LAWS, SEMIMODULE_ACTION), algebra)
+        return requirements((*SEMIRING_LAWS, SEMIMODULE_ACTION), algebra)
 
 
 class Marginal(_Observable):
@@ -2754,7 +2306,7 @@ class Marginal(_Observable):
             The semiring laws, and division when normalized.
         """
         laws = (*SEMIRING_LAWS, DIVISION) if self.normalized else SEMIRING_LAWS
-        return _requirements(laws, algebra)
+        return requirements(laws, algebra)
 
 
 class Sample(_Observable):
@@ -2808,7 +2360,7 @@ class Sample(_Observable):
         tuple of Requirement
             The semiring laws and division, which normalizing needs.
         """
-        return _requirements((*SEMIRING_LAWS, DIVISION), algebra)
+        return requirements((*SEMIRING_LAWS, DIVISION), algebra)
 
 
 class Fold(_Observable):
@@ -2850,7 +2402,7 @@ class Fold(_Observable):
             The semiring laws, and linearity of the fold.
         """
         return (
-            *_requirements(SEMIRING_LAWS, algebra),
+            *requirements(SEMIRING_LAWS, algebra),
             Requirement(
                 law=FOLD_LINEAR,
                 subject=ClaimSubject(kind="computation", name=str(self.fold)),
@@ -4429,7 +3981,7 @@ def admissibility(
     wanted = contract.gradient
     needed = (
         *observable.requirements(algebra),
-        *_requirements(recursion.laws(), algebra),
+        *requirements(recursion.laws(), algebra),
         *uses,
     )
     for requirement in dict.fromkeys(needed):
@@ -4862,7 +4414,6 @@ def check_complexity(claim: ComplexityClaim) -> None:
 
 
 __all__ = [
-    "ADDITIVE_INVERSE",
     "ALGEBRA_OPERATIONS",
     "AbsoluteError",
     "AbsoluteLogError",
@@ -4871,7 +4422,6 @@ __all__ = [
     "Acyclic",
     "Argument",
     "ArgumentBound",
-    "Assumed",
     "Attainment",
     "BOUND_FUNCTIONS",
     "Best",
@@ -4883,8 +4433,6 @@ __all__ = [
     "BudgetExhausted",
     "Certificate",
     "Certified",
-    "Citation",
-    "ClaimSubject",
     "Completed",
     "ComplexityBound",
     "ComplexityClaim",
@@ -4898,9 +4446,6 @@ __all__ = [
     "ContractNotMet",
     "Control",
     "ControlReached",
-    "DISTRIBUTIVE",
-    "DIVISION",
-    "Decided",
     "Deficient",
     "DerivativeEntry",
     "DerivativeReport",
@@ -4908,8 +4453,6 @@ __all__ = [
     "DualityGap",
     "Enclosure",
     "Exact",
-    "FIRST_MAXIMIZER",
-    "FOLD_LINEAR",
     "FailurePolicy",
     "Fold",
     "Forest",
@@ -4921,31 +4464,20 @@ __all__ = [
     "JudgmentPattern",
     "KBest",
     "KLDivergence",
-    "Law",
-    "LawClaim",
-    "LawEvidence",
-    "LawStatus",
     "LinearCyclic",
     "Marginal",
     "Metric",
     "MonotonePolynomial",
     "NOT_DIFFERENTIATED",
-    "NO_ZERO_DIVISORS",
     "NoRetention",
     "NonlinearFold",
     "Numerics",
-    "OMEGA_CONTINUOUS",
     "ObjectiveGap",
     "Observable",
     "OccurrenceId",
     "OperationBound",
     "OptimalityStatus",
     "Outcome",
-    "PLUS_ASSOCIATIVE",
-    "PLUS_COMMUTATIVE",
-    "PLUS_IDEMPOTENT",
-    "PLUS_SELECTIVE",
-    "PLUS_UNIT",
     "PackedForest",
     "ParameterId",
     "ParentCounts",
@@ -4953,7 +4485,6 @@ __all__ = [
     "PhaseInapplicable",
     "PresentationId",
     "Probabilistic",
-    "Proved",
     "ProvedOptimal",
     "QuerySpec",
     "Rational",
@@ -4962,25 +4493,15 @@ __all__ = [
     "RefusalCode",
     "RelativeError",
     "RequestedEvidence",
-    "Requirement",
     "ResourceBudget",
     "Retention",
-    "SEMIMODULE_ACTION",
-    "SEMIRING_LAWS",
     "SPECTRAL_RADIUS_BELOW_ONE",
-    "STAR_LEAST_SOLUTION",
-    "SUPERIOR",
     "Sample",
     "SiteEstimator",
     "Statistic",
     "StopReason",
     "Support",
-    "TIMES_ASSOCIATIVE",
-    "TIMES_COMMUTATIVE",
-    "TIMES_UNIT",
     "Target",
-    "Tested",
-    "TieRule",
     "TotalVariation",
     "UNLIMITED",
     "Unbiased",
@@ -4991,8 +4512,6 @@ __all__ = [
     "Weight",
     "WorkReport",
     "ZERO",
-    "ZERO_ANNIHILATES",
-    "ZERO_SUM_FREE",
     "admissibility",
     "attained_guarantee",
     "check_admissible",

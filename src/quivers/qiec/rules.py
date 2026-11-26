@@ -44,28 +44,30 @@ import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec._models import QiecModel
+from quivers.core.laws import (
+    Citation,
+    ClaimSubject,
+    Law,
+    LawClaim,
+    Tested,
+)
 from quivers.qiec.contracts import (
     WORD_RAM_EXPECTED_HASHING,
     Acyclic,
     BestKnown,
-    Citation,
     ComplexityBound,
     ComplexityClaim,
     ComplexityParameter,
     Phase,
     ProvedOptimal,
     Unresolved,
-    ClaimSubject,
     InterpretationId,
-    Law,
-    LawClaim,
     LinearCyclic,
     MonotonePolynomial,
     OccurrenceId,
     ParameterId,
     PresentationId,
     Recursion,
-    Tested,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.effects import EMPTY_ROW

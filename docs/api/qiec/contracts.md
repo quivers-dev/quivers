@@ -10,7 +10,7 @@ combination that does not fit, with the reason.
 | record | what it states |
 |---|---|
 | [`QuerySpec`][quivers.qiec.contracts.QuerySpec] | presentation, interpretation, observable, input types, inputs of the gradient, batch axes, retention |
-| [`LawClaim`][quivers.qiec.contracts.LawClaim] | a law of a subject, with evidence that is proved, decided, tested or assumed |
+| [`LawClaim`][quivers.core.laws.LawClaim] | a law of a subject, with evidence that is proved, decided, tested or assumed |
 | [`Recursion`][quivers.qiec.contracts.Recursion] | acyclic, linear cyclic, monotone polynomial, bounded by the model, or unrolled |
 | [`AccuracyContract`][quivers.qiec.contracts.AccuracyContract] | numerics, target and metric, guarantee, controls, budget, failure policy, derivative |
 | [`ComplexityClaim`][quivers.qiec.contracts.ComplexityClaim] | bounds per phase and resource, each with its optimality status |
@@ -46,12 +46,12 @@ square is $0$, while their squares sum to $2$.
 ## Law claims
 
 A claim's status is read from its evidence, so the two cannot disagree.
-[`Proved`][quivers.qiec.contracts.Proved] cites a written argument and
-[`Decided`][quivers.qiec.contracts.Decided] names a procedure that decides the law on the carrier:
+[`Proved`][quivers.core.laws.Proved] cites a written argument and
+[`Decided`][quivers.core.laws.Decided] names a procedure that decides the law on the carrier:
 every tuple of a finite carrier, a normal form of polynomial terms, or quantifier elimination over
-the reals. These two are *established*. [`Tested`][quivers.qiec.contracts.Tested] evaluates
+the reals. These two are *established*. [`Tested`][quivers.core.laws.Tested] evaluates
 finitely many points of a larger carrier, which can refute a law and cannot establish it, and
-[`Assumed`][quivers.qiec.contracts.Assumed] is a declaration. An exact, certified or
+[`Assumed`][quivers.core.laws.Assumed] is a declaration. An exact, certified or
 probabilistic result needs every law it uses to be established; a heuristic result needs every
 law it uses to be claimed. A claim is about the mathematical carrier: a floating point
 implementation satisfies no algebraic law exactly, and its rounding belongs to
@@ -191,7 +191,7 @@ counts of unrolled loops, the estimator of each random site, and the bias of the
 component, so it is a preorder with no derivative at the bottom, and
 [`meet`][quivers.qiec.contracts.DerivativeSemantics.meet] is its greatest lower bound. Two tie
 rules have no meet: mixing them makes a result depend on bracketing, so there is one rule,
-[`FIRST_MAXIMIZER`][quivers.qiec.contracts.FIRST_MAXIMIZER].
+[`FIRST_MAXIMIZER`][quivers.core.laws.FIRST_MAXIMIZER].
 
 The forms of a derivative report are points of this order: exact at regular points, a selected
 branch at ties, implicit under conditions, unrolled, an estimator per site with its bias, and none

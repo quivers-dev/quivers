@@ -10,6 +10,8 @@ from fractions import Fraction
 import didactic.api as dx
 import pytest
 
+from quivers.core import laws
+from quivers.core.algebras import LOG_PROB
 from quivers.qiec import contracts as c
 from quivers.qiec.identifiers import ComputationId, FamilyId, SiteId
 from quivers.qiec.serialization import (
@@ -21,22 +23,22 @@ from quivers.qiec.serialization import (
     to_data,
 )
 
-ALGEBRA = c.ClaimSubject(kind="algebra", name="quivers.core.algebras.LogProbAlgebra")
-PROOF = c.Proved(
+ALGEBRA = laws.ClaimSubject(kind="algebra", name="quivers.core.algebras.LogProbAlgebra")
+PROOF = laws.Proved(
     argument="docs/api/qiec/contracts.md#the-composition-law",
     sources=(
-        c.Citation(
+        laws.Citation(
             reference="Li and Eisner 2009, First- and second-order expectation semirings",
             locator="section 3",
             doi="10.3115/1699510.1699517",
         ),
     ),
 )
-TEST = c.Tested(check="tests/test_algebra_laws.py", cases=10, domain="float64 grid")
-DECIDED = c.Decided(
+TEST = laws.Tested(check="tests/test_algebra_laws.py", cases=10, domain="float64 grid")
+DECIDED = laws.Decided(
     procedure="exhaustive", domain="the Boolean carrier", check="tests/test_x.py"
 )
-ASSUMED = c.Assumed(declared_by="a user", reason="a learned operation")
+ASSUMED = laws.Assumed(declared_by="a user", reason="a learned operation")
 HALF = c.Rational.of(Fraction(1, 2))
 QUARTER = c.Rational.of(Fraction(1, 4))
 ONE = c.Rational.of(1)
@@ -48,7 +50,7 @@ SITE_A = SiteId.derive("site", "a")
 SITE_B = SiteId.derive("site", "b")
 
 
-def claim(law: c.Law, evidence: c.LawEvidence = PROOF) -> c.LawClaim:
+def claim(law: laws.Law, evidence: laws.LawEvidence = PROOF) -> laws.LawClaim:
     """A claim about the algebra.
 
     Parameters
@@ -63,22 +65,22 @@ def claim(law: c.Law, evidence: c.LawEvidence = PROOF) -> c.LawClaim:
     LawClaim
         The claim.
     """
-    return c.LawClaim(law=law, subject=ALGEBRA, evidence=evidence)
+    return laws.LawClaim(law=law, subject=ALGEBRA, evidence=evidence)
 
 
 CLAIMS = tuple(
     claim(law)
     for law in (
-        *c.SEMIRING_LAWS,
-        c.TIMES_COMMUTATIVE,
-        c.PLUS_SELECTIVE,
-        c.SUPERIOR,
-        c.ZERO_SUM_FREE,
-        c.NO_ZERO_DIVISORS,
-        c.STAR_LEAST_SOLUTION,
-        c.OMEGA_CONTINUOUS,
-        c.DIVISION,
-        c.SEMIMODULE_ACTION,
+        *laws.SEMIRING_LAWS,
+        laws.TIMES_COMMUTATIVE,
+        laws.PLUS_SELECTIVE,
+        laws.SUPERIOR,
+        laws.ZERO_SUM_FREE,
+        laws.NO_ZERO_DIVISORS,
+        laws.STAR_LEAST_SOLUTION,
+        laws.OMEGA_CONTINUOUS,
+        laws.DIVISION,
+        laws.SEMIMODULE_ACTION,
     )
 )
 
@@ -180,7 +182,7 @@ def refusals(
     spec: c.QuerySpec,
     recursion: c.Recursion,
     accuracy: c.AccuracyContract,
-    claims: tuple[c.LawClaim, ...] = CLAIMS,
+    claims: tuple[laws.LawClaim, ...] = CLAIMS,
 ) -> set[c.RefusalCode]:
     """The refusals of a combination.
 
@@ -246,31 +248,31 @@ def _examples() -> list[dx.Model]:
         unmet=(c.ContractField.GRADIENT,),
         derivatives=c.DerivativeReport(entries=entries),
         work=(work,),
-        claims=(claim(c.PLUS_COMMUTATIVE, DECIDED),),
+        claims=(claim(laws.PLUS_COMMUTATIVE, DECIDED),),
     )
     best = c.BestKnown(
-        sources=(c.Citation(reference="Eisner 2023", locator="section 6"),)
+        sources=(laws.Citation(reference="Eisner 2023", locator="section 6"),)
     )
     return [
         c.Rational.of(Fraction(-3, 7)),
-        c.Citation(reference="r", locator="l"),
-        c.Law(name="n", statement="s"),
+        laws.Citation(reference="r", locator="l"),
+        laws.Law(name="n", statement="s"),
         ALGEBRA,
         PROOF,
         DECIDED,
         TEST,
         ASSUMED,
-        claim(c.PLUS_SELECTIVE, ASSUMED),
-        c.Requirement(law=c.DIVISION, subject=ALGEBRA),
+        claim(laws.PLUS_SELECTIVE, ASSUMED),
+        laws.Requirement(law=laws.DIVISION, subject=ALGEBRA),
         c.SPECTRAL_RADIUS_BELOW_ONE,
-        c.FIRST_MAXIMIZER,
+        laws.FIRST_MAXIMIZER,
         c.Unbiased(),
         c.BiasBound(bound=HALF),
         c.BiasUnknown(),
         c.SiteEstimator(site=SITE_A, estimator="enumerate"),
         c.DerivativeSemantics(
             almost_everywhere=True,
-            tie_rule=c.FIRST_MAXIMIZER,
+            tie_rule=laws.FIRST_MAXIMIZER,
             implicit_conditions=(c.SPECTRAL_RADIUS_BELOW_ONE,),
             unrolled=(5, 2),
         ),
@@ -285,7 +287,7 @@ def _examples() -> list[dx.Model]:
         c.ObjectiveGap(),
         enclosure,
         c.DualityGap(primal=QUARTER, dual=HALF),
-        c.Argument(value=QUARTER, claim=claim(c.Law(name="rate", statement="q"))),
+        c.Argument(value=QUARTER, claim=claim(laws.Law(name="rate", statement="q"))),
         c.ComposedTerm(lipschitz=ONE, bound=HALF),
         composition,
         c.Exact(),
@@ -366,8 +368,10 @@ EXAMPLES = _examples()
 
 
 def test_every_contract_record_is_on_the_wire_and_has_an_example() -> None:
-    """Require the codec to carry exactly the contract records exemplified."""
-    on_wire = {cls for cls in _NODES.values() if cls.__module__ == c.__name__}
+    """Require the codec to carry exactly the contract and law records exemplified."""
+    on_wire = {
+        cls for cls in _NODES.values() if cls.__module__ in {c.__name__, laws.__name__}
+    }
     assert on_wire == {type(example) for example in EXAMPLES}
 
 
@@ -471,7 +475,7 @@ def test_rationals_are_exact() -> None:
         lambda: c.Sample(n=0),
         lambda: c.Unrolled(iterations=0),
         lambda: c.Bounded(measure="length", limit=-1),
-        lambda: c.Tested(check="t", cases=0, domain="d"),
+        lambda: laws.Tested(check="t", cases=0, domain="d"),
         lambda: c.Heuristic(reason=" "),
         lambda: c.ResourceBudget(iterations=-1),
         lambda: c.WorkReport(phase=c.Phase.EXECUTION, scalar_sums=-1),
@@ -502,7 +506,7 @@ def test_malformed_records_are_refused(build: Callable[[], dx.Model]) -> None:
 def test_status_is_read_from_the_evidence() -> None:
     """Require the status and its strength to follow the evidence."""
     statuses = {
-        evidence.tag: claim(c.PLUS_UNIT, evidence)
+        evidence.tag: claim(laws.PLUS_UNIT, evidence)
         for evidence in (PROOF, DECIDED, TEST, ASSUMED)
     }
     assert {tag: item.status.value for tag, item in statuses.items()} == {
@@ -579,11 +583,11 @@ def _semantics() -> list[c.DerivativeSemantics]:
     list of DerivativeSemantics
         The grid.
     """
-    other_rule = c.TieRule(name="equal-shares", statement="split")
+    other_rule = laws.TieRule(name="equal-shares", statement="split")
     grid = [c.DerivativeSemantics.none("x")]
     for ae, rule, implicit, unrolled, sites, bias in itertools.product(
         (False, True),
-        (None, c.FIRST_MAXIMIZER, other_rule),
+        (None, laws.FIRST_MAXIMIZER, other_rule),
         ((), (c.SPECTRAL_RADIUS_BELOW_ONE,)),
         ((), (3,), (3, 3)),
         ((), (c.SiteEstimator(site=SITE_A, estimator="score"),)),
@@ -635,7 +639,7 @@ def test_meet_is_the_greatest_lower_bound() -> None:
 def test_kind_names_the_weakest_form() -> None:
     """Require the named form to be the weakest component present."""
     assert c.DerivativeSemantics.exact().kind == "exact-at-regular-points"
-    assert c.DerivativeSemantics.selected_branch(c.FIRST_MAXIMIZER).kind == (
+    assert c.DerivativeSemantics.selected_branch(laws.FIRST_MAXIMIZER).kind == (
         "selected-branch"
     )
     assert (
@@ -920,12 +924,12 @@ def test_composite_derivatives() -> None:
     rules = (
         part(
             c.Exact(),
-            derivative=c.DerivativeSemantics.selected_branch(c.FIRST_MAXIMIZER),
+            derivative=c.DerivativeSemantics.selected_branch(laws.FIRST_MAXIMIZER),
         ),
         part(
             c.Exact(),
             derivative=c.DerivativeSemantics.selected_branch(
-                c.TieRule(name="equal-shares", statement="split")
+                laws.TieRule(name="equal-shares", statement="split")
             ),
         ),
     )
@@ -949,7 +953,9 @@ def test_composite_derivatives() -> None:
         (
             query(observable=c.Best(), differentiate_with_respect_to=(P1,)),
             c.Acyclic(),
-            contract(gradient=c.DerivativeSemantics.selected_branch(c.FIRST_MAXIMIZER)),
+            contract(
+                gradient=c.DerivativeSemantics.selected_branch(laws.FIRST_MAXIMIZER)
+            ),
         ),
         (query(observable=c.KBest(k=2)), c.LinearCyclic(), contract()),
         (query(observable=c.Support()), c.Acyclic(), contract()),
@@ -1022,9 +1028,9 @@ def test_a_fold_needs_its_own_linearity_claim() -> None:
     fold = ComputationId.derive("count")
     spec = query(observable=c.Fold(fold=fold), retention=c.PackedForest())
     assert refusals(spec, c.Acyclic(), contract()) == {c.RefusalCode.MISSING_CLAIM}
-    linear = c.LawClaim(
-        law=c.FOLD_LINEAR,
-        subject=c.ClaimSubject(kind="computation", name=str(fold)),
+    linear = laws.LawClaim(
+        law=laws.FOLD_LINEAR,
+        subject=laws.ClaimSubject(kind="computation", name=str(fold)),
         evidence=PROOF,
     )
     assert refusals(spec, c.Acyclic(), contract(), (*CLAIMS, linear)) == set()
@@ -1038,7 +1044,7 @@ def test_used_laws_need_claims_and_heuristics_need_no_establishment() -> None:
     }
     heuristic = contract(guarantee=c.Heuristic(reason="beam"))
     assert refusals(query(), c.Acyclic(), heuristic, tested) == set()
-    uses = (c.Requirement(law=c.PLUS_IDEMPOTENT, subject=ALGEBRA),)
+    uses = (laws.Requirement(law=laws.PLUS_IDEMPOTENT, subject=ALGEBRA),)
     found = c.admissibility(
         query(), c.Acyclic(), contract(), algebra=ALGEBRA, claims=CLAIMS, uses=uses
     )
@@ -1181,7 +1187,7 @@ def test_an_early_stop_claims_only_its_certificate() -> None:
 
 def test_complexity_claims() -> None:
     """Require a complete claim to pass and an incomplete one to be refused."""
-    best = c.BestKnown(sources=(c.Citation(reference="Eisner 2023", locator="s6"),))
+    best = c.BestKnown(sources=(laws.Citation(reference="Eisner 2023", locator="s6"),))
     bounds = tuple(
         c.ComplexityBound(
             phase=phase, resource=resource, expression="V + E", status=best
@@ -1221,3 +1227,16 @@ def test_complexity_claims() -> None:
         )
     )
     assert c.complexity_refusals(log_bound) == ()
+
+
+def test_a_shipped_algebra_licenses_its_queries() -> None:
+    """Require a shipped algebra's own subject and claims to admit a weight query."""
+    found = c.admissibility(
+        query(),
+        c.Acyclic(),
+        contract(),
+        algebra=LOG_PROB.subject,
+        claims=LOG_PROB.claims(),
+    )
+    assert found == ()
+    assert LOG_PROB.subject.name == "quivers.core.algebras.LogProbAlgebra"
