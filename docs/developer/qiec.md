@@ -182,6 +182,12 @@ The built-in prelude declares the following interfaces, each with reference hand
   morphism or a closure;
 - `Param`, through which a computation reads a learned parameter by name.
 
+A foreign handler may state what it computes in its declaration's `foreign` field: a semiring sum
+over the shots of a search, a semiring product of a scope's weights, an enumeration of a finite
+draw, or the settlement of an iteration's stop
+([`quivers.qiec.foreign`](../api/qiec/foreign.md)). The core provider builds such a handler from
+that statement, and a semiring handler first requires its semiring to establish the laws it uses.
+
 These handlers state the reference behavior in executable form. A backend may implement the same
 behavior with its own optimized routines. Samplers, observation tables, semiring operations,
 state cells, and trace recorders remain attachments.
