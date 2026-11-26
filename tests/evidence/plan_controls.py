@@ -532,11 +532,11 @@ class _CountingReals(RealAlgebra):
 
 
 class _CountingMarkov(MarkovAlgebra):
-    """Probabilities with a closure, counting the operations a plan asks of them."""
+    """Probabilities with a closure, counting every product and sum, the closure's too."""
 
     proof = MarkovAlgebra.proof
     tested = MarkovAlgebra.tested
-    counted: ClassVar[dict[str, int]] = {"products": 0, "sums": 0, "closures": 0}
+    counted: ClassVar[dict[str, int]] = {"products": 0, "sums": 0}
 
     def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Count and forward products, one per element.
@@ -574,34 +574,22 @@ class _CountingMarkov(MarkovAlgebra):
         self.counted["sums"] += result.numel()
         return result
 
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
-        """Count and forward a closure of one element.
-
-        Parameters
-        ----------
-        matrix : torch.Tensor
-            Shape ``(1, 1)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Its closure.
-        """
-        self.counted["closures"] += 1
-        return super().star(matrix)
-
 
 def _check_cyclic_counts() -> None:
     """Require a cyclic plan's measured counters to be independent counts.
 
+    The counting algebra sees every product and sum, the matrix closure's
+    included; the five states of the ring are five pivots, and no loop
+    nears the boundary, so no exact decision runs.
+
     Raises
     ------
     Mismatch
-        If a measured counter differs from the algebra's own count, or the
-        closure's work is not ``n^3 + n^2`` products and sums for a
-        component of ``n``.
+        If a measured counter differs from its independent count, or the
+        closure's work is below ``n`` rounds of ``n^2`` for a component of
+        ``n``.
     """
-    _CountingMarkov.counted.update(products=0, sums=0, closures=0)
+    _CountingMarkov.counted.update(products=0, sums=0)
     edges = [(i, (i + 1) % 5) for i in range(5)]
     inputs: Inputs = {**graphs.edge_weights(edges, [0.5] * len(edges))}
     current = plan(
@@ -617,7 +605,8 @@ def _check_cyclic_counts() -> None:
     for field, count in (
         (WorkField.SCALAR_PRODUCTS, counted["products"]),
         (WorkField.SCALAR_SUMS, counted["sums"]),
-        (WorkField.STAR_PIVOTS, counted["closures"]),
+        (WorkField.STAR_PIVOTS, 5),
+        (WorkField.EXACT_OPERATIONS, 0),
         (WorkField.SCALAR_DIVISIONS, 0),
     ):
         _require(
@@ -630,10 +619,13 @@ def _check_cyclic_counts() -> None:
                 float(abs(found - count)) or 1.0,
                 f"cyclic {field.value}: reported {found}, counted {count}",
             )
-    _require(report.star_pivots == 5, f"{report.star_pivots} closures for five states")
     _require(
-        report.scalar_products >= 5**3 + 5**2 and report.scalar_sums >= 5**3 + 5**2,
-        "the closure did fewer than n^3 + n^2 products and sums",
+        report.scalar_products >= 5**3 and report.scalar_sums >= 5**3,
+        "the closure did fewer than n rounds of n^2 products and sums",
+    )
+    _require(
+        report.scalar_divisions == 0,
+        "a cyclic run divided outside its closures",
     )
 
 

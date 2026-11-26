@@ -2952,6 +2952,7 @@ class WorkField(str, Enum):
     SCALAR_PRODUCTS = "scalar_products"
     SCALAR_DIVISIONS = "scalar_divisions"
     STAR_PIVOTS = "star_pivots"
+    EXACT_OPERATIONS = "exact_operations"
     KEY_COMPARISONS = "key_comparisons"
     HASH_OPERATIONS = "hash_operations"
     PRODUCT_STATES = "product_states"
@@ -3000,9 +3001,13 @@ class WorkReport(QiecModel):
     scalar_products : int
         Scalar products.
     scalar_divisions : int
-        Scalar divisions.
+        Scalar divisions outside closures of one element.
     star_pivots : int
-        Pivots of star computations.
+        Pivots of star computations: closures of one element, each one
+        operation of the algebra, whatever it computes inside.
+    exact_operations : int
+        Rational or interval updates of an exact or enclosed decision,
+        run when rounding alone cannot decide.
     key_comparisons : int
         Comparisons of keys.
     hash_operations : int
@@ -3044,6 +3049,7 @@ class WorkReport(QiecModel):
     scalar_products: int = 0
     scalar_divisions: int = 0
     star_pivots: int = 0
+    exact_operations: int = 0
     key_comparisons: int = 0
     hash_operations: int = 0
     product_states: int = 0
@@ -3103,6 +3109,7 @@ _COUNTERS = (
     "scalar_products",
     "scalar_divisions",
     "star_pivots",
+    "exact_operations",
     "key_comparisons",
     "hash_operations",
     "product_states",
@@ -3143,6 +3150,7 @@ TIME_FIELDS: frozenset[WorkField] = frozenset(
         WorkField.SCALAR_PRODUCTS,
         WorkField.SCALAR_DIVISIONS,
         WorkField.STAR_PIVOTS,
+        WorkField.EXACT_OPERATIONS,
         WorkField.KEY_COMPARISONS,
         WorkField.HASH_OPERATIONS,
     }

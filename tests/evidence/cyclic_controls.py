@@ -27,7 +27,6 @@ from quivers.core.algebras import (
     REAL,
     MatrixSemiring,
     OrderPreservingSemiring,
-    Star,
 )
 from quivers.qiec.contracts import (
     Acyclic,
@@ -62,48 +61,6 @@ START = OccurrenceId.derive(graphs.NAME, "start")
 STEP = ParameterId.derive(graphs.NAME, "step")
 S, P, Q, W = 0.9, 0.5, 0.6, 0.8
 """Start, edge and step weights, with ``p q w^2 < 1``."""
-
-
-class StarMatrices(MatrixSemiring, Star):
-    """Square matrices over a semiring with a closure, with the closure of block matrices.
-
-    An ``n x n`` matrix of ``k x k`` matrices is an ``nk x nk`` matrix
-    over the base, and block multiplication is its multiplication, so the
-    two semirings are isomorphic and the base's least closure is one here.
-    """
-
-    @property
-    def star_domain(self) -> str:
-        """The block matrices whose flattened matrix the base closes.
-
-        Returns
-        -------
-        str
-            The domain.
-        """
-        base = self.base
-        assert isinstance(base, Star)
-        return f"block matrices whose flattened matrix lies in: {base.star_domain}"
-
-    def star(self, matrix: torch.Tensor) -> torch.Tensor:
-        """The closure, by the base's closure of the flattened matrix.
-
-        Parameters
-        ----------
-        matrix : torch.Tensor
-            Shape ``(n, n, k, k)``.
-
-        Returns
-        -------
-        torch.Tensor
-            The closure, of the same shape.
-        """
-        base = self.base
-        assert isinstance(base, Star)
-        n, k = matrix.shape[0], self.size
-        flat = matrix.permute(0, 2, 1, 3).reshape(n * k, n * k)
-        closed = base.star(flat)
-        return closed.reshape(n, k, n, k).permute(0, 2, 1, 3)
 
 
 def _require(condition: bool, what: str) -> None:
@@ -360,7 +317,7 @@ def check_one_sided() -> None:
     Mismatch
         If a value differs from its closed form, or a side is not recorded.
     """
-    algebra = StarMatrices(MARKOV, 2)
+    algebra = MatrixSemiring(MARKOV, 2)
     like = torch.zeros((2, 2), dtype=torch.float64)
     eye = torch.eye(2, dtype=torch.float64)
     left = _run(graphs.LEFT, algebra, _matrix_inputs(weighted=True), like)
@@ -442,13 +399,18 @@ def _refused(
     Raises
     ------
     Mismatch
-        If it is admitted or refused for another reason.
+        If it is admitted, refused for another reason, or fails with
+        another error.
     """
     try:
         attempt()
     except PlanRefused as refused:
         _require(refused.code is code, f"{what}: refused as {refused.code.value}")
         return refused.reason
+    except Exception as error:  # noqa: BLE001
+        raise Mismatch(
+            "refusal", math.inf, f"{what} raised {type(error).__name__}: {error}"
+        ) from error
     raise Mismatch("refusal", math.inf, f"{what} was admitted")
 
 
@@ -488,7 +450,7 @@ def check_refusals() -> None:
     reason = _refused(
         lambda: _run(
             graphs.MIXED,
-            StarMatrices(MARKOV, 2),
+            MatrixSemiring(MARKOV, 2),
             _matrix_inputs(weighted=True),
             torch.zeros((2, 2), dtype=torch.float64),
         ),
@@ -593,8 +555,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         also_in=("quivers.stochastic.planning",),
         rewrites=(
             Rewrite(
-                old="term = algebra.tensor_op(closure[i, j], constant[j])",
-                new="term = algebra.tensor_op(constant[j], closure[i, j])",
+                old="term = _times(algebra, closure[i, j], constant[j], work)",
+                new="term = _times(algebra, constant[j], closure[i, j], work)",
             ),
         ),
         rejected_by=("cyclic/one-sided",),
@@ -629,7 +591,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=f"{RECURSION}:solve",
         also_in=("quivers.stochastic.planning",),
         rewrites=(
-            Rewrite(old="closure = algebra.star(filled)", new="closure = filled"),
+            Rewrite(
+                old="closure, closing = algebra.star_with_work(filled)",
+                new=(
+                    "closing = algebra.star_with_work(filled)[1]\n"
+                    "            closure = filled"
+                ),
+            ),
         ),
         rejected_by=("cyclic/closed-form",),
         min_effect=1e-6,

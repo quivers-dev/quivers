@@ -101,6 +101,7 @@ class _Work:
         self.sums = 0
         self.products = 0
         self.pivots = 0
+        self.exact = 0
 
     def count(self, kind: Literal["sums", "products"], result: torch.Tensor) -> None:
         """Count one operation over a batch of elements.
@@ -125,12 +126,15 @@ class CyclicWork(QiecModel):
     products : int
         Products, one per element.
     pivots : int
-        States the closures eliminated, as the algebra reports them.
+        States the closures eliminated, each a closure of one element.
+    exact : int
+        Operations of the closures' exact or enclosed decisions.
     """
 
     sums: int = 0
     products: int = 0
     pivots: int = 0
+    exact: int = 0
 
 
 class Component(QiecModel):
@@ -349,9 +353,9 @@ def solve(
     -------
     tuple of dict, tuple of Component and CyclicWork
         The value of every item, each component with its side, and the
-        algebra's operations of building each component's system and of
-        applying its closure to the constants; the closures' own work is
-        the algebra's to report.
+        algebra's operations of building each component's system, closing
+        it (as the closure reports its own work) and applying the closure
+        to the constants.
 
     Raises
     ------
@@ -439,7 +443,11 @@ def solve(
         ]
         filled = torch.stack(rows)
         try:
-            closure = algebra.star(filled)
+            closure, closing = algebra.star_with_work(filled)
+            work.sums += closing.sums
+            work.products += closing.products
+            work.pivots += closing.pivots
+            work.exact += closing.exact
         except DivergentClosureError as error:
             raise CyclicRefused(CyclicRefusal.DIVERGENT, str(error)) from error
         except UndecidedClosureError as error:
@@ -460,7 +468,12 @@ def solve(
     return (
         values,
         tuple(solved),
-        CyclicWork(sums=work.sums, products=work.products, pivots=work.pivots),
+        CyclicWork(
+            sums=work.sums,
+            products=work.products,
+            pivots=work.pivots,
+            exact=work.exact,
+        ),
     )
 
 

@@ -1000,19 +1000,31 @@ EVALUATION_MEASURES: tuple[WorkField, ...] = measuring(
         WorkField.SCALAR_PRODUCTS,
         WorkField.SCALAR_DIVISIONS,
         WorkField.STAR_PIVOTS,
+        WorkField.EXACT_OPERATIONS,
         WorkField.HASH_OPERATIONS,
         WorkField.KEY_COMPARISONS,
         WorkField.PROVENANCE_RECORDS,
     }
 )
-"""The counters a two-pass evaluation counts: it divides and closes nothing."""
+"""The counters a two-pass evaluation counts: it divides, closes and decides
+nothing exactly."""
 
 CYCLIC_MEASURES: tuple[WorkField, ...] = measuring(
-    {WorkField.HASH_OPERATIONS, WorkField.KEY_COMPARISONS}
+    {
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.SCALAR_DIVISIONS,
+        WorkField.STAR_PIVOTS,
+        WorkField.EXACT_OPERATIONS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+    }
 )
-"""The counters a cyclic run counts: its chart's lookups and candidates. The
-operations of building, closing and applying each component's system, its closures of one element,
-and its chart's lookups and candidates; it divides nothing."""
+"""The counters a cyclic run counts: the sums and products of building,
+closing and applying each component's system, the closures' pivots and
+exact decisions as each closure reports them, and the chart's lookups and
+candidates. A closure of one element is one pivot, whatever it divides
+inside, and nothing outside the closures divides."""
 
 
 class Evaluation(ValueModel):
@@ -1038,6 +1050,8 @@ class Evaluation(ValueModel):
         Parent counts kept during the run, one per item.
     pivots : int
         Closures of one element, one per state a cyclic run eliminates.
+    exact : int
+        Operations of the closures' exact or enclosed decisions.
     evidence : dict of Item to tuple of ForestEdge, or None
         Under requested evidence, the edges of every derived item of a
         requested form: its input occurrences, then its rule instances;
@@ -1058,6 +1072,7 @@ class Evaluation(ValueModel):
     products: int = 0
     counts: int = 0
     pivots: int = 0
+    exact: int = 0
     evidence: dict[Item, tuple[ForestEdge, ...]] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -1121,6 +1136,7 @@ class Evaluation(ValueModel):
             scalar_sums=kept(WorkField.SCALAR_SUMS, self.sums),
             scalar_products=kept(WorkField.SCALAR_PRODUCTS, self.products),
             star_pivots=kept(WorkField.STAR_PIVOTS, self.pivots),
+            exact_operations=kept(WorkField.EXACT_OPERATIONS, self.exact),
             hash_operations=kept(WorkField.HASH_OPERATIONS, self.work.lookups),
             key_comparisons=kept(WorkField.KEY_COMPARISONS, self.work.candidates),
             provenance_records=kept(
@@ -2046,6 +2062,7 @@ def _solve_cyclic(
         sums=closures.sums,
         products=closures.products,
         pivots=closures.pivots,
+        exact=closures.exact,
         components=parts,
         measures=CYCLIC_MEASURES,
         evidence=None
