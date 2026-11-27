@@ -17,7 +17,7 @@ overrides, discrete Gibbs sites, and draws that are not posterior MCMC draws.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import numpy as np
 import torch
@@ -31,17 +31,12 @@ from quivers.diagnostics.bridge import (
 )
 from quivers.diagnostics.elpd import response_hash
 from quivers.effects.joint_plan import _has_custom_joint
-from quivers.formulas._brms_priors import require_proper
 from quivers.formulas._postprocess_loo import criterion_outcomes, unconstrained_draws
 from quivers.inference._prior_projection import _has_potential, project_prior_sites
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.mcmc.kernel import PotentialFn
 from quivers._values import ValueModel
 from quivers.formulas._fit_types import Fit
-
-if TYPE_CHECKING:
-    from quivers.formulas._fit import BayesianFit
-    from quivers.formulas._joint_fit import MultivariateFit
 
 type EvidenceInput = Fit | BridgeResult
 """A fit, or a bridge-sampling estimate computed from one."""
@@ -99,10 +94,7 @@ def require_normalized(fit: Fit, purpose: str) -> None:
         potential of unknown mass or an opaque joint override, or the
         posterior is not retained MCMC draws.
     """
-    if _joint(fit):
-        require_proper(cast("MultivariateFit", fit).emission.module, purpose)
-    else:
-        cast("BayesianFit", fit)._require_proper(purpose)
+    fit._require_proper(purpose)
     if _has_custom_joint(fit.program):
         raise ValueError(
             f"{purpose} requires the canonical log joint; an overridden "

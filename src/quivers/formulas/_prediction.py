@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import copy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Mapping, Never, SupportsIndex
 
 import didactic.api as dx
@@ -14,18 +16,30 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.programs import MonadicProgram
-from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import (
     Module,
 )
+from quivers.family_catalog import FamilyCatalog
 from quivers.formulas.formula import (
+    Formula,
+    RowSelection,
     _CS_ONES,
     _qvr_name,
 )
 from quivers.formulas._autocor import AutocorMatrix
+from quivers.formulas._blocks import ResponseData
 from quivers.formulas._residual_law import ResidualLaw, recorded_history
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
+from quivers.formulas._joint_compile import place_single_response
+from quivers.formulas._joint_missing import (
+    SingleMissing,
+    apply_missing,
+    fitted_measurement_prior,
+    fresh_values,
+    missing_multipliers,
+    missing_site_exclusions,
+)
 from quivers.formulas._predictor import Predictor
 from quivers.formulas._row_source import RowSource, finite_inputs
 from quivers.formulas._term import bind_inputs
@@ -33,7 +47,7 @@ from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
 # Improper flat priors and the brms Intercept column.
-from quivers.formulas._brms_priors import with_flat_catalog
+from quivers.formulas._fit_core import compile_model
 from quivers.formulas._formula_options import BRMS_INTERCEPT
 from quivers.inference.registry import LatentRegistry
 from quivers.formulas._group_prediction import (
@@ -47,6 +61,11 @@ from quivers.formulas._threshold_groups import threshold_selectors
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
+    from quivers.formulas._group_covariance import GroupCovariance
+    from quivers.formulas._predictor_graph import PredictorGraph
+    from quivers.formulas._response import ResponseReadout
+    from quivers.formulas.compile import FormulaToQVRModule
+    from quivers.formulas.family import Family
 
 
 class FormulaPredictionPlan(ValueModel):
@@ -58,6 +77,8 @@ class FormulaPredictionPlan(ValueModel):
         Training program, including its priors and latent dimensions.
     designs : Mapping[str, DesignMatrices]
         Evaluated location and auxiliary formulas, retaining transform state.
+    response : ResponseData or None
+        Retained outcome evaluator, coordinates and response-side inputs.
     preparation_data : IntoDataFrame or None
         One frozen original-row snapshot for durable design reconstruction.
         Clone-owned recipes share this snapshot internally; reference-owned
@@ -71,6 +92,8 @@ class FormulaPredictionPlan(ValueModel):
         Actual emitted parameter roles, authored labels, and nominal axes.
     predictors : tuple[Predictor, ...]
         Planned predictors of the training program.
+    missing : SingleMissing or None
+        Retained missing-value plans and fitted design evaluators.
     version : str
         Runtime-plan schema identifier. This plan contains formulae objects
         and is deliberately not a portable serialized model representation.
@@ -79,6 +102,9 @@ class FormulaPredictionPlan(ValueModel):
     module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     designs: Mapping[str, DesignMatrices] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    response: ResponseData | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     preparation_data: IntoDataFrame | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -94,6 +120,9 @@ class FormulaPredictionPlan(ValueModel):
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    missing: SingleMissing | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     version: Literal["qvr-formula-prediction/v1"] = "qvr-formula-prediction/v1"
 
@@ -149,22 +178,17 @@ class OrdinalReplay(ValueModel):
     rows: int = 0
 
 
-class PredictionContext(ValueModel):
-    """Prepared row bindings shared by every draw of one prediction request.
+class PredictionRows(ValueModel):
+    """Row bindings shared by formula prediction and likelihood requests.
 
     Parameters
     ----------
-    program : MonadicProgram
-        Native training program or a row-specialized copy.
     observations : Mapping[str, torch.Tensor]
         Validated predictor bindings and internal response placeholders.
     rows : int
         Number of prediction rows.
     groups : dict[str, GroupRemap]
         Compact grouping axes and fitted raw-site mappings.
-    prior_program : MonadicProgram or None
-        One dependency projection for conditional new-group draws, prepared
-        once per request rather than rebuilt for every posterior draw.
     new_level_policy : NewLevelPolicy
         Joint donor or conditional Gaussian policy for new identities.
     seed : int
@@ -184,16 +208,12 @@ class PredictionContext(ValueModel):
         Rows of the request; None when the fitted program serves it.
     """
 
-    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     observations: Mapping[str, torch.Tensor] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     rows: int
     groups: dict[str, GroupRemap] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    prior_program: MonadicProgram | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     new_level_policy: NewLevelPolicy = "uncertainty"
     seed: int = 0
@@ -208,8 +228,94 @@ class PredictionContext(ValueModel):
     )
 
 
+class PredictionContext(PredictionRows):
+    """Compiled prediction over the bindings shared by all draws.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        Native training program or a row-specialized copy.
+    prior_program : MonadicProgram or None
+        One dependency projection for conditional new-group draws.
+    """
+
+    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    prior_program: MonadicProgram | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+
+class PreparedPredictionRows(PredictionRows):
+    """Prepared rows with their local AST and family catalog for compilation."""
+
+    module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    families: FamilyCatalog | None = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+
+@dataclass(frozen=True, slots=True)
+class JointResponsePreparation:
+    """Retained response metadata used to bind rows of a joint prediction."""
+
+    formula: Formula
+    family: Family
+    lens: FormulaToQVRModule
+    observations: Mapping[str, torch.Tensor]
+    prediction_plan: FormulaPredictionPlan
+    binomial_trials: int | str | None
+    thresholds_by: str | None
+    _response_data: ResponseData
+    _response_readout: ResponseReadout
+    predictor: None = None
+    predictor_name: None = None
+
+    @property
+    def residual(self) -> ResidualLaw | None:
+        return self.lens._residual
+
+    @property
+    def distributional(self) -> Mapping[str, Formula]:
+        return self.lens._distributional
+
+    @property
+    def predictor_graph(self) -> PredictorGraph | None:
+        return self.lens._predictor_graph
+
+    @property
+    def group_covariances(self) -> dict[str, GroupCovariance]:
+        return self.lens.group_covariances
+
+    @property
+    def category_labels(self) -> tuple[int | str, ...]:
+        from quivers.formulas._response import response_category_labels
+
+        return response_category_labels(self.formula, self.family)
+
+    def _predictor_items(self):
+        return self.lens._predictor_items(self.formula)
+
+    def _formula_lens(
+        self,
+        *,
+        distributional: Mapping[str, Formula],
+        nonlinear_leaves: Mapping[str, Formula],
+        residual: ResidualLaw | None,
+    ) -> FormulaToQVRModule:
+        lens = copy(self.lens)
+        lens._set_prior_configuration(None)
+        lens._distributional = dict(distributional)
+        if self.predictor_graph is not None:
+            lens._predictor_graph = self.predictor_graph.with_(
+                leaves=dict(nonlinear_leaves)
+            )
+        lens._residual = residual
+        return lens
+
+
+type PredictionDesign = BayesianFit | JointResponsePreparation
+
+
 def _set_trial_rows(
-    fit: BayesianFit,
+    fit: PredictionDesign,
     observations: dict[str, torch.Tensor],
     counts: torch.Tensor,
     *,
@@ -233,8 +339,9 @@ def _set_trial_rows(
     ValueError
         If a literal scalar trial count cannot be overridden at runtime.
     """
-    response = _qvr_name(fit.formula.response_name)
-    event = fit.formula.response_layout.event_shape
+    data = fit._response_data
+    response = _qvr_name(data.name)
+    event = data.layout.event_shape
     if event:
         observations["formula_trials"] = counts
         point = torch.zeros(
@@ -265,7 +372,8 @@ def _set_trial_rows(
 
 @torch.random.fork_rng(devices=[])
 def residual_at(
-    fit: BayesianFit,
+    law: ResidualLaw,
+    data: ResponseData,
     frame: pd.DataFrame | None,
     *,
     include: bool,
@@ -275,8 +383,10 @@ def residual_at(
 
     Parameters
     ----------
-    fit : BayesianFit
-        Fitted formula with a residual law.
+    law : ResidualLaw
+        The fitted residual law.
+    data : ResponseData
+        Fitted outcomes and evaluator for recorded history.
     frame : pandas.DataFrame or None
         Prediction rows, or None for the training rows.
     include : bool
@@ -290,18 +400,14 @@ def residual_at(
         The law over the requested rows, with the recorded responses of new
         rows as recursion history.
     """
-    law = fit.residual
-    assert law is not None
     history = None
     if frame is not None and law.conditional:
-        plan = fit.prediction_plan
-        assert plan is not None
-        evaluator = plan.designs["mu"].response
+        evaluator = data.evaluator
         assert evaluator is not None
         history = recorded_history(
             frame.reset_index(drop=True),
             evaluator.term.term.eval_new_data,
-            float(np.nanmean(np.asarray(fit.formula.response_values))),
+            float(np.nanmean(np.asarray(data.values))),
             law.response,
         )
     return law.at(frame, include=include, data2=data2, history=history)
@@ -320,6 +426,7 @@ def prepare_prediction(
     require_trials: bool = True,
     incl_autocor: bool = True,
     data2: Mapping[str, AutocorMatrix] | None = None,
+    retain_law: bool = True,
 ) -> PredictionContext:
     """Prepare and validate prediction rows before sampling posterior draws.
 
@@ -349,6 +456,9 @@ def prepare_prediction(
     data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
         Matrices of ``sar`` and ``fcor`` terms over the rows of ``new_data``
         (brms ``newdata2``).
+    retain_law : bool
+        Expose the law on every retained row of a missing response so replay
+        can read its moments or sample it. Training likelihood uses recorded events.
 
     Returns
     -------
@@ -362,6 +472,121 @@ def prepare_prediction(
     TypeError
         If the compiled prediction program changes its latent layout.
     """
+    if new_data is not None:
+        return compile_prediction_rows(
+            fit,
+            prepare_prediction_rows(
+                fit,
+                new_data,
+                predictor_data,
+                re_formula=re_formula,
+                allow_new_levels=allow_new_levels,
+                sample_new_levels=sample_new_levels,
+                seed=seed,
+                trials=trials,
+                require_trials=require_trials,
+                incl_autocor=incl_autocor,
+                data2=data2,
+            ),
+        )
+    _validate_prediction_policy(allow_new_levels, sample_new_levels)
+    data = fit._response_data
+    readout = fit._response_readout
+    formulas, _, response_formula, constrained_cs = _prediction_formulas(fit, readout)
+    selected = selected_effects(formulas, re_formula)
+    retained_observations = fit.observations
+    if trials is not None:
+        if readout.trials_parameter is None:
+            raise ValueError(
+                "trial overrides require a count family with a trial parameter"
+            )
+        from quivers.formulas._fit import _binomial_trial_tensor
+
+        source = data.training_data
+        if isinstance(trials, str) and source is None:
+            raise ValueError("a trial column requires a retained training dataframe")
+        counts = _binomial_trial_tensor(source, trials, n_obs=len(data.values))
+        retained_observations = dict(fit.observations)
+        _set_trial_rows(fit, retained_observations, counts, specification=trials)
+    # A residual law is rebuilt over the requested rows.
+    residual = (
+        residual_at(
+            fit.residual,
+            data,
+            None,
+            include=incl_autocor,
+            data2=data2,
+        )
+        if fit.residual is not None
+        else None
+    )
+    plan = fit.prediction_plan
+    missing = plan.missing if plan is not None else None
+    restore_law = retain_law and missing is not None and missing.score_site is not None
+    if re_formula is None and incl_autocor and not restore_law:
+        if predictor_data is not None:
+            raise ValueError("predictor_data requires new_data")
+        return PredictionContext(
+            program=fit.program,
+            observations=retained_observations,
+            rows=len(data.values),
+        )
+    if predictor_data is not None:
+        raise ValueError("predictor_data requires new_data")
+    if plan is None:
+        raise ValueError("this fit has no retained formula prediction plan")
+    source = RowSource(selected=selected, include=incl_autocor)
+    lens = fit._formula_lens(residual=residual)
+    module, complement = lens._forward(response_formula, rows=source)
+    families = lens.families()
+    observations = dict(retained_observations) | bind_inputs(
+        item for term in lens._terms(response_formula, source) for item in term.inputs()
+    )
+    if missing is not None:
+        if plan.preparation_data is None:
+            raise ValueError("mi() prediction requires the retained training rows")
+        original = nw.from_native(plan.preparation_data, eager_only=True).to_pandas()
+        selection = response_formula.modifiers.subset or RowSelection(
+            size=len(original), positions=tuple(range(len(original)))
+        )
+        emission, extra, removed = apply_missing(
+            place_single_response(
+                missing.label, lens, response_formula, module, complement
+            ),
+            missing.plan,
+            missing.specs,
+            original,
+            keep_observation=restore_law,
+            consumer_rows={missing.label: selection},
+            prior=fitted_measurement_prior(plan.module),
+        )
+        module, families = emission.module, emission.families
+        observations = {
+            name: value for name, value in observations.items() if name not in removed
+        } | extra
+        if restore_law:
+            from quivers.formulas._response import response_point
+            from quivers.formulas._response_modifiers import response_input_name
+
+            observations[response_input_name(response_formula)] = response_point(
+                response_formula, fit.family
+            ).expand(len(data.values), *data.layout.event_shape)
+    program = compile_model(module, families).morphism
+    if not isinstance(program, MonadicProgram):
+        raise TypeError("prediction requires a native monadic program")
+    return PredictionContext(
+        program=program,
+        observations=observations,
+        rows=len(data.values),
+        source=source,
+        seed=seed,
+        retain_ordinal_cutpoints=constrained_cs,
+    )
+
+
+def _validate_prediction_policy(
+    allow_new_levels: bool, sample_new_levels: NewLevelPolicy
+) -> None:
     if not isinstance(allow_new_levels, bool):
         raise TypeError("allow_new_levels must be a bool")
     if sample_new_levels not in {
@@ -375,94 +600,64 @@ def prepare_prediction(
             "sample_new_levels must be uncertainty, old_levels, gaussian, "
             "feasible_uncertainty, or feasible_gaussian"
         )
-    formulas = {name: formula for name, _, formula in fit._predictor_items()}
-    prefixes = {name: prefix for name, prefix, _ in fit._predictor_items()}
+
+
+def _prediction_formulas(
+    fit: PredictionDesign, readout: ResponseReadout
+) -> tuple[dict[str, Formula], dict[str, str], Formula, bool]:
+    location = readout.location
+    predictors = tuple(
+        (name, prefix, formula)
+        for name, prefix, formula in fit._predictor_items()
+        if prefix or name == location
+    )
+    formulas = {name: formula for name, _, formula in predictors}
+    prefixes = {name: prefix for name, prefix, _ in predictors}
+    response_formula = fit.formula if location is None else formulas[location]
     constrained_cs = (
-        fit.family.ordinal is not None
-        and fit.family.ordinal.kind in {"cumulative", "hurdle_cumulative"}
-        and (fit.formula.category_specific)
+        readout.constrains_cutpoints
+        and location is not None
+        and response_formula.category_specific
+    )
+    return formulas, prefixes, response_formula, constrained_cs
+
+
+def prepare_prediction_rows(
+    fit: PredictionDesign,
+    new_data: IntoDataFrame,
+    predictor_data: torch.Tensor | None,
+    *,
+    re_formula: str | None = None,
+    allow_new_levels: bool = False,
+    sample_new_levels: NewLevelPolicy = "uncertainty",
+    seed: int = 0,
+    trials: int | str | None = None,
+    require_trials: bool = True,
+    incl_autocor: bool = True,
+    data2: Mapping[str, AutocorMatrix] | None = None,
+) -> PreparedPredictionRows:
+    """Bind fresh rows and retain their local emission without compiling them."""
+    _validate_prediction_policy(allow_new_levels, sample_new_levels)
+    data = fit._response_data
+    readout = fit._response_readout
+    location = readout.location
+    formulas, prefixes, response_formula, constrained_cs = _prediction_formulas(
+        fit, readout
     )
     selected = selected_effects(formulas, re_formula)
-    retained_observations = fit.observations
-    if trials is not None:
-        if fit.family.trials_parameter is None:
-            raise ValueError(
-                "trial overrides require a count family with a trial parameter"
-            )
-        if new_data is None:
-            from quivers.formulas._fit import _binomial_trial_tensor
-
-            source = (
-                fit.prediction_plan.designs["mu"].data
-                if fit.prediction_plan is not None
-                else None
-            )
-            if isinstance(trials, str) and source is None:
-                raise ValueError(
-                    "a trial column requires a retained training dataframe"
-                )
-            counts = _binomial_trial_tensor(
-                source, trials, n_obs=len(fit.formula.response_values)
-            )
-            retained_observations = dict(fit.observations)
-            _set_trial_rows(fit, retained_observations, counts, specification=trials)
-    # A residual law is rebuilt over the requested rows.
-    residual = (
-        residual_at(
-            fit,
-            None
-            if new_data is None
-            else nw.from_native(new_data, eager_only=True).to_pandas(),
-            include=incl_autocor,
-            data2=data2,
+    if trials is not None and readout.trials_parameter is None:
+        raise ValueError(
+            "trial overrides require a count family with a trial parameter"
         )
+    frame = nw.from_native(new_data, eager_only=True).to_pandas()
+    residual = (
+        residual_at(fit.residual, data, frame, include=incl_autocor, data2=data2)
         if fit.residual is not None
         else None
     )
-    if new_data is None and re_formula is None and incl_autocor:
-        if predictor_data is not None:
-            raise ValueError("predictor_data requires new_data")
-        return PredictionContext(
-            program=fit.program,
-            observations=retained_observations,
-            rows=len(fit.formula.response_values),
-        )
     plan = fit.prediction_plan
-    if new_data is None:
-        if predictor_data is not None:
-            raise ValueError("predictor_data requires new_data")
-        if plan is None:
-            raise ValueError("this fit has no retained formula prediction plan")
-        source = RowSource(selected=selected, include=incl_autocor)
-        lens = fit._formula_lens(residual=residual)
-        module, _ = lens._forward(fit.formula, rows=source)
-        program = (
-            Compiler(
-                module,
-                # Improper flat priors are compilation-local native laws.
-                families=with_flat_catalog(lens.families(), module),
-            )
-            .compile()
-            .morphism
-        )
-        if not isinstance(program, MonadicProgram):
-            raise TypeError("prediction requires a native monadic program")
-        return PredictionContext(
-            program=program,
-            observations=dict(retained_observations)
-            | bind_inputs(
-                item
-                for term in lens._terms(fit.formula, source)
-                for item in term.inputs()
-            ),
-            rows=len(fit.formula.response_values),
-            source=source,
-            seed=seed,
-            retain_ordinal_cutpoints=constrained_cs,
-        )
     if plan is None:
         raise ValueError("this fit has no retained new_data prediction plan")
-    frame = nw.from_native(new_data, eager_only=True).to_pandas()
     # brms g1:g2 and mm() factors are derived from their source columns.
     frame = add_grouping_columns(
         frame,
@@ -507,12 +702,9 @@ def prepare_prediction(
     if fit.predictor is None and predictor_data is not None:
         raise ValueError("predictor_data requires a fitted neural predictor")
 
-    original = LatentRegistry.from_model(
-        fit.program, observed_names=set(fit.observations)
-    )
     groups = compact_groups(fit, frame, selected, allow_new_levels)
     order_groups = {
-        term.group for term in fit.formula.random_terms if term.category_specific
+        term.group for term in response_formula.random_terms if term.category_specific
     }
     if fit.thresholds_by is not None:
         order_groups.add(fit.thresholds_by)
@@ -540,6 +732,11 @@ def prepare_prediction(
         name: specialized_formula(formula, groups, frame)
         for name, formula in formulas.items()
     }
+    specialized_response = (
+        specialized_formula(response_formula, groups, frame)
+        if location is None
+        else specialized[location]
+    )
     specialized_lens = fit._formula_lens(
         distributional={
             name: formula
@@ -553,8 +750,9 @@ def prepare_prediction(
         },
         residual=residual,
     )
-    module, _ = specialized_lens._forward(specialized["mu"], rows=source)
-    terms = specialized_lens._terms(specialized["mu"], source)
+    module, complement = specialized_lens._forward(specialized_response, rows=source)
+    families = specialized_lens.families()
+    terms = specialized_lens._terms(specialized_response, source)
     observations = finite_inputs(
         bind_inputs(item for term in terms for item in term.inputs())
     )
@@ -572,6 +770,11 @@ def prepare_prediction(
         from quivers.formulas._predictor_graph import graph_input_bindings
 
         observations.update(graph_input_bindings(fit.predictor_graph, frame))
+    # The response kernel's own data: row values from the fresh rows, the
+    # others as fitted unless data2 gives them anew.
+    observations.update(
+        fit.family.kernel_bindings(frame, {**fit.observations, **(data2 or {})})
+    )
 
     from quivers.formulas._fit import _binomial_trial_tensor, _predictor_output
 
@@ -584,19 +787,19 @@ def prepare_prediction(
     from quivers.formulas._response_modifiers import response_input_name
 
     observations[response_input_name(fit.formula)] = point.expand(
-        rows, *fit.formula.response_layout.event_shape
+        rows, *data.layout.event_shape
     )
-    if fit.formula.modifiers.weights is not None:
+    if data.modifiers.weights is not None:
         observations["formula_weights"] = torch.ones(rows, dtype=torch.float64)
-    if fit.formula.modifiers.decision is not None:
+    if data.modifiers.decision is not None:
         observations["formula_decision"] = torch.ones(rows, dtype=torch.bool)
     from quivers.formulas._response_roles import prediction_role_bindings
 
-    observations.update(prediction_role_bindings(fit.formula.modifiers, frame))
+    observations.update(prediction_role_bindings(data.modifiers, frame))
     # brms thres(n, gr): the fitted category selectors of every group.
     observations.update(threshold_selectors(fit.observations))
-    if fit.family.trials_parameter is not None:
-        retained_source = dict(fit.formula.modifiers.sources).get("trials")
+    if readout.trials_parameter is not None:
+        retained_source = dict(data.modifiers.sources).get("trials")
         specification = (
             trials
             if trials is not None
@@ -647,9 +850,50 @@ def prepare_prediction(
 
     # The level inputs of every block on the compact prediction levels.
     observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
-    # Improper flat priors are compilation-local native laws.
-    families = with_flat_catalog(specialized_lens.families(), module)
-    program = Compiler(module, families=families).compile().morphism
+    if (missing := plan.missing) is not None:
+        emission, extra, _ = apply_missing(
+            place_single_response(
+                missing.label,
+                specialized_lens,
+                specialized_response,
+                module,
+                complement,
+            ),
+            missing.plan,
+            missing.specs,
+            frame,
+            fresh=fresh_values(missing.plan, frame, consumed_only=True),
+            multipliers=missing_multipliers(missing.plan, missing.designs, frame),
+        )
+        module, families = emission.module, emission.families
+        observations.update(extra)
+    return PreparedPredictionRows(
+        module=module,
+        families=families,
+        observations=observations,
+        rows=rows,
+        groups=groups,
+        new_level_policy=sample_new_levels,
+        seed=seed,
+        retain_ordinal_cutpoints=constrained_cs,
+        ordinal_order_groups=tuple(sorted(order_groups)) if constrained_cs else (),
+        fresh_sites=fresh_sites,
+        source=source,
+    )
+
+
+def compile_prediction_rows(
+    fit: BayesianFit, prepared: PreparedPredictionRows
+) -> PredictionContext:
+    """Compile the fresh program and check it against the retained latent layout."""
+    observations = prepared.observations
+    groups = prepared.groups
+    fresh_sites = prepared.fresh_sites
+    sample_new_levels = prepared.new_level_policy
+    original = LatentRegistry.from_model(
+        fit.program, observed_names=set(fit.observations)
+    )
+    program = compile_model(prepared.module, prepared.families).morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("prediction requires a native monadic program")
     specialized_registry = LatentRegistry.from_model(
@@ -665,6 +909,9 @@ def prepare_prediction(
     }
     # Sites drawn for the new rows are not replayed.
     covariance_sites = covariance_sites | set(fresh_sites)
+    plan = fit.prediction_plan
+    if plan is not None and plan.missing is not None:
+        covariance_sites |= missing_site_exclusions(plan.missing.plan, original.names)
     if (
         set(original.names) - covariance_sites
         != set(specialized_registry.names) - covariance_sites
@@ -704,14 +951,14 @@ def prepare_prediction(
         )
     return PredictionContext(
         program=program,
-        observations=observations,
-        rows=rows,
-        groups=groups,
         prior_program=prior_program,
+        observations=observations,
+        rows=prepared.rows,
+        groups=groups,
         new_level_policy=sample_new_levels,
-        seed=seed,
-        retain_ordinal_cutpoints=constrained_cs,
-        ordinal_order_groups=tuple(sorted(order_groups)) if constrained_cs else (),
-        fresh_sites=fresh_sites,
-        source=source,
+        seed=prepared.seed,
+        retain_ordinal_cutpoints=prepared.retain_ordinal_cutpoints,
+        ordinal_order_groups=prepared.ordinal_order_groups,
+        fresh_sites=prepared.fresh_sites,
+        source=prepared.source,
     )

@@ -12,7 +12,7 @@ sites without a brms counterpart keep their QVR site names.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 import re
 from typing import TYPE_CHECKING
 
@@ -50,7 +50,10 @@ from quivers.formulas._variable_catalogue import (
 from quivers.inference._posterior import draw_count
 
 if TYPE_CHECKING:
+    from formulae.matrices import DesignMatrices
+
     from quivers.formulas._fit import BayesianFit
+    from quivers.formulas._linpred import PredictorReadout
 
 _INDEXED = re.compile(r"^(?P<stem>.*\()(?P<args>.*)\)\[(?P<index>[0-9]+)\]$")
 
@@ -99,9 +102,32 @@ def coefficient_labels(fit: BayesianFit) -> dict[tuple[str, str], str]:
         did not evaluate keep their renamed column name.
     """
     plan = fit.prediction_plan
+    return design_coefficient_labels(
+        fit._predictor_items(), plan.designs if plan is not None else {}
+    )
+
+
+def design_coefficient_labels(
+    items: Iterable[tuple[str, str, Formula]],
+    designs: Mapping[str, DesignMatrices],
+) -> dict[tuple[str, str], str]:
+    """Name the fixed columns of fitted response predictors.
+
+    Parameters
+    ----------
+    items : Iterable[tuple[str, str, Formula]]
+        Parameter labels, native prefixes, and predictor formulas.
+    designs : Mapping[str, DesignMatrices]
+        Evaluated formulae designs by parameter.
+
+    Returns
+    -------
+    dict[tuple[str, str], str]
+        The brms label of each parameter's fixed column.
+    """
     result: dict[tuple[str, str], str] = {}
-    for parameter, _, predictor in fit._predictor_items():
-        design = plan.designs.get(parameter) if plan is not None else None
+    for parameter, _, predictor in items:
+        design = designs.get(parameter)
         terms = (
             design.common.terms
             if design is not None and design.common is not None
@@ -142,13 +168,15 @@ def _infix(parameter: str) -> str:
     return "" if parameter == "mu" else f"{parameter}_"
 
 
-def _ordinal_thresholds(fit: BayesianFit) -> bool:
+def _ordinal_thresholds(readout: PredictorReadout, thresholds_by: str | None) -> bool:
     """Report whether thresholds have brms's ``b_Intercept[k]`` form.
 
     Parameters
     ----------
-    fit : BayesianFit
-        Fitted formula model.
+    readout : PredictorReadout
+        Fitted response and predictor metadata.
+    thresholds_by : str or None
+        Authored separate-threshold group, if any.
 
     Returns
     -------
@@ -156,23 +184,25 @@ def _ordinal_thresholds(fit: BayesianFit) -> bool:
         True for a cumulative family with one threshold vector shared by all
         rows: no grouped thresholds and no category-specific effects.
     """
-    if fit.family.ordinal is None:
+    if readout.family.ordinal is None:
         return False
     # brms thres(n, gr): every ordinal family reports its group thresholds.
-    if fit.formula.modifiers.threshold_groups is not None:
+    if readout.formula.modifiers.threshold_groups is not None:
         return True
-    if fit.family.ordinal.kind != "cumulative" or fit.thresholds_by is not None:
+    if readout.family.ordinal.kind != "cumulative" or thresholds_by is not None:
         return False
-    return not fit.formula.category_specific
+    return not readout.formula.category_specific
 
 
-def coordinate_labels(fit: BayesianFit, target: PriorTarget) -> tuple[str, ...]:
+def coordinate_labels(
+    readout: PredictorReadout, target: PriorTarget
+) -> tuple[str, ...]:
     """Return the coordinate labels of a correlation-class target.
 
     Parameters
     ----------
-    fit : BayesianFit
-        Fitted formula model, or the response view of a joint fit.
+    readout : PredictorReadout
+        Fitted response and predictor metadata.
     target : PriorTarget
         A target whose site is a Cholesky factor.
 
@@ -187,10 +217,10 @@ def coordinate_labels(fit: BayesianFit, target: PriorTarget) -> tuple[str, ...]:
         return tuple(str(label) for label in target.component_labels)
     if target.class_ == "rescor":
         # A logistic-normal response correlates its free categories.
-        return tuple(brms_rename(str(label)) for label in fit.coefficient_labels)
-    if fit.residual is None:
+        return tuple(brms_rename(str(label)) for label in readout.coefficient_labels)
+    if readout.residual is None:
         return ()
-    return tuple(time_label(level) for level in fit.residual.time_levels)
+    return tuple(time_label(level) for level in readout.residual.time_levels)
 
 
 def shrinkage_scales(
@@ -234,7 +264,7 @@ def shrinkage_scales(
 _MIXTURE_LOCATION = re.compile(r"^mu([0-9]+)$")
 
 
-def distributional_classes(fit: BayesianFit) -> tuple[str, ...]:
+def distributional_classes(readout: PredictorReadout) -> tuple[str, ...]:
     """Return the family's distributional parameter names in brms's order.
 
     A mixture lists the parameters of each component in turn and then the
@@ -244,15 +274,15 @@ def distributional_classes(fit: BayesianFit) -> tuple[str, ...]:
 
     Parameters
     ----------
-    fit : BayesianFit
-        Fitted formula model.
+    readout : PredictorReadout
+        Fitted response and predictor metadata.
 
     Returns
     -------
     tuple[str, ...]
         Parameter names as brms's ``valid_dpars`` lists them.
     """
-    family = fit.family
+    family = readout.family
     if family.mixture is not None:
         components = family.mixture.components
         return (
@@ -264,7 +294,7 @@ def distributional_classes(fit: BayesianFit) -> tuple[str, ...]:
             *(f"theta{index}" for index in range(1, len(components) + 1)),
         )
     base = ("mu", *(aux.name for aux in family.aux_params))
-    categories = tuple(brms_rename(str(label)) for label in fit.coefficient_labels)
+    categories = tuple(brms_rename(str(label)) for label in readout.coefficient_labels)
     return (*base, *(f"{name}{category}" for name in base for category in categories))
 
 
@@ -336,6 +366,46 @@ def name_scope(
         The names of the predictor.
     """
     plan = fit.prediction_plan
+    design = plan.designs.get(parameter) if plan is not None else None
+    return design_name_scope(
+        parameter, prefix, predictor, labels, design, response=response, special=special
+    )
+
+
+def design_name_scope(
+    parameter: str,
+    prefix: str,
+    predictor: Formula,
+    labels: Mapping[tuple[str, str], str],
+    design: DesignMatrices | None,
+    *,
+    response: str = "",
+    special: Mapping[str, str] | None = None,
+) -> NameScope:
+    """Build names from one retained predictor and its design.
+
+    Parameters
+    ----------
+    parameter : str
+        Predicted parameter.
+    prefix : str
+        Its native coefficient prefix.
+    predictor : Formula
+        Fitted predictor formula.
+    labels : Mapping[tuple[str, str], str]
+        Fixed-column labels by parameter and column.
+    design : DesignMatrices or None
+        Formulae design retaining smooth contrasts.
+    response : str
+        Response label used in brms parameter names.
+    special : Mapping[str, str] or None
+        Labels of special-effects columns, by column name.
+
+    Returns
+    -------
+    NameScope
+        Naming metadata for the predictor's terms.
+    """
     return NameScope(
         parameter=parameter,
         role="nlpar" if prefix.startswith("nlpar_") else "dpar",
@@ -346,7 +416,7 @@ def name_scope(
             for (owner, column), label in labels.items()
             if owner == parameter
         },
-        states=smooth_states(plan.designs.get(parameter) if plan is not None else None),
+        states=smooth_states(design),
         special=dict(special or {}),
     )
 
@@ -391,7 +461,8 @@ def single_variables(
     consumed: set[str] = set()
     population: dict[str, torch.Tensor] = {}
     intercepts: set[str] = set()
-    thresholds = _ordinal_thresholds(fit)
+    readout = fit._predictor_readout
+    thresholds = _ordinal_thresholds(readout, fit.thresholds_by)
     labels = coefficient_labels(fit)
     special: dict[str, torch.Tensor] = {}
     latent: dict[str, torch.Tensor] = {}
@@ -488,7 +559,7 @@ def single_variables(
                 target,
                 value,
                 infix=_infix(parameter),
-                labels=coordinate_labels(fit, target),
+                labels=coordinate_labels(readout, target),
             )
             consumed.add(target.site)
     order = {target.site: index for index, target in enumerate(targets)}
@@ -534,7 +605,7 @@ def single_variables(
             | group_coefficients
             | latent
             | native_variables(draws, consumed),
-            distributional_classes(fit),
+            distributional_classes(readout),
         ),
         shape,
     )

@@ -180,6 +180,23 @@ class RecursiveResiduals(Distribution):
             self.conditional_means(self.history(), self._innovations(()))
         )
 
+    def given(self, values: torch.Tensor) -> JointLaw:
+        """Return the law of each row's vector given completed responses.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            Responses of every row, ``(..., rows, responses)``, completed
+            where a response is missing.
+
+        Returns
+        -------
+        JointLaw
+            Normal or Student vectors at the conditional means the
+            recursions give over ``values``.
+        """
+        return self._row_law(self.conditional_means(values))
+
     def _innovations(self, sample_shape: _size) -> torch.Tensor:
         """Draw innovation vectors of every row.
 
@@ -425,6 +442,54 @@ def marginal(law: torch.distributions.Distribution, keep: Sequence[int]) -> Join
             law.df, loc, scale_tril=torch.linalg.cholesky(shape)
         )
     return MultivariateNormal(loc, scale_tril=torch.linalg.cholesky(shape))
+
+
+def recorded_log_prob(
+    law: torch.distributions.Distribution,
+    values: torch.Tensor,
+    recorded: torch.Tensor,
+) -> torch.Tensor:
+    """Score each row's recorded coordinates given the completion of the rest.
+
+    For a row whose coordinates ``M`` have no recorded value, the score is
+    ``log p(v_O | v_M) = log p(v) - log p_M(v_M)``: the log density of the
+    row's vector ``v`` (recorded values, completed where missing) minus the
+    log density of the completed coordinates under their marginal law. A row
+    with every coordinate recorded keeps its log density; a row with none
+    recorded scores zero, since it has no recorded likelihood. The marginal
+    of a Normal or Student-t vector is of the same family
+    (`marginal`), so the score is exact. Cost: one marginal law per distinct
+    pattern of missing coordinates.
+
+    Parameters
+    ----------
+    law : torch.distributions.Distribution
+        Normal or Student-t law of each row's vector, with batch axis over
+        rows (for a recursion, `RecursiveResiduals.given` the completed
+        responses).
+    values : torch.Tensor
+        Each row's vector, shaped ``(rows, coordinates)``: recorded values,
+        and completed values where a value is missing.
+    recorded : torch.Tensor
+        Boolean, shaped like ``values``: whether each value is recorded.
+
+    Returns
+    -------
+    torch.Tensor
+        One score per row.
+    """
+    rows = law
+    scores = rows.log_prob(values.to(rows.mean.dtype))
+    for pattern in torch.unique(~recorded, dim=0):
+        missing = [int(index) for index in torch.nonzero(pattern).reshape(-1)]
+        if not missing:
+            continue
+        at = (~recorded == pattern).all(dim=-1)
+        completed = marginal(rows, missing).log_prob(
+            values[..., missing].to(rows.mean.dtype)
+        )
+        scores = torch.where(at, scores - completed, scores)
+    return scores
 
 
 def coordinate(

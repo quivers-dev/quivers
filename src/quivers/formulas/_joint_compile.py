@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
-from typing import TypeVar, cast
 
 import didactic.api as dx
 import torch
@@ -13,8 +12,6 @@ from quivers.family_catalog import FamilyCatalog
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
-    ExportDecl,
-    ExprIdent,
     LetExprIndex,
     LetExprLiteral,
     LetExprNode,
@@ -23,23 +20,19 @@ from quivers.dsl.ast_nodes import (
     ObjectDecl,
     ProgramDecl,
     ProgramStep,
-    QiecIndexName,
     QiecValueParameter,
     SampleStep,
     ScoreStep,
     Statement,
-    TypeFromExpr,
     LetStep,
     ObserveStep,
     TypeName,
 )
+from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.program_templates import (
-    TemplateBindings,
     _bound_names,
-    _rename_step,
-    substitute_program_object,
 )
-from quivers.dsl.step_resolution import _step_value_names
+from quivers.formulas._blocks import Namespace, emit_block, emit_model, place_block
 from quivers.formulas._ast import (
     _add,
     _call,
@@ -62,6 +55,7 @@ from quivers.formulas._group_law import (
     renamed_law,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._kernel_law import elliptical_family
 from quivers.formulas._group_emission import draw_level, emit_group_block
 from quivers.formulas._group_plan import (
     block_covariance,
@@ -93,6 +87,7 @@ from quivers.formulas._priors import (
     component_rules,
     resolve_priors,
 )
+from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._response import response_tensor
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._observation import Observation, observation
@@ -101,8 +96,6 @@ from quivers.formulas._joint_residual import (
     recursive_residual_record,
 )
 from quivers.formulas.formula import Formula, FormulaData, RandomTerm, _qvr_name
-
-_Value = TypeVar("_Value")
 
 #: Response label to its prepared lens and formula.
 type _Components = Mapping[str, tuple[FormulaToQVRModule, Formula]]
@@ -407,35 +400,6 @@ def _normalized_components(
     return result, levels
 
 
-def _indices(value: _Value, objects: Mapping[str, str]) -> _Value:
-    """Rename nominal indices throughout a generated runtime parameter type.
-
-    Parameters
-    ----------
-    value : _Value
-        A type expression, a tuple of them, or a leaf field value.
-    objects : Mapping[str, str]
-        Local object names and their namespaced names.
-
-    Returns
-    -------
-    _Value
-        The value with every nominal index renamed, of the same type.
-    """
-    if isinstance(value, QiecIndexName):
-        return value.with_(name=objects.get(value.name, value.name))
-    if isinstance(value, tuple):
-        return cast(_Value, tuple(_indices(item, objects) for item in value))
-    if isinstance(value, dx.Model):
-        return value.with_(
-            **{
-                key: _indices(getattr(value, key), objects)
-                for key in type(value).__field_specs__
-            }
-        )
-    return value
-
-
 def _namespace(
     name: str,
     lens: FormulaToQVRModule,
@@ -447,6 +411,7 @@ def _namespace(
     supplied_sites: Collection[str] = (),
     supplied_inputs: Mapping[str, LetExprNode] | None = None,
     rows: RowSource | None = None,
+    resolved_priors: Mapping[str, PriorSpec] | None = None,
 ) -> _ResponseEmission:
     """Apply the existing program-template substitution to one emitted response.
 
@@ -472,6 +437,8 @@ def _namespace(
         Explicit expressions for response inputs over joint bindings.
     rows : RowSource or None
         Rows the response covers; None for its training rows.
+    resolved_priors : Mapping[str, PriorSpec] or None
+        Joint prior selections keyed by their local sites in this response.
 
     Returns
     -------
@@ -486,31 +453,41 @@ def _namespace(
     TypeError
         If a formula object lacks its finite declaration.
     """
-    module, complement = lens._forward(
+    module, complement = emit_block(
+        lens,
         formula,
         supplied_groups=supplied_groups,
         supplied_sites=supplied_sites,
-        check=False,
         rows=rows,
+        resolved_priors=resolved_priors,
     )
+    return _place_response(
+        name,
+        lens,
+        formula,
+        module,
+        complement,
+        Namespace(
+            prefix="response_" + _qvr_name(name) + "__",
+            shared=frozenset(global_names),
+            shared_objects=dict(shared_objects),
+        ),
+        supplied_inputs=supplied_inputs,
+    )
+
+
+def _place_response(
+    name: str,
+    lens: FormulaToQVRModule,
+    formula: Formula,
+    module: Module,
+    complement: FormulaData,
+    namespace: Namespace,
+    *,
+    supplied_inputs: Mapping[str, LetExprNode] | None = None,
+) -> _ResponseEmission:
+    """Place an emitted response and substitute its symbolic inputs."""
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
-    prefix = "response_" + _qvr_name(name) + "__"
-    objects = {
-        value: shared_objects.get(value, prefix + value)
-        for item in module.statements
-        if isinstance(item, ObjectDecl)
-        for value in item.names
-    }
-    variables = set(_bound_names(program.draws)) | {
-        parameter.name for parameter in program.value_parameters
-    }
-    variables.update(
-        value for step in program.draws for value in _step_value_names(step)
-    )
-    variables.update(
-        law.support_site for law in lens.group_laws if law.support_site is not None
-    )
-    names = {value: prefix + value for value in variables - global_names}
     explicit_inputs = supplied_inputs or {}
     supplied_inputs = lens.symbolic_column_expressions(formula)
     symbolic = set(supplied_inputs)
@@ -533,77 +510,37 @@ def _namespace(
         for value, expression in supplied_inputs.items()
         if value in known_inputs
     }
-    for value in supplied_inputs:
-        names.setdefault(value, prefix + value)
-    # Two responses may draw from one law over different coordinates.
-    laws = lens.term_laws
-    morphisms = (
-        {}
-        if laws is None
-        else {record.name: prefix + record.name for record in laws.definitions}
+    renamed = place_block(
+        lens,
+        module,
+        namespace,
+        inputs=supplied_inputs,
+        omitted=supplied_inputs.keys() | namespace.shared,
     )
+    names = renamed.names
     families = lens.response_laws
-    if laws is not None:
-        laws = laws.renamed(morphisms)
-        families = laws if families is None else families.with_catalog(laws)
-    bindings = TemplateBindings(objects=objects, values={}, morphisms=morphisms)
-    parameters = tuple(
-        parameter.with_(
-            name=names.get(parameter.name, parameter.name),
-            type_expr=_indices(parameter.type_expr, objects),
+    if renamed.families is not None:
+        families = (
+            renamed.families
+            if families is None
+            else families.with_catalog(renamed.families)
         )
-        for parameter in program.value_parameters
-        if parameter.name not in supplied_inputs and parameter.name not in global_names
+    statements = (
+        *renamed.objects,
+        renamed.program.with_(
+            draws=(
+                *(
+                    LetStep(name=names[value], value=expression)
+                    for value, expression in supplied_inputs.items()
+                ),
+                *renamed.program.draws,
+            )
+        ),
     )
-    statements = []
-    for item in module.statements:
-        if isinstance(item, ObjectDecl):
-            if not isinstance(item.init, TypeFromExpr):
-                raise TypeError(
-                    "formula objects require their retained finite declaration"
-                )
-            statements.append(
-                item.with_(
-                    names=tuple(objects[value] for value in item.names),
-                    init=item.init.with_(
-                        expr=substitute_program_object(
-                            item.init.expr,
-                            {
-                                key: TypeName(name=value)
-                                for key, value in objects.items()
-                            },
-                        )
-                    ),
-                )
-            )
-        elif isinstance(item, ProgramDecl):
-            statements.append(
-                item.with_(
-                    name=prefix + "model",
-                    value_parameters=parameters,
-                    domain=substitute_program_object(
-                        item.domain,
-                        {key: TypeName(name=value) for key, value in objects.items()},
-                    ),
-                    codomain=substitute_program_object(
-                        item.codomain,
-                        {key: TypeName(name=value) for key, value in objects.items()},
-                    ),
-                    draws=(
-                        *(
-                            LetStep(name=names[value], value=expression)
-                            for value, expression in supplied_inputs.items()
-                        ),
-                        *(_rename_step(step, bindings, names) for step in item.draws),
-                    ),
-                    return_vars=tuple(
-                        names.get(value, value) for value in item.return_vars
-                    ),
-                )
-            )
+    objects = renamed.object_names
     return _ResponseEmission(
         name,
-        prefix,
+        namespace.prefix,
         lens,
         formula,
         Module(statements=tuple(statements)),
@@ -614,22 +551,36 @@ def _namespace(
     )
 
 
-def _renamed(names: Mapping[str, str], value: str | None) -> str | None:
-    """Rename an optional binding, keeping names outside the namespace.
-
-    Parameters
-    ----------
-    names : Mapping[str, str]
-        Local names and their namespaced names.
-    value : str or None
-        Optional local name.
-
-    Returns
-    -------
-    str or None
-        The namespaced name, the name itself when it is not renamed, or None.
-    """
-    return None if value is None else names.get(value, value)
+def place_single_response(
+    name: str,
+    lens: FormulaToQVRModule,
+    formula: Formula,
+    module: Module,
+    complement: FormulaData,
+) -> _JointEmission:
+    """Provide an identity-namespaced response to the missing-data rewrite."""
+    response = _place_response(
+        name, lens, formula, module, complement, Namespace(prefix="")
+    )
+    program = next(
+        item for item in response.module.statements if isinstance(item, ProgramDecl)
+    )
+    return _JointEmission(
+        module=module.with_(
+            statements=tuple(
+                program if isinstance(item, ProgramDecl) else item
+                for item in module.statements
+            )
+        ),
+        responses={name: response},
+        group_laws=complement.group_laws,
+        level_sites=complement.level_sites,
+        prior_targets=complement.prior_targets,
+        fixed_inputs={},
+        families=response.families
+        if response.families is not None
+        else FamilyCatalog(),
+    )
 
 
 def _law(
@@ -667,14 +618,7 @@ def _response_parts(
     global_steps: Sequence[ProgramStep],
     global_parameters: Sequence[QiecValueParameter],
     global_laws: Sequence[GroupBlockLaw],
-) -> tuple[
-    list[Statement],
-    list[ProgramStep],
-    list[QiecValueParameter],
-    list[str],
-    list[PriorTarget],
-    list[GroupBlockLaw],
-]:
+) -> tuple[Module, list[PriorTarget], list[GroupBlockLaw]]:
     """Collect namespaced responses without changing their conditional prior laws.
 
     Parameters
@@ -692,9 +636,8 @@ def _response_parts(
 
     Returns
     -------
-    tuple
-        Object declarations, program steps, runtime parameters, returned
-        names, prior targets, and group-block laws of the joint program.
+    tuple[Module, list[PriorTarget], list[GroupBlockLaw]]
+        The assembled joint module, its prior targets and its group laws.
 
     Raises
     ------
@@ -702,33 +645,17 @@ def _response_parts(
         If two responses declare one nominal group axis differently, or two
         group blocks would own the same name.
     """
-    statements = list(initial_objects)
-    steps, parameters = list(global_steps), list(global_parameters)
-    returned: list[str] = []
+    module = emit_model(
+        initial_objects,
+        global_steps,
+        global_parameters,
+        (),
+        axis="FormulaJointUnit",
+        blocks=(response.module for response in responses.values()),
+    )
     targets: list[PriorTarget] = []
     laws = list(global_laws)
     for name, response in responses.items():
-        for statement in response.module.statements:
-            if isinstance(statement, ObjectDecl):
-                existing = next(
-                    (
-                        item
-                        for item in statements
-                        if isinstance(item, ObjectDecl)
-                        and item.names == statement.names
-                    ),
-                    None,
-                )
-                if existing is None:
-                    statements.append(statement)
-                elif existing != statement:
-                    raise ValueError(
-                        "joint response graphs disagree on a nominal group axis"
-                    )
-            elif isinstance(statement, ProgramDecl):
-                steps.extend(statement.draws)
-                parameters.extend(statement.value_parameters)
-                returned.extend(statement.return_vars)
         targets.extend(
             target.with_(
                 site=response.names[target.site],
@@ -748,7 +675,7 @@ def _response_parts(
             for law in response.lens.group_laws
         )
     check_names(laws)
-    return statements, steps, parameters, returned, targets, laws
+    return module, targets, laws
 
 
 def _member_axis(
@@ -802,7 +729,9 @@ def _validate_residual_rows(components: _Components) -> None:
         a response is censored or truncated, or Student responses do not
         share one ``nu``.
     """
-    laws = {lens._family.elliptical for lens, _ in components.values()}
+    laws = {
+        elliptical_family(lens._family).elliptical for lens, _ in components.values()
+    }
     # A conditional ARMA recursion moves each row's location and keeps the law
     # of the row's residual vector (RecursiveResiduals). A covariance across
     # rows beside one across responses has no single composition: a Kronecker
@@ -860,12 +789,128 @@ def _validate_residual_rows(components: _Components) -> None:
             raise ValueError(
                 f"correlated Student responses use one shared {df} parameter"
             )
-    if df is not None:
-        values = {lens._fixed_parameters.get(df) for lens, _ in components.values()}
-        if len(values) != 1:
-            raise ValueError(
-                f"correlated Student responses require one common fixed or sampled {df}"
-            )
+
+
+@dataclass(frozen=True, slots=True)
+class _SharedDegrees:
+    """Bindings for the common degrees of freedom of Student responses.
+
+    Parameters
+    ----------
+    name : str
+        Binding passed to the vector observation.
+    steps : tuple[ProgramStep, ...]
+        Bindings added before the vector observation.
+    replaced : frozenset[str]
+        Scalar degrees-of-freedom draws replaced by the shared draw.
+    target : PriorTarget or None
+        Formula prior target carried to the shared draw, if there is one.
+    """
+
+    name: str
+    steps: tuple[ProgramStep, ...] = ()
+    replaced: frozenset[str] = frozenset()
+    target: PriorTarget | None = None
+
+
+def _shared_student_degrees(
+    df: str,
+    arguments: tuple[LetExprNode, ...],
+    steps: tuple[ProgramStep, ...],
+    observations: set[str],
+    targets: Sequence[PriorTarget],
+) -> _SharedDegrees:
+    """Unify the scalar degrees of freedom of one Student residual event.
+
+    Parameters
+    ----------
+    df : str
+        Name of the shared binding.
+    arguments : tuple[LetExprNode, ...]
+        Degrees of freedom passed to each scalar observation, in response order.
+    steps : tuple[ProgramStep, ...]
+        Existing steps of the composed body.
+    observations : set[str]
+        Scalar observations replaced by the joint event.
+    targets : Sequence[PriorTarget]
+        Existing prior targets of the composed body.
+
+    Returns
+    -------
+    _SharedDegrees
+        Common constant, existing binding, or common draw and its prior target.
+
+    Raises
+    ------
+    ValueError
+        If the responses cannot share one scalar degrees of freedom argument.
+    """
+    error = f"correlated Student responses require one common fixed or sampled {df}"
+    lets = {step.name: step.value for step in steps if isinstance(step, LetStep)}
+
+    def resolve(expression: LetExprNode) -> LetExprNode:
+        """Follow aliases to a literal or one program binding."""
+        seen: set[str] = set()
+        while (
+            isinstance(expression, LetExprVar)
+            and expression.name in lets
+            and expression.name not in seen
+        ):
+            seen.add(expression.name)
+            expression = lets[expression.name]
+        return expression
+
+    resolved = tuple(resolve(argument) for argument in arguments)
+    constants = {
+        float(value.value) for value in resolved if isinstance(value, LetExprLiteral)
+    }
+    if len(constants) == 1 and all(
+        isinstance(value, LetExprLiteral) for value in resolved
+    ):
+        (value,) = constants
+        return _SharedDegrees(df, steps=(_let(df, LetExprLiteral(value=value)),))
+    bindings = tuple(value.name for value in resolved if isinstance(value, LetExprVar))
+    if len(bindings) != len(arguments):
+        raise ValueError(error)
+    sites = frozenset(bindings)
+    if len(sites) == 1:
+        return _SharedDegrees(bindings[0])
+    draws = {
+        step.vars[0]: step
+        for step in steps
+        if isinstance(step, SampleStep) and step.vars[0] in sites
+    }
+    if draws.keys() != sites or any(step.index is not None for step in draws.values()):
+        raise ValueError(error)
+    prior_targets = {target.site: target for target in targets if target.site in sites}
+    if (
+        sites - prior_targets.keys()
+        and len(
+            {
+                draw_call_to_source(
+                    step.morphism, step.args, static_args=step.static_args
+                )
+                for step in draws.values()
+            }
+        )
+        != 1
+    ):
+        raise ValueError(error + " with the same authored prior")
+    if any(
+        _step_value_names(step) & sites
+        for step in steps
+        if not isinstance(step, ObserveStep) or step.vars[0] not in observations
+    ):
+        raise ValueError(error + " used only by the correlated observations")
+    original = next(
+        (prior_targets[name] for name in bindings if name in prior_targets), None
+    )
+    return _SharedDegrees(
+        df,
+        steps=(next(iter(draws.values())).with_(vars=(df,)),),
+        replaced=sites,
+        target=None if original is None else original.with_(site=df, response=None),
+    )
 
 
 def _correlated_residual(
@@ -929,23 +974,48 @@ def _correlated_residual(
         }
         for name, observed in observations.items()
     }
-    shared = next(iter(responses.values())).lens
-    elliptical = shared._family.elliptical
+    declarations = {
+        name: elliptical_family(response.lens._family)
+        for name, response in responses.items()
+    }
+    elliptical = declarations[names[0]].elliptical
     assert elliptical is not None
+    direct = {
+        step.vars[0]: step
+        for step in program.draws
+        if isinstance(step, ObserveStep) and step.vars[0] in removed
+    }
+    if direct.keys() != removed:
+        raise ValueError(
+            "rescor requires response observations in the same program scope"
+        )
+    for observed in observations.values():
+        allowed = {"weights"} if observed.weights is not None else set()
+        if {option.key for option in direct[observed.site].options} - allowed:
+            raise ValueError(
+                "rescor requires one joint recording law for the response observations"
+            )
     df = elliptical.df
-    nu_sites = (
-        {response.names.get(df) for response in responses.values()}
-        if df is not None
-        else set()
+    degrees = (
+        None
+        if df is None
+        else _shared_student_degrees(
+            df,
+            tuple(
+                arguments_by_response[name][
+                    "nu"
+                    if responses[name].lens._residual is not None
+                    else declarations[name].native_parameter(df)
+                ]
+                for name in names
+            ),
+            program.draws,
+            removed,
+            targets,
+        )
     )
-    nu_prior = next(
-        (
-            step
-            for step in program.draws
-            if isinstance(step, SampleStep) and step.vars[0] in nu_sites
-        ),
-        None,
-    )
+    df_binding = None if degrees is None else degrees.name
+    nu_sites = frozenset() if degrees is None else degrees.replaced
     steps = [
         step
         for step in program.draws
@@ -968,27 +1038,17 @@ def _correlated_residual(
             component_labels=names,
         )
     )
-    if df is not None:
-        fixed_nu = shared._fixed_parameters.get(df)
-        if fixed_nu is None:
-            assert nu_prior is not None
-            steps.append(nu_prior.with_(vars=(df,)))
-            original = next(
-                target
-                for response in responses.values()
-                for target in response.lens.prior_targets
-                if target.site == df
-            )
-            targets.append(original.with_(site=df, response=None))
-        else:
-            steps.append(_let(df, LetExprLiteral(value=float(fixed_nu))))
+    if degrees is not None:
+        steps.extend(degrees.steps)
+        if degrees.target is not None:
+            targets.append(degrees.target)
     rows, zero = ("row", row), "formula_joint_zeros"
 
     def stacked(quantity: str) -> Iterator[tuple[int, LetExprNode]]:
         # Scalar-to-row broadcasting uses the ordinary typed binary operation;
         # nominal row ownership never depends on coincident axis cardinalities.
-        for index, (name, response) in enumerate(responses.items()):
-            argument = response.lens._family.native_parameter(quantity)
+        for index, name in enumerate(responses):
+            argument = declarations[name].native_parameter(quantity)
             yield index, _add(arguments_by_response[name][argument], _var(zero))
 
     component = ("component", axis)
@@ -1019,13 +1079,13 @@ def _correlated_residual(
     weights = next(iter(observations.values())).weights
     location = ("formula_joint_mu", "formula_joint_scale")
     recursions = recursion_kernel(
-        responses, arguments_by_response, student=df is not None
+        responses, arguments_by_response, student=df_binding is not None
     )
     joint = (
         observation(
             "formula_joint_response",
             elliptical.kernel,
-            location if df is None else (df, *location),
+            location if df_binding is None else (df_binding, *location),
             plate=row,
             event=axis,
             parameterization=elliptical.parameterization,
@@ -1034,7 +1094,11 @@ def _correlated_residual(
         else observation(
             "formula_joint_response",
             recursions[0].definitions[0].name,
-            (*((df,) if df is not None else ()), *location, *recursions[1]),
+            (
+                *((df_binding,) if df_binding is not None else ()),
+                *location,
+                *recursions[1],
+            ),
             plate=row,
             event=axis,
             catalog=recursions[0],
@@ -1047,7 +1111,7 @@ def _correlated_residual(
             "formula_joint_response",
             recursions[0].definitions[1].name,
             (
-                *((df,) if df is not None else ()),
+                *((df_binding,) if df_binding is not None else ()),
                 *location,
                 *recursions[1],
                 COMPLETION,
@@ -1655,14 +1719,7 @@ def emit_joint(
         )
         return list(program.draws), targets
 
-    def parts() -> tuple[
-        list[Statement],
-        list[ProgramStep],
-        list[QiecValueParameter],
-        list[str],
-        list[PriorTarget],
-        list[GroupBlockLaw],
-    ]:
+    def parts() -> tuple[Module, list[PriorTarget], list[GroupBlockLaw]]:
         """Join the responses' programs."""
         return _response_parts(
             responses,
@@ -1672,7 +1729,8 @@ def emit_joint(
             emitter.group_laws,
         )
 
-    statements, steps, parameters, returned, targets, layouts = parts()
+    module, targets, layouts = parts()
+    statements = list(module.statements[:-2])
     _, global_targets = shared_targets(())
     separated = component_rules(plan, [*targets, *global_targets])
     if separated:
@@ -1698,56 +1756,61 @@ def emit_joint(
         global_steps, global_targets = shared_targets(
             [target for target in separated if target in global_targets]
         )
-        statements, steps, parameters, returned, targets, layouts = parts()
+        module, targets, layouts = parts()
+        statements = list(module.statements[:-2])
     targets.extend(global_targets)
-    program = ProgramDecl(
-        name="model",
-        params=None,
-        domain=TypeName(name="FormulaJointUnit"),
-        codomain=TypeName(name="FormulaJointUnit"),
-        value_parameters=tuple(parameters),
-        draws=tuple(steps),
-        return_vars=tuple(returned),
-    )
+    program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     joint_laws = None
     joint: JointElliptical | None = None
     if rescor:
         program, targets, fixed_inputs, joint_laws, joint = _correlated_residual(
             program, responses, emitter, statements, targets, fixed_inputs
         )
-    module = Module(
-        statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
-    )
+    shared_by_response: dict[str | None, list[PriorTarget]] = {}
+    for target in global_targets:
+        shared_by_response.setdefault(target.response, []).append(target)
+    selected = {}
+    for name, shared in shared_by_response.items():
+        lens, formula = (emitter, grouping) if name is None else components[name]
+        selected.update(lens._brms_defaults(formula, tuple(shared)))
     if plan.rules:
-        selected = resolve_priors(plan, targets)
-        ordinary = {
-            site: rule
-            for site, rule in selected.items()
-            if isinstance(rule.distribution, str)
-        }
-        by_site = {target.site: target for target in targets}
+        selected.update(resolve_priors(plan, targets))
+    ordinary = {
+        site: rule
+        for site, rule in selected.items()
+        if isinstance(rule.distribution, str)
+    }
+    by_site = {target.site: target for target in targets}
+    shared_sites = {target.site for target in global_targets}
+    responses_changed = False
+    if plan.rules:
         # Re-enter the ordinary emitter after global selector resolution so its
         # existing dynamic support restrictions remain conditional and normalized.
         # This is source emission only; the native program is compiled once.
         for name, response in tuple(responses.items()):
-            local_rules = []
+            local_rules = {}
             reverse = {
                 global_name: local for local, global_name in response.names.items()
             }
             for site, rule in ordinary.items():
-                if by_site[site].response == name and site in reverse:
-                    local_rules.append(
-                        PriorSpec(
-                            distribution=rule.distribution,
-                            class_=None,
-                            site=reverse[site],
-                            lower=rule.lower,
-                            upper=rule.upper,
-                        )
+                if (
+                    site not in shared_sites
+                    and by_site[site].response == name
+                    and site in reverse
+                ):
+                    local = reverse[site]
+                    local_rules[local] = PriorSpec(
+                        distribution=rule.distribution,
+                        class_=None,
+                        site=local,
+                        lower=rule.lower,
+                        upper=rule.upper,
                     )
             if local_rules:
                 lens = copy(response.lens)
-                lens._set_prior_configuration(PriorSet(rules=tuple(local_rules)))
+                lens._set_prior_configuration(
+                    PriorSet(rules=tuple(local_rules.values()))
+                )
                 responses[name] = _namespace(
                     name,
                     lens,
@@ -1758,76 +1821,68 @@ def emit_joint(
                     supplied_sites=emitter._drawn_sites,
                     supplied_inputs=supplied_inputs.get(name),
                     rows=(rows or {}).get(name),
+                    resolved_priors=local_rules,
                 )
-        statements, steps, parameters, returned, _, layouts = _response_parts(
-            responses,
-            initial_objects,
-            global_steps,
-            global_parameters,
-            emitter.group_laws,
-        )
-        program = program.with_(
-            draws=tuple(steps),
-            value_parameters=tuple(parameters),
-            return_vars=tuple(returned),
+                responses_changed = True
+    if responses_changed:
+        module, _, layouts = parts()
+        statements = list(module.statements[:-2])
+        program = next(
+            item for item in module.statements if isinstance(item, ProgramDecl)
         )
         if rescor:
             program, _, fixed_inputs, joint_laws, joint = _correlated_residual(
                 program, responses, emitter, statements, targets, fixed_inputs
             )
-        replacements = {
-            site: ordinary_prior_step(by_site[site], rule, draw=emitter._parse_prior)
-            for site, rule in ordinary.items()
-            if by_site[site] in global_targets or by_site[site].response is None
-        }
-        program = program.with_(
-            draws=tuple(
-                step.with_(
-                    morphism=replacements[step.vars[0]].morphism,
-                    args=replacements[step.vars[0]].args,
-                    static_args=replacements[step.vars[0]].static_args,
-                )
-                if isinstance(step, SampleStep) and step.vars[0] in replacements
-                else step
-                for step in program.draws
+    replacements = {
+        site: ordinary_prior_step(by_site[site], rule, draw=emitter._parse_prior)
+        for site, rule in ordinary.items()
+        if site in shared_sites or by_site[site].response is None
+    }
+    program = program.with_(
+        draws=tuple(
+            step.with_(
+                morphism=replacements[step.vars[0]].morphism,
+                args=replacements[step.vars[0]].args,
+                static_args=replacements[step.vars[0]].static_args,
             )
+            if isinstance(step, SampleStep) and step.vars[0] in replacements
+            else step
+            for step in program.draws
         )
-        module = module.with_(
-            statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
-        )
-        special = {
-            site: rule
-            for site, rule in selected.items()
-            if not isinstance(rule.distribution, str)
+    )
+    module = module.with_(statements=(*statements, program, module.statements[-1]))
+    special = {
+        site: rule
+        for site, rule in selected.items()
+        if not isinstance(rule.distribution, str)
+    }
+    if special:
+        row_counts = {
+            target.site: len(responses[target.response].formula.response_values)
+            for target in targets
+            if target.response is not None
         }
-        if special:
-            row_counts = {
-                target.site: len(responses[target.response].formula.response_values)
-                for target in targets
-                if target.response is not None
-            }
-            sigmas = {}
-            for target in targets:
-                if target.response is None:
-                    continue
-                response = responses[target.response]
-                residual = response.lens._family.residual_scale
-                if (
-                    residual is not None
-                    and residual.name in response.names
-                    and residual.name not in response.lens._distributional
-                ):
-                    sigmas[target.site] = response.names[residual.name]
-            module = apply_prior_plan(
-                module,
-                targets,
-                special,
-                draw=emitter._parse_prior,
-                training_rows=row_counts,
-                sigma=sigmas,
-            )
-        else:
-            module = order_prior_dependencies(module)
+        sigmas = {}
+        for target in targets:
+            if target.response is None:
+                continue
+            response = responses[target.response]
+            residual = response.lens._family.residual_scale
+            if (
+                residual is not None
+                and residual.name in response.names
+                and residual.name not in response.lens._distributional
+            ):
+                sigmas[target.site] = response.names[residual.name]
+        module = apply_prior_plan(
+            module,
+            targets,
+            special,
+            draw=emitter._parse_prior,
+            training_rows=row_counts,
+            sigma=sigmas,
+        )
     module = order_prior_dependencies(module)
     catalog = FamilyCatalog() if joint_laws is None else joint_laws
     for response in responses.values():

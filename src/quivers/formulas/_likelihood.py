@@ -10,11 +10,15 @@ from narwhals.typing import IntoDataFrame
 import numpy as np
 import torch
 
+from quivers.formulas._modifiers import response_columns
 from quivers.formulas._autocor import AutocorMatrix
 from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._prediction import (
     PredictionContext,
-    prepare_prediction,
+    PredictionDesign,
+    PreparedPredictionRows,
+    compile_prediction_rows,
+    prepare_prediction_rows,
     _set_trial_rows,
 )
 from quivers.formulas._response import (
@@ -84,24 +88,54 @@ def prepare_likelihood(
     ValueError
         If rows, recorded outcomes, trials, or observation-event inputs are invalid.
     """
-    plan = fit.prediction_plan
-    if plan is None:
+    rows, observations = prepare_likelihood_rows(
+        fit,
+        new_data,
+        predictor_data,
+        trials=trials,
+        re_formula=re_formula,
+        allow_new_levels=allow_new_levels,
+        sample_new_levels=sample_new_levels,
+        seed=seed,
+        incl_autocor=incl_autocor,
+        data2=data2,
+    )
+    return compile_prediction_rows(fit, rows).with_(observations=observations)
+
+
+def prepare_likelihood_rows(
+    fit: PredictionDesign,
+    new_data: IntoDataFrame,
+    predictor_data: torch.Tensor | None,
+    *,
+    trials: int | str | None = None,
+    re_formula: str | None = None,
+    allow_new_levels: bool = False,
+    sample_new_levels: NewLevelPolicy = "uncertainty",
+    seed: int = 0,
+    incl_autocor: bool = True,
+    data2: Mapping[str, AutocorMatrix] | None = None,
+) -> tuple[PreparedPredictionRows, dict[str, torch.Tensor]]:
+    """Bind fresh recorded outcomes separately from the predictive placeholders."""
+    if fit.prediction_plan is None:
         raise ValueError(
             "fresh likelihood rows require a retained formula prediction plan"
         )
     frame = nw.from_native(new_data, eager_only=True).to_pandas()
     if len(frame) < 1 or not frame.columns.is_unique:
         raise ValueError("new_data requires nonempty rows and unique column names")
+    fitted_response = fit._response_data
+    readout = fit._response_readout
     # Raw likelihoods do not depend on fitting weights, including their columns.
     sources = {
         role: source
-        for role, source in fit.formula.modifiers.sources
+        for role, source in fitted_response.modifiers.sources
         if role not in {"weights", "weights_scale"}
     }
     if trials is not None and "trials" in sources:
         sources["trials"] = trials
     frame, bound = bind_roles(
-        frame, sources, threshold_groups=fit.formula.modifiers.threshold_groups
+        frame, sources, threshold_groups=fitted_response.modifiers.threshold_groups
     )
     modifiers = ResponseModifiers(**bound)
     if predictor_data is not None and modifiers.subset is not None:
@@ -110,20 +144,21 @@ def prepare_likelihood(
                 "predictor_data must align with fresh rows before subset selection"
             )
         predictor_data = predictor_data[list(modifiers.subset.positions)]
-    evaluated = plan.designs["mu"].response
+    evaluated = fitted_response.evaluator
     if evaluated is None:
         raise ValueError("the retained formula has no response evaluator")
     evaluated_values = np.asarray(evaluated.term.term.eval_new_data(frame))
     # Integer categories evaluate to a value vector and not to factor
     # indicators: brms thres() and cat() codes, and brms's integer coding.
-    integer_categories = fit.formula.response_layout.category_values
+    layout = fitted_response.layout
+    integer_categories = layout.category_values
     values = normalize_response_values(
         evaluated_values,
-        component_names=fit.formula.response_layout.component_names,
+        component_names=layout.component_names,
         category_levels=()
-        if (fit.formula.modifiers.thresholds is not None or integer_categories)
+        if (fitted_response.modifiers.thresholds is not None or integer_categories)
         and evaluated_values.ndim == 1
-        else fit.formula.response_layout.category_levels,
+        else layout.category_levels,
     )
     if integer_categories:
         values = category_positions(values, integer_categories)
@@ -138,9 +173,9 @@ def prepare_likelihood(
     # This immutable view shares fitted encodings; it does not reevaluate designs.
     response = fit.formula.with_(response_values=values, modifiers=modifiers)
     if (
-        response.response_layout.event_shape
-        and fit.family.vector_response
-        and fit.family.trials_parameter is None
+        layout.event_shape
+        and readout.vector_response
+        and readout.trials_parameter is None
     ):
         validate_simplex(response)
     outcome = response_tensor(response, fit.family)
@@ -148,7 +183,7 @@ def prepare_likelihood(
         raise ValueError("fresh responses must fit finite native response carriers")
     counts: torch.Tensor | None = None
     specification: int | str | None = None
-    if fit.family.trials_parameter is not None:
+    if readout.trials_parameter is not None:
         from quivers.formulas._fit import _response_trials
 
         retained = sources.get("trials")
@@ -170,7 +205,7 @@ def prepare_likelihood(
             prediction_trials = None
     else:
         prediction_trials = trials
-    context = prepare_prediction(
+    rows = prepare_prediction_rows(
         fit,
         frame,
         predictor_data,
@@ -183,7 +218,7 @@ def prepare_likelihood(
         incl_autocor=incl_autocor,
         data2=data2,
     )
-    observations = dict(context.observations)
+    observations = dict(rows.observations)
     if counts is not None:
         _set_trial_rows(fit, observations, counts, specification=specification)
     observations.update(
@@ -191,9 +226,9 @@ def prepare_likelihood(
             column.qvr_name: torch.as_tensor(
                 column.data.copy(), dtype=torch.bool if role == "decision" else None
             )
-            for role, column in modifiers.columns()
+            for role, column in response_columns(modifiers, fit.residual)
             if role != "trials"
         }
     )
     observations[response_input_name(fit.formula)] = outcome
-    return context.with_(observations=observations)
+    return rows, observations

@@ -16,7 +16,11 @@ from quivers.formulas._brms_priors import (
     user_selection,
 )
 from quivers.formulas._data_options import Knots, formula_data_options
-from quivers.formulas._fit import BayesianFit, _formula_lens, _refuse_joint_syntax
+from quivers.formulas._fit import (
+    BayesianFit,
+    _prepare_formula_entry,
+    _refuse_joint_syntax,
+)
 from quivers.formulas._joint_fit import MultivariateFit
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._multivariate import MultivariateFormula, ResponseModel
@@ -106,9 +110,13 @@ def _table(
             module, targets, user_selection(rules, targets), policy=policy
         )
     _refuse_joint_syntax(formula, "default_prior")
-    lens, parsed = _formula_lens(formula, data=data, priors=rules, **options)
-    module, _ = lens.forward(parsed)
-    targets = lens.prior_targets
+    prepared = _prepare_formula_entry(formula, data=data, priors=rules, **options)
+    if prepared.missing is None:
+        module, _ = prepared.lens.forward(prepared.formula)
+        targets = prepared.lens.prior_targets
+    else:
+        emission = prepared.missing.emission
+        module, targets = emission.module, emission.prior_targets
     return prior_table(module, targets, user_selection(rules, targets), policy=policy)
 
 

@@ -109,11 +109,22 @@ def test_joint_names_are_the_single_names_with_the_response(formula, family):
     } <= (restored | other)
 
 
-def test_level_tables_have_one_column_per_category():
+def test_level_tables_have_one_column_per_category(monkeypatch: pytest.MonkeyPatch):
     """Group tables list each category's coefficient under its parameter."""
     fitted = _joint("c ~ x + (1 | g)", "categorical")
+
+    def rebuild(*_args):
+        raise AssertionError(
+            "reading joint level coefficients must not compile a response fit"
+        )
+
+    monkeypatch.setattr(MultivariateFit, "_response_fit", rebuild)
     table = fitted.ranef(num_samples=3)["g"]
     assert table.components == ("muB_c_Intercept", "muC_c_Intercept")
+    labels, coefficients = fitted.ranef(summary=False, num_samples=3, seed=2)["g"]
+    expected = fitted.random_effects(resp="c", num_samples=3, seed=2)["g"]["Intercept"]
+    assert labels == table.components
+    assert torch.equal(coefficients, expected)
     single = _single("c ~ x + (1 | g)", "categorical").ranef(num_samples=3)["g"]
     assert single.components == ("muB_Intercept", "muC_Intercept")
 

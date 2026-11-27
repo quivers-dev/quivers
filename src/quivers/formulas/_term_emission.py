@@ -184,6 +184,8 @@ def emit_axis_part(
     emission: ProgramEmission,
     steps: list[ProgramStep],
     name: str,
+    *,
+    rows: bool = True,
 ) -> None:
     """Append the part of one predictor over an output axis.
 
@@ -199,14 +201,27 @@ def emit_axis_part(
         Program steps receiving the draws and bindings.
     name : str
         Binding of the sum of the contributions over the rows and the axis.
+    rows : bool
+        Whether the sum is bound at every row; False binds it over the axis
+        alone, which requires that no contribution vary over the rows.
+
+    Raises
+    ------
+    ValueError
+        If ``rows`` is False and a contribution varies over the rows.
     """
     row, coordinate = _var("response"), _var(COORDINATE)
     summands = emit_terms(predictor.part(output), emission, steps)
+    if not rows and any(summand.rows for summand in summands):
+        raise ValueError(
+            f"the predictor of {name!r} varies over the rows and cannot be bound "
+            "over its output axis alone"
+        )
     steps.append(
         _let(
             name,
             _factor(
-                (("response", "Resp"), (COORDINATE, output.name)),
+                (*((("response", "Resp"),) if rows else ()), (COORDINATE, output.name)),
                 body=_add(*(summand.cell(row, coordinate) for summand in summands)),
             ),
         )

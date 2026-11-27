@@ -43,10 +43,11 @@ from quivers.formulas import (
     loo_model_weights,
     model_weights,
 )
-from quivers.formulas._multivariate import bf
+from quivers.formulas._multivariate import bf, set_rescor
 from quivers.formulas._postprocess_loo import kfold_plan, unconstrained_draws
 from quivers.inference.mcmc.kernel import PotentialFn
 from quivers.inference.mcmc.driver import MCMCResult
+from quivers.modeling.artifact import load_fit, save_fit
 
 ORACLE = json.loads(
     (pathlib.Path(__file__).parent / "oracles" / "brms_postprocess.json").read_text()
@@ -695,9 +696,13 @@ def test_kfold_partitions_follow_brms(conjugate: BayesianFit) -> None:
         conjugate.kfold(K=2, Ksub=[5])
 
 
-def test_kfold_predict_with_saved_refits() -> None:
-    frame = pd.DataFrame({"y": Y[:8], "x": np.linspace(-1, 1, 8)})
-    model = fit("y ~ x", data=frame, method="svi", num_steps=30, seed=0)
+@pytest.mark.parametrize("multivariate", [False, True])
+def test_kfold_predict_with_saved_refits(multivariate: bool) -> None:
+    frame = pd.DataFrame({"y": Y[:8], "z": -Y[:8], "x": np.linspace(-1, 1, 8)})
+    specification = (
+        bf("y ~ x") + bf("z ~ x") + set_rescor(False) if multivariate else "y ~ x"
+    )
+    model = fit(specification, data=frame, method="svi", num_steps=30, seed=0)
     result = model.kfold(K=2, save_fits=True, joint="fold", num_samples=20)
     assert result.estimate.num_observations == 2 and result.estimate.joint == "fold"
     prediction = kfold_predict(result, num_samples=20)
@@ -745,6 +750,45 @@ def test_joint_fit_criteria() -> None:
     assert subsample.responses == ("y1", "y2")
     stored = joint.add_criterion("loo", num_samples=200)
     assert loo_compare({"a": stored, "b": stored}).rows == ("a", "b")
+
+
+def test_joint_criteria_keep_selected_responses_separate(
+    tmp_path: pathlib.Path,
+) -> None:
+    rng = np.random.default_rng(3)
+    frame = pd.DataFrame({"y1": rng.normal(size=402), "y2": rng.normal(size=402)})
+    joint = fit(
+        bf("y1 ~ 1") + bf("y2 ~ 1") + set_rescor(False),
+        data=frame,
+        method="svi",
+        num_steps=3,
+        seed=1,
+    )
+    partial = joint.add_criterion("loo", resp="y1", num_samples=32)
+    selected = partial.criterion("loo")
+    assert selected.responses == ("y1",)
+    assert partial.loo(resp=("y1",)) is selected
+    assert partial.loo(num_samples=32).responses == ("y1", "y2")
+
+    legacy = joint.with_(criteria={"loo": selected})
+    assert legacy.loo(resp="y1") is selected
+    stored = legacy.add_criterion("loo", num_samples=32)
+    assert stored.loo() is stored.criterion("loo")
+    assert stored.loo().responses == ("y1", "y2")
+    assert stored.criterion("loo", resp="y1") is selected
+    save_fit(stored, tmp_path / "joint")
+    restored = load_fit(tmp_path / "joint")
+    assert restored.loo().responses == ("y1", "y2")
+    assert restored.criterion("loo", resp="y1").responses == ("y1",)
+
+    cross_validated = stored.add_criterion(
+        ["loo_subsample", "kfold"],
+        resp="y2",
+        num_samples=32,
+        kfold_options={"K": 2, "num_samples": 32},
+    )
+    for name in ("loo_subsample", "kfold"):
+        assert cross_validated.criterion(name, resp="y2").responses == ("y2",)
 
 
 def test_variational_and_hmc_fits_run_the_criteria() -> None:

@@ -488,7 +488,7 @@ def _rename_step(
                 variables.append(actual.name)
             else:
                 variables.append(rename.get(name, name))
-        return step.with_(
+        renamed = step.with_(
             vars=tuple(variables),
             static_args=_rename_static_args(step.static_args, bindings),
             morphism=_rename_morphism(step.morphism, morphisms, rename),
@@ -497,6 +497,14 @@ def _rename_step(
             axes=_rename_axes(step.axes, objects),
             options=_rename_step_options(step.options, objects, values, rename),
         )
+        if isinstance(renamed, ObserveStep) and renamed.via is not None:
+            renamed = renamed.with_(
+                via=_rename_value_name(renamed.via, "via", values, rename),
+                via_axes=None
+                if renamed.via_axes is None
+                else tuple(objects.get(name, name) for name in renamed.via_axes),
+            )
+        return renamed
     if isinstance(step, MarginalizeStep):
         return step.with_(
             static_args=_rename_static_args(step.static_args, bindings),
@@ -510,6 +518,7 @@ def _rename_step(
                 if step.over_objs is None
                 else tuple(objects.get(name, name) for name in step.over_objs)
             ),
+            options=_rename_step_options(step.options, objects, values, rename),
             scope=tuple(_rename_step(inner, bindings, rename) for inner in step.scope),
         )
     if isinstance(step, (LetStep, ScoreStep)):
@@ -577,6 +586,11 @@ def _rename_step_options(
             entry = entry.with_(value=option)
         from quivers._observation import EVENT_OPTIONS
 
+        if entry.key == "via" and isinstance(option, OptionName):
+            option = option.with_(
+                value=_rename_value_name(option.value, "via", values, rename)
+            )
+            entry = entry.with_(value=option)
         if entry.key in {"weights", *EVENT_OPTIONS} and isinstance(option, OptionName):
             actual = values.get(option.value)
             if actual is None:
@@ -592,6 +606,43 @@ def _rename_step_options(
             entry = entry.with_(value=option)
         result.append(entry)
     return tuple(result)
+
+
+def _rename_value_name(
+    name: str,
+    option: str,
+    values: Mapping[str, LetExprNode],
+    rename: Mapping[str, str],
+) -> str:
+    """Rename a runtime name an option of a step refers to.
+
+    Parameters
+    ----------
+    name : str
+        The name the option refers to.
+    option : str
+        The option, named in errors.
+    values : Mapping[str, LetExprNode]
+        Actual runtime values replacing formal parameter names.
+    rename : Mapping[str, str]
+        Fresh names replacing locals of the instantiated body.
+
+    Returns
+    -------
+    str
+        The name in the caller's program.
+
+    Raises
+    ------
+    TemplateError
+        If the actual value of a formal parameter is not a name.
+    """
+    actual = values.get(name)
+    if actual is None:
+        return rename.get(name, name)
+    if isinstance(actual, LetExprVar):
+        return actual.name
+    raise TemplateError(f"observation {option} requires a named runtime value")
 
 
 def _rename_static_args(

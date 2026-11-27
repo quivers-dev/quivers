@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 import narwhals as nw
 import torch
@@ -16,6 +17,9 @@ from quivers.formulas._gp import (
 )
 from quivers.formulas._fit_types import SingleFit
 from quivers.formulas._smooth import SmoothTransform
+
+if TYPE_CHECKING:
+    from quivers.formulas._linpred import PredictorReadout
 
 
 def conditional_smooths(
@@ -61,8 +65,7 @@ def conditional_smooths(
         Seed for variational draws and for the latent function of an exact
         ``gp()`` term at the rows.
     draws : Mapping[str, torch.Tensor] or None
-        Constrained draws to read in place of the fit's own: the draws of a
-        joint fit when ``fitted`` is the view of one of its responses.
+        Explicit constrained draws to read in place of the fit's own.
     site_prefix : str
         Namespace of that response's sites within ``draws``.
 
@@ -83,11 +86,39 @@ def conditional_smooths(
             "conditional_smooths evaluates the smooth of one response; for a "
             "joint fit call its conditional_smooths method with resp"
         )
-    formula, prefix = fitted._formula_predictor(parameter)
-    plan = fitted.prediction_plan
-    if plan is None or parameter not in plan.designs:
+
+    def effect_draws() -> Mapping[str, torch.Tensor]:
+        return (
+            fitted.draws(num_samples=num_samples, seed=seed) if draws is None else draws
+        )
+
+    return _smooth_contribution(
+        fitted._predictor_readout,
+        term,
+        new_data,
+        parameter=parameter,
+        seed=seed,
+        get_draws=effect_draws,
+        site_prefix=site_prefix,
+    )
+
+
+def _smooth_contribution(
+    readout: PredictorReadout,
+    term: str,
+    new_data: IntoDataFrame,
+    *,
+    parameter: str,
+    seed: int,
+    get_draws: Callable[[], Mapping[str, torch.Tensor]],
+    site_prefix: str,
+) -> torch.Tensor:
+    """Evaluate a smooth from its fitted basis and posterior coefficients."""
+    _, prefix = readout._formula_predictor(parameter)
+    designs = readout.designs
+    if designs is None or parameter not in designs:
         raise ValueError("this fit has no retained design for smooth evaluation")
-    design = plan.designs[parameter]
+    design = designs[parameter]
     terms = design.common.terms if design.common is not None else {}
     if term not in terms:
         raise ValueError(
@@ -109,12 +140,9 @@ def conditional_smooths(
     ):
         raise ValueError(f"{term!r} is not a fitted s(), t2(), or gp() term")
     frame = nw.from_native(new_data, eager_only=True).to_pandas()
-    draws = dict(
-        fitted.draws(num_samples=num_samples, seed=seed) if draws is None else draws
-    )
     draws = {
         site: value.double() if value.is_floating_point() else value
-        for site, value in draws.items()
+        for site, value in get_draws().items()
     }
     if site_prefix:
         draws = {
@@ -122,7 +150,7 @@ def conditional_smooths(
             for site, value in draws.items()
             if site.startswith(site_prefix)
         }
-    predictor = next(item for item in plan.predictors if item.prefix == prefix)
+    predictor = next(item for item in readout.predictors if item.prefix == prefix)
     rows = PredictorRows(RowSource(frame=frame), design)
     generator = torch.Generator().manual_seed(seed)
     parts = [

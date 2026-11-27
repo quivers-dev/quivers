@@ -684,7 +684,10 @@ from a seeded quivers stream, not from R's generator, so a fold assignment
 reproduces only within quivers.
 
 `add_criterion` stores criteria on a new fit, and they persist through
-`save_fit` and `load_fit`. `loo_compare`, `loo_model_weights`, and
+`save_fit` and `load_fit`. A joint fit can store the same criterion for
+several response selections. Read one of them with `criterion(name, resp=...)`.
+`loo` reuses a stored estimate for the responses it scores.
+`loo_compare`, `loo_model_weights`, and
 `model_weights` compare fits by stored criteria or by precomputed estimates, and
 refuse fits that score different responses.
 

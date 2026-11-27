@@ -440,7 +440,9 @@ def test_hurdle_scores_probabilities_and_names_match_brms_at_its_draws():
     assert bool(torch.isnan(thresholds[:, 2, 1:]).all())
 
 
-def test_joint_scores_probabilities_and_names_match_brms_at_its_draws():
+def test_joint_scores_probabilities_and_names_match_brms_at_its_draws(
+    monkeypatch: pytest.MonkeyPatch,
+):
     oracle = ORACLE["values"]["joint"]
     fitted = groups._pinned(
         _fit("joint"),
@@ -460,7 +462,13 @@ def test_joint_scores_probabilities_and_names_match_brms_at_its_draws():
             },
         ),
     )
-    variables = fitted.variables()
+
+    def rebuild(*_args):
+        raise AssertionError("naming joint thresholds must not compile a response fit")
+
+    with monkeypatch.context() as naming:
+        naming.setattr(type(fitted), "_response_fit", rebuild)
+        variables = fitted.variables()
     expected = _reported(oracle["variables"])
     assert list(variables) == expected
     draws = pd.DataFrame(oracle["draws"])

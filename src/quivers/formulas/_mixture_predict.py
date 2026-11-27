@@ -10,6 +10,7 @@ import torch
 from quivers.continuous._observation_events import event_log_prob
 from quivers.continuous._zip_hurdle import MixtureNormal
 from quivers.continuous.measure import Mixture
+from quivers.formulas._modifiers import response_columns
 from quivers.formulas._likelihood import prepare_likelihood
 from quivers.formulas._posterior import collect_draws, replay
 from quivers.formulas._prediction import prepare_prediction
@@ -183,7 +184,7 @@ def pp_mixture(
             sample_new_levels=sample_new_levels,
             seed=seed,
         )
-    columns = dict(fit.formula.modifiers.columns())
+    columns = dict(response_columns(fit.formula.modifiers, fit.residual))
     status = columns.get("censoring")
     upper = columns.get("censoring_upper")
     lower_bound = columns.get("trunc_lower")

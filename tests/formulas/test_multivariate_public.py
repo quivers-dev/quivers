@@ -15,6 +15,7 @@ from scipy import stats
 
 from quivers.diagnostics import prediction_grid
 from quivers.diagnostics.cross_validation import FoldPlan, cross_validate
+from quivers.dsl import Compiler
 from quivers.formulas import (
     MultivariateFit,
     MultivariateFormula,
@@ -138,7 +139,7 @@ def test_fit_refuses_raw_mvbind_strings_and_response_options():
             method="svi",
             num_steps=1,
         )
-    with pytest.raises(ValueError, match="pass bf"):
+    with pytest.raises(ValueError, match=r"mi\(x\).*requires a response"):
         fit("y_1 ~ mi(x)", data=data, method="svi", num_steps=1)
 
 
@@ -405,7 +406,9 @@ def test_uncorrelated_units_sum_responses_per_row_as_brms_does():
 # New-data prediction and new grouping levels.
 
 
-def test_new_rows_reuse_fitted_encodings_and_shared_group_effects():
+def test_new_rows_reuse_fitted_encodings_and_shared_group_effects(
+    monkeypatch: pytest.MonkeyPatch,
+):
     data = _frame()
     fitted = fit(
         bf("y_1 ~ x + (1|p|g)") + bf("z ~ x + (1|p|g)") + set_rescor(False),
@@ -414,21 +417,38 @@ def test_new_rows_reuse_fitted_encodings_and_shared_group_effects():
         num_steps=2,
         seed=5,
     )
+    assert isinstance(fitted, MultivariateFit)
     fresh = pd.DataFrame({"x": [0.5, -1.0, 2.0], "g": ["c", "a", "c"]})
     linear = fitted.posterior_linpred(new_data=fresh, num_samples=4, seed=1)
-    for resp in ("y1", "z"):
-        fixed = fitted.fixed_effects(resp=resp, num_samples=4, seed=1)
-        effects = fitted.random_effects(resp=resp, num_samples=4, seed=1)["g"][
-            "Intercept"
-        ]
-        levels = fitted.group_levels["g"]
-        codes = [levels.index(label) for label in fresh.g]
-        expected = (
-            fixed["Intercept"][..., None]
-            + fixed["x"][..., None] * torch.tensor(fresh.x.to_numpy()).float()
-            + effects[..., codes]
+    draws = fitted.draws(num_samples=4, seed=1)
+
+    def rebuild(*_args):
+        raise AssertionError(
+            "reading joint coefficients must not compile a response fit"
         )
-        torch.testing.assert_close(linear[resp], expected)
+
+    with monkeypatch.context() as coefficients:
+        coefficients.setattr(MultivariateFit, "_response_fit", rebuild)
+        for resp in ("y1", "z"):
+            fixed = fitted.fixed_effects(resp=resp, num_samples=4, seed=1)
+            effects = fitted.random_effects(resp=resp, num_samples=4, seed=1)["g"][
+                "Intercept"
+            ]
+            namespace = fitted.emission.responses[resp].prefix
+            assert torch.equal(fixed["Intercept"], draws[f"{namespace}intercept"])
+            assert torch.equal(fixed["x"], draws[f"{namespace}beta_x"])
+            combined = fitted.coefficients(resp=resp, num_samples=4, seed=1)["g"]
+            assert torch.equal(
+                combined["Intercept"], fixed["Intercept"][..., None] + effects
+            )
+            levels = fitted.group_levels["g"]
+            codes = [levels.index(label) for label in fresh.g]
+            expected = (
+                fixed["Intercept"][..., None]
+                + fixed["x"][..., None] * torch.tensor(fresh.x.to_numpy()).float()
+                + effects[..., codes]
+            )
+            torch.testing.assert_close(linear[resp], expected)
     means = fitted.posterior_epred(resp="z", new_data=fresh, num_samples=4, seed=1)
     assert set(means) == {"z"}
     torch.testing.assert_close(means["z"], linear["z"])
@@ -519,6 +539,64 @@ def test_gaussian_new_levels_keep_the_cross_response_correlation():
         (expected.square() + torch.outer(expected.diag(), expected.diag())) / draws
     )
     assert torch.all((covariance - expected).abs() < 5 * error)
+
+
+def test_joint_training_expected_responses_reuse_the_fitted_program(monkeypatch):
+    data = _frame().assign(category=pd.Categorical(["red", "green", "blue"] * 4))
+    fitted = fit(
+        bf("y_1 ~ x") + bf("category ~ x", family="categorical") + set_rescor(False),
+        data=data,
+        method="svi",
+        num_steps=1,
+    )
+
+    def reject_compilation(*args, **kwargs):
+        pytest.fail("training posterior_epred should reuse the fitted joint program")
+
+    monkeypatch.setattr(Compiler, "compile", reject_compilation)
+    expected = fitted.posterior_epred(num_samples=3, seed=12)
+    native = fitted.draws(num_samples=3, seed=12)
+    intercept = native["response_y1__intercept"].unsqueeze(-1)
+    slope = native["response_y1__beta_x"].unsqueeze(-1)
+    x = torch.as_tensor(data["x"].to_numpy(copy=True), dtype=intercept.dtype)
+    torch.testing.assert_close(expected["y1"], intercept + slope * x)
+    linear = fitted.posterior_linpred(resp="y1", num_samples=3, seed=12)["y1"]
+    torch.testing.assert_close(linear, expected["y1"])
+    probabilities = expected["category"]
+    assert probabilities.shape == (1, 3, len(data), 3)
+    torch.testing.assert_close(
+        probabilities.sum(dim=-1), torch.ones_like(probabilities[..., 0])
+    )
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["posterior_linpred", "posterior_epred", "posterior_predict", "log_likelihood"],
+)
+def test_fresh_joint_rows_compile_one_program(monkeypatch, method):
+    data = _frame()
+    fitted = fit(
+        bf("y_1 ~ x + (1 | shared | g)")
+        + bf("z ~ x + (1 | shared | g)")
+        + set_rescor(False),
+        data=data,
+        method="svi",
+        num_steps=1,
+    )
+    compile_model = Compiler.compile
+    compilations = []
+
+    def compile_once(compiler, *args, **kwargs):
+        compilations.append(compiler)
+        return compile_model(compiler, *args, **kwargs)
+
+    monkeypatch.setattr(Compiler, "compile", compile_once)
+    fresh = data.iloc[:3].assign(g=["a", "new", "b"])
+    draws = getattr(fitted, method)(
+        new_data=fresh, allow_new_levels=True, num_samples=2, seed=12
+    )
+    assert len(compilations) == 1
+    assert all(value.shape == (1, 2, 3) for value in draws.values())
 
 
 def test_correlated_predictions_keep_the_joint_residual_law_on_new_rows():

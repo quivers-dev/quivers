@@ -15,13 +15,16 @@ The body is a sequence of `KernelPart` values. One composer, `compose`, emits
 every kernel by emitting its parts in order; it never asks which family the
 kernel was built from. Each part states one construction as data: emit or bind
 a slot, literal steps, or a family construction (ordinal thresholds,
-category masses, the native arguments of the observation).
+category masses, the native arguments of the observation). A part may emit a
+nested response block (`quivers.formulas._blocks.ResponseBlock`), such as a
+mixture component; the emission takes the block's runtime parameters, group
+laws, prior targets and names (`KernelEmission.absorb`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol
+from collections.abc import Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import didactic.api as dx
 import numpy as np
@@ -30,7 +33,9 @@ from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
     LetExprLiteral,
     LetExprNode,
+    ObjectDecl,
     ProgramStep,
+    QiecValueParameter,
     SampleStep,
     Statement,
 )
@@ -51,8 +56,16 @@ from quivers.formulas._predictor_graph import PredictorGraph
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._term import AxisDecl, InputDecl, OutputAxis, SiteDecl
 from quivers.formulas._term_emission import ProgramEmission, emit_axis_part, emit_terms
+from quivers.formulas._group_law import GroupBlockLaw
+from quivers.formulas._priors import PriorTarget
+from quivers.formulas._term import ProgramNames
 from quivers.formulas.family import Family, Link
 from quivers.formulas.formula import Formula
+
+if TYPE_CHECKING:
+    import torch
+
+    from quivers.formulas._blocks import NestedBlocks, PlacedBlock, ResponseBlock
 
 __all__: list[str] = []
 
@@ -84,21 +97,69 @@ class Completion(ValueModel):
     coordinates: tuple[int, ...] = ()
     prefix: str = ""
 
-    def steps(self, free: str, result: str) -> tuple[ProgramStep, ...]:
+    def steps(
+        self, free: str, result: str, *, rows: bool = True
+    ) -> tuple[ProgramStep, ...]:
         """Bind the value over the full axis.
 
         Parameters
         ----------
         free : str
-            Binding of the free coordinates over ``(Resp, free axis)``.
+            Binding of the free coordinates over ``(Resp, free axis)``, or
+            over the free axis alone when ``rows`` is False.
         result : str
-            Binding of the value over ``(Resp, axis)``.
+            Binding of the value over ``(Resp, axis)``, or over the axis
+            alone when ``rows`` is False.
+        rows : bool
+            Whether the value varies over the rows.
 
         Returns
         -------
         tuple[ProgramStep, ...]
-            The zero row of the reference and the stack by coordinate.
+            The zero row of the reference and the stack by coordinate; for a
+            value that does not vary over the rows, one binding over the axis.
         """
+        if not rows:
+            return (
+                _let(
+                    result,
+                    _factor(
+                        (("category", self.axis),),
+                        cases=tuple(
+                            sorted(
+                                (
+                                    *(
+                                        ()
+                                        if self.reference is None
+                                        else (
+                                            (
+                                                self.reference,
+                                                LetExprLiteral(value=0.0),
+                                            ),
+                                        )
+                                    ),
+                                    *(
+                                        (
+                                            category,
+                                            _index(
+                                                free,
+                                                LetExprLiteral(
+                                                    value=float(coordinate),
+                                                    integral=True,
+                                                ),
+                                            ),
+                                        )
+                                        for coordinate, category in enumerate(
+                                            self.coordinates
+                                        )
+                                    ),
+                                ),
+                                key=lambda case: case[0],
+                            )
+                        ),
+                    ),
+                ),
+            )
         zero = f"{self.prefix}categorical_zero_logit"
         cases: tuple[tuple[int, LetExprNode], ...] = (
             () if self.reference is None else ((self.reference, _var(zero)),)
@@ -383,6 +444,10 @@ class ParameterSlot(ValueModel):
         the row); None for a linked value.
     precomposition : Precomposition or None
         How the body computes the slot, when no source feeds it.
+    constant_rows : bool
+        Whether a vector value that no term of its predictor varies over the
+        rows is bound over its coordinates alone; False binds it at every
+        row.
     """
 
     name: str
@@ -392,6 +457,7 @@ class ParameterSlot(ValueModel):
     completion: Completion | None = None
     axis: str | None = None
     row_binder: str | None = None
+    constant_rows: bool = False
     precomposition: Precomposition | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -451,8 +517,16 @@ class PredictorSource(ParameterSource):
                     AxisDecl(name=slot.completion.axis, size=slot.completion.size)
                 )
             emission.declare(AxisDecl(name=output.name, size=output.size))
-            emit_axis_part(predictor, output, emission.terms, emission.steps, slot.free)
-            emission.pending(slot.name, None, ValueShape(rows=True, coordinates=True))
+            rows = predictor.rowwise or not slot.constant_rows
+            emit_axis_part(
+                predictor,
+                output,
+                emission.terms,
+                emission.steps,
+                slot.free,
+                rows=rows,
+            )
+            emission.pending(slot.name, None, ValueShape(rows=rows, coordinates=True))
             return
         summands = emit_terms(predictor.part(None), emission.terms, emission.steps)
         emission.pending(
@@ -751,6 +825,8 @@ class KernelInputs(ValueModel):
         Binding or constant of the trial counts.
     response_values : np.ndarray
         Training responses.
+    blocks : NestedBlocks or None
+        Response laws the kernel emits as nested programs; None for none.
     """
 
     family: Family = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -777,6 +853,9 @@ class KernelInputs(ValueModel):
     category_parameters: frozenset[str] = frozenset()
     trials: str | float | None = None
     response_values: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    blocks: NestedBlocks | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     def predictor(self, prefix: str) -> Predictor:
         """Return the planned predictor of one namespace.
@@ -994,6 +1073,98 @@ class KernelHost(Protocol):
         """
         ...
 
+    def emit_block(
+        self,
+        block: ResponseBlock,
+        shared: frozenset[str],
+        supplied: Mapping[tuple[str, str, str], LetExprNode],
+        supplied_sites: Collection[str],
+    ) -> PlacedBlock:
+        """Emit a nested response block and place it in the model.
+
+        Parameters
+        ----------
+        block : ResponseBlock
+            The block.
+        shared : frozenset[str]
+            Inputs, bindings and objects the model owns.
+        supplied : Mapping[tuple[str, str, str], LetExprNode]
+            Group coefficients the model emits, by the model's predictor
+            prefix, group, and slope.
+        supplied_sites : Collection[str]
+            Level hyperparameters the model draws.
+
+        Returns
+        -------
+        PlacedBlock
+            The block in the model's names.
+        """
+        ...
+
+    @property
+    def drawn_sites(self) -> frozenset[str]:
+        """The level hyperparameters the model has drawn so far.
+
+        Returns
+        -------
+        frozenset[str]
+            Site names.
+        """
+        ...
+
+    def place_names(self, names: ProgramNames) -> None:
+        """Name columns and bindings as a placed nested block names them.
+
+        Parameters
+        ----------
+        names : ProgramNames
+            The block's names, in the model's names.
+        """
+        ...
+
+    @property
+    def supplied(self) -> Mapping[tuple[str, str, str], LetExprNode]:
+        """The group coefficients another program emits.
+
+        Returns
+        -------
+        Mapping[tuple[str, str, str], LetExprNode]
+            Coefficients keyed by predictor prefix, group, and slope.
+        """
+        ...
+
+    def column_values(self, formula: Formula) -> Mapping[str, torch.Tensor]:
+        """Return the values of the data columns the model reads.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response.
+
+        Returns
+        -------
+        Mapping[str, torch.Tensor]
+            Column values by input name.
+        """
+        ...
+
+    def category_count(self, formula: Formula, family: Family) -> int:
+        """Count the response categories of a family.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula with the response.
+        family : Family
+            Family reading the categories.
+
+        Returns
+        -------
+        int
+            Number of categories.
+        """
+        ...
+
 
 class KernelEmission:
     """The program a kernel is emitted into.
@@ -1016,6 +1187,24 @@ class KernelEmission:
         Group-level coefficients emitted ahead of the body.
     formula : Formula
         Response, its rows, and its modifiers.
+
+    Attributes
+    ----------
+    parameters : dict[str, QiecValueParameter]
+        Runtime parameters of the nested blocks, first declaration first.
+    data : list[InputDecl]
+        Columns the body reads that no other part declares.
+    targets : list[PriorTarget]
+        Prior catalogue entries of the nested blocks and the body's sites.
+    laws : list[GroupBlockLaw]
+        Group-block laws of the nested blocks, in the model's names.
+    catalogs : list[FamilyCatalog]
+        Laws the terms of the nested blocks draw from.
+    placed : dict[str, PlacedBlock]
+        Nested blocks emitted, by the model parameter of their location.
+    shared : frozenset[str]
+        Inputs, bindings and objects the model owns, which nested blocks
+        keep under their names.
     """
 
     def __init__(
@@ -1040,9 +1229,51 @@ class KernelEmission:
         self._emitted: set[str] = set()
         self._values: dict[str, LetExprNode | None] = {}
         self._shapes: dict[str, ValueShape] = {}
+        self.gathered = dict(gathered)
         self.buffers: dict[str, list[ProgramStep]] = {}
         self.names: dict[str, str] = {}
         self.arguments: KernelArguments | None = None
+        self.parameters: dict[str, QiecValueParameter] = {}
+        self.data: list[InputDecl] = []
+        self.targets: list[PriorTarget] = []
+        self.laws: list[GroupBlockLaw] = []
+        self.catalogs: list[FamilyCatalog] = []
+        self.placed: dict[str, PlacedBlock] = {}
+        self.shared: frozenset[str] = frozenset()
+
+    def absorb(self, label: str, block: PlacedBlock) -> None:
+        """Take a placed nested block into the model.
+
+        The block's declarations of axes the model already declares are
+        left out, its runtime parameters are kept after any of the same
+        name, its prior targets, laws and term laws are joined, and the
+        model names columns and bindings as the block does.
+
+        Parameters
+        ----------
+        label : str
+            Model parameter of the block's location.
+        block : PlacedBlock
+            The block in the model's names.
+        """
+        for item in block.objects:
+            if any(
+                isinstance(declared, ObjectDecl)
+                and isinstance(item, ObjectDecl)
+                and declared.names == item.names
+                for declared in self.statements
+            ):
+                continue
+            self.statements.append(item)
+        for parameter in block.parameters:
+            self.parameters.setdefault(parameter.name, parameter)
+        self.targets.extend(block.prior_targets)
+        self.laws.extend(block.group_laws)
+        # The names a block gives its columns are the model's from now on.
+        self.host.place_names(block.names)
+        if block.families is not None:
+            self.catalogs.append(block.families)
+        self.placed[label] = block
 
     def declare(self, axis: AxisDecl) -> None:
         """Declare a finite axis once.
@@ -1148,16 +1379,19 @@ class KernelEmission:
         if source is not None:
             source.emit(slot, self)
 
-    def bind_slot(self, name: str) -> None:
+    def bind_slot(self, name: str, *, binding: str | None = None) -> None:
         """Bind a slot through the levels after its source.
 
         Parameters
         ----------
         name : str
             Slot name.
+        binding : str or None
+            Destination of the linked value, or None for the slot's name.
         """
         self.emit_slot(name)
         slot = self.kernel.slot(name)
+        target = name if binding is None else binding
         precomposition = slot.precomposition
         if precomposition is not None and precomposition.level == "name":
             return
@@ -1177,7 +1411,11 @@ class KernelEmission:
                 if value != _var(slot.free):
                     self.steps.append(_let(slot.free, value))
             if slot.completion is not None:
-                self.steps.extend(slot.completion.steps(slot.free, slot.eta))
+                self.steps.extend(
+                    slot.completion.steps(
+                        slot.free, slot.eta, rows=self._shapes[name].rows
+                    )
+                )
             else:
                 self.steps.append(_let(slot.eta, _var(slot.free)))
         else:
@@ -1188,18 +1426,29 @@ class KernelEmission:
                 self.steps.append(_let(slot.eta, value))
         if slot.row_binder is not None:
             row = _var(slot.row_binder)
+            value = self._shapes[name].at(slot.eta, row)
+            if slot.link is not None:
+                if slot.link.intermediates:
+                    raise ValueError(
+                        f"parameter {name!r} is bound at every row through the "
+                        f"link {slot.link.name!r}, whose intermediate bindings "
+                        "have no row form"
+                    )
+                value = _bind(
+                    slot.link.inverse_expr.format(eta="eta", name=target),
+                    eta=value,
+                )
             self.steps.append(
                 _let(
-                    slot.name,
-                    _factor(
-                        ((slot.row_binder, self.kernel.row_axis),),
-                        body=self._shapes[name].at(slot.eta, row),
-                    ),
+                    target,
+                    _factor(((slot.row_binder, self.kernel.row_axis),), body=value),
                 )
             )
             self._shapes[name] = ValueShape(rows=True)
         elif slot.link is not None:
-            append_link(self.steps, slot.name, _var(slot.eta), slot.link)
+            append_link(self.steps, target, _var(slot.eta), slot.link)
+        elif binding is not None:
+            self.steps.append(_let(target, _var(slot.eta)))
 
 
 def append_link(

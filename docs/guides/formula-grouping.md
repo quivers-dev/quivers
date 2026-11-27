@@ -105,6 +105,10 @@ identifier form one block, so an option that one of them declares applies to
 the block, and two of them may not declare different `by` variables, prior
 weights, or level covariances.
 
+When a group identifier links multiple responses, `default_priors="brms"`
+sets each group standard deviation's prior from the response of its
+coefficient. A prior rule for that standard deviation overrides the default.
+
 Two combinations have no density and are refused. Both concern a known level
 covariance of deficient rank, declared with `GroupCovariance(rank=...)`,
 whose coefficients are confined to a subspace of the levels. A prior weight

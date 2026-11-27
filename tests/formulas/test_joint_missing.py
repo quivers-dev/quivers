@@ -13,14 +13,18 @@ from scipy import stats
 
 from quivers.diagnostics.cross_validation import FoldPlan
 from quivers.formulas import (
+    BayesianFit,
     MultivariateFit,
     PriorSpec,
+    RegularizedHorseshoe,
     bf,
+    default_prior,
     fit,
     formula_to_qvr,
     get_prior,
     set_mecor,
     set_rescor,
+    validate_prior,
 )
 from quivers.inference import trace
 from quivers.inference.prior import PriorDraws
@@ -46,7 +50,9 @@ def _scale(call: str) -> float:
     return float(call.split("scale=")[1].rstrip(")"))
 
 
-def _fixed(fitted: MultivariateFit, values: dict, draws: int = 1) -> MultivariateFit:
+def _fixed[Fit: (BayesianFit, MultivariateFit)](
+    fitted: Fit, values: dict, draws: int = 1
+) -> Fit:
     return fitted.with_(
         posterior=PriorDraws(
             samples={
@@ -57,7 +63,7 @@ def _fixed(fitted: MultivariateFit, values: dict, draws: int = 1) -> Multivariat
             },
             num_samples=draws,
         ),
-        response_fits={},
+        **({"response_fits": {}} if isinstance(fitted, MultivariateFit) else {}),
     )
 
 
@@ -220,8 +226,8 @@ def test_mi_likelihood_units_prediction_and_index_joins():
     fitted = _fixed(fitted, values)
     missing = ~np.isfinite(data.x.to_numpy())
     scores = fitted.log_likelihood(resp="x")["x"][0, 0]
-    # brms log_lik returns NA at missing mi() rows and scores recorded rows.
-    assert torch.isnan(scores[missing]).all()
+    # A missing mi() row has no recorded likelihood (brms log_lik gives NA).
+    assert bool((scores[missing] == 0).all())
     expected = stats.norm.logpdf(data.x[~missing], 0.1 + 0.6 * data.z[~missing], 0.5)
     torch.testing.assert_close(
         scores[~missing].double(), torch.tensor(expected), rtol=1e-5, atol=1e-6
@@ -301,6 +307,119 @@ def test_mi_source_refit_and_artifact(tmp_path):
         resp="y", new_data=data.iloc[test], num_samples=2, seed=split.seed
     )
     torch.testing.assert_close(prediction.log_likelihood["y"], expected["y"])
+
+
+@pytest.mark.parametrize("known_error", [False, True])
+def test_bare_mi_uses_single_response_names_and_recorded_scores(known_error, tmp_path):
+    data = _frame()
+    formula = f"x | mi({'s' if known_error else ''}) ~ z"
+    fitted = fit(formula, data=data, method="svi", num_steps=1, seed=3)
+    assert isinstance(fitted, BayesianFit)
+    assert fitted.formula.formula == formula
+    assert fitted.included_rows == tuple(range(len(data)))
+    assert fitted.qvr_source == formula_to_qvr(formula, data=data)
+    assert set(get_prior(formula, data=data)) == {"intercept", "beta_z", "sigma"}
+
+    actual = torch.tensor(data.x.to_numpy())
+    recorded = torch.isfinite(actual)
+    z = torch.tensor(data.z.to_numpy())
+    mean = 0.2 - 0.4 * z
+    truth = torch.linspace(-0.5, 0.5, len(data), dtype=torch.float64)
+    latent = (
+        {"mi_x__truth": truth} if known_error else {"mi_x__missing": truth[~recorded]}
+    )
+    view = _fixed(fitted, {"intercept": 0.2, "beta_z": -0.4, "sigma": 0.7, **latent})
+    assert set(view.draws()) == {"intercept", "beta_z", "sigma", *latent}
+    expected = torch.zeros_like(actual)
+    loc = truth[recorded] if known_error else mean[recorded]
+    scale = torch.tensor(data.s.to_numpy())[recorded] if known_error else 0.7
+    expected[recorded] = torch.distributions.Normal(loc, scale).log_prob(
+        actual[recorded]
+    )
+    torch.testing.assert_close(view.posterior_linpred()[0, 0].double(), mean)
+    torch.testing.assert_close(view.posterior_epred()[0, 0].double(), mean)
+    torch.testing.assert_close(view.log_likelihood()["x"][0, 0].double(), expected)
+    torch.testing.assert_close(
+        view.log_likelihood(re_formula="~0")["x"][0, 0].double(), expected
+    )
+    analysis = view.analysis()
+    torch.testing.assert_close(
+        analysis.observed_data["x"].double(), actual, equal_nan=True
+    )
+    torch.testing.assert_close(analysis.log_likelihood["x"][0, 0].double(), expected)
+
+    # An outcome solely on the left side is unnecessary for predicting it.
+    fresh = data[["z"]].iloc[[1, 4, 0]]
+    torch.testing.assert_close(
+        view.posterior_epred(new_data=fresh)[0, 0].double(), mean[[1, 4, 0]]
+    )
+    assert view.posterior_predict(new_data=fresh).shape == (1, 1, len(fresh))
+    assert view.posterior_predict().shape == (1, 1, len(data))
+
+    if not known_error:
+        shrinkage = PriorSpec(distribution=RegularizedHorseshoe(), class_="b")
+        ordinary = get_prior("x ~ z", data=data.dropna(subset=["x"]), priors=shrinkage)
+        assert "prior_0_global" in ordinary
+        assert get_prior(formula, data=data, priors=shrinkage).keys() == ordinary.keys()
+        assert len(fitted.update(num_steps=2).losses) == 2
+        path = tmp_path / "bare-mi.pt"
+        save_fit(fitted, path)
+        restored = load_fit(path)
+        assert isinstance(restored, BayesianFit)
+        assert restored.qvr_source == fitted.qvr_source
+        for new_data in (None, fresh):
+            torch.testing.assert_close(
+                restored.posterior_epred(new_data=new_data, num_samples=2, seed=4),
+                fitted.posterior_epred(new_data=new_data, num_samples=2, seed=4),
+            )
+
+
+def test_bare_me_replays_true_values_and_fresh_measurements_with_ordinary_names():
+    data = _frame().assign(x=np.linspace(0.1, 1.0, 8))
+    formula = "y ~ me(x, s) + me(x, s):z"
+    rule = {"me_y__x__mean": "Normal(0.0, 2.0)"}
+    fitted = fit(formula, data=data, priors=rule, method="svi", num_steps=1)
+    authored = fit(bf(formula), data=data, method="svi", num_steps=1)
+    assert isinstance(fitted, BayesianFit)
+    assert isinstance(authored, MultivariateFit)
+    assert fitted.qvr_source == formula_to_qvr(formula, data=data, priors=rule)
+    assert "beta_x" in get_prior(formula, data=data)
+    assert "response_y__beta_x" in get_prior(bf(formula), data=data)
+    assert default_prior(formula, data=data).row("me_y__x__mean").source == "default"
+    priors = validate_prior(rule, formula, data=data)
+    assert priors.row("me_y__x__mean").source == "user"
+
+    values = {"intercept": 0.3, "beta_x": 0.8, "beta_x_z": -0.4, "sigma": 0.7}
+    noise = torch.linspace(-1.0, 1.0, len(data))
+    measurement = {"me_y__x__mean": 0.2, "me_y__x__sd": 0.9, "me_y__x__z": noise}
+    view = _fixed(fitted, values | measurement)
+    joint = _fixed(
+        authored, {f"response_y__{k}": v for k, v in values.items()} | measurement
+    )
+    z = torch.tensor(data.z.to_numpy())
+    expected = 0.3 + (0.8 - 0.4 * z) * (0.2 + 0.9 * noise)
+    torch.testing.assert_close(view.posterior_epred()[0, 0].double(), expected)
+    torch.testing.assert_close(view.posterior_epred(), joint.posterior_epred()["y"])
+
+    fresh = data[["x", "z"]].iloc[[3, 1, 7]]
+    expected = 0.3 + (0.8 - 0.4 * torch.tensor(fresh.z.to_numpy())) * torch.tensor(
+        fresh.x.to_numpy()
+    )
+    torch.testing.assert_close(
+        view.posterior_linpred(new_data=fresh)[0, 0].double(), expected
+    )
+    torch.testing.assert_close(
+        view.posterior_epred(new_data=fresh)[0, 0].double(), expected
+    )
+    actual = data.y.loc[fresh.index]
+    score = torch.distributions.Normal(expected, 0.7).log_prob(
+        torch.tensor(actual.to_numpy())
+    )
+    torch.testing.assert_close(
+        view.log_likelihood(new_data=fresh.assign(y=actual))["y"][0, 0].double(), score
+    )
+    with pytest.raises(ValueError, match="brms returns missing predictions"):
+        view.posterior_epred(new_data=fresh.assign(x=[0.1, np.nan, 0.2]))
 
 
 @pytest.mark.slow
@@ -424,7 +543,7 @@ def test_me_terms_follow_brms_noncentered_correlated_latent_values():
         torch.set_default_dtype(torch.float32)
 
 
-def test_me_grouping_shares_one_latent_value_per_level_and_plain_strings_refer_to_bf():
+def test_me_grouping_shares_one_latent_value_per_level():
     data = _complete().assign(x=[1.0, 0.1, 0.5, 0.3] * 2, s=[0.1, 0.2, 0.3, 0.1] * 2)
     fitted = fit(bf("y ~ me(x, s, gr = g)"), data=data, method="svi", num_steps=1)
     assert fitted.draws(num_samples=1)["me_y__x__z"].shape == (1, 1, 4)
@@ -432,8 +551,6 @@ def test_me_grouping_shares_one_latent_value_per_level_and_plain_strings_refer_t
         fitted.observations["mi_y__x__source_0"],
         torch.tensor([0, 1, 2, 3, 0, 1, 2, 3]),
     )
-    with pytest.raises(ValueError, match="pass bf"):
-        fit("y ~ me(x, s)", data=data, method="svi", num_steps=1)
     with pytest.raises(ValueError, match="identical measured values"):
         fit(bf("y ~ me(x, s, g)"), data=_complete(), method="svi", num_steps=1)
 

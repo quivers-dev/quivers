@@ -21,11 +21,16 @@ from typing import Literal, Mapping
 
 import didactic.api as dx
 import numpy as np
+import pandas as pd
+import torch
 
 from quivers._splines import MSplineBasis
 from quivers.formulas._survival import BaselineSpec
 from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._family_registry import FamilyRegistry
+from quivers.dsl.ast_nodes import Module
+from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._kernel_law import KernelLaw
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec.families import DistributionFamily
 from quivers.qiec.families import family as semantic_family
@@ -276,6 +281,58 @@ class OrdinalSpec(dx.Model):
     thresholds: Literal["flexible", "equidistant", "sum_to_zero"] = "flexible"
 
 
+LOCATION = "mu"
+"""The parameter whose formula is the main formula of the model."""
+
+
+def parameter_prefix(name: str) -> str:
+    """Return the namespace of the predictor of a parameter.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name.
+
+    Returns
+    -------
+    str
+        Empty for the location ``mu``, whose formula is the main formula;
+        ``dpar_<name>_`` for any other parameter.
+    """
+    return "" if name == LOCATION else f"dpar_{name}_"
+
+
+class ParameterCoordinates(dx.Model):
+    """The coordinates of a parameter that takes one value per element of an axis.
+
+    Attributes
+    ----------
+    axis : str
+        Finite axis of the parameter's value.
+    size : int
+        Number of elements of the axis.
+    reference : int or None
+        Coordinate fixed at zero on the link scale, so that a predictor has
+        one coefficient vector per other coordinate; None when every
+        coordinate is free.
+    """
+
+    axis: str
+    size: int
+    reference: int | None = None
+
+    @property
+    def free(self) -> tuple[int, ...]:
+        """The coordinates a predictor gives a value.
+
+        Returns
+        -------
+        tuple[int, ...]
+            Every coordinate but the reference, in axis order.
+        """
+        return tuple(index for index in range(self.size) if index != self.reference)
+
+
 class AuxParam(dx.Model):
     """An auxiliary family parameter (scale, dispersion, etc.).
 
@@ -314,6 +371,9 @@ class AuxParam(dx.Model):
     per_component : bool
         Whether the parameter has one value per free component of the
         family's `ResponseSpec`.
+    coordinates : ParameterCoordinates or None
+        The axis of a parameter that takes one value per element of an axis
+        of its own; None for a scalar parameter.
     """
 
     name: str
@@ -326,6 +386,7 @@ class AuxParam(dx.Model):
     links: tuple[str, ...] | None = None
     below_response: bool = False
     per_component: bool = False
+    coordinates: ParameterCoordinates | None = None
 
     @property
     def parameter_class(self) -> str:
@@ -649,6 +710,9 @@ class Family(ValueModel):
     mixture : MixtureSpec or None
         Components and ordering of a finite mixture built by
         `quivers.formulas.mixture`.
+    kernel_law : KernelLaw or None
+        A law that builds the family's kernel itself, such as a named QVR
+        program; None for a family observed through its native law.
     """
 
     name: str
@@ -906,6 +970,73 @@ class Family(ValueModel):
     mixture: MixtureSpec | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    kernel_law: KernelLaw | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    @property
+    def reads_location(self) -> bool:
+        """Whether the family's kernel reads the location ``mu``.
+
+        Returns
+        -------
+        bool
+            True for a native law; for a kernel law, whether ``mu`` is one of
+            the parameters it replaces.
+        """
+        return self.kernel_law is None or any(
+            aux.name == LOCATION for aux in self.aux_params
+        )
+
+    @property
+    def kernel_columns(self) -> tuple[str, ...]:
+        """The data columns the family's kernel reads at each row by name.
+
+        Returns
+        -------
+        tuple[str, ...]
+            The columns of a kernel law; empty for a native law, which reads
+            only the formulas' columns.
+        """
+        return () if self.kernel_law is None else self.kernel_law.row_columns
+
+    def kernel_bindings(
+        self,
+        frame: pd.DataFrame,
+        data2: Mapping[str, np.ndarray | pd.DataFrame | torch.Tensor | float | int]
+        | None,
+    ) -> dict[str, torch.Tensor]:
+        """Bind the data the family's kernel reads by name.
+
+        Parameters
+        ----------
+        frame : pandas.DataFrame
+            The rows of the response, in row order.
+        data2 : Mapping[str, numpy.ndarray or pandas.DataFrame or torch.Tensor or float or int] or None
+            Values that are not indexed by the rows.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Values by input name; empty for a native law.
+        """
+        return {} if self.kernel_law is None else self.kernel_law.bindings(frame, data2)
+
+    def check_kernel(self, module: Module, families: FamilyCatalog | None) -> None:
+        """Check a model emitted with the family's kernel law.
+
+        A native law's model is correct by its construction; a kernel law
+        states a body the formulas change, so its model is checked.
+
+        Parameters
+        ----------
+        module : Module
+            The emitted model.
+        families : FamilyCatalog or None
+            Compilation-local laws of the model.
+        """
+        if self.kernel_law is not None:
+            self.kernel_law.check(module, families)
 
     @dx.model_validator()
     def _validate_declarations(self) -> None:

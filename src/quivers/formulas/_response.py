@@ -2,17 +2,125 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Collection
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
+from quivers._values import ValueModel
 from quivers.formulas._count_data import checked_integer_data
 import torch
 
 from quivers.formulas.formula import Formula
+from quivers.formulas.family import LOCATION
 
 if TYPE_CHECKING:
     from quivers.formulas.family import Family
+
+
+class ResponseReadout(ValueModel):
+    """The measurements a response law exposes to posterior readers.
+
+    Parameters
+    ----------
+    law : str
+        Name of the sampled response law.
+    location : str or None
+        Regressed location slot, or None for an authored or fixed location.
+    categories : int
+        Extent of the category axis, zero for a numeric response.
+    ordinal : bool
+        Whether a reader may ask for moments of the ordered category codes.
+    unordered : bool
+        Whether the categories lack an ordering for residual diagnostics.
+    decision : bool
+        Whether the law has a measured reaction time and a binary decision.
+    circular : bool
+        Whether the response is angular.
+    r_squared : {"model", "residual"}
+        Default variance diagnostic for this response law.
+    vector_response : bool
+        Whether the response has one event with several coordinates.
+    trials_parameter : str or None
+        Declared finite-trial parameter, when present.
+    constrains_cutpoints : bool
+        Whether category-specific predictors must retain ordered cutpoints.
+    """
+
+    law: str
+    location: str | None
+    categories: int
+    ordinal: bool
+    unordered: bool
+    decision: bool
+    circular: bool
+    r_squared: Literal["model", "residual"]
+    vector_response: bool
+    trials_parameter: str | None
+    constrains_cutpoints: bool
+
+
+def response_category_labels(formula: Formula, family: Family) -> tuple[int | str, ...]:
+    """Return the response categories or event components in fitted order.
+
+    Parameters
+    ----------
+    formula : Formula
+        Formula carrying the fitted response layout.
+    family : Family
+        Family specifying whether the response has category coordinates.
+
+    Returns
+    -------
+    tuple of int or str
+        Component names, factor levels, or integer category labels. Scalar
+        numeric responses have no category labels.
+    """
+    layout = formula.response_layout
+    labels = layout.component_names or layout.category_values or layout.category_levels
+    if labels:
+        return labels
+    if family.ordinal is None and not family.unordered_categories:
+        return ()
+
+    from quivers.formulas.compile import FormulaToQVRModule
+
+    return tuple(range(FormulaToQVRModule._category_count(formula, family=family.name)))
+
+
+def response_readout(
+    family: Family, categories: int, *, fixed: Collection[str] = ()
+) -> ResponseReadout:
+    """Read the posterior measurement properties declared by a response family.
+
+    Parameters
+    ----------
+    family : Family
+        Family whose kernel defines the observed law.
+    categories : int
+        Fitted category count, zero for a numeric response.
+    fixed : Collection[str]
+        Program parameters held at a constant instead of regressed.
+
+    Returns
+    -------
+    ResponseReadout
+        Measurements declared for the fitted response.
+    """
+    return ResponseReadout(
+        law=family.observe_family,
+        location=LOCATION if family.reads_location and LOCATION not in fixed else None,
+        categories=categories,
+        ordinal=family.response_ordinal() is not None,
+        unordered=family.unordered_categories,
+        decision=family.decision_event is not None,
+        circular=family.circular,
+        r_squared=family.r_squared,
+        vector_response=family.vector_response,
+        trials_parameter=family.trials_parameter,
+        constrains_cutpoints=family.ordinal is not None
+        and family.ordinal.kind in {"cumulative", "hurdle_cumulative"},
+    )
 
 
 def normalize_response_values(
@@ -35,7 +143,8 @@ def normalize_response_values(
     Returns
     -------
     numpy.ndarray
-        Scalar category codes or numeric row/event values in Int64 or Float64.
+        Scalar category codes or numeric row/event values in Int64 or Float64;
+        Boolean values become the integers zero and one.
 
     Raises
     ------
@@ -71,6 +180,9 @@ def normalize_response_values(
             values = values[:, 0]
         if values.ndim != 1:
             raise ValueError("vector responses require explicit cbind component labels")
+    if values.dtype.kind == "b":
+        # A Boolean response is the integer carrier of zero and one.
+        values = values.astype(np.int64)
     if values.dtype.kind not in "iuf":
         raise ValueError("responses must have a real or integer numeric carrier")
     integer = values.dtype.kind in "iu"
@@ -263,9 +375,8 @@ def resolve_trials(family: Family, trials: int | str | None) -> int | str | None
 
 def expected_response(
     distribution: torch.distributions.Distribution,
-    family: Family,
+    readout: ResponseReadout,
     *,
-    categories: int = 0,
     decision: bool = False,
     mc_samples: int | None = None,
 ) -> torch.Tensor:
@@ -275,10 +386,8 @@ def expected_response(
     ----------
     distribution : torch.distributions.Distribution
         Native law produced by the existing program replay.
-    family : Family
-        Retained response-family semantics and category ordering.
-    categories : int
-        Actual ordered or categorical response extent, zero for numeric events.
+    readout : ResponseReadout
+        Retained response measurements and category ordering.
     decision : bool
         Return Wiener lower/upper probabilities rather than reaction-time means.
     mc_samples : int or None
@@ -296,11 +405,11 @@ def expected_response(
     """
     from quivers.inference._response import category_probabilities, response_mean
 
-    if family.circular:
+    if readout.circular:
         raise TypeError(
             "a circular response expectation requires an angular convention"
         )
-    if decision or family.decision_event is not None:
+    if decision or readout.decision:
         from quivers.continuous._wiener import Wiener
 
         if not isinstance(distribution, Wiener):
@@ -310,12 +419,12 @@ def expected_response(
         )
     elif isinstance(distribution, torch.distributions.Categorical):
         value = distribution.probs
-    elif family.response_ordinal() is not None:
-        value = category_probabilities(distribution, categories)
+    elif readout.ordinal:
+        value = category_probabilities(distribution, readout.categories)
     else:
         value = response_mean(distribution, mc_samples)
     if not torch.isfinite(value).all():
         raise ValueError(
-            f"{family.observe_family} has an undefined or nonfinite response mean at a posterior draw"
+            f"{readout.law} has an undefined or nonfinite response mean at a posterior draw"
         )
     return value

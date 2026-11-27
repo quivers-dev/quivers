@@ -18,22 +18,45 @@ from quivers.formulas._posterior import (
     collect_draws,
     row_binding,
 )
+from quivers.formulas._response import ResponseReadout
 from quivers.formulas._response_modifiers import ExpectationOptions
 
 if TYPE_CHECKING:
+    from quivers.formulas._blocks import ResponseData
     from quivers.formulas._fit import BayesianFit
+    from quivers.formulas._residual_law import ResidualLaw
 
 
 def _responses(fit: BayesianFit, options: ExpectationOptions) -> torch.Tensor:
     """Evaluate original responses with the retained formula transform."""
     data = options.get("new_data")
+    if data is not None and fit.prediction_plan is None:
+        raise ValueError("new-data R-squared requires retained response evaluators")
+    return evaluate_responses(fit._response_data, data)
+
+
+def evaluate_responses(
+    fitted_response: ResponseData, data: IntoDataFrame | None
+) -> torch.Tensor:
+    """Read training outcomes or evaluate the fitted response on fresh rows.
+
+    Parameters
+    ----------
+    fitted_response : ResponseData
+        Retained values, layout, and response transformation.
+    data : IntoDataFrame or None
+        Fresh rows supplying the recorded outcome, or None for training rows.
+
+    Returns
+    -------
+    torch.Tensor
+        Recorded response values on their fitted row and event axes.
+    """
     if data is None:
-        values = fit.formula.response_values
+        values = fitted_response.values
     else:
-        if fit.prediction_plan is None:
-            raise ValueError("new-data R-squared requires retained response evaluators")
         frame = nw.from_native(data, eager_only=True).to_pandas()
-        response = fit.prediction_plan.designs["mu"].response
+        response = fitted_response.evaluator
         if response is None:
             raise ValueError(
                 "new-data R-squared requires a retained response transform"
@@ -45,8 +68,9 @@ def _responses(fit: BayesianFit, options: ExpectationOptions) -> torch.Tensor:
             raise ValueError(
                 "R-squared needs new-data response values; supply their columns or observed explicitly"
             ) from error
-        if fit.formula.response_layout.category_levels:
-            width = len(fit.formula.response_layout.category_levels)
+        layout = fitted_response.layout
+        if layout.category_levels:
+            width = len(layout.category_levels)
             if (
                 values.shape != (len(frame), width)
                 or not np.all((values == 0) | (values == 1))
@@ -56,7 +80,7 @@ def _responses(fit: BayesianFit, options: ExpectationOptions) -> torch.Tensor:
                     "R-squared responses require the fitted category encoding"
                 )
             values = values.argmax(-1)
-        elif not fit.formula.response_layout.event_shape and values.ndim == 2:
+        elif not layout.event_shape and values.ndim == 2:
             values = values[:, 0]
     return torch.as_tensor(values.copy())
 
@@ -69,14 +93,14 @@ the number of rows."""
 
 
 def law_moments(
-    fit: BayesianFit, law: Distribution
+    readout: ResponseReadout, law: Distribution
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the conditional mean and variance of a replayed response law.
 
     Parameters
     ----------
-    fit : BayesianFit
-        The response, whose family says how its law is read.
+    readout : ResponseReadout
+        The measurements exposed by the response law.
     law : torch.distributions.Distribution
         The response law at one draw.
 
@@ -92,11 +116,11 @@ def law_moments(
         If the law has no analytic moments.
     """
     try:
-        if fit.family.decision_event is not None:
+        if readout.decision:
             assert isinstance(law, Wiener)
             return law.mean_response_time, law.variance_response_time
-        if fit.family.response_ordinal() is not None:
-            probs = category_probabilities(law, len(fit.category_labels))
+        if readout.ordinal:
+            probs = category_probabilities(law, readout.categories)
             codes = torch.arange(
                 probs.shape[-1], device=probs.device, dtype=probs.dtype
             )
@@ -110,12 +134,15 @@ def law_moments(
 
 
 def formula_r2(
-    fit: BayesianFit,
+    fitted_response: ResponseData,
+    readout: ResponseReadout,
+    dependence: ResidualLaw | None,
     method: Literal["auto", "model", "residual"],
     observed: torch.Tensor | None,
     *,
     new_data: IntoDataFrame | None,
     mc_samples: int | None,
+    recorded: Callable[[], torch.Tensor],
     expected: Callable[[], torch.Tensor],
     laws: ResponseLaws,
 ) -> torch.Tensor:
@@ -129,8 +156,12 @@ def formula_r2(
 
     Parameters
     ----------
-    fit : BayesianFit
-        The response: its family, residual law, formula, and recorded events.
+    fitted_response : ResponseData
+        The response's retained outcomes, layout, and modifiers.
+    readout : ResponseReadout
+        The expectations and diagnostics declared for the response.
+    dependence : ResidualLaw or None
+        The residual law correlated across the rows.
     method : {"auto", "model", "residual"}
         Requested form.
     observed : torch.Tensor or None
@@ -140,6 +171,8 @@ def formula_r2(
     mc_samples : int or None
         Monte Carlo budget of the conditional means, refused by the model
         form.
+    recorded : Callable[[], torch.Tensor]
+        Outcomes on the request's training or fresh rows.
     expected : Callable[[], torch.Tensor]
         Conditional means on ``(chain, draw, row)``.
     laws : ResponseLaws
@@ -162,20 +195,20 @@ def formula_r2(
         raise ValueError("R-squared method must be auto, model, or residual")
     if observed is not None and not isinstance(observed, torch.Tensor):
         raise TypeError("R-squared observed responses must be a real tensor")
-    if fit.family.unordered_categories:
+    if readout.unordered:
         raise ValueError(
             "bayes_R2 is not defined for unordered categorical models, as in "
             "brms: unordered categories have no residual"
         )
     if method == "auto":
         method = (
-            (fit.family if fit.residual is None else fit.residual).r_squared
-            if observed is None and fit.formula.modifiers.truncation is None
+            (readout if dependence is None else dependence).r_squared
+            if observed is None and fitted_response.modifiers.truncation is None
             else "residual"
         )
     if method == "residual":
         if observed is None:
-            censoring = fit.formula.modifiers.censoring
+            censoring = fitted_response.modifiers.censoring
             if (
                 new_data is None
                 and censoring is not None
@@ -185,9 +218,9 @@ def formula_r2(
                     "residual R-squared needs actual responses, not censoring bounds; "
                     "supply observed or use a model-variance diagnostic"
                 )
-            observed = _responses(fit, ExpectationOptions(new_data=new_data))
+            observed = recorded()
         means = expected()
-        if fit.family.response_ordinal() is not None:
+        if readout.ordinal:
             codes = torch.arange(
                 means.shape[-1], device=means.device, dtype=means.dtype
             )
@@ -199,7 +232,7 @@ def formula_r2(
         raise ValueError(
             "model R-squared uses analytic moments; mc_samples applies to residual means"
         )
-    event = fit.formula.response_layout.event_shape
+    event = fitted_response.layout.event_shape
     replayed, shape, rows = laws()
 
     def moments() -> Iterator[torch.Tensor]:
@@ -208,7 +241,7 @@ def formula_r2(
         # analytic moments.
         try:
             for law in replayed:
-                mean, variance = law_moments(fit, law)
+                mean, variance = law_moments(readout, law)
                 yield torch.stack(
                     (
                         row_binding(mean, rows, event),

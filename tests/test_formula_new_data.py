@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 import torch
 
+from quivers.dsl import Compiler
 from quivers.formulas import fit, formula_from_data
 from quivers.formulas._prediction import prepare_prediction
 from quivers.inference.mcmc.driver import MCMCResult
@@ -67,8 +68,6 @@ def test_new_rows_compile_once_preserve_training_priors_and_exact_gradients(
     )
     original = result.qvr_source
     observations = {name: value.clone() for name, value in result.observations.items()}
-    from quivers.formulas._prediction import Compiler
-
     compile_ = Compiler.compile
     calls = []
 

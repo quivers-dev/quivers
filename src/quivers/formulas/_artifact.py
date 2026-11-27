@@ -13,7 +13,10 @@ import narwhals as nw
 import pandas as pd
 import torch
 
+from quivers.continuous.programs import MonadicProgram
 from quivers.dsl.emit import module_to_source
+from quivers.formulas._fit_core import FormulaFit
+from quivers.formulas._program_kernel import program_arguments
 from quivers.formulas._fit import (
     BayesianFit,
     _InferenceResult,
@@ -23,6 +26,7 @@ from quivers.formulas._fit import (
     fit,
 )
 from quivers.formulas._refit import capture_recipe
+from quivers.inference import MCMCResult, PriorDraws
 from quivers.modeling._artifact_codec import (
     ArtifactContext,
     _Codec,
@@ -34,6 +38,7 @@ from quivers.modeling.artifact import (
     _restore_posterior,
     _validate_recorded,
 )
+from quivers.modeling.refit import RefitRecipe
 
 __all__: list[str] = []
 
@@ -204,6 +209,104 @@ def _arguments(function, options: Mapping[str, object]) -> dict:
     }
 
 
+def _stored_fit_state[Result](
+    fitted: FormulaFit,
+    codec: _Codec,
+    *,
+    kind: str,
+    data: IntoDataFrame,
+    recipe: RefitRecipe[IntoDataFrame, Mapping[str, object], Result],
+    source: str,
+    modules: Mapping[str, torch.nn.Module | None] | None = None,
+) -> dict:
+    """Encode a formula outcome and the rows and recipe that reproduce it.
+
+    Parameters
+    ----------
+    fitted : FormulaFit
+        Native fitted state shared by all response models.
+    codec : _Codec
+        Declarative checkpoint encoder.
+    kind : str
+        Kind of checkpoint to reconstruct.
+    data : IntoDataFrame
+        Original training rows retained for preparation.
+    recipe : RefitRecipe
+        Canonical fit arguments and ownership of their original rows.
+    source : str
+        Canonical source of the prepared formula model.
+    modules : Mapping or None
+        Additional trained modules of this checkpoint kind.
+
+    Returns
+    -------
+    dict
+        Encoded fit state and its reconstruction inputs.
+    """
+    return {
+        "kind": kind,
+        "data": codec.encode(data),
+        "recipe_data": codec.encode(recipe.data)
+        if recipe.snapshot_policy == "reference"
+        else None,
+        "options": codec.encode(dict(recipe.method)),
+        "ownership": recipe.snapshot_policy,
+        "source": source,
+        "program": codec.encode(_module_state(fitted.program)),
+        **{name: codec.encode(module) for name, module in (modules or {}).items()},
+        "observations": codec.encode(dict(fitted.observations)),
+        "posterior": _posterior_state(fitted.posterior, codec),
+        "prior": codec.encode(fitted.prior),
+        "sample_prior": fitted.sample_prior,
+        "losses": codec.encode(fitted.losses),
+        "criteria": codec.encode(dict(fitted.criteria)),
+    }
+
+
+def _restore_fit_state(
+    manifest: dict,
+    codec: _Codec,
+    program: MonadicProgram,
+    observations: Mapping[str, torch.Tensor],
+) -> _InferenceResult:
+    """Restore the fitted state of a checked model and its observation bindings.
+
+    Parameters
+    ----------
+    manifest : dict
+        Verified formula artifact specification.
+    codec : _Codec
+        Checked tensor and declarative option decoder.
+    program : MonadicProgram
+        The recompiled formula model.
+    observations : Mapping[str, torch.Tensor]
+        Checked observations and host-data bindings of that model.
+
+    Returns
+    -------
+    _InferenceResult
+        The recorded posterior, prior, prior mode and loss history.
+
+    Raises
+    ------
+    TypeError
+        If a retained prior is present without recorded draws.
+    """
+    _restore_module(program, codec.decode(manifest["program"]))
+    context = ArtifactContext(
+        program, torch.zeros(1, 1, dtype=torch.long), observations
+    )
+    posterior = _restore_posterior(manifest["posterior"], codec, context)
+    prior = codec.decode(manifest["prior"])
+    if prior is not None:
+        if not isinstance(prior, MCMCResult | PriorDraws):
+            raise TypeError("artifact retained prior must be a recorded result")
+        _validate_recorded(prior, context)
+    return _InferenceResult(
+        posterior, codec.decode(manifest["losses"]), prior, manifest["sample_prior"]
+    )
+
+
 def _formula_state(fitted: BayesianFit, codec: _Codec) -> dict:
     """Capture original preparation inputs and fitted state without live evaluators.
 
@@ -239,24 +342,15 @@ def _formula_state(fitted: BayesianFit, codec: _Codec) -> dict:
         raise ValueError(
             "formula artifact requires its retained checked prediction plan"
         )
-    return {
-        "kind": "formula",
-        "data": codec.encode(fitted.prediction_plan.preparation_data),
-        "recipe_data": codec.encode(recipe.data)
-        if recipe.snapshot_policy == "reference"
-        else None,
-        "options": codec.encode(dict(recipe.method)),
-        "ownership": recipe.snapshot_policy,
-        "source": module_to_source(fitted.prediction_plan.module),
-        "program": codec.encode(_module_state(fitted.program)),
-        "predictor": codec.encode(fitted.predictor),
-        "observations": codec.encode(dict(fitted.observations)),
-        "posterior": _posterior_state(fitted.posterior, codec),
-        "prior": codec.encode(fitted.prior),
-        "sample_prior": fitted.sample_prior,
-        "losses": codec.encode(fitted.losses),
-        "criteria": codec.encode(dict(fitted.criteria)),
-    }
+    return _stored_fit_state(
+        fitted,
+        codec,
+        kind="formula",
+        data=fitted.prediction_plan.preparation_data,
+        recipe=recipe,
+        source=module_to_source(fitted.prediction_plan.module),
+        modules={"predictor": fitted.predictor},
+    )
 
 
 def _restore_formula(manifest: dict, codec: _Codec) -> BayesianFit:
@@ -304,14 +398,33 @@ def _restore_formula(manifest: dict, codec: _Codec) -> BayesianFit:
         raise TypeError("artifact formula observations require named tensors")
     if predictor_name is not None and predictor_name not in observations:
         raise ValueError("artifact is missing its saved predictor output")
+    # A program fit stores the program's text and formulas, as it was called.
+    arguments = bound.arguments
+    formula, family, distributional = program_arguments(
+        arguments["formula"],
+        program=arguments["program"],
+        entry=arguments["entry"],
+        static=arguments["static"],
+        parameters=arguments["parameters"],
+        response=arguments["response"],
+        family=arguments["family"],
+        distributional=arguments["distributional"],
+        nonlinear=arguments["nonlinear"],
+        fixed_parameters=arguments["fixed_parameters"],
+        caller="load_fit",
+    )
     prepared = _prepare_formula(
         **_arguments(
             _prepare_formula,
             {
                 **options,
+                "formula": formula,
+                "family": family,
+                "distributional": distributional,
                 "data": data,
                 "predictor_name": predictor_name,
                 "caller": "load_fit",
+                "allow_missing": True,
             },
         )
     )
@@ -341,21 +454,7 @@ def _restore_formula(manifest: dict, codec: _Codec) -> BayesianFit:
                 f"artifact formula preparation changed checked binding {name!r}"
             )
     native.observations.update(observations)
-    _restore_module(native.program, codec.decode(manifest["program"]))
-    context = ArtifactContext(
-        native.program, torch.zeros(1, 1, dtype=torch.long), native.observations
-    )
-    posterior = _restore_posterior(manifest["posterior"], codec, context)
-    prior = codec.decode(manifest["prior"])
-    if prior is not None:
-        from quivers.inference import MCMCResult, PriorDraws
-
-        if not isinstance(prior, MCMCResult | PriorDraws):
-            raise TypeError("artifact retained prior must be a recorded result")
-        _validate_recorded(prior, context)
-    result = _InferenceResult(
-        posterior, codec.decode(manifest["losses"]), prior, manifest["sample_prior"]
-    )
+    result = _restore_fit_state(manifest, codec, native.program, native.observations)
     return _assemble_fit(
         native, result, refit_recipe=recipe, **_arguments(_assemble_fit, options)
     ).with_(criteria=codec.decode(manifest["criteria"]))

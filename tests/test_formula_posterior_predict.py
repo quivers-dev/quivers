@@ -44,7 +44,7 @@ def test_gaussian_shared_parameters_produce_independent_rows_and_correct_moments
     def reject_recompile(*args, **kwargs):
         raise AssertionError("predictive sampling must reuse the fitted program")
 
-    monkeypatch.setattr("quivers.formulas._fit.Compiler.compile", reject_recompile)
+    monkeypatch.setattr("quivers.dsl.Compiler.compile", reject_recompile)
     samples = result.posterior_predict(seed=71)
     assert samples.shape == (2, draws, rows)
     residual = samples - 0.3

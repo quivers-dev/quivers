@@ -33,12 +33,14 @@ from quivers.formulas._postprocess_methods import (
     SinglePredictionOptions,
 )
 from quivers.formulas._postprocess_predict import PredictionMethod
-from quivers.formulas._response import response_tensor
+from quivers.formulas._response import response_category_labels, response_tensor
 from quivers.formulas._fit_types import Fit
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
     from quivers.formulas._joint_fit import MultivariateFit
+    from quivers.formulas.family import Family
+    from quivers.formulas.formula import Formula
 
 type Prefix = Literal["ppc", "ppd"]
 """Posterior predictive check (``ppc``) or predictive distribution (``ppd``)."""
@@ -412,34 +414,17 @@ def _predict(
     return values.reshape(-1, values.shape[-1]).double()
 
 
-def _view(fit: Fit, resp: str | None) -> BayesianFit:
-    """Return the single-response view of the checked response.
-
-    Parameters
-    ----------
-    fit : BayesianFit or MultivariateFit
-        Fitted model.
-    resp : str or None
-        Joint response.
-
-    Returns
-    -------
-    BayesianFit
-        The response view.
-    """
-    if _joint(fit):
-        assert resp is not None
-        return cast("MultivariateFit", fit)._response_fit(resp)
-    return cast("BayesianFit", fit)
-
-
-def _observed(view: BayesianFit, newdata: IntoDataFrame | None) -> torch.Tensor:
+def _observed(
+    formula: Formula, family: Family, newdata: IntoDataFrame | None
+) -> torch.Tensor:
     """Return observed responses in the fit's response coding.
 
     Parameters
     ----------
-    view : BayesianFit
-        Response view.
+    formula : Formula
+        The fitted response and its outcome encoding.
+    family : Family
+        Family specifying the outcomes' carrier.
     newdata : IntoDataFrame or None
         Prediction rows holding the response, or None for training rows.
 
@@ -454,14 +439,14 @@ def _observed(view: BayesianFit, newdata: IntoDataFrame | None) -> torch.Tensor:
         If new rows lack the response or hold unknown categories.
     """
     if newdata is None:
-        values = response_tensor(view.formula, view.family).double()
+        values = response_tensor(formula, family).double()
         return values.reshape(values.shape[0], -1)[:, 0] if values.ndim > 1 else values
     frame = nw.from_native(newdata, eager_only=True).to_pandas()
-    name = view.formula.response_name
+    name = formula.response_name
     if name not in frame.columns:
         raise ValueError(f"newdata must hold the response {name!r} for ppc types")
     column = frame[name]
-    labels = view.category_labels
+    labels = response_category_labels(formula, family)
     if labels:
         index = {str(label): i for i, label in enumerate(labels)}
         unknown = sorted({str(v) for v in column.tolist()} - set(index))
@@ -471,13 +456,13 @@ def _observed(view: BayesianFit, newdata: IntoDataFrame | None) -> torch.Tensor:
     return torch.as_tensor(column.to_numpy(np.float64))
 
 
-def _status(view: BayesianFit, newdata: IntoDataFrame | None) -> np.ndarray | None:
+def _status(formula: Formula, newdata: IntoDataFrame | None) -> np.ndarray | None:
     """Return brms's censoring codes of the training rows.
 
     Parameters
     ----------
-    view : BayesianFit
-        Response view.
+    formula : Formula
+        The fitted response carrying the censoring status.
     newdata : IntoDataFrame or None
         Prediction rows; censoring is read only for training rows.
 
@@ -486,7 +471,7 @@ def _status(view: BayesianFit, newdata: IntoDataFrame | None) -> np.ndarray | No
     numpy.ndarray or None
         Codes -1 (left), 0 (none), 1 (right), 2 (interval), or None.
     """
-    censoring = view.formula.modifiers.censoring
+    censoring = formula.modifiers.censoring
     if censoring is None or newdata is not None:
         return None
     return np.asarray(censoring.status.data, dtype=np.float64).reshape(-1)
@@ -586,10 +571,14 @@ def pp_check(
             resp = joint.response_names[0]
         elif resp not in joint.response_names:
             raise ValueError(f"unknown response {resp!r}")
-    elif resp is not None:
-        raise ValueError("resp applies only to joint fits")
-    view = _view(fit, resp)
-    if view.family.vector_response:
+        formula = joint.emission.responses[resp].formula
+        family = joint.prepared[resp].family
+    else:
+        if resp is not None:
+            raise ValueError("resp applies only to joint fits")
+        single = cast("BayesianFit", fit)
+        formula, family = single.formula, single.family
+    if family.vector_response:
         raise ValueError(
             "pp_check is not implemented for multicolumn response families"
         )
@@ -613,12 +602,12 @@ def pp_check(
         "posterior_epred" if type == "error_binned" else "posterior_predict"
     )
     if type == "error_binned" and (
-        view.family.ordinal is not None or view.category_labels
+        family.ordinal is not None or response_category_labels(formula, family)
     ):
         raise ValueError("error_binned is not available for polytomous models")
     ids = _select_draws(fit, type, ndraws, draw_ids, seed)
     yrep = _predict(fit, resp, method, newdata, ids, seed)
-    y = _observed(view, newdata) if prefix == "ppc" else None
+    y = _observed(formula, family, newdata) if prefix == "ppc" else None
     n = yrep.shape[1]
     group_values = (
         None if group is None else np.asarray(rows[group].tolist(), dtype=object)
@@ -630,7 +619,7 @@ def pp_check(
     if y is not None:
         keep &= ~torch.isnan(y).numpy()
     status_values = None
-    codes = _status(view, newdata)
+    codes = _status(formula, newdata)
     if codes is not None:
         if kind == "km":
             keep &= np.isin(codes, (0.0, 1.0))

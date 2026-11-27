@@ -17,8 +17,7 @@ from quivers.diagnostics import (
     hypothesis_summary,
 )
 from quivers.diagnostics.contrast import _contrast_plan, _evaluate_contrast
-from quivers.formulas import PriorSpec, R2D2, RegularizedHorseshoe, fit
-from quivers.formulas._posterior import posterior_draws
+from quivers.formulas import BayesianFit, PriorSpec, R2D2, RegularizedHorseshoe, fit
 
 
 def _analysis(samples, kind="mcmc"):
@@ -196,8 +195,8 @@ def test_formula_point_contrasts_reuse_joint_hierarchical_prior_streams(hierarch
         bandwidth=0.3,
     )
     state = torch.random.get_rng_state()
-    with patch(
-        "quivers.formulas._fit.posterior_draws", wraps=posterior_draws
+    with patch.object(
+        BayesianFit, "draws", autospec=True, side_effect=BayesianFit.draws
     ) as collect:
         actual = result.hypothesis(
             "x-z", num_samples=7, seed=8, prior=True, point=PointNullSpec(bandwidth=0.3)
@@ -205,8 +204,9 @@ def test_formula_point_contrasts_reuse_joint_hierarchical_prior_streams(hierarch
     assert collect.call_count == 2
     assert torch.equal(state, torch.random.get_rng_state())
     torch.testing.assert_close(actual.point_evidence.log_ratio, oracle.log_ratio)
-    with patch(
-        "quivers.formulas._fit.posterior_draws",
+    with patch.object(
+        BayesianFit,
+        "draws",
         side_effect=AssertionError("must validate prior request before drawing"),
     ):
         with pytest.raises(ValueError, match="prior=True"):

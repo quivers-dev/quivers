@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 import torch
 
-from quivers.formulas import NonlinearExpression, PriorSpec, families, fit
+from quivers.formulas import NonlinearExpression, PriorSpec, bf, families, fit
 from quivers.dsl.emit import module_to_source
 from quivers.inference import AutoNormalGuide, MCMC, MCMCResult, SVI
 from quivers.modeling import ArtifactFactory, load_fit, save_fit
@@ -53,6 +53,31 @@ def _restore(fitted, tmp_path, monkeypatch, *, factories=None):
         restored = load_fit(path, factories=factories)
     assert torch.equal(before, torch.random.get_rng_state())
     return restored
+
+
+@pytest.mark.parametrize("policy", ["quivers", "brms"])
+def test_joint_artifact_restores_the_fitted_prior_policy(policy, tmp_path, monkeypatch):
+    """Rebuild the checked program with the policy used during fitting."""
+    frame = pd.DataFrame(
+        {"y": [-2.0, 0.0, 2.0, 4.0], "z": [-3.0, 3.0, 6.0, 9.0], "x": range(4)}
+    )
+    fitted = fit(
+        bf("y ~ x") + bf("z ~ x"),
+        data=frame,
+        method="svi",
+        num_steps=3,
+        seed=2,
+        default_priors=policy,
+    )
+    restored = _restore(fitted, tmp_path, monkeypatch)
+    assert restored.qvr_source == fitted.qvr_source
+    assert restored.specification == fitted.specification
+    if policy == "brms":
+        with pytest.raises(ValueError, match="prior_draws requires a proper prior"):
+            restored.prior_draws(num_samples=3)
+    draws = restored.draws(num_samples=3, seed=11)
+    for name, value in fitted.draws(num_samples=3, seed=11).items():
+        torch.testing.assert_close(draws[name], value, rtol=0, atol=0)
 
 
 def _assert_replay(fitted, restored, *, fresh=None):

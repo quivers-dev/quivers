@@ -851,9 +851,17 @@ def loo_subsample_estimate(
     selected = torch.tensor(units, dtype=torch.long)
     if joint:
         joint_fit = cast("MultivariateFit", fit)
+        responses = (
+            joint_fit.emission.responses[name] for name in joint_fit._selection(resp)
+        )
         separable = all(
-            joint_fit._response_fit(name)._separable_rows
-            for name in joint_fit._selection(resp)
+            response.lens._residual is None
+            and all(
+                term.separable
+                for predictor in response.lens._planned(response.formula)
+                for term in predictor.terms
+            )
+            for response in responses
         )
         subsample = (
             joint_fit.log_likelihood(

@@ -1026,6 +1026,194 @@ thresholds has no counterpart, and the built-in ordinal families take that
 role. `conditional_effects` refuses a `conditions` value for a column bound
 through `data`, because the column keeps its fitted numeric carrier.
 
+### Formulas on the parameters of a program
+
+`fit`, `formula_to_qvr`, and `get_prior` take a QVR program and formulas
+for named parameters. Pass source text to `program=` and use `entry=` to
+select a program when the text declares several. To select a program in a
+file, pass `program=(path, entry)`. A binder such as `[K : FinSet]` or
+`[K : Nat]` takes its extent from `static={"K": 3}`. The row object takes the
+number of included data rows. A saved fit retains the source text, entry
+name, and extents, so it loads without the source file.
+
+`response=` selects the observed site to report. `parameters=` maps sample
+sites or program inputs to formulas. A row-indexed draw such as
+`sample mu : Trial <- Normal(...)` can take a constant or row-varying formula.
+When `mu` has a formula, it serves as the fit's location predictor. A program
+may keep its authored location and regress a different parameter, such as
+`sigma`. Call
+`posterior_linpred(parameter="sigma", transform=True)` to read the fitted
+scale on its natural scale. `posterior_epred` and `log_likelihood` use the
+location computed by the program, including on new rows.
+
+#### Links and priors
+
+The parameter's support determines its inverse link. A real parameter is its
+predictor `eta`, a positive one is `exp(eta)`, and one on `(a, b)` is
+`a + (b - a) * sigmoid(eta)`. A formula replaces the site's sampling
+statement with the linked predictor. The joint density scores the regression
+coefficients under their own priors, as in a distributional formula. An
+intercept-only `noise ~ 1` on a `Beta(1, 20)` site thus induces a logit-normal
+prior, and the default `Normal(0, 5)` intercept puts much of its mass near 0
+and 1. `PriorSpec("Normal(-3.0, 1.0)", class_="Intercept", dpar="noise")`
+sets a prior on that intercept. To change the law of an unregressed site,
+edit its sampling statement in the program.
+
+A [`NonlinearExpression`](../api/formulas/fit.md#quivers.formulas.NonlinearExpression)
+in `parameters=` gives the parameter's value on the link scale. Its named
+predictors can have their own formulas in that mapping. For instance,
+`{"noise": NonlinearExpression(expression="a + b * x"), "a": "~ 1", "b": "~ 1"}`
+lets the response-noise parameter depend on `x`. A vector parameter takes one
+expression per free coordinate, keyed by its zero-based index. For a real
+tensor parameter, the coefficients follow the declared axes in row-major
+order, and the program receives the linked values on those axes. A
+positive-definite matrix takes one predictor per entry of its lower Cholesky
+factor, also in row-major order. The inverse link exponentiates the diagonal
+and multiplies the factor by its transpose. Each matrix in a batch has its
+own coordinates. The simplex link sets the first logit to zero and applies
+the softmax separately to each simplex in a batch.
+
+A neural `predictor=` module adds to the link-scale predictor of a scalar
+`mu` with a formula, including a `NonlinearExpression`. For fresh rows, pass
+the corresponding inputs as `predictor_data`.
+
+#### Observations and response modifiers
+
+Data read at each row come from columns of the same name. Scalars and data
+on other axes come from `data2`. Additional observations contribute to the
+joint likelihood. Include their values on fresh rows when predicting the
+selected response. `log_likelihood()` returns pointwise scores for the named
+response when its likelihood factors over rows.
+
+A top-level observation takes `weights()` to scale its log likelihood. A
+native law that declares recorded events takes `cens()` and `trunc()`, so
+the event is scored before its enclosing marginalization sums out latent
+values. A law with a declared error scale takes `se(error)` to use recorded
+standard errors as the scale. `se(error, sigma = TRUE)` combines those errors
+with the program's residual scale in quadrature. Poisson, negative binomial,
+and geometric observations take `rate(exposure)` for counts accumulated
+over the recorded exposure.
+
+A top-level Gaussian observation can model residual dependence across rows
+through its location formula. For instance, `~ x + ar(time=t, gr=series)`
+declares a first-order autoregression within each series. With
+`~ x + fcor(V)`, pass the fixed row covariance matrix `V` in `data2`.
+
+In a joint formula, `set_rescor(True)` can correlate a top-level Gaussian or
+Student observation with other responses declaring the same residual law.
+The Student responses share the degrees of freedom of the joint observation.
+
+The fit below reads a named program from a file and uses a formula for its
+scale. New rows require the scale covariate `x`.
+
+<!-- python: run -->
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pandas as pd
+
+from quivers.formulas import fit
+
+normal_source = """object Trial : FinSet 4
+object Val : Real 1
+
+program normal_with_scale : Trial -> Val
+    sample mu <- Normal(loc=0.0, scale=2.0)
+    sample sigma <- HalfNormal(scale=1.0)
+    observe y : Trial <- Normal(loc=mu, scale=sigma)
+    return mu
+
+export normal_with_scale
+"""
+rows = pd.DataFrame({"y": [-0.8, 0.1, 0.5, 1.3], "x": [-1.0, 0.0, 0.5, 1.0]})
+with TemporaryDirectory() as directory:
+    path = Path(directory) / "responses.qvr"
+    path.write_text(normal_source, encoding="utf-8")
+    scale_fit = fit(
+        program=(path, "normal_with_scale"),
+        parameters={"sigma": "~ x"},
+        response="y",
+        data=rows,
+        method="svi",
+        num_steps=20,
+        seed=3,
+    )
+
+new_rows = pd.DataFrame({"x": [0.25, 0.75]})
+scales = scale_fit.posterior_linpred(
+    parameter="sigma", transform=True, new_data=new_rows, num_samples=4
+)
+assert scales.shape == (1, 4, 2) and (scales > 0).all()
+assert scale_fit.posterior_epred(new_data=new_rows, num_samples=4).shape == (1, 4, 2)
+```
+
+The next program marginalizes over a categorical latent value for each row.
+The formula for `noise` varies across participants.
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import fit, formula_to_qvr
+
+program = """object Trial : FinSet 6
+object Res : FinSet 3
+object Val : Real 1
+
+program around(trial_idx : Tensor[Int]([Trial])) : Trial -> Val
+    sample res_logits <- Normal(loc=0.0, scale=1.0) [over=Res]
+    sample noise <- Beta(concentration1=1.0, concentration0=20.0)
+    let res_probs = softmax(res_logits)
+    marginalize r : Res <- Categorical(probs=res_probs) [over=Trial, reduction=logsumexp]
+        let inside = real(dist <= halfwidth[r])
+        let p = noise + (1.0 - 2.0 * noise) * inside
+        observe accept : Trial <- Bernoulli(probs=p) [via=trial_idx]
+    return noise
+
+export around
+"""
+rng = np.random.default_rng(0)
+data = pd.DataFrame(
+    {
+        "dist": rng.uniform(0.0, 4.0, 40),
+        "accept": rng.uniform(size=40) < 0.5,
+        "participant": np.repeat(["a", "b", "c", "d"], 10),
+        "trial_idx": np.arange(40),
+    }
+)
+formulas = {"res_logits": "~ 1", "noise": "~ 1 + (1 | participant)"}
+print(
+    formula_to_qvr(
+        program=program,
+        parameters=formulas,
+        response="accept",
+        data=data,
+        data2={"halfwidth": np.array([1.0, 2.0, 3.0])},
+    )
+)
+result = fit(
+    program=program,
+    parameters=formulas,
+    response="accept",
+    data=data,
+    data2={"halfwidth": np.array([1.0, 2.0, 3.0])},
+    method="svi",
+    num_steps=20,
+)
+assert result.log_likelihood(num_samples=4)["accept"].shape == (1, 4, 40)
+```
+
+A `marginalize` without `over=` draws one value for every row, so the rows'
+likelihoods multiply before it is summed out. Such a program has no
+likelihood per row, and `loo` says so. A formula that varies over the rows
+cannot feed the law of such a value: the program must state the per-row model
+itself, with `[over=Trial]` on the block and `[via=...]` on the observation, as
+above. `bf(program=..., parameters=..., response=...)` gives a program block in
+a joint formula, where it can share group terms such as `(1 | p | g)` with the
+other responses.
+
 ### Factor and vector responses
 
 A factor response remains one scalar code per row. `ResponseLayout` retains

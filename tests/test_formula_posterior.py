@@ -388,7 +388,7 @@ def test_real_mcmc_draws_and_prediction_do_not_recompile(data, monkeypatch):
     def reject_recompile(*args, **kwargs):
         raise AssertionError("posterior summaries must reuse the fitted native program")
 
-    monkeypatch.setattr("quivers.formulas._fit.Compiler.compile", reject_recompile)
+    monkeypatch.setattr("quivers.dsl.Compiler.compile", reject_recompile)
     draws = result.draws()
     expected = draws["intercept"][..., None] + draws["beta_x"][
         ..., None

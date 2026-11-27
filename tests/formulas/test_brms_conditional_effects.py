@@ -22,7 +22,7 @@ import pytest
 import torch
 
 from quivers.diagnostics import prediction_grid
-from quivers.formulas import bf, conditional_smooths, fit, set_rescor
+from quivers.formulas import MultivariateFit, bf, conditional_smooths, fit, set_rescor
 from quivers.modeling.artifact import load_fit, save_fit
 from quivers.formulas._brms_effects import (
     BrmsConditionalEffects,
@@ -166,10 +166,49 @@ def test_smooth_terms_contribute_their_variables():
     check(model.conditional_effects(resolution=4), "smooth_default")
 
 
-def test_joint_fits_loop_effects_then_responses():
+def test_joint_fits_loop_effects_then_responses(monkeypatch: pytest.MonkeyPatch):
     model = svi(bf("y ~ x + f") + bf("y2 ~ z") + set_rescor(False))
+
+    def rebuild(*_args):
+        raise AssertionError("joint conditional effects must use the joint fit")
+
+    monkeypatch.setattr(MultivariateFit, "_response_fit", rebuild)
     check(model.conditional_effects(resolution=3), "mv_default")
     check(model.conditional_effects(resp="y2", resolution=3), "mv_resp")
+
+
+def test_joint_grids_keep_fitted_response_labels_and_draws(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    labels = ("3", "1", "4", "2")
+    frame = DATA.assign(o=pd.Categorical(DATA["o"], categories=labels, ordered=True))
+    model = fit(
+        bf("o ~ x", family="categorical") + bf("y2 ~ x") + set_rescor(False),
+        data=frame,
+        method="svi",
+        num_steps=2,
+        seed=1,
+    )
+    assert isinstance(model, MultivariateFit)
+
+    def rebuild(*_args):
+        raise AssertionError(
+            "labeling a joint prediction grid must use fitted metadata"
+        )
+
+    monkeypatch.setattr(MultivariateFit, "_response_fit", rebuild)
+    grid = prediction_grid({"x": [-1.0, 0.0, 1.0]}, conditions={})
+    draws = {"num_samples": 3, "seed": 2}
+    for method, predict in (
+        ("epred", model.posterior_epred),
+        ("linpred", model.posterior_linpred),
+    ):
+        effects = model.conditional_effects(grid, method=method, **draws)
+        expected = predict(new_data=grid.to_frame(), **draws)
+        assert effects["o"].labels == labels
+        assert effects["y2"].labels == ()
+        for response, result in effects.items():
+            assert torch.equal(result.draws, expected[response].unsqueeze(3))
 
 
 def test_estimates_summarize_the_fits_own_predictions(gauss):

@@ -17,6 +17,7 @@ import torch
 
 from quivers.diagnostics import _ppc_data as tables
 from quivers.diagnostics.elpd import psis_weights
+from quivers.dsl import Compiler
 from quivers.formulas import bf, fit, set_rescor
 from quivers.formulas._mcmc_plot import MCMC_PLOTS, NOT_PROVIDED, mcmc_datatree
 from quivers.formulas._pp_check import ARVIZ_PLOTS, PPC_TYPES, PPD_TYPES
@@ -134,7 +135,7 @@ def test_censored_responses():
     assert dens.y.shape[0] == int((frame["cens"] == 0).sum())
 
 
-def test_joint_fits_check_one_response():
+def test_joint_fits_check_one_response(monkeypatch):
     frame = DATA.assign(w=DATA["y"] * 0.5)
     joint = fit(
         bf("y ~ x") + bf("w ~ 1") + set_rescor(False),
@@ -142,10 +143,16 @@ def test_joint_fits_check_one_response():
         method="svi",
         num_steps=5,
     )
-    check = joint.pp_check("scatter_avg", resp="w")
-    torch.testing.assert_close(
-        check.y, torch.as_tensor(frame["w"].to_numpy(), dtype=torch.float64)
-    )
+
+    def reject_compilation(*args, **kwargs):
+        pytest.fail("joint training checks should reuse the fitted program")
+
+    monkeypatch.setattr(Compiler, "compile", reject_compilation)
+    observed = torch.as_tensor(frame["w"].to_numpy(copy=True), dtype=torch.float64)
+    for kind in ("scatter_avg", "error_binned"):
+        check = joint.pp_check(kind, resp="w", draw_ids=[1, 3])
+        torch.testing.assert_close(check.y, observed)
+        assert check.yrep.shape == (2, N)
     with pytest.raises(ValueError, match="requires resp"):
         joint.pp_check("scatter_avg")
 

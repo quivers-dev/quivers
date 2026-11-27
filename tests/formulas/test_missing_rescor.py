@@ -358,9 +358,13 @@ def test_scores_and_expectations_match_brms_at_its_draws(name):
     )
     scores = fitted.log_likelihood()["y__x"][0].float()
     wanted = _numbers(oracle["log_lik"])
-    # brms reports NA where a response of the row has no recorded value.
-    assert bool(torch.isnan(wanted).any())
-    torch.testing.assert_close(scores, wanted, rtol=RTOL, atol=ATOL, equal_nan=True)
+    # brms reports NA where a response of the row has no recorded value; the
+    # recorded values of such a row are scored given the completion
+    # (tests/formulas/test_missing_recorded_scores.py).
+    recorded = ~torch.isnan(wanted)
+    assert not bool(recorded.all())
+    assert bool(torch.isfinite(scores).all())
+    torch.testing.assert_close(scores[recorded], wanted[recorded], rtol=RTOL, atol=ATOL)
     marginal = fitted.log_likelihood(resp="y")["y"][0].float()
     if name == "student":
         # brms scores a response subset of a Student joint event with the
@@ -387,8 +391,11 @@ def test_scores_and_expectations_match_brms_at_its_draws(name):
         )
     else:
         wanted_marginal = _numbers(oracle["log_lik_y"])
+    # A row whose response is missing has no recorded likelihood.
+    absent = torch.isnan(wanted_marginal)
+    assert bool((marginal[absent] == 0).all())
     torch.testing.assert_close(
-        marginal, wanted_marginal, rtol=RTOL, atol=ATOL, equal_nan=True
+        marginal[~absent], wanted_marginal[~absent], rtol=RTOL, atol=ATOL
     )
     expected = fitted.posterior_epred()
     linear = fitted.posterior_linpred()
@@ -453,10 +460,8 @@ def test_predictive_draws_keep_the_joint_residual_law():
     marginal = torch.distributions.Normal(loc[:, 1], factor[1].norm()).log_prob(
         torch.tensor(np.nan_to_num(data.x.to_numpy()))
     )
-    marginal[~torch.tensor(np.isfinite(data.x.to_numpy()))] = float("nan")
-    torch.testing.assert_close(
-        scores.float(), marginal.float(), rtol=RTOL, atol=ATOL, equal_nan=True
-    )
+    marginal[~torch.tensor(np.isfinite(data.x.to_numpy()))] = 0.0
+    torch.testing.assert_close(scores.float(), marginal.float(), rtol=RTOL, atol=ATOL)
 
 
 @pytest.mark.parametrize("method", ["svi", "hmc", "nuts"])
@@ -482,7 +487,7 @@ def test_fit_predict_refit_and_restore(method, name, tmp_path):
         assert bool(torch.isfinite(predicted[resp]).all())
     scores = fitted.log_likelihood(num_samples=3, seed=1)["y__x"]
     assert scores.shape == (1, 3, rows)
-    assert int(torch.isnan(scores[0, 0]).sum()) == (2 if name == "noisy" else 3)
+    assert bool(torch.isfinite(scores).all())
     fresh = data.dropna().iloc[:4]
     new = fitted.posterior_predict(new_data=fresh, num_samples=3, seed=1)
     assert new["y"].shape == new["x"].shape == (1, 3, 4)
@@ -502,7 +507,7 @@ def test_fit_predict_refit_and_restore(method, name, tmp_path):
         restored.posterior_epred(num_samples=3, seed=1)["y"], epred["y"]
     )
     torch.testing.assert_close(
-        restored.log_likelihood(num_samples=3, seed=1)["y__x"], scores, equal_nan=True
+        restored.log_likelihood(num_samples=3, seed=1)["y__x"], scores
     )
     callback = fitted.refit_callback(
         method_factory=lambda settings, seed: {**settings, "seed": seed},

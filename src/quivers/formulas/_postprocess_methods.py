@@ -17,6 +17,7 @@ draws through its existing prediction and scoring methods.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import json
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, cast
 
 import narwhals as nw
@@ -56,6 +57,8 @@ from quivers.formulas._postprocess_loo import (
 from quivers.formulas._name_scope import level_coefficients
 from quivers.formulas._postprocess_names import (
     coefficient_labels,
+    design_coefficient_labels,
+    design_name_scope,
     name_scope,
     single_variables,
 )
@@ -70,6 +73,7 @@ from quivers.formulas._postprocess_predict import (
 from quivers.formulas._postprocess_summary import (
     FitSummary,
     VarCorrBlock,
+    _ThresholdSign,
     coef_arrays,
     fit_summary,
     fixef_draws,
@@ -80,7 +84,7 @@ from quivers.formulas._postprocess_summary import (
     vcov_table,
 )
 from quivers.formulas._autocor import AutocorMatrix
-from quivers.formulas._r_squared import _responses, formula_r2
+from quivers.formulas._r_squared import _responses, evaluate_responses, formula_r2
 from quivers.formulas._fit_controls import SamplerControl, mcmc_kernel, sampler_control
 from quivers.formulas._initial_values import chain_initial_values
 from quivers.inference.mcmc.hmc import _HamiltonianKernel
@@ -98,6 +102,7 @@ from quivers.formulas._fit_types import Fit, JointFit, SingleFit
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
     from quivers.formulas._joint_fit import MultivariateFit
+    from quivers.formulas.family import OrdinalSpec
 
 type ResponseSelection = str | Sequence[str] | None
 """Joint response selection: one label, several labels, or every response."""
@@ -114,6 +119,25 @@ _NUTS_NAMES: dict[str, str] = {
     "diverged": "divergent__",
     "energy": "energy__",
 }
+
+
+def _ordinal_threshold_sign(ordinal: OrdinalSpec) -> _ThresholdSign:
+    """Return the direction of an ordinal threshold on the linear predictor.
+
+    Parameters
+    ----------
+    ordinal : OrdinalSpec
+        The response's ordinal likelihood.
+
+    Returns
+    -------
+    _ThresholdSign
+        Threshold minus predictor, or predictor minus threshold for adjacent
+        categories and continuation ratios.
+    """
+    if ordinal.kind in {"cratio", "acat"}:
+        return "eta_minus_thres"
+    return "thres_minus_eta"
 
 
 class JointPredictionOptions(TypedDict, total=False):
@@ -290,17 +314,22 @@ class _PostprocessCore:
         """
         return frozenset()
 
-    def _pp_threshold_sign(
-        self,
-    ) -> Literal["thres_minus_eta", "eta_minus_thres", "plus"]:
-        """Return how ordinal thresholds combine with group intercepts.
+    def _pp_threshold_signs(
+        self, fixed: Mapping[str, torch.Tensor]
+    ) -> dict[str, _ThresholdSign]:
+        """Return directions of the population ordinal coefficients.
+
+        Parameters
+        ----------
+        fixed : Mapping[str, torch.Tensor]
+            Population coefficient labels and draws.
 
         Returns
         -------
-        {"thres_minus_eta", "eta_minus_thres", "plus"}
-            brms's ordinal special of the family.
+        dict[str, _ThresholdSign]
+            Threshold directions keyed by coefficient label.
         """
-        return "plus"
+        return {}
 
     def _pp_describe(self) -> tuple[str, str]:
         """Describe the formula and family for the summary header.
@@ -714,7 +743,9 @@ class _PostprocessCore:
                 "no group-level effects detected; use fixef for population effects"
             )
         fixed = fixef_draws(self._pp_named(num_samples, seed), None)
-        arrays = coef_arrays(fixed, levels, threshold_sign=self._pp_threshold_sign())
+        arrays = coef_arrays(
+            fixed, levels, threshold_signs=self._pp_threshold_signs(fixed)
+        )
         if not summary:
             return arrays
         group_levels = cast("BayesianFit", self).group_levels
@@ -1183,23 +1214,13 @@ class SinglePostprocess(_PostprocessCore):
         """
         return frozenset(aux.name for aux in self._pp_fit().family.aux_params)
 
-    def _pp_threshold_sign(
-        self,
-    ) -> Literal["thres_minus_eta", "eta_minus_thres", "plus"]:
-        """Return brms's ordinal threshold sign of the family.
-
-        Returns
-        -------
-        {"thres_minus_eta", "eta_minus_thres", "plus"}
-            ``thres_minus_eta`` for cumulative, sratio and hurdle cumulative,
-            ``eta_minus_thres`` for cratio and acat, ``plus`` otherwise.
-        """
+    def _pp_threshold_signs(
+        self, fixed: Mapping[str, torch.Tensor]
+    ) -> dict[str, _ThresholdSign]:
         ordinal = self._pp_fit().family.ordinal
         if ordinal is None:
-            return "plus"
-        if ordinal.kind in {"cratio", "acat"}:
-            return "eta_minus_thres"
-        return "thres_minus_eta"
+            return {}
+        return dict.fromkeys(fixed, _ordinal_threshold_sign(ordinal))
 
     def _pp_describe(self) -> tuple[str, str]:
         """Describe the formula and family.
@@ -2221,6 +2242,90 @@ class JointPostprocess(_PostprocessCore):
         """
         return cast("MultivariateFit", self)
 
+    def _criterion_key(self, name: str, responses: tuple[str, ...]) -> str:
+        """Key a criterion by its responses in the fit's authored order.
+
+        Parameters
+        ----------
+        name : str
+            Criterion name.
+        responses : tuple[str, ...]
+            Selected response labels.
+
+        Returns
+        -------
+        str
+            The criterion name for the whole fit, or the name and selection.
+        """
+        if responses == self._pp_fit().response_names:
+            return name
+        return f"{name}:{json.dumps(responses, separators=(',', ':'))}"
+
+    def _stored_criterion(
+        self, name: str, responses: tuple[str, ...]
+    ) -> ELPDEstimate | torch.Tensor | None:
+        """Read a stored criterion of exactly the selected responses.
+
+        Parameters
+        ----------
+        name : str
+            Criterion name.
+        responses : tuple[str, ...]
+            Selected response labels.
+
+        Returns
+        -------
+        ELPDEstimate or torch.Tensor or None
+            The matching stored value, if present.
+        """
+        stored = self._pp_fit().criteria
+        value = stored.get(self._criterion_key(name, responses))
+        if value is None:
+            old = stored.get(name)
+            if isinstance(old, ELPDEstimate) and old.responses == responses:
+                return old
+        if isinstance(value, ELPDEstimate) and value.responses != responses:
+            return None
+        return value
+
+    def criterion(
+        self, name: str, *, resp: ResponseSelection = None
+    ) -> ELPDEstimate | torch.Tensor:
+        """Return a criterion stored by `add_criterion`.
+
+        Parameters
+        ----------
+        name : str
+            Criterion name.
+        resp : str or Sequence[str] or None
+            Response selection. None prefers the whole-fit criterion if it is
+            stored, then the most recently stored selection of this criterion.
+
+        Returns
+        -------
+        ELPDEstimate or torch.Tensor
+            The stored estimate or R-squared draws.
+
+        Raises
+        ------
+        KeyError
+            If the criterion is not stored for the selection.
+        """
+        fit = self._pp_fit()
+        if resp is None:
+            stored = fit.criteria
+            value = stored.get(name)
+            if value is not None:
+                return value
+            for key in reversed(tuple(stored)):
+                if key.startswith(f"{name}:"):
+                    return stored[key]
+        else:
+            value = self._stored_criterion(name, fit._selection(resp))
+            if value is not None:
+                return value
+        raise KeyError(f"criterion {name!r} is not stored; call add_criterion first")
+
     def _pp_named(self, num_samples: int | None, seed: int) -> dict[str, torch.Tensor]:
         """Return the joint fit's brms-named draws.
 
@@ -2237,6 +2342,28 @@ class JointPostprocess(_PostprocessCore):
             `MultivariateFit.variables`.
         """
         return self._pp_fit().variables(num_samples=num_samples, seed=seed)
+
+    def _pp_threshold_signs(
+        self, fixed: Mapping[str, torch.Tensor]
+    ) -> dict[str, _ThresholdSign]:
+        fit = self._pp_fit()
+        signs: dict[str, _ThresholdSign] = {}
+        for name, response in fit.emission.responses.items():
+            ordinal = response.lens._family.ordinal
+            if ordinal is None:
+                continue
+            prefix = f"{name}_" if len(fit.response_names) > 1 else ""
+            signs.update(
+                dict.fromkeys(
+                    (
+                        label
+                        for label in fixed
+                        if label.startswith(f"{prefix}Intercept[")
+                    ),
+                    _ordinal_threshold_sign(ordinal),
+                )
+            )
+        return signs
 
     def _pp_levels(
         self, num_samples: int | None, seed: int
@@ -2259,14 +2386,15 @@ class JointPostprocess(_PostprocessCore):
         fit = self._pp_fit()
         result: dict[str, list[tuple[str, torch.Tensor]]] = {}
         for name in fit.response_names:
-            view = fit._response_fit(name)
-            labels = coefficient_labels(view)
-            plan = view.prediction_plan
+            response = fit.emission.responses[name]
+            designs = fit.prepared[name].designs
+            items = response.lens._predictor_items(response.formula)
+            labels = design_coefficient_labels(items, designs)
             outputs = {
                 item.prefix: item.output
-                for item in (plan.predictors if plan is not None else ())
+                for item in fit._predictor_readout(name).predictors
             }
-            for parameter, prefix, predictor in view._predictor_items():
+            for parameter, prefix, predictor in items:
                 if not predictor.random_terms:
                     continue
                 for item in level_coefficients(
@@ -2276,8 +2404,13 @@ class JointPostprocess(_PostprocessCore):
                         num_samples=num_samples,
                         seed=seed,
                     ),
-                    name_scope(
-                        view, parameter, prefix, predictor, labels, response=name
+                    design_name_scope(
+                        parameter,
+                        prefix,
+                        predictor,
+                        labels,
+                        designs.get(parameter),
+                        response=name,
                     ),
                     outputs.get(prefix),
                 ):
@@ -2296,7 +2429,7 @@ class JointPostprocess(_PostprocessCore):
         return frozenset(
             aux.name
             for name in fit.response_names
-            for aux in fit._response_fit(name).family.aux_params
+            for aux in fit.prepared[name].family.aux_params
         )
 
     def _pp_describe(self) -> tuple[str, str]:
@@ -2312,7 +2445,7 @@ class JointPostprocess(_PostprocessCore):
             fit.specification.responses[name].formula for name in fit.response_names
         )
         families = ", ".join(
-            fit._response_fit(name).family.name for name in fit.response_names
+            fit.prepared[name].family.name for name in fit.response_names
         )
         return formulas, families
 
@@ -2342,10 +2475,10 @@ class JointPostprocess(_PostprocessCore):
         residuals = {
             name: scale.name
             for name in fit.response_names
-            if (scale := fit._response_fit(name).family.residual_scale) is not None
+            if (scale := fit.prepared[name].family.residual_scale) is not None
         }
         if any(
-            scale in fit._response_fit(name).distributional
+            scale in fit.emission.responses[name].lens._distributional
             for name, scale in residuals.items()
         ):
             return None
@@ -2499,8 +2632,7 @@ class JointPostprocess(_PostprocessCore):
         bool
             True for ordinal and categorical families.
         """
-        family = self._pp_fit()._response_fit(name).family
-        return family.category_response
+        return self._pp_fit().prepared[name].family.category_response
 
     def predict(
         self,
@@ -2544,7 +2676,7 @@ class JointPostprocess(_PostprocessCore):
         return {
             name: summarize_prediction(
                 value,
-                categories=fit._response_fit(name).category_labels,
+                categories=fit._predictor_readout(name).category_labels,
                 discrete_table=self._pp_categorical(name),
                 probs=probs,
                 robust=robust,
@@ -2602,7 +2734,9 @@ class JointPostprocess(_PostprocessCore):
             draws = self._pp_prediction(
                 "posterior_epred", resp, options, draw_ids=draw_ids
             )
-            labels = {name: fit._response_fit(name).category_labels for name in draws}
+            labels = {
+                name: fit._predictor_readout(name).category_labels for name in draws
+            }
         else:
             name_ = parameter or "mu"
             draws = self._pp_prediction(
@@ -2614,7 +2748,8 @@ class JointPostprocess(_PostprocessCore):
                 transform=scale == "response",
             )
             labels = {
-                name: fit._response_fit(name).predictor_labels(name_) for name in draws
+                name: fit._predictor_readout(name).predictor_labels(name_)
+                for name in draws
             }
         if not summary:
             return draws
@@ -2678,9 +2813,8 @@ class JointPostprocess(_PostprocessCore):
         )
         result: dict[str, torch.Tensor] = {}
         for name in names:
-            observed = _responses(
-                fit._response_fit(name),
-                ExpectationOptions(new_data=options.get("new_data")),
+            observed = evaluate_responses(
+                fit._response_data(name), options.get("new_data")
             )
             scale = (
                 reference[name]
@@ -2835,8 +2969,8 @@ class JointPostprocess(_PostprocessCore):
         method_factory : MethodFactory or None
             Fit settings of each refit; None keeps the original settings.
         use_stored : bool
-            Return a stored ``loo`` criterion when no correction or ``resp``
-            is requested.
+            Return a stored ``loo`` criterion for the selected responses
+            when no correction is requested.
         num_samples : int or None
             Draws per chain.
         seed : int
@@ -2848,13 +2982,10 @@ class JointPostprocess(_PostprocessCore):
             PSIS-LOO estimate.
         """
         fit = self._pp_fit()
-        if (
-            use_stored
-            and resp is None
-            and not (moment_match or reloo)
-            and "loo" in fit.criteria
-        ):
-            return cast(ELPDEstimate, fit.criteria["loo"])
+        if use_stored and not (moment_match or reloo):
+            stored = self._stored_criterion("loo", fit._selection(resp))
+            if isinstance(stored, ELPDEstimate):
+                return stored
         return loo_estimate(
             fit,
             joint=True,
@@ -3266,15 +3397,20 @@ class JointPostprocess(_PostprocessCore):
         one more for the model form.
         """
         fit = self._pp_fit()
+        new_data = options.get("new_data")
         values: dict[str, torch.Tensor] = {}
         for name in fit._selection(resp):
-            view = fit._response_fit(name)
+            data = fit._response_data(name)
+            readout = fit._response_readout(name)
+            dependence = fit.emission.responses[name].lens._residual
 
-            def expected(name: str = name, view: BayesianFit = view) -> torch.Tensor:
+            def expected(
+                name: str = name, ordinal: bool = readout.ordinal
+            ) -> torch.Tensor:
                 means = fit.posterior_epred(
                     resp=name, mc_samples=mc_samples, **options
                 )[name]
-                if view.family.response_ordinal() is None and means.ndim != 3:
+                if not ordinal and means.ndim != 3:
                     raise ValueError(
                         f"bayes_R2 is defined for one value per row; response {name!r} "
                         f"has conditional means of shape {tuple(means.shape[2:])}"
@@ -3282,11 +3418,14 @@ class JointPostprocess(_PostprocessCore):
                 return means
 
             values[f"R2{name}"] = formula_r2(
-                view,
+                data,
+                readout,
+                dependence,
                 method,
                 None if observed is None else observed.get(name),
-                new_data=options.get("new_data"),
+                new_data=new_data,
                 mc_samples=mc_samples,
+                recorded=lambda: evaluate_responses(data, new_data),
                 expected=expected,
                 laws=lambda name=name: fit._response_laws(name, options),
             )
@@ -3334,8 +3473,7 @@ class JointPostprocess(_PostprocessCore):
         fit = self._pp_fit()
         values: dict[str, torch.Tensor] = {}
         for index, name in enumerate(fit._selection(resp)):
-            view = fit._response_fit(name)
-            if view.family.unordered_categories:
+            if fit._response_readout(name).unordered:
                 raise ValueError(
                     "loo_R2 is not defined for unordered categorical models"
                 )
@@ -3350,7 +3488,7 @@ class JointPostprocess(_PostprocessCore):
                 :, 0
             ]
             values[f"R2{name}"] = loo_r2_draws(
-                _responses(view, ExpectationOptions()),
+                evaluate_responses(fit._response_data(name), None),
                 loo_mean,
                 torch.Generator().manual_seed(seed + index),
                 expected.shape[0] * expected.shape[1],
@@ -3451,8 +3589,8 @@ class JointPostprocess(_PostprocessCore):
             ``bayes_R2`` and ``loo_R2``.
         resp : str or Sequence[str] or None
             Responses the criterion scores, as brms's ``resp``; None scores
-            every response. A model with ``mi()`` responses is scored on its
-            responses without missing values this way, as brms advises.
+            every response. At a row with an ``mi()`` response, the likelihood
+            scores the recorded outcomes given the completed values.
         overwrite : bool
             Recompute stored criteria.
         num_samples : int or None
@@ -3476,20 +3614,36 @@ class JointPostprocess(_PostprocessCore):
         names = [criterion] if isinstance(criterion, str) else list(criterion)
         stored = dict(fit.criteria)
         for name in names:
-            if name in stored and not overwrite:
+            options = dict(kfold_options or {}) if name == "kfold" else {}
+            selected = fit._selection(
+                cast(ResponseSelection, options.get("resp", resp))
+            )
+            key = self._criterion_key(name, selected)
+            legacy = stored.get(name)
+            if (
+                isinstance(legacy, ELPDEstimate)
+                and legacy.responses != fit.response_names
+                and legacy.responses
+                and set(legacy.responses) <= set(fit.response_names)
+            ):
+                stored.setdefault(self._criterion_key(name, legacy.responses), legacy)
+                del stored[name]
+            if key in stored and not overwrite:
                 continue
             if name == "loo":
-                stored[name] = self.loo(
+                stored[key] = self.loo(
                     resp=resp, use_stored=False, num_samples=num_samples, seed=seed
                 )
             elif name == "waic":
-                stored[name] = self.waic(resp=resp, num_samples=num_samples, seed=seed)
+                stored[key] = self.waic(resp=resp, num_samples=num_samples, seed=seed)
             elif name == "loo_subsample":
-                stored[name] = self.loo_subsample(num_samples=num_samples, seed=seed)
+                stored[key] = self.loo_subsample(
+                    resp=resp, num_samples=num_samples, seed=seed
+                )
             elif name == "kfold":
-                options = dict(kfold_options or {})
+                options.setdefault("resp", resp)
                 options.setdefault("seed", seed)
-                stored[name] = self.kfold(**cast(dict, options)).estimate
+                stored[key] = self.kfold(**cast(dict, options)).estimate
             elif name == "loo_R2":
                 draws = cast(
                     dict,
@@ -3497,10 +3651,10 @@ class JointPostprocess(_PostprocessCore):
                         resp=resp, summary=False, num_samples=num_samples, seed=seed
                     ),
                 )
-                stored[name] = torch.stack(list(draws.values()), dim=-1)
+                stored[key] = torch.stack(list(draws.values()), dim=-1)
             elif name == "bayes_R2":
                 ratios = self.bayes_r2(resp=resp, num_samples=num_samples, seed=seed)
-                stored[name] = torch.stack(
+                stored[key] = torch.stack(
                     [value.flatten(0, 1) for value in ratios.values()], dim=-1
                 )
             else:
@@ -3588,9 +3742,7 @@ def kfold_predict(
             name = resp if resp is not None else joint_fit.response_names[0]
             call = getattr(joint_fit, canonical)
             draws = call(resp=name, **options)[name]
-            truth = _responses(
-                joint_fit._response_fit(name), ExpectationOptions(new_data=frame)
-            )
+            truth = evaluate_responses(joint_fit._response_data(name), frame)
         else:
             single = cast("BayesianFit", fitted)
             draws = getattr(single, canonical)(**options)

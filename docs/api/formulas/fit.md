@@ -6,6 +6,8 @@ Posterior draws carry the uncertainty in the coefficients, and predictive draws 
 of the response given those coefficients. `formula_to_qvr` emits the QVR source of a formula. `get_prior` returns the
 effective named priors, including autoscaled defaults, without running inference.
 Unknown or unused prior overrides raise `ValueError` before fitting.
+The three entry points also accept an authored QVR program and a mapping of
+[formulas on its parameters](../../guides/analysis-data-and-formulas.md#formulas-on-the-parameters-of-a-program).
 `BayesianFit.update(data=None, **overrides)` reuses a retained fitting recipe
 with the original raw dataframe and all canonical fit settings. It fits a fresh
 posterior, with isolated initial neural state and explicit clone/reference data

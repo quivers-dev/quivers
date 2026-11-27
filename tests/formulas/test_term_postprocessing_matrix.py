@@ -29,6 +29,7 @@ import torch
 
 from torch.distributions import Distribution, constraints
 
+from quivers.diagnostics.elpd import ELPDEstimate, psis_weights
 from quivers.diagnostics.posterior_tables import SummaryTable
 from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import DistributionFamily, FamilyParameter
@@ -242,13 +243,12 @@ class ModelCase:
     multicolumn : bool
         Whether each response row is a vector (multinomial, Dirichlet).
     missing_response : str
-        The ``mi()`` response whose scores are missing at ``missing_rows``.
+        The ``mi()`` response without recorded likelihood at ``missing_rows``.
     score_resp : str or None
-        A response without missing values that criteria score through
-        ``resp``, as brms advises for models with ``mi()`` responses.
+        A response without missing values to score separately through ``resp``.
     missing_rows : tuple[int, ...]
-        Training rows whose ``mi()`` response is missing, where pointwise
-        scores are missing.
+        Training rows whose ``mi()`` response is missing and scores zero
+        when evaluated alone.
     new_refusal : str or None
         Pattern of the documented refusal of every new-row prediction.
     splines : bool or None
@@ -348,7 +348,7 @@ R2D2_PRIOR = PriorSpec(distribution=R2D2())
 NUTS = {"method": "nuts"}
 NO_ERRORS = "predictive errors are not defined for ordinal or categorical models"
 NO_COVARIANCE = "the model does not contain covariance matrices"
-NO_SCORES = "requires finite log likelihoods at every posterior draw"
+CONSTANT_PSIS_TAIL = "All tail values are the same"
 NO_LATENT_ROWS = "Cannot predict new latent residuals when using cov = FALSE"
 MISSING_ROWS = tuple(range(0, N, 5))
 XMIS_ROWS = tuple(range(0, N, 7))
@@ -389,7 +389,7 @@ MODELS: dict[str, ModelCase] = {
         hypothesis="b_x",
         oracle="mi_response",
         missing_rows=MISSING_ROWS,
-        refuse=dict.fromkeys(("loo", "waic", "loo_compare"), NO_SCORES),
+        refuse=dict.fromkeys(("loo", "loo_compare"), CONSTANT_PSIS_TAIL),
     ),
     "mi_predictor": ModelCase(
         bf("y ~ mi(ymis) + z") + bf("ymis | mi() ~ x") + set_rescor(False),
@@ -1102,20 +1102,21 @@ def _prediction(method: str, *, new: bool) -> Callable[[Context], None]:
             return
         value = getattr(ctx.fit, method)(**options, **ctx.draws)
         if method == "log_likelihood" and not new and ctx.case.missing_rows:
-            # Scores of a missing mi() response are missing, as brms's NA.
             missing = list(ctx.case.missing_rows)
             label = ctx.case.missing_response
-            scored = [value[name] for name in value if label in name]
-            assert scored
-            for scores in scored:
-                assert bool(scores[..., missing].isnan().all())
-            value = {
-                name: scores.nan_to_num(nan=0.0) if label in name else scores
-                for name, scores in value.items()
-            }
-            for scores in scored:
-                kept = [row for row in range(N) if row not in missing]
-                assert bool(scores[..., kept].isfinite().all())
+            recorded = ctx.case.score_resp
+            if recorded is None:
+                scores = value[label]
+            else:
+                assert isinstance(ctx.fit, MultivariateFit)
+                scores = ctx.fit.log_likelihood(resp=label, **ctx.draws)[label]
+                if not ctx.fit.rescor:
+                    other = ctx.fit.log_likelihood(resp=recorded, **ctx.draws)[recorded]
+                    torch.testing.assert_close(
+                        value["__".join(ctx.responses)], scores + other, rtol=0, atol=0
+                    )
+            assert bool((scores[..., missing] == 0).all())
+            check_draws(ctx, scores, ctx.case.rows, what=f"{label} log_likelihood")
         check_draws(ctx, value, _rows(ctx, new=new), what=method)
 
     return cell
@@ -1211,10 +1212,25 @@ def cell_loo(ctx: Context) -> None:
     if ctx.case.method == "svi":
         with pytest.raises(ValueError, match="pooled draws are fewer than 25"):
             ctx.fit.loo(**ctx.score, num_samples=DRAWS)
-    if ctx.case.score_resp is not None:
-        # brms reports NA scores for a missing mi() response and advises resp.
-        with pytest.raises(ValueError, match=NO_SCORES + ".*through resp"):
-            ctx.fit.loo(**ctx.psis_draws)
+    if ctx.case.missing_rows and ctx.case.method == "svi":
+        cases = [(estimate, ctx.score)]
+        if ctx.case.score_resp is not None:
+            with pytest.raises(ValueError, match=CONSTANT_PSIS_TAIL):
+                ctx.fit.loo(resp=ctx.case.missing_response, **ctx.psis_draws)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                full = ctx.fit.loo(**ctx.psis_draws)
+            cases.append((full, {}))
+        for result, selection in cases:
+            ((name, scores),) = ctx.fit.log_likelihood(
+                **selection, **ctx.psis_draws
+            ).items()
+            labels = tuple(name.split("__"))
+            assert result.responses == labels
+            assert result.num_observations == scores.shape[-1] == ctx.case.rows
+            weights = psis_weights(scores, r_eff=1.0)
+            expected = torch.logsumexp(weights.log_weights + scores, dim=(0, 1))
+            torch.testing.assert_close(result.pointwise_elpd, expected)
 
 
 def cell_waic(ctx: Context) -> None:
@@ -1229,8 +1245,19 @@ def cell_loo_compare(ctx: Context) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         stored = ctx.fit.add_criterion(["loo", "waic"], **ctx.score, **ctx.psis_draws)
-        table = loo_compare({"a": stored, "b": stored})
-        waic = loo_compare({"a": stored, "b": stored}, criterion="waic")
+    loo_model: Fit | ELPDEstimate = stored
+    waic_model: Fit | ELPDEstimate = stored
+    if ctx.case.score_resp is not None:
+        assert isinstance(stored, MultivariateFit)
+        with pytest.raises(ValueError, match="no stored 'loo' criterion"):
+            loo_compare({"a": stored, "b": stored})
+        loo_selected = stored.criterion("loo", resp=ctx.case.score_resp)
+        waic_selected = stored.criterion("waic", resp=ctx.case.score_resp)
+        assert isinstance(loo_selected, ELPDEstimate)
+        assert isinstance(waic_selected, ELPDEstimate)
+        loo_model, waic_model = loo_selected, waic_selected
+    table = loo_compare({"a": loo_model, "b": loo_model})
+    waic = loo_compare({"a": waic_model, "b": waic_model}, criterion="waic")
     check_table(table, 2, what="loo_compare")
     check_table(waic, 2, what="loo_compare(waic)")
     with pytest.raises(ValueError, match="no stored 'kfold' criterion"):

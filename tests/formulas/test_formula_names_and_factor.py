@@ -140,13 +140,9 @@ def test_a_distributional_formula_reports_its_unknown_variable() -> None:
         fit(bf("y ~ x", "sigma ~ nope"), data=_frame(), method="svi", num_steps=1)
 
 
-@pytest.mark.parametrize(
-    "formula", ["y ~ me(x, se) + z", "y | mi(se) ~ x", "mvbind(y, z) ~ x"]
-)
-def test_joint_terms_in_a_string_are_refused_by_every_entry_point(
-    formula: str,
-) -> None:
+def test_bare_mvbind_is_refused_by_every_entry_point() -> None:
     frame = _frame()
+    formula = "mvbind(y, z) ~ x"
     for name, call in (
         ("fit", lambda: fit(formula, data=frame, method="svi", num_steps=1)),
         ("get_prior", lambda: get_prior(formula, data=frame)),

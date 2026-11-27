@@ -34,6 +34,8 @@ _FIXED = re.compile(r"^b(|s|cs|sp|mo|me|mi|m)_")
 type DrawKind = Literal["mcmc", "variational", "prior"]
 """Provenance of retained draws."""
 
+type _ThresholdSign = Literal["thres_minus_eta", "eta_minus_thres", "plus"]
+
 
 class FitSummary(ValueModel):
     """brms's ``summary`` of a fitted model, section by section.
@@ -440,7 +442,7 @@ def coef_arrays(
     fixed: Mapping[str, torch.Tensor],
     varying: Mapping[str, Sequence[tuple[str, torch.Tensor]]],
     *,
-    threshold_sign: Literal["thres_minus_eta", "eta_minus_thres", "plus"],
+    threshold_signs: Mapping[str, _ThresholdSign],
 ) -> dict[str, tuple[tuple[str, ...], torch.Tensor]]:
     """Combine population and group coefficients as brms ``coef``.
 
@@ -450,10 +452,9 @@ def coef_arrays(
         ``fixef`` labels mapped to ``(chain, draw)`` draws.
     varying : Mapping[str, Sequence[tuple[str, torch.Tensor]]]
         Per group, ``ranef`` labels with ``(chain, draw, level)`` draws.
-    threshold_sign : {"thres_minus_eta", "eta_minus_thres", "plus"}
-        How a group intercept enters ordinal thresholds ``Intercept[k]``:
-        subtracted for cumulative-type families (thresholds minus the
-        linear predictor), and as brms combines them otherwise.
+    threshold_signs : Mapping[str, _ThresholdSign]
+        Threshold directions keyed by population coefficient label. A
+        cumulative threshold subtracts the group's linear predictor.
 
     Returns
     -------
@@ -527,11 +528,12 @@ def coef_arrays(
         for name, value in combined.items():
             base = population[name].unsqueeze(-1)
             if threshold.search(name):
+                sign = threshold_signs.get(name, "plus")
                 value = (
                     base - value
-                    if threshold_sign == "thres_minus_eta"
+                    if sign == "thres_minus_eta"
                     else value - base
-                    if threshold_sign == "eta_minus_thres"
+                    if sign == "eta_minus_thres"
                     else base + value
                 )
             else:

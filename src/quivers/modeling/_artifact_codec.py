@@ -190,7 +190,9 @@ def _builtin_types(formula: bool = False) -> dict[str, type]:
             OrdinalSpec,
             ResponseSpec,
             MixtureSpec,
+            ParameterCoordinates,
         )
+        from quivers.formulas._program_kernel import ProgramKernelSpec
         from quivers.formulas._survival import BaselineSpec
         from quivers.formulas._predictor_graph import NonlinearExpression
         from quivers.formulas._priors import (
@@ -224,6 +226,8 @@ def _builtin_types(formula: bool = False) -> dict[str, type]:
             OrdinalSpec,
             ResponseSpec,
             MixtureSpec,
+            ParameterCoordinates,
+            ProgramKernelSpec,
             BaselineSpec,
             NonlinearExpression,
             PriorSpec,

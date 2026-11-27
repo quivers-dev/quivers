@@ -32,7 +32,6 @@ from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
 from quivers.diagnostics.density import PointNullSpec
 from quivers.diagnostics.hypothesis import HypothesisSummary
 from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
-from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import Module, ObserveStep, ProgramDecl, SampleStep
 from quivers.dsl.emit import draw_call_to_source, module_to_source
 from quivers.formulas._fit import (
@@ -45,7 +44,13 @@ from quivers.formulas._fit import (
     fit,
 )
 from quivers.formulas._autocor import AutocorMatrix
-from quivers.formulas._joint_residual import coordinate, marginal
+from quivers.formulas._blocks import ResponseData, response_data
+from quivers.formulas._joint_residual import (
+    RecursiveResiduals,
+    coordinate,
+    marginal,
+    recorded_log_prob,
+)
 from quivers.formulas._residual_law import pointwise_scores
 
 # brms fitting controls, flat priors, and derived sites.
@@ -54,10 +59,9 @@ from quivers.formulas._brms_priors import (
     FLAT_FAMILY,
     flat_prior_step,
     improper_sites,
-    derived_site_draws,
     require_proper,
-    with_flat_catalog,
 )
+from quivers.formulas._fit_core import FormulaFit, compile_model
 from quivers.formulas._fit_controls import (
     InferenceControls,
     checked_cores,
@@ -74,7 +78,11 @@ from quivers.formulas._row_retention import (
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._group_law import group_coefficients
 from quivers.formulas._group_prediction import NewLevelPolicy
-from quivers.formulas._joint_compile import _JointEmission, emit_joint
+from quivers.formulas._joint_compile import (
+    _JointEmission,
+    emit_joint,
+    place_single_response,
+)
 from quivers.formulas._joint_options import JointFitOptions
 from quivers.formulas._joint_prediction import (
     JOINT_RESPONSE,
@@ -95,23 +103,29 @@ from quivers.formulas._joint_missing import (
     latent_specs,
     missing_frame,
     missing_specification,
+    split_measurement_priors,
     symbolize,
 )
 from quivers.formulas.formula import RowSelection
 from quivers.formulas._posterior import replay, row_binding
-from quivers.formulas._prediction import FormulaPredictionPlan
+from quivers.formulas._prediction import FormulaPredictionPlan, JointResponsePreparation
+from quivers.formulas._linpred import PredictorReadout, population_coefficients
 from quivers.formulas._refit import update_fit
 from quivers.formulas._prior_emission import ordinary_prior_step
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._priors import PriorSpec, resolve_priors
-from quivers.formulas._priors import PriorInput, PriorSet, PriorTarget, normalize_priors
-from quivers.formulas._response import expected_response, response_tensor
+from quivers.formulas._priors import PriorInput, PriorTarget, normalize_priors
+from quivers.formulas._response import (
+    ResponseReadout,
+    expected_response,
+    response_category_labels,
+    response_readout,
+    response_tensor,
+)
 from quivers.formulas.formula import Formula, _qvr_name
 from quivers.formulas._response_modifiers import response_input_name
-from quivers.inference._likelihood import collect_log_likelihood
 from quivers.inference._posterior import (
     collect_site_draws,
-    constrained_draws,
     draw_count,
 )
 from quivers.inference._response import (
@@ -122,17 +136,15 @@ from quivers.inference._response import (
 )
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
-from quivers.inference.prior import PriorDraws, PriorMode, prior_draws
+from quivers.inference.prior import PriorDraws
 from quivers.inference.pathfinder import draw_provenance
 from quivers.formulas._parallel_chains import FormulaChainWorker
 from quivers.formulas._data_options import formula_data_options
-from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace
 from quivers.modeling._row_attachments import original_positions, validate_split_rows
 from quivers.modeling.refit import RefitRecipe, refit_callback
 
-# brms post-processing methods (summaries, accessors, LOO family) and stored criteria.
-from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
+# brms post-processing methods (summaries, accessors, LOO family).
 from quivers.formulas._postprocess_methods import (
     JointPostprocess,
     JointPredictionOptions,
@@ -141,8 +153,8 @@ from quivers.formulas._postprocess_methods import (
 # brms coefficient renaming shared with single fits.
 from quivers.formulas._postprocess_names import (
     _ordinal_thresholds,
-    coefficient_labels,
-    name_scope,
+    design_coefficient_labels,
+    design_name_scope,
     coordinate_labels,
     distributional_classes,
     shrinkage_scales,
@@ -231,7 +243,7 @@ def _kind(
     return draw_provenance(posterior)
 
 
-class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
+class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
     """A fitted joint (multivariate) formula model.
 
     Parameters
@@ -284,32 +296,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
     """
 
     specification: MultivariateFormula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    posterior: MCMCResult | PriorDraws | Guide = dx.field(
-        opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    observations: Mapping[str, torch.Tensor] = dx.field(
-        opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
     emission: _JointEmission = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     prepared: Mapping[str, _PreparedFormula] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    losses: tuple[float, ...] = ()
-    prior: PriorDraws | MCMCResult | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    sample_prior: PriorMode = "no"
-    priors: PriorSet = dx.field(
-        default_factory=PriorSet, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    fixed_prior: str = "Normal(0.0, 5.0)"
-    random_scale_prior: str = "HalfNormal(1.0)"
-    correlation_prior: str = "LKJCholesky(1.0)"
-    group_covariances: dict[str, GroupCovariance] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    reparameterize: Literal["centered", "noncentered"] = "noncentered"
     preparation_data: IntoDataFrame | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -327,10 +317,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
     )
     data2: dict[str, AutocorMatrix] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    # Criteria stored by add_criterion (brms ``x$criteria``), kept in artifacts.
-    criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
-        default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @property
@@ -442,12 +428,54 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         )
         return laws, shape, prepared.rows[name]
 
-    def _response_fit(self, name: str) -> BayesianFit:
-        """Build the response view used by the ordinary row preparation.
+    def _response_plan(
+        self, name: str
+    ) -> tuple[FormulaToQVRModule, FormulaPredictionPlan]:
+        """Emit local group laws and fitted row metadata for one response."""
+        response = self.emission.responses[name]
+        part = self.prepared[name]
+        lens = copy(response.lens)
+        lens._emitted_groups = []
+        module, complement = lens.forward(response.formula)
+        return lens, FormulaPredictionPlan(
+            module=module,
+            designs=part.designs,
+            response=response_data(
+                response.formula, response.lens._residual, part.designs["mu"]
+            ),
+            preparation_data=self.preparation_data,
+            group_laws=complement.group_laws,
+            level_sites=complement.level_sites,
+            prior_targets=complement.prior_targets,
+            predictors=lens._planned(response.formula),
+        )
 
-        The view retains the response's fitted designs, joint grouping codes,
-        and its own compiled program, so `prepare_prediction` applies the
-        single-response row rules unchanged. Its posterior is never sampled.
+    def _response_preparation(self, name: str) -> JointResponsePreparation:
+        """Retain the local response metadata needed to bind fresh joint rows."""
+        response = self.emission.responses[name]
+        part = self.prepared[name]
+        lens, plan = self._response_plan(name)
+        data = plan.response
+        assert data is not None
+        return JointResponsePreparation(
+            formula=response.formula,
+            family=part.family,
+            lens=lens,
+            observations=_formula_observations(
+                part, formula=response.formula, lens=response.lens
+            ),
+            prediction_plan=plan,
+            binomial_trials=part.binomial_trials,
+            thresholds_by=self.specification.responses[name].thresholds_by,
+            _response_data=data,
+            _response_readout=self._response_readout(name),
+        )
+
+    def _response_fit(self, name: str) -> BayesianFit:
+        """Build the single-response view used by joint parameter readers.
+
+        The view retains fitted designs, joint grouping codes, and its own
+        compiled program. Joint prediction binds rows through `_response_preparation`.
 
         Parameters
         ----------
@@ -469,18 +497,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         response = self.emission.responses[name]
         authored = self.specification.responses[name]
         part = self.prepared[name]
-        lens = copy(response.lens)
-        lens._emitted_groups = []
-        module, complement = lens.forward(response.formula)
+        lens, plan = self._response_plan(name)
         family = part.family
-        program = (
-            Compiler(
-                module,
-                families=with_flat_catalog(lens.families(), module),
-            )
-            .compile()
-            .morphism
-        )
+        program = compile_model(plan.module, lens.families()).morphism
         if not isinstance(program, MonadicProgram):
             raise TypeError("a joint response must compile to one MonadicProgram")
         view = BayesianFit(
@@ -506,46 +525,15 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             default_priors=response.lens._default_priors,
             center=response.lens._center,
             decomp=response.lens._decomp,
-            prediction_plan=FormulaPredictionPlan(
-                module=module,
-                designs=part.designs,
-                preparation_data=self.preparation_data,
-                group_laws=complement.group_laws,
-                level_sites=complement.level_sites,
-                prior_targets=complement.prior_targets,
-                predictors=lens._planned(response.formula),
-            ),
+            prediction_plan=plan,
         )
         self.response_fits[name] = view
         return view
 
-    def draws(
-        self, *, num_samples: int | None = None, seed: int = 0
-    ) -> dict[str, torch.Tensor]:
-        """Return constrained draws of the native joint sites.
-
-        Parameters
-        ----------
-        num_samples : int or None
-            Draws per chain, or None for every retained draw (100 for a guide).
-        seed : int
-            Seed for draws from a variational guide.
-
-        Returns
-        -------
-        dict[str, torch.Tensor]
-            Constrained draws keyed by namespaced site, on chain and draw axes.
-        """
-        registry = LatentRegistry.from_model(
-            self.program, observed_names=set(self.observations)
-        )
-        draws = constrained_draws(
-            self.posterior,
-            torch.zeros(1, 1, dtype=torch.long),
-            num_samples=num_samples,
-            seed=seed,
-            registry=registry,
-        )
+    def _derived_draw_bindings(
+        self, draws: Mapping[str, torch.Tensor]
+    ) -> tuple[Module, list[str]]:
+        """Report coordinates of all fitted responses in the joint namespace."""
         # Constants, centered intercepts, and QR coefficients are derived sites.
         reported = [
             response.names.get(local, local)
@@ -565,9 +553,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
             if response.names.get(source, source) in draws
         ]
-        return derived_site_draws(
+        return (
             self.emission.module,
-            draws,
             reported
             + [site for target in self.emission.prior_targets for site in target.sites]
             + equated,
@@ -633,11 +620,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             minus the location intercept, shaped
             ``(chain, draw, row, threshold)``. Empty without such a response.
         """
-        names = [
-            name
-            for name in self.response_names
-            if _ordinal_thresholds(self._response_fit(name))
-        ]
+        names = {}
+        for name in self.response_names:
+            readout = self._predictor_readout(name)
+            if _ordinal_thresholds(
+                readout, self.specification.responses[name].thresholds_by
+            ):
+                ordinal = readout.family.ordinal
+                assert ordinal is not None
+                names[name] = len(readout.category_labels) - (
+                    2 if ordinal.kind == "hurdle_cumulative" else 1
+                )
         if not names:
             return {}
         prepared = self._prepare(
@@ -663,17 +656,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 Row-by-threshold values keyed by response.
             """
             result = {}
-            for name in names:
-                view = self._response_fit(name)
+            for name, width in names.items():
+                response = self.emission.responses[name]
                 site = (
                     "row_cutpoints"
-                    if view.formula.modifiers.threshold_groups is not None
+                    if response.formula.modifiers.threshold_groups is not None
                     else "cutpoints"
                 )
                 result[name] = row_binding(
-                    recorded.sites[self.emission.responses[name].names[site]].value,
+                    recorded.sites[response.names[site]].value,
                     prepared.rows[name],
-                    len(view.threshold_labels),
+                    width,
                 )
             return result
 
@@ -710,12 +703,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         result: dict[str, torch.Tensor] = {}
         # brms omits the response from names of a one-response model.
         joint = len(self.response_names) > 1
-        # Coefficient labels as single fits name them:
-        # brms's renaming of each response's design labels (f[q] -> fq).
-        renamed = {
-            resp: coefficient_labels(self._response_fit(resp))
-            for resp in self.response_names
-        }
+        readouts = {resp: self._predictor_readout(resp) for resp in self.response_names}
 
         special: dict[tuple[str, str, str], str] = {}
 
@@ -757,14 +745,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         scopes: dict[str, NameScope] = {}
         outputs: dict[str, OutputAxis | None] = {}
         for resp, response in self.emission.responses.items():
-            plan = self._response_fit(resp).prediction_plan
-            assert plan is not None
+            designs = self.prepared[resp].designs
+            items = response.lens._predictor_items(response.formula)
+            labels = design_coefficient_labels(items, designs)
             local = {
                 site.removeprefix(response.prefix): value
                 for site, value in draws.items()
                 if site.startswith(response.prefix)
             }
-            planned = {predictor.prefix: predictor for predictor in plan.predictors}
+            planned = {
+                predictor.prefix: predictor for predictor in readouts[resp].predictors
+            }
             outputs |= {
                 response.prefix + key: item.output for key, item in planned.items()
             }
@@ -774,17 +765,15 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 result |= threshold_variables(
                     thresholds[resp],
                     infix=tag(resp),
-                    groups=self._response_fit(resp).formula.modifiers.threshold_groups,
+                    groups=response.formula.modifiers.threshold_groups,
                 )
-            for parameter, prefix, predictor in response.lens._predictor_items(
-                response.formula
-            ):
-                scope = name_scope(
-                    self._response_fit(resp),
+            for parameter, prefix, predictor in items:
+                scope = design_name_scope(
                     parameter,
                     prefix,
                     predictor,
-                    renamed[resp],
+                    labels,
+                    designs.get(parameter),
                     response=resp if joint else "",
                     special={
                         column: label
@@ -908,7 +897,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     else target,
                     value,
                     infix=self._infix(target),
-                    labels=coordinate_labels(self._response_fit(resp), target)
+                    labels=coordinate_labels(readouts[resp], target)
                     if resp is not None
                     else tuple(str(label) for label in target.component_labels),
                 )
@@ -963,7 +952,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 [
                     name
                     for resp in self.response_names
-                    for name in distributional_classes(self._response_fit(resp))
+                    for name in distributional_classes(readouts[resp])
                 ],
             ),
             (chains, count),
@@ -1029,7 +1018,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         tuple[Formula, str]
             The retained predictor and its namespaced prefix.
         """
-        predictor, prefix = self._response_fit(resp)._formula_predictor(parameter)
+        predictor, prefix = self._predictor_readout(resp)._formula_predictor(parameter)
         return predictor, self.emission.responses[resp].prefix + prefix
 
     def fixed_effects(
@@ -1059,10 +1048,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             Column labels mapped to coefficient draws on chain and draw axes.
         """
         self._selection(resp)
-        view = self._response_fit(resp)
-        return view._fixed_effects(
+        readout = self._predictor_readout(resp)
+        _, prefix = readout._formula_predictor(parameter)
+        return population_coefficients(
+            readout.predictors,
             self.draws(num_samples=num_samples, seed=seed),
-            view._formula_predictor(parameter)[1],
+            prefix,
             self.emission.responses[resp].prefix,
         )
 
@@ -1162,15 +1153,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             population coefficients.
         """
         self._selection(resp)
-        predictor, prefix = self._predictor(resp, parameter)
+        readout = self._predictor_readout(resp)
+        predictor, prefix = readout._formula_predictor(parameter)
+        namespace = self.emission.responses[resp].prefix
         draws = self.draws(num_samples=num_samples, seed=seed)
-        view = self._response_fit(resp)
-        fixed = view._fixed_effects(
-            draws,
-            view._formula_predictor(parameter)[1],
-            self.emission.responses[resp].prefix,
-        )
-        varying = self._random(draws, predictor, prefix)
+        fixed = population_coefficients(readout.predictors, draws, prefix, namespace)
+        varying = self._random(draws, predictor, namespace + prefix)
         for group, values in varying.items():
             for name, coefficient in fixed.items():
                 population = coefficient.unsqueeze(2)
@@ -1380,9 +1368,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             If a selection, predictor, or row is invalid.
         """
         names = self._selection(resp)
+        readers = {name: self._predictor_readout(name) for name in names}
         bindings = {
-            name: self._response_fit(name)._linpred_binding(parameter, transform)
-            for name in names
+            name: reader._linpred_binding(parameter, transform)
+            for name, reader in readers.items()
         }
         prepared = self._prepare(
             new_data,
@@ -1413,7 +1402,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 response = self.emission.responses[name]
                 index = self.response_names.index(name)
                 result[name] = bindings[name].read(
-                    self._response_fit(name)._row_reader(
+                    readers[name]._row_reader(
                         parameter,
                         bindings[name],
                         recorded,
@@ -1501,6 +1490,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             incl_autocor=incl_autocor,
         )
 
+        measurements = {}
+        if not self.rescor:
+            for name in names:
+                response = self.emission.responses[name]
+                site = response.names[_qvr_name(response.formula.response_name)]
+                readout = self._response_readout(name)
+                extent = (
+                    self._response_data(name).layout.event_shape or readout.categories
+                )
+                measurements[name] = (site, readout, extent)
+
         def operation(recorded: Trace) -> dict[str, torch.Tensor]:
             """Read every selected expected response from one trace.
 
@@ -1524,25 +1524,13 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     name: value[..., self.response_names.index(name)] for name in names
                 }
             result: dict[str, torch.Tensor] = {}
-            for name in names:
-                response = self.emission.responses[name]
-                view = self._response_fit(name)
-                family = view.family
-                categories = (
-                    len(view.category_labels) if family.category_response else 0
-                )
-                site = response.names[_qvr_name(response.formula.response_name)]
+            for name, (site, readout, extent) in measurements.items():
                 value = expected_response(
                     response_distribution(recorded, site),
-                    family,
-                    categories=categories,
+                    readout,
                     mc_samples=mc_samples,
                 )
-                result[name] = row_binding(
-                    value,
-                    prepared.rows[name],
-                    response.formula.response_layout.event_shape or categories,
-                )
+                result[name] = row_binding(value, prepared.rows[name], extent)
             return result
 
         return self._replay(
@@ -1669,6 +1657,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         response gives its own pointwise scores, and a selection of several
         sums their scores per row, as brms ``log_lik`` does.
 
+        On the training rows only recorded values are scored. Where an
+        ``mi()`` value is missing, the recorded values of the row are scored
+        by the joint law conditional on the completed value
+        (`recorded_log_prob`), and a row with no recorded value scores zero.
+        brms reports these rows as missing (NA) instead.
+
         Parameters
         ----------
         resp : str or Sequence[str] or None
@@ -1720,81 +1714,79 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             incl_autocor=incl_autocor,
         )
 
-        def recorded_rows(scores: torch.Tensor) -> torch.Tensor:
-            """Report missing scores where a selected ``mi()`` value is missing.
-
-            brms scores a training row of a joint residual event as NA when
-            a selected response has no recorded value there.
-
-            Parameters
-            ----------
-            scores : torch.Tensor
-                Pointwise scores on ``(chain, draw, row)``.
-
-            Returns
-            -------
-            torch.Tensor
-                The scores with NaN at rows lacking a recorded value.
-            """
-            if new_data is not None:
-                return scores
-            for name in names:
-                spec = self.missing_specs.get(name)
-                if spec is None:
-                    continue
-                absent = torch.ones(scores.shape[-1], dtype=torch.bool)
-                absent[list(spec.observed_positions)] = False
-                scores = scores.masked_fill(absent.to(scores.device), float("nan"))
-            return scores
-
-        if self.rescor and names == self.response_names:
-            shape = draw_count(self.posterior, num_samples)
-            draws = self.draws(num_samples=num_samples, seed=seed)
-            with torch.no_grad():
-                joint = collect_log_likelihood(
-                    replay(
-                        cast(BayesianFit, self),
-                        draws,
-                        shape,
-                        context=prepared.context,
-                        score_observations=True,
-                    ),
-                    {JOINT_RESPONSE},
-                    shape,
-                )
-            return {key: recorded_rows(joint[JOINT_RESPONSE])}
         if self.rescor:
             indices = [self.response_names.index(name) for name in names]
-            outcome = prepared.context.observations[JOINT_RESPONSE][..., indices]
+            width = len(self.response_names)
+            rows = prepared.rows[names[0]]
+            outcome = prepared.context.observations[JOINT_RESPONSE].reshape(rows, width)
+            # On training rows a missing mi() value is completed by the
+            # program; on new rows every value is recorded.
+            recorded = (
+                torch.stack(
+                    [
+                        torch.as_tensor(self._response_data(name).recorded)
+                        for name in self.response_names
+                    ],
+                    dim=-1,
+                )
+                if new_data is None
+                else torch.ones((rows, width), dtype=torch.bool)
+            )
 
-            def selected(recorded: Trace) -> dict[str, torch.Tensor]:
-                """Score the selected components by their exact marginal law.
+            def selected(trace: Trace) -> dict[str, torch.Tensor]:
+                """Score the recorded values of the selected responses.
+
+                A missing value is conditioned on at its completion, which
+                the recursions of later rows also read; a strict subset is
+                scored by the exact marginal of the joint event.
 
                 Parameters
                 ----------
-                recorded : Trace
+                trace : Trace
                     One replayed joint trace.
 
                 Returns
                 -------
                 dict[str, torch.Tensor]
-                    Marginal pointwise scores.
+                    Pointwise scores.
                 """
-                law = marginal(response_distribution(recorded, JOINT_RESPONSE), indices)
+                values = outcome
+                if not bool(recorded.all()):
+                    completed = torch.stack(
+                        [
+                            trace.sites[f"mi_{name}__completed"].value.reshape(rows)
+                            if f"mi_{name}__completed" in trace.sites
+                            else outcome[:, position]
+                            for position, name in enumerate(self.response_names)
+                        ],
+                        dim=-1,
+                    ).to(outcome.dtype)
+                    values = torch.where(recorded, outcome, completed)
+                law = response_distribution(trace, JOINT_RESPONSE)
+                if isinstance(law, RecursiveResiduals):
+                    law = law.given(values)
+                if len(indices) < width:
+                    law = marginal(law, indices)
                 return {
                     key: row_binding(
-                        law.log_prob(outcome.to(law.loc.dtype)),
-                        prepared.rows[names[0]],
+                        recorded_log_prob(
+                            law, values[:, indices], recorded[:, indices]
+                        ),
+                        rows,
                     )
                 }
 
-            scores = self._replay(
-                prepared, selected, num_samples=num_samples, seed=seed, stream=2
+            return self._replay(
+                prepared,
+                selected,
+                num_samples=num_samples,
+                seed=seed,
+                stream=2,
+                score=True,
             )
-            return {key: recorded_rows(scores[key])}
         training = new_data is None and re_formula is None
         # On training rows an mi() response is scored on its recorded events;
-        # brms reports missing scores (NA) at its missing rows.
+        # a missing row has no recorded likelihood.
         events = {
             name: self.missing_specs[name]
             for name in names
@@ -1843,14 +1835,83 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
         for name, spec in events.items():
             recorded = scores[sites[name]]
-            full = recorded.new_full(
-                (*recorded.shape[:2], prepared.rows[name]), float("nan")
-            )
+            full = recorded.new_zeros((*recorded.shape[:2], prepared.rows[name]))
             positions = torch.as_tensor(spec.observed_rows, dtype=torch.long)
             included = {row: index for index, row in enumerate(spec.rows.positions)}
             full[..., [included[int(row)] for row in positions]] = recorded
             scores[sites[name]] = full
         return {key: sum((scores[site] for site in sites.values()), torch.zeros(()))}
+
+    def _response_data(self, name: str) -> ResponseData:
+        """Return the response data of one response.
+
+        Parameters
+        ----------
+        name : str
+            Response label.
+
+        Returns
+        -------
+        ResponseData
+            Values, recorded rows, and the columns the program reads; an
+            ``mi()`` response is recorded at its observed rows only.
+        """
+        response = self.emission.responses[name]
+        data = response_data(
+            response.formula,
+            response.lens._residual,
+            self.prepared[name].designs.get("mu"),
+        )
+        spec = self.missing_specs.get(name)
+        if spec is None:
+            return data
+        recorded = np.zeros(len(data.recorded), dtype=bool)
+        recorded[list(spec.observed_positions)] = True
+        return data.with_(recorded=recorded)
+
+    def _response_readout(self, name: str) -> ResponseReadout:
+        """Return the measurements declared for a fitted response.
+
+        Parameters
+        ----------
+        name : str
+            Response label.
+
+        Returns
+        -------
+        ResponseReadout
+            The fitted response law's measurement policy and category extent.
+        """
+        family = self.prepared[name].family
+        formula = self.emission.responses[name].formula
+        categories = (
+            len(response_category_labels(formula, family))
+            if family.category_response
+            else 0
+        )
+        return response_readout(
+            family,
+            categories,
+            fixed=self.specification.responses[name].fixed_parameters or (),
+        )
+
+    def _predictor_readout(self, name: str) -> PredictorReadout:
+        """Read one joint response's predictors in the fitted coordinates."""
+        response = self.emission.responses[name]
+        lens = response.lens
+        family = self.prepared[name].family
+        return PredictorReadout(
+            formula=response.formula,
+            family=family,
+            designs=self.prepared[name].designs,
+            distributional=lens._distributional,
+            predictor_graph=lens._predictor_graph,
+            predictors=lens._planned(response.formula),
+            fixed_parameters=self.specification.responses[name].fixed_parameters or {},
+            category_labels=response_category_labels(response.formula, family),
+            location=self._response_readout(name).location,
+            residual=lens._residual,
+        )
 
     def observed(self, *, resp: ResponseSelection = None) -> dict[str, torch.Tensor]:
         """Return the training outcomes of the selected responses.
@@ -2001,42 +2062,21 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             predictions = self.posterior_linpred(resp=resp, new_data=frame, **request)
         else:
             predictions = self.posterior_predict(resp=resp, new_data=frame, **request)
-        return {
-            name: grid.result(
+        effects = {}
+        for name, value in predictions.items():
+            readout = self._predictor_readout(name)
+            effects[name] = grid.result(
                 value,
                 kind=_kind(self.posterior),
                 method=method,
-                labels=self._response_fit(name).predictor_labels("mu")
+                labels=readout.predictor_labels("mu")
                 if method == "linpred"
-                else self._response_fit(name).category_labels,
+                else readout.category_labels,
             )
-            for name, value in predictions.items()
-        }
+        return effects
 
-    def prior_draws(
-        self, *, num_samples: int = 100, seed: int = 0
-    ) -> PriorDraws | MCMCResult:
-        """Draw the joint prior with the retained designs.
-
-        Parameters
-        ----------
-        num_samples : int
-            Independent ancestral draws.
-        seed : int
-            Isolated seed.
-
-        Returns
-        -------
-        PriorDraws or MCMCResult
-            Constrained prior samples.
-        """
-        return prior_draws(
-            self.program,
-            torch.zeros(1, 1),
-            self.observations,
-            num_samples=num_samples,
-            seed=seed,
-        )
+    def _prior_module(self) -> Module:
+        return self.emission.module
 
     def prior_view(
         self, *, num_samples: int | None = None, seed: int = 0
@@ -2198,9 +2238,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         ValueError
             If no recipe was retained.
         """
-        return cast(
-            MultivariateFit, update_fit(cast(BayesianFit, self), data, overrides)
-        )
+        return update_fit(self.refit_recipe, data, overrides)
 
     def refit_callback(
         self,
@@ -2482,6 +2520,8 @@ def compose_joint(
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     data2: Mapping[str, AutocorMatrix] | None = None,
     caller: str = "fit",
+    identity_namespace: bool = False,
+    predictor_name: str | None = None,
 ) -> JointComposition:
     """Prepare every response and compose one joint program.
 
@@ -2507,6 +2547,10 @@ def compose_joint(
         Named matrices available to every response, as brms ``data2``.
     caller : str
         Entry point named in located errors.
+    identity_namespace : bool
+        Keep the ordinary names and group laws of a bare response.
+    predictor_name : str or None
+        External predictor binding of a bare response.
 
     Returns
     -------
@@ -2517,33 +2561,31 @@ def compose_joint(
     original = nw.from_native(data, eager_only=True).to_pandas()
     frame = missing_frame(original, declared) if declared else data
     # me() hyperparameter rules are resolved on the me() targets.
-    rules = normalize_priors(priors).rules
-    measurement_rules = PriorSet(
-        rules=tuple(rule for rule in rules if rule.class_ in MEASUREMENT_CLASSES)
-    )
-    priors = PriorSet(
-        rules=tuple(rule for rule in rules if rule.class_ not in MEASUREMENT_CLASSES)
+    priors, measurement_rules = split_measurement_priors(
+        normalize_priors(priors), measurements if identity_namespace else None
     )
     # brms na_omit: one row decision for every response together.
-    rows = joint_complete_rows(
-        nw.from_native(frame, eager_only=True).to_pandas(),
-        tuple(
-            (
-                model_texts(
-                    response.formula, (response.distributional, response.nonlinear)
-                ),
-                model_columns(
-                    response.weights,
-                    response.decision,
-                    response.binomial_trials,
-                    response.thresholds_by,
-                    # brms bf(unused = ): kept columns join row retention.
-                    *response.unused,
-                ),
-            )
-            for response in (plain.responses[name] for name in plain.response_names)
-        ),
-    )
+    rows = None
+    if not identity_namespace:
+        rows = joint_complete_rows(
+            nw.from_native(frame, eager_only=True).to_pandas(),
+            tuple(
+                (
+                    model_texts(
+                        response.formula, (response.distributional, response.nonlinear)
+                    ),
+                    model_columns(
+                        response.weights,
+                        response.decision,
+                        response.binomial_trials,
+                        response.thresholds_by,
+                        # brms bf(unused = ): kept columns join row retention.
+                        *response.unused,
+                    ),
+                )
+                for response in (plain.responses[name] for name in plain.response_names)
+            ),
+        )
     prepared: dict[str, _PreparedFormula] = {}
     for name in plain.response_names:
         response = plain.responses[name]
@@ -2564,7 +2606,9 @@ def compose_joint(
             random_scale_prior=random_scale_prior,
             correlation_prior=correlation_prior,
             group_covariances=group_covariances,
+            priors=priors if identity_namespace else None,
             reparameterize=reparameterize,
+            predictor_name=predictor_name,
             data2=data2,
             caller=caller,
             # brms bf(center, decomp) and the fit's default prior policy.
@@ -2598,9 +2642,12 @@ def compose_joint(
         )
         components[name] = (lens, formula)
         inputs.extend(columns)
-    emission = emit_joint(
-        components, priors=normalize_priors(priors), rescor=specification.rescor
-    )
+    if identity_namespace:
+        ((name, (lens, formula)),) = components.items()
+        module, complement = lens.forward(formula)
+        emission = place_single_response(name, lens, formula, module, complement)
+    else:
+        emission = emit_joint(components, priors=priors, rescor=specification.rescor)
     plan = MissingPlan(
         responses=declared,
         inputs=tuple(inputs),
@@ -2686,10 +2733,6 @@ def compose_joint(
         missing=plan,
         specs=specs,
     )
-
-
-#: brms prior classes of me() hyperparameters.
-MEASUREMENT_CLASSES: frozenset[str | None] = frozenset({"meanme", "sdme", "corme"})
 
 
 def _replace_priors(
@@ -2796,7 +2839,7 @@ def _prepare_joint(
         caller=caller,
     )
     emission = composition.emission
-    program = Compiler(emission.module, families=emission.families).compile().morphism
+    program = compile_model(emission.module, emission.families).morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("joint formula emission must compile to one MonadicProgram")
     return composition, program
@@ -3033,7 +3076,7 @@ def fit_entry(
     formula: MultivariateFormula,
     data: IntoDataFrame,
     options: Mapping[str, object],
-    refit_recipe: RefitRecipe[IntoDataFrame, Mapping[str, object], BayesianFit],
+    refit_recipe: RefitRecipe[IntoDataFrame, Mapping[str, object], MultivariateFit],
 ) -> MultivariateFit:
     """Fit a joint formula from the canonical arguments captured by `fit`.
 
@@ -3081,11 +3124,7 @@ def fit_entry(
     return fit_joint(
         formula,
         data,
-        # The recipe reruns `fit`, which returns a MultivariateFit for this formula.
-        refit_recipe=cast(
-            RefitRecipe[IntoDataFrame, Mapping[str, object], MultivariateFit],
-            refit_recipe,
-        ),
+        refit_recipe=refit_recipe,
         **cast(
             JointFitOptions,
             {name: value for name, value in options.items() if name in keys},

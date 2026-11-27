@@ -4,7 +4,8 @@
 the slots of its location and auxiliary parameters, the parts that compute
 the arguments of its native law (ordinal thresholds and masses, category
 completion, vector concentration, the map from the formula parameterization
-to the native one), and the observation. `slot_sources` gives each slot the
+to the native one), and the observation. A mixture declares its components,
+which its kernel emits as nested blocks (`quivers.formulas._mixture`). `slot_sources` gives each slot the
 source the formula, the fixed values, or the priors choose, and
 `precompose_graph` folds the nonlinear predictor graph into the kernel.
 """
@@ -57,12 +58,17 @@ from quivers.formulas._kernel import (
     Steps,
     ValueShape,
 )
+from quivers.formulas._mixture import mixture_kernel
 from quivers.formulas._observation import observation
 from quivers.formulas._predictor import response_axis
-from quivers.formulas._predictor_graph import ComponentExpression, PredictorGraph
+from quivers.formulas._predictor_graph import (
+    ComponentExpression,
+    PredictorGraph,
+    _value_names,
+)
 from quivers.formulas._modifiers import response_modifiers
 from quivers.formulas._term import AxisDecl, InputDecl, SiteDecl
-from quivers.formulas.family import AuxParam, links
+from quivers.formulas.family import AuxParam, links, parameter_prefix
 from quivers.formulas.formula import Formula, _qvr_name
 
 __all__: list[str] = []
@@ -478,6 +484,7 @@ def graph_value(
     *,
     axis: str | None = None,
     components: tuple[str, ...] | None = None,
+    rowwise: bool = True,
 ) -> Steps:
     """Bind a graph value over the rows and, for a vector, its coordinates.
 
@@ -494,6 +501,8 @@ def graph_value(
     components : tuple[str, ...] or None
         Coordinate labels the value must have, in order; None for a value
         that names its own.
+    rowwise : bool
+        Keep the row axis. A value constant over the rows may omit it.
 
     Returns
     -------
@@ -505,52 +514,39 @@ def graph_value(
     ValueError
         If the labels or the scalar or vector carrier do not match.
     """
-    row = _var(GRAPH_ROW)
+    row = _var(GRAPH_ROW) if rowwise else LetExprLiteral(value=0, integral=True)
+
+    def read(expression: LetExprNode, component: str | None = None) -> LetExprNode:
+        body = graph_expression_at(graph, expression, row, component)
+        return _factor(((GRAPH_ROW, "Resp"),), body=body) if rowwise else body
+
     if not isinstance(value, ComponentExpression):
         if components is not None:
             raise ValueError(
                 f"nonlinear {name!r} requires explicit component expressions for {components}"
             )
-        return Steps(
-            steps=(
-                _let(
-                    name,
-                    _factor(
-                        ((GRAPH_ROW, "Resp"),),
-                        body=graph_expression_at(graph, value, row),
-                    ),
-                ),
-            )
-        )
+        return Steps(steps=(_let(name, read(value)),))
     labels = value.components if components is None else components
     if set(labels) != set(value.components):
         raise ValueError(
             f"nonlinear {name!r} component labels {value.components} do not match expected {labels}"
         )
     axis = axis or f"FormulaGraphCoordinate_{name}"
+    coordinate = ("graph_coordinate", axis)
+    values = tuple(
+        (index, read(value.at(label), label)) for index, label in enumerate(labels)
+    )
     return Steps(
         objects=(AxisDecl(name=axis, size=len(labels)),),
         steps=stack_rows(
             name,
-            (
-                (
-                    index,
-                    _factor(
-                        ((GRAPH_ROW, "Resp"),),
-                        body=graph_expression_at(
-                            graph,
-                            value.values[value.components.index(label)],
-                            row,
-                            label,
-                        ),
-                    ),
-                )
-                for index, label in enumerate(labels)
-            ),
-            ("graph_coordinate", axis),
+            values,
+            coordinate,
             stem=f"{name}_by_coordinate",
             row=(GRAPH_ROW, "Resp"),
-        ),
+        )
+        if rowwise
+        else (_let(name, _factor((coordinate,), cases=values)),),
     )
 
 
@@ -825,6 +821,39 @@ def _category_stack(
     )
 
 
+def graph_row_roots(inputs: KernelInputs) -> frozenset[str]:
+    """Read which nonlinear roots depend on the row.
+
+    Parameters
+    ----------
+    inputs : KernelInputs
+        Planned parameter predictors and the graph's dependency order.
+
+    Returns
+    -------
+    frozenset[str]
+        Roots that read row covariates, including through other expressions.
+    """
+    graph = inputs.graph
+    if graph is None:
+        return frozenset()
+    varying = {column.qvr_name for column in graph.inputs.values()}
+    varying.update(
+        f"nlpar_{name}"
+        for name in graph.leaves
+        if inputs.predictor(f"nlpar_{name}_").rowwise
+    )
+    for name, expression in graph.expressions.items():
+        if _value_names(expression) & varying:
+            varying.add(f"nlpar_{name}")
+    return frozenset(
+        name
+        for name, expression in graph.roots.items()
+        if _value_names(expression) & varying
+        or (name == "mu" and inputs.host is not None)
+    )
+
+
 def precompose_graph(
     kernel: ResponseKernel,
     inputs: KernelInputs,
@@ -886,11 +915,33 @@ def precompose_graph(
     )
     family = inputs.family
     labels = inputs.labels if family.response is not None else ()
+    declared = {aux.name: aux.coordinates for aux in family.aux_params}
+    varying = graph_row_roots(inputs)
     for name, value in graph.roots.items():
         if not kernel.has_slot(name) or kernel.slot(name).precomposition is not None:
             continue
         slot = kernel.slot(name)
-        if slot.free is not None and name == "mu":
+        coordinates = declared.get(name)
+        rowwise = name in varying or not slot.constant_rows
+        if coordinates is not None:
+            assert slot.free is not None
+            axis = coordinates.axis
+            if coordinates.reference is not None:
+                axis = parameter_prefix(name) + axis
+            step = graph_value(
+                graph,
+                slot.free,
+                value,
+                axis=axis,
+                components=tuple(str(index) for index in coordinates.free),
+                rowwise=rowwise,
+            )
+            precomposition = Precomposition(
+                parts=(step,),
+                level="free",
+                shape=ValueShape(rows=rowwise, coordinates=True),
+            )
+        elif slot.free is not None and name == "mu":
             # The free logits of a categorical law.
             response = family.response
             assert response is not None
@@ -917,12 +968,14 @@ def precompose_graph(
             if inputs.host is not None:
                 total = _add(total, _var(inputs.host))
             precomposition = Precomposition(
-                parts=(graph_value(graph, root, value),), value=total
+                parts=(graph_value(graph, root, value, rowwise=rowwise),),
+                value=total,
+                shape=ValueShape(rows=rowwise),
             )
         else:
             assert slot.eta is not None
             components = None
-            shape = ValueShape(rows=True)
+            shape = ValueShape(rows=rowwise)
             if isinstance(value, ComponentExpression):
                 if slot.free is None:
                     raise ValueError(
@@ -942,6 +995,7 @@ def precompose_graph(
                         value,
                         axis=f"dpar_{name}_FormulaCategoryLogit",
                         components=components,
+                        rowwise=rowwise,
                     ),
                 ),
                 value=_var(slot.eta),
@@ -950,6 +1004,28 @@ def precompose_graph(
         kernel = kernel.precompose(name, precomposition)
         sources.pop(name, None)
     return kernel.with_prelude(leaves, parts, data)
+
+
+def residual_sources(inputs: KernelInputs) -> dict[str, ParameterSource]:
+    """Bind the scalar structural parameters of the residual law.
+
+    Parameters
+    ----------
+    inputs : KernelInputs
+        Residual law and fixed parameter values.
+
+    Returns
+    -------
+    dict[str, ParameterSource]
+        Sources in the order of the residual law's signature.
+    """
+    law = inputs.residual
+    return {
+        site.name: ConstantSource(value=float(inputs.fixed[site.name]))
+        if site.name in inputs.fixed
+        else SiteSource(site=site)
+        for site in (() if law is None else law.sites)
+    }
 
 
 def family_kernel(
@@ -968,9 +1044,15 @@ def family_kernel(
     Returns
     -------
     tuple[ResponseKernel, dict[str, ParameterSource]]
-        The kernel and the source of each slot a source feeds.
+        The kernel and the source of each slot a source feeds. A family
+        with a kernel law takes the law's kernel; a mixture's kernel emits
+        its components as nested blocks and has no slot.
     """
     family = inputs.family
+    if family.kernel_law is not None:
+        return family.kernel_law.kernel(inputs, formula)
+    if family.mixture is not None:
+        return mixture_kernel(inputs, formula), {}
     location = inputs.predictor("")
     graph = inputs.graph
     roots = {} if graph is None else graph.roots
@@ -1059,15 +1141,10 @@ def family_kernel(
                 if source is not None:
                     sources[aux.name] = source
         body.append(BindSlot(slot=aux.name))
-    residual = inputs.residual
-    for site in residual.sites if residual is not None else ():
-        slots.append(ParameterSlot(name=site.name))
-        sources[site.name] = (
-            ConstantSource(value=float(inputs.fixed[site.name]))
-            if site.name in inputs.fixed
-            else SiteSource(site=site)
-        )
-        body.append(BindSlot(slot=site.name))
+    structural = residual_sources(inputs)
+    slots.extend(ParameterSlot(name=name) for name in structural)
+    sources.update(structural)
+    body.extend(BindSlot(slot=name) for name in structural)
     if response is not None:
         if family.vector_response:
             assert response.kind in (
