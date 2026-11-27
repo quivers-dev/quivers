@@ -1131,13 +1131,19 @@ def parameter_decl(
             raise ValueError(
                 f"{law.obstacle}; the program {entry!r} cannot take a formula for it"
             )
-        if analysis.row_axis in site.axes:
+        rows = site.axes[:1] == (analysis.row_axis,)
+        if analysis.row_axis in site.axes[1:]:
             raise ValueError(
-                f"the program {entry!r} draws {name!r} once per row; a formula "
-                "gives a parameter that the program draws once"
+                f"the program {entry!r} does not give {name!r} a single leading "
+                f"row axis {analysis.row_axis!r}; put the response rows first"
             )
         coordinates, axes = _coordinates(
-            entry, name, site.axes, site.sizes, law.reference, law.matrix
+            entry,
+            name,
+            site.axes[1:] if rows else site.axes,
+            site.sizes,
+            law.reference,
+            law.matrix,
         )
         reference = law.reference if len(axes) > 1 else None
         return ParameterDecl(
@@ -1145,6 +1151,7 @@ def parameter_decl(
             origin="site",
             link=links["identity"] if reference is not None else law.link,
             domain=law.domain,
+            rows=rows,
             coordinates=coordinates,
             axes=axes,
             matrix=law.matrix,
@@ -1245,6 +1252,11 @@ def _coordinates(
         width = math.prod(sizes[:-2]) * (dim * (dim + 1) // 2)
         return ParameterCoordinates(axis=flat, size=width), shape
     if not shape:
+        if reference is not None:
+            raise ValueError(
+                f"the simplex parameter {name!r} of {entry!r} needs a declared "
+                "component axis other than the response rows"
+            )
         return None, ()
     if len(shape) == 1:
         axis = shape[0]

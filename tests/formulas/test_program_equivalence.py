@@ -229,6 +229,34 @@ def test_a_program_vector_parameter_keeps_its_coordinate_axis() -> None:
     )
 
 
+@pytest.mark.parametrize("with_slope", [False, True])
+def test_a_program_row_draw_can_take_a_regression(with_slope: bool) -> None:
+    source = GAUSS.replace("sample mu <-", "sample mu : Trial <-")
+    rows = frame().assign(y=np.arange(-6, 6) / 8, x=np.arange(12) / 8)
+    fitted = fit(
+        program=source,
+        parameters={"mu": "~ x" if with_slope else "~ 1"},
+        response="y",
+        data=rows,
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    intercept, scale, slope = 0.375, 0.75, -0.5
+    values = {"intercept": np.asarray([intercept]), "sigma": np.asarray([scale])}
+    if with_slope:
+        values["beta_x"] = np.asarray([slope])
+    location = torch.full((len(rows),), intercept, dtype=torch.float64)
+    if with_slope:
+        location = location + slope * torch.tensor(rows["x"].to_numpy())
+    actual = pin(fitted, values).log_likelihood()["y"].reshape(-1)
+    y = torch.tensor(rows["y"].to_numpy())
+    expected = torch.distributions.Normal(location, scale).log_prob(y)
+    torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+    wrong = torch.distributions.Normal(location + 1.0, scale).log_prob(y)
+    assert float((actual - wrong).abs().max()) > 1e-2
+
+
 @pytest.mark.parametrize("per_row", [False, True])
 def test_a_program_tensor_parameter_retains_its_nominal_coordinates(
     per_row: bool,
