@@ -46,6 +46,34 @@ class ResponseReadout(ValueModel):
     r_squared: Literal["model", "residual"]
 
 
+def response_category_labels(formula: Formula, family: Family) -> tuple[int | str, ...]:
+    """Return the response categories or event components in fitted order.
+
+    Parameters
+    ----------
+    formula : Formula
+        Formula carrying the fitted response layout.
+    family : Family
+        Family specifying whether the response has category coordinates.
+
+    Returns
+    -------
+    tuple of int or str
+        Component names, factor levels, or integer category labels. Scalar
+        numeric responses have no category labels.
+    """
+    layout = formula.response_layout
+    labels = layout.component_names or layout.category_values or layout.category_levels
+    if labels:
+        return labels
+    if family.ordinal is None and not family.unordered_categories:
+        return ()
+
+    from quivers.formulas.compile import FormulaToQVRModule
+
+    return tuple(range(FormulaToQVRModule._category_count(formula, family=family.name)))
+
+
 def response_readout(family: Family, categories: int) -> ResponseReadout:
     """Read the posterior measurement properties declared by a response family.
 

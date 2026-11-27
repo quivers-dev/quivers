@@ -122,6 +122,7 @@ from quivers.formulas._response import (
     ResponseReadout,
     count_totals,
     expected_response,
+    response_category_labels,
     response_readout,
     response_tensor,
 )
@@ -791,22 +792,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             families. Predicted categories are positions in this tuple.
             Categorical coefficient arrays omit the first category.
         """
-        if self.formula.response_layout.component_names:
-            return self.formula.response_layout.component_names
-        # brms integer categories keep their integer values as labels.
-        if self.formula.response_layout.category_values:
-            return self.formula.response_layout.category_values
-        if self.formula.response_layout.category_levels:
-            return self.formula.response_layout.category_levels
-        if self.family.ordinal is None and not self.family.unordered_categories:
-            return ()
-        return tuple(
-            range(
-                FormulaToQVRModule._category_count(
-                    self.formula, family=self.family.name
-                )
-            )
-        )
+        return response_category_labels(self.formula, self.family)
 
     @property
     def threshold_labels(self) -> tuple[tuple[int | str, int | str], ...]:

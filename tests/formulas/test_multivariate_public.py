@@ -15,6 +15,7 @@ from scipy import stats
 
 from quivers.diagnostics import prediction_grid
 from quivers.diagnostics.cross_validation import FoldPlan, cross_validate
+from quivers.dsl import Compiler
 from quivers.formulas import (
     MultivariateFit,
     MultivariateFormula,
@@ -519,6 +520,32 @@ def test_gaussian_new_levels_keep_the_cross_response_correlation():
         (expected.square() + torch.outer(expected.diag(), expected.diag())) / draws
     )
     assert torch.all((covariance - expected).abs() < 5 * error)
+
+
+def test_joint_training_expected_responses_reuse_the_fitted_program(monkeypatch):
+    data = _frame().assign(category=pd.Categorical(["red", "green", "blue"] * 4))
+    fitted = fit(
+        bf("y_1 ~ x") + bf("category ~ x", family="categorical") + set_rescor(False),
+        data=data,
+        method="svi",
+        num_steps=1,
+    )
+
+    def reject_compilation(*args, **kwargs):
+        pytest.fail("training posterior_epred should reuse the fitted joint program")
+
+    monkeypatch.setattr(Compiler, "compile", reject_compilation)
+    expected = fitted.posterior_epred(num_samples=3, seed=12)
+    native = fitted.draws(num_samples=3, seed=12)
+    intercept = native["response_y1__intercept"].unsqueeze(-1)
+    slope = native["response_y1__beta_x"].unsqueeze(-1)
+    x = torch.as_tensor(data["x"].to_numpy(copy=True), dtype=intercept.dtype)
+    torch.testing.assert_close(expected["y1"], intercept + slope * x)
+    probabilities = expected["category"]
+    assert probabilities.shape == (1, 3, len(data), 3)
+    torch.testing.assert_close(
+        probabilities.sum(dim=-1), torch.ones_like(probabilities[..., 0])
+    )
 
 
 def test_correlated_predictions_keep_the_joint_residual_law_on_new_rows():

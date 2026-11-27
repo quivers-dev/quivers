@@ -111,7 +111,10 @@ from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._priors import PriorSpec, resolve_priors
 from quivers.formulas._priors import PriorInput, PriorSet, PriorTarget, normalize_priors
 from quivers.formulas._response import (
+    ResponseReadout,
     expected_response,
+    response_category_labels,
+    response_readout,
     response_tensor,
 )
 from quivers.formulas.formula import Formula, _qvr_name
@@ -1504,6 +1507,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             incl_autocor=incl_autocor,
         )
 
+        measurements = {}
+        if not self.rescor:
+            for name in names:
+                response = self.emission.responses[name]
+                site = response.names[_qvr_name(response.formula.response_name)]
+                readout = self._response_readout(name)
+                extent = (
+                    self._response_data(name).layout.event_shape or readout.categories
+                )
+                measurements[name] = (site, readout, extent)
+
         def operation(recorded: Trace) -> dict[str, torch.Tensor]:
             """Read every selected expected response from one trace.
 
@@ -1527,21 +1541,13 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                     name: value[..., self.response_names.index(name)] for name in names
                 }
             result: dict[str, torch.Tensor] = {}
-            for name in names:
-                response = self.emission.responses[name]
-                view = self._response_fit(name)
-                readout = view._response_readout
-                site = response.names[_qvr_name(response.formula.response_name)]
+            for name, (site, readout, extent) in measurements.items():
                 value = expected_response(
                     response_distribution(recorded, site),
                     readout,
                     mc_samples=mc_samples,
                 )
-                result[name] = row_binding(
-                    value,
-                    prepared.rows[name],
-                    view._response_data.layout.event_shape or readout.categories,
-                )
+                result[name] = row_binding(value, prepared.rows[name], extent)
             return result
 
         return self._replay(
@@ -1875,6 +1881,28 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         recorded = np.zeros(len(data.recorded), dtype=bool)
         recorded[list(spec.observed_positions)] = True
         return data.with_(recorded=recorded)
+
+    def _response_readout(self, name: str) -> ResponseReadout:
+        """Return the measurements declared for a fitted response.
+
+        Parameters
+        ----------
+        name : str
+            Response label.
+
+        Returns
+        -------
+        ResponseReadout
+            The fitted response law's measurement policy and category extent.
+        """
+        family = self.prepared[name].family
+        formula = self.emission.responses[name].formula
+        categories = (
+            len(response_category_labels(formula, family))
+            if family.category_response
+            else 0
+        )
+        return response_readout(family, categories)
 
     def observed(self, *, resp: ResponseSelection = None) -> dict[str, torch.Tensor]:
         """Return the training outcomes of the selected responses.
