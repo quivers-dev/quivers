@@ -556,10 +556,12 @@ def test_criteria_score_the_complete_response_of_a_missing_data_model() -> None:
         data=frame,
         **SVI,
     )
-    with pytest.raises(ValueError, match="score the responses without missing"):
-        joint.loo(num_samples=30)
+    whole = joint.loo(num_samples=30)
+    assert whole.responses == ("y", "xmis")
+    assert math.isfinite(float(whole.elpd))
     scored = joint.add_criterion(["loo", "waic"], resp="y", num_samples=30)
     assert scored.criterion("loo").responses == ("y",)
+    assert scored.loo(num_samples=30).responses == whole.responses
     assert math.isfinite(float(scored.criterion("loo").elpd))
     assert math.isfinite(float(scored.criterion("waic").elpd))
     # The stored estimate is the estimate of the same response alone.

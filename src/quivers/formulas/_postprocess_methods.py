@@ -17,6 +17,7 @@ draws through its existing prediction and scoring methods.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import json
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, cast
 
 import narwhals as nw
@@ -2239,6 +2240,90 @@ class JointPostprocess(_PostprocessCore):
         """
         return cast("MultivariateFit", self)
 
+    def _criterion_key(self, name: str, responses: tuple[str, ...]) -> str:
+        """Key a criterion by its responses in the fit's authored order.
+
+        Parameters
+        ----------
+        name : str
+            Criterion name.
+        responses : tuple[str, ...]
+            Selected response labels.
+
+        Returns
+        -------
+        str
+            The criterion name for the whole fit, or the name and selection.
+        """
+        if responses == self._pp_fit().response_names:
+            return name
+        return f"{name}:{json.dumps(responses, separators=(',', ':'))}"
+
+    def _stored_criterion(
+        self, name: str, responses: tuple[str, ...]
+    ) -> ELPDEstimate | torch.Tensor | None:
+        """Read a stored criterion of exactly the selected responses.
+
+        Parameters
+        ----------
+        name : str
+            Criterion name.
+        responses : tuple[str, ...]
+            Selected response labels.
+
+        Returns
+        -------
+        ELPDEstimate or torch.Tensor or None
+            The matching stored value, if present.
+        """
+        stored = self._pp_fit().criteria
+        value = stored.get(self._criterion_key(name, responses))
+        if value is None:
+            old = stored.get(name)
+            if isinstance(old, ELPDEstimate) and old.responses == responses:
+                return old
+        if isinstance(value, ELPDEstimate) and value.responses != responses:
+            return None
+        return value
+
+    def criterion(
+        self, name: str, *, resp: ResponseSelection = None
+    ) -> ELPDEstimate | torch.Tensor:
+        """Return a criterion stored by `add_criterion`.
+
+        Parameters
+        ----------
+        name : str
+            Criterion name.
+        resp : str or Sequence[str] or None
+            Response selection. None prefers the whole-fit criterion if it is
+            stored, then the most recently stored selection of this criterion.
+
+        Returns
+        -------
+        ELPDEstimate or torch.Tensor
+            The stored estimate or R-squared draws.
+
+        Raises
+        ------
+        KeyError
+            If the criterion is not stored for the selection.
+        """
+        fit = self._pp_fit()
+        if resp is None:
+            stored = fit.criteria
+            value = stored.get(name)
+            if value is not None:
+                return value
+            for key in reversed(tuple(stored)):
+                if key.startswith(f"{name}:"):
+                    return stored[key]
+        else:
+            value = self._stored_criterion(name, fit._selection(resp))
+            if value is not None:
+                return value
+        raise KeyError(f"criterion {name!r} is not stored; call add_criterion first")
+
     def _pp_named(self, num_samples: int | None, seed: int) -> dict[str, torch.Tensor]:
         """Return the joint fit's brms-named draws.
 
@@ -2875,8 +2960,8 @@ class JointPostprocess(_PostprocessCore):
         method_factory : MethodFactory or None
             Fit settings of each refit; None keeps the original settings.
         use_stored : bool
-            Return a stored ``loo`` criterion when no correction or ``resp``
-            is requested.
+            Return a stored ``loo`` criterion for the selected responses
+            when no correction is requested.
         num_samples : int or None
             Draws per chain.
         seed : int
@@ -2888,13 +2973,10 @@ class JointPostprocess(_PostprocessCore):
             PSIS-LOO estimate.
         """
         fit = self._pp_fit()
-        if (
-            use_stored
-            and resp is None
-            and not (moment_match or reloo)
-            and "loo" in fit.criteria
-        ):
-            return cast(ELPDEstimate, fit.criteria["loo"])
+        if use_stored and not (moment_match or reloo):
+            stored = self._stored_criterion("loo", fit._selection(resp))
+            if isinstance(stored, ELPDEstimate):
+                return stored
         return loo_estimate(
             fit,
             joint=True,
@@ -3491,8 +3573,8 @@ class JointPostprocess(_PostprocessCore):
             ``bayes_R2`` and ``loo_R2``.
         resp : str or Sequence[str] or None
             Responses the criterion scores, as brms's ``resp``; None scores
-            every response. A model with ``mi()`` responses is scored on its
-            responses without missing values this way, as brms advises.
+            every response. At a row with an ``mi()`` response, the likelihood
+            scores the recorded outcomes given the completed values.
         overwrite : bool
             Recompute stored criteria.
         num_samples : int or None
@@ -3516,20 +3598,36 @@ class JointPostprocess(_PostprocessCore):
         names = [criterion] if isinstance(criterion, str) else list(criterion)
         stored = dict(fit.criteria)
         for name in names:
-            if name in stored and not overwrite:
+            options = dict(kfold_options or {}) if name == "kfold" else {}
+            selected = fit._selection(
+                cast(ResponseSelection, options.get("resp", resp))
+            )
+            key = self._criterion_key(name, selected)
+            legacy = stored.get(name)
+            if (
+                isinstance(legacy, ELPDEstimate)
+                and legacy.responses != fit.response_names
+                and legacy.responses
+                and set(legacy.responses) <= set(fit.response_names)
+            ):
+                stored.setdefault(self._criterion_key(name, legacy.responses), legacy)
+                del stored[name]
+            if key in stored and not overwrite:
                 continue
             if name == "loo":
-                stored[name] = self.loo(
+                stored[key] = self.loo(
                     resp=resp, use_stored=False, num_samples=num_samples, seed=seed
                 )
             elif name == "waic":
-                stored[name] = self.waic(resp=resp, num_samples=num_samples, seed=seed)
+                stored[key] = self.waic(resp=resp, num_samples=num_samples, seed=seed)
             elif name == "loo_subsample":
-                stored[name] = self.loo_subsample(num_samples=num_samples, seed=seed)
+                stored[key] = self.loo_subsample(
+                    resp=resp, num_samples=num_samples, seed=seed
+                )
             elif name == "kfold":
-                options = dict(kfold_options or {})
+                options.setdefault("resp", resp)
                 options.setdefault("seed", seed)
-                stored[name] = self.kfold(**cast(dict, options)).estimate
+                stored[key] = self.kfold(**cast(dict, options)).estimate
             elif name == "loo_R2":
                 draws = cast(
                     dict,
@@ -3537,10 +3635,10 @@ class JointPostprocess(_PostprocessCore):
                         resp=resp, summary=False, num_samples=num_samples, seed=seed
                     ),
                 )
-                stored[name] = torch.stack(list(draws.values()), dim=-1)
+                stored[key] = torch.stack(list(draws.values()), dim=-1)
             elif name == "bayes_R2":
                 ratios = self.bayes_r2(resp=resp, num_samples=num_samples, seed=seed)
-                stored[name] = torch.stack(
+                stored[key] = torch.stack(
                     [value.flatten(0, 1) for value in ratios.values()], dim=-1
                 )
             else:
