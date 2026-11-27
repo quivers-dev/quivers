@@ -12,8 +12,6 @@ from quivers.family_catalog import FamilyCatalog
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
-    ExportDecl,
-    ExprIdent,
     LetExprIndex,
     LetExprLiteral,
     LetExprNode,
@@ -33,7 +31,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.program_templates import (
     _bound_names,
 )
-from quivers.formulas._blocks import Namespace, emit_block, place_block
+from quivers.formulas._blocks import Namespace, emit_block, emit_model, place_block
 from quivers.formulas._ast import (
     _add,
     _call,
@@ -564,14 +562,7 @@ def _response_parts(
     global_steps: Sequence[ProgramStep],
     global_parameters: Sequence[QiecValueParameter],
     global_laws: Sequence[GroupBlockLaw],
-) -> tuple[
-    list[Statement],
-    list[ProgramStep],
-    list[QiecValueParameter],
-    list[str],
-    list[PriorTarget],
-    list[GroupBlockLaw],
-]:
+) -> tuple[Module, list[PriorTarget], list[GroupBlockLaw]]:
     """Collect namespaced responses without changing their conditional prior laws.
 
     Parameters
@@ -589,9 +580,8 @@ def _response_parts(
 
     Returns
     -------
-    tuple
-        Object declarations, program steps, runtime parameters, returned
-        names, prior targets, and group-block laws of the joint program.
+    tuple[Module, list[PriorTarget], list[GroupBlockLaw]]
+        The assembled joint module, its prior targets and its group laws.
 
     Raises
     ------
@@ -599,33 +589,17 @@ def _response_parts(
         If two responses declare one nominal group axis differently, or two
         group blocks would own the same name.
     """
-    statements = list(initial_objects)
-    steps, parameters = list(global_steps), list(global_parameters)
-    returned: list[str] = []
+    module = emit_model(
+        initial_objects,
+        global_steps,
+        global_parameters,
+        (),
+        axis="FormulaJointUnit",
+        blocks=(response.module for response in responses.values()),
+    )
     targets: list[PriorTarget] = []
     laws = list(global_laws)
     for name, response in responses.items():
-        for statement in response.module.statements:
-            if isinstance(statement, ObjectDecl):
-                existing = next(
-                    (
-                        item
-                        for item in statements
-                        if isinstance(item, ObjectDecl)
-                        and item.names == statement.names
-                    ),
-                    None,
-                )
-                if existing is None:
-                    statements.append(statement)
-                elif existing != statement:
-                    raise ValueError(
-                        "joint response graphs disagree on a nominal group axis"
-                    )
-            elif isinstance(statement, ProgramDecl):
-                steps.extend(statement.draws)
-                parameters.extend(statement.value_parameters)
-                returned.extend(statement.return_vars)
         targets.extend(
             target.with_(
                 site=response.names[target.site],
@@ -645,7 +619,7 @@ def _response_parts(
             for law in response.lens.group_laws
         )
     check_names(laws)
-    return statements, steps, parameters, returned, targets, laws
+    return module, targets, laws
 
 
 def _member_axis(
@@ -1552,14 +1526,7 @@ def emit_joint(
         )
         return list(program.draws), targets
 
-    def parts() -> tuple[
-        list[Statement],
-        list[ProgramStep],
-        list[QiecValueParameter],
-        list[str],
-        list[PriorTarget],
-        list[GroupBlockLaw],
-    ]:
+    def parts() -> tuple[Module, list[PriorTarget], list[GroupBlockLaw]]:
         """Join the responses' programs."""
         return _response_parts(
             responses,
@@ -1569,7 +1536,8 @@ def emit_joint(
             emitter.group_laws,
         )
 
-    statements, steps, parameters, returned, targets, layouts = parts()
+    module, targets, layouts = parts()
+    statements = list(module.statements[:-2])
     _, global_targets = shared_targets(())
     separated = component_rules(plan, [*targets, *global_targets])
     if separated:
@@ -1595,17 +1563,10 @@ def emit_joint(
         global_steps, global_targets = shared_targets(
             [target for target in separated if target in global_targets]
         )
-        statements, steps, parameters, returned, targets, layouts = parts()
+        module, targets, layouts = parts()
+        statements = list(module.statements[:-2])
     targets.extend(global_targets)
-    program = ProgramDecl(
-        name="model",
-        params=None,
-        domain=TypeName(name="FormulaJointUnit"),
-        codomain=TypeName(name="FormulaJointUnit"),
-        value_parameters=tuple(parameters),
-        draws=tuple(steps),
-        return_vars=tuple(returned),
-    )
+    program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     joint_laws = None
     joint: JointElliptical | None = None
     if rescor:
@@ -1668,17 +1629,10 @@ def emit_joint(
                     rows=(rows or {}).get(name),
                     resolved_priors=local_rules,
                 )
-        statements, steps, parameters, returned, _, layouts = _response_parts(
-            responses,
-            initial_objects,
-            global_steps,
-            global_parameters,
-            emitter.group_laws,
-        )
-        program = program.with_(
-            draws=tuple(steps),
-            value_parameters=tuple(parameters),
-            return_vars=tuple(returned),
+        module, _, layouts = parts()
+        statements = list(module.statements[:-2])
+        program = next(
+            item for item in module.statements if isinstance(item, ProgramDecl)
         )
         if rescor:
             program, _, fixed_inputs, joint_laws, joint = _correlated_residual(
@@ -1701,9 +1655,7 @@ def emit_joint(
             for step in program.draws
         )
     )
-    module = Module(
-        statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
-    )
+    module = module.with_(statements=(*statements, program, module.statements[-1]))
     special = {
         site: rule
         for site, rule in selected.items()

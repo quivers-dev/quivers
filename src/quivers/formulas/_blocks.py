@@ -17,7 +17,7 @@ rest. `emit_nested_block` emits one block and places it.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, TypeVar, cast
 
 import didactic.api as dx
@@ -25,6 +25,8 @@ import numpy as np
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
+    ExportDecl,
+    ExprIdent,
     LetExprNode,
     Module,
     ObjectDecl,
@@ -459,6 +461,86 @@ def emit_block(
         check=False,
         rows=rows,
         resolved_priors=resolved_priors,
+    )
+
+
+def emit_model(
+    declarations: Sequence[Statement],
+    steps: Sequence[ProgramStep],
+    parameters: Iterable[QiecValueParameter],
+    returned: Sequence[str],
+    *,
+    axis: str,
+    blocks: Iterable[Module] = (),
+) -> Module:
+    """Assemble one QVR model from ordered root parts and placed blocks.
+
+The root parts retain their order. Each placed block contributes its
+nominal axes, inputs, steps and returns in order. Two declarations of
+one nominal axis must agree.
+
+    Parameters
+    ----------
+    declarations : Sequence[Statement]
+        Declarations owned by the model.
+    steps : Sequence[ProgramStep]
+        Program steps before the placed blocks' steps.
+    parameters : Iterable[QiecValueParameter]
+        Runtime parameters before the placed blocks' parameters.
+    returned : Sequence[str]
+        Bindings returned before the placed blocks' returns.
+    axis : str
+        Declared object used as the model's domain and codomain.
+    blocks : Iterable[Module]
+        Response emissions already placed in the model's namespace.
+
+    Returns
+    -------
+    Module
+        The assembled module exporting its model program.
+
+    Raises
+    ------
+    ValueError
+        If declarations of the same nominal axis disagree.
+    """
+    statements = list(declarations)
+    objects: dict[tuple[str, ...], ObjectDecl] = {}
+    for statement in statements:
+        if isinstance(statement, ObjectDecl):
+            objects.setdefault(statement.names, statement)
+    draws = list(steps)
+    inputs = list(parameters)
+    outputs = list(returned)
+    for block in blocks:
+        for statement in block.statements:
+            if isinstance(statement, ObjectDecl):
+                existing = objects.get(statement.names)
+                if existing is None:
+                    objects[statement.names] = statement
+                    statements.append(statement)
+                elif existing != statement:
+                    raise ValueError(
+                        "joint response graphs disagree on a nominal group axis"
+                    )
+            elif isinstance(statement, ProgramDecl):
+                draws.extend(statement.draws)
+                inputs.extend(statement.value_parameters)
+                outputs.extend(statement.return_vars)
+    return Module(
+        statements=(
+            *statements,
+            ProgramDecl(
+                name="model",
+                params=None,
+                value_parameters=tuple(inputs),
+                domain=TypeName(name=axis),
+                codomain=TypeName(name=axis),
+                draws=tuple(draws),
+                return_vars=tuple(outputs),
+            ),
+            ExportDecl(expr=ExprIdent(name="model")),
+        )
     )
 
 

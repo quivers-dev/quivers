@@ -67,8 +67,6 @@ import torch
 
 from quivers.dsl.ast_nodes import (
     AxisSpec,
-    ExportDecl,
-    ExprIdent,
     LetExprBinOp,
     LetExprCall,
     LetExprFactor,
@@ -145,6 +143,7 @@ from quivers.formulas._blocks import (
     PlacedBlock,
     ResponseBlock,
     ResponseData,
+    emit_model,
     emit_nested_block,
     response_data,
 )
@@ -4062,19 +4061,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             formula, (*kernel.data, *emission.data)
         ):
             parameters.setdefault(parameter.name, parameter)
-        statements.append(
-            ProgramDecl(
-                name="model",
-                params=None,
-                value_parameters=tuple(parameters.values()),
-                domain=TypeName(name="Resp"),
-                codomain=TypeName(name="Resp"),
-                draws=tuple(program_steps),
-                return_vars=(kernel.response,),
-            )
+        return emit_model(
+            statements,
+            program_steps,
+            parameters.values(),
+            (kernel.response,),
+            axis="Resp",
         )
-        statements.append(ExportDecl(expr=ExprIdent(name="model")))
-        return Module(statements=tuple(statements))
 
 
 class _LensHost:
