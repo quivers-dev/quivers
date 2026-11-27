@@ -191,17 +191,27 @@ class TraceHandler(EffectHandler):
             the value it returns.
         """
         del output
-        sites: dict[str, SampleSite] = {}
-        drawn: list[SampleSite] = []
-        for event in self._recorder.events:
-            if event.operation == RANDOM_SAMPLE:
-                drawn.append(self._record_site(run, event))
-            else:
-                self._record_step(run, event, sites)
+        events = self._recorder.events
+        drawn = [
+            self._record_site(run, event)
+            for event in events
+            if event.operation == RANDOM_SAMPLE
+        ]
         for score in self._program_scores(run):
             drawn.append(score)
             self._run_axes[score.name] = False
-        for recorded, site in zip(drawn, _occurrences(drawn), strict=True):
+        named = iter(zip(drawn, _occurrences(drawn), strict=True))
+        sites: dict[str, SampleSite] = {}
+        # The joint adds site densities in trace order. Keep each host
+        # score at its recorded position relative to the draws.
+        for event in events:
+            if event.operation == RANDOM_SAMPLE:
+                recorded, site = next(named)
+                self._run_axes[site.name] = self._run_axes[recorded.name]
+                sites[site.name] = site
+            else:
+                self._record_step(run, event, sites)
+        for recorded, site in named:
             self._run_axes[site.name] = self._run_axes[recorded.name]
             sites[site.name] = site
         self._run_sites.append(sites)
