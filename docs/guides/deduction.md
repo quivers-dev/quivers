@@ -524,6 +524,92 @@ counts, plus the cost of constructing and grouping the structural keys.
 Grounding uses the indexed agenda to find the rule instances. The runtime
 grounds the forest again on each invocation.
 
+#### Scoring a response with a prover
+
+The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules
+yield two derivations of the form `approved` and one of `unresolved`. The
+form selector adds the two masses for `approved` before normalizing. The
+checked `to_claim` computation uses the parser's structural equality to
+construct an item of the prover's own family. For each such item, the call
+`Prover__run[1]([claim], [true])` asks whether the one supplied axiom proves
+the goal in the Boolean semiring.
+
+<!-- compile: qiec -->
+```qvr
+object Word : FinSet 2
+object Weight : Real 1
+
+deduction Reading : Word -> Word [semiring=LogProb, start=S]
+    atoms span, A, B, C, D, S, lexical, approved, unresolved
+    rule first : span(I, K, A, lexical), span(K, J, D, lexical) |- span(I, J, S, approved)
+    rule second : span(I, K, B, lexical), span(K, J, D, lexical) |- span(I, J, S, approved)
+    rule third : span(I, K, C, lexical), span(K, J, D, lexical) |- span(I, J, S, unresolved)
+    lexicon
+        "item" : A = lexical #[learnable]
+        "item" : B = lexical #[learnable]
+        "item" : C = lexical #[learnable]
+        "reviewed" : D = lexical
+
+deduction Prover : Word -> Word [semiring=Boolean, start=Goal]
+    atoms Accepted, Pending, Licensed, Goal
+    rule license : Accepted |- Licensed
+    rule discharge : Licensed |- Goal
+
+define pack_tokens(first : String, last : String) : Tensor[String]([2]) !{} =
+    return [first, last]
+
+define to_claim(form : Reading__Item) : Prover__Item !{} =
+    let accepted = construct Reading__approved() as Reading__Item
+    let matches : Bool <- Reading__eq(form, accepted)
+    if matches then
+        return construct Prover__Accepted() as Prover__Item
+    else
+        return construct Prover__Pending() as Prover__Item
+
+define response_mass(rows : Reading__Outcomes, yes : Real, no : Real) : Real !{} =
+    case rows motive => Real
+        Reading__outcome_end =>
+            return 0.0
+        Reading__outcome_entry(form, log_weight, tail) =>
+            let claim : Prover__Item <- to_claim(form)
+            let proved : Bool <- Prover__run[1]([claim], [true])
+            let rest : Real <- response_mass(tail, yes, no)
+            if proved then
+                return rest + exp(log_weight) * yes
+            else
+                return rest + exp(log_weight) * no
+
+program assess(first : String, last : String, yes : Real, no : Real) : Word -> Weight
+    let sentence <- pack_tokens(first, last)
+    let readings = parse_normalized_outcomes(Reading, sentence, "form")
+    let likelihood <- response_mass(readings, yes, no)
+    score response = log(likelihood)
+    return response
+
+export assess
+```
+
+The likelihood sums the reading probabilities weighted by `yes` when the
+prover succeeds and `no` otherwise. For lexical log weights $w_0,w_1,w_2$,
+the likelihood is
+
+$$
+\frac{(e^{w_0}+e^{w_1})\,\mathrm{yes}+e^{w_2}\,\mathrm{no}}
+     {e^{w_0}+e^{w_1}+e^{w_2}}.
+$$
+
+Save the source as `weighted_parser_prover.qvr` and run it with the default
+lexical log weights and different response probabilities.
+
+```bash
+qvr run weighted_parser_prover.qvr assess \
+    --data 'first="item"' --data 'last="reviewed"' --data yes=0.8 --data no=0.3
+```
+
+This example uses a pure typed adapter and Boolean deduction. Typed rule
+interpretations with effects require a separate account of what each rule
+does and which uses of its result may share an effect.
+
 ## Schema export
 
 A compiled `DeductionDecl` can also be exported as a
