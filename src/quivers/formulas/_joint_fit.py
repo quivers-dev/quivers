@@ -32,7 +32,6 @@ from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
 from quivers.diagnostics.density import PointNullSpec
 from quivers.diagnostics.hypothesis import HypothesisSummary
 from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
-from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import Module, ObserveStep, ProgramDecl, SampleStep
 from quivers.dsl.emit import draw_call_to_source, module_to_source
 from quivers.formulas._fit import (
@@ -62,8 +61,8 @@ from quivers.formulas._brms_priors import (
     improper_sites,
     derived_site_draws,
     require_proper,
-    with_flat_catalog,
 )
+from quivers.formulas._fit_core import compile_model
 from quivers.formulas._fit_controls import (
     InferenceControls,
     checked_cores,
@@ -478,14 +477,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         lens._emitted_groups = []
         module, complement = lens.forward(response.formula)
         family = part.family
-        program = (
-            Compiler(
-                module,
-                families=with_flat_catalog(lens.families(), module),
-            )
-            .compile()
-            .morphism
-        )
+        program = compile_model(module, lens.families()).morphism
         if not isinstance(program, MonadicProgram):
             raise TypeError("a joint response must compile to one MonadicProgram")
         view = BayesianFit(
@@ -2826,7 +2818,7 @@ def _prepare_joint(
         caller=caller,
     )
     emission = composition.emission
-    program = Compiler(emission.module, families=emission.families).compile().morphism
+    program = compile_model(emission.module, emission.families).morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("joint formula emission must compile to one MonadicProgram")
     return composition, program

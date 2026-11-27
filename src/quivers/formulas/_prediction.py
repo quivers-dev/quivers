@@ -14,7 +14,6 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.programs import MonadicProgram
-from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import (
     Module,
 )
@@ -33,7 +32,7 @@ from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
 # Improper flat priors and the brms Intercept column.
-from quivers.formulas._brms_priors import with_flat_catalog
+from quivers.formulas._fit_core import compile_model
 from quivers.formulas._formula_options import BRMS_INTERCEPT
 from quivers.inference.registry import LatentRegistry
 from quivers.formulas._group_prediction import (
@@ -436,15 +435,7 @@ def prepare_prediction(
         source = RowSource(selected=selected, include=incl_autocor)
         lens = fit._formula_lens(residual=residual)
         module, _ = lens._forward(fit.formula, rows=source)
-        program = (
-            Compiler(
-                module,
-                # Improper flat priors are compilation-local native laws.
-                families=with_flat_catalog(lens.families(), module),
-            )
-            .compile()
-            .morphism
-        )
+        program = compile_model(module, lens.families()).morphism
         if not isinstance(program, MonadicProgram):
             raise TypeError("prediction requires a native monadic program")
         return PredictionContext(
@@ -652,9 +643,7 @@ def prepare_prediction(
 
     # The level inputs of every block on the compact prediction levels.
     observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
-    # Improper flat priors are compilation-local native laws.
-    families = with_flat_catalog(specialized_lens.families(), module)
-    program = Compiler(module, families=families).compile().morphism
+    program = compile_model(module, specialized_lens.families()).morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("prediction requires a native monadic program")
     specialized_registry = LatentRegistry.from_model(

@@ -36,7 +36,6 @@ from narwhals.typing import IntoDataFrame
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
-from quivers.dsl import Compiler
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.ast_nodes import Module
 from quivers.formulas.compile import FormulaToQVRModule
@@ -126,6 +125,7 @@ from quivers.formulas._response import (
 from quivers.formulas._priors import PriorInput, PriorSet, normalize_priors
 
 # brms sampler and fitting controls.
+from quivers.formulas._fit_core import compile_model
 from quivers.formulas._fit_controls import (
     Algorithm,
     FileRefit,
@@ -158,7 +158,6 @@ from quivers.formulas._brms_priors import (
     prior_table,
     require_proper,
     user_selection,
-    with_flat_catalog,
 )
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
@@ -3641,8 +3640,7 @@ def _prepare_fit(
             "freeze its parameters before using NUTS or HMC"
         )
     module, complement = lens.forward(parsed)
-    compiler = Compiler(module, families=with_flat_catalog(lens.families(), module))
-    program_runtime = compiler.compile()
+    program_runtime = compile_model(module, lens.families())
     morphism = program_runtime.morphism
     if not isinstance(morphism, MonadicProgram):
         raise TypeError(

@@ -22,7 +22,6 @@ from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
-from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import (
     ProgramDecl,
     SampleStep,
@@ -37,7 +36,7 @@ from quivers.formulas._group_prediction import (
     specialized_formula,
 )
 from quivers.formulas._joint_compile import emit_joint
-from quivers.formulas._brms_priors import with_flat_catalog
+from quivers.formulas._fit_core import compile_model
 from quivers.formulas._joint_missing import (
     apply_missing,
     fresh_values,
@@ -562,10 +561,7 @@ def prepare_joint_prediction(
                 fresh=fresh,
                 multipliers=missing_multipliers(fit.missing, fit.prepared, frame),
             )
-    # Flat latent values of mi() responses may be the module's only flat sites.
-    compiled = Compiler(
-        emission.module, families=with_flat_catalog(emission.families, emission.module)
-    ).compile()
+    compiled = compile_model(emission.module, emission.families)
     program = compiled.morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("joint prediction requires a native monadic program")
