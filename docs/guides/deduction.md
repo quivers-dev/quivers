@@ -176,6 +176,13 @@ The plan takes the rule presentation of the system,
 and refuses a group whose rules put it on both sides of a product that does not
 commute, or whose closure diverges or cannot be decided.
 
+For a rule presentation in span form, `plan` can choose a
+[span executor](../api/stochastic/planning.md) for a weight, support, or marginal
+query that keeps no derivation records. It sums over the split points for each
+premise pair before applying the rules that use the pair. Empty spans are admitted
+when their dependencies and the within-cell closure satisfy the recursion
+contract. Unreachable items have the algebra's zero weight.
+
 ## Pre-registered stdlib {#pre-registered-stdlib}
 
 `quivers.stochastic.stdlib` provides ready-made `DeductionSystem` instances:

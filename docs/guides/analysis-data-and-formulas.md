@@ -1901,10 +1901,10 @@ zero's logit at zero removes that direction, and the other logits compare each c
 with the reference. With logits `[0, 0, 0]`, for instance, each category has
 probability `1/3`.
 
-The categorical family infers `K` from contiguous integer labels
-`0, ..., K-1` and uses category zero as the reference. Any other integer
-response takes its sorted distinct values as categories, as brms does, with
-the smallest as the reference. Every fixed-effect
+The categorical family takes the sorted distinct values of an integer
+response as its categories, as brms does. A factor response uses its
+declared levels. The compiler indexes the `K` categories from zero and
+uses the first label as the default reference. Every fixed-effect
 coefficient and random effect is thus a vector of `K - 1` logits.
 The compiler prepends the reference logit of zero and applies softmax to
 the resulting `K`-vector of each row. This parameterization removes the
@@ -1920,7 +1920,6 @@ choice_fit = fit(
 )
 ```
 
-Categorical responses must contain every label between zero and `K - 1`.
 Random effects for each class default to the
 [non-centered parameterization](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html),
 which transforms standard Normal innovations into coefficients.
@@ -2121,9 +2120,10 @@ cutpoints, with the probability of rating at most $k$ equal to
 $\sigma(c_k - \eta)$ [@mccullagh1980regression]. Moving the predictor changes which
 intervals are likely, and changing the spacings changes how widely particular ratings
 are used, so group-specific spacings represent differences in scale use. The
-cumulative family infers the number of categories from contiguous
-integer response labels `0, ..., K-1`. Shared cutpoints are represented
-by cumulative positive spacings and centered to separate their location
+cumulative family uses the
+[ordinal response coding](#ordinal-families-thresholds-and-category-specific-effects)
+described above. Shared cutpoints use cumulative positive spacings, centered
+to separate their location
 from the formula intercept. `thresholds_by` constructs a complete partially
 pooled profile for each group: a centered shape and one varying location.
 It reuses an existing ordinary varying intercept for that factor, or adds
@@ -2700,7 +2700,7 @@ names, and each name takes the prefix of the class: with the default
 `class_="b"` the name `x` is the population coefficient `b_x`, with
 `class_="sd"` and `group="g"` the name `Intercept` is `sd_g__Intercept`, and
 `class_=None` reads names as
-[`variables`](../api/formulas/index.md#quivers.formulas.BayesianFit.variables)
+[`variables`](../api/formulas/fit.md#quivers.formulas._postprocess_methods.SinglePostprocess.variables)
 reports them. Several strings are given as a list, or as a mapping from
 names to strings. `scope="ranef"` and `scope="coef"` test the per-level
 coefficients of `group`, one row per level.

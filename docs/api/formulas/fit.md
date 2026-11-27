@@ -53,9 +53,9 @@ assert evidence.num_particles == 128
 This is a separate inference run whose budget and seed belong to `sampler`.
 Its log normalizer is ordinary marginal data evidence when the retained prior
 and likelihood form a normalized sampling model. Non-unit response weights
-instead yield the powered target's log normalizer. SMC retains its existing
-refusals for unknown prior mass, opaque joint overrides, and subsampled
-observations; the adapter does not bypass them.
+yield the powered target's log normalizer. SMC refuses an explicit prior
+potential with unknown mass, an opaque joint override that prevents role
+decomposition, and an active subsampling handler.
 `fixed_parameters={"quantile": 0.9}` performs asymmetric Laplace quantile regression
 at a specified quantile, and other auxiliary parameters can likewise be held fixed.
 All three entry points accept
