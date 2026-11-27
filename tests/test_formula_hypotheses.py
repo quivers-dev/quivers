@@ -7,8 +7,14 @@ import pytest
 import torch
 
 from quivers.diagnostics import ContrastExpression, hypothesis_summary
-from quivers.formulas import PriorSpec, R2D2, RegularizedHorseshoe, families, fit
-from quivers.formulas._posterior import posterior_draws
+from quivers.formulas import (
+    BayesianFit,
+    PriorSpec,
+    R2D2,
+    RegularizedHorseshoe,
+    families,
+    fit,
+)
 from quivers.inference.trace import trace
 
 
@@ -37,8 +43,8 @@ def test_population_hypothesis_uses_one_draw_stream_and_exact_authored_labels(fr
     expression = ContrastExpression(expression="exp(a)-x", bindings={"a": label})
     expected = hypothesis_summary(torch.exp(fixed[label]) - fixed["x"])
     state = torch.random.get_rng_state()
-    with patch(
-        "quivers.formulas._fit.posterior_draws", wraps=posterior_draws
+    with patch.object(
+        BayesianFit, "draws", autospec=True, side_effect=BayesianFit.draws
     ) as collect:
         actual = result.hypothesis(expression, num_samples=8, seed=14)
     assert collect.call_count == 1
@@ -181,8 +187,8 @@ def test_hierarchical_prior_contrasts_preserve_joint_dependence_and_bounds(
         posterior["beta_x"] - posterior["beta_z"],
         prior=prior["beta_x"] - prior["beta_z"],
     )
-    with patch(
-        "quivers.formulas._fit.posterior_draws", wraps=posterior_draws
+    with patch.object(
+        BayesianFit, "draws", autospec=True, side_effect=BayesianFit.draws
     ) as collect:
         actual = result.hypothesis("x-z", num_samples=6, seed=8, prior=True)
     assert collect.call_count == 2
