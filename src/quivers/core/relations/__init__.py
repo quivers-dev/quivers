@@ -96,10 +96,12 @@ class RationalRelation(Morphism):
     -----
     Fixed-word queries accept cycles that consume symbols, because each
     such step advances a position in a finite observation. A reachable
-    all-epsilon cycle with an accepting continuation instead requires a
-    star calculation. This evaluator refuses that case, even when its
-    current weights are zero. A change in weights never changes the plan.
-    The weight vector is checked each time it is read for evaluation.
+    all-epsilon cycle with an accepting continuation requires a star
+    calculation. Supplying `max_closure_size` to `query` admits productive
+    self-loops in singleton components under an established semiring
+    star. The plan depends on topology and records zero-weight
+    occurrences. Each evaluation checks the current weight vector and
+    the numerical domain of every closure it uses.
     """
 
     def __init__(
@@ -157,6 +159,7 @@ class RationalRelation(Morphism):
         *,
         max_states: int | None = None,
         max_work: int | None = None,
+        max_closure_size: int | None = None,
     ) -> FixedStringQuery:
         """Compile a reusable query for one tuple of words.
 
@@ -169,6 +172,10 @@ class RationalRelation(Morphism):
             Limit on visited state and offset configurations.
         max_work : int or None
             Limit on candidate arc examinations, including rejected matches.
+        max_closure_size : int or None
+            Maximum order of each local star matrix, including auxiliary
+            vertices for parallel self-loops. None requires an acyclic
+            productive graph.
 
         Returns
         -------
@@ -180,10 +187,16 @@ class RationalRelation(Morphism):
         RelationLimitError
             If a construction limit is reached before the query is ready.
         ProductiveEpsilonCycleError
-            If there are infinitely many structurally accepting walks at
-            the queried tuple.
+            If the productive graph has a cycle outside this plan's
+            supported singleton components.
         """
-        return FixedStringQuery(self, words, max_states=max_states, max_work=max_work)
+        return FixedStringQuery(
+            self,
+            words,
+            max_states=max_states,
+            max_work=max_work,
+            max_closure_size=max_closure_size,
+        )
 
     def weight(self, words: Words) -> torch.Tensor:
         """Evaluate the total accepting walk weight for the supplied words.
@@ -248,6 +261,9 @@ class FixedStringQuery:
         Limit on visited state and offset configurations.
     max_work : int or None
         Limit on candidate arc examinations.
+    max_closure_size : int or None
+        Maximum order of each local star matrix. None requires an
+        acyclic productive graph.
     """
 
     def __init__(
@@ -257,11 +273,16 @@ class FixedStringQuery:
         *,
         max_states: int | None = None,
         max_work: int | None = None,
+        max_closure_size: int | None = None,
     ) -> None:
         relation.topology._validate_words(words)
-        _validate_limits(max_states, max_work)
+        _validate_limits(max_states, max_work, max_closure_size)
         self._plan = _compile_paths(
-            relation.topology, words, max_states=max_states, max_work=max_work
+            relation.topology,
+            words,
+            max_states=max_states,
+            max_work=max_work,
+            max_closure_size=max_closure_size,
         )
         self._relation = relation
 
@@ -271,7 +292,13 @@ class FixedStringQuery:
         return self._plan.work
 
     def weight(self) -> torch.Tensor:
-        """Evaluate the plan with the current weights."""
+        """Evaluate the plan with the current weights.
+
+        A cyclic plan requires floating-point weights and an algebra that
+        establishes the semiring laws and the least-solution law of its
+        star. Closure can raise `DivergentClosureError` or
+        `UndecidedClosureError` for the current weights.
+        """
         return self._plan.evaluate(self._relation._weights(), self._relation.algebra)
 
 
