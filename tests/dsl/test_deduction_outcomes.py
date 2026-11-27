@@ -27,7 +27,8 @@ from quivers.qiec.module import QiecModule, validate_module
 from quivers.qiec.numbers import NumberDomain
 from quivers.qiec.program_runtime import run_program
 from quivers.qiec.serialization import dumps, loads
-from quivers.qiec.types import IndexLiteral
+from quivers.qiec.terms import Bind, Call, Var
+from quivers.qiec.types import IndexLiteral, IndexVariable
 from quivers.transpile import UnsupportedConstruct, transpile
 
 
@@ -115,6 +116,162 @@ PRODUCTION_QUERY = (
         '    let outcomes = parse_normalized_outcomes(Mix, sentence, "category", ("S", p))',
     )
 )
+
+
+def test_computed_tokens_feed_a_weighted_response_and_its_gradients() -> None:
+    """A checked tokenizer selects the sentence before exactly one outcome query."""
+    producer = """\
+define choose_tokens(use_x : Bool) : Tensor[String]([2]) !{} =
+    if use_x then
+        return ["x", "y"]
+    else
+        return ["z", "y"]
+"""
+    query = PRODUCTION_QUERY.replace(
+        "program example : Token -> Result\n"
+        "    sample p <- Dirichlet(concentration=[2.0, 3.0])",
+        "program example(p : Tensor[Real]([2]), use_x : Bool) : Token -> Result\n"
+        "    let sentence <- choose_tokens(use_x)",
+    )
+    source = PRODUCTION_GRAMMAR + "\n" + producer + "\n" + query
+    compiled = load_source(source)
+    entry = next(item for item in compiled.entry_points() if item.name == "example")
+    assert {parameter.name for parameter in entry.parameters} == {
+        "p",
+        "use_x",
+        "a",
+        "b",
+    }
+    assert entry.statics == ()
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    restored = loads(dumps(module))
+    assert isinstance(restored, QiecModule)
+    assert restored == module
+
+    p = torch.tensor([0.2, 0.8], dtype=torch.float64, requires_grad=True)
+    responses = torch.tensor([0.8, 0.3], dtype=p.dtype, requires_grad=True)
+    for round_tripped in (False, True):
+        for use_x in (True, False):
+            data = {"p": p, "use_x": use_x, "a": responses[0], "b": responses[1]}
+            if round_tripped:
+                result = run_program(restored, "example", data=data, sites={})
+            else:
+                result = compiled.run("example", data=data)
+                calls = [
+                    event.detail["computation"]
+                    for event in result.result.trace
+                    if event.event == "call.entered"
+                    and event.detail["computation"]
+                    in ("choose_tokens", "Mix__weighted_outcomes")
+                ]
+                assert calls == ["choose_tokens", "Mix__weighted_outcomes"]
+
+            # x y has two proofs, with relative weights p[0]/sum(p) and 1.
+            # z y has one proof with weight p[1]/sum(p), which cancels.
+            proof = p[0 if use_x else 1] / p.sum()
+            if use_x:
+                mass = proof * responses[0] + responses[1]
+                total = proof + 1.0
+            else:
+                mass = proof * responses[0]
+                total = proof
+            expected = mass.log() - total.log()
+            torch.testing.assert_close(
+                result.log_joint, expected, atol=1e-12, rtol=1e-12
+            )
+            actual = torch.autograd.grad(result.log_joint, (p, responses))
+            wanted = torch.autograd.grad(expected, (p, responses))
+            for found, reference in zip(actual, wanted, strict=True):
+                torch.testing.assert_close(found, reference, atol=1e-12, rtol=1e-12)
+
+
+def test_computed_tokens_reuse_a_symbolic_sentence_extent() -> None:
+    source = (
+        GRAMMAR
+        + "\n"
+        + QUERY[: QUERY.index("program example")]
+        + """
+program generic[n : Nat](given : Tensor[String]([n])) : Token -> Result
+    let sentence = given
+    let outcomes = parse_outcomes(Mix, sentence, "form")
+    let answer <- mixture(outcomes, a, b)
+    return answer
+
+export generic
+"""
+    )
+    compiled = load_source(source)
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    body = next(item.body for item in module.computations if item.name == "generic")
+    assert isinstance(body, Bind)
+    assert body.binder.name == "sentence"
+    assert isinstance(body.then, Bind)
+    call = body.then.first
+    assert isinstance(call, Call)
+    assert call.name == "Mix__outcomes"
+    assert call.static_arguments == (IndexVariable(name="n", sort=NAT),)
+    assert call.arguments[0] == Var(local=body.binder)
+
+    responses = {"a": 0.8, "b": 0.3}
+    short = {"given": ("x",), **responses}
+    long = {"given": ("x", "y"), **responses}
+    assert compiled.run("generic", data=short).value == pytest.approx(3 * 0.3)
+    assert compiled.run("generic", data=long).value == pytest.approx(2 * 0.8 + 0.3)
+    with pytest.raises(ExecutionFailure, match="invalid shape evidence") as error:
+        compiled.run("generic", data=short, static_arguments=("n=2",))
+    assert error.value.diagnostic.code == "qiec-run-config"
+
+
+@pytest.mark.parametrize(
+    ("source_steps", "code", "message"),
+    (
+        (
+            '    let sentence = [1, 2]\n    let result = parse_outcomes(Mix, sentence, "form")\n',
+            "qiec-deduction-outcomes",
+            "rank-one Tensor",
+        ),
+        (
+            '    let sentence = [["x", "y"]]\n    let result = parse_outcomes(Mix, sentence, "form")\n',
+            "qiec-deduction-outcomes",
+            "rank-one Tensor",
+        ),
+        (
+            '    let result = parse_outcomes(Mix, ["x", "y"], "form")\n',
+            "qiec-deduction-outcomes",
+            "named by a program binding",
+        ),
+        (
+            '    let sentence = filter(["x", "y"], token -> token == "x")\n'
+            '    let result = parse_outcomes(Mix, sentence, "form")\n',
+            "qiec-collection:filter:dynamic-shape",
+            "data-dependent output length",
+        ),
+        (
+            '    let result = parse_outcomes(Mix, sentence, "form")\n    let sentence = ["x", "y"]\n',
+            "qiec-program",
+            "already bound in program",
+        ),
+        (
+            '    let sentence = ["x", "y"]\n    let result = parse(Mix, sentence)\n',
+            "qiec-program",
+            "which a step binds",
+        ),
+    ),
+)
+def test_computed_deduction_input_requires_a_supported_binding_and_shape(
+    source_steps: str, code: str, message: str
+) -> None:
+    source = (
+        GRAMMAR
+        + "\nprogram invalid : Token -> Result\n"
+        + source_steps
+        + ("    let answer = 1.0\n    return answer\n")
+    )
+    with pytest.raises(QiecDiagnosticError, match=message) as error:
+        lower_qvr_to_qiec(parse(source))
+    assert error.value.code == code
 
 
 def test_checked_response_score_and_gradient_equal_enumeration(monkeypatch) -> None:
