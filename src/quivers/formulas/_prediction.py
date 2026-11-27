@@ -22,6 +22,7 @@ from quivers.formulas.formula import (
     _qvr_name,
 )
 from quivers.formulas._autocor import AutocorMatrix
+from quivers.formulas._blocks import ResponseData
 from quivers.formulas._residual_law import ResidualLaw, recorded_history
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
@@ -57,6 +58,8 @@ class FormulaPredictionPlan(ValueModel):
         Training program, including its priors and latent dimensions.
     designs : Mapping[str, DesignMatrices]
         Evaluated location and auxiliary formulas, retaining transform state.
+    response : ResponseData or None
+        Retained outcome evaluator, coordinates and response-side inputs.
     preparation_data : IntoDataFrame or None
         One frozen original-row snapshot for durable design reconstruction.
         Clone-owned recipes share this snapshot internally; reference-owned
@@ -78,6 +81,9 @@ class FormulaPredictionPlan(ValueModel):
     module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     designs: Mapping[str, DesignMatrices] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    response: ResponseData | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     preparation_data: IntoDataFrame | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -293,14 +299,14 @@ def residual_at(
     assert law is not None
     history = None
     if frame is not None and law.conditional:
-        plan = fit.prediction_plan
-        assert plan is not None
-        evaluator = plan.designs["mu"].response
+        assert fit.prediction_plan is not None
+        data = fit._response_data
+        evaluator = data.evaluator
         assert evaluator is not None
         history = recorded_history(
             frame.reset_index(drop=True),
             evaluator.term.term.eval_new_data,
-            float(np.nanmean(np.asarray(fit.formula.response_values))),
+            float(np.nanmean(np.asarray(data.values))),
             law.response,
         )
     return law.at(frame, include=include, data2=data2, history=history)
@@ -391,18 +397,13 @@ def prepare_prediction(
         if new_data is None:
             from quivers.formulas._fit import _binomial_trial_tensor
 
-            source = (
-                fit.prediction_plan.designs["mu"].data
-                if fit.prediction_plan is not None
-                else None
-            )
+            data = fit._response_data
+            source = data.training_data
             if isinstance(trials, str) and source is None:
                 raise ValueError(
                     "a trial column requires a retained training dataframe"
                 )
-            counts = _binomial_trial_tensor(
-                source, trials, n_obs=len(fit.formula.response_values)
-            )
+            counts = _binomial_trial_tensor(source, trials, n_obs=len(data.values))
             retained_observations = dict(fit.observations)
             _set_trial_rows(fit, retained_observations, counts, specification=trials)
     # A residual law is rebuilt over the requested rows.

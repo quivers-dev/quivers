@@ -85,24 +85,24 @@ def prepare_likelihood(
     ValueError
         If rows, recorded outcomes, trials, or observation-event inputs are invalid.
     """
-    plan = fit.prediction_plan
-    if plan is None:
+    if fit.prediction_plan is None:
         raise ValueError(
             "fresh likelihood rows require a retained formula prediction plan"
         )
     frame = nw.from_native(new_data, eager_only=True).to_pandas()
     if len(frame) < 1 or not frame.columns.is_unique:
         raise ValueError("new_data requires nonempty rows and unique column names")
+    fitted_response = fit._response_data
     # Raw likelihoods do not depend on fitting weights, including their columns.
     sources = {
         role: source
-        for role, source in fit.formula.modifiers.sources
+        for role, source in fitted_response.modifiers.sources
         if role not in {"weights", "weights_scale"}
     }
     if trials is not None and "trials" in sources:
         sources["trials"] = trials
     frame, bound = bind_roles(
-        frame, sources, threshold_groups=fit.formula.modifiers.threshold_groups
+        frame, sources, threshold_groups=fitted_response.modifiers.threshold_groups
     )
     modifiers = ResponseModifiers(**bound)
     if predictor_data is not None and modifiers.subset is not None:
@@ -111,20 +111,21 @@ def prepare_likelihood(
                 "predictor_data must align with fresh rows before subset selection"
             )
         predictor_data = predictor_data[list(modifiers.subset.positions)]
-    evaluated = plan.designs["mu"].response
+    evaluated = fitted_response.evaluator
     if evaluated is None:
         raise ValueError("the retained formula has no response evaluator")
     evaluated_values = np.asarray(evaluated.term.term.eval_new_data(frame))
     # Integer categories evaluate to a value vector and not to factor
     # indicators: brms thres() and cat() codes, and brms's integer coding.
-    integer_categories = fit.formula.response_layout.category_values
+    layout = fitted_response.layout
+    integer_categories = layout.category_values
     values = normalize_response_values(
         evaluated_values,
-        component_names=fit.formula.response_layout.component_names,
+        component_names=layout.component_names,
         category_levels=()
-        if (fit.formula.modifiers.thresholds is not None or integer_categories)
+        if (fitted_response.modifiers.thresholds is not None or integer_categories)
         and evaluated_values.ndim == 1
-        else fit.formula.response_layout.category_levels,
+        else layout.category_levels,
     )
     if integer_categories:
         values = category_positions(values, integer_categories)

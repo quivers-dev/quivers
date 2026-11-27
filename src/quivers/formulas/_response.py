@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
+from quivers._values import ValueModel
 from quivers.formulas._count_data import checked_integer_data
 import torch
 
@@ -13,6 +14,62 @@ from quivers.formulas.formula import Formula
 
 if TYPE_CHECKING:
     from quivers.formulas.family import Family
+
+
+class ResponseReadout(ValueModel):
+    """The measurements a response law exposes to posterior readers.
+
+    Parameters
+    ----------
+    law : str
+        Name of the sampled response law.
+    categories : int
+        Extent of the category axis, zero for a numeric response.
+    ordinal : bool
+        Whether a reader may ask for moments of the ordered category codes.
+    unordered : bool
+        Whether the categories lack an ordering for residual diagnostics.
+    decision : bool
+        Whether the law has a measured reaction time and a binary decision.
+    circular : bool
+        Whether the response is angular.
+    r_squared : {"model", "residual"}
+        Default variance diagnostic for this response law.
+    """
+
+    law: str
+    categories: int
+    ordinal: bool
+    unordered: bool
+    decision: bool
+    circular: bool
+    r_squared: Literal["model", "residual"]
+
+
+def response_readout(family: Family, categories: int) -> ResponseReadout:
+    """Read the posterior measurement properties declared by a response family.
+
+    Parameters
+    ----------
+    family : Family
+        Family whose kernel defines the observed law.
+    categories : int
+        Fitted category count, zero for a numeric response.
+
+    Returns
+    -------
+    ResponseReadout
+        Measurements declared for the fitted response.
+    """
+    return ResponseReadout(
+        law=family.observe_family,
+        categories=categories,
+        ordinal=family.response_ordinal() is not None,
+        unordered=family.unordered_categories,
+        decision=family.decision_event is not None,
+        circular=family.circular,
+        r_squared=family.r_squared,
+    )
 
 
 def normalize_response_values(
@@ -267,9 +324,8 @@ def resolve_trials(family: Family, trials: int | str | None) -> int | str | None
 
 def expected_response(
     distribution: torch.distributions.Distribution,
-    family: Family,
+    readout: ResponseReadout,
     *,
-    categories: int = 0,
     decision: bool = False,
     mc_samples: int | None = None,
 ) -> torch.Tensor:
@@ -279,10 +335,8 @@ def expected_response(
     ----------
     distribution : torch.distributions.Distribution
         Native law produced by the existing program replay.
-    family : Family
-        Retained response-family semantics and category ordering.
-    categories : int
-        Actual ordered or categorical response extent, zero for numeric events.
+    readout : ResponseReadout
+        Retained response measurements and category ordering.
     decision : bool
         Return Wiener lower/upper probabilities rather than reaction-time means.
     mc_samples : int or None
@@ -300,11 +354,11 @@ def expected_response(
     """
     from quivers.inference._response import category_probabilities, response_mean
 
-    if family.circular:
+    if readout.circular:
         raise TypeError(
             "a circular response expectation requires an angular convention"
         )
-    if decision or family.decision_event is not None:
+    if decision or readout.decision:
         from quivers.continuous._wiener import Wiener
 
         if not isinstance(distribution, Wiener):
@@ -314,12 +368,12 @@ def expected_response(
         )
     elif isinstance(distribution, torch.distributions.Categorical):
         value = distribution.probs
-    elif family.response_ordinal() is not None:
-        value = category_probabilities(distribution, categories)
+    elif readout.ordinal:
+        value = category_probabilities(distribution, readout.categories)
     else:
         value = response_mean(distribution, mc_samples)
     if not torch.isfinite(value).all():
         raise ValueError(
-            f"{family.observe_family} has an undefined or nonfinite response mean at a posterior draw"
+            f"{readout.law} has an undefined or nonfinite response mean at a posterior draw"
         )
     return value

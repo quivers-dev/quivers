@@ -117,9 +117,12 @@ from quivers.formulas._initial_values import report_initial_values
 from quivers.formulas._group_law import group_coefficients
 
 from quivers.formulas._group_covariance import GroupCovariance
+from quivers.formulas._blocks import ResponseData, response_data
 from quivers.formulas._response import (
+    ResponseReadout,
     count_totals,
     expected_response,
+    response_readout,
     response_tensor,
 )
 from quivers.formulas._priors import PriorInput, PriorSet, normalize_priors
@@ -746,6 +749,38 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         )
 
     @property
+    def _response_data(self) -> ResponseData:
+        """Return fitted outcomes and their retained response evaluator.
+
+        Returns
+        -------
+        ResponseData
+            Outcome values, their coordinates, and fitted response inputs.
+        """
+        plan = self.prediction_plan
+        if plan is not None and plan.response is not None:
+            return plan.response
+        return response_data(
+            self.formula,
+            self.residual,
+            plan.designs.get("mu") if plan is not None else None,
+        )
+
+    @property
+    def _response_readout(self) -> ResponseReadout:
+        """Return the fitted response's declared posterior measurements.
+
+        Returns
+        -------
+        ResponseReadout
+            The response law's measurement policy and category extent.
+        """
+        return response_readout(
+            self.family,
+            len(self.category_labels) if self.family.category_response else 0,
+        )
+
+    @property
     def qvr_source(self) -> str:
         """Lazily emit the AST-equivalent ``.qvr`` source for display.
 
@@ -1349,11 +1384,13 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
 
         if component not in {"response", "decision"}:
             raise ValueError("expected response component must be response or decision")
-        if component == "decision" and self.formula.modifiers.decision is None:
+        data = self._response_data
+        if component == "decision" and data.modifiers.decision is None:
             raise ValueError(
                 "decision probabilities require a decision response modifier"
             )
-        if self.family.circular:
+        readout = self._response_readout
+        if readout.circular:
             raise TypeError(
                 "a circular response expectation requires an angular convention"
             )
@@ -1372,10 +1409,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
-        response = _qvr_name(self.formula.response_name)
-        categories = len(self.category_labels) if self.family.category_response else 0
-        if component == "decision":
-            categories = 2
+        response = _qvr_name(data.name)
+        categories = 2 if component == "decision" else readout.categories
 
         def values():
             """Yield retained row values through the shared posterior replay.
@@ -1394,14 +1429,11 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                 distribution = response_distribution(recorded, response)
                 value = expected_response(
                     distribution,
-                    self.family,
-                    categories=categories,
+                    readout,
                     decision=component == "decision",
                     mc_samples=mc_samples,
                 )
-                yield row_binding(
-                    value, rows, self.formula.response_layout.event_shape or categories
-                )
+                yield row_binding(value, rows, data.layout.event_shape or categories)
 
         with response_rng(seed + 2, (*draws.values(), *context.observations.values())):
             try:
@@ -1837,9 +1869,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                     )
                 _response_trials(
                     self.formula,
-                    self.prediction_plan.designs["mu"].data
-                    if self.prediction_plan is not None
-                    else None,
+                    self._response_data.training_data,
                     trials,
                     caller="log_likelihood",
                 )
@@ -4074,6 +4104,11 @@ def _assemble_fit(
             module=prepared.module,
             preparation_data=prepared.preparation_data,
             designs=prepared.formula.designs,
+            response=response_data(
+                prepared.formula.formula,
+                prepared.formula.lens._residual,
+                prepared.formula.designs["mu"],
+            ),
             group_laws=prepared.complement.group_laws,
             level_sites=prepared.complement.level_sites,
             prior_targets=prepared.complement.prior_targets,

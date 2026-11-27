@@ -44,7 +44,7 @@ from quivers.formulas._fit import (
     fit,
 )
 from quivers.formulas._autocor import AutocorMatrix
-from quivers.formulas._blocks import ResponseData
+from quivers.formulas._blocks import ResponseData, response_data
 from quivers.formulas._joint_residual import (
     RecursiveResiduals,
     coordinate,
@@ -110,7 +110,10 @@ from quivers.formulas._prior_emission import ordinary_prior_step
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._priors import PriorSpec, resolve_priors
 from quivers.formulas._priors import PriorInput, PriorSet, PriorTarget, normalize_priors
-from quivers.formulas._response import expected_response, response_tensor
+from quivers.formulas._response import (
+    expected_response,
+    response_tensor,
+)
 from quivers.formulas.formula import Formula, _qvr_name
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.inference._posterior import (
@@ -506,6 +509,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             prediction_plan=FormulaPredictionPlan(
                 module=module,
                 designs=part.designs,
+                response=response_data(
+                    response.formula, response.lens._residual, part.designs["mu"]
+                ),
                 preparation_data=self.preparation_data,
                 group_laws=complement.group_laws,
                 level_sites=complement.level_sites,
@@ -1524,21 +1530,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             for name in names:
                 response = self.emission.responses[name]
                 view = self._response_fit(name)
-                family = view.family
-                categories = (
-                    len(view.category_labels) if family.category_response else 0
-                )
+                readout = view._response_readout
                 site = response.names[_qvr_name(response.formula.response_name)]
                 value = expected_response(
                     response_distribution(recorded, site),
-                    family,
-                    categories=categories,
+                    readout,
                     mc_samples=mc_samples,
                 )
                 result[name] = row_binding(
                     value,
                     prepared.rows[name],
-                    response.formula.response_layout.event_shape or categories,
+                    view._response_data.layout.event_shape or readout.categories,
                 )
             return result
 

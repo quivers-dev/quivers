@@ -21,7 +21,9 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, TypeVar, cast
 
 import didactic.api as dx
+from formulae.matrices import DesignMatrices, ResponseMatrix
 import numpy as np
+import pandas as pd
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
@@ -54,7 +56,14 @@ from quivers.formulas._priors import PriorSpec, PriorTarget
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._term import ColumnName, ProgramNames
 from quivers.formulas.family import Family
-from quivers.formulas.formula import FixedColumn, Formula, RandomTerm, _qvr_name
+from quivers.formulas.formula import (
+    FixedColumn,
+    Formula,
+    RandomTerm,
+    ResponseLayout,
+    ResponseModifiers,
+    _qvr_name,
+)
 
 if TYPE_CHECKING:
     from quivers.formulas._row_source import RowSource
@@ -191,6 +200,14 @@ class ResponseData(ValueModel):
         Response values, NaN where a value is not recorded.
     recorded : np.ndarray
         Boolean, one entry per row: whether the row's value is recorded.
+    layout : ResponseLayout
+        Retained response coordinates and labels.
+    modifiers : ResponseModifiers
+        Authored response inputs and their fitted row values.
+    evaluator : ResponseMatrix or None
+        Fitted response expression for evaluating fresh rows.
+    training_data : pandas.DataFrame or None
+        Retained training rows for response-side column overrides.
     columns : tuple[ResponseColumn, ...]
         Columns of the response terms the program reads, in input order.
     """
@@ -198,6 +215,14 @@ class ResponseData(ValueModel):
     name: str
     values: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     recorded: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    layout: ResponseLayout = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    modifiers: ResponseModifiers = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    evaluator: ResponseMatrix | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    training_data: pd.DataFrame | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     columns: tuple[ResponseColumn, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -213,7 +238,9 @@ class ResponseData(ValueModel):
         return tuple((item.role, item.column) for item in self.columns)
 
 
-def response_data(formula: Formula, residual: ResidualLaw | None) -> ResponseData:
+def response_data(
+    formula: Formula, residual: ResidualLaw | None, design: DesignMatrices | None = None
+) -> ResponseData:
     """Read the response data of a formula.
 
     Parameters
@@ -223,6 +250,8 @@ def response_data(formula: Formula, residual: ResidualLaw | None) -> ResponseDat
     residual : ResidualLaw or None
         Residual law correlated across the rows, which may take response
         columns into its covariance.
+    design : DesignMatrices or None
+        Fitted design carrying the retained response evaluator and training rows.
 
     Returns
     -------
@@ -239,6 +268,10 @@ def response_data(formula: Formula, residual: ResidualLaw | None) -> ResponseDat
         name=formula.response_name,
         values=values,
         recorded=recorded,
+        layout=formula.response_layout,
+        modifiers=formula.modifiers,
+        evaluator=design.response if design is not None else None,
+        training_data=design.data if design is not None else None,
         columns=tuple(
             ResponseColumn(role=role, column=column)
             for role, column in response_columns(formula.modifiers, residual)
@@ -475,9 +508,9 @@ def emit_model(
 ) -> Module:
     """Assemble one QVR model from ordered root parts and placed blocks.
 
-The root parts retain their order. Each placed block contributes its
-nominal axes, inputs, steps and returns in order. Two declarations of
-one nominal axis must agree.
+    The root parts retain their order. Each placed block contributes its
+    nominal axes, inputs, steps and returns in order. Two declarations of
+    one nominal axis must agree.
 
     Parameters
     ----------
