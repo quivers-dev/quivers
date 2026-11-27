@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import torch
 
 from quivers.core.algebras import Semiring
+from quivers.core.relations._packed import _PackedPaths, _pack_paths
 from quivers.core.relations.topology import EPSILON, RelationTopology, Words
 
 
@@ -31,32 +32,11 @@ class QueryWork:
 
 @dataclass(frozen=True, slots=True)
 class _PathPlan:
-    topology: RelationTopology
-    order: tuple[int, ...]
-    arcs: tuple[tuple[tuple[int, int], ...], ...]
-    initial: tuple[tuple[int, int], ...]
-    final: tuple[tuple[int, int], ...]
+    packed: _PackedPaths
     work: QueryWork
 
     def evaluate(self, weights: torch.Tensor, algebra: Semiring) -> torch.Tensor:
-        incoming = {state: weights[slot] for state, slot in self.initial}
-        final_slots = dict(self.final)
-        accepted: list[torch.Tensor] = []
-        for state in self.order:
-            prefix = incoming.pop(state)
-            for target, arc_id in self.arcs[state]:
-                slot = self.topology.arcs[arc_id].weight
-                value = algebra.tensor_op(prefix, weights[slot])
-                previous = incoming.get(target)
-                incoming[target] = (
-                    value if previous is None else algebra.join_pair(previous, value)
-                )
-            # A final position can also have outgoing silent arcs.
-            if state in final_slots:
-                accepted.append(algebra.tensor_op(prefix, weights[final_slots[state]]))
-        if not accepted:
-            return algebra.join(weights[:0], dim=0)
-        return algebra.join(torch.stack(accepted), dim=0)
+        return self.packed.evaluate(weights, algebra)
 
 
 def _advance(
@@ -173,11 +153,7 @@ def _compile_paths(
         if index in productive
     )
     return _PathPlan(
-        topology,
-        tuple(order),
-        tuple(active_arcs),
-        initial,
-        tuple(final),
+        _pack_paths(topology, order, active_arcs, initial, final),
         QueryWork(len(states), examined, len(order), sum(map(len, active_arcs))),
     )
 
