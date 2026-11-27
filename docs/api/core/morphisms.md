@@ -32,8 +32,8 @@ of reaching a state is the sum of its initial weight, if present, and one produc
 incoming arc. Each product multiplies the weight of reaching the source by the arc weight.
 By induction on the levels and distributivity, these terms account for every accepting walk
 when the final sum multiplies each completed state's weight by its final weight. A cycle in
-this graph would have to leave every position unchanged, so the query raises
-`ProductiveEpsilonCycleError` when the surviving graph contains a cycle.
+this graph would have to leave every position unchanged. By default, a cycle in the
+surviving graph raises `ProductiveEpsilonCycleError`.
 
 An index assigns each arc to its first non-epsilon label or to the all-epsilon group for its
 source state. With $E$ arcs on $k$ tapes, validating and sorting the indexed arc labels
@@ -51,6 +51,29 @@ Computing the weight vector has a separate cost, and validation tests membership
 weight slot. A bounded tensor restriction reads and validates the vector once for the whole
 table. It repeats construction for each entry, subject to the explicit tensor size limit and
 optional state and arc budgets.
+
+### Productive self-loops
+
+`RationalRelation.query(words, max_closure_size=n)` admits productive self-loops when
+all strongly connected components in the observation graph are singletons. Deleting
+the self-loops leaves an acyclic graph. Each accepting walk consists of a path in that
+graph with a sequence of self-loops at each visited state. The evaluator replaces each
+such sequence by one local star before continuing or accepting. Empty loop sequences
+contribute the multiplicative unit.
+
+A state with $m$ self-loop occurrences uses a star matrix of order $m$. One loop stays
+direct and each other loop passes through its own auxiliary vertex with a unit return.
+This keeps occurrence weights separate in the closure input so the solver can account
+for the rounding of their sum. `max_closure_size` bounds the order of every matrix, and
+`QueryWork.closure_sizes` reports the orders the plan will use. The shipped closures
+take $O(\sum_i m_i^3)$ algebra operations in addition to the packed pass and any exact
+or enclosed numerical decisions inside `Star`.
+
+Scoring uses floating-point tensors and requires established semiring laws and the
+least-solution law of `Star`. Each local closure evaluates the live weights. Divergence and numerical uncertainty
+raise `DivergentClosureError` and `UndecidedClosureError`, respectively. A closure
+whose return weight is nonfinite also raises `UndecidedClosureError`. The structural
+plan includes zero-weight occurrences and is reusable across updates.
 
 ### Binary composition at fixed words
 

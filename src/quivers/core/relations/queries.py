@@ -7,13 +7,14 @@ from dataclasses import dataclass
 
 import torch
 
-from quivers.core.algebras import Semiring
-from quivers.core.relations._packed import _PackedPaths, _pack_paths
+from quivers.core.algebras import Semiring, Star, UndecidedClosureError
+from quivers.core.laws import SEMIRING_LAWS, STAR_LEAST_SOLUTION
+from quivers.core.relations._packed import _PackedPaths, _pack_paths, _take
 from quivers.core.relations.topology import EPSILON, RelationTopology, Words
 
 
 class ProductiveEpsilonCycleError(ValueError):
-    """The observation leaves a cycle on accepting walks."""
+    """The observation has a productive cycle outside the supported closure."""
 
 
 class RelationLimitError(ValueError):
@@ -22,21 +23,67 @@ class RelationLimitError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class QueryWork:
-    """Counts for construction of a fixed-word path plan."""
+    """Graph counts and planned star matrix orders for a fixed-word query.
+
+    State and arc counts refer to the observation graph. Each entry of
+    `closure_sizes` is the order of a local matrix, including any
+    auxiliary vertices.
+    """
 
     visited_states: int
     candidate_arcs: int
     active_states: int
     active_arcs: int
+    closure_sizes: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class _PathPlan:
     packed: _PackedPaths
     work: QueryWork
+    loops: tuple[tuple[int, ...], ...] = ()
 
     def evaluate(self, weights: torch.Tensor, algebra: Semiring) -> torch.Tensor:
+        if self.loops:
+            if not isinstance(algebra, Star) or not algebra.establishes(
+                *SEMIRING_LAWS, STAR_LEAST_SOLUTION
+            ):
+                raise ProductiveEpsilonCycleError(
+                    "a productive epsilon cycle requires an established semiring star"
+                )
+            if not weights.is_floating_point():
+                raise TypeError(
+                    "productive epsilon closure requires floating-point weights"
+                )
+            closed = torch.stack(
+                [_close_loops(weights, slots, algebra) for slots in self.loops]
+            )
+            weights = torch.cat((weights, closed))
         return self.packed.evaluate(weights, algebra)
+
+
+def _close_loops(
+    weights: torch.Tensor, slots: tuple[int, ...], algebra: Star
+) -> torch.Tensor:
+    # Keep one weight per entry in the solver's initial matrix. Additional
+    # parallel loops visit a distinct auxiliary node and then return with
+    # unit weight. Pre-summing the entries could round across the solver's
+    # convergence boundary before it had a chance to enclose the sum.
+    auxiliary = len(slots) - 1
+    top = torch.cat(
+        (
+            algebra.zero_like((auxiliary, auxiliary), weights),
+            algebra.unit_like((auxiliary, 1), weights),
+        ),
+        dim=1,
+    )
+    matrix = torch.cat((top, _take(weights, slots).unsqueeze(0)), dim=0)
+    repeat = algebra.star(matrix)[-1, -1]
+    if not bool(torch.isfinite(repeat)):
+        raise UndecidedClosureError(
+            "productive epsilon closure did not yield a finite weight"
+        )
+    return repeat
 
 
 def _advance(
@@ -54,8 +101,16 @@ def _advance(
     return tuple(result)
 
 
-def _validate_limits(max_states: int | None, max_work: int | None) -> None:
-    for name, limit in (("max_states", max_states), ("max_work", max_work)):
+def _validate_limits(
+    max_states: int | None,
+    max_work: int | None,
+    max_closure_size: int | None = None,
+) -> None:
+    for name, limit in (
+        ("max_states", max_states),
+        ("max_work", max_work),
+        ("max_closure_size", max_closure_size),
+    ):
         if limit is not None and (type(limit) is not int or limit < 0):
             raise ValueError(f"{name} must be a nonnegative integer or None")
 
@@ -66,6 +121,7 @@ def _compile_paths(
     *,
     max_states: int | None,
     max_work: int | None,
+    max_closure_size: int | None = None,
 ) -> _PathPlan:
     initial_offsets: tuple[int, ...] = (0,) * len(words)
     final_offsets = tuple(map(len, words))
@@ -106,7 +162,14 @@ def _compile_paths(
         cursor += 1
 
     initial = [(index, mark.weight) for index, mark in enumerate(topology.initial)]
-    return _trim_paths(arcs, initial, final, examined)
+    return _trim_paths(
+        arcs,
+        initial,
+        final,
+        examined,
+        max_closure_size=max_closure_size,
+        weight_slots=len(topology.weight_names),
+    )
 
 
 def _trim_paths(
@@ -114,6 +177,9 @@ def _trim_paths(
     initial: list[tuple[int, int]],
     final: list[tuple[int, int]],
     examined: int,
+    *,
+    max_closure_size: int | None = None,
+    weight_slots: int = 0,
 ) -> _PathPlan:
     # An edge is an occurrence of a (target, weight slot) record. Several
     # occurrences can have the same target and slot.
@@ -131,13 +197,23 @@ def _trim_paths(
                 agenda.append(source)
 
     active_arcs: list[tuple[tuple[int, int], ...]] = []
+    self_loops: dict[int, tuple[int, ...]] = {}
     incoming_count = dict.fromkeys(productive, 0)
+    active_count = 0
     for state, candidates in enumerate(arcs):
         active = (
             tuple((target, arc) for target, arc in candidates if target in productive)
             if state in productive
             else ()
         )
+        active_count += len(active)
+        if max_closure_size is not None:
+            loops = tuple(slot for target, slot in active if target == state)
+            if loops:
+                self_loops[state] = loops
+                active = tuple(
+                    (target, slot) for target, slot in active if target != state
+                )
         active_arcs.append(active)
         for target, _ in active:
             incoming_count[target] += 1
@@ -157,13 +233,46 @@ def _trim_paths(
     if len(order) != len(productive):
         # Every emitting arc strictly increases a tape offset, so any
         # cycle here consists entirely of all-epsilon arcs.
-        raise ProductiveEpsilonCycleError(
+        message = (
             "fixed-word path sum requires closure of a productive epsilon cycle"
+            if max_closure_size is None
+            else "fixed-word closure supports only singleton productive epsilon components"
         )
+        raise ProductiveEpsilonCycleError(message)
+    if max_closure_size is not None and any(
+        len(slots) > max_closure_size for slots in self_loops.values()
+    ):
+        raise RelationLimitError("fixed-word closure exceeds max_closure_size")
+
     active_initial = tuple(mark for mark in initial if mark[0] in productive)
+    closure_slots: list[tuple[int, ...]] = []
+    if self_loops:
+        # Split a state into entry and exit with one closure edge. A path
+        # takes that edge before emitting another symbol or accepting.
+        expanded_order: list[int] = []
+        exits: dict[int, int] = {}
+        for state in order:
+            expanded_order.append(state)
+            if (slots := self_loops.get(state)) is not None:
+                exit_ = len(active_arcs)
+                exits[state] = exit_
+                expanded_order.append(exit_)
+                active_arcs.append(active_arcs[state])
+                active_arcs[state] = ((exit_, weight_slots + len(closure_slots)),)
+                closure_slots.append(slots)
+        final = [(exits.get(state, state), slot) for state, slot in final]
+        order = expanded_order
+
     return _PathPlan(
         _pack_paths(order, active_arcs, active_initial, final),
-        QueryWork(len(arcs), examined, len(order), sum(map(len, active_arcs))),
+        QueryWork(
+            len(arcs),
+            examined,
+            len(productive),
+            active_count,
+            tuple(map(len, closure_slots)),
+        ),
+        tuple(closure_slots),
     )
 
 
