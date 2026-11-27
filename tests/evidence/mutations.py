@@ -224,6 +224,7 @@ CHART_FIFO = "deduction/value/fifo"
 BUILTINS = "quivers.qiec.builtins"
 EXECUTION = "quivers.qiec.execution"
 PRESENTATION = "quivers.dsl.compiler._deduction_presentation"
+CHART = "quivers.dsl._deduction_chart"
 
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
@@ -601,6 +602,35 @@ MUTATIONS: tuple[Mutation, ...] = (
             ),
         ),
         rejected_by=("presented/bare_items",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="goal-need-not-cover-the-sentence",
+        defect_class="omitted alternative",
+        provenance=(
+            "a chart over a sentence accepts a goal span over part of it, so "
+            "derivations of a fragment count as parses"
+        ),
+        target=f"{CHART}:_Chart.covers",
+        rewrites=(Rewrite(old="if not self.lexical:", new="if True:"),),
+        rejected_by=("machine/judgments/compiled",),
+        min_effect=0.5,
+    ),
+    Mutation(
+        name="rounded-agreement-before-a-cycle-is-shown",
+        defect_class="stopping rule",
+        provenance=(
+            "a chart in rounded arithmetic stops when its weights agree, before "
+            "its counts settle, although no cycle is shown"
+        ),
+        target=f"{CHART}:_Chart.derive",
+        rewrites=(
+            Rewrite(
+                old='c.primitive("gt_int", round_, Var(local=size))',
+                new="self.boolean(True)",
+            ),
+        ),
+        rejected_by=("machine/judgments/compiled",),
         min_effect=1.0,
     ),
     Mutation(

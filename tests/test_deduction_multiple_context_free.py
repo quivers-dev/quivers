@@ -20,7 +20,7 @@ import pytest
 import torch
 
 from quivers.dsl import load, loads, parse
-from quivers.dsl.qiec_lowering import QiecDiagnosticError, lower_qvr_to_qiec
+from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.qiec.program_runtime import run_deduction
 
 _EXAMPLES = Path(__file__).resolve().parents[1] / "docs" / "examples" / "source"
@@ -169,29 +169,28 @@ def test_the_cross_serial_grammar_scores_one_derivation_on_both_evaluators() -> 
 
 
 @pytest.mark.parametrize(
-    ("rule", "fragment"),
+    "rule",
     [
-        (
-            "rule both : span(I, J, A), span(I, K, B) |- p(I, J, J, K)",
-            "two premise components start at 'I'",
-        ),
-        (
-            "rule drop : span(I, J, A), span(J, K, B) |- p(I, J, J, J)",
-            "premise component (J, K) is not part of the conclusion's yield",
-        ),
+        "rule both : span(I, J, A), span(I, K, B) |- p(I, J, J, K)",
+        "rule drop : span(I, J, A), span(J, K, B) |- p(I, J, J, J)",
     ],
 )
-def test_a_rule_that_is_not_linear_is_refused_at_the_rule(
-    rule: str, fragment: str
-) -> None:
+def test_a_rule_that_is_not_linear_is_computed_by_the_chart(rule: str) -> None:
+    # A rule that is not linear in the multiple context-free sense gives no
+    # search by yields, so the chart computes the deduction; both engines
+    # agree on every sentence.
     source = DISCONTINUOUS.replace(
         "    rule pair : span(I1, J1, A), span(I2, J2, B) |- p(I1, J1, I2, J2)",
         f"    {rule}",
     )
-    with pytest.raises(QiecDiagnosticError) as captured:
-        lower_qvr_to_qiec(parse(source), file_path="nonlinear.qvr")
-    assert captured.value.line == 5
-    assert fragment in captured.value.message
+    module = lower_qvr_to_qiec(parse(source), file_path="nonlinear.qvr")
+    assert any(item.name == "G__chart_lexicon" for item in module.computations)
+    program = loads(source)
+    for sentence in ("a b", "a a b b", "a b b"):
+        tokens = sentence.split()
+        agenda = float(program.deductions["G"](tokens).goal_weight().detach())
+        checked = run_deduction(module, "G", tokens=tokens).weight
+        assert float(checked) == pytest.approx(agenda)
 
 
 ERASING = """

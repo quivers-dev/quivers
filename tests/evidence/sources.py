@@ -77,6 +77,21 @@ deduction I : Term -> Term [semiring=SEMIRING, start=G]
 """A deduction with a rule over every judgment form: ``keep`` keeps any item,
 a term or a span, which holds positions."""
 
+JUDGMENTS = """
+object Term : FinSet 4
+deduction J : Term -> Term [semiring=SEMIRING, start=S]
+    atoms S, A, B, seen, span, a, b
+    rule found : span(I, J, B) |- seen #[learnable]
+    rule after : seen, span(I, J, A) |- span(I, J, S) #[learnable]
+    rule lift : span(I, J, B) |- span(I, J, S) #[learnable]
+    rule join : span(I, K, S), span(K, J, S) |- span(I, J, S) #[learnable]
+    lexicon
+        "a" : A = a
+        "b" : B = b
+"""
+"""A lexical deduction with an item that is not a span: ``seen`` says that
+some ``b`` occurs, and a span rests on it."""
+
 CATEGORIAL = """
 object Atom : FinSet 3
 deduction CG : Atom -> Atom [semiring=SEMIRING, start=S, depth=4]
@@ -244,6 +259,7 @@ SOURCES: dict[str, str] = {
     "cycle": CYCLE,
     "bare": BARE,
     "categorial": CATEGORIAL,
+    "judgments": JUDGMENTS,
     "grouped": GROUPED,
     "ungrouped": UNGROUPED,
     "hmm": HMM,

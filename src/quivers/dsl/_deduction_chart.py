@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from quivers.dsl.compiler._deduction_positions import SPAN_SYMBOL
 from quivers.qiec.canonical import tensor_type
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.identifiers import ConstructorId, FamilyId, StaticScopeId
@@ -44,7 +45,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
 )
-from quivers.qiec.types import BOOL, INT, REAL, TypeApplication, TypeExpr
+from quivers.qiec.types import BOOL, INT, REAL, STRING, TypeApplication, TypeExpr
 
 if TYPE_CHECKING:
     from quivers.dsl.deduction_elaboration import _Context, _System
@@ -117,6 +118,157 @@ class _Chart:
         )
         self.nil = context.elaborator.constructors[self.s.name("chart_nil")]
         self.cons = context.elaborator.constructors[self.s.name("chart_cons")]
+        self.lexical = bool(self.s.entries)
+        self.reader = "chart_lexicon" if self.lexical else "chart_axioms"
+        self.inputs: tuple[str, ...] = (
+            ("tokens",) if self.lexical else ("axioms", "weights")
+        )
+
+    def read(self, position: Value, chart: Value, *inputs: Value) -> Computation:
+        """Add the axioms from a position on to a round's chart.
+
+        Parameters
+        ----------
+        position : Value
+            The first input not yet added.
+        chart : Value
+            The chart so far.
+        *inputs : Value
+            The axioms and their weights, or the sentence.
+
+        Returns
+        -------
+        Computation
+            The chart with every remaining axiom added.
+        """
+        if self.lexical:
+            return self.lexicon(position, chart, *inputs)
+        return self.axioms(position, chart, *inputs)
+
+    def lexicon(self, position: Value, chart: Value, tokens: Value) -> Computation:
+        """Add the lexical axioms of the tokens from a position on.
+
+        Each entry whose word is the token at a position is one axiom: the
+        span it yields there, with the entry's weight and the count one.
+
+        Parameters
+        ----------
+        position : Value
+            The first token not yet read.
+        chart : Value
+            The chart so far.
+        tokens : Value
+            The sentence.
+
+        Returns
+        -------
+        Computation
+            The chart with the axioms of every remaining token added.
+        """
+        c = self.c
+        token = Gather(value=tokens, index=position, result_type=STRING)
+
+        def entries(index: int, current: Value) -> Computation:
+            """Add the entries from one index on that match the token.
+
+            Parameters
+            ----------
+            index : int
+                The entry tested here.
+            current : Value
+                The chart so far.
+
+            Returns
+            -------
+            Computation
+                The chart with the matching entries added, then the next
+                token read.
+            """
+            if index == len(self.s.entries):
+                return self.call(
+                    "chart_lexicon",
+                    c.primitive("add_int", position, self.integer(1)),
+                    current,
+                    tokens,
+                )
+            entry = self.s.entries[index]
+
+            def added(weight: Value) -> Computation:
+                """Add the entry's span at its weight, then go on.
+
+                Parameters
+                ----------
+                weight : Value
+                    The entry's weight.
+
+                Returns
+                -------
+                Computation
+                    The rest of the reading.
+                """
+                return c.bind(
+                    "added",
+                    self.type,
+                    self.call(
+                        "chart_add",
+                        current,
+                        c.lexical_item(index, position),
+                        weight,
+                        self.integer(1),
+                    ),
+                    lambda next_: entries(index + 1, Var(local=next_)),
+                )
+
+            return If(
+                condition=c.primitive(
+                    "eq_string", token, LiteralValue(value=entry.word, type=STRING)
+                ),
+                then=c.entry_weight(index, entry, added),
+                otherwise=entries(index + 1, current),
+            )
+
+        return If(
+            condition=c.primitive("lt_int", position, self.length()),
+            then=entries(0, chart),
+            otherwise=Return(value=chart),
+        )
+
+    def covers(self, item: Value) -> Computation:
+        """Whether a goal item covers the whole input.
+
+        A span of a lexical system has to cover the sentence; any other
+        item, and any item of a system without a lexicon, covers it.
+
+        Parameters
+        ----------
+        item : Value
+            An item the start pattern accepts.
+
+        Returns
+        -------
+        Computation
+            A ``Bool``.
+        """
+        if not self.lexical:
+            return Return(value=self.boolean(True))
+        c = self.c
+        return c.case(
+            item,
+            BOOL,
+            {
+                SPAN_SYMBOL: lambda fields: Return(
+                    value=c.primitive(
+                        "and",
+                        c.primitive("eq_int", Var(local=fields[0]), self.integer(0)),
+                        c.primitive("eq_int", Var(local=fields[1]), self.length()),
+                    )
+                )
+            },
+            lambda: Return(value=self.boolean(True)),
+            "chart",
+            "goal",
+            "extent",
+        )
 
     def integer(self, value: int) -> LiteralValue:
         """Build an integer literal.
@@ -695,7 +847,7 @@ class _Chart:
         )
 
     def goal(self, chart: Value) -> Computation:
-        """Sum the weights of all items accepted by the start pattern.
+        """Sum the weights of the items the start pattern accepts that cover the input.
 
         Parameters
         ----------
@@ -719,10 +871,17 @@ class _Chart:
                     "accept",
                     BOOL,
                     self.call("goal", item),
-                    lambda accept: If(
-                        condition=Var(local=accept),
-                        then=self.call("chart_plus", weight, Var(local=rest)),
-                        otherwise=Return(value=Var(local=rest)),
+                    lambda accept: self.c.bind(
+                        "covers",
+                        BOOL,
+                        self.covers(item),
+                        lambda covers: If(
+                            condition=self.c.primitive(
+                                "and", Var(local=accept), Var(local=covers)
+                            ),
+                            then=self.call("chart_plus", weight, Var(local=rest)),
+                            otherwise=Return(value=Var(local=rest)),
+                        ),
                     ),
                 ),
             ),
@@ -976,17 +1135,15 @@ class _Chart:
 
         return match(0, {})
 
-    def step(self, old: Value, axioms: Value, weights: Value) -> Computation:
+    def step(self, old: Value, *inputs: Value) -> Computation:
         """Compute axioms plus the rule contributions from the old chart.
 
         Parameters
         ----------
         old : Value
             The chart of the previous round.
-        axioms : Value
-            The input axioms.
-        weights : Value
-            Their weights.
+        *inputs : Value
+            The axioms and their weights, or the sentence.
 
         Returns
         -------
@@ -1032,24 +1189,31 @@ class _Chart:
             lambda cleared: self.c.bind(
                 "base",
                 self.type,
-                self.call(
-                    "chart_axioms", self.integer(0), Var(local=cleared), axioms, weights
-                ),
+                self.call(self.reader, self.integer(0), Var(local=cleared), *inputs),
                 lambda base: rules(0, Var(local=base)),
             ),
         )
 
-    def derive(self, old: Value, axioms: Value, weights: Value) -> Computation:
+    def derive(self, old: Value, round_: Value, *inputs: Value) -> Computation:
         """Iterate until two rounds agree, and stop at the goal's weight.
+
+        Equal counts stop the iteration with a certificate. Agreeing
+        weights stop it in exact arithmetic, where they certify; in
+        rounded arithmetic they stop it only once a cycle is shown: a
+        count that changes in round ``k`` belongs to a derivation of height
+        ``k``, whose items are ``k`` distinct items of the chart when no
+        item derives itself, so a change after more rounds than the chart
+        has items shows a cycle, under which counts never settle. Before
+        that the iteration goes on, so an acyclic system always settles.
 
         Parameters
         ----------
         old : Value
             The chart of the previous round.
-        axioms : Value
-            The input axioms.
-        weights : Value
-            Their weights.
+        round_ : Value
+            The number of the round about to be computed, from one.
+        *inputs : Value
+            The axioms and their weights, or the sentence.
 
         Returns
         -------
@@ -1091,10 +1255,46 @@ class _Chart:
                 ),
             )
 
+        def stops(current: Value, agree: Value, settled: Value) -> Computation:
+            """Whether the iteration stops after this round.
+
+            Parameters
+            ----------
+            current : Value
+                This round's chart.
+            agree : Value
+                Whether the rounds agree in every weight.
+            settled : Value
+                Whether the rounds agree in every count.
+
+            Returns
+            -------
+            Computation
+                A ``Bool``.
+            """
+            if self.s.semiring.exact:
+                return Return(value=c.primitive("or", agree, settled))
+            return c.bind(
+                "size",
+                INT,
+                self.call("chart_size", current),
+                lambda size: Return(
+                    value=c.primitive(
+                        "or",
+                        settled,
+                        c.primitive(
+                            "and",
+                            agree,
+                            c.primitive("gt_int", round_, Var(local=size)),
+                        ),
+                    )
+                ),
+            )
+
         return c.bind(
             "current",
             self.type,
-            self.call("chart_step", old, axioms, weights),
+            self.call("chart_step", old, *inputs),
             lambda current: c.bind(
                 "agree",
                 BOOL,
@@ -1103,30 +1303,63 @@ class _Chart:
                     "settled",
                     BOOL,
                     self.call("chart_settled", old, Var(local=current)),
-                    lambda settled: If(
-                        condition=c.primitive(
-                            "or", Var(local=agree), Var(local=settled)
-                        ),
-                        then=judged(
-                            Var(local=current), Var(local=agree), Var(local=settled)
-                        ),
-                        otherwise=self.call(
-                            "derive", Var(local=current), axioms, weights
+                    lambda settled: c.bind(
+                        "stop",
+                        BOOL,
+                        stops(Var(local=current), Var(local=agree), Var(local=settled)),
+                        lambda stop: If(
+                            condition=Var(local=stop),
+                            then=judged(
+                                Var(local=current),
+                                Var(local=agree),
+                                Var(local=settled),
+                            ),
+                            otherwise=self.call(
+                                "derive",
+                                Var(local=current),
+                                c.primitive("add_int", round_, self.integer(1)),
+                                *inputs,
+                            ),
                         ),
                     ),
                 ),
             ),
         )
 
-    def entry(self, axioms: Value, weights: Value) -> Computation:
+    def size(self, chart: Value) -> Computation:
+        """The number of items of a chart.
+
+        Parameters
+        ----------
+        chart : Value
+            A chart.
+
+        Returns
+        -------
+        Computation
+            An ``Int``.
+        """
+        return self.case(
+            chart,
+            INT,
+            Return(value=self.integer(0)),
+            lambda item, weight, count, tail: self.c.bind(
+                "rest",
+                INT,
+                self.call("chart_size", tail),
+                lambda rest: Return(
+                    value=self.c.primitive("add_int", Var(local=rest), self.integer(1))
+                ),
+            ),
+        )
+
+    def entry(self, *inputs: Value) -> Computation:
         """Settle the goal weight of the iterated chart.
 
         Parameters
         ----------
-        axioms : Value
-            The input axioms.
-        weights : Value
-            Their weights.
+        *inputs : Value
+            The axioms and their weights, or the sentence.
 
         Returns
         -------
@@ -1136,7 +1369,7 @@ class _Chart:
         handlers = self.s.handlers_cell[0]
         assert handlers is not None
         return self.c.settled(
-            self.call("derive", self.empty(), axioms, weights), handlers
+            self.call("derive", self.empty(), self.integer(1), *inputs), handlers
         )
 
 
@@ -1162,16 +1395,18 @@ def elaborate_chart(context: _Context) -> list[NamedComputation]:
         chart.build("chart_equal", ("left", "right"), chart.equal),
         chart.build("chart_settled", ("left", "right"), chart.settled),
         chart.build("chart_residual", ("left", "right"), chart.residual),
+        chart.build("chart_size", ("chart",), chart.size),
         chart.build("chart_goal", ("chart",), chart.goal),
-        chart.build(
-            "chart_axioms", ("position", "chart", "axioms", "weights"), chart.axioms
-        ),
-        chart.build("chart_step", ("old", "axioms", "weights"), chart.step),
-        chart.build("derive", ("old", "axioms", "weights"), chart.derive),
-        chart.build("run", ("axioms", "weights"), chart.entry),
+        chart.build(chart.reader, ("position", "chart", *chart.inputs), chart.read),
+        chart.build("chart_step", ("old", *chart.inputs), chart.step),
+        chart.build("derive", ("old", "round", *chart.inputs), chart.derive),
+        chart.build("run", chart.inputs, chart.entry),
     ]
     if context.table is not None:
-        result = result[-3:]
+        # The weighted variant elaborates again what reads production
+        # weights: the round, the iteration and the entry, and the
+        # lexicon's axioms.
+        result = result[-4:] if chart.lexical else result[-3:]
     for index, rule in enumerate(context.system.rules):
         for position in range(len(rule.premises) + 1):
             result.append(
