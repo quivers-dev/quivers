@@ -30,6 +30,8 @@ evaluation, the sum over the derivations of an item is the sum over its edges of
 product with its premises' sums, so dynamic programming over the forest in order computes it in
 time linear in the forest's size. A carrier such as the
 [`ExpectationSemiring`][quivers.core.carriers.ExpectationSemiring] makes the fold a statistic.
+[`forest_folds`][quivers.stochastic.forest.forest_folds] computes the folds of several goals
+in one pass, sharing the values of any premises used by more than one goal.
 
 ## Nonlinear folds
 

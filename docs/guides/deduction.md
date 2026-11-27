@@ -465,6 +465,52 @@ lists the families, effects,
 [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries
 a deduction or a parser built from rule schemata adds.
 
+### Weighted outcomes of a lexical deduction
+
+In a `program`, write `let readings = parse_outcomes(D, sentence, "form")` to get
+the full-span logical forms and their log inside weights. The selectors
+`"category"` and `"item"` return the category or the entire span item,
+respectively. All three produce the closed family `D__Outcomes`, with
+`D__outcome_end` for the empty list and `D__outcome_entry(key, weight, tail)`
+for each entry. The key has type `D__Item` and the weight has type `Real`.
+The query sums the weights of all derivations whose goal has the same
+structural key, including derivations of distinct goal items that map to that
+key. When the deduction declares a start category, the query first restricts
+the full-span items to that category.
+
+`parse_normalized_outcomes` subtracts the log of the total goal mass from each
+log weight. A key with zero mass has no entry. A raw query with no positive
+goal mass returns an empty list, and a normalized query raises an error in that
+case. For a response with likelihood $L(k)$ under key $k$, a QVR computation
+can traverse the normalized entries and sum $P(k\mid\text{sentence}) L(k)$,
+then pass the logarithm of that sum to `score`.
+
+These calls use the checked runtime and accept one sentence. The current
+fragment has one lexical span judgment and unit-width lexical entries. Each
+rule combines at least two contiguous spans in premise order, and every
+premise is strictly narrower than its conclusion. The rules use unit weights
+or weights from `normalize=lhs` groups. Learned lexical log weights remain
+available. The normalized groups also accept the same labeled probability
+bindings as `parse`, with components in $[0,1]$ and positive total mass in
+each bound group. The fragment excludes category depth bounds, unary and
+zero-premise rules, open hypotheses, and rule weights computed from bindings.
+Lexical categories and forms must inhabit the vocabulary of the deduction's
+closed rule presentation. The query supports derivatives on fixed positive
+support, with zero masses omitted from its output. Finite log weights must
+fit a range that leaves room for a derivation's sum in the run's number type.
+The query raises an error if the input exceeds this range.
+
+The runtime grounds a packed forest and computes one inside value per useful
+item, shared across all requested goals. For each incoming rule instance, a
+proof independently chooses a proof for each premise occurrence. Distributivity
+thus lets the fold multiply the premise sums and the rule weight, then sum
+across incoming instances. After grounding, the fold uses one visit per useful
+edge and one multiplication per premise occurrence. On scalar machine
+numbers the fold and its reverse pass require arithmetic linear in those
+counts, plus the cost of constructing and grouping the structural keys.
+Grounding uses the indexed agenda to find the rule instances. The runtime
+grounds the forest again on each invocation.
+
 ## Schema export
 
 A compiled `DeductionDecl` can also be exported as a

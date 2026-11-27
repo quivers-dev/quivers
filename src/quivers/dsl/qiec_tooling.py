@@ -89,6 +89,7 @@ QIEC_DIAGNOSTIC_CODES = frozenset(
         "qiec-resumption",
         "qiec-instance-escape",
         "qiec-program-gap",
+        "qiec-deduction-outcomes",
     }
 )
 
@@ -349,10 +350,15 @@ def target_diagnostics(
     """
     from quivers.transpile._api import UnsupportedConstruct
     from quivers.transpile.plan import _TargetPreparation
-    from quivers.transpile.qiec_ir import analyze_qiec_capabilities
+    from quivers.transpile.qiec_ir import (
+        analyze_qiec_capabilities,
+        outcome_capability_diagnostics,
+    )
 
     preparation = _TargetPreparation(checked, source, target)
-    capabilities = analyze_qiec_capabilities(preparation.projection, target)
+    capabilities = outcome_capability_diagnostics(preparation.module, target)
+    if not capabilities:
+        capabilities = analyze_qiec_capabilities(preparation.projection, target)
     if capabilities:
         return tuple(
             QiecToolingDiagnostic(
