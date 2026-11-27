@@ -1,9 +1,8 @@
 """Replay handler: reinstall the values a trace recorded.
 
-`ReplayHandler` answers each site the trace holds with the recorded
-value and scores it under the site's current distribution, so replay
-fixes the values and not the densities: the joint of the replayed run is
-the model's density at the recorded values.
+`ReplayHandler` answers sites with their recorded values unless the
+current run gives an explicit value at the site. It scores each replayed
+value under the site's current distribution.
 """
 
 from __future__ import annotations
@@ -36,14 +35,16 @@ class ReplayHandler(EffectHandler):
         Returns
         -------
         tuple[Installation, ...]
-            The replay handler, which forwards sites the trace lacks and
-            ignores recorded sites the program never samples.
+            The replay handler, which forwards sites already given to
+            the run and sites the trace lacks. It ignores recorded sites
+            the program never samples.
         """
         kernel = run.kernel
         values = {
             name: run.slice_value(name, site.value)
             for name, site in self._trace.sites.items()
-            if not site.is_deterministic or site.morphism is not None
+            if name not in run.observations
+            and (not site.is_deterministic or site.morphism is not None)
         }
         return (
             Installation(

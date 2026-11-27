@@ -31,7 +31,7 @@
   "join_controls.py": "fcdaed0d6df9906f183dcdb8794f77b50159ba075fdf2f2e9041e297bee99188",
   "laws.py": "e4a56b151c47cc1d7cccadb0fcf2d752faffd84da03af13f9b039b2927d65971",
   "ledger.py": "0afcd707c22fd06ad01be6b98d08ab764bdae2d1a0d923466254ede5d3f1eedc",
-  "mutations.py": "a60cd370bef203b5b0a42b802ce572daf3de1b868e3947e954d8203e5fee2bc1",
+  "mutations.py": "2610c1c845556b51797c7ea18c870c6babeefc8a07aad888992e30d72d33f61d",
   "newton_controls.py": "3b95a593169450595b93aae926666b90e1649d71c2821cbb0bf0838bd64e42e2",
   "oracles/__init__.py": "15432e0d793d6474bf52d857e733320678cb306dae426c0998ff123afaba5c88",
   "oracles/binding.py": "3c9a9c89ce6391899125b65879062a5589a92e42debf82d6d6dc2c6407c486de",

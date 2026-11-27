@@ -1090,12 +1090,18 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         name="replayed-site-dropped",
         defect_class="site address",
-        provenance="a replay that loses one recorded site draws it again",
+        provenance="a replay that loses a recorded latent site draws it again",
         target="quivers.effects.replay:ReplayHandler.install",
         rewrites=(
             Rewrite(
-                old="for name, site in self._trace.sites.items()",
-                new="for name, site in list(self._trace.sites.items())[1:]",
+                old="    kernel = run.kernel\n",
+                new="    kernel = run.kernel\n"
+                "    dropped = next(name for name, site in self._trace.sites.items()\n"
+                "                   if not site.is_deterministic and not site.is_observed)\n",
+            ),
+            Rewrite(
+                old="if name not in run.observations",
+                new="if name != dropped and name not in run.observations",
             ),
         ),
         rejected_by=("consumer/replay/beta", "consumer/replay/hmm"),
