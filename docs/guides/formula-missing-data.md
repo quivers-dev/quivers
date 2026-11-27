@@ -55,7 +55,7 @@ fitted = fit(spec, data=data, method="svi", num_steps=50, seed=1)
 names = set(fitted.variables(num_samples=4))
 assert {"bsp_bmi_michl", "bsp_bmi_age:michl", "Ymi_chl[2]"} <= names
 scores = fitted.log_likelihood(resp="chl", num_samples=4)["chl"]
-assert bool(scores[..., 1].isnan().all())
+assert bool((scores[..., data["chl"].isna().to_numpy(copy=True)] == 0).all())
 ```
 
 The model has no residual correlation, which is the brms default when a
