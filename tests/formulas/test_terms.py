@@ -24,7 +24,7 @@ from quivers.dsl.program_templates import _bound_names
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas import FormulaToQVRModule, families
 from quivers.formulas._ast import finite_object_sizes
-from quivers.formulas._fit import _formula_lens
+from quivers.formulas._fit import _prepare_formula_entry
 from quivers.formulas._group_law import law_inputs
 from quivers.formulas._predictor import Predictor, response_axis, transition_axis
 from quivers.formulas._term import (
@@ -106,7 +106,10 @@ CASES: dict[str, tuple[str, Options]] = {
 
 def _emit(name: str) -> tuple[FormulaToQVRModule, Formula, Module, ProgramDecl]:
     formula, options = CASES[name]
-    lens, parsed = _formula_lens(formula, data=FRAME, data2={"W": ADJACENCY}, **options)
+    prepared = _prepare_formula_entry(
+        formula, data=FRAME, data2={"W": ADJACENCY}, **options
+    )
+    lens, parsed = prepared.lens, prepared.formula
     module, _ = lens.forward(parsed)
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     return lens, parsed, module, program

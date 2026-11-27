@@ -16,7 +16,7 @@ from quivers.formulas import (
     bf,
     fit,
 )
-from quivers.formulas._fit import _formula_lens
+from quivers.formulas._fit import _prepare_formula_entry
 
 type Draw = Mapping[str, npt.NDArray[np.float64]]
 
@@ -226,6 +226,8 @@ def test_dirichlet_precision_takes_any_predictor(terms):
 )
 def test_location_varies_by_row_with_its_scalar_terms(formula, options, expected):
     """Category-specific terms belong to the transitions, not the scalar part."""
-    lens, parsed = _formula_lens(formula, data=FRAME, data2={"W": CYCLE}, **options)
-    lens.forward(parsed)
-    assert lens.predictors[0].rowwise is expected
+    prepared = _prepare_formula_entry(
+        formula, data=FRAME, data2={"W": CYCLE}, **options
+    )
+    prepared.lens.forward(prepared.formula)
+    assert prepared.lens.predictors[0].rowwise is expected

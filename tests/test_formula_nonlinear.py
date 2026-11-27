@@ -9,7 +9,7 @@ import torch
 from quivers.dsl import Compiler
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.formulas import NonlinearExpression, fit, formula_to_qvr, get_prior
-from quivers.formulas._fit import _formula_lens
+from quivers.formulas._fit import _prepare_formula_entry
 from quivers.formulas._prediction import prepare_prediction
 from quivers.inference.trace import trace
 from quivers.inference.mcmc.driver import MCMCResult
@@ -69,7 +69,7 @@ def test_nonlinear_joint_all_gradients_and_checked_reference_agree_with_independ
         "nlpar_s0_intercept",
         "nlpar_s1_intercept",
     ]
-    lens, parsed = _formula_lens(
+    prepared = _prepare_formula_entry(
         "y ~ a*(1-exp(-rate*x))",
         data=frame,
         nonlinear=nonlinear,
@@ -77,6 +77,7 @@ def test_nonlinear_joint_all_gradients_and_checked_reference_agree_with_independ
         weights="w",
         priors={name: "Normal(0.0,2.0)" for name in names},
     )
+    lens, parsed = prepared.lens, prepared.formula
     module, complement = lens.forward(parsed)
     assert lens.backward(module, complement) == parsed
     checked = lower_qvr_to_qiec(module)
@@ -316,7 +317,7 @@ def test_labelled_nonlinear_response_roots_match_native_laws_and_all_head_gradie
         if name == "logistic_normal"
         else {}
     )
-    lens, parsed = _formula_lens(
+    prepared = _prepare_formula_entry(
         f"{response}~0",
         data=frame,
         family=family,
@@ -328,6 +329,7 @@ def test_labelled_nonlinear_response_roots_match_native_laws_and_all_head_gradie
             "nlpar_p_intercept": "Normal(0.0,2.0)",
         },
     )
+    lens, parsed = prepared.lens, prepared.formula
     module, _ = lens.forward(parsed)
     theta = torch.tensor([0.3, -0.2], dtype=torch.float64, requires_grad=True)
     observations = lens.fixed_column_observations(parsed)
