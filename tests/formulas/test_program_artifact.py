@@ -23,7 +23,7 @@ def test_a_saved_fit_loads_without_its_program_file(tmp_path: Path) -> None:
     program = tmp_path / "approximators.qvr"
     program.write_text(AROUND_ROWS, encoding="utf-8")
     fitted = fit(
-        program=program.read_text(encoding="utf-8"),
+        program=(program, "around_rows"),
         parameters={"noise": "~ x + (1 | g)", "res_logits": "~ 1"},
         response="accept",
         data=frame(),
@@ -48,3 +48,9 @@ def test_a_saved_fit_loads_without_its_program_file(tmp_path: Path) -> None:
         parameters=("res_logits", "noise"),
     )
     assert loaded.qvr_source == fitted.qvr_source
+    assert fitted.refit_recipe is not None
+    assert fitted.refit_recipe.method["program"] == AROUND_ROWS
+    refitted = loaded.update()
+    torch.testing.assert_close(
+        refitted.log_likelihood(num_samples=5)["accept"], before, rtol=0.0, atol=0.0
+    )

@@ -9,6 +9,8 @@ paired with the closest call that binds.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -24,7 +26,12 @@ from tests.formulas._program_cases import (
 )
 
 
-def _emit(source: str, parameters: dict[str, str], response: str, **extra):
+def _emit(
+    source: str | tuple[str | Path, str],
+    parameters: dict[str, str],
+    response: str,
+    **extra,
+):
     keywords = {"data": frame(), "data2": {"halfwidth": HALFWIDTH}} | extra
     return formula_to_qvr(
         program=source, parameters=parameters, response=response, **keywords
@@ -130,9 +137,20 @@ def test_refusals_state_their_reason(
         _emit(source, parameters, response, **extra)
 
 
-def test_a_path_is_not_a_program() -> None:
-    with pytest.raises(TypeError, match="takes the QVR source text"):
-        _emit(("gauss.qvr", "gauss"), {"mu": "~ x"}, "y")  # type: ignore[arg-type]
+def test_a_program_file_selects_the_named_program(tmp_path: Path) -> None:
+    other = GAUSS.replace("gauss", "other").replace("observe y", "observe z")
+    path = tmp_path / "programs.qvr"
+    path.write_text(
+        GAUSS + "".join(other.splitlines(keepends=True)[3:]), encoding="utf-8"
+    )
+    assert _emit((path, "gauss"), {"mu": "~ x"}, "y") == _emit(
+        GAUSS, {"mu": "~ x"}, "y"
+    )
+    assert _emit((str(path), "other"), {"mu": "~ x"}, "z") == _emit(
+        other, {"mu": "~ x"}, "z"
+    )
+    with pytest.raises(ValueError, match="no program 'missing'"):
+        _emit((str(path), "missing"), {"mu": "~ x"}, "y")
 
 
 def test_a_program_that_couples_its_rows_is_refused() -> None:

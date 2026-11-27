@@ -1029,10 +1029,12 @@ through `data`, because the column keeps its fitted numeric carrier.
 ### Formulas on the parameters of a program
 
 A QVR program whose observation scores one response can take its design from
-formulas. `program=` gives the program's source text, `response=` the site it
-observes, and `parameters=` a formula for each sample site or input the design
-should drive. The program's domain is the rows of the data, so its row object
-takes the number of rows. A parameter with a formula has its prior replaced by
+formulas. `program=` takes QVR source text or a pair `(path, entry)` naming a
+program in a source file. Give `entry=` to choose a program from source
+text that declares several. A saved fit keeps the source text and the entry
+name. `response=` names the observed site, and `parameters=` gives a formula
+for each sample site or input the design should drive. The program's domain
+is the rows of the data, so its row object takes the number of rows. A parameter with a formula has its prior replaced by
 the regression, on the link its support requires: a real parameter is its
 predictor, a positive one `exp(eta)`, one on `(a, b)` is
 `a + (b - a) * sigmoid(eta)`, and a simplex is the softmax of a predictor whose

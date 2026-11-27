@@ -28,6 +28,7 @@ from __future__ import annotations
 import functools
 import math
 from collections.abc import Collection, Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import Literal
 
 import didactic.api as dx
@@ -64,6 +65,7 @@ from quivers.dsl.ast_nodes import (
     TypeName,
 )
 from quivers.dsl.emit import draw_call_to_source
+from quivers.dsl.latent_weights import _references
 from quivers.dsl.program_templates import _bound_names
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.step_resolution import _draw_arg_value_names, _step_value_names
@@ -337,28 +339,37 @@ class ProgramAnalysis(ValueModel):
         )
 
 
-def _entry(module: Module) -> ProgramDecl:
+def _entry(module: Module, name: str | None) -> ProgramDecl:
     """Select the entry program of a module.
 
     Parameters
     ----------
     module : Module
         Parsed source.
+    name : str or None
+        The explicit program name, or None to infer it from the source.
 
     Returns
     -------
     ProgramDecl
-        The exported program, or the only program.
+        The named program, the exported program, or the only program.
 
     Raises
     ------
     ValueError
-        If the source has no program, or several candidates.
+        If the source has no program, no program of the requested name,
+        or several candidates and no name is given.
     """
     programs = [item for item in module.statements if isinstance(item, ProgramDecl)]
     if not programs:
         raise ValueError("the program source declares no program")
     names = [program.name for program in programs]
+    if name is not None:
+        if name not in names:
+            raise ValueError(
+                f"the program source has no program {name!r}; it declares {names}"
+            )
+        return programs[names.index(name)]
     exported = [
         item.expr.name
         for item in module.statements
@@ -710,14 +721,65 @@ def _row_couplings(node: Node, row_axis: str) -> Iterator[str]:
         yield from _row_couplings(getattr(node, key), row_axis)
 
 
+def _kernel_declarations(module: Module, entry: str) -> tuple[Statement, ...]:
+    """Keep the entry's dependent programs and non-program declarations.
+
+    Parameters
+    ----------
+    module : Module
+        Authored source containing the program.
+    entry : str
+        The program whose body is emitted by the response kernel.
+
+    Returns
+    -------
+    tuple[Statement, ...]
+        Declarations in source order. Other programs stay only if the entry
+        or a retained definition uses them.
+    """
+    programs = {
+        statement.name
+        for statement in module.statements
+        if isinstance(statement, ProgramDecl)
+    }
+    graph = _references(module)
+    pending = [entry, *(graph.keys() - programs)]
+    reached: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name not in reached:
+            reached.add(name)
+            pending.extend(graph.get(name, ()))
+    return tuple(
+        statement
+        for statement in module.statements
+        if not isinstance(statement, ObjectDecl | ExportDecl)
+        and (
+            not isinstance(statement, ProgramDecl)
+            or (statement.name in reached and statement.name != entry)
+        )
+    )
+
+
 @functools.lru_cache(maxsize=32)
-def program_analysis(source: str) -> ProgramAnalysis:
+def _program_module(source: str) -> Module:
+    """Parse the QVR source of a formula kernel."""
+    try:
+        return parse(source)
+    except ParseError as error:
+        raise ValueError(f"the program source does not parse: {error}") from error
+
+
+@functools.lru_cache(maxsize=32)
+def program_analysis(source: str, entry: str) -> ProgramAnalysis:
     """Check a program with its row axis left symbolic and read its parts.
 
     Parameters
     ----------
     source : str
         QVR source declaring the program.
+    entry : str
+        Program name in the source.
 
     Returns
     -------
@@ -727,15 +789,12 @@ def program_analysis(source: str) -> ProgramAnalysis:
     Raises
     ------
     ValueError
-        If the source does not parse or check, its entry is ambiguous or has
+        If the source does not parse or check, its entry is absent or has
         static parameters, its domain is not a finite object, or it couples
         its rows.
     """
-    try:
-        module = parse(source)
-    except ParseError as error:
-        raise ValueError(f"the program source does not parse: {error}") from error
-    program = _entry(module)
+    module = _program_module(source)
+    program = _entry(module, entry)
     if program.params or program.type_params or program.binders:
         raise ValueError(
             f"the program {program.name!r} has static parameters; a formula block "
@@ -783,13 +842,15 @@ def program_analysis(source: str) -> ProgramAnalysis:
         checked = lower_qvr_to_qiec(_symbolic_rows(module, row_axis))
     except (QiecDiagnosticError, CompileError) as error:
         raise ValueError(f"the program does not check: {error}") from error
-    entry = next((item for item in checked.entries if item.name == program.name), None)
-    if entry is None:
+    contract = next(
+        (item for item in checked.entries if item.name == program.name), None
+    )
+    if contract is None:
         raise ValueError(f"the program {program.name!r} has no checked contract")
     declared = {parameter.name: parameter for parameter in program.value_parameters}
     inputs = tuple(
         _checked_input(parameter, row_axis, declared.get(parameter.name))
-        for parameter in entry.parameters
+        for parameter in contract.parameters
         if parameter.role in {"data", "index_map", "scalar", "observation"}
     )
     top = {step.vars[0]: step for step in program.draws if isinstance(step, SampleStep)}
@@ -810,7 +871,7 @@ def program_analysis(source: str) -> ProgramAnalysis:
             "draws continuous sites and marginalizes discrete ones"
         ) from error
     sites: list[KernelSite] = []
-    for site in entry.sites:
+    for site in contract.sites:
         plates = (*site.batch, *site.event)
         names = tuple(plate.name for plate in plates)
         step = top.get(site.name)
@@ -844,12 +905,7 @@ def program_analysis(source: str) -> ProgramAnalysis:
         row_axis=row_axis,
         objects=tuple(AxisDecl(name=name, size=size) for name, size in sizes.items()),
         program=program,
-        statements=tuple(
-            item
-            for item in module.statements
-            if not isinstance(item, (ObjectDecl, ExportDecl))
-            and not (isinstance(item, ProgramDecl) and item.name == program.name)
-        ),
+        statements=_kernel_declarations(module, program.name),
         sites=tuple(sites),
         inputs=inputs,
         row_maps=frozenset(_row_maps(program.draws, row_axis, inside=False)),
@@ -1303,7 +1359,7 @@ class ProgramKernelSpec(KernelLaw):
     source : str
         QVR source declaring the program.
     entry : str
-        The program read: the exported program, or the only one.
+        The name of the program read from the source.
     response : str
         The observed site.
     parameters : tuple[str, ...]
@@ -1326,7 +1382,7 @@ class ProgramKernelSpec(KernelLaw):
         ProgramAnalysis
             The checked program.
         """
-        return program_analysis(self.source)
+        return program_analysis(self.source, self.entry)
 
     @property
     def row_columns(self) -> tuple[str, ...]:
@@ -1726,21 +1782,67 @@ def program_family(spec: ProgramKernelSpec) -> Family:
     )
 
 
+def program_source(
+    program: str | tuple[str | Path, str],
+    entry: str | None,
+) -> tuple[str, str | None]:
+    """Resolve a program file to source text before retaining fit arguments.
+
+    Parameters
+    ----------
+    program : str or tuple[str or Path, str]
+        QVR source, or a source file path and its program name.
+    entry : str or None
+        The program name given separately.
+
+    Returns
+    -------
+    tuple[str, str or None]
+        The source text and explicit entry, when given.
+
+    Raises
+    ------
+    TypeError
+        If the program is neither source text nor a path and program name.
+    ValueError
+        If the pair and the entry keyword name different programs.
+    """
+    if isinstance(program, str):
+        return program, entry
+    if (
+        isinstance(program, tuple)
+        and len(program) == 2
+        and isinstance(program[0], str | Path)
+        and isinstance(program[1], str)
+    ):
+        path, named = program
+        if entry is not None and entry != named:
+            raise ValueError(
+                f"program= names the entry {named!r}, but entry= is {entry!r}"
+            )
+        return Path(path).read_text(encoding="utf-8"), named
+    raise TypeError("program= takes QVR source text or a (path, entry) pair")
+
+
 def program_spec(
-    program: str,
+    program: str | tuple[str | Path, str],
     response: str,
     parameters: Collection[str],
+    *,
+    entry: str | None,
 ) -> ProgramKernelSpec:
     """Read the kernel law of a program from the arguments of a formula call.
 
     Parameters
     ----------
-    program : str
-        QVR source declaring the program.
+    program : str or tuple[str or Path, str]
+        QVR source, or a source file path and its program name.
     response : str
         The observed site.
     parameters : Collection[str]
         The sites and inputs given a formula or a fixed value.
+    entry : str or None
+        The program name given separately.
 
     Returns
     -------
@@ -1750,22 +1852,20 @@ def program_spec(
     Raises
     ------
     TypeError
-        If ``program`` is not source text.
+        If ``program`` is neither source text nor a path and program name.
     ValueError
         If a parameter is not one the program has.
     """
-    if not isinstance(program, str):
-        raise TypeError(
-            "program= takes the QVR source text of the program; read a file with "
-            "pathlib.Path(path).read_text(). A saved fit keeps the text, not a path"
-        )
-    analysis = program_analysis(program)
+    source, entry = program_source(program, entry)
+    if entry is None:
+        entry = _entry(_program_module(source), None).name
+    analysis = program_analysis(source, entry)
     order = {name: index for index, name in enumerate(analysis.parameters)}
     unknown = sorted(set(parameters) - order.keys())
     for name in unknown:
         parameter_decl(analysis, name, response)
     return ProgramKernelSpec(
-        source=program,
+        source=source,
         entry=analysis.entry,
         response=response,
         parameters=tuple(sorted(parameters, key=lambda name: order[name])),
@@ -1775,7 +1875,8 @@ def program_spec(
 def program_arguments[Authored](
     formula: Authored | None,
     *,
-    program: str | None,
+    program: str | tuple[str | Path, str] | None,
+    entry: str | None,
     parameters: Mapping[str, str] | None,
     response: str | None,
     family: str | Family,
@@ -1799,8 +1900,10 @@ def program_arguments[Authored](
     formula : Authored or None
         The formula of an ordinary call, as authored; None for a program
         call.
-    program : str or None
-        QVR source declaring the program.
+    program : str or tuple[str or Path, str] or None
+        QVR source, or a source file path and its program name.
+    entry : str or None
+        The program name given separately.
     parameters : Mapping[str, str] or None
         Formulas of the program's parameters, by name.
     response : str or None
@@ -1826,9 +1929,9 @@ def program_arguments[Authored](
         parameter formulas, or gives program keywords without a program.
     """
     if program is None:
-        if parameters is not None or response is not None:
+        if entry is not None or parameters is not None or response is not None:
             raise ValueError(
-                f"{caller}: parameters= and response= describe a program; pass its "
+                f"{caller}: entry=, parameters= and response= describe a program; pass its "
                 "source as program="
             )
         if formula is None:
@@ -1855,7 +1958,9 @@ def program_arguments[Authored](
         )
     site = response.partition("|")[0].strip()
     formulas = dict(parameters or {})
-    spec = program_spec(program, site, {*formulas, *(fixed_parameters or {})})
+    spec = program_spec(
+        program, site, {*formulas, *(fixed_parameters or {})}, entry=entry
+    )
     location = formulas.pop(LOCATION, None)
     right = "~ 0"
     if location is not None:

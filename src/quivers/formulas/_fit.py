@@ -88,7 +88,7 @@ from quivers.formulas._residual_law import (
 # Joint (multivariate) formulas: typed overload contracts and dispatch target.
 from typing import overload
 from quivers.formulas._joint_options import FormulaFitOptions, JointFitOptions
-from quivers.formulas._program_kernel import program_arguments
+from quivers.formulas._program_kernel import program_arguments, program_source
 from quivers.formulas._multivariate import (
     MultivariateFormula,
     ResponseModel,
@@ -2536,8 +2536,9 @@ def fit(
     formula: None = None,
     *,
     data: IntoDataFrame,
-    program: str,
+    program: str | tuple[str | Path, str],
     response: str,
+    entry: str | None = None,
     **options: Unpack[FormulaFitOptions],
 ) -> BayesianFit: ...
 
@@ -2546,7 +2547,8 @@ def fit(
     formula: str | ResponseModel | MultivariateFormula | None = None,
     *,
     data: IntoDataFrame,
-    program: str | None = None,
+    program: str | tuple[str | Path, str] | None = None,
+    entry: str | None = None,
     parameters: Mapping[str, str] | None = None,
     response: str | None = None,
     family: str | Family = "gaussian",
@@ -2623,14 +2625,17 @@ def fit(
         raises. None for a program, given by ``program=``.
     data : IntoDataFrame
         Pandas, Polars, or another Narwhals-compatible dataframe.
-    program : str or None
-        QVR source of a program whose observation of ``response`` is the
-        likelihood: the exported program, or the only one. Its domain is the
-        rows of the data. Every sample site and input that ``parameters``
+    program : str or tuple[str or Path, str] or None
+        QVR source, or a source file path and a program name. With source
+        text alone, the one program or the one exported program is selected.
+        The program's observation of ``response`` is the likelihood, and its
+        domain is the rows of the data. Every sample site and input that ``parameters``
         names is replaced by a regression on the link scale its support
         requires; every other site keeps the program's own law. Data the
         program reads at each row are data columns of the same name; data on
         another axis and scalars come from ``data2``.
+    entry : str or None
+        The program name when it is given separately from the source text.
     parameters : Mapping[str, str] or None
         Formulas of the program's parameters, as ``{"noise": "~ 1 + (1 | g)"}``.
         Their priors are those of distributional formulas, with
@@ -2850,6 +2855,13 @@ def fit(
         center, decomp = authored["center"], authored["decomp"]
         cmc, sparse = authored["cmc"], authored["sparse"]
         unused = authored["unused"]
+    # An existing artifact with file_refit="never" needs no program file.
+    if file is not None and file_refit == "never" and Path(file).exists():
+        return cast(
+            "BayesianFit | _joint_fit.MultivariateFit", artifact_store.load_fit(file)
+        )
+    if program is not None:
+        program, entry = program_source(program, entry)
     # brms file / file_refit: reuse or refresh a fit in the artifact store.
     if file is not None:
         arguments = {
@@ -2900,6 +2912,7 @@ def fit(
         formula, family, distributional = program_arguments(
             formula,
             program=program,
+            entry=entry,
             parameters=parameters,
             response=response,
             family=family,
@@ -3023,7 +3036,8 @@ def formula_to_qvr(
     formula: str | ResponseModel | MultivariateFormula | None = None,
     *,
     data: IntoDataFrame,
-    program: str | None = None,
+    program: str | tuple[str | Path, str] | None = None,
+    entry: str | None = None,
     parameters: Mapping[str, str] | None = None,
     response: str | None = None,
     family: str | Family = "gaussian",
@@ -3077,9 +3091,10 @@ def formula_to_qvr(
         composed program is emitted; None for a program.
     data : IntoDataFrame
         Original training columns, including response modifiers.
-    program : str or None
-        QVR source of a program whose observation of ``response`` is the
-        likelihood, as in `fit`.
+    program : str or tuple[str or Path, str] or None
+        QVR source, or a source file path and a program name, as in `fit`.
+    entry : str or None
+        The program name when it is given separately from the source text.
     parameters : Mapping[str, str] or None
         Formulas of the program's parameters, by name.
     response : str or None
@@ -3169,6 +3184,7 @@ def formula_to_qvr(
     formula, family, distributional = program_arguments(
         formula,
         program=program,
+        entry=entry,
         parameters=parameters,
         response=response,
         family=family,
@@ -3218,7 +3234,8 @@ def get_prior(
     formula: str | ResponseModel | MultivariateFormula | None = None,
     *,
     data: IntoDataFrame,
-    program: str | None = None,
+    program: str | tuple[str | Path, str] | None = None,
+    entry: str | None = None,
     parameters: Mapping[str, str] | None = None,
     response: str | None = None,
     family: str | Family = "gaussian",
@@ -3263,9 +3280,10 @@ def get_prior(
         None for a program.
     data : IntoDataFrame
         Rows used to evaluate design matrices and autoscale default priors.
-    program : str or None
-        QVR source of a program whose observation of ``response`` is the
-        likelihood, as in `fit`.
+    program : str or tuple[str or Path, str] or None
+        QVR source, or a source file path and a program name, as in `fit`.
+    entry : str or None
+        The program name when it is given separately from the source text.
     parameters : Mapping[str, str] or None
         Formulas of the program's parameters, by name.
     response : str or None
@@ -3365,6 +3383,7 @@ def get_prior(
     formula, family, distributional = program_arguments(
         formula,
         program=program,
+        entry=entry,
         parameters=parameters,
         response=response,
         family=family,

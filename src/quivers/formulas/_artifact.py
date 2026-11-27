@@ -310,6 +310,7 @@ def _restore_formula(manifest: dict, codec: _Codec) -> BayesianFit:
     formula, family, distributional = program_arguments(
         arguments["formula"],
         program=arguments["program"],
+        entry=arguments["entry"],
         parameters=arguments["parameters"],
         response=arguments["response"],
         family=arguments["family"],

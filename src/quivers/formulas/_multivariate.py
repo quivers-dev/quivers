@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Literal, cast
 
 import didactic.api as dx
@@ -935,7 +936,8 @@ def mvbf(
 def bf(
     formula: str | None = None,
     *formulas: str,
-    program: str | None = None,
+    program: str | tuple[str | Path, str] | None = None,
+    entry: str | None = None,
     parameters: Mapping[str, str] | None = None,
     response: str | None = None,
     family: str | Family | None = None,
@@ -966,9 +968,10 @@ def bf(
         A left-hand side naming an auxiliary parameter of the family is
         distributional; any other name is nonlinear. Several parameters
         joined by ``+`` share one right-hand side (``"b1 + b2 ~ 1"``).
-    program : str or None
-        QVR source of a program whose observation of ``response`` is the
-        likelihood of this response, as in `fit`.
+    program : str or tuple[str or Path, str] or None
+        QVR source, or a source file path and a program name, as in `fit`.
+    entry : str or None
+        The program name when it is given separately from the source text.
     parameters : Mapping[str, str] or None
         Formulas of the program's parameters, by name.
     response : str or None
@@ -1024,6 +1027,7 @@ def bf(
         text, kernel_family, given = program_arguments(
             formula,
             program=program,
+            entry=entry,
             parameters=parameters,
             response=response,
             family="gaussian" if family is None else family,
@@ -1048,7 +1052,12 @@ def bf(
             sparse=sparse,
             unused=tuple(unused),
         )
-    if formula is None or parameters is not None or response is not None:
+    if (
+        formula is None
+        or entry is not None
+        or parameters is not None
+        or response is not None
+    ):
         raise ValueError(
             "bf: give a response formula, or a program= with its response= and "
             "parameters="
