@@ -182,6 +182,23 @@ def test_bounded_tensor_agrees_with_independent_path_enumeration(algebra):
         machine @ observed(restricted.domain, restricted.codomain, expected, REAL)
 
 
+def test_weight_slots_must_belong_to_the_declared_carrier():
+    with pytest.raises(ValueError, match="outside the .* carrier"):
+        RationalRelation(_topology(), torch.tensor([-1, 1, 1, 1]), algebra=COUNTING)
+
+    log_weights = nn.Parameter(torch.zeros(4))
+    machine = RationalRelation(_topology(), log_weights, algebra=LOG_PROB)
+    empty_walk = machine.query(((), ()))
+    table = machine.restrict((0, 0), max_entries=1)
+    with torch.no_grad():
+        # An unused slot is still part of the declared weight vector.
+        log_weights[3] = float("nan")
+    with pytest.raises(ValueError, match="outside the .* carrier"):
+        empty_walk.weight()
+    with pytest.raises(ValueError, match="outside the .* carrier"):
+        _ = table.tensor
+
+
 def _check_live_weight_slots():
     class Scores(nn.Module):
         def __init__(self):

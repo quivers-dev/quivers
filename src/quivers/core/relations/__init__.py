@@ -82,9 +82,10 @@ class RationalRelation(Morphism):
     topology : RelationTopology
         Finite topology and weight-slot names.
     weights : torch.Tensor or nn.Module
-        A vector of scalar weights in slot order. A tensor must be a leaf.
-        A module supplies the vector through its zero-argument forward call
-        and can compute fresh differentiable weights from its parameters.
+        A vector of scalar weights in slot order, with every entry in the
+        declared algebra's carrier. A tensor must be a leaf. A module
+        supplies the vector through its zero-argument forward call and
+        can compute fresh differentiable weights from its parameters.
     algebra : Semiring
         The scalar algebra for path multiplication and addition. Defaults
         to real weights.
@@ -96,6 +97,7 @@ class RationalRelation(Morphism):
     all-epsilon cycle with an accepting continuation instead requires a
     star calculation. This evaluator refuses that case, even when its
     current weights are zero. A change in weights never changes the plan.
+    The weight vector is checked each time it is read for evaluation.
     """
 
     def __init__(
@@ -140,6 +142,7 @@ class RationalRelation(Morphism):
             raise ValueError(
                 f"the weight source must supply a tensor of shape {expected}"
             )
+        self.algebra.validate(weights)
 
     def _weights(self) -> torch.Tensor:
         values = self._weight_source()
