@@ -14,9 +14,11 @@ meet again where both reach one continuation.
 The four resumption grades are one rule. A clause that resumes twice puts its
 captured continuation back twice, and one that never resumes drops it.
 Surviving direct requests record the shot labels of the copied continuations
-that reach them. A surviving request inside a discharged shot keeps the
-computation on the reference machine if its operation has a checked
-unrestricted clause.
+that reach them and the ancestry of the linear operation clauses they
+run in. A surviving request inside a discharged shot keeps the computation
+on the reference machine if its operation has a checked unrestricted
+clause. A residual effectful call in a discharged clause also keeps its
+reference continuation.
 
 The result depends on no target and no runtime. The compiled runtime, the
 transpile planner, the static targets' projection, and the capability analysis
@@ -46,12 +48,15 @@ from quivers.qiec.evidence import BranchGiven, Reflexivity
 from quivers.qiec.identifiers import (
     ComputationId,
     ConstructorId,
+    DynamicAddressFrame,
     EffectInstanceId,
     HandlerId,
     OperationId,
     SourceOrigin,
     StaticScopeId,
     StaticVariableId,
+    _CLAUSE_SCOPE,
+    _clause_address,
 )
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.substitution import (
@@ -135,8 +140,9 @@ class DischargeObstacle(QiecModel):
         ``"recursion"`` for a recursive call that makes handled requests,
         ``"case"`` for a case analysis on a value known only at run time
         whose branches do not meet in one continuation, ``"growth"`` for a
-        rewriting past the size bounds, and ``"address"`` for a surviving
-        operation that can open a runtime shot inside one being discharged.
+        rewriting past the size bounds, and ``"address"`` when a surviving
+        operation can open a runtime shot inside one being discharged or a
+        residual effectful call needs its original clause scope.
     reason
         The obstacle as a clause naming the handler and the clause, to
         follow "the computation".
@@ -209,7 +215,7 @@ class DischargedModule(QiecModel):
         }
         for handler in self.module.handlers:
             for clause, made in clause_requests(handler, names):
-                if made.origin == request.origin:
+                if made.origin.static_site == request.origin.static_site:
                     return clause
         return None
 
@@ -336,6 +342,10 @@ class _ClauseFrame(_Frame):
         The shot path at the handled request.
     next_shot
         The ordinal of the next shot of this invocation.
+    clause_path
+        The active clause ancestry in the clause body.
+    captured_clauses
+        The clause ancestry outside the captured continuation.
     """
 
     captured: tuple[_Frame, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -344,6 +354,12 @@ class _ClauseFrame(_Frame):
     grade: ResumptionGrade = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     next_shot: int = 0
+    clause_path: tuple[DynamicAddressFrame, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    captured_clauses: tuple[DynamicAddressFrame, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class _ShotFrame(_Frame):
@@ -353,9 +369,14 @@ class _ShotFrame(_Frame):
     ----------
     resumptions
         The surrounding shot path.
+    clause_path
+        The clause ancestry outside the captured continuation.
     """
 
     resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    clause_path: tuple[DynamicAddressFrame, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class _CallFrame(_Frame):
@@ -1216,6 +1237,15 @@ class _Discharger:
             elif isinstance(term, Call):
                 entered = self.enter(term, stack)
                 if entered is None:
+                    if (term.effects.entries or term.effects.tail is not None) and (
+                        _clause_path(stack)
+                    ):
+                        raise _Undischarged(
+                            "address",
+                            f"calls `{term.name}` with residual effects from a "
+                            "discharged operation clause",
+                            term.origin,
+                        )
                     binder = Local(
                         name=self.fresh(_awaiting(stack, "called")),
                         type=term.result_type,
@@ -1252,6 +1282,7 @@ class _Discharger:
                     )
                 )
                 position = self.answering(request, stack)
+                clause_path = _clause_path(stack)
                 if position is None:
                     if resumptions:
                         if request.operation in self.tables.multi_shot_operations:
@@ -1273,6 +1304,15 @@ class _Discharger:
                                 )
                             )
                         )
+                    if clause_path:
+                        request = request.with_(
+                            origin=request.origin.with_(
+                                dynamic_path=(
+                                    *clause_path,
+                                    *request.origin.dynamic_path,
+                                )
+                            )
+                        )
                     binder = Local(
                         name=self.fresh(_awaiting(stack, "answer")),
                         type=request.result_type,
@@ -1284,6 +1324,20 @@ class _Discharger:
                 answering = cast(_HandlerFrame, stack[position])
                 clause = answering.handler.clause(request.operation)
                 assert clause is not None
+                if self.track_shots:
+                    clause_path = (
+                        *clause_path,
+                        *(
+                            frame
+                            for frame in request.origin.dynamic_path
+                            if frame.scope == _CLAUSE_SCOPE
+                        ),
+                    )
+                    if clause.grade is ResumptionGrade.LINEAR:
+                        clause_path = (
+                            *clause_path,
+                            _clause_address(request.origin.static_site),
+                        )
                 bound, environment, state = self.clause(request, answering, clause)
                 made.extend(bound)
                 stack = (
@@ -1295,6 +1349,8 @@ class _Discharger:
                         serial=self.ordinal(),
                         grade=clause.grade,
                         resumptions=resumptions,
+                        clause_path=clause_path,
+                        captured_clauses=_clause_path(stack[position + 1 :]),
                     ),
                     *stack[position + 1 :],
                 )
@@ -1571,7 +1627,10 @@ class _Discharger:
             beyond = (_JoinFrame(serial=self.ordinal()), *beyond)
             restored = resumptions
         if self.track_shots:
-            beyond = (_ShotFrame(resumptions=restored), *beyond)
+            beyond = (
+                _ShotFrame(resumptions=restored, clause_path=frame.captured_clauses),
+                *beyond,
+            )
         return (
             tuple(made),
             self.value(term.value, environment),
@@ -2374,6 +2433,29 @@ def _entered(stack: tuple[_Frame, ...]) -> frozenset[ComputationId]:
     return frozenset(frame.callee for frame in stack if isinstance(frame, _CallFrame))
 
 
+def _clause_path(stack: tuple[_Frame, ...]) -> tuple[DynamicAddressFrame, ...]:
+    """Find the active clause ancestry of a symbolic continuation.
+
+    Parameters
+    ----------
+    stack : tuple[_Frame, ...]
+        The continuation, innermost frame first.
+
+    Returns
+    -------
+    tuple[DynamicAddressFrame, ...]
+        The ancestry set by the nearest clause or shot boundary.
+    """
+    return next(
+        (
+            frame.clause_path
+            for frame in stack
+            if isinstance(frame, _ClauseFrame | _ShotFrame)
+        ),
+        (),
+    )
+
+
 def _same(left: tuple[_Frame, ...], right: tuple[_Frame, ...]) -> bool:
     """Whether two continuations carry the same control and shot information.
 
@@ -2407,6 +2489,7 @@ def _same(left: tuple[_Frame, ...], right: tuple[_Frame, ...]) -> bool:
             isinstance(a, _ShotFrame)
             and isinstance(b, _ShotFrame)
             and a.resumptions == b.resumptions
+            and a.clause_path == b.clause_path
         )
         for a, b in zip(left, right, strict=True)
     )

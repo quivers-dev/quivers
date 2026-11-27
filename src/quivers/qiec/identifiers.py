@@ -447,6 +447,26 @@ class DynamicAddressFrame(QiecModel):
     key: str | int
 
 
+_CLAUSE_SCOPE = "handler-clause"
+
+
+def _clause_address(site: SiteId) -> DynamicAddressFrame:
+    """Address an operation clause relative to the request that entered it.
+
+    Parameters
+    ----------
+    site : SiteId
+        The static site of the answered request. The surrounding dynamic
+        frames and shot path identify its activation.
+
+    Returns
+    -------
+    DynamicAddressFrame
+        A relative clause frame, ordered after its enclosing context.
+    """
+    return DynamicAddressFrame(scope=_CLAUSE_SCOPE, key=str(site))
+
+
 class SiteProvenance(QiecModel):
     """Static and dynamic provenance of an effect request.
 
@@ -456,7 +476,8 @@ class SiteProvenance(QiecModel):
         The source site the request was written at.
     dynamic_path
         The address frames entered to reach this occurrence of the site,
-        outermost first.
+        outermost first. A handler-clause frame left by discharge is relative
+        to the active caller's dynamic path.
     resumption_path
         The ordinal of each resumption taken to reach this occurrence, so a
         site reached twice under a multi-shot handler yields two keys.
