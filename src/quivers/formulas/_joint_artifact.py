@@ -17,25 +17,15 @@ import torch
 from narwhals.typing import IntoDataFrame
 
 from quivers.dsl.emit import module_to_source
-from quivers.formulas._fit import _InferenceResult, fit
+from quivers.formulas._artifact import _restore_fit_state, _stored_fit_state
+from quivers.formulas._fit import fit
 from quivers.formulas._joint_fit import MultivariateFit, _prepare_joint
 from quivers.formulas._data_options import Knots, formula_data_options
 from quivers.formulas._multivariate import MultivariateFormula
 from quivers.formulas._priors import normalize_priors
 from quivers.formulas._refit import capture_recipe
-from quivers.inference import MCMCResult, PriorDraws
-from quivers.modeling._artifact_codec import (
-    ArtifactContext,
-    _Codec,
-    _module_state,
-    _restore_module,
-)
+from quivers.modeling._artifact_codec import _Codec
 from quivers.modeling.refit import RefitRecipe
-from quivers.modeling.artifact import (
-    _posterior_state,
-    _restore_posterior,
-    _validate_recorded,
-)
 
 __all__: list[str] = []
 
@@ -75,23 +65,14 @@ def joint_state(fitted: MultivariateFit, codec: _Codec) -> dict:
         )
     if fitted.preparation_data is None:
         raise ValueError("joint formula artifacts require the retained training rows")
-    return {
-        "kind": JOINT_KIND,
-        "data": codec.encode(fitted.preparation_data),
-        "recipe_data": codec.encode(recipe.data)
-        if recipe.snapshot_policy == "reference"
-        else None,
-        "options": codec.encode(dict(recipe.method)),
-        "ownership": recipe.snapshot_policy,
-        "source": fitted.qvr_source,
-        "program": codec.encode(_module_state(fitted.program)),
-        "observations": codec.encode(dict(fitted.observations)),
-        "posterior": _posterior_state(fitted.posterior, codec),
-        "prior": codec.encode(fitted.prior),
-        "sample_prior": fitted.sample_prior,
-        "losses": codec.encode(fitted.losses),
-        "criteria": codec.encode(dict(fitted.criteria)),
-    }
+    return _stored_fit_state(
+        fitted,
+        codec,
+        kind=JOINT_KIND,
+        data=fitted.preparation_data,
+        recipe=recipe,
+        source=fitted.qvr_source,
+    )
 
 
 def restore_joint(manifest: dict, codec: _Codec) -> MultivariateFit:
@@ -175,19 +156,7 @@ def restore_joint(manifest: dict, codec: _Codec) -> MultivariateFit:
     for name, value in saved.items():
         if not torch.equal(observations[name].to(value), value):
             raise ValueError(f"artifact joint preparation changed binding {name!r}")
-    _restore_module(program, codec.decode(manifest["program"]))
-    context = ArtifactContext(
-        program, torch.zeros(1, 1, dtype=torch.long), observations
-    )
-    posterior = _restore_posterior(manifest["posterior"], codec, context)
-    prior = codec.decode(manifest["prior"])
-    if prior is not None:
-        if not isinstance(prior, MCMCResult | PriorDraws):
-            raise TypeError("artifact retained prior must be a recorded result")
-        _validate_recorded(prior, context)
-    result = _InferenceResult(
-        posterior, codec.decode(manifest["losses"]), prior, manifest["sample_prior"]
-    )
+    result = _restore_fit_state(manifest, codec, program, observations)
     return MultivariateFit(
         specification=specification,
         program=program,
