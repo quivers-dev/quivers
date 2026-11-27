@@ -90,7 +90,7 @@ from quivers.formulas._kernel import (
     Steps,
 )
 from quivers.formulas._kernel_law import KernelDatum, KernelLaw
-from quivers.formulas._modifiers import response_modifiers
+from quivers.formulas._modifiers import Modifier, response_modifiers
 from quivers.formulas._observation import Observation
 from quivers.formulas._predictor_graph import NonlinearExpression
 from quivers.formulas._brms_priors import flat_event_rank
@@ -102,6 +102,7 @@ from quivers.formulas.family import (
     Link,
     LOCATION,
     ParameterCoordinates,
+    families,
     links,
     parameter_prefix,
 )
@@ -1382,6 +1383,92 @@ def _observation(step: ObserveStep, factorized: bool) -> Observation | None:
     )
 
 
+def _with_observation(
+    steps: tuple[ProgramStep, ...], observation: ObserveStep
+) -> tuple[ProgramStep, ...]:
+    """Replace a unique observed site in the same scope where it is scored.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        Steps of a program or marginalization.
+    observation : ObserveStep
+        The replacement step at the observed site.
+
+    Returns
+    -------
+    tuple[ProgramStep, ...]
+        Steps in their original scopes with the observation replaced.
+    """
+    return tuple(
+        observation
+        if isinstance(step, ObserveStep) and step.vars == observation.vars
+        else step.with_(scope=_with_observation(step.scope, observation))
+        if isinstance(step, MarginalizeStep)
+        else step
+        for step in steps
+    )
+
+
+def _observation_options(
+    observed: ObserveStep,
+    state: Observation | None,
+    modifiers: tuple[Modifier, ...],
+    enclosing: tuple[MarginalizeStep, ...],
+) -> tuple[ObserveStep, Observation | None]:
+    """Fold modifiers over an authored observation without changing its scope.
+
+    Parameters
+    ----------
+    observed : ObserveStep
+        The step that scores the response.
+    state : Observation or None
+        The observation record when its constructor arguments fit the record.
+    modifiers : tuple[Modifier, ...]
+        Modifiers that attach options to the observation.
+    enclosing : tuple[MarginalizeStep, ...]
+        The marginalizations that contain the observation.
+
+    Returns
+    -------
+    tuple[ObserveStep, Observation or None]
+        The authored step and its record, with modifier options attached.
+
+    Raises
+    ------
+    ValueError
+        If a modifier would re-specify an option or weight the conditional
+        scores inside a marginalization.
+    """
+    updated = (
+        state
+        if state is not None
+        else Observation(
+            site=observed.vars[0], kernel=observed.morphism, parameters=(), values=()
+        )
+    )
+    for modifier in modifiers:
+        updated = modifier.observe(updated)
+    if updated.weights is not None and enclosing:
+        raise ValueError(
+            "weights() on a marginalized program response must multiply its "
+            "scores after the marginalization"
+        )
+    added = updated.step().options
+    repeated = {option.key for option in observed.options} & {
+        option.key for option in added
+    }
+    if repeated:
+        raise ValueError(
+            f"the program's observation of {observed.vars[0]!r} already sets "
+            f"{sorted(repeated)}; give each observation option once"
+        )
+    return (
+        observed.with_(options=(*observed.options, *added)),
+        updated if state is not None else None,
+    )
+
+
 def _row_varying_laws(
     steps: Sequence[ProgramStep], varying: Mapping[str, frozenset[str]]
 ) -> dict[str, frozenset[str]]:
@@ -1612,11 +1699,12 @@ class ProgramKernelSpec(KernelLaw):
         analysis = self.analysis
         entry = analysis.entry
         modifiers = response_modifiers(formula.modifiers, inputs.residual)
-        if modifiers:
+        changes = [item.kind for item in modifiers if item.changes_arguments]
+        if changes:
             raise ValueError(
                 f"the program {entry!r} scores its response by its own observation; "
-                f"the response terms {[modifier.kind for modifier in modifiers]} "
-                "change that law, so the program must state them itself"
+                f"the response terms {changes} change that law, so the program "
+                "must state them itself"
             )
         if inputs.host is not None and (
             LOCATION not in self.parameters or LOCATION in inputs.fixed
@@ -1714,6 +1802,13 @@ class ProgramKernelSpec(KernelLaw):
         assert found is not None
         observed, enclosing = found
         factorized = all(block.over == ROWS for block in enclosing)
+        observation = _observation(observed, factorized)
+        draws = renamed.program.draws
+        if modifiers:
+            observed, observation = _observation_options(
+                observed, observation, modifiers, enclosing
+            )
+            draws = _with_observation(draws, observed)
         replaced_inputs = {
             name for name, item in declarations.items() if item.origin == "input"
         }
@@ -1729,7 +1824,7 @@ class ProgramKernelSpec(KernelLaw):
             *(BindSlot(slot=name) for name in replaced_inputs),
         ]
         literal: list[ProgramStep] = []
-        for step in renamed.program.draws:
+        for step in draws:
             if isinstance(step, SampleStep) and step.vars[0] in declarations:
                 if literal:
                     body.append(Steps(steps=tuple(literal)))
@@ -1739,7 +1834,7 @@ class ProgramKernelSpec(KernelLaw):
             literal.append(step)
         if literal:
             body.append(Steps(steps=tuple(literal)))
-        body.append(ObserveResponse(observation=_observation(observed, factorized)))
+        body.append(ObserveResponse(observation=observation))
         data = tuple(
             InputDecl(
                 name=item.name,
@@ -1856,6 +1951,11 @@ def program_family(spec: ProgramKernelSpec) -> Family:
         name=analysis.entry,
         location_link=location,
         observe_family=site.law,
+        recorded_events=any(
+            family.recorded_events
+            for family in families.values()
+            if family.observe_family == site.law
+        ),
         aux_params=tuple(
             AuxParam(
                 name=item.name,

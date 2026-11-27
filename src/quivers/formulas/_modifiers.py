@@ -72,6 +72,11 @@ class Modifier(dx.TaggedUnion, discriminator="kind"):
     """A response term that changes how a response is scored."""
 
     @property
+    def changes_arguments(self) -> bool:
+        """Whether the modifier changes the law before observation."""
+        return False
+
+    @property
     def admission_rank(self) -> int:
         """Rank of the modifier's check among those of a response.
 
@@ -152,6 +157,11 @@ class RateExposure(Modifier):
 
     kind: Literal["exposure"] = "exposure"
     denominator: str
+
+    @property
+    def changes_arguments(self) -> bool:
+        """The modifier changes the law before observation."""
+        return True
 
     @property
     def admission_rank(self) -> int:
@@ -248,6 +258,11 @@ class KnownError(Modifier):
     sigma: bool
 
     @property
+    def changes_arguments(self) -> bool:
+        """The modifier changes the law before observation."""
+        return True
+
+    @property
     def admission_rank(self) -> int:
         """Rank of the check: 1.
 
@@ -335,6 +350,11 @@ class ResidualDependence(Modifier):
     """Natural residuals correlated across the rows."""
 
     kind: Literal["residual_dependence"] = "residual_dependence"
+
+    @property
+    def changes_arguments(self) -> bool:
+        """The modifier changes the law before observation."""
+        return True
 
     @property
     def admission_rank(self) -> int:

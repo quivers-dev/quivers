@@ -229,6 +229,50 @@ def test_a_program_vector_parameter_keeps_its_coordinate_axis() -> None:
     )
 
 
+def test_the_program_observation_composes_weights_and_recorded_events() -> None:
+    rows = frame().assign(
+        y=np.linspace(-1.0, 1.0, 12),
+        w=np.linspace(0.25, 2.25, 12),
+        status=np.tile([-1, 0, 1], 4),
+    )
+    fitted = fit(
+        program=GAUSS,
+        parameters={"mu": "~ 1"},
+        response="y | cens(status) + trunc(lb = -2, ub = 2)",
+        weights="w",
+        data=rows,
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    values = {
+        "intercept": torch.tensor(0.45, dtype=torch.float64),
+        "sigma": torch.tensor(0.8, dtype=torch.float64),
+    }
+    normal = torch.distributions.Normal(values["intercept"], values["sigma"])
+    response = torch.tensor(rows["y"].to_numpy())
+    status = torch.tensor(rows["status"].to_numpy())
+    weight = torch.tensor(rows["w"].to_numpy())
+    lower, upper = normal.cdf(torch.tensor([-2.0, 2.0], dtype=torch.float64))
+    cumulative = normal.cdf(response)
+    scores = (
+        torch.where(
+            status < 0,
+            (cumulative - lower).log(),
+            torch.where(
+                status > 0, (upper - cumulative).log(), normal.log_prob(response)
+            ),
+        )
+        - (upper - lower).log()
+    )
+    prior = torch.distributions.Normal(0.0, 5.0).log_prob(
+        values["intercept"]
+    ) + torch.distributions.HalfNormal(1.0).log_prob(values["sigma"])
+    actual = log_joint(run(fitted, values))
+    assert actual == pytest.approx(float(prior + (scores * weight).sum()), rel=1e-7)
+    assert abs(actual - float(prior + scores.sum())) > 1e-3
+
+
 def test_the_two_class_program_is_the_gaussian_mixture_row_by_row() -> None:
     program = _svi(program=MIX2, parameters={}, response="y")
     family = _svi("y ~ 1", family=mixture("gaussian", "gaussian", order="none"))

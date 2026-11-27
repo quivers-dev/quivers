@@ -22,6 +22,7 @@ from tests.formulas._program_cases import (
     DECAY,
     GAUSS,
     HALFWIDTH,
+    MIX2,
     frame,
 )
 
@@ -119,13 +120,6 @@ def test_rows_with_a_missing_program_column_are_left_out() -> None:
             {"data": frame().assign(s=1.0)},
             r"se\(\) is not supported for family 'gauss'",
         ),
-        (
-            GAUSS,
-            {"mu": "~ x"},
-            "y",
-            {"weights": "w", "data": frame().assign(w=1.0)},
-            "row_weights",
-        ),
         (GAUSS, {"mu": "~ x"}, "y", {"family": "poisson"}, "family= does not apply"),
         (GAUSS, {"mu": "~ x"}, None, {}, "needs response="),
     ],
@@ -151,6 +145,11 @@ def test_a_program_file_selects_the_named_program(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="no program 'missing'"):
         _emit((str(path), "missing"), {"mu": "~ x"}, "y")
+
+
+def test_weights_do_not_raise_the_conditional_scores_of_a_marginalization() -> None:
+    with pytest.raises(ValueError, match="after the marginalization"):
+        _emit(MIX2, {}, "y", weights="w", data=frame().assign(w=1.0))
 
 
 def test_a_program_that_couples_its_rows_is_refused() -> None:
