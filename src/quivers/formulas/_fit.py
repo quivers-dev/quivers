@@ -39,7 +39,7 @@ from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.ast_nodes import Module
 from quivers.formulas.compile import FormulaToQVRModule
-from quivers.formulas.family import Family, families
+from quivers.formulas.family import LOCATION, Family, families
 from quivers.formulas._mixture import mixture_component_count, mixture_distributional
 from quivers.formulas._mixture_predict import pp_mixture
 from quivers.formulas._category_formulas import (
@@ -730,6 +730,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         return response_readout(
             self.family,
             len(self.category_labels) if self.family.category_response else 0,
+            fixed=self.fixed_parameters,
         )
 
     @property
@@ -2259,11 +2260,14 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             If the parameter has no predictor or an ordinal inverse link is
             requested.
         """
-        if parameter == "mu" and not self.family.reads_location:
+        if parameter == LOCATION and self._response_readout.location is None:
+            if transform and parameter in self.fixed_parameters:
+                return LinpredBinding(site=parameter)
             raise ValueError(
-                f"the response kernel {self.family.name!r} has no location 'mu'; "
+                f"the response kernel {self.family.name!r} has no location {parameter!r} "
+                "with a fitted predictor; "
                 "name one of its parameters with a formula: "
-                f"{[aux.name for aux in self.family.aux_params]}"
+                f"{[aux.name for aux in self.family.aux_params if aux.name not in self.fixed_parameters]}"
             )
         coordinate = self._vector_coordinate(parameter)
         if coordinate is not None and coordinate[0].prefix:

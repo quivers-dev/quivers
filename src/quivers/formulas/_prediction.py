@@ -238,8 +238,9 @@ def _set_trial_rows(
     ValueError
         If a literal scalar trial count cannot be overridden at runtime.
     """
-    response = _qvr_name(fit.formula.response_name)
-    event = fit.formula.response_layout.event_shape
+    data = fit._response_data
+    response = _qvr_name(data.name)
+    event = data.layout.event_shape
     if event:
         observations["formula_trials"] = counts
         point = torch.zeros(
@@ -380,24 +381,32 @@ def prepare_prediction(
             "sample_new_levels must be uncertainty, old_levels, gaussian, "
             "feasible_uncertainty, or feasible_gaussian"
         )
-    formulas = {name: formula for name, _, formula in fit._predictor_items()}
-    prefixes = {name: prefix for name, prefix, _ in fit._predictor_items()}
+    data = fit._response_data
+    readout = fit._response_readout
+    location = readout.location
+    predictors = tuple(
+        (name, prefix, formula)
+        for name, prefix, formula in fit._predictor_items()
+        if prefix or name == location
+    )
+    formulas = {name: formula for name, _, formula in predictors}
+    prefixes = {name: prefix for name, prefix, _ in predictors}
+    response_formula = fit.formula if location is None else formulas[location]
     constrained_cs = (
-        fit.family.ordinal is not None
-        and fit.family.ordinal.kind in {"cumulative", "hurdle_cumulative"}
-        and (fit.formula.category_specific)
+        readout.constrains_cutpoints
+        and location is not None
+        and response_formula.category_specific
     )
     selected = selected_effects(formulas, re_formula)
     retained_observations = fit.observations
     if trials is not None:
-        if fit.family.trials_parameter is None:
+        if readout.trials_parameter is None:
             raise ValueError(
                 "trial overrides require a count family with a trial parameter"
             )
         if new_data is None:
             from quivers.formulas._fit import _binomial_trial_tensor
 
-            data = fit._response_data
             source = data.training_data
             if isinstance(trials, str) and source is None:
                 raise ValueError(
@@ -425,7 +434,7 @@ def prepare_prediction(
         return PredictionContext(
             program=fit.program,
             observations=retained_observations,
-            rows=len(fit.formula.response_values),
+            rows=len(data.values),
         )
     plan = fit.prediction_plan
     if new_data is None:
@@ -435,7 +444,7 @@ def prepare_prediction(
             raise ValueError("this fit has no retained formula prediction plan")
         source = RowSource(selected=selected, include=incl_autocor)
         lens = fit._formula_lens(residual=residual)
-        module, _ = lens._forward(fit.formula, rows=source)
+        module, _ = lens._forward(response_formula, rows=source)
         program = compile_model(module, lens.families()).morphism
         if not isinstance(program, MonadicProgram):
             raise TypeError("prediction requires a native monadic program")
@@ -444,10 +453,10 @@ def prepare_prediction(
             observations=dict(retained_observations)
             | bind_inputs(
                 item
-                for term in lens._terms(fit.formula, source)
+                for term in lens._terms(response_formula, source)
                 for item in term.inputs()
             ),
-            rows=len(fit.formula.response_values),
+            rows=len(data.values),
             source=source,
             seed=seed,
             retain_ordinal_cutpoints=constrained_cs,
@@ -504,7 +513,7 @@ def prepare_prediction(
     )
     groups = compact_groups(fit, frame, selected, allow_new_levels)
     order_groups = {
-        term.group for term in fit.formula.random_terms if term.category_specific
+        term.group for term in response_formula.random_terms if term.category_specific
     }
     if fit.thresholds_by is not None:
         order_groups.add(fit.thresholds_by)
@@ -532,6 +541,11 @@ def prepare_prediction(
         name: specialized_formula(formula, groups, frame)
         for name, formula in formulas.items()
     }
+    specialized_response = (
+        specialized_formula(response_formula, groups, frame)
+        if location is None
+        else specialized[location]
+    )
     specialized_lens = fit._formula_lens(
         distributional={
             name: formula
@@ -545,8 +559,8 @@ def prepare_prediction(
         },
         residual=residual,
     )
-    module, _ = specialized_lens._forward(specialized["mu"], rows=source)
-    terms = specialized_lens._terms(specialized["mu"], source)
+    module, _ = specialized_lens._forward(specialized_response, rows=source)
+    terms = specialized_lens._terms(specialized_response, source)
     observations = finite_inputs(
         bind_inputs(item for term in terms for item in term.inputs())
     )
@@ -581,19 +595,19 @@ def prepare_prediction(
     from quivers.formulas._response_modifiers import response_input_name
 
     observations[response_input_name(fit.formula)] = point.expand(
-        rows, *fit.formula.response_layout.event_shape
+        rows, *data.layout.event_shape
     )
-    if fit.formula.modifiers.weights is not None:
+    if data.modifiers.weights is not None:
         observations["formula_weights"] = torch.ones(rows, dtype=torch.float64)
-    if fit.formula.modifiers.decision is not None:
+    if data.modifiers.decision is not None:
         observations["formula_decision"] = torch.ones(rows, dtype=torch.bool)
     from quivers.formulas._response_roles import prediction_role_bindings
 
-    observations.update(prediction_role_bindings(fit.formula.modifiers, frame))
+    observations.update(prediction_role_bindings(data.modifiers, frame))
     # brms thres(n, gr): the fitted category selectors of every group.
     observations.update(threshold_selectors(fit.observations))
-    if fit.family.trials_parameter is not None:
-        retained_source = dict(fit.formula.modifiers.sources).get("trials")
+    if readout.trials_parameter is not None:
+        retained_source = dict(data.modifiers.sources).get("trials")
         specification = (
             trials
             if trials is not None

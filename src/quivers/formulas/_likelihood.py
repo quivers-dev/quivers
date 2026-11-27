@@ -93,6 +93,7 @@ def prepare_likelihood(
     if len(frame) < 1 or not frame.columns.is_unique:
         raise ValueError("new_data requires nonempty rows and unique column names")
     fitted_response = fit._response_data
+    readout = fit._response_readout
     # Raw likelihoods do not depend on fitting weights, including their columns.
     sources = {
         role: source
@@ -140,9 +141,9 @@ def prepare_likelihood(
     # This immutable view shares fitted encodings; it does not reevaluate designs.
     response = fit.formula.with_(response_values=values, modifiers=modifiers)
     if (
-        response.response_layout.event_shape
-        and fit.family.vector_response
-        and fit.family.trials_parameter is None
+        layout.event_shape
+        and readout.vector_response
+        and readout.trials_parameter is None
     ):
         validate_simplex(response)
     outcome = response_tensor(response, fit.family)
@@ -150,7 +151,7 @@ def prepare_likelihood(
         raise ValueError("fresh responses must fit finite native response carriers")
     counts: torch.Tensor | None = None
     specification: int | str | None = None
-    if fit.family.trials_parameter is not None:
+    if readout.trials_parameter is not None:
         from quivers.formulas._fit import _response_trials
 
         retained = sources.get("trials")

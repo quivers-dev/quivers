@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from quivers.formulas import fit
@@ -121,3 +122,57 @@ def test_fresh_and_known_levels_of_a_program_parameter() -> None:
     assert bool(torch.isfinite(predicted).all())
     # One fresh level is one draw of its effect, shared by its rows.
     assert float(predicted[0, 0, 0]) == float(predicted[0, 0, 1])
+
+
+@pytest.mark.parametrize("fixed_location", [False, True])
+def test_fresh_rows_do_not_require_a_synthetic_location_design(
+    fixed_location: bool,
+) -> None:
+    """Predict a program's scale with an authored or fixed location."""
+    location = 0.25
+    fitted = fit(
+        program=GAUSS,
+        parameters={"sigma": "~ x"},
+        fixed_parameters={"mu": location} if fixed_location else None,
+        response="y",
+        data=frame(),
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    draws = {
+        "dpar_sigma_intercept": np.array([-0.25]),
+        "dpar_sigma_beta_x": np.array([0.5]),
+    }
+    if not fixed_location:
+        draws["mu"] = np.array([location])
+    fitted = pin(fitted, draws)
+    plan = fitted.prediction_plan
+    assert plan is not None
+    fitted = fitted.with_(
+        prediction_plan=plan.with_(designs={"sigma": plan.designs["sigma"]})
+    )
+
+    rows = pd.DataFrame({"x": [0.5, -0.25], "y": [-0.5, 0.75]})
+    eta = torch.tensor([0.0, -0.375], dtype=torch.float64)
+    expected_mean = torch.full_like(eta, location)
+    expected_log_prob = torch.distributions.Normal(expected_mean, eta.exp()).log_prob(
+        torch.tensor([-0.5, 0.75], dtype=torch.float64)
+    )
+    torch.testing.assert_close(
+        fitted.posterior_linpred(new_data=rows, parameter="sigma")[0, 0].double(),
+        eta,
+    )
+    torch.testing.assert_close(
+        fitted.posterior_epred(new_data=rows)[0, 0].double(), expected_mean
+    )
+    likelihood = fitted.log_likelihood(new_data=rows)
+    assert isinstance(likelihood, dict)
+    torch.testing.assert_close(likelihood["y"][0, 0].double(), expected_log_prob)
+    with pytest.raises(ValueError, match="has no .*location"):
+        fitted.posterior_linpred(new_data=rows)
+    if fixed_location:
+        torch.testing.assert_close(
+            fitted.posterior_linpred(new_data=rows, transform=True)[0, 0].double(),
+            expected_mean,
+        )

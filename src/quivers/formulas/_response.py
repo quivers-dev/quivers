@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -11,6 +12,7 @@ from quivers.formulas._count_data import checked_integer_data
 import torch
 
 from quivers.formulas.formula import Formula
+from quivers.formulas.family import LOCATION
 
 if TYPE_CHECKING:
     from quivers.formulas.family import Family
@@ -23,6 +25,8 @@ class ResponseReadout(ValueModel):
     ----------
     law : str
         Name of the sampled response law.
+    location : str or None
+        Regressed location slot, or None for an authored or fixed location.
     categories : int
         Extent of the category axis, zero for a numeric response.
     ordinal : bool
@@ -35,15 +39,25 @@ class ResponseReadout(ValueModel):
         Whether the response is angular.
     r_squared : {"model", "residual"}
         Default variance diagnostic for this response law.
+    vector_response : bool
+        Whether the response has one event with several coordinates.
+    trials_parameter : str or None
+        Declared finite-trial parameter, when present.
+    constrains_cutpoints : bool
+        Whether category-specific predictors must retain ordered cutpoints.
     """
 
     law: str
+    location: str | None
     categories: int
     ordinal: bool
     unordered: bool
     decision: bool
     circular: bool
     r_squared: Literal["model", "residual"]
+    vector_response: bool
+    trials_parameter: str | None
+    constrains_cutpoints: bool
 
 
 def response_category_labels(formula: Formula, family: Family) -> tuple[int | str, ...]:
@@ -74,7 +88,9 @@ def response_category_labels(formula: Formula, family: Family) -> tuple[int | st
     return tuple(range(FormulaToQVRModule._category_count(formula, family=family.name)))
 
 
-def response_readout(family: Family, categories: int) -> ResponseReadout:
+def response_readout(
+    family: Family, categories: int, *, fixed: Collection[str] = ()
+) -> ResponseReadout:
     """Read the posterior measurement properties declared by a response family.
 
     Parameters
@@ -83,6 +99,8 @@ def response_readout(family: Family, categories: int) -> ResponseReadout:
         Family whose kernel defines the observed law.
     categories : int
         Fitted category count, zero for a numeric response.
+    fixed : Collection[str]
+        Program parameters held at a constant instead of regressed.
 
     Returns
     -------
@@ -91,12 +109,17 @@ def response_readout(family: Family, categories: int) -> ResponseReadout:
     """
     return ResponseReadout(
         law=family.observe_family,
+        location=LOCATION if family.reads_location and LOCATION not in fixed else None,
         categories=categories,
         ordinal=family.response_ordinal() is not None,
         unordered=family.unordered_categories,
         decision=family.decision_event is not None,
         circular=family.circular,
         r_squared=family.r_squared,
+        vector_response=family.vector_response,
+        trials_parameter=family.trials_parameter,
+        constrains_cutpoints=family.ordinal is not None
+        and family.ordinal.kind in {"cumulative", "hurdle_cumulative"},
     )
 
 

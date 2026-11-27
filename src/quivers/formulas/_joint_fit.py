@@ -1902,7 +1902,11 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             if family.category_response
             else 0
         )
-        return response_readout(family, categories)
+        return response_readout(
+            family,
+            categories,
+            fixed=self.specification.responses[name].fixed_parameters or (),
+        )
 
     def observed(self, *, resp: ResponseSelection = None) -> dict[str, torch.Tensor]:
         """Return the training outcomes of the selected responses.
