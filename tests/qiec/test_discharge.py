@@ -566,6 +566,141 @@ def test_an_effectful_call_inside_a_linear_clause_keeps_the_reference_path(
         assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
 
 
+_CAPTURED_CALL_SOURCE = """
+define relay_leaf(x : Real) : Real !{relay} =
+    let result <- perform relay.pass(x)
+    return result
+
+define relay_chain(x : Real) : Real !{relay} =
+    let result <- relay_leaf(x)
+    return result
+
+define relay_tail(x : Real) : Real !{relay} =
+    if x > 0.0 then
+        relay_leaf(x)
+    else
+        relay_leaf(0.0 - x)
+
+define report_captured(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let first <- relay_chain(x)
+        let second <- relay_chain(first)
+        perform score.add(weight(second))
+        return second
+
+define report_tail(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let first <- relay_tail(x)
+        let second <- relay_tail(first)
+        return second
+
+define report_pure_tail(x : Real) : Real !{score} =
+    handle relay with identity in
+        let result <- relay_tail(x)
+        perform score.add(weight(result))
+        return result
+
+define report_captured_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_captured(x)
+
+define report_tail_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_tail(x)
+
+define report_pure_tail_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_pure_tail(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def captured_call_module() -> tuple[QiecModule, DischargedModule]:
+    module = _module(_ADDRESS_SOURCE + _CLAUSE_SOURCE + _CAPTURED_CALL_SOURCE)
+    return module, discharge_module(module)
+
+
+def test_non_tail_captured_calls_distinguish_one_lexical_operation(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_captured"
+    assert discharged.obstacle(name) is None
+    original = _computation(module, name).body
+    rewritten = _computation(discharged.module, name).body
+    assert not any(isinstance(item, Handle | Call) for item in _terms(rewritten))
+    entries = sorted(
+        (term for term in _terms(original) if isinstance(term, Call)),
+        key=lambda term: term.origin.line or 0,
+    )
+    assert len(entries) == 2
+    (leaf_call,) = (
+        term
+        for term in _terms(_computation(module, "relay_chain").body)
+        if isinstance(term, Call)
+    )
+    (trigger,) = _effect_sites(_computation(module, "relay_leaf").body, "Relay")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    (outside,) = _effect_sites(original, "Score")
+    call = (("call", f"{name}#1"),)
+    expected = (
+        *(
+            (
+                score,
+                (
+                    *call,
+                    (
+                        "handler-clause",
+                        "/".join(
+                            (
+                                trigger,
+                                str(entry.origin.site_id()),
+                                str(leaf_call.origin.site_id()),
+                            )
+                        ),
+                    ),
+                ),
+                (),
+            )
+            for entry in entries
+        ),
+        (outside, call, ()),
+    )
+    assert len(set(expected)) == 3
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name + "_run", 1.0) == expected
+
+
+def test_an_effectful_clause_with_an_elided_caller_keeps_reference_execution(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_tail"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "tail call" in obstacle.reason
+    assert _computation(discharged.module, name) is _computation(module, name)
+    observed = _request_addresses(module, name + "_run", 1.0)
+    assert len(observed) == 2
+    assert _request_addresses(discharged.module, name + "_run", 1.0) == observed
+
+
+def test_a_pure_clause_does_not_need_an_elided_callers_address(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_pure_tail"
+    assert discharged.obstacle(name) is None
+    rewritten = _computation(discharged.module, name).body
+    assert not any(isinstance(item, Handle | Call) for item in _terms(rewritten))
+    (score,) = _effect_sites(_computation(module, name).body, "Score")
+    expected = ((score, (("call", f"{name}#1"),), ()),)
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, name + "_run", 1.0) == expected
+
+
 # ---------------------------------------------------------------------------
 # One computation per way of resuming
 # ---------------------------------------------------------------------------

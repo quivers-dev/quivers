@@ -45,6 +45,7 @@ from quivers.qiec.identifiers import (
     EffectInstanceId,
     HandlerId,
     OperationId,
+    SourceOrigin,
     _CLAUSE_SCOPE,
     _clause_address,
 )
@@ -1085,6 +1086,10 @@ class _CallFrame(ContinuationFrame):
     serial
         The call's ordinal within the run, so two iterations of a
         recursive computation address their requests differently.
+    origin
+        The static site of the call.
+    replaced_caller
+        Whether a tail call removed its caller's frame.
     environment
         The caller's bindings, restored when the call returns.
     """
@@ -1092,6 +1097,8 @@ class _CallFrame(ContinuationFrame):
     callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
     serial: int
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    replaced_caller: bool
     environment: Mapping[Local, HeldValue] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -3179,8 +3186,10 @@ class Evaluator:
                 # the caller's frame has no further use, so it is left rather
                 # than kept beneath the callee, and a tail-recursive loop
                 # runs in constant stack.
+                replaced_caller = False
                 if stack and isinstance(finished := stack[-1], _CallFrame):
                     stack.pop()
+                    replaced_caller = True
                     if self.trace_hook is not None:
                         self._emit_trace(
                             "call.returned",
@@ -3208,6 +3217,8 @@ class Evaluator:
                         callee=callee.id,
                         name=callee.name,
                         serial=serial,
+                        origin=current.origin,
+                        replaced_caller=replaced_caller,
                         environment=caller_environment,
                     )
                 )
@@ -3555,9 +3566,19 @@ class Evaluator:
                     if address.scope == _CLAUSE_SCOPE
                 )
                 if structural_clause.grade is ResumptionGrade.LINEAR:
+                    calls = tuple(
+                        frame
+                        for frame in captured_stack
+                        if isinstance(frame, _CallFrame)
+                    )
+                    call_sites = (
+                        ()
+                        if any(call.replaced_caller for call in calls)
+                        else tuple(call.origin.site_id() for call in calls)
+                    )
                     clause_path = (
                         *clause_path,
-                        _clause_address(request.core.origin.static_site),
+                        _clause_address(request.core.origin.static_site, call_sites),
                     )
                 del stack[index:]
                 stack.append(
