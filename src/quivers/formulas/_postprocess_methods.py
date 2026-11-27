@@ -70,6 +70,7 @@ from quivers.formulas._postprocess_predict import (
 from quivers.formulas._postprocess_summary import (
     FitSummary,
     VarCorrBlock,
+    _ThresholdSign,
     coef_arrays,
     fit_summary,
     fixef_draws,
@@ -98,6 +99,7 @@ from quivers.formulas._fit_types import Fit, JointFit, SingleFit
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
     from quivers.formulas._joint_fit import MultivariateFit
+    from quivers.formulas.family import OrdinalSpec
 
 type ResponseSelection = str | Sequence[str] | None
 """Joint response selection: one label, several labels, or every response."""
@@ -114,6 +116,25 @@ _NUTS_NAMES: dict[str, str] = {
     "diverged": "divergent__",
     "energy": "energy__",
 }
+
+
+def _ordinal_threshold_sign(ordinal: OrdinalSpec) -> _ThresholdSign:
+    """Return the direction of an ordinal threshold on the linear predictor.
+
+    Parameters
+    ----------
+    ordinal : OrdinalSpec
+        The response's ordinal likelihood.
+
+    Returns
+    -------
+    _ThresholdSign
+        Threshold minus predictor, or predictor minus threshold for adjacent
+        categories and continuation ratios.
+    """
+    if ordinal.kind in {"cratio", "acat"}:
+        return "eta_minus_thres"
+    return "thres_minus_eta"
 
 
 class JointPredictionOptions(TypedDict, total=False):
@@ -290,17 +311,22 @@ class _PostprocessCore:
         """
         return frozenset()
 
-    def _pp_threshold_sign(
-        self,
-    ) -> Literal["thres_minus_eta", "eta_minus_thres", "plus"]:
-        """Return how ordinal thresholds combine with group intercepts.
+    def _pp_threshold_signs(
+        self, fixed: Mapping[str, torch.Tensor]
+    ) -> dict[str, _ThresholdSign]:
+        """Return directions of the population ordinal coefficients.
+
+        Parameters
+        ----------
+        fixed : Mapping[str, torch.Tensor]
+            Population coefficient labels and draws.
 
         Returns
         -------
-        {"thres_minus_eta", "eta_minus_thres", "plus"}
-            brms's ordinal special of the family.
+        dict[str, _ThresholdSign]
+            Threshold directions keyed by coefficient label.
         """
-        return "plus"
+        return {}
 
     def _pp_describe(self) -> tuple[str, str]:
         """Describe the formula and family for the summary header.
@@ -714,7 +740,9 @@ class _PostprocessCore:
                 "no group-level effects detected; use fixef for population effects"
             )
         fixed = fixef_draws(self._pp_named(num_samples, seed), None)
-        arrays = coef_arrays(fixed, levels, threshold_sign=self._pp_threshold_sign())
+        arrays = coef_arrays(
+            fixed, levels, threshold_signs=self._pp_threshold_signs(fixed)
+        )
         if not summary:
             return arrays
         group_levels = cast("BayesianFit", self).group_levels
@@ -1183,23 +1211,13 @@ class SinglePostprocess(_PostprocessCore):
         """
         return frozenset(aux.name for aux in self._pp_fit().family.aux_params)
 
-    def _pp_threshold_sign(
-        self,
-    ) -> Literal["thres_minus_eta", "eta_minus_thres", "plus"]:
-        """Return brms's ordinal threshold sign of the family.
-
-        Returns
-        -------
-        {"thres_minus_eta", "eta_minus_thres", "plus"}
-            ``thres_minus_eta`` for cumulative, sratio and hurdle cumulative,
-            ``eta_minus_thres`` for cratio and acat, ``plus`` otherwise.
-        """
+    def _pp_threshold_signs(
+        self, fixed: Mapping[str, torch.Tensor]
+    ) -> dict[str, _ThresholdSign]:
         ordinal = self._pp_fit().family.ordinal
         if ordinal is None:
-            return "plus"
-        if ordinal.kind in {"cratio", "acat"}:
-            return "eta_minus_thres"
-        return "thres_minus_eta"
+            return {}
+        return dict.fromkeys(fixed, _ordinal_threshold_sign(ordinal))
 
     def _pp_describe(self) -> tuple[str, str]:
         """Describe the formula and family.
@@ -2237,6 +2255,28 @@ class JointPostprocess(_PostprocessCore):
             `MultivariateFit.variables`.
         """
         return self._pp_fit().variables(num_samples=num_samples, seed=seed)
+
+    def _pp_threshold_signs(
+        self, fixed: Mapping[str, torch.Tensor]
+    ) -> dict[str, _ThresholdSign]:
+        fit = self._pp_fit()
+        signs: dict[str, _ThresholdSign] = {}
+        for name, response in fit.emission.responses.items():
+            ordinal = response.lens._family.ordinal
+            if ordinal is None:
+                continue
+            prefix = f"{name}_" if len(fit.response_names) > 1 else ""
+            signs.update(
+                dict.fromkeys(
+                    (
+                        label
+                        for label in fixed
+                        if label.startswith(f"{prefix}Intercept[")
+                    ),
+                    _ordinal_threshold_sign(ordinal),
+                )
+            )
+        return signs
 
     def _pp_levels(
         self, num_samples: int | None, seed: int

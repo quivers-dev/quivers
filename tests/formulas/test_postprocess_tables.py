@@ -229,7 +229,7 @@ def test_ranef_and_coef_arrays_match_brms() -> None:
         ranef.values.numpy(), array_values(oracle), rtol=TOLERANCE
     )
     fixed = {name[2:]: value for name, value in names.items() if name.startswith("b_")}
-    arrays = coef_arrays(fixed, members, threshold_sign="plus")
+    arrays = coef_arrays(fixed, members, threshold_signs={})
     coef_labels, coef_values = arrays["g"]
     coef = posterior_summary(
         coef_values, robust=True, labels=("a", "b", "c"), components=coef_labels
@@ -245,7 +245,9 @@ def test_cumulative_coef_subtracts_group_intercepts_from_thresholds() -> None:
     names = brms_names("cumulative")
     members = level_members(names)
     fixed = {name[2:]: value for name, value in names.items() if name.startswith("b_")}
-    labels, values = coef_arrays(fixed, members, threshold_sign="thres_minus_eta")["g"]
+    labels, values = coef_arrays(
+        fixed, members, threshold_signs=dict.fromkeys(fixed, "thres_minus_eta")
+    )["g"]
     table = posterior_summary(
         values, robust=True, labels=("a", "b", "c"), components=labels
     )
@@ -255,7 +257,7 @@ def test_cumulative_coef_subtracts_group_intercepts_from_thresholds() -> None:
         table.values.numpy(), array_values(oracle), rtol=TOLERANCE
     )
     # A wrong sign convention is detected.
-    _, wrong = coef_arrays(fixed, members, threshold_sign="plus")["g"]
+    _, wrong = coef_arrays(fixed, members, threshold_signs={})["g"]
     wrong_table = posterior_summary(
         wrong, robust=True, labels=("a", "b", "c"), components=labels
     )

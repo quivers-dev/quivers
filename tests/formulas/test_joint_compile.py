@@ -10,7 +10,7 @@ import torch
 
 from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import ProgramDecl, ObserveStep
-from quivers.formulas import bf, formula_to_qvr, set_rescor
+from quivers.formulas import bf, fit, formula_to_qvr, set_rescor
 from quivers.formulas._fit import _prepare_formula
 from quivers.formulas._joint_compile import emit_joint
 from quivers.formulas._response import response_tensor
@@ -103,6 +103,41 @@ def test_shared_group_scale_uses_its_response_brms_default(override: bool) -> No
         "Exponential(rate=1.5)" if override else "HalfStudentT(df=3.0, scale=14.8)"
     )
     assert f"sample response_wide__sigma_g_Intercept <- {expected}" in source
+
+
+def test_joint_ordinal_coefficients_keep_each_responses_threshold_direction() -> None:
+    """Combine the same fit's population thresholds and group intercepts."""
+    frame = pd.DataFrame(
+        {
+            "first": [0, 1, 2, 2, 0, 1],
+            "second": [2, 1, 0, 0, 1, 2],
+            "g": ["a", "b", "a", "b", "a", "b"],
+        }
+    )
+    model = fit(
+        bf("first ~ 1 + (1 | g)", family="cumulative")
+        + bf("second ~ 1 + (1 | g)", family="gaussian")
+        + set_rescor(False),
+        data=frame,
+        method="svi",
+        num_steps=2,
+        seed=2,
+    )
+    fixed = model.fixef(summary=False, num_samples=4, seed=5)
+    group_names, group = model.ranef(summary=False, num_samples=4, seed=5)["g"]
+    coef_names, coefficients = model.coef(summary=False, num_samples=4, seed=5)["g"]
+    varying = group[..., group_names.index("first_Intercept")]
+    for index in (1, 2):
+        threshold = f"first_Intercept[{index}]"
+        expected = fixed[threshold].unsqueeze(-1) - varying
+        torch.testing.assert_close(
+            coefficients[..., coef_names.index(threshold)], expected
+        )
+    intercept = "second_Intercept"
+    torch.testing.assert_close(
+        coefficients[..., coef_names.index(intercept)],
+        fixed[intercept].unsqueeze(-1) + group[..., group_names.index(intercept)],
+    )
 
 
 def test_heterogeneous_response_density_gradients_and_checked_reference():
