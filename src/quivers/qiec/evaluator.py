@@ -2616,9 +2616,7 @@ class Evaluator:
         if isinstance(value, Rowwise):
             return _rowwise(
                 value.operator,
-                _tensor_operand(
-                    self._value(value.value, environment), value.operator
-                ),
+                _tensor_operand(self._value(value.value, environment), value.operator),
             )
         if isinstance(value, CholeskyFactor):
             return _cholesky(

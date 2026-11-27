@@ -1085,8 +1085,12 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
     _signature("div_real", (REAL, REAL), REAL, "arithmetic", _quotient),
     _signature("neg_real", (REAL,), REAL, "arithmetic", _total(torch.neg), total=True),
     _signature("abs_real", (REAL,), REAL, "arithmetic", _total(torch.abs), total=True),
-    _signature("min_real", (REAL, REAL), REAL, "arithmetic", _first_minimum, total=True),
-    _signature("max_real", (REAL, REAL), REAL, "arithmetic", _first_maximum, total=True),
+    _signature(
+        "min_real", (REAL, REAL), REAL, "arithmetic", _first_minimum, total=True
+    ),
+    _signature(
+        "max_real", (REAL, REAL), REAL, "arithmetic", _first_maximum, total=True
+    ),
     _signature("pow_real", (REAL, REAL), REAL, "math", _power),
     _signature("exp", (REAL,), REAL, "math", _partial("exp", torch.exp)),
     _signature("log", (REAL,), REAL, "math", _partial("log", torch.log)),
@@ -1172,17 +1176,13 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
     _signature("erfc", (REAL,), REAL, "special", _partial("erfc", torch.erfc)),
     _signature("erfinv", (REAL,), REAL, "special", _partial("erfinv", torch.erfinv)),
     _signature("lgamma", (REAL,), REAL, "special", _partial("lgamma", torch.lgamma)),
-    _signature(
-        "digamma", (REAL,), REAL, "special", _partial("digamma", torch.digamma)
-    ),
+    _signature("digamma", (REAL,), REAL, "special", _partial("digamma", torch.digamma)),
     _signature("sigmoid", (REAL,), REAL, "activation", _total(torch.sigmoid)),
     _signature("relu", (REAL,), REAL, "activation", _total(_F.relu)),
     _signature("relu6", (REAL,), REAL, "activation", _total(_F.relu6)),
     _signature("elu", (REAL,), REAL, "activation", _total(_F.elu)),
     _signature("selu", (REAL,), REAL, "activation", _total(_F.selu)),
-    _signature(
-        "gelu", (REAL,), REAL, "activation", _total(_F.gelu)
-    ),
+    _signature("gelu", (REAL,), REAL, "activation", _total(_F.gelu)),
     _signature("silu", (REAL,), REAL, "activation", _total(_F.silu)),
     _signature("mish", (REAL,), REAL, "activation", _total(_F.mish)),
     _signature("softplus", (REAL,), REAL, "activation", _total(_F.softplus)),

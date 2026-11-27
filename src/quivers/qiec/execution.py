@@ -1781,9 +1781,13 @@ def run_named(
         )
 
     providers = config.instantiate()
-    attachments = RuntimeAttachments(
-        numbers=numbers if numbers is not None else NumberDomain(),
-        **({} if distributions is None else {"distributions": distributions}),
+    attachments = (
+        RuntimeAttachments(numbers=numbers if numbers is not None else NumberDomain())
+        if distributions is None
+        else RuntimeAttachments(
+            numbers=numbers if numbers is not None else NumberDomain(),
+            distributions=distributions,
+        )
     )
     try:
         for provider in providers:

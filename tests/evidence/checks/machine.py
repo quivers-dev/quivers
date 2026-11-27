@@ -589,13 +589,23 @@ def check_judgments(semiring: str, fresh: bool = False) -> None:
             raise Mismatch(
                 "refusal", math.inf, f"machine {semiring} {sentence}: {refusal}"
             ) from refusal
-        assert isinstance(machine, (bool, int, float))
+        if not isinstance(machine, torch.Tensor) or machine.dim() != 0:
+            raise Mismatch(
+                "shape", math.inf, f"machine {semiring}: expected a scalar tensor"
+            )
+        dtype = {"Counting": torch.int64, "Boolean": torch.bool}.get(
+            semiring, torch.float64
+        )
+        if machine.dtype != dtype:
+            raise Mismatch(
+                "dtype", math.inf, f"machine {semiring}: {machine.dtype} for {dtype}"
+            )
         agenda = float(system(list(sentence)).goal_weight().detach())
         accuracy = Accuracy(
             domain="log", operations=ROUNDINGS * max(1, len(trees)), magnitude=8.0
         )
         compare_number(
-            float(machine), wanted, accuracy, f"machine {semiring} {sentence}"
+            float(machine.detach()), wanted, accuracy, f"machine {semiring} {sentence}"
         )
         compare_number(
             agenda,

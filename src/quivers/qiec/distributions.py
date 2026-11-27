@@ -2474,8 +2474,7 @@ def _family_log_prob(
     density = _DENSITIES.get(family)
     if density is None:
         raise DistributionError(
-            f"the reference backend cannot score {family}; use a backend that "
-            "covers it"
+            f"the reference backend cannot score {family}; use a backend that covers it"
         )
     return density(arguments, value)
 
@@ -2502,8 +2501,7 @@ def _family_log_mass(family: str, arguments: Mapping[str, object]) -> float:
     """
     if family not in _DENSITIES:
         raise DistributionError(
-            f"the reference backend cannot weigh {family}; use a backend that "
-            "covers it"
+            f"the reference backend cannot weigh {family}; use a backend that covers it"
         )
     mass = _LOG_MASSES.get(family)
     return 0.0 if mass is None else mass(arguments)

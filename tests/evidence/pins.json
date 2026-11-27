@@ -13,7 +13,7 @@
   "checks/contraction.py": "5fb0a387c0e8b73b1bcc375eb0e6ef52c49d8a6e82e4a455cb89564a8eff7608",
   "checks/deduction.py": "b3d9f1dd9adbfbb2b97bde54a98f6b61e04185dd9e779e35b51ad08fd385f2a1",
   "checks/evaluator.py": "c66d55813c0b54562ae59d66be18b49f5e286b75a5bc262d0ed082c175313d74",
-  "checks/machine.py": "827410a39376662359b5f0a1de6890ccecbcc0a028be086e286bfa027b5e7cf9",
+  "checks/machine.py": "0a79c1ca2740a3c1ad04ce2ae486c1ab324a88b440350a9238fd3fc500f52094",
   "checks/mixture.py": "9ae5eb147b8de11226f422448b7f351e611ece4e5d7db936423754f6f4792248",
   "checks/presented.py": "cd5a8669814cfe2226d1e9e6979ef857690ef5342078df596e3d14d3ec1ac70f",
   "checks/span.py": "31a3af97a3f6b3870b847dd0506766d7cd7ba2e4a6fa8f138df4a0ef9684b0e2",

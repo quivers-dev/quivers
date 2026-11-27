@@ -75,7 +75,10 @@ def test_finite_nonnegative_weights_normalize_without_overflow_or_underflow(scal
     assert backend.family_log_prob(
         "Categorical", {"probs": weights.tolist()}, 0
     ) == pytest.approx(-math.log(2))
-    assert backend.family_log_prob("Categorical", {"probs": weights.tolist()}, 2) == -math.inf
+    assert (
+        backend.family_log_prob("Categorical", {"probs": weights.tolist()}, 2)
+        == -math.inf
+    )
     assert d.expand((4,)).sample((3,)).shape == (3, 4)
     assert (d.sample((100,)) < 2).all()
 

@@ -104,7 +104,8 @@ def test_reference_scores_and_seeded_draws_share_all_four_parameterizations(
     )
     torch.testing.assert_close(
         torch.tensor(
-            backend.family_sample("MatrixNormal", host, random.Random(74)), dtype=torch.double
+            backend.family_sample("MatrixNormal", host, random.Random(74)),
+            dtype=torch.double,
         ),
         torch.tensor(expected, dtype=torch.double),
         atol=1e-15,

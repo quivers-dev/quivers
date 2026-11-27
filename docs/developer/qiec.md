@@ -208,8 +208,8 @@ argument outside its domain rather than answering NaN. A number leaves the tenso
 a discrete value is read: the condition of a branch, an index into a tuple of structured values,
 the key of an item, and a number a report states. Values from the host are converted where they
 enter (a run's arguments, attached values, the sites and parameters a run is given), and
-[`host_value`][quivers.qiec.numbers.host_value] converts a result back to plain data where it
-leaves, as [`invoke_entry`][quivers.qiec.entries.invoke_entry] does.
+[`host_value`][quivers.qiec.numbers.host_value] converts a result to plain data when it is
+serialized. [`invoke_entry`][quivers.qiec.entries.invoke_entry] keeps the tensors in its result.
 
 A distribution construction evaluates to a [`RuntimeDistribution`](../api/qiec/distributions.md),
 which samples and scores through the run's `DistributionBackend`. The reference backend

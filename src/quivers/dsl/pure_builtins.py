@@ -131,6 +131,7 @@ def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | flo
         )
     return value
 
+
 def _eager_observation_status(value: torch.Tensor | int) -> torch.Tensor | int:
     """Validate event codes while preserving their scalar or tensor carrier.
 
@@ -152,6 +153,7 @@ def _eager_observation_status(value: torch.Tensor | int) -> torch.Tensor | int:
     if not isinstance(value, torch.Tensor):
         return _observation_status(value)
     return observation_status(value)
+
 
 def _eager_interval_upper(
     lower: torch.Tensor | float, upper: torch.Tensor | float
@@ -223,6 +225,7 @@ def _eager_positive_parameter(value: torch.Tensor | float) -> torch.Tensor | flo
         return _positive_parameter(value)
     return positive_parameter(value)
 
+
 def _eager_log_probability(value: torch.Tensor | float) -> torch.Tensor | float:
     """Validate and log a probability, masking the singular zero endpoint.
 
@@ -244,6 +247,7 @@ def _eager_log_probability(value: torch.Tensor | float) -> torch.Tensor | float:
     if not isinstance(value, torch.Tensor):
         return _log_probability(value)
     return log_probability(value)
+
 
 def _eager_log1mexp(value: torch.Tensor | float) -> torch.Tensor | float:
     """Log complementary exponentials with protected endpoint derivatives.
@@ -267,6 +271,7 @@ def _eager_log1mexp(value: torch.Tensor | float) -> torch.Tensor | float:
         return _log1mexp(value)
     return log1mexp(value)
 
+
 def _eager_log_ndtr(value: torch.Tensor | float) -> torch.Tensor | float:
     """Normal log CDF with protected infinite endpoint derivatives.
 
@@ -288,6 +293,7 @@ def _eager_log_ndtr(value: torch.Tensor | float) -> torch.Tensor | float:
     if not isinstance(value, torch.Tensor):
         return _log_ndtr(value)
     return log_ndtr(value)
+
 
 def _eager_scale_weight(
     coefficient: torch.Tensor | float, density: torch.Tensor | float

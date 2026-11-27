@@ -154,12 +154,15 @@ def test_reference_backend_matches_density_and_quantile_probability():
     arguments = {"loc": 0.4, "scale": 0.7, "quantile": 0.8}
     oracle = scipy.stats.laplace_asymmetric(2.0, loc=0.4, scale=1.75)
     for point in [-3.0, 0.2, 0.4, 1.5]:
-        assert backend.family_log_prob("AsymmetricLaplace", arguments, point) == pytest.approx(
-            oracle.logpdf(point), abs=1e-12
-        )
+        assert backend.family_log_prob(
+            "AsymmetricLaplace", arguments, point
+        ) == pytest.approx(oracle.logpdf(point), abs=1e-12)
     rng = random.Random(31)
     draws = np.asarray(
-        [backend.family_sample("AsymmetricLaplace", arguments, rng) for _ in range(20000)]
+        [
+            backend.family_sample("AsymmetricLaplace", arguments, rng)
+            for _ in range(20000)
+        ]
     )
     assert np.mean(draws < 0.4) == pytest.approx(0.8, abs=0.012)
     assert np.mean(draws) == pytest.approx(oracle.mean(), abs=0.06)

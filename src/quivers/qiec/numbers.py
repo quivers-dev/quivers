@@ -110,7 +110,9 @@ class NumberDomain(QiecModel):
             The domain; a tensor that is not floating gives the default
             floating dtype.
         """
-        dtype = tensor.dtype if tensor.is_floating_point() else torch.get_default_dtype()
+        dtype = (
+            tensor.dtype if tensor.is_floating_point() else torch.get_default_dtype()
+        )
         return cls(real=_dtype_name(dtype), device=str(tensor.device))
 
     @classmethod
@@ -644,7 +646,9 @@ def host_real(value: torch.Tensor, what: str) -> float:
     return float(value.detach())
 
 
-def discrete_key(value: torch.Tensor) -> tuple[str, tuple[int, ...], tuple[object, ...]]:
+def discrete_key(
+    value: torch.Tensor,
+) -> tuple[str, tuple[int, ...], tuple[object, ...]]:
     """The value of a tensor of integers or truth values, as a hashable key.
 
     Parameters

@@ -178,9 +178,7 @@ def test_beta_interval_native_reference_and_restriction_use_independent_integral
     )
     native = log_interval_mass(law, low, high).item()
     scalar = log_beta_interval_mass(a, b, low, high)
-    base = HostLaw(
-        family="Beta", arguments=dict(concentration1=a, concentration0=b)
-    )
+    base = HostLaw(family="Beta", arguments=dict(concentration1=a, concentration0=b))
     restricted = HostLaw(
         family="Restrict", arguments=dict(base=base, low=low, high=high)
     )

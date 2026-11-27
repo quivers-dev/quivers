@@ -125,18 +125,18 @@ class EntryRun(QiecModel):
     entry
         The entry invoked.
     value
-        The value the entry returned, as host data: numbers and nested
-        tuples of numbers where the machine held tensors.
+        The value the entry returned. Numeric values are tensors and retain
+        their autograd graphs.
     log_joint
-        The log joint density a program run accumulated, or ``None`` for
-        a computation.
+        The log joint density a program run accumulated, as a scalar tensor
+        with its autograd graph, or ``None`` for a computation.
     result
         The underlying execution result, with its trace.
     """
 
     entry: EntryPoint = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    log_joint: float | None
+    log_joint: torch.Tensor | None = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def to_data(self) -> dict[str, object]:
@@ -151,7 +151,7 @@ class EntryRun(QiecModel):
         data = self.result.to_data()
         data["kind"] = self.entry.kind
         if self.log_joint is not None:
-            data["log_joint"] = self.log_joint
+            data["log_joint"] = host_value(self.log_joint)
         return data
 
 
@@ -393,7 +393,7 @@ def invoke_entry(
         )
         return EntryRun(
             entry=entry,
-            value=host_value(result.value),
+            value=result.value,
             log_joint=None,
             result=result,
         )
@@ -488,12 +488,10 @@ def invoke_entry(
             ),
         ),
     )
-    log_joint = host_value(run.log_joint)
-    assert isinstance(log_joint, float)
     return EntryRun(
         entry=entry,
-        value=host_value(run.value),
-        log_joint=log_joint,
+        value=run.value,
+        log_joint=run.log_joint,
         result=result,
     )
 

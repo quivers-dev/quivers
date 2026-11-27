@@ -783,8 +783,8 @@ class ReplSession:
             "runtime": payload["runtime"],
             "trace_events": len(run.result.trace),
         }
-        if run.log_joint is not None:
-            summary["log_joint"] = run.log_joint
+        if "log_joint" in payload:
+            summary["log_joint"] = payload["log_joint"]
         return _resp(json.dumps(summary, indent=2), body_kind="json")
 
     def _value_line_for_name(self, bare: str) -> str | None:

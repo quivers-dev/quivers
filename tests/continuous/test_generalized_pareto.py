@@ -71,7 +71,10 @@ def test_reference_density_sampling_and_support(concentration):
         ) == pytest.approx(oracle.logpdf(point), abs=3e-12)
     rng = random.Random(327)
     draws = np.array(
-        [backend.family_sample("GeneralizedPareto", arguments, rng) for _ in range(5000)]
+        [
+            backend.family_sample("GeneralizedPareto", arguments, rng)
+            for _ in range(5000)
+        ]
     )
     assert np.mean(draws <= oracle.ppf(0.4)) == pytest.approx(0.4, abs=0.025)
     assert backend.family_log_prob("GeneralizedPareto", arguments, -1.0) == -np.inf

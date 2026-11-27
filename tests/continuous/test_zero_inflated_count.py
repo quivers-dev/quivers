@@ -278,7 +278,9 @@ def test_reference_density_and_sampling_agree_with_independent_count_oracles(
             math.log(expected) if expected else -math.inf, abs=3e-12
         )
     rng = random.Random(712)
-    samples = np.array([backend.family_sample(cls.__name__, named, rng) for _ in range(12000)])
+    samples = np.array(
+        [backend.family_sample(cls.__name__, named, rng) for _ in range(12000)]
+    )
     mean = cls(
         *(torch.tensor(value, dtype=torch.float64) for value in parameters)
     ).mean.item()
@@ -613,9 +615,9 @@ def test_scalar_reference_large_real_negative_binomial_shape_density():
     backend = ReferenceBackend()
     expected = -5.524117052526595
     arguments = dict(total_count=1e16, probs=1e-12)
-    assert backend.family_log_prob("NegativeBinomial", arguments, 10000) == pytest.approx(
-        expected, abs=2e-12
-    )
+    assert backend.family_log_prob(
+        "NegativeBinomial", arguments, 10000
+    ) == pytest.approx(expected, abs=2e-12)
     for family in ("ZeroInflatedNegativeBinomial", "HurdleNegativeBinomial"):
         assert backend.family_log_prob(
             family, dict(zero_prob=0.3, **arguments), 10000
@@ -637,7 +639,9 @@ def test_reference_large_rate_sampling_uses_constant_work_gamma_poisson(
     backend = ReferenceBackend()
     rng = random.Random(417)
     arguments = dict(zero_prob=0.0, total_count=1e16, probs=1e-12)
-    draws = np.array([backend.family_sample(family, arguments, rng) for _ in range(2000)])
+    draws = np.array(
+        [backend.family_sample(family, arguments, rng) for _ in range(2000)]
+    )
     assert draws.mean() == pytest.approx(10000.0, abs=10.0)
     assert np.all(draws > 0)
 
@@ -783,7 +787,9 @@ def test_reference_large_mean_sampling_uses_correct_constant_work_law(family):
     if family in ("ZeroInflatedPoisson", "HurdlePoisson"):
         arguments["zero_prob"] = 0.0
     rng = random.Random(24)
-    draws = [ReferenceBackend().family_sample(family, arguments, rng) for _ in range(2000)]
+    draws = [
+        ReferenceBackend().family_sample(family, arguments, rng) for _ in range(2000)
+    ]
     assert np.mean(draws) == pytest.approx(10000.0, abs=10.0)
 
 

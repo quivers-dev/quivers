@@ -253,7 +253,10 @@ def test_reference_sampling_moments_and_invalid_gaussian_geometry():
     arguments = {"df": 8.0, "loc": (0.3, -0.2), "scale_tril": ((0.9, 0.0), (0.4, 0.7))}
     rng = random.Random(39)
     draws = np.asarray(
-        [backend.family_sample("MultivariateStudentT", arguments, rng) for _ in range(16000)]
+        [
+            backend.family_sample("MultivariateStudentT", arguments, rng)
+            for _ in range(16000)
+        ]
     )
     np.testing.assert_allclose(draws.mean(0), [0.3, -0.2], atol=0.025, rtol=0)
     np.testing.assert_allclose(

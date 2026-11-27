@@ -193,8 +193,8 @@ def main(args: object) -> int:
         sys.stdout.write(json.dumps(payload, indent=2) + "\n")
     else:
         line = f"{run.entry.name} = {payload['value']!r} : {payload['result_type']}"
-        if run.log_joint is not None:
-            line += f"  log_joint = {run.log_joint!r}"
+        if "log_joint" in payload:
+            line += f"  log_joint = {payload['log_joint']!r}"
         sys.stdout.write(line + "\n")
         if bool(getattr(args, "trace", False)):
             for event in run.result.trace:

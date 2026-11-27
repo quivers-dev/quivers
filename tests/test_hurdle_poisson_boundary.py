@@ -125,9 +125,7 @@ export p
 
 def test_reference_hurdle_samples_its_zero_rate_limit() -> None:
     rng = random.Random(119)
-    dist = HostLaw(
-        family="HurdlePoisson", arguments={"zero_prob": 0.3, "rate": 0.0}
-    )
+    dist = HostLaw(family="HurdlePoisson", arguments={"zero_prob": 0.3, "rate": 0.0})
     draws = [dist.sample(rng) for _ in range(2000)]
     assert set(draws) == {0, 1}
     assert abs(draws.count(0) / 2000 - 0.3) < 6 * math.sqrt(0.21 / 2000)

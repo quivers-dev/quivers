@@ -58,7 +58,7 @@ def _argument(value: object, rank: int, natural: tuple[int, ...]) -> TorchArgume
         If the argument is neither a tensor nor a distribution.
     """
     if isinstance(value, RuntimeDistribution):
-        return law(value)
+        return torch_law(value)
     if isinstance(value, tuple):
         return tuple(_argument(item, rank, natural) for item in value)
     if not isinstance(value, torch.Tensor):
@@ -72,7 +72,7 @@ def _argument(value: object, rank: int, natural: tuple[int, ...]) -> TorchArgume
     return value.expand(dims)
 
 
-def law(distribution: RuntimeDistribution) -> Distribution:
+def torch_law(distribution: RuntimeDistribution) -> Distribution:
     """The torch distribution of a runtime distribution.
 
     Parameters
@@ -146,7 +146,9 @@ def _point(value: object, distribution: Distribution) -> torch.Tensor:
         ):
             return value.to(_parameter_dtype(distribution))
         return value if not value.dtype.is_floating_point else value.long()
-    return value if value.is_floating_point() else value.to(_parameter_dtype(distribution))
+    return (
+        value if value.is_floating_point() else value.to(_parameter_dtype(distribution))
+    )
 
 
 def _parameter_dtype(distribution: Distribution) -> torch.dtype:
@@ -235,7 +237,7 @@ class TensorBackend:
             If the family has no torch distribution for its arguments.
         """
         del rng
-        native = law(distribution)
+        native = torch_law(distribution)
         drawn = native.rsample() if native.has_rsample else native.sample()
         kind = number_kind(family_record(distribution.family).element)
         return _draw(drawn, kind, distribution.numbers)
@@ -266,7 +268,7 @@ class TensorBackend:
             If the family has no torch distribution for its arguments, or
             the point is not shaped like the plate.
         """
-        native = law(distribution)
+        native = torch_law(distribution)
         density = native.log_prob(_point(value, native))
         kept = len(distribution.batch) if keep_batch else 0
         if density.dim() < kept:
@@ -300,8 +302,8 @@ class TensorBackend:
         DistributionError
             If the family has no torch distribution for its arguments.
         """
-        mass = measure_log_mass(law(distribution), batch_axes=batch_axes)
+        mass = measure_log_mass(torch_law(distribution), batch_axes=batch_axes)
         return torch.as_tensor(mass).to(distribution.numbers.real_dtype)
 
 
-__all__ = ["TensorBackend", "law"]
+__all__ = ["TensorBackend", "torch_law"]

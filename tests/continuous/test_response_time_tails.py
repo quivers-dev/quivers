@@ -387,9 +387,7 @@ export model
     host = run_program(checked, "model", data={"y": (point,)}, sites={}).log_joint
     cls = ExGaussian if family == "ExGaussian" else InverseGaussian
     law = cls(*(torch.tensor(p, dtype=torch.double) for p in parameters.values()))
-    mass = host_interval(
-        HostLaw(family=family, arguments=parameters), low, high
-    )
+    mass = host_interval(HostLaw(family=family, arguments=parameters), low, high)
     expected = law.log_prob(torch.tensor(point, dtype=torch.double)).item() - mass
     assert native.item() == pytest.approx(expected, abs=2e-10)
     assert host == pytest.approx(expected, abs=2e-10)
