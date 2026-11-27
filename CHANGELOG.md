@@ -4,6 +4,28 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.70.0] - 2026-11-27
+
+### Added
+
+- **Formulas on named QVR programs.** `fit`, `formula_to_qvr`, `get_prior`, and `bf` accept a program and a formula for each selected parameter. The equations in the program state the observation law, and the formulas state the population and group predictors. The checked program retains its parameter supports and nominal axes, and binds data columns and observations by name. Prediction, likelihood, model comparison, and saved fits use that same program.
+- **Missing data in single-response formulas.** Plain formulas can use `mi()` and `me()` through the checked missing-data compiler. Their fits retain the missing-data plan for prediction, recorded-row scoring, and restoration from an artifact.
+- **Checked computations under inference.** Effect handlers can trace, score, replay, and fit checked programs through the same inference interfaces as other native programs. Independent runs on a leading tensor axis can be evaluated together.
+- **Monotone polynomial systems and lexical judgments.** The planner solves monotone polynomial systems by decomposed Newton iteration. Checked lexical deductions can sum accepted goal items directly from a chart, including analyses whose weights are not queries for a bounded span.
+- **Contraction and span plans.** Tensor contractions plan variable elimination from the algebra's laws. Span plans preserve exact zeros, handle empty spans, and report the relevant work counts.
+
+### Changed
+
+- **Breaking change. Checked computation values use Torch tensors.** The QIEC evaluator, reference laws, and foreign computation boundaries use declared tensor types and nominal shapes. Foreign operations must return a carrier that matches their declared result type.
+- QIEC handlers run according to their declared semantics and the settled iteration rules. Deductions, rules, and schemata share a rule presentation used by the checked compiler.
+- Formula fits share model compilation, posterior draws, prior sampling, and stored checkpoint state. Joint fits use their retained response metadata for diagnostics and compile fresh prediction and scoring requests once, including shared group effects.
+
+### Fixed
+
+- Every variational guide scores each run in a density batch independently.
+- Joint formula fits preserve response-specific brms priors at shared group scales and on artifact restoration. Stored information criteria respect the selected responses, ordinal coefficients keep their family-specific sign, and retained predictions honor `incl_autocor=False` for latent residuals.
+- Docs navigation remains scrollable above the footer when the external Mermaid script is unavailable. Tabbed examples align with the text and confine horizontal scrolling to the code panel.
+
 ## [0.69.0] - 2026-11-26
 
 ### Added
