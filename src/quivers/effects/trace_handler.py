@@ -15,11 +15,14 @@ from __future__ import annotations
 import torch
 
 from quivers.continuous.program_steps import Let, Score
+from quivers.continuous.plate import PlateDraw
+from quivers.continuous.tensor_backend import site_morphism
 from quivers.effects.base import EffectHandler, Installation, RunContext
 from quivers.effects.program_module import HostStep
 from quivers.effects.sites import TorchSampleable
 from quivers.effects.trace_types import SampleSite, Trace
 from quivers.effects.units import SiteUnits
+from quivers.qiec.distributions import RuntimeDistribution
 from quivers.qiec.builtins import (
     COMPUTE_APPLY,
     RANDOM,
@@ -28,6 +31,40 @@ from quivers.qiec.builtins import (
     TraceRecorder,
     trace_handler,
 )
+
+
+def _occurrences(drawn: list[SampleSite]) -> list[SampleSite]:
+    """Name each site a run reached by its label and its occurrence.
+
+    A label the run reached once names its site. A label it reached more
+    than once, as a recursion or a repeated call reaches the sites of its
+    body, names each occurrence ``"<label>@<n>"`` in the order the run
+    reached them, from zero, which is how a replay addresses them; no
+    occurrence takes the bare label, so none is mistaken for another.
+
+    Parameters
+    ----------
+    drawn : list[SampleSite]
+        The sites in the order the run reached them, named by label.
+
+    Returns
+    -------
+    list[SampleSite]
+        The same sites, each named uniquely.
+    """
+    counts: dict[str, int] = {}
+    for site in drawn:
+        counts[site.name] = counts.get(site.name, 0) + 1
+    seen: dict[str, int] = {}
+    named: list[SampleSite] = []
+    for site in drawn:
+        if counts[site.name] == 1:
+            named.append(site)
+            continue
+        occurrence = seen.get(site.name, 0)
+        seen[site.name] = occurrence + 1
+        named.append(site.with_(name=f"{site.name}@{occurrence}"))
+    return named
 
 
 def _per_run_density(name: str, log_prob: torch.Tensor, runs: int) -> torch.Tensor:
@@ -154,17 +191,75 @@ class TraceHandler(EffectHandler):
             the value it returns.
         """
         del output
+        events = self._recorder.events
+        drawn = [
+            self._record_site(run, event)
+            for event in events
+            if event.operation == RANDOM_SAMPLE
+        ]
+        for score in self._program_scores(run):
+            drawn.append(score)
+            self._run_axes[score.name] = False
+        named = iter(zip(drawn, _occurrences(drawn), strict=True))
         sites: dict[str, SampleSite] = {}
-        for event in self._recorder.events:
+        # The joint adds site densities in trace order. Keep each host
+        # score at its recorded position relative to the draws.
+        for event in events:
             if event.operation == RANDOM_SAMPLE:
-                self._record_site(run, event, sites)
+                recorded, site = next(named)
+                self._run_axes[site.name] = self._run_axes[recorded.name]
+                sites[site.name] = site
             else:
                 self._record_step(run, event, sites)
+        for recorded, site in named:
+            self._run_axes[site.name] = self._run_axes[recorded.name]
+            sites[site.name] = site
         self._run_sites.append(sites)
         if run.vectorized:
             self._vectorized_runs = run.runs
         if run.run_index == run.runs - 1:
             self._merge_runs()
+
+    def _program_scores(self, run: RunContext) -> list[SampleSite]:
+        """The scores the program itself added that no step accounts for.
+
+        A program that runs as its checked computation scores an
+        observation or a ``score`` statement by a ``Score.add`` of its
+        own, with no host step to record it. Each such contribution is a
+        deterministic site of the trace named ``"score:<path>"`` by the
+        structural path of its request, so the trace's joint holds every
+        contribution that reached the accumulator.
+
+        Parameters
+        ----------
+        run : RunContext
+            The run.
+
+        Returns
+        -------
+        list[SampleSite]
+            One site per contribution, in the order they arrived.
+        """
+        recorded = {
+            ("steps", step.position, "score")
+            for step in self._steps.values()
+            if step.kind == "score"
+        }
+        scores: list[SampleSite] = []
+        for item in run.contributions:
+            if item.derived or tuple(item.path[:3]) in recorded:
+                continue
+            scores.append(
+                SampleSite(
+                    name="score:" + ".".join(str(part) for part in item.path),
+                    morphism=None,
+                    value=item.weight,
+                    log_prob=item.weight,
+                    is_deterministic=True,
+                    address=item.key,
+                )
+            )
+        return scores
 
     def _merge_runs(self) -> None:
         """Lay the recorded runs' sites out along the run axis.
@@ -212,9 +307,7 @@ class TraceHandler(EffectHandler):
                 units=tuple(item for site in per_run for item in site.units),
             )
 
-    def _record_site(
-        self, run: RunContext, event: TraceEvent, sites: dict[str, SampleSite]
-    ) -> None:
+    def _record_site(self, run: RunContext, event: TraceEvent) -> SampleSite:
         """Record one sample site from its trace event.
 
         Parameters
@@ -223,13 +316,32 @@ class TraceHandler(EffectHandler):
             The run.
         event : TraceEvent
             The recorded request and answer.
-        sites : dict[str, SampleSite]
-            The run's sites, which the site joins.
+
+        Returns
+        -------
+        SampleSite
+            The site, named by its label.
         """
-        label, sampleable = event.arguments
+        label, drawn_from = event.arguments
         assert isinstance(label, str)
-        assert isinstance(sampleable, TorchSampleable)
         value = event.result
+        assert isinstance(value, torch.Tensor)
+        carries_run_axis = run.site_carries_run_axis(label)
+        if isinstance(drawn_from, RuntimeDistribution):
+            # A machine run draws one run's value, which has no run axis.
+            # A site not drawn over a plate leads with the run axis in a
+            # trace, as a compiled program's does.
+            morphism = site_morphism(drawn_from)
+            sampleable = TorchSampleable(
+                morphism=morphism,
+                input=torch.zeros(0, dtype=drawn_from.numbers.real_dtype),
+            )
+            if not isinstance(morphism, PlateDraw):
+                value = value.unsqueeze(0)
+                carries_run_axis = True
+        else:
+            sampleable = drawn_from
+        assert isinstance(sampleable, TorchSampleable)
         assert isinstance(value, torch.Tensor)
         contributions = [
             item for item in run.contributions if item.key == event.address
@@ -244,8 +356,8 @@ class TraceHandler(EffectHandler):
             log_prob = torch.zeros(
                 value.shape[:1] if value.dim() > 0 else (1,), device=value.device
             )
-        self._run_axes[label] = run.site_carries_run_axis(label)
-        sites[label] = SampleSite(
+        self._run_axes[label] = carries_run_axis
+        return SampleSite(
             name=label,
             morphism=sampleable.declared,
             value=value,

@@ -1417,6 +1417,60 @@ def _emit_score(
     )
 
 
+def _occurrence_key(
+    site: object,
+    occurrence: int,
+    values: Mapping[object, object],
+    handler: str,
+) -> object | None:
+    """The key a value for one occurrence of a site is given under.
+
+    A site reached more than once, as a recurrence or a recursion reaches
+    the sites of its body, takes the value keyed ``"<site>@<n>"`` at its
+    ``n``-th occurrence, counted from zero. A value keyed by the site alone
+    is for a site reached once; given for a site reached more than once, it
+    is refused rather than used at every occurrence.
+
+    Parameters
+    ----------
+    site : object
+        The site.
+    occurrence : int
+        How many times the run reached it before.
+    values : Mapping[object, object]
+        The values given, by key.
+    handler : str
+        The handler, for the diagnostic.
+
+    Returns
+    -------
+    object | None
+        The key, or ``None`` when no value is given for the occurrence.
+
+    Raises
+    ------
+    InvalidHandlerError
+        If one value is keyed by the site alone and the site is reached
+        more than once.
+    """
+    key_at = f"{site}@{occurrence}"
+    if key_at in values:
+        return key_at
+    if site not in values:
+        return None
+    if occurrence > 0 or any(
+        isinstance(key, str) and key.startswith(f"{site}@") for key in values
+    ):
+        # One value for a site reached more than once would be used at
+        # every occurrence, a trajectory the caller never gave.
+        raise InvalidHandlerError(
+            f"{handler} {site!r}: the site is reached more than once, so each "
+            f"occurrence takes its own value under '{site}@<n>', not one value "
+            f"under {site!r}"
+        )
+    return site
+
+
 def condition_handler(
     observations: Mapping[object, object],
     *,
@@ -1427,6 +1481,7 @@ def condition_handler(
     extra: ExtraValuePolicy = ExtraValuePolicy.ERROR,
     answer_type: TypeExpr = ANSWER,
     key: str = "condition",
+    at_run: Callable[[object, object], object] | None = None,
 ) -> RuntimeHandler:
     """Supply likelihood observations and emit their densities as Score.
 
@@ -1456,6 +1511,10 @@ def condition_handler(
     key
         Distinguishes this handler from others of the same name,
         entering its derived identity.
+    at_run
+        Given an observation and the site's sampleable, the value of the
+        run being executed, for observations given once for every run of
+        a call; ``None`` takes each observation as it is.
 
     Returns
     -------
@@ -1486,6 +1545,7 @@ def condition_handler(
             declaration do not share it.
         """
         seen: set[object] = set()
+        occurrences: dict[object, int] = {}
 
         def sample(
             request: RuntimeRequest,
@@ -1519,18 +1579,23 @@ def condition_handler(
                 If the observed value does not inhabit the site's type.
             """
             site, sampleable = _site_and_sampleable(request, definition.name)
-            if site not in observations:
+            occurrence = occurrences.get(site, 0)
+            occurrences[site] = occurrence + 1
+            key = _occurrence_key(site, occurrence, observations, "observation")
+            if key is None:
                 if missing is MissingValuePolicy.ERROR:
                     raise InvalidHandlerError(f"missing observation for site {site!r}")
                 return Forward()
-            value = observations[site]
+            value = observations[key]
+            if at_run is not None:
+                value = at_run(value, sampleable)
             _require(
                 value,
                 result_validator,
                 request.core.result_type,
-                f"observation {site!r}",
+                f"observation {key!r}",
             )
-            seen.add(site)
+            seen.add(key)
             weight = _log_density(sampleable, value)
             _emit_score(
                 context,
@@ -1613,6 +1678,7 @@ def replay_handler(
     key: str = "replay",
     type_validator: Callable[[TypeExpr], RuntimeValidator | None] = lambda _type: None,
     host_numbers: NumberDomain | None = None,
+    at_run: Callable[[object, object], object] | None = None,
 ) -> RuntimeHandler:
     """Replay selected sites under an explicit scoring/intervention policy.
 
@@ -1658,6 +1724,10 @@ def replay_handler(
         For values a host gives as host data, the run's numbers: each is
         converted by the site's type where it is replayed. ``None`` for
         values that are already the machine's.
+    at_run
+        Given a value and the site's sampleable, the value of the run being
+        executed, for values given once for every run of a call; ``None``
+        takes each value as it is.
 
     Returns
     -------
@@ -1736,26 +1806,12 @@ def replay_handler(
             site, sampleable = _site_and_sampleable(request, definition.name)
             occurrence = occurrences.get(site, 0)
             occurrences[site] = occurrence + 1
-            key_at = f"{site}@{occurrence}"
-            if key_at in values:
-                site_key: object = key_at
-            elif site in values:
-                if occurrence > 0 or any(
-                    isinstance(key, str) and key.startswith(f"{site}@")
-                    for key in values
-                ):
-                    # One value for a site reached more than once would be
-                    # replayed at every occurrence, a trajectory the caller
-                    # never gave.
-                    raise InvalidHandlerError(
-                        f"replay {site!r}: the site is reached more than once, "
-                        f"so each occurrence takes its own value under "
-                        f"'{site}@<n>', not one value under {site!r}"
-                    )
-                site_key = site
-            else:
+            site_key = _occurrence_key(site, occurrence, values, "replay")
+            if site_key is None:
                 return Forward()
             value = values[site_key]
+            if at_run is not None:
+                value = at_run(value, sampleable)
             if host_numbers is not None:
                 value = machine_value(request.core.result_type, value, host_numbers)
             _require(
@@ -3191,6 +3247,7 @@ def intervene_handler(
     on_intervene: Callable[[RuntimeRequest, object], None] | None = None,
     answer_type: TypeExpr = ANSWER,
     key: str = "intervene",
+    at_run: Callable[[object, object], object] | None = None,
 ) -> RuntimeHandler:
     """Fix selected sites to given values without scoring them.
 
@@ -3200,7 +3257,8 @@ def intervene_handler(
     Parameters
     ----------
     values
-        The value for each intervened site, keyed by site.
+        The value for each intervened site, keyed by site, or by site and
+        occurrence as ``"<site>@<n>"`` for a site reached more than once.
     result_validator
         Checks an intervened value inhabits the request's result type.
     on_intervene
@@ -3211,6 +3269,10 @@ def intervene_handler(
     key
         Distinguishes this handler from others of the same name,
         entering its derived identity.
+    at_run
+        Given a value and the site's sampleable, the value of the run being
+        executed, for values given once for every run of a call; ``None``
+        takes each value as it is.
 
     Returns
     -------
@@ -3228,54 +3290,78 @@ def intervene_handler(
         telescope=_generic_binders(answer_type=answer_type),
     )
 
-    def sample(
-        request: RuntimeRequest,
-        resume: Resumption,
-        _context: ClauseContext,
-    ) -> object:
-        """Answer a `Random.sample` request with the intervened value.
-
-        Parameters
-        ----------
-        request
-            The request being answered and its arguments.
-        resume
-            The continuation, invoked within the clause's declared grade.
-        _context
-            Runtime services, unused by this clause.
+    def make_context() -> RuntimeHandler:
+        """Build a fresh per-installation handler.
 
         Returns
         -------
-        object
-            What the resumed computation produced, or a `Forward` when
-            the site is not intervened.
-
-        Raises
-        ------
-        InvalidHandlerError
-            If the request does not carry a site and a sampleable.
-        RuntimeTypeMismatch
-            If the value does not inhabit the site's type.
+        RuntimeHandler
+            A handler counting its own occurrences of each site.
         """
-        site, _ = _site_and_sampleable(request, definition.name)
-        if site not in values:
-            return Forward()
-        value = values[site]
-        _require(
-            value, result_validator, request.core.result_type, f"intervention {site!r}"
-        )
-        if on_intervene is not None:
-            on_intervene(request, value)
-        return TailResume(value=value)
+        occurrences: dict[object, int] = {}
 
-    return RuntimeHandler(
-        definition=definition,
-        clauses={
-            RANDOM_SAMPLE: RuntimeClause(
-                invoke=sample, result_validator=result_validator
+        def sample(
+            request: RuntimeRequest,
+            resume: Resumption,
+            _context: ClauseContext,
+        ) -> object:
+            """Answer a `Random.sample` request with the intervened value.
+
+            Parameters
+            ----------
+            request
+                The request being answered and its arguments.
+            resume
+                The continuation, invoked within the clause's declared grade.
+            _context
+                Runtime services, unused by this clause.
+
+            Returns
+            -------
+            object
+                What the resumed computation produced, or a `Forward` when
+                the site is not intervened.
+
+            Raises
+            ------
+            InvalidHandlerError
+                If the request does not carry a site and a sampleable, or
+                one value keyed by the site alone is given for a site
+                reached more than once.
+            RuntimeTypeMismatch
+                If the value does not inhabit the site's type.
+            """
+            site, sampleable = _site_and_sampleable(request, definition.name)
+            occurrence = occurrences.get(site, 0)
+            occurrences[site] = occurrence + 1
+            key = _occurrence_key(site, occurrence, values, "intervention")
+            if key is None:
+                return Forward()
+            value = values[key]
+            if at_run is not None:
+                value = at_run(value, sampleable)
+            _require(
+                value,
+                result_validator,
+                request.core.result_type,
+                f"intervention {key!r}",
             )
-        },
-    )
+            if on_intervene is not None:
+                on_intervene(request, value)
+            return TailResume(value=value)
+
+        return RuntimeHandler(
+            definition=definition,
+            clauses={
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=result_validator
+                )
+            },
+            mutable_context=True,
+        )
+
+    prototype = make_context()
+    return prototype.with_(context_factory=make_context)
 
 
 def reweight_handler(

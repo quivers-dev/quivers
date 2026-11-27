@@ -9,8 +9,9 @@ operates by clamping trace sites to observed data.
 The `trace(program, x, observations)` free function is a thin
 wrapper on top of the effect-handler machinery: it pushes a
 `quivers.effects.trace_handler.TraceHandler` onto the active
-handler stack, invokes `quivers.effects.interpreter.run_program`,
-and returns the accumulated `Trace`. Any other handlers active in
+handler stack, runs the program forward once by its own ``rsample``
+(a compiled program on its kernel encoding, a checked program on its
+checked computation), and returns the accumulated `Trace`. Any other handlers active in
 the enclosing scope compose with `TraceHandler` in the standard
 outer-to-inner order.
 
@@ -23,7 +24,6 @@ from __future__ import annotations
 import torch
 
 from quivers.continuous.programs import MonadicProgram
-from quivers.effects.interpreter import run_program
 from quivers.effects.trace_handler import TraceHandler
 from quivers.effects.trace_types import SampleSite, Trace
 
@@ -40,8 +40,8 @@ def trace(
 
     A thin wrapper around the handler-aware interpreter: pushes a
     `quivers.effects.trace_handler.TraceHandler` onto the active
-    handler stack, delegates to
-    `quivers.effects.interpreter.run_program`, and returns the
+    handler stack, runs the program forward once by its own
+    ``rsample``, and returns the
     accumulated `Trace` (with ``output`` and ``log_joint`` filled
     in). Any other handlers already on the stack compose with
     trace in the standard outer-to-inner order.
@@ -66,7 +66,7 @@ def trace(
         run, ``(B,)``.
     """
     with TraceHandler() as handler:
-        output = run_program(program, x, observations)
+        output = program.rsample(x, torch.Size(), observations)
     handler.trace = handler.trace.with_(
         output=output, log_joint=handler.total_log_joint(x.device)
     )

@@ -1,7 +1,7 @@
 """Calls the compiled runtime lowers to steps, and the calls it refuses.
 
-A program's call of a computation is fit when the callee's body can be
-stated as a fixed chain of compiled steps:
+A call projects to compiled steps when the callee's body can be stated as
+a fixed chain of steps:
 
 * pure calls nested inside pure callees are inlined in turn;
 * an ``if`` between pure branches is ``select`` of its branches;
@@ -15,9 +15,9 @@ by hand: the reference machine at rel 1e-9, the compiled runtime at rel
 1e-5 (float32 arithmetic on a joint of order ten), its gradients against
 autograd on the oracle, and one NUTS recovery per form against a
 closed-form Gaussian posterior. Each check is shown to reject a wrong
-variant of the model. Every refusal is checked on both paths: the
-compiled runtime refuses to fit the program, located at the call and
-saying why, and the reference machine still runs it.
+variant of the model. When projection fails, the checked program retains
+its located diagnostic. The checked runtime executes those calls, and the
+same density oracle checks its results.
 """
 
 from __future__ import annotations
@@ -733,25 +733,49 @@ _REASONS = {
 }
 
 
-@pytest.mark.parametrize("call", sorted(_REASONS))
-def test_the_compiled_runtime_refuses_at_the_call_saying_why(call: str) -> None:
+@pytest.mark.parametrize(
+    ("call", "result", "draws_z"),
+    [
+        ("branchy(a)", -0.25, True),
+        ("relayed(a)", 0.375, False),
+        ("triangle(3)", 6.0, False),
+    ],
+)
+def test_checked_runtime_runs_calls_with_a_projection_diagnostic(
+    call: str, result: float, draws_z: bool
+) -> None:
     source = _refused(call)
     program = loads(source).morphism
     assert isinstance(program, CheckedProgram)
+    refusal = program.refusal
+    assert isinstance(refusal, CompileError)
     line = source.splitlines().index(f"    let k <- {call}") + 1
-    for fit in (
-        lambda: trace(program, torch.zeros(1, 1), {"y": torch.zeros(4)}),
-        lambda: MCMC(NUTSKernel(), num_warmup=2, num_samples=2, seed=0).run(
-            program, torch.zeros(1, 1), {"y": torch.zeros(4)}
-        ),
-    ):
-        with pytest.raises(CompileError) as raised:
-            fit()
-        message = str(raised.value)
-        assert message.startswith(f"line {line}, col 4: program 'prog' cannot be fit")
-        assert f"`let k <- {call.split('(')[0]}(...)`" in message
-        for fragment in _REASONS[call]:
-            assert fragment in message
+    message = str(refusal)
+    assert message.startswith(f"line {line}, col 4: program 'prog' cannot be fit")
+    assert f"`let k <- {call.split('(')[0]}(...)`" in message
+    for fragment in _REASONS[call]:
+        assert fragment in message
+
+    x = torch.zeros(1, 1, dtype=_F64)
+    a = torch.tensor([0.375], dtype=_F64)
+    y = torch.zeros(4, dtype=_F64)
+    values = {"a": a, "y": y}
+    expected = _normal(a, torch.zeros_like(a), 1.0) + _normal(y, a + result, 1.0)
+    if draws_z:
+        # A positive a takes the branch that draws z ~ Normal(a, 1).
+        z = torch.tensor([result], dtype=_F64)
+        values["z"] = z
+        expected = expected + _normal(z, a, 1.0)
+    recorded = trace(program, x, values)
+    torch.testing.assert_close(recorded.output, y.unsqueeze(0))
+    torch.testing.assert_close(
+        recorded.log_joint, expected.unsqueeze(0), rtol=1e-12, atol=1e-12
+    )
+    torch.testing.assert_close(
+        program.log_joint(x, values), recorded.log_joint, rtol=0, atol=0
+    )
+    if draws_z:
+        torch.testing.assert_close(recorded.sites["z"].value, values["z"])
 
 
 @pytest.mark.parametrize(

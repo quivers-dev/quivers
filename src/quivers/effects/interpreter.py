@@ -58,6 +58,7 @@ from quivers.effects.base import (
     RunContext,
     _handler_stack,
     fixed_site_values,
+    handle_chain,
 )
 from quivers.effects.batching import batching_obstacles, draws_at_random
 from quivers.effects.checked_program import CheckedProgram
@@ -102,8 +103,6 @@ from quivers.qiec.module import NamedComputation, NamedEffectInstance, QiecModul
 from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.terms import (
     Call,
-    Computation,
-    Handle,
     LiteralValue,
     Local,
     Perform,
@@ -1960,32 +1959,6 @@ class _HostSteps:
         return torch.cat(parts, dim=1)
 
 
-def _handle_chain(installations: list[Installation], inner: Computation) -> Computation:
-    """Nest handler installations around a computation, outermost first.
-
-    Parameters
-    ----------
-    installations : list[Installation]
-        The installations, outermost first.
-    inner : Computation
-        The computation handled.
-
-    Returns
-    -------
-    Computation
-        The nested ``Handle`` terms.
-    """
-    body = inner
-    for installation in reversed(installations):
-        body = Handle(
-            instance=installation.instance.entry.instance,
-            handler=installation.runtime.definition.id,
-            computation=body,
-            static_arguments=(),
-        )
-    return body
-
-
 #: The kernel encodings and validated run modules of each program, keyed
 #: by the program. An encoding depends on the program's steps and the
 #: data names a run supplies; a run module also depends on the handlers
@@ -2072,7 +2045,7 @@ def _checked_run_module(
             source_protocol=SOURCE_PROTOCOL,
         ),
     )
-    body = _handle_chain(installations, call)
+    body = handle_chain(installations, call)
     wrapper = NamedComputation(
         id=ComputationId.derive(kernel.module.module, "computation", RUN),
         name=RUN,
@@ -2913,6 +2886,7 @@ def _run_once(
                 role=request.core.origin.origin.role,
                 weight=torch.as_tensor(weight),
                 path=request.core.origin.origin.structural_path,
+                derived=bool(request.core.origin.parents),
             )
         )
 

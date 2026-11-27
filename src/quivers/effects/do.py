@@ -84,6 +84,7 @@ class DoHandler(EffectHandler):
                     on_intervene=mark,
                     answer_type=run.result_type,
                     key=f"do-{id(self):x}",
+                    at_run=run.select_run,
                 ),
             ),
         )

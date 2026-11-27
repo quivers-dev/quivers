@@ -48,6 +48,7 @@ from quivers.qiec.effects import HandlerDef
 from quivers.qiec.evaluator import RuntimeHandler, RuntimeRequest, RuntimeValidator
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import NamedEffectInstance
+from quivers.qiec.terms import Computation, Handle
 from quivers.qiec.types import TypeExpr
 
 _LOCAL = threading.local()
@@ -93,6 +94,10 @@ class Contribution(QiecModel):
         The structural path of the request's origin; a score step of the
         program has the path of its step, a derived contribution the
         path it was generated at.
+    derived
+        Whether a handler derived the contribution from a site (the
+        density of a draw, an observation, a replay), rather than the
+        program scoring it.
     """
 
     key: SiteKey = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -101,6 +106,7 @@ class Contribution(QiecModel):
     path: tuple[str | int, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
+    derived: bool = False
 
 
 def _shared_value(label: str, value: torch.Tensor) -> torch.Tensor:
@@ -119,6 +125,25 @@ def _shared_value(label: str, value: torch.Tensor) -> torch.Tensor:
         ``value``.
     """
     del label
+    return value
+
+
+def _as_given(value: object, sampleable: object) -> object:
+    """A value as it is given, already the run's.
+
+    Parameters
+    ----------
+    value : object
+        The value.
+    sampleable : object
+        The site's sampleable, unused.
+
+    Returns
+    -------
+    object
+        The value.
+    """
+    del sampleable
     return value
 
 
@@ -210,6 +235,12 @@ class RunContext(QiecModel):
     vectorized
         Whether this execution carries all ``runs`` runs of the call at
         once, every value leading with the run axis of length ``runs``.
+    select_run
+        Given a value handed to a handler for every run of the call and the
+        sampleable of the site it is used at, this run's value. A compiled
+        run slices its values by `slice_value` before the run and takes
+        each as it is here; a run that learns a site's shape only when it
+        reaches the site slices here.
     subsamples
         The rows of each subsampled plate the run scores, by plate name,
         as the `SubsampleHandler` entries on the stack register them.
@@ -256,6 +287,9 @@ class RunContext(QiecModel):
         default=_no_site_run_axis, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     vectorized: bool = False
+    select_run: Callable[[object, object], object] = dx.field(
+        default=_as_given, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     subsamples: dict[str, torch.Tensor] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -412,6 +446,32 @@ class Installation(QiecModel):
 
             runtime = runtime.with_(context_factory=context_factory)
         return Installation(instance=self.instance, runtime=runtime)
+
+
+def handle_chain(installations: list[Installation], inner: Computation) -> Computation:
+    """Nest handler installations around a computation, outermost first.
+
+    Parameters
+    ----------
+    installations : list[Installation]
+        The installations, outermost first.
+    inner : Computation
+        The computation handled.
+
+    Returns
+    -------
+    Computation
+        The nested ``Handle`` terms.
+    """
+    body = inner
+    for installation in reversed(installations):
+        body = Handle(
+            instance=installation.instance.entry.instance,
+            handler=installation.runtime.definition.id,
+            computation=body,
+            static_arguments=(),
+        )
+    return body
 
 
 def fixed_site_values() -> dict[str, torch.Tensor] | None:

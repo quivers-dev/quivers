@@ -1266,5 +1266,6 @@ fit = model.fit(
 
 The reference-machine `:run` executes a model once. The Python fitting interface
 specializes and validates a tensor model, then runs the chosen inference method.
-Typed structured bindings and tensor fitting of `CheckedProgram` remain subject
-to the limits listed in the [capability audit](../developer/model-interface-roadmap.md).
+MCMC and SVI fit a [`CheckedProgram`](../api/effects/checked_program.md) on tensors through
+its traces. The [capability audit](../developer/model-interface-roadmap.md) lists the forms
+that typed structured bindings admit.

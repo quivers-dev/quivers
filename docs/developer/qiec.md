@@ -387,11 +387,12 @@ authored handlers is lowered as any other.
 
 A program that keeps any other call (recursion, an `if` whose branches draw, a handler that is not
 discharged, `case`, static arguments) has no step table the compiler can build. It compiles to a
-[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], a morphism whose `rsample`
-and `log_joint` are `sample_program` and `run_program` on the module's own entry point. Its
-`steps`, which every fitting entry point reads, raise the located refusal that the lowering
-recorded. The machine scores Python numbers, so such a program keeps no gradient path to the
-tensors it is given.
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram]. Each run installs handlers
+for its `Random`, `Score`, and `Param` instances and evaluates the checked computation on
+tensors. Its returned value and log joint retain their gradients. MCMC and SVI build the
+latent registry from a trace, which records the site's sampleable, address, value, and score.
+The program's `refusal` records the located diagnostic of the call the compiler could not
+lower to steps.
 
 ## Discharging handlers {#discharging-handlers}
 

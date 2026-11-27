@@ -624,6 +624,19 @@ class MonadicProgram(ContinuousMorphism):
         """
         return self._steps
 
+    @property
+    def steps_list_sites(self) -> bool:
+        """Whether the steps list every site a run of the program reaches.
+
+        Returns
+        -------
+        bool
+            ``True``: each draw or observe step is a site. A program whose
+            body is not a table of steps says otherwise, and its sites are
+            read from a run.
+        """
+        return True
+
     def step_module(self, step: Draw | Observe) -> nn.Module:
         """The registered module a draw or observe step applies.
 

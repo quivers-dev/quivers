@@ -433,20 +433,13 @@ still called through each dynamic target's runtime, where its site keeps its lab
 reference machine: a site `noise` reached once is `noise`, and reached repeatedly, by a `traverse`
 or by two calls, is `noise@0`, `noise@1`, and so on in run order.
 
-Any other call leaves the program a
-[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], which runs on the reference
-machine but cannot be fit. `trace`, MCMC, SVI, and every other fitting entry point raise a
-[`CompileError`][quivers.dsl.CompileError] located at the call, and a parametric template that makes
-such a call is refused with the same error when it is instantiated:
-
-| Call | Why it cannot be fit | Instead |
-| --- | --- | --- |
-| a call that reaches a recursive call | its number of steps depends on its arguments | a reduction (`sum`, `fold`) or `map` over a tensor of fixed length, or `scan` over a sequence |
-| an `if` whose branches draw or score | its set of sites depends on the branch taken | draw outside the conditional and choose between values with `select` |
-| a callee whose handlers are not [discharged](effects-and-handlers.md#discharged-handlers) | the compiled runtime does not run handlers or resumptions | authored, nonforwarding handlers over computations without recursion |
-| a `case` on a family value | the compiled runtime does not run case analysis | a callee with no `case` |
-| a `define`-computation call with static arguments, as `identity[Int](4)` | the compiled runtime does not specialize computation calls | a computation with no static binders |
-| a program called as a computation, `let y <- sub(...)` | a program is drawn from, not called | `sample y <- sub(...)` |
+When a well-typed call cannot be expressed as a chain of steps, the program becomes a
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram] and runs on tensors on the
+reference machine. This includes recursive calls, case analysis, and handlers that remain
+in the computation. MCMC and SVI read site types and addresses from a trace and use the
+program's differentiable log joint. The machine evaluates each run of a call separately.
+An observation is read from the given data. Prior projection and predictive draws require
+declared generative steps. Draw from a program with `sample y <- sub(...)`.
 
 Dynamic transpile targets emit every reachable call. The static targets state an inlined call as
 deterministic statements, Stan also accepts a callee that is a closed, monomorphic scalar

@@ -85,6 +85,7 @@ class ClampHandler(EffectHandler):
                     extra=ExtraValuePolicy.IGNORE,
                     answer_type=run.result_type,
                     key=f"clamp-{id(self):x}",
+                    at_run=run.select_run,
                 ),
             ),
         )

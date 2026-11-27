@@ -34,10 +34,10 @@ from quivers.dsl.compiler.programs import LetValue, _ProgramsMixin
 from quivers.effects.checked_program import CheckedProgram
 from quivers.enriched.kan_extensions import Projection, left_kan
 from quivers.inference import AutoLaplaceApproximation
+from quivers.qiec.evaluator import Evaluator
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import (
     run_deduction,
-    run_program,
 )
 from quivers.monadic.instances import Identity
 from quivers.stochastic.agenda import (
@@ -802,32 +802,27 @@ record(
 
 
 def _checked() -> Facts:
-    """Whether a checked program's joint has a gradient, and its runs.
+    """How many machine runs a checked program's joint of three rows makes.
 
     Returns
     -------
     Facts
-        The gradient path and the number of machine runs for three rows.
+        The number of machine runs for three rows.
     """
     model = program("recursive").morphism
     assert isinstance(model, CheckedProgram)
-    data = {"t": torch.tensor([0.5], requires_grad=True), "y": torch.tensor([0.5])}
-    joint = model.log_joint(torch.zeros(1, 1), data)
-    with CallCounter({"runs": run_program}) as calls:
-        model.log_joint(torch.zeros(3, 1), {**data, "t": torch.tensor([0.5])})
-    return {
-        "joint has a gradient": str(joint.requires_grad),
-        "machine runs for three rows": str(calls.counts["runs"]),
-    }
+    data = {"t": torch.tensor([0.5]), "y": torch.tensor([0.5])}
+    with CallCounter({"runs": Evaluator.evaluate_validated}) as calls:
+        model.log_joint(torch.zeros(3, 1), data)
+    return {"machine runs for three rows": str(calls.counts["runs"])}
 
 
 record(
-    "checked-program-detached",
+    "checked-program-runs-per-row",
     "effects/checked_program.py: CheckedProgram.log_joint",
-    "a checked program's log joint has no gradient and is computed by one "
-    "machine run per row",
-    {"joint has a gradient": "False", "machine runs for three rows": "3"},
-    {"joint has a gradient": "True", "machine runs for three rows": "1"},
+    "a checked program's log joint is computed by one machine run per row",
+    {"machine runs for three rows": "3"},
+    {"machine runs for three rows": "1"},
     _checked,
 )
 
