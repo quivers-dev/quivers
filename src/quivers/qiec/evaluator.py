@@ -772,16 +772,15 @@ class RuntimeRequest(QiecModel):
         -------
         tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
             The source site, the dynamic address frames, and the
-            resumption path. One request site reached twice, under a loop
-            or under a resumed continuation, yields two addresses, which
-            is what lets a trace name each occurrence separately.
+            resumption path. Active caller shots precede the shots already
+            recorded in the request's rewritten provenance.
         """
         static, dynamic, declared_path = self.core.origin.dynamic_key()
         runtime = tuple((frame.scope, frame.key) for frame in self.dynamic_path)
         return (
             static,
             (*dynamic, *runtime),
-            (*declared_path, *self.resumption_path),
+            (*self.resumption_path, *declared_path),
         )
 
 
@@ -1672,7 +1671,10 @@ class Resumption:
             assert isinstance(handler, _HandlerFrame)
             self._evaluator._validate_parameters(handler.definition, arguments)
             captured[0] = handler.carrying(arguments)
-        return captured, (*self._path, next_call - 1)
+        shot_path = self._path
+        if self._grade is ResumptionGrade.UNRESTRICTED:
+            shot_path = (*shot_path, next_call - 1)
+        return captured, shot_path
 
     def _check_completed(self) -> None:
         """Confirm a linear resumption was actually used.

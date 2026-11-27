@@ -13,6 +13,10 @@ meet again where both reach one continuation.
 
 The four resumption grades are one rule. A clause that resumes twice puts its
 captured continuation back twice, and one that never resumes drops it.
+Surviving direct requests record the shot labels of the copied continuations
+that reach them. A surviving request inside a discharged shot keeps the
+computation on the reference machine if its operation has a checked
+unrestricted clause.
 
 The result depends on no target and no runtime. The compiled runtime, the
 transpile planner, the static targets' projection, and the capability analysis
@@ -33,8 +37,10 @@ from quivers.qiec.declarations import ConstructorDecl
 from quivers.qiec.effects import (
     EffectDef,
     EffectRequest,
+    HandlerClauseDef,
     HandlerDef,
     OperationDef,
+    ResumptionGrade,
 )
 from quivers.qiec.evidence import BranchGiven, Reflexivity
 from quivers.qiec.identifiers import (
@@ -109,7 +115,9 @@ Discharge reduces a term without entering a recursive call, so it terminates.
 The bound stops a reduction whose copies produce no statement of their own.
 """
 
-type ObstacleKind = Literal["foreign", "forwarding", "recursion", "case", "growth"]
+type ObstacleKind = Literal[
+    "foreign", "forwarding", "recursion", "case", "growth", "address"
+]
 """What stops a handler from being discharged."""
 
 
@@ -126,8 +134,9 @@ class DischargeObstacle(QiecModel):
         and which no outer handler of the computation answers,
         ``"recursion"`` for a recursive call that makes handled requests,
         ``"case"`` for a case analysis on a value known only at run time
-        whose branches do not meet in one continuation, and ``"growth"``
-        for a rewriting past the size bounds.
+        whose branches do not meet in one continuation, ``"growth"`` for a
+        rewriting past the size bounds, and ``"address"`` for a surviving
+        operation that can open a runtime shot inside one being discharged.
     reason
         The obstacle as a clause naming the handler and the clause, to
         follow "the computation".
@@ -318,10 +327,35 @@ class _ClauseFrame(_Frame):
         frame last.
     answer
         The type the clause answers.
+    serial
+        The identity of this invocation, shared by its frames at different
+        shot counts.
+    grade
+        The clause's declared resumption grade.
+    resumptions
+        The shot path at the handled request.
+    next_shot
+        The ordinal of the next shot of this invocation.
     """
 
     captured: tuple[_Frame, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     answer: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    serial: int
+    grade: ResumptionGrade = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    next_shot: int = 0
+
+
+class _ShotFrame(_Frame):
+    """Restore the surrounding shot path when a resumed continuation returns.
+
+    Parameters
+    ----------
+    resumptions
+        The surrounding shot path.
+    """
+
+    resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _CallFrame(_Frame):
@@ -367,6 +401,8 @@ class _Arrival(QiecModel):
         The value.
     stack
         The continuation beyond the join.
+    resumptions
+        The active shot path at the join.
     resumed
         Whether the path left the conditional by a ``resume`` in tail
         position of its clause, so that the value returns to the resumed
@@ -377,6 +413,7 @@ class _Arrival(QiecModel):
     statements: _Statements = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     value: Value = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     stack: tuple[_Frame, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     resumed: bool = False
 
 
@@ -431,11 +468,14 @@ class _Meeting(QiecModel):
         The value after it.
     stack
         The continuation after it.
+    resumptions
+        The active shot path after it.
     """
 
     statements: _Statements = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     value: Value = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     stack: tuple[_Frame, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 type _Path = _Arrival | _Fork
@@ -808,6 +848,11 @@ class _Discharger:
     def __init__(self, owner: NamedComputation, tables: _Tables) -> None:
         self.owner = owner
         self.tables = tables
+        # A closed empty row cannot emit a surviving request. Keep its
+        # continuation joins independent of address bookkeeping.
+        self.track_shots = bool(owner.type.effects.entries) or (
+            owner.type.effects.tail is not None
+        )
         self.occupied = {parameter.name for parameter in owner.parameters}
         self.scopes: set[StaticScopeId] = set()
         self.tensors: dict[str, tuple[Value, ...]] = {}
@@ -832,7 +877,7 @@ class _Discharger:
         environment: _Environment = {
             parameter.name: Var(local=parameter) for parameter in self.owner.parameters
         }
-        path = self.reduce(self.owner.body, environment, ())
+        path = self.reduce(self.owner.body, environment, (), ())
         body = self.close(path, self.owner.type.result)
         self.statements = 0
         self.count(_size(body))
@@ -1072,6 +1117,7 @@ class _Discharger:
         state: _State,
         environment: _Environment,
         stack: tuple[_Frame, ...],
+        resumptions: tuple[int, ...],
     ) -> _Path:
         """Reduce a term under a continuation.
 
@@ -1084,6 +1130,8 @@ class _Discharger:
             The value each local of the term stands for.
         stack : tuple[_Frame, ...]
             The continuation, innermost frame first.
+        resumptions : tuple[int, ...]
+            The active multi-shot labels, outermost first.
 
         Returns
         -------
@@ -1110,7 +1158,11 @@ class _Discharger:
                 value = cast(Value, state)
                 if not stack:
                     return _Arrival(
-                        join=None, statements=tuple(made), value=value, stack=()
+                        join=None,
+                        statements=tuple(made),
+                        value=value,
+                        stack=(),
+                        resumptions=resumptions,
                     )
                 frame, stack = stack[0], stack[1:]
                 if isinstance(frame, _BindFrame):
@@ -1132,12 +1184,15 @@ class _Discharger:
                             answer.binder.name: read,
                         }
                         state = substitute_computation(answer.body, frame.statics)
+                elif isinstance(frame, _ClauseFrame | _ShotFrame):
+                    resumptions = frame.resumptions
                 elif isinstance(frame, _JoinFrame) and frame.serial in self.awaited:
                     return _Arrival(
                         join=frame.serial,
                         statements=tuple(made),
                         value=value,
                         stack=stack,
+                        resumptions=resumptions,
                     )
                 continue
             term = cast(Computation, state)
@@ -1198,6 +1253,26 @@ class _Discharger:
                 )
                 position = self.answering(request, stack)
                 if position is None:
+                    if resumptions:
+                        if request.operation in self.tables.multi_shot_operations:
+                            effect, operation = self.tables.operations[
+                                request.operation
+                            ]
+                            raise _Undischarged(
+                                "address",
+                                f"leaves `{effect.ref.name}.{operation.name}` inside "
+                                "a discharged shot, where a runtime handler could "
+                                "resume its continuation more than once",
+                                request.origin.origin,
+                            )
+                        request = request.with_(
+                            origin=request.origin.with_(
+                                resumption_path=(
+                                    *resumptions,
+                                    *request.origin.resumption_path,
+                                )
+                            )
+                        )
                     binder = Local(
                         name=self.fresh(_awaiting(stack, "answer")),
                         type=request.result_type,
@@ -1206,36 +1281,38 @@ class _Discharger:
                     self.count(1)
                     state = Var(local=binder)
                     continue
-                bound, environment, state = self.clause(
-                    request, cast(_HandlerFrame, stack[position])
-                )
-                made.extend(bound)
                 answering = cast(_HandlerFrame, stack[position])
+                clause = answering.handler.clause(request.operation)
+                assert clause is not None
+                bound, environment, state = self.clause(request, answering, clause)
+                made.extend(bound)
                 stack = (
                     _ClauseFrame(
                         captured=stack[: position + 1],
                         answer=substitute_type(
                             answering.handler.output_type, answering.statics
                         ),
+                        serial=self.ordinal(),
+                        grade=clause.grade,
+                        resumptions=resumptions,
                     ),
                     *stack[position + 1 :],
                 )
             elif isinstance(term, Resume):
-                bound, value, captured = self.resume(term, environment, stack)
+                bound, value, stack, resumptions, joins = self.resume(
+                    term, environment, stack, resumptions
+                )
                 made.extend(bound)
-                joins, beyond = self.clause_end(stack)
                 if joins:
                     return _Arrival(
                         join=joins[0],
                         statements=tuple(made),
                         value=value,
-                        stack=(*captured, *beyond),
+                        stack=stack,
+                        resumptions=resumptions,
                         resumed=True,
                     )
                 state = value
-                if beyond is stack:
-                    beyond = (_JoinFrame(serial=self.ordinal()), *stack)
-                stack = (*captured, *beyond)
             elif isinstance(term, If):
                 condition = self.value(term.condition, environment)
                 if isinstance(condition, LiteralValue):
@@ -1246,23 +1323,28 @@ class _Discharger:
                     _if(condition),
                     ((term.then, environment), (term.otherwise, environment)),
                     stack,
+                    resumptions,
                     duplicable=True,
                 )
                 if not isinstance(path, _Meeting):
                     return path
                 made = list(path.statements)
                 stack = path.stack
+                resumptions = path.resumptions
                 state = path.value
             elif isinstance(term, Case):
                 scrutinee = self.value(term.scrutinee, environment)
                 if isinstance(scrutinee, ConstructorValue):
                     environment, state = self.matched(term, scrutinee, environment)
                     continue
-                path = self.case(tuple(made), term, scrutinee, environment, stack)
+                path = self.case(
+                    tuple(made), term, scrutinee, environment, stack, resumptions
+                )
                 if not isinstance(path, _Meeting):
                     return path
                 made = list(path.statements)
                 stack = path.stack
+                resumptions = path.resumptions
                 state = path.value
             else:  # pragma: no cover - closed union
                 raise TypeError(f"unknown computation term {term!r}")
@@ -1387,7 +1469,7 @@ class _Discharger:
         )
 
     def clause(
-        self, request: EffectRequest, frame: _HandlerFrame
+        self, request: EffectRequest, frame: _HandlerFrame, clause: HandlerClauseDef
     ) -> tuple[_Statements, dict[str, Value], Computation]:
         """The clause body that answers a request, and what it is read under.
 
@@ -1397,6 +1479,8 @@ class _Discharger:
             The request, over the rewritten body's names.
         frame : _HandlerFrame
             The handler that answers it.
+        clause : HandlerClauseDef
+            The clause answering the request.
 
         Returns
         -------
@@ -1404,8 +1488,7 @@ class _Discharger:
             The statements binding the request's arguments, the clause's
             environment, and its body at the request's static arguments.
         """
-        clause = frame.handler.clause(request.operation)
-        assert clause is not None and clause.body is not None
+        assert clause.body is not None
         operation = self.tables.operations[request.operation][1]
         statics = _combined(
             frame.statics,
@@ -1424,9 +1507,15 @@ class _Discharger:
         return tuple(made), environment, substitute_computation(clause.body, statics)
 
     def resume(
-        self, term: Resume, environment: _Environment, stack: tuple[_Frame, ...]
-    ) -> tuple[_Statements, Value, tuple[_Frame, ...]]:
-        """The captured continuation a ``resume`` puts back.
+        self,
+        term: Resume,
+        environment: _Environment,
+        stack: tuple[_Frame, ...],
+        resumptions: tuple[int, ...],
+    ) -> tuple[
+        _Statements, Value, tuple[_Frame, ...], tuple[int, ...], tuple[int, ...]
+    ]:
+        """Reinstate the captured continuation and its shot path.
 
         Parameters
         ----------
@@ -1436,15 +1525,21 @@ class _Discharger:
             The value each local of the clause stands for.
         stack : tuple[_Frame, ...]
             The continuation of the resumption.
+        resumptions : tuple[int, ...]
+            The active shot path in the clause.
 
         Returns
         -------
-        tuple[tuple[tuple[Local, Computation], ...], Value, tuple[_Frame, ...]]
+        tuple[tuple[tuple[Local, Computation], ...], Value, tuple[_Frame, ...], tuple[int, ...], tuple[int, ...]]
             The statements binding the parameters' values, the resumed
             value, and the captured continuation with the handler at those
-            parameters.
+            parameters. The final items are the active shot path and the
+            awaited joins skipped by a tail resumption.
         """
-        frame = next(item for item in stack if isinstance(item, _ClauseFrame))
+        position = next(
+            i for i, item in enumerate(stack) if isinstance(item, _ClauseFrame)
+        )
+        frame = cast(_ClauseFrame, stack[position])
         handler = cast(_HandlerFrame, frame.captured[-1])
         made: list[tuple[Local, Computation]] = []
         arguments: list[Value] = []
@@ -1458,10 +1553,31 @@ class _Discharger:
             )
             made.extend(bound)
             arguments.append(read)
+        joins, beyond = self.clause_end(stack)
+        restored = frame.resumptions
+        shot_path = frame.resumptions
+        multiple = self.track_shots and frame.grade is ResumptionGrade.UNRESTRICTED
+        if multiple:
+            shot_path = (*shot_path, frame.next_shot)
+        if beyond is stack:
+            if multiple:
+                # The enclosing clause keeps its next ordinal. Captured frames
+                # and sibling branches retain the count they were given.
+                beyond = (
+                    *stack[:position],
+                    frame.with_(next_shot=frame.next_shot + 1),
+                    *stack[position + 1 :],
+                )
+            beyond = (_JoinFrame(serial=self.ordinal()), *beyond)
+            restored = resumptions
+        if self.track_shots:
+            beyond = (_ShotFrame(resumptions=restored), *beyond)
         return (
             tuple(made),
             self.value(term.value, environment),
-            (*frame.captured[:-1], handler.carrying(tuple(arguments))),
+            (*frame.captured[:-1], handler.carrying(tuple(arguments)), *beyond),
+            shot_path,
+            joins,
         )
 
     def clause_end(
@@ -1557,6 +1673,7 @@ class _Discharger:
         rebuild: Callable[[tuple[Computation, ...], TypeExpr], Computation],
         branches: tuple[tuple[Computation, _Environment], ...],
         stack: tuple[_Frame, ...],
+        resumptions: tuple[int, ...],
         *,
         duplicable: bool,
     ) -> _Path | _Meeting:
@@ -1579,6 +1696,8 @@ class _Discharger:
             Each branch, and the environment it is read under.
         stack : tuple[_Frame, ...]
             The continuation of the conditional.
+        resumptions : tuple[int, ...]
+            The active shot path at the conditional.
         duplicable : bool
             Whether the conditional may be stated more than once.
 
@@ -1605,7 +1724,9 @@ class _Discharger:
             statements=made,
             rebuild=rebuild,
             paths=tuple(
-                self.reduce(body, environment, (_JoinFrame(serial=own), *stack))
+                self.reduce(
+                    body, environment, (_JoinFrame(serial=own), *stack), resumptions
+                )
                 for body, environment in branches
             ),
             duplicable=duplicable,
@@ -1630,7 +1751,10 @@ class _Discharger:
                     # around it.
                     return path.with_(join=outer.serial)
                 return _Meeting(
-                    statements=path.statements, value=path.value, stack=path.stack
+                    statements=path.statements,
+                    value=path.value,
+                    stack=path.stack,
+                    resumptions=path.resumptions,
                 )
             path = self.follow(path, serial)
         return self.settled(path)
@@ -1676,7 +1800,7 @@ class _Discharger:
             )
         if path.join != serial:
             return path
-        further = self.reduce(path.value, {}, path.stack)
+        further = self.reduce(path.value, {}, path.stack, path.resumptions)
         return further.with_(statements=(*path.statements, *further.statements))
 
     def meet(self, fork: _Fork) -> _Arrival | None:
@@ -1702,6 +1826,7 @@ class _Discharger:
             or any(
                 item.join != first.join
                 or item.resumed != first.resumed
+                or item.resumptions != first.resumptions
                 or not _same(item.stack, first.stack)
                 for item in arrivals
             )
@@ -1745,6 +1870,7 @@ class _Discharger:
         return _Arrival(
             join=first.join,
             resumed=first.resumed,
+            resumptions=first.resumptions,
             statements=(*fork.statements, *stated),
             value=_read_chosen(value, differing, stated),
             stack=tuple(
@@ -1966,6 +2092,7 @@ class _Discharger:
         scrutinee: Value,
         environment: _Environment,
         stack: tuple[_Frame, ...],
+        resumptions: tuple[int, ...],
     ) -> _Path | _Meeting:
         """Reduce a case analysis on a value known only at run time.
 
@@ -1981,6 +2108,8 @@ class _Discharger:
             The value each local stands for.
         stack : tuple[_Frame, ...]
             The continuation.
+        resumptions : tuple[int, ...]
+            The active shot path at the case analysis.
 
         Returns
         -------
@@ -2040,7 +2169,9 @@ class _Discharger:
                 ),
             )
 
-        path = self.branch(made, rebuild, tuple(branches), stack, duplicable=False)
+        path = self.branch(
+            made, rebuild, tuple(branches), stack, resumptions, duplicable=False
+        )
         if repeated or (isinstance(path, _Fork) and stack):
             raise _Undischarged(
                 "case",
@@ -2092,6 +2223,12 @@ class _Tables:
         self.handlers: dict[HandlerId, HandlerDef] = {
             item.id: item for item in module.handlers
         }
+        self.multi_shot_operations = frozenset(
+            clause.operation
+            for handler in module.handlers
+            for clause in handler.clauses
+            if clause.grade is ResumptionGrade.UNRESTRICTED
+        )
         self.computations: dict[ComputationId, NamedComputation] = {
             item.id: item for item in module.computations
         }
@@ -2238,7 +2375,7 @@ def _entered(stack: tuple[_Frame, ...]) -> frozenset[ComputationId]:
 
 
 def _same(left: tuple[_Frame, ...], right: tuple[_Frame, ...]) -> bool:
-    """Whether two continuations are one up to handler parameter values.
+    """Whether two continuations carry the same control and shot information.
 
     Parameters
     ----------
@@ -2250,8 +2387,8 @@ def _same(left: tuple[_Frame, ...], right: tuple[_Frame, ...]) -> bool:
     Returns
     -------
     bool
-        True when they hold the same frames in order, a handler's frame
-        being the same as another of its installation.
+        True when they hold the same frames in order. Handler parameters may
+        differ because the join reconciles them.
     """
     return len(left) == len(right) and all(
         a is b
@@ -2259,6 +2396,17 @@ def _same(left: tuple[_Frame, ...], right: tuple[_Frame, ...]) -> bool:
             isinstance(a, _HandlerFrame)
             and isinstance(b, _HandlerFrame)
             and a.serial == b.serial
+        )
+        or (
+            isinstance(a, _ClauseFrame)
+            and isinstance(b, _ClauseFrame)
+            and a.serial == b.serial
+            and a.next_shot == b.next_shot
+        )
+        or (
+            isinstance(a, _ShotFrame)
+            and isinstance(b, _ShotFrame)
+            and a.resumptions == b.resumptions
         )
         for a, b in zip(left, right, strict=True)
     )
