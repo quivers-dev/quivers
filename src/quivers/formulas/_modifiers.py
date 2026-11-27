@@ -26,20 +26,87 @@ import didactic.api as dx
 import numpy as np
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
-from quivers.dsl.ast_nodes import LetExprNode, LetStep, ProgramStep
+from quivers.dsl.ast_nodes import (
+    DrawArg,
+    DrawArgName,
+    DrawArgNamed,
+    LetExprLiteral,
+    LetExprNode,
+    LetStep,
+    ObserveStep,
+    ProgramStep,
+)
 from quivers.dsl.let_expr_traversal import substitute_let_expr
-from quivers.formulas._ast import _bind, _let, _var
+from quivers.dsl.program_templates import draw_argument_expression
+from quivers.formulas._ast import _add, _bind, _call, _div, _let, _mul, _var
 from quivers.formulas._kernel import KernelArguments, KernelEmission
 from quivers.formulas._observation import WEIGHTS, Observation
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._response_roles import event_option_columns
 from quivers.formulas.family import Family, families
 from quivers.formulas.formula import FixedColumn, ResponseModifiers
+from quivers.qiec.families import family as semantic_family
 
 __all__: list[str] = []
 
 KNOWN_SCALE = "formula_sigma"
 """Binding of the response scale under known errors."""
+
+
+def combine_error_scales(
+    error: LetExprNode, residual: LetExprNode, reference: LetExprNode
+) -> LetExprNode:
+    """Combine independent error scales relative to their larger scale.
+
+    Parameters
+    ----------
+    error, residual : LetExprNode
+        Known standard error and residual scale.
+    reference : LetExprNode
+        Elementwise maximum of the two scales.
+
+    Returns
+    -------
+    LetExprNode
+        The combined scale, without squaring potentially large scales.
+    """
+    return _mul(
+        reference,
+        _call(
+            "sqrt",
+            _add(
+                _call("pow", _div(error, reference), LetExprLiteral(value=2.0)),
+                _call("pow", _div(residual, reference), LetExprLiteral(value=2.0)),
+            ),
+        ),
+    )
+
+
+def observation_argument(
+    observation: ObserveStep, parameter: str
+) -> tuple[int, DrawArg] | None:
+    """Find the argument passed to a named native constructor parameter.
+
+    Parameters
+    ----------
+    observation : ObserveStep
+        The native observation.
+    parameter : str
+        Name of the parameter in the native constructor.
+
+    Returns
+    -------
+    tuple[int, DrawArg] or None
+        Position in the authored arguments and the value passed there.
+    """
+    schema = semantic_family(observation.morphism).parameters
+    for position, argument in enumerate(observation.args or ()):
+        if isinstance(argument, DrawArgNamed):
+            if argument.parameter == parameter:
+                return position, argument.value
+        elif position < len(schema) and schema[position].name == parameter:
+            return position, argument
+    return None
 
 
 class Admission(ValueModel):
@@ -119,6 +186,36 @@ class Modifier(dx.TaggedUnion, discriminator="kind"):
             The changed law; unchanged by a term that does not change it.
         """
         return arguments
+
+    def apply_to_step(
+        self, observation: ObserveStep, family: Family
+    ) -> tuple[ObserveStep, tuple[ProgramStep, ...]]:
+        """Apply a modifier to the arguments of an authored observation.
+
+        Parameters
+        ----------
+        observation : ObserveStep
+            The native observation in its program.
+        family : Family
+            Declared response law.
+
+        Returns
+        -------
+        tuple[ObserveStep, tuple[ProgramStep, ...]]
+            The observation and bindings it needs in the same scope.
+
+        Raises
+        ------
+        ValueError
+            If the modifier requires a law that is unavailable for the step.
+        """
+        if self.changes_arguments:
+            raise ValueError(
+                f"the program {family.name!r} scores its response by its own "
+                f"observation; the response term {self.kind!r} changes that law, "
+                "so the program must state it itself"
+            )
+        return observation, ()
 
     def observe(self, observation: Observation) -> Observation:
         """Change the written observation.
@@ -288,8 +385,15 @@ class KnownError(Modifier):
             formula, value, or prior while the known errors replace it.
         """
         family = admission.family
+        law = family.kernel_law
         residual = family.error_scale
-        if residual is None:
+        if (
+            residual is None
+            and law is not None
+            and law.error_scale_argument is not None
+        ):
+            residual = law.error_scale_binding
+        elif residual is None:
             admitted = sorted(
                 name
                 for name, entry in families.items()
@@ -344,6 +448,52 @@ class KnownError(Modifier):
                 ),
             ),
         )
+
+    def apply_to_step(
+        self, observation: ObserveStep, family: Family
+    ) -> tuple[ObserveStep, tuple[ProgramStep, ...]]:
+        """Replace the native constructor's scale with the known-error scale.
+
+        Parameters
+        ----------
+        observation : ObserveStep
+            The observation in its program.
+        family : Family
+            Declared response law and its scale parameter.
+
+        Returns
+        -------
+        tuple[ObserveStep, tuple[ProgramStep, ...]]
+            The observation and bindings for its total scale.
+        """
+        law = family.kernel_law
+        assert law is not None and law.error_scale_argument is not None
+        parameter = law.error_scale_argument
+        found = observation_argument(observation, parameter)
+        if found is None:
+            raise ValueError(
+                f"the observation under {observation.morphism!r} does not pass "
+                f"the declared error scale {parameter!r}"
+            )
+        position, scale = found
+        arguments = list(observation.args or ())
+        original = arguments[position]
+        error = _var("formula_standard_error")
+        value = error
+        lets: list[ProgramStep] = []
+        if self.sigma:
+            reference_name = "formula_error_reference"
+            residual = draw_argument_expression(scale)
+            lets.append(_let(reference_name, _call("max", error, residual)))
+            value = combine_error_scales(error, residual, _var(reference_name))
+        lets.append(_let(KNOWN_SCALE, value))
+        replaced = DrawArgName(text=KNOWN_SCALE)
+        arguments[position] = (
+            original.with_(value=replaced)
+            if isinstance(original, DrawArgNamed)
+            else replaced
+        )
+        return observation.with_(args=tuple(arguments)), tuple(lets)
 
 
 class ResidualDependence(Modifier):

@@ -115,10 +115,10 @@ def test_rows_with_a_missing_program_column_are_left_out() -> None:
         (AROUND_ROWS, {"noise": "~ x"}, "accept", {"data2": {}}, "give it in data2"),
         (
             GAUSS,
-            {"mu": "~ x"},
+            {"mu": "~ x", "sigma": "~ z"},
             "y | se(s)",
             {"data": frame().assign(s=1.0)},
-            r"se\(\) is not supported for family 'gauss'",
+            r"se\(\) without sigma=True excludes a separate residual sigma",
         ),
         (GAUSS, {"mu": "~ x"}, "y", {"family": "poisson"}, "family= does not apply"),
         (GAUSS, {"mu": "~ x"}, None, {}, "needs response="),

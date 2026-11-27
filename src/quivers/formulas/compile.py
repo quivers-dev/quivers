@@ -104,7 +104,12 @@ from quivers.dsl.family_schemas import family_parameter_names
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas.family import Domain, Family, parameter_prefix
-from quivers.formulas._modifiers import Admission, admit_modifiers, response_modifiers
+from quivers.formulas._modifiers import (
+    Admission,
+    admit_modifiers,
+    combine_error_scales,
+    response_modifiers,
+)
 
 from quivers.formulas._category_formulas import (
     is_category_parameter,
@@ -1192,16 +1197,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             )
             scale = _index("formula_error_reference", row)
-            combined = _mul(
-                scale,
-                _call(
-                    "sqrt",
-                    _add(
-                        _call("pow", _div(se, scale), LetExprLiteral(value=2.0)),
-                        _call("pow", _div(sigma, scale), LetExprLiteral(value=2.0)),
-                    ),
-                ),
-            )
+            combined = combine_error_scales(se, sigma, scale)
             program_steps.append(
                 _let("formula_sigma", _factor((("response", "Resp"),), body=combined))
             )

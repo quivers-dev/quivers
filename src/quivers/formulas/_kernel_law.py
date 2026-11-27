@@ -34,6 +34,28 @@ type KernelDatum = np.ndarray | pd.DataFrame | torch.Tensor | float | int
 class KernelLaw(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """A response law that builds its own kernel."""
 
+    @property
+    def error_scale_argument(self) -> str | None:
+        """Return the native observation argument giving its error scale.
+
+        Returns
+        -------
+        str or None
+            Constructor parameter that takes the residual scale, if declared.
+        """
+        return None
+
+    @property
+    def error_scale_binding(self) -> str | None:
+        """Return an authored binding of the observation's residual scale.
+
+        Returns
+        -------
+        str or None
+            Binding passed directly as the residual scale, if it has one.
+        """
+        return None
+
     def kernel(
         self, inputs: KernelInputs, formula: Formula
     ) -> tuple[ResponseKernel, dict[str, ParameterSource]]:

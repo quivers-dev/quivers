@@ -276,6 +276,38 @@ export tensor_mean
     assert float((scores - wrong).abs().max()) > 1e-3
 
 
+@pytest.mark.parametrize("estimate_sigma", [False, True])
+def test_the_program_observation_takes_known_errors(estimate_sigma: bool) -> None:
+    rows = frame().assign(y=np.arange(-6, 6) / 8, error=(np.arange(12) + 2) / 8)
+    sigma_option = ", sigma=True" if estimate_sigma else ""
+    fitted = fit(
+        program=GAUSS,
+        parameters={"mu": "~ 1"},
+        response=f"y | se(error{sigma_option})",
+        data=rows,
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    values = {
+        "intercept": torch.tensor(0.45, dtype=torch.float64),
+        "sigma": torch.tensor(0.8, dtype=torch.float64),
+    }
+    y = torch.tensor(rows["y"].to_numpy())
+    error = torch.tensor(rows["error"].to_numpy())
+    combined = torch.hypot(error, values["sigma"])
+    scale = combined if estimate_sigma else error
+    scores = torch.distributions.Normal(values["intercept"], scale).log_prob(y)
+    prior = torch.distributions.Normal(0.0, 5.0).log_prob(
+        values["intercept"]
+    ) + torch.distributions.HalfNormal(1.0).log_prob(values["sigma"])
+    actual = log_joint(run(fitted, values))
+    assert actual == pytest.approx(float(prior + scores.sum()), rel=1e-10)
+    wrong_scale = error if estimate_sigma else combined
+    wrong = torch.distributions.Normal(values["intercept"], wrong_scale).log_prob(y)
+    assert abs(actual - float(prior + wrong.sum())) > 1e-2
+
+
 def test_the_program_observation_composes_weights_and_recorded_events() -> None:
     rows = frame().assign(
         y=np.linspace(-1.0, 1.0, 12),

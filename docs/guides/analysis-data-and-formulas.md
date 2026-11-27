@@ -1066,6 +1066,9 @@ with a formula. A program with an observation at the top level takes
 `weights()` on that response. A native observation law that declares
 recorded events also takes `cens()` and `trunc()`, which change the
 observation before its enclosing marginalizations sum out latent values.
+An observation law that declares a residual scale takes `se(error)` to
+use the recorded standard errors as its scale. With `sigma=True`, it
+combines the recorded errors and the program's residual scale in quadrature.
 
 Data the program reads at each row are data columns of the same name. Data on
 another axis and scalars come from `data2`. A saved fit keeps the program's

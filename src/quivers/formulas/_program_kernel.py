@@ -95,7 +95,11 @@ from quivers.formulas._kernel import (
     Steps,
 )
 from quivers.formulas._kernel_law import KernelDatum, KernelLaw
-from quivers.formulas._modifiers import Modifier, response_modifiers
+from quivers.formulas._modifiers import (
+    Modifier,
+    observation_argument,
+    response_modifiers,
+)
 from quivers.formulas._observation import Observation
 from quivers.formulas._predictor_graph import NonlinearExpression
 from quivers.formulas._brms_priors import flat_event_rank
@@ -1599,7 +1603,9 @@ def _observation(step: ObserveStep, factorized: bool) -> Observation | None:
 
 
 def _with_observation(
-    steps: tuple[ProgramStep, ...], observation: ObserveStep
+    steps: tuple[ProgramStep, ...],
+    observation: ObserveStep,
+    bindings: tuple[ProgramStep, ...],
 ) -> tuple[ProgramStep, ...]:
     """Replace a unique observed site in the same scope where it is scored.
 
@@ -1609,20 +1615,25 @@ def _with_observation(
         Steps of a program or marginalization.
     observation : ObserveStep
         The replacement step at the observed site.
+    bindings : tuple[ProgramStep, ...]
+        Bindings needed immediately before the new observation.
 
     Returns
     -------
     tuple[ProgramStep, ...]
         Steps in their original scopes with the observation replaced.
     """
-    return tuple(
-        observation
-        if isinstance(step, ObserveStep) and step.vars == observation.vars
-        else step.with_(scope=_with_observation(step.scope, observation))
-        if isinstance(step, MarginalizeStep)
-        else step
-        for step in steps
-    )
+    updated: list[ProgramStep] = []
+    for step in steps:
+        if isinstance(step, ObserveStep) and step.vars == observation.vars:
+            updated.extend((*bindings, observation))
+        elif isinstance(step, MarginalizeStep):
+            updated.append(
+                step.with_(scope=_with_observation(step.scope, observation, bindings))
+            )
+        else:
+            updated.append(step)
+    return tuple(updated)
 
 
 def _observation_options(
@@ -1640,7 +1651,7 @@ def _observation_options(
     state : Observation or None
         The observation record when its constructor arguments fit the record.
     modifiers : tuple[Modifier, ...]
-        Modifiers that attach options to the observation.
+        Modifiers of the observation.
     enclosing : tuple[MarginalizeStep, ...]
         The marginalizations that contain the observation.
 
@@ -1767,6 +1778,51 @@ class ProgramKernelSpec(KernelLaw):
         """
         return program_analysis(
             self.source, self.entry, tuple(sorted(self.static_arguments.items()))
+        )
+
+    @property
+    def error_scale_argument(self) -> str | None:
+        """Read the native argument corresponding to a declared error scale.
+
+        Returns
+        -------
+        str or None
+            Native argument used for the residual scale, when the registered
+            observation law has one.
+        """
+        site = self.analysis.site(self.response)
+        if site is None:
+            return None
+        schema = semantic_family(site.law).parameters
+        arguments = {
+            parameter.name
+            for family in families.values()
+            if family.observe_family == site.law and family.error_scale is not None
+            for parameter, source in zip(schema, family.observe_args, strict=False)
+            if source == family.error_scale
+        }
+        return next(iter(arguments)) if len(arguments) == 1 else None
+
+    @property
+    def error_scale_binding(self) -> str | None:
+        """Read the authored value passed to the native residual scale.
+
+        Returns
+        -------
+        str or None
+            A named program parameter, if passed directly to the observation.
+        """
+        parameter = self.error_scale_argument
+        if parameter is None:
+            return None
+        found = _enclosing(self.analysis.program.draws, self.response)
+        if found is None:
+            return None
+        argument = observation_argument(found[0], parameter)
+        return (
+            argument[1].text
+            if argument and isinstance(argument[1], DrawArgName)
+            else None
         )
 
     @property
@@ -1906,21 +1962,14 @@ class ProgramKernelSpec(KernelLaw):
         Raises
         ------
         ValueError
-            If the response carries a term that changes its law, the model
-            adds to a location the program does not have, a vector or row
+            If a response term requires an undeclared law, the model adds
+            to a location the program does not have, a vector or row
             parameter is fixed, or a parameter that varies over the rows
             feeds the law of a latent the rows share.
         """
         analysis = self.analysis
         entry = analysis.entry
         modifiers = response_modifiers(formula.modifiers, inputs.residual)
-        changes = [item.kind for item in modifiers if item.changes_arguments]
-        if changes:
-            raise ValueError(
-                f"the program {entry!r} scores its response by its own observation; "
-                f"the response terms {changes} change that law, so the program "
-                "must state them itself"
-            )
         if inputs.host is not None and (
             LOCATION not in self.parameters or LOCATION in inputs.fixed
         ):
@@ -2017,13 +2066,17 @@ class ProgramKernelSpec(KernelLaw):
         assert found is not None
         observed, enclosing = found
         factorized = all(block.over == ROWS for block in enclosing)
-        observation = _observation(observed, factorized)
         draws = renamed.program.draws
+        bindings: list[ProgramStep] = []
+        for modifier in modifiers:
+            observed, needed = modifier.apply_to_step(observed, inputs.family)
+            bindings.extend(needed)
+        observation = _observation(observed, factorized)
         if modifiers:
             observed, observation = _observation_options(
                 observed, observation, modifiers, enclosing
             )
-            draws = _with_observation(draws, observed)
+            draws = _with_observation(draws, observed, tuple(bindings))
         replaced_inputs = {
             name for name, item in declarations.items() if item.origin == "input"
         }
