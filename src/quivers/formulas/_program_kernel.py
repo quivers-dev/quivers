@@ -1268,8 +1268,8 @@ def _response_site(analysis: ProgramAnalysis, response: str) -> KernelSite:
     Raises
     ------
     ValueError
-        If the program does not observe the response, observes another site,
-        or observes the response over other plates than its rows.
+        If the program does not observe the response or observes it over
+        other plates than its rows.
     """
     entry = analysis.entry
     observed = analysis.observations
@@ -1277,13 +1277,6 @@ def _response_site(analysis: ProgramAnalysis, response: str) -> KernelSite:
         raise ValueError(
             f"the program {entry!r} does not observe {response!r}; it observes "
             f"{list(observed)}"
-        )
-    others = [name for name in observed if name != response]
-    if others:
-        raise ValueError(
-            f"the program {entry!r} observes {others} besides the response "
-            f"{response!r}; a program block has one response, so state the others "
-            "as blocks of their own"
         )
     site = analysis.site(response)
     assert site is not None
@@ -1861,6 +1854,25 @@ class ProgramKernelSpec(KernelLaw):
         )
 
     @property
+    def _binding_inputs(self) -> tuple[KernelInput, ...]:
+        """Read program inputs and observations conditioned on by the block.
+
+        Returns
+        -------
+        tuple[KernelInput, ...]
+            Runtime inputs and observed sites other than the named response.
+        """
+        analysis = self.analysis
+        return (
+            *analysis.data(self.parameters),
+            *(
+                item
+                for item in analysis.inputs
+                if item.role == "observation" and item.name != self.response
+            ),
+        )
+
+    @property
     def row_columns(self) -> tuple[str, ...]:
         """The inputs the program reads at each row.
 
@@ -1869,9 +1881,7 @@ class ProgramKernelSpec(KernelLaw):
         tuple[str, ...]
             Names of row inputs no formula replaces.
         """
-        return tuple(
-            item.name for item in self.analysis.data(self.parameters) if item.rows
-        )
+        return tuple(item.name for item in self._binding_inputs if item.rows)
 
     def bindings(
         self,
@@ -1905,7 +1915,7 @@ class ProgramKernelSpec(KernelLaw):
         """
         extra = dict(data2 or {})
         bound: dict[str, torch.Tensor] = {}
-        for item in self.analysis.data(self.parameters):
+        for item in self._binding_inputs:
             if item.rows:
                 if item.name not in frame.columns:
                     place = (

@@ -1075,8 +1075,12 @@ Poisson, negative binomial, and geometric observations take `rate(exposure)`
 for counts accumulated over the recorded exposure.
 
 Data the program reads at each row are data columns of the same name. Data on
-another axis and scalars come from `data2`. A saved fit keeps the program's
-text, so it loads without the `.qvr` file.
+another axis and scalars come from `data2`. Use `response=` to select the
+response the fit reports. Other observations in the program contribute to
+the joint likelihood, and their values come from the data frame or `data2`
+according to their axes. Include any additional row observations when
+predicting on new rows. A saved fit keeps the program's text, so it loads
+without the `.qvr` file.
 
 <!-- python: run -->
 ```python

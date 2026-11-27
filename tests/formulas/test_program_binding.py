@@ -24,6 +24,9 @@ from tests.formulas._program_cases import (
     HALFWIDTH,
     MIX2,
     frame,
+    log_joint,
+    pin,
+    run,
 )
 
 
@@ -161,13 +164,47 @@ def test_a_program_that_couples_its_rows_is_refused() -> None:
         _emit(coupled, {"mu": "~ x"}, "y")
 
 
-def test_a_second_observation_is_refused() -> None:
-    two = GAUSS.replace(
-        "    return mu",
-        "    observe y2 : Trial <- Normal(loc=mu, scale=sigma)\n    return mu",
+def test_a_second_observation_conditions_the_named_response() -> None:
+    source = GAUSS.replace(
+        "    observe y : Trial <- Normal(loc=mu, scale=sigma)",
+        "    observe y2 : Trial <- Normal(loc=mu, scale=sigma)\n"
+        "    observe y : Trial <- Normal(loc=y2, scale=sigma)",
     )
-    with pytest.raises(ValueError, match=r"observes \['y2'\] besides the response"):
-        _emit(two, {"mu": "~ x"}, "y")
+    rows = frame().assign(y=np.arange(-6, 6) / 8, y2=np.arange(12) / 4)
+    fitted = fit(
+        program=source,
+        parameters={"mu": "~ 1"},
+        response="y",
+        data=rows,
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    location = torch.tensor(0.5, dtype=torch.float64)
+    scale = torch.tensor(1.25, dtype=torch.float64)
+    values = {"intercept": location, "sigma": scale}
+    normal = torch.distributions.Normal(location, scale)
+    y = torch.tensor(rows["y"].to_numpy())
+    y2 = torch.tensor(rows["y2"].to_numpy())
+    prior = torch.distributions.Normal(0.0, 5.0).log_prob(location) + (
+        torch.distributions.HalfNormal(1.0).log_prob(scale)
+    )
+    first = torch.distributions.Normal(y2, scale).log_prob(y)
+    joint = log_joint(run(fitted, values))
+    assert joint == pytest.approx(
+        float(prior + first.sum() + normal.log_prob(y2).sum()), rel=1e-10
+    )
+    assert abs(joint - float(prior + first.sum())) > 1.0
+    draws = {name: value.numpy()[None] for name, value in values.items()}
+    pinned = pin(fitted, draws)
+    scores = pinned.log_likelihood()
+    assert set(scores) == {"y"}
+    torch.testing.assert_close(scores["y"].reshape(-1), first)
+    fresh = rows.iloc[:4].drop(columns="y")
+    expected = pinned.posterior_epred(new_data=fresh).reshape(-1).double()
+    torch.testing.assert_close(expected, y2[:4])
+    with pytest.raises(ValueError, match="data has no column 'y2'"):
+        _emit(source, {"mu": "~ x"}, "y", data=frame())
 
 
 @pytest.mark.parametrize("kind", ["Nat", "FinSet"])
