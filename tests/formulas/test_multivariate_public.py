@@ -541,6 +541,8 @@ def test_joint_training_expected_responses_reuse_the_fitted_program(monkeypatch)
     slope = native["response_y1__beta_x"].unsqueeze(-1)
     x = torch.as_tensor(data["x"].to_numpy(copy=True), dtype=intercept.dtype)
     torch.testing.assert_close(expected["y1"], intercept + slope * x)
+    linear = fitted.posterior_linpred(resp="y1", num_samples=3, seed=12)["y1"]
+    torch.testing.assert_close(linear, expected["y1"])
     probabilities = expected["category"]
     assert probabilities.shape == (1, 3, len(data), 3)
     torch.testing.assert_close(
@@ -549,7 +551,8 @@ def test_joint_training_expected_responses_reuse_the_fitted_program(monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "method", ["posterior_epred", "posterior_predict", "log_likelihood"]
+    "method",
+    ["posterior_linpred", "posterior_epred", "posterior_predict", "log_likelihood"],
 )
 def test_fresh_joint_rows_compile_one_program(monkeypatch, method):
     data = _frame()

@@ -104,6 +104,7 @@ from quivers.formulas._joint_missing import (
 from quivers.formulas.formula import RowSelection
 from quivers.formulas._posterior import replay, row_binding
 from quivers.formulas._prediction import FormulaPredictionPlan, JointResponsePreparation
+from quivers.formulas._linpred import PredictorReadout
 from quivers.formulas._refit import update_fit
 from quivers.formulas._prior_emission import ordinary_prior_step
 from quivers.formulas.compile import FormulaToQVRModule
@@ -1361,9 +1362,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             If a selection, predictor, or row is invalid.
         """
         names = self._selection(resp)
+        readers = {name: self._predictor_readout(name) for name in names}
         bindings = {
-            name: self._response_fit(name)._linpred_binding(parameter, transform)
-            for name in names
+            name: reader._linpred_binding(parameter, transform)
+            for name, reader in readers.items()
         }
         prepared = self._prepare(
             new_data,
@@ -1394,7 +1396,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
                 response = self.emission.responses[name]
                 index = self.response_names.index(name)
                 result[name] = bindings[name].read(
-                    self._response_fit(name)._row_reader(
+                    readers[name]._row_reader(
                         parameter,
                         bindings[name],
                         recorded,
@@ -1885,6 +1887,23 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             family,
             categories,
             fixed=self.specification.responses[name].fixed_parameters or (),
+        )
+
+    def _predictor_readout(self, name: str) -> PredictorReadout:
+        """Read one joint response's predictors in the fitted coordinates."""
+        response = self.emission.responses[name]
+        lens = response.lens
+        family = self.prepared[name].family
+        return PredictorReadout(
+            formula=response.formula,
+            family=family,
+            distributional=lens._distributional,
+            predictor_graph=lens._predictor_graph,
+            predictors=lens._planned(response.formula),
+            fixed_parameters=self.specification.responses[name].fixed_parameters or {},
+            category_labels=response_category_labels(response.formula, family),
+            location=self._response_readout(name).location,
+            residual=lens._residual,
         )
 
     def observed(self, *, resp: ResponseSelection = None) -> dict[str, torch.Tensor]:
