@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Sparse relations over strings.** `StringSet` describes an unbounded tape and `RationalRelation` sums the weights of accepting walks for fixed words using a sparse index. Arc occurrences can share weight slots, and reused queries read the live weights on every evaluation. An explicit size-checked restriction provides a `FiniteMorphism` for callers that need a tensor.
 - Checked lexical deductions can return weighted forms, categories, or full goal items. QVR programs can normalize reading weights and use them in a response likelihood, with gradients reaching lexical and supported production weights. Token tensors computed in QVR can feed the same query.
 
 ### Fixed

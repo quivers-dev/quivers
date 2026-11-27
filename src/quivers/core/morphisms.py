@@ -1,19 +1,20 @@
-"""Morphism hierarchy: V-enriched relations between finite sets.
+"""Typed V-enriched morphisms and their finite tensor representation.
 
-A morphism from domain D to codomain C is represented as a tensor of
-shape (*D.shape, *C.shape) with entries in the carrier of an algebra.
-Composition uses the algebra's operations (join over tensor product).
+A finite tensor morphism from domain D to codomain C has shape
+(*D.shape, *C.shape) with entries in the carrier of an algebra.
+Finite tensor composition joins over the product of these entries.
 
-The hierarchy:
+The finite hierarchy:
 
-    Morphism (abstract)
-    ├── ObservedMorphism    — fixed tensor (not learned)
-    ├── LatentMorphism      — nn.Parameter with sigmoid constraint
-    ├── ComposedMorphism    — f >> g (V-enriched composition)
-    ├── ProductMorphism     — f @ g (tensor / parallel product)
-    ├── MarginalizedMorphism — contract codomain dims via join
-    ├── FunctorMorphism     — lazy image of a morphism under a functor
-    └── RepeatMorphism      — runtime-variable iterated composition (T^n)
+    Morphism
+    └── FiniteMorphism (abstract)
+        ├── ObservedMorphism    — fixed tensor (not learned)
+        ├── LatentMorphism      — nn.Parameter with sigmoid constraint
+        ├── ComposedMorphism    — f >> g (V-enriched composition)
+        ├── ProductMorphism     — f @ g (tensor / parallel product)
+        ├── MarginalizedMorphism — contract codomain dims via join
+        ├── FunctorMorphism     — lazy image of a morphism under a functor
+        └── RepeatMorphism      — runtime-variable iterated composition (T^n)
 
 PyTorch boundary
 ================
@@ -68,11 +69,10 @@ def _build_morphism_transformation_transform(phi, source):
 
 
 class Morphism(ABC):
-    """Abstract base for morphisms between finite sets.
+    """Typed morphism with an enrichment algebra and parameter module.
 
-    Subclasses must implement ``tensor`` (returns the materialized
-    tensor with values in the algebra's lattice) and ``module``
-    (returns the nn.Module tree for parameter collection).
+    Subclasses supply a representation of the morphism. Finite tensor
+    operations require the capability provided by `FiniteMorphism`.
 
     Parameters
     ----------
@@ -108,14 +108,9 @@ class Morphism(ABC):
 
     @property
     def tensor_shape(self) -> tuple[int, ...]:
-        """Expected shape of the materialized tensor."""
+        """Expected shape for a morphism with a finite tensor."""
+        _require_finite(self)
         return (*self._domain.shape, *self._codomain.shape)
-
-    @property
-    @abstractmethod
-    def tensor(self) -> torch.Tensor:
-        """Materialize the morphism as a tensor in the algebra's carrier."""
-        ...
 
     @abstractmethod
     def module(self) -> nn.Module:
@@ -206,6 +201,7 @@ class Morphism(ABC):
             for shape-aware ones (e.g. ``BayesInvert``) the
             transformation may swap them.
         """
+        _require_finite(self)
         if isinstance(phi, TransSeq):
             # Apply the steps in order; each step's change_base
             # type-checks its own source against the current
@@ -270,6 +266,7 @@ class Morphism(ABC):
         ObservedMorphism
             The reshape of ``self`` into the requested type.
         """
+        _require_finite(self)
         new_domain = domain if domain is not None else self._domain
         new_codomain = codomain if codomain is not None else self._codomain
 
@@ -346,6 +343,7 @@ class Morphism(ABC):
             tensor of ``self``. Gradients propagate to the original
             morphism's parameters through the transpose.
         """
+        _require_finite(self)
         d_ndim = len(self._domain.shape)
         c_ndim = len(self._codomain.shape)
         # Build the permutation that brings the codomain axes to
@@ -391,6 +389,7 @@ class Morphism(ABC):
         ObservedMorphism
             Morphism ``X → Y`` (the trace).
         """
+        _require_finite(self)
         if not isinstance(self._domain, ProductSet) or not isinstance(
             self._codomain, ProductSet
         ):
@@ -449,6 +448,37 @@ class Morphism(ABC):
         return f"{cls}({self.domain!r} -> {self.codomain!r})"
 
 
+class FiniteMorphism(Morphism):
+    """Morphism with a finite tensor in the carrier of its algebra."""
+
+    @property
+    @abstractmethod
+    def tensor(self) -> torch.Tensor:
+        """Materialize the morphism as a tensor in the algebra's carrier."""
+        ...
+
+    @classmethod
+    def __subclasshook__(cls, candidate: type[object]) -> bool:
+        # Subclasses of Morphism could supply a tensor before the finite
+        # interface was named. Check the definition without reading it.
+        if cls is FiniteMorphism and Morphism in candidate.__mro__:
+            for base in candidate.__mro__:
+                if "tensor" in vars(base):
+                    if not getattr(vars(base)["tensor"], "__isabstractmethod__", False):
+                        return True
+                    break
+        return NotImplemented
+
+
+def _require_finite(morphism: Morphism) -> FiniteMorphism:
+    if not isinstance(morphism, FiniteMorphism):
+        raise TypeError(
+            f"{type(morphism).__name__} does not provide a finite tensor; "
+            "use an explicit finite restriction"
+        )
+    return morphism
+
+
 class _MorphismModule(nn.Module):
     """Internal nn.Module wrapper for a single morphism's parameters."""
 
@@ -466,7 +496,7 @@ class _SourcedModule(nn.Module):
         self.source = source_module
 
 
-class TransformedMorphism(Morphism):
+class TransformedMorphism(FiniteMorphism):
     """A morphism whose tensor is a transformation of a source
     morphism's tensor, recomputed on each `tensor` access.
 
@@ -502,6 +532,7 @@ class TransformedMorphism(Morphism):
         codomain: SetObject,
         algebra: Algebra | None = None,
     ) -> None:
+        source = _require_finite(source)
         super().__init__(
             domain,
             codomain,
@@ -524,7 +555,7 @@ class TransformedMorphism(Morphism):
         return self._module
 
 
-class ObservedMorphism(Morphism):
+class ObservedMorphism(FiniteMorphism):
     """A morphism with a fixed (non-learnable) tensor.
 
     Parameters
@@ -563,7 +594,7 @@ class ObservedMorphism(Morphism):
         return self._module
 
 
-class LatentMorphism(Morphism):
+class LatentMorphism(FiniteMorphism):
     """A learnable morphism backed by an nn.Parameter.
 
     Stores unconstrained real-valued parameters and applies sigmoid
@@ -619,7 +650,7 @@ class _ComposedModule(nn.Module):
         self.right = right_mod
 
 
-class ComposedMorphism(Morphism):
+class ComposedMorphism(FiniteMorphism):
     """V-enriched composition of two morphisms.
 
     Given left: A -> B and right: B -> C, produces A -> C
@@ -634,6 +665,8 @@ class ComposedMorphism(Morphism):
     """
 
     def __init__(self, left: Morphism, right: Morphism) -> None:
+        left = _require_finite(left)
+        right = _require_finite(right)
         n_contract = left.codomain.ndim
         super().__init__(left.domain, right.codomain, algebra=left._algebra)
         self._left = left
@@ -669,7 +702,7 @@ class _ProductModule(nn.Module):
         self.right = right_mod
 
 
-class ProductMorphism(Morphism):
+class ProductMorphism(FiniteMorphism):
     """Tensor (parallel) product of two morphisms.
 
     Given left: A -> B and right: C -> D, produces
@@ -685,6 +718,8 @@ class ProductMorphism(Morphism):
     """
 
     def __init__(self, left: Morphism, right: Morphism) -> None:
+        left = _require_finite(left)
+        right = _require_finite(right)
         domain = ProductSet(components=(left.domain, right.domain))
         codomain = ProductSet(components=(left.codomain, right.codomain))
         super().__init__(domain, codomain, algebra=left._algebra)
@@ -722,7 +757,7 @@ class _MarginalizedModule(nn.Module):
         self.inner = inner_mod
 
 
-class MarginalizedMorphism(Morphism):
+class MarginalizedMorphism(FiniteMorphism):
     """Morphism with codomain dimensions marginalized via the algebra's join.
 
     Given an inner morphism A -> B × C and a set B to marginalize,
@@ -741,6 +776,7 @@ class MarginalizedMorphism(Morphism):
         inner: Morphism,
         sets_to_marginalize: tuple[SetObject, ...] | list[SetObject],
     ) -> None:
+        inner = _require_finite(inner)
         codomain = inner.codomain
         sets_to_marginalize = tuple(sets_to_marginalize)
         if not isinstance(codomain, ProductSet):
@@ -778,7 +814,7 @@ class MarginalizedMorphism(Morphism):
         return _MarginalizedModule(self._inner.module())
 
 
-class FunctorMorphism(Morphism):
+class FunctorMorphism(FiniteMorphism):
     """Lazy image of a morphism under a functor.
 
     Recomputes the tensor on each access from the inner morphism,
@@ -800,6 +836,7 @@ class FunctorMorphism(Morphism):
     def __init__(
         self, functor: Functor, inner: Morphism, domain: SetObject, codomain: SetObject
     ) -> None:
+        inner = _require_finite(inner)
         super().__init__(domain, codomain, algebra=inner._algebra)
         self._functor = functor
         self._inner = inner
@@ -825,7 +862,7 @@ class _RepeatModule(nn.Module):
         self.inner = inner_mod
 
 
-class RepeatMorphism(Morphism):
+class RepeatMorphism(FiniteMorphism):
     """Runtime-variable iterated composition (matrix power).
 
     Wraps an endomorphism f : X -> X and computes f^n at runtime,
@@ -861,6 +898,7 @@ class RepeatMorphism(Morphism):
     """
 
     def __init__(self, inner: Morphism, n: int = 1) -> None:
+        inner = _require_finite(inner)
         if inner.domain != inner.codomain:
             raise TypeError(
                 f"repeat requires an endomorphism, got {inner.domain!r} -> {inner.codomain!r}"
@@ -921,7 +959,7 @@ class RepeatMorphism(Morphism):
         return f"RepeatMorphism({self._inner!r}, n={self._n})"
 
 
-class CurriedMorphism(Morphism):
+class CurriedMorphism(FiniteMorphism):
     """The curry of a morphism out of a product.
 
     V-matrices form a compact closed category under the cartesian
@@ -961,6 +999,7 @@ class CurriedMorphism(Morphism):
     """
 
     def __init__(self, inner: Morphism, direction: str = "right") -> None:
+        inner = _require_finite(inner)
         if direction not in ("right", "left"):
             raise ValueError(f"direction must be 'right' or 'left', got {direction!r}")
         if not isinstance(inner.domain, ProductSet) or len(inner.domain.components) < 2:
@@ -1016,7 +1055,7 @@ class CurriedMorphism(Morphism):
         return f"CurriedMorphism({self._inner!r}, direction={self._direction!r})"
 
 
-class UncurriedMorphism(Morphism):
+class UncurriedMorphism(FiniteMorphism):
     """The uncurry of a morphism into a product, inverse to `CurriedMorphism`.
 
     For ``g : X → [Y, Z] = Y × Z``, ``direction='right'`` gives
@@ -1044,6 +1083,7 @@ class UncurriedMorphism(Morphism):
     """
 
     def __init__(self, inner: Morphism, direction: str = "right") -> None:
+        inner = _require_finite(inner)
         if direction not in ("right", "left"):
             raise ValueError(f"direction must be 'right' or 'left', got {direction!r}")
         cod = inner.codomain
@@ -1330,6 +1370,7 @@ from quivers.categorical.functors import Functor  # noqa: E402
 
 __all__ = [
     "Morphism",
+    "FiniteMorphism",
     "TransformedMorphism",
     "ObservedMorphism",
     "LatentMorphism",

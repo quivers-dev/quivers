@@ -12,11 +12,13 @@ import torch.nn.functional as F
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.core.morphisms import (
     ComposedMorphism,
+    FiniteMorphism,
     FunctorMorphism,
     MarginalizedMorphism,
     Morphism,
     ProductMorphism,
     RepeatMorphism,
+    _require_finite,
 )
 from quivers.qiec.entries import (
     EntryPoint,
@@ -38,7 +40,7 @@ class Program(nn.Module):
     and observed buffers, and provides a forward() that materializes
     the composed tensor.
 
-    Supports both discrete ``Morphism`` instances (which produce a
+    Supports finite tensor morphisms (which produce a
     membership tensor via ``forward()``) and ``ContinuousMorphism``
     instances (which expose ``rsample`` / ``log_prob``).
 
@@ -71,6 +73,8 @@ class Program(nn.Module):
         #: The checked projection of the compiled module, or ``None``
         #: for a Program built directly around a morphism.
         self.qiec: QiecModule | None = None
+        if isinstance(morphism, Morphism):
+            _require_finite(morphism)
         self._morphism = morphism
         self._is_continuous = isinstance(morphism, ContinuousMorphism)
         self._is_callable_module = (
@@ -366,7 +370,7 @@ class Program(nn.Module):
         if n_steps is not None:
             self._set_repeat_steps(n_steps)
 
-        return cast(Morphism, self._morphism).tensor
+        return cast(FiniteMorphism, self._morphism).tensor
 
     def _set_repeat_steps(self, n: int) -> None:
         """Set n_steps on all RepeatMorphism nodes in the tree.
@@ -401,7 +405,7 @@ class Program(nn.Module):
             Log-membership values.  Entries near 0 map to large
             negative values.
         """
-        t = cast(Morphism, self._morphism).tensor
+        t = cast(FiniteMorphism, self._morphism).tensor
         return torch.log(t.clamp(min=1e-7))
 
     def nll_loss(
@@ -429,7 +433,7 @@ class Program(nn.Module):
         torch.Tensor
             Scalar mean negative log-likelihood.
         """
-        t = cast(Morphism, self._morphism).tensor
+        t = cast(FiniteMorphism, self._morphism).tensor
 
         # handle both flat and multi-dimensional indexing
         if domain_indices.ndim == 1:
@@ -461,7 +465,7 @@ class Program(nn.Module):
         torch.Tensor
             Scalar BCE loss.
         """
-        t = cast(Morphism, self._morphism).tensor
+        t = cast(FiniteMorphism, self._morphism).tensor
         return F.binary_cross_entropy(t, target)
 
 

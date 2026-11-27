@@ -33,6 +33,7 @@ from quivers.core.objects import (
     ProductSet,
     CoproductSet,
     FreeMonoid,
+    StringSet,
     Unit,
 )
 from quivers.core.algebras import (
@@ -44,6 +45,7 @@ from quivers.core.algebras import (
 )
 from quivers.core.morphisms import (
     Morphism,
+    FiniteMorphism,
     ObservedMorphism,
     LatentMorphism,
     ComposedMorphism,
@@ -331,6 +333,7 @@ __all__ = [
     "ProductSet",
     "CoproductSet",
     "FreeMonoid",
+    "StringSet",
     "Unit",
     "EmptySet",
     "EMPTY",
@@ -375,6 +378,7 @@ __all__ = [
     "lookup_carrier_map",
     # morphisms
     "Morphism",
+    "FiniteMorphism",
     "ObservedMorphism",
     "LatentMorphism",
     "ComposedMorphism",
