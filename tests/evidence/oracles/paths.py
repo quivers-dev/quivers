@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from fractions import Fraction
+from itertools import zip_longest
 
 import didactic.api as dx
 import torch
@@ -19,6 +20,10 @@ type Label = str | None
 
 type Strings = tuple[tuple[str, ...], ...]
 """One string per tape."""
+
+
+type Alignment = tuple[tuple[int | None, int | None], ...]
+"""Ordered paired arc positions. An absent position leaves that path unchanged."""
 
 
 class Arc(dx.Model):
@@ -339,6 +344,67 @@ def compose_relations(
             if shared == other:
                 table[(x, z)] = table.get((x, z), Fraction(0)) + first * second
     return table
+
+
+def epsilon_matching_alignment(
+    left: Sequence[Label], right: Sequence[Label]
+) -> Alignment | None:
+    """Give the canonical epsilon-matching alignment of two label sequences.
+
+    The arguments contain labels on the shared tape, including epsilons.
+    Distinct occurrences retain their positions even if their labels agree.
+    Incompatible emitted words return None. Two empty sequences align by
+    the empty tuple.
+
+    Corresponding non-epsilon positions must be paired. Between them,
+    the three-state epsilon-matching filter allows paired epsilon steps
+    followed by a run of single-sided steps on at most one side. Thus
+    the number of paired steps is exactly the shorter run length. This
+    oracle obtains the alignment directly from those lengths.
+    """
+    left_symbols = tuple(i for i, label in enumerate(left) if label is not None)
+    right_symbols = tuple(j for j, label in enumerate(right) if label is not None)
+    if tuple(left[i] for i in left_symbols) != tuple(right[j] for j in right_symbols):
+        return None
+
+    alignment: list[tuple[int | None, int | None]] = []
+    i = j = 0
+    for stop_i, stop_j in zip(
+        (*left_symbols, len(left)), (*right_symbols, len(right)), strict=True
+    ):
+        alignment.extend(zip_longest(range(i, stop_i), range(j, stop_j)))
+        if stop_i < len(left):
+            alignment.append((stop_i, stop_j))
+        i, j = stop_i + 1, stop_j + 1
+    return tuple(alignment)
+
+
+def compatible_path_pairs(
+    left: Machine, right: Machine
+) -> Iterator[tuple[Path, Path, Alignment]]:
+    """Yield each compatible pair of accepting paths and its alignment.
+
+    Each operand has two tapes and finitely many accepting paths. The
+    second left tape is matched to the first right tape. Arcs and
+    boundary marks come from the original paths, so parallel paths and
+    zero-weight paths remain separately identifiable.
+    """
+    if any(len(arc.labels) != 2 for machine in (left, right) for arc in machine.arcs):
+        raise ValueError("composition oracle requires two tapes per operand")
+
+    right_groups: dict[tuple[str, ...], list[Path]] = {}
+    for right_path in accepting_paths(right):
+        shared, _ = right_path.strings() or ((), ())
+        right_groups.setdefault(shared, []).append(right_path)
+    for left_path in accepting_paths(left):
+        _, shared = left_path.strings() or ((), ())
+        for right_path in right_groups.get(shared, ()):
+            alignment = epsilon_matching_alignment(
+                tuple(arc.labels[1] for arc in left_path.arcs),
+                tuple(arc.labels[0] for arc in right_path.arcs),
+            )
+            assert alignment is not None
+            yield left_path, right_path, alignment
 
 
 def conditional(table: Mapping[Strings, Fraction]) -> dict[Strings, Fraction]:
