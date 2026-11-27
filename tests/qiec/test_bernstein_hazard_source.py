@@ -52,7 +52,7 @@ def test_source_binding_infers_structural_extents_and_matches_reference_and_orac
     expected = run_program(
         model.checked_module, "survival", data=host, sites={}
     ).log_joint
-    assert actual.item() == pytest.approx(expected, abs=2e-7)
+    assert actual.item() == pytest.approx(expected.item(), abs=2e-7)
     emitted = module_to_source(parse(SOURCE))
     Compiler(parse(emitted)).qiec_module
     torch.testing.assert_close(

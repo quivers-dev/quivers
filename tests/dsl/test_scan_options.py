@@ -241,8 +241,8 @@ def test_reversed_scan_reference_machine_matches_the_oracle() -> None:
     assert run.log_joint == pytest.approx(
         float(_reversed_oracle(visited, x, o)), rel=REFERENCE_REL
     )
-    expected = tuple((float(visited[T - 1 - p]),) for p in range(T))
-    assert run.value == expected
+    expected = torch.stack(visited).flip(0).unsqueeze(-1)
+    torch.testing.assert_close(run.value, expected, rtol=0, atol=0)
 
 
 BIDIRECTIONAL = """
@@ -354,7 +354,8 @@ def test_bidirectional_reference_machine_matches_the_oracle() -> None:
     assert run.log_joint == pytest.approx(
         float(_bidirectional_oracle(values, x, y)), rel=REFERENCE_REL
     )
-    assert run.value == tuple((float(values[f"s@{t}"]),) for t in range(T))
+    expected = torch.stack([values[f"s@{t}"] for t in range(T)]).unsqueeze(-1)
+    torch.testing.assert_close(run.value, expected, rtol=0, atol=0)
 
 
 def test_the_two_paths_agree_on_a_batch_of_runs() -> None:

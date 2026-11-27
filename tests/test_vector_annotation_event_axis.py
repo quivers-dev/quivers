@@ -82,7 +82,9 @@ def test_explicit_one_coordinate_codomain_fixes_the_singleton_simplex() -> None:
         D.Dirichlet(torch.tensor([2.0])).log_prob(point),
     )
     checked = program.run("p", data={}, sites={"w": (1.0,)})
-    assert checked.value == (1.0,)
+    torch.testing.assert_close(
+        checked.value, torch.ones(1, dtype=torch.float64), rtol=0, atol=0
+    )
     assert checked.log_joint == 0.0
 
 

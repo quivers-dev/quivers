@@ -35,7 +35,7 @@ def test_normal_events_and_truncation_agree_between_native_reference_and_math(
     module = parse(source)
     checked = lower_qvr_to_qiec(module)
     data = {"y": (-0.2, 0.3, 0.8, 0.1), "c": (-1, 0, 1, 2), "u": (0.0, 0.0, 0.0, 1.1)}
-    actual = run_program(checked, "p", data=data, sites={"a": 0.2}).log_joint
+    actual = run_program(checked, "p", data=data, sites={"a": 0.2}).log_joint.item()
     normal = torch.distributions.Normal(torch.tensor(0.2, dtype=torch.float64), 1.0)
 
     def cdf(x):

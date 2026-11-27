@@ -466,5 +466,5 @@ export model
             checked, "model", data=data | {name: value - step}, sites={}
         ).log_joint
         assert actual.item() == pytest.approx(
-            (plus - minus) / (2 * step), rel=5e-5, abs=1e-6
+            (plus - minus).item() / (2 * step), rel=5e-5, abs=1e-6
         )

@@ -53,24 +53,6 @@ CASES: dict[str, tuple[str, str, list[float] | list[list[float]] | float]] = {
 }
 
 
-def _nested(value: list[float] | list[list[float]] | float) -> object:
-    """A value as the reference machine's nested tuples.
-
-    Parameters
-    ----------
-    value : list[float] | list[list[float]] | float
-        The value.
-
-    Returns
-    -------
-    object
-        A number, or nested tuples of numbers.
-    """
-    if isinstance(value, list):
-        return tuple(_nested(item) for item in value)
-    return value
-
-
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_map_returns_the_checked_tensor_on_both_paths(case: str) -> None:
     body, result, expected = CASES[case]
@@ -83,7 +65,9 @@ def test_map_returns_the_checked_tensor_on_both_paths(case: str) -> None:
     (entry,) = program.entry_points()
     assert entry.result == result
     reference = program.run("total", sites={"w": tuple(W)}).value
-    assert reference == _nested(expected)
+    torch.testing.assert_close(
+        reference, torch.tensor(expected, dtype=torch.float64), rtol=0, atol=0
+    )
     compiled = program.morphism.rsample(
         torch.zeros(1, 1), observations={"w": torch.tensor(W)}
     )
