@@ -1,4 +1,4 @@
-"""Conformance of deductions on the reference machine against enumerated derivations."""
+"""Conformance of deductions and programs on the reference machine."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from tests.evidence.conformance import parameters, run
     "name",
     parameters(
         "machine",
+        "checked",
         "repeat/machine-lexical",
         "repeat/machine-nonlexical",
         "repeat/machine-chained",

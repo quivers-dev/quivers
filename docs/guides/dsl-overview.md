@@ -124,7 +124,8 @@ or a `program` through one call of an entry point
 ([`invoke_entry`](../api/qiec/entries.md)). The compiled runtime lowers a program's
 calls of other computations to its own steps where it can. A program with a call it
 cannot lower becomes a [`CheckedProgram`](../api/effects/checked_program.md), which
-runs on the reference machine, scores the same joint, and cannot be fitted. The
+runs on the reference machine with tensor values. MCMC and SVI fit it through its traces and
+log joint. The
 transpilers lower the well-typed computation to each target language;
 [Transpiler support](../transpile-support.md) lists what each target accepts.
 

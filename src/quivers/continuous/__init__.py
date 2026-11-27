@@ -114,7 +114,9 @@ if TYPE_CHECKING:
         reload_inline_registry,
     )
     from quivers.continuous.tensor_backend import (
+        DrawnLaw as DrawnLaw,
         TensorBackend as TensorBackend,
+        site_morphism as site_morphism,
         torch_law as torch_law,
     )
 
@@ -147,7 +149,7 @@ _INLINE_EXPORTS = (
 )
 
 
-_TENSOR_BACKEND_EXPORTS = ("TensorBackend", "torch_law")
+_TENSOR_BACKEND_EXPORTS = ("DrawnLaw", "TensorBackend", "site_morphism", "torch_law")
 """The tensor backend also depends on the inline distribution builders."""
 
 
@@ -245,4 +247,4 @@ __all__ += [
     "reload_inline_registry",
 ]
 __all__ += plate.__all__
-__all__ += ["TensorBackend", "torch_law"]
+__all__ += ["DrawnLaw", "TensorBackend", "site_morphism", "torch_law"]
