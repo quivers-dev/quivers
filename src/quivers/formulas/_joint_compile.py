@@ -1589,6 +1589,7 @@ def emit_joint(
     }
     by_site = {target.site: target for target in targets}
     shared_sites = {target.site for target in global_targets}
+    responses_changed = False
     if plan.rules:
         # Re-enter the ordinary emitter after global selector resolution so its
         # existing dynamic support restrictions remain conditional and normalized.
@@ -1629,6 +1630,8 @@ def emit_joint(
                     rows=(rows or {}).get(name),
                     resolved_priors=local_rules,
                 )
+                responses_changed = True
+    if responses_changed:
         module, _, layouts = parts()
         statements = list(module.statements[:-2])
         program = next(
