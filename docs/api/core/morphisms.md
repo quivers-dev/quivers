@@ -52,6 +52,34 @@ weight slot. A bounded tensor restriction reads and validates the vector once fo
 table. It repeats construction for each entry, subject to the explicit tensor size limit and
 optional state and arc budgets.
 
+### Binary composition at fixed words
+
+`ComposedRelation(left, right)` joins the output tape of the left relation to the input
+tape of the right relation. Each operand has one input and one output tape, and the joined
+tape types and scalar semiring must agree. For outer words $x$ and $z$, the score is
+$\bigoplus_y R(x,y)\otimes S(y,z)$. The shared semiring must establish commutative
+multiplication so that interleaved products preserve the product of the two path weights.
+
+The query aligns the corresponding non-epsilon occurrences on the joined tape. Between
+two such matches, including the leading and trailing intervals, the filter pairs epsilon
+occurrences until one side has finished its run. The remaining occurrences advance their
+own side. A match of a non-epsilon symbol resets the filter. This gives exactly one
+filtered path per compatible pair of original paths, including parallel paths and paths
+with no arc. Current weights leave this correspondence unchanged.
+
+The constructor indexes arcs by state, outer label, and shared label in time and space
+linear in the total number of operand arcs. A query explores only configurations reachable
+at the supplied words. For $P$ reached configurations, $H$ shared-label probes and $A$
+candidate arc occurrences, planning after word validation takes $O(P+H+A)$ time and
+$O(P+A)$ space. At each configuration a probe examines one label from the smaller of two
+allowed shared-label groups. The arc count includes every admitted occurrence of a matched
+arc pair or one-sided epsilon arc. `max_states` bounds $P$ and `max_work` bounds $H+A$.
+Evaluation reads both original weight sources and uses the packed acyclic plan for the
+productive part. The weight vectors must have a common dtype and device. Evaluation work
+is linear in the operand slot counts and the productive graph, apart from computing the
+operand weights. A productive cycle on the fixed outer words requires closure, even
+when it emits symbols on the shared tape or its current weight is zero.
+
 ::: quivers.core.relations
     options:
       members:
@@ -63,6 +91,8 @@ optional state and arc budgets.
         - Label
         - Words
         - FixedStringQuery
+        - ComposedRelation
+        - ComposedStringQuery
         - QueryWork
         - FiniteRelationRestriction
         - ProductiveEpsilonCycleError

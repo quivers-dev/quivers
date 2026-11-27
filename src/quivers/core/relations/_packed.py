@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import torch
 
 from quivers.core.algebras import Semiring
-from quivers.core.relations.topology import RelationTopology
 
 
 def _take(values: torch.Tensor, indices: tuple[int, ...]) -> torch.Tensor:
@@ -125,7 +124,6 @@ class _PackedPaths:
 
 
 def _pack_paths(
-    topology: RelationTopology,
     order: list[int],
     arcs: list[tuple[tuple[int, int], ...]],
     initial: tuple[tuple[int, int], ...],
@@ -159,13 +157,11 @@ def _pack_paths(
                 start.append(initial_slots[state])
             if state in final_slots:
                 finish.append((local_id, final_slots[state]))
-            for target, arc in arcs[state]:
+            for target, slot in arcs[state]:
                 destination = level_of[target]
                 rows[target].append(incoming_sizes[destination])
                 incoming_sizes[destination] += 1
-                outgoing.setdefault(destination, []).append(
-                    (local_id, topology.arcs[arc].weight)
-                )
+                outgoing.setdefault(destination, []).append((local_id, slot))
         flat = [edge for group in outgoing.values() for edge in group]
         layers.append(
             _PathLayer(

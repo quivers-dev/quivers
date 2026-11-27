@@ -76,7 +76,6 @@ def _compile_paths(
         raise RelationLimitError("fixed-word path plan exceeds max_states")
     state_ids = {state: index for index, state in enumerate(states)}
     arcs: list[list[tuple[int, int]]] = [[] for _ in states]
-    reverse: list[list[int]] = [[] for _ in states]
     examined = 0
     final: list[tuple[int, int]] = []
     cursor = 0
@@ -103,11 +102,25 @@ def _compile_paths(
                 state_ids[destination] = destination_id
                 states.append(destination)
                 arcs.append([])
-                reverse.append([])
-            arcs[cursor].append((destination_id, arc_id))
-            reverse[destination_id].append(cursor)
+            arcs[cursor].append((destination_id, topology.arcs[arc_id].weight))
         cursor += 1
 
+    initial = [(index, mark.weight) for index, mark in enumerate(topology.initial)]
+    return _trim_paths(arcs, initial, final, examined)
+
+
+def _trim_paths(
+    arcs: list[list[tuple[int, int]]],
+    initial: list[tuple[int, int]],
+    final: list[tuple[int, int]],
+    examined: int,
+) -> _PathPlan:
+    # An edge is an occurrence of a (target, weight slot) record. Several
+    # occurrences can have the same target and slot.
+    reverse: list[list[int]] = [[] for _ in arcs]
+    for source, edges in enumerate(arcs):
+        for target, _ in edges:
+            reverse[target].append(source)
     productive = {state for state, _ in final}
     agenda = list(productive)
     while agenda:
@@ -130,7 +143,7 @@ def _compile_paths(
             incoming_count[target] += 1
     ready = deque(
         state
-        for state in range(len(states))
+        for state in range(len(arcs))
         if state in productive and incoming_count[state] == 0
     )
     order: list[int] = []
@@ -147,14 +160,10 @@ def _compile_paths(
         raise ProductiveEpsilonCycleError(
             "fixed-word path sum requires closure of a productive epsilon cycle"
         )
-    initial = tuple(
-        (index, mark.weight)
-        for index, mark in enumerate(topology.initial)
-        if index in productive
-    )
+    active_initial = tuple(mark for mark in initial if mark[0] in productive)
     return _PathPlan(
-        _pack_paths(topology, order, active_arcs, initial, final),
-        QueryWork(len(states), examined, len(order), sum(map(len, active_arcs))),
+        _pack_paths(order, active_arcs, active_initial, final),
+        QueryWork(len(arcs), examined, len(order), sum(map(len, active_arcs))),
     )
 
 
