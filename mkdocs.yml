@@ -85,7 +85,9 @@ markdown_extensions:
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
-          class: mermaid
+          # mermaid-init.js owns rendering. Material's loader for pre.mermaid
+          # can abort sidebar sizing when its Mermaid script fails to load.
+          class: qv-mermaid-source
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true

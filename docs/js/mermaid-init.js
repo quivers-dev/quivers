@@ -92,7 +92,7 @@
     }
 
     function prepareDiagramSources() {
-        document.querySelectorAll("pre.mermaid").forEach(function (pre) {
+        document.querySelectorAll("pre.qv-mermaid-source").forEach(function (pre) {
             const code = pre.querySelector("code");
             const source = (code ? code.textContent : pre.textContent) || "";
             const div = document.createElement("div");
