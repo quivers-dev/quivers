@@ -25,7 +25,7 @@ from quivers.dsl.compiler.deductions import BASE_WEIGHT_KEY
 from quivers.qiec.foreign import SemiringProduct, SemiringSum
 from quivers.qiec.module import reached_handlers
 from quivers.qiec.program_runtime import run_deduction
-from quivers.stochastic.agenda import HashChart
+from quivers.stochastic.agenda import ChartView, HashChart
 from tests.evidence.checks._registry import add
 from tests.evidence.compare import (
     Accuracy,
@@ -81,7 +81,8 @@ POINTS = (
 ROUNDINGS = 20 * len(PROOFS) * (8 + len(PROOFS))
 
 type LogWeights = Mapping[str, torch.Tensor]
-type Evaluation = tuple[torch.Tensor, LogWeights]
+type Evaluation = tuple[torch.Tensor, LogWeights, int]
+"""The score, its gradient leaves, and the executor's retained provenance count."""
 type Reader = Callable[[LogWeights], Evaluation]
 
 
@@ -114,7 +115,7 @@ def machine() -> Reader:
             },
         )
         assert isinstance(result.weight, torch.Tensor)
-        return result.weight, weights
+        return result.weight, weights, len(result.result.trace)
 
     return evaluate
 
@@ -141,7 +142,8 @@ def agenda() -> Reader:
         with torch.no_grad():
             for name, leaf in leaves.items():
                 leaf.copy_(weights[name])
-        return system(SENTENCE).goal_weight(), leaves
+        result = system.run(SENTENCE)
+        return ChartView(result).goal_weight(), leaves, result.work.provenance_records
 
     return evaluate
 
@@ -160,7 +162,7 @@ def contraction() -> Reader:
         # the same for b, for which the S row is structurally absent.
         # The two s factors represent the two binary nodes at either
         # bracketing. The i, j, k unary factors turn a V into an S.
-        return wiring.apply(b, join, join, a, unary, unary, a, unary), weights
+        return wiring.apply(b, join, join, a, unary, unary, a, unary), weights, 0
 
     return evaluate
 
@@ -177,7 +179,7 @@ def check_partition(make: Callable[[], Reader], executor: str) -> None:
             )
             for name, weight in weights.items()
         }
-        answer, leaves = evaluate(tensors)
+        answer, leaves, _ = evaluate(tensors)
         label = f"{executor} {point}"
         expected = torch.tensor(logarithm(mass), dtype=torch.float64)
         compare_tensor(
