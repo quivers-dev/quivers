@@ -187,7 +187,9 @@ def _require_partitionable_joint(model: MonadicProgram) -> None:
     ValueError
         If an opaque joint override has no declared prior/likelihood roles.
     """
-    if _has_custom_joint(model):
+    # A program whose sites are read from its runs states each density's
+    # role in its traces; an override of another program's joint hides them.
+    if _has_custom_joint(model) and model.steps_list_sites:
         raise ValueError(
             "SMC tempering requires the canonical MonadicProgram.log_joint; "
             "an overridden log_joint does not expose prior/likelihood factor roles. "
@@ -239,11 +241,7 @@ class TemperedPotential(PotentialFn):
         _require_partitionable_joint(model)
         super().__init__(model, registry, x, observations)
         self._temperature = _check_temperature(temperature)
-        from quivers.inference._prior_projection import _score_steps
-
-        self._potential_scores = frozenset(
-            step.name for step in _score_steps(model) if step.role == "potential"
-        )
+        self._potential_scores = model.potential_sites
 
     @property
     def temperature(self) -> float:

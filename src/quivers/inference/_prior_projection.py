@@ -16,6 +16,7 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import Euclidean
+from quivers.effects.checked_program import CheckedProgram
 
 
 def _labels(program: MonadicProgram) -> set[str]:
@@ -77,6 +78,8 @@ def _has_potential(program: MonadicProgram) -> bool:
     bool
         Whether projecting this scope must preserve a potential contribution.
     """
+    if isinstance(program, CheckedProgram):
+        return bool(program.potentials)
     return any(step.role == "potential" for step in _score_steps(program))
 
 
@@ -132,16 +135,20 @@ def project_prior_sites(
     Raises
     ------
     ValueError
-        If a requested base label is absent from the native program, or
-        the program's steps do not list its sites.
+        If a requested base label is absent from the native program.
     """
-    if not model.steps_list_sites:
-        raise ValueError(
-            "a prior projection keeps the draws among a program's steps, and this "
-            "program runs a checked computation whose draws and scores are not "
-            "steps; its scores state no role that separates a prior potential "
-            "from an observation, so its prior cannot be projected"
-        )
+    if isinstance(model, CheckedProgram):
+        drawn = {site.name for site in model.entry.sites if site.kind == "sample"}
+        requested = {
+            name.rsplit("@", 1)[0] if name.rpartition("@")[2].isdigit() else name
+            for name in sites or ()
+        }
+        if missing := requested - drawn:
+            raise ValueError(f"unknown prior sites {sorted(missing)}")
+        # The checked computation is not a list of steps to project: its
+        # prior is the program with its observations' scores dropped, every
+        # draw kept.
+        return model.prior_program()
     available = _labels(model)
     selected = (
         available

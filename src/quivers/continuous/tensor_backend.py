@@ -14,6 +14,7 @@ itself accounts for, and has none.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import math
 import random
 
@@ -21,6 +22,7 @@ import torch
 from torch.distributions import Distribution
 from torch.distributions import constraints as _constraints
 
+from quivers import _positions
 from quivers.continuous._measure_queries import log_mass as measure_log_mass
 from quivers.continuous.inline import _raw_distribution_value
 from quivers.continuous.morphisms import ContinuousMorphism
@@ -76,6 +78,115 @@ def _argument(value: object, rank: int, natural: tuple[int, ...]) -> TorchArgume
         return value
     dims = natural if len(natural) == rank else tuple(natural[-1] for _ in range(rank))
     return value.expand(dims)
+
+
+def _expanded(
+    distribution: RuntimeDistribution, tensors: list[torch.Tensor]
+) -> RuntimeDistribution:
+    """A distribution whose tensor arguments have their full shape.
+
+    Each tensor argument is expanded, without a copy, to the shape the
+    torch family is built from: the plate's axes and the parameter's own,
+    so a leading run axis added to it later is never read as a plate axis.
+
+    Parameters
+    ----------
+    distribution : RuntimeDistribution
+        The distribution.
+    tensors : list[torch.Tensor]
+        Where the expanded tensors are collected, in order.
+
+    Returns
+    -------
+    RuntimeDistribution
+        The distribution over the expanded arguments.
+    """
+    plate = (*distribution.batch, *distribution.event)
+
+    def expanded(value: object, rank: int) -> object:
+        """One argument with its full shape, its tensors collected.
+
+        Parameters
+        ----------
+        value : object
+            The argument.
+        rank : int
+            The parameter's own rank.
+
+        Returns
+        -------
+        object
+            The argument, expanded.
+        """
+        if isinstance(value, RuntimeDistribution):
+            return _expanded(value, tensors)
+        if isinstance(value, tuple):
+            return tuple(expanded(item, rank) for item in value)
+        if not isinstance(value, torch.Tensor):
+            return value
+        full = _argument(value, rank, distribution.natural)
+        assert isinstance(full, torch.Tensor)
+        if plate:
+            own = tuple(full.shape[full.dim() - rank :]) if rank else ()
+            full = full.expand(*plate, *own)
+        tensors.append(full)
+        return full
+
+    return distribution.with_(
+        arguments={
+            name: expanded(value, distribution.ranks.get(name, 0))
+            for name, value in distribution.arguments.items()
+        }
+    )
+
+
+def _rebuilt(
+    distribution: RuntimeDistribution,
+    values: Iterator[torch.Tensor],
+    count: int | None,
+) -> RuntimeDistribution:
+    """A distribution over other tensors, with a leading run axis if given.
+
+    Parameters
+    ----------
+    distribution : RuntimeDistribution
+        A distribution from `_expanded`.
+    values : Iterator[torch.Tensor]
+        Its tensors, in the order `_expanded` collected them.
+    count : int | None
+        The runs, which lead every tensor and the plate, or ``None``.
+
+    Returns
+    -------
+    RuntimeDistribution
+        The distribution.
+    """
+
+    def rebuilt(value: object) -> object:
+        """One argument over the next tensors.
+
+        Parameters
+        ----------
+        value : object
+            The argument.
+
+        Returns
+        -------
+        object
+            The argument over the given tensors.
+        """
+        if isinstance(value, RuntimeDistribution):
+            return _rebuilt(value, values, count)
+        if isinstance(value, tuple):
+            return tuple(rebuilt(item) for item in value)
+        if not isinstance(value, torch.Tensor):
+            return value
+        return next(values)
+
+    arguments = {name: rebuilt(value) for name, value in distribution.arguments.items()}
+    if count is None:
+        return distribution.with_(arguments=arguments)
+    return distribution.with_(arguments=arguments, batch=(count, *distribution.batch))
 
 
 def torch_law(distribution: RuntimeDistribution) -> Distribution:
@@ -143,13 +254,7 @@ def _point(value: object, distribution: Distribution) -> torch.Tensor:
         raise DistributionError("a tensor backend scores a tensor")
     support = distribution.support
     if support is not None and support.is_discrete:
-        if isinstance(
-            support,
-            (
-                torch.distributions.constraints._Boolean,
-                torch.distributions.constraints._OneHot,
-            ),
-        ):
+        if isinstance(support, (_constraints._Boolean, _constraints._OneHot)):
             return value.to(_parameter_dtype(distribution))
         return value if not value.dtype.is_floating_point else value.long()
     return (
@@ -225,6 +330,11 @@ class TensorBackend:
     def sample(self, distribution: RuntimeDistribution, rng: random.Random) -> object:
         """Draw at every position of the plate.
 
+        In a pass over many runs at once (`quivers._positions.map_positions`)
+        every run draws its own value: the draw is made beneath the mapping
+        by `quivers._positions.draw`, over a distribution whose arguments
+        lead with the run axis.
+
         Parameters
         ----------
         distribution : RuntimeDistribution
@@ -243,10 +353,33 @@ class TensorBackend:
             If the family has no torch distribution for its arguments.
         """
         del rng
-        native = torch_law(distribution)
-        drawn = native.rsample() if native.has_rsample else native.sample()
         kind = number_kind(family_record(distribution.family).element)
-        return _draw(drawn, kind, distribution.numbers)
+        tensors: list[torch.Tensor] = []
+        expanded = _expanded(distribution, tensors)
+
+        def drawing(
+            values: tuple[torch.Tensor, ...], count: int | None
+        ) -> torch.Tensor:
+            """Draw from the distribution over the given tensors.
+
+            Parameters
+            ----------
+            values : tuple[torch.Tensor, ...]
+                Its tensors, in the order they were collected; each leads
+                with the run axis when ``count`` is a number.
+            count : int | None
+                The number of runs drawn at once, or ``None``.
+
+            Returns
+            -------
+            torch.Tensor
+                The draw, leading with the run axis when there is one.
+            """
+            native = torch_law(_rebuilt(expanded, iter(values), count))
+            drawn = native.rsample() if native.has_rsample else native.sample()
+            return _draw(drawn, kind, distribution.numbers)
+
+        return _positions.draw(drawing, tuple(tensors))
 
     def log_prob(
         self, distribution: RuntimeDistribution, value: object, keep_batch: bool

@@ -19,6 +19,7 @@ from quivers.qiec.builtins import (
     COMPUTE_APPLY,
     COMPUTE_EFFECT,
     ExtraValuePolicy,
+    MissingSiteValue,
     MissingValuePolicy,
     PARAM,
     PARAM_EFFECT,
@@ -344,6 +345,7 @@ from quivers.qiec.program_runtime import (
     sample_program,
     static_arguments_for,
 )
+from quivers.qiec.scope import Scope
 from quivers.qiec.programs import (
     ParameterRole,
     ProgramEntry,
@@ -848,11 +850,13 @@ __all__ = [
     "weight_handler",
     "HostLaw",
     "Implementation",
+    "MissingSiteValue",
     "Number",
     "NumberDomain",
     "NumberKind",
     "PositionDependentControl",
     "RealDtype",
+    "Scope",
     "decide",
     "discrete_key",
     "host_index",

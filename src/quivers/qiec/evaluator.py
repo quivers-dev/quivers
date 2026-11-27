@@ -21,6 +21,8 @@ handler boundary.
 from __future__ import annotations
 
 from functools import cached_property, lru_cache
+from types import MappingProxyType
+import weakref
 from collections.abc import Callable, Hashable, Mapping
 from typing import cast
 
@@ -95,6 +97,7 @@ from quivers.qiec.distributions import (
     distribution_backend,
 )
 from quivers.qiec.families import family
+from quivers.qiec.scope import Scope
 from quivers.qiec.numbers import (
     NumberDomain,
     decide,
@@ -960,18 +963,18 @@ class _HandlerFrame(ContinuationFrame):
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
-    def bindings(self) -> dict[Local, HeldValue]:
+    def bindings(self) -> Scope[Local, HeldValue]:
         """The environment an authored clause body of this frame starts from.
 
         Returns
         -------
-        dict[Local, HeldValue]
+        Scope[Local, HeldValue]
             The bindings at the installation, extended by the handler's
             parameters at their current values.
         """
-        environment = dict(self.environment)
-        environment.update(zip(self.definition.parameters, self.arguments, strict=True))
-        return environment
+        return Scope.of(self.environment).extend(
+            zip(self.definition.parameters, self.arguments, strict=True)
+        )
 
     def carrying(self, arguments: tuple[HeldValue, ...]) -> _HandlerFrame:
         """This installation with its parameters at other values.
@@ -1207,7 +1210,7 @@ class _Continue(QiecModel):
     """
 
     current: Computation | _Returned = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    environment: dict[Local, HeldValue] = dx.field(
+    environment: Mapping[Local, HeldValue] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     resumption_path: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -1368,7 +1371,7 @@ class ClauseContext:
         stack = [*self._outer_stack, delimiter]
         return self._evaluator._evaluate_delimited(
             computation,
-            dict(self._environment),
+            Scope.of(self._environment),
             stack,
             self._outer_stack,
             self._resumption_path,
@@ -1577,7 +1580,7 @@ class Resumption:
         try:
             return self._evaluator._drive_value(
                 value,
-                dict(self._captured_environment),
+                Scope.of(self._captured_environment),
                 stack,
                 path,
                 delimiter,
@@ -2157,6 +2160,51 @@ def _stacked(
         raise EvaluationError(f"tensor entries differ in shape: {error}") from error
 
 
+_TABLES: weakref.WeakKeyDictionary[
+    QiecModule,
+    tuple[
+        Mapping[ComputationId, NamedComputation],
+        Mapping[HandlerId, HandlerDef],
+        frozenset[str],
+    ],
+] = weakref.WeakKeyDictionary()
+"""The lookup tables of each module an evaluator has run."""
+
+
+def _module_tables(
+    module: QiecModule,
+) -> tuple[
+    Mapping[ComputationId, NamedComputation],
+    Mapping[HandlerId, HandlerDef],
+    frozenset[str],
+]:
+    """A module's computations and handlers by identity, built once.
+
+    A module is immutable, so an evaluator built for it reads the tables
+    of every earlier one rather than walking the module again.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module.
+
+    Returns
+    -------
+    tuple
+        The computations by identity, the handler declarations by
+        identity, and the names of its native distribution families.
+    """
+    tables = _TABLES.get(module)
+    if tables is None:
+        tables = (
+            MappingProxyType({item.id: item for item in module.computations}),
+            MappingProxyType({item.id: item for item in module.handlers}),
+            frozenset(item.name for item in module.distribution_families),
+        )
+        _TABLES[module] = tables
+    return tables
+
+
 class Evaluator:
     """Execute QIEC computations with explicit runtime attachments.
 
@@ -2206,16 +2254,15 @@ class Evaluator:
         self.trace_hook = trace_hook
         self.fuel = fuel
         self._type_validator = type_validator
-        self._computations: dict[ComputationId, NamedComputation] = {}
-        self._handler_definitions: dict[HandlerId, HandlerDef] = {}
-        self._native_families = (
-            {item.name for item in module.distribution_families}
-            if module is not None
-            else set()
-        )
+        self._computations: Mapping[ComputationId, NamedComputation] = {}
+        self._handler_definitions: Mapping[HandlerId, HandlerDef] = {}
+        self._native_families: frozenset[str] = frozenset()
         if module is not None:
-            self._computations = {item.id: item for item in module.computations}
-            self._handler_definitions = {item.id: item for item in module.handlers}
+            (
+                self._computations,
+                self._handler_definitions,
+                self._native_families,
+            ) = _module_tables(module)
         self._run_serial = 0
         self._steps = 0
         self._call_serial = 0
@@ -2268,7 +2315,7 @@ class Evaluator:
         try:
             return self._drive_computation(
                 computation,
-                self._machine_environment(environment),
+                Scope(self._machine_environment(environment)),
                 stack,
                 (),
             )
@@ -2352,7 +2399,7 @@ class Evaluator:
         EvaluationError
             If execution fails, as in `evaluate`.
         """
-        runtime_environment: dict[Local, HeldValue] = dict(environment or {})
+        runtime_environment: Scope[Local, HeldValue] = Scope.of(environment or {})
         manifest = HandlerManifest.from_registry(registry)
         self._validate_handler_manifest(manifest)
         self._begin_run()
@@ -2628,10 +2675,9 @@ class Evaluator:
                 [
                     self._value(
                         value.body,
-                        {
-                            **environment,
-                            value.binder: self.numbers.number("integer", index),
-                        },
+                        Scope.of(environment).bind(
+                            value.binder, self.numbers.number("integer", index)
+                        ),
                     )
                     for index in range(extent)
                 ],
@@ -2639,9 +2685,9 @@ class Evaluator:
                 self.numbers,
             )
         if isinstance(value, LetValue):
-            scope = dict(environment)
+            scope = Scope.of(environment)
             for binding in value.bindings:
-                scope[binding.binder] = self._value(binding.value, scope)
+                scope = scope.bind(binding.binder, self._value(binding.value, scope))
             return self._value(value.body, scope)
         raise TypeError(f"unsupported QIEC value {type(value).__name__}")
 
@@ -2760,7 +2806,7 @@ class Evaluator:
     def _drive_computation(
         self,
         computation: Computation,
-        environment: dict[Local, HeldValue],
+        environment: Scope[Local, HeldValue],
         stack: list[_Frame],
         resumption_path: tuple[int, ...],
     ) -> object:
@@ -2792,7 +2838,7 @@ class Evaluator:
     def _drive_value(
         self,
         value: object,
-        environment: dict[Local, HeldValue],
+        environment: Scope[Local, HeldValue],
         stack: list[_Frame],
         resumption_path: tuple[int, ...],
         delimiter: _DelimiterFrame | None = None,
@@ -2803,7 +2849,7 @@ class Evaluator:
         ----------
         value : object
             The value being returned.
-        environment : dict[Local, HeldValue]
+        environment : Scope[Local, HeldValue]
             Values in scope where the value was produced.
         stack : list[_Frame]
             The frame stack, mutated in place.
@@ -2832,7 +2878,7 @@ class Evaluator:
     def _run(  # noqa: C901, PLR0912, PLR0915
         self,
         current: Computation | _Returned,
-        environment: dict[Local, HeldValue],
+        environment: Scope[Local, HeldValue],
         stack: list[_Frame],
         resumption_path: tuple[int, ...],
         delimiter: _DelimiterFrame | None = None,
@@ -2850,7 +2896,7 @@ class Evaluator:
         ----------
         current : Computation or _Returned
             The term to reduce, or the value flowing back into the stack.
-        environment : dict[Local, HeldValue]
+        environment : Scope[Local, HeldValue]
             Values in scope.
         stack : list[_Frame]
             The machine's frame stack, mutated in place.
@@ -2875,7 +2921,7 @@ class Evaluator:
             a resumption breaks its grade, the budget runs out, or a host
             value fails validation.
         """
-        env: dict[Local, HeldValue] = environment
+        env: Scope[Local, HeldValue] = environment
         while True:
             self._tick()
             if isinstance(current, _Returned):
@@ -2891,8 +2937,7 @@ class Evaluator:
                     current = _Returned(value=frame.hook(value))
                     continue
                 if isinstance(frame, _BindFrame):
-                    env = dict(frame.environment)
-                    env[frame.binder] = value
+                    env = Scope.of(frame.environment).bind(frame.binder, value)
                     current = frame.then
                     continue
                 if isinstance(frame, _PathFrame):
@@ -2904,7 +2949,7 @@ class Evaluator:
                             "call.returned",
                             {"computation": frame.name, "serial": frame.serial},
                         )
-                    env = dict(frame.environment)
+                    env = Scope.of(frame.environment)
                     continue
                 if isinstance(frame, _InstanceFrame):
                     if self.trace_hook is not None:
@@ -2931,8 +2976,7 @@ class Evaluator:
                         and authored is not None
                     ):
                         stack.append(_AnswerFrame(handler=frame))
-                        env = frame.bindings()
-                        env[authored.binder] = value
+                        env = frame.bindings().bind(authored.binder, value)
                         current = authored.body
                         continue
                     try:
@@ -2951,11 +2995,11 @@ class Evaluator:
                         raise
                     self._finish_handler(frame, answer)
                     current = _Returned(value=answer)
-                    env = dict(frame.environment)
+                    env = Scope.of(frame.environment)
                     continue
                 if isinstance(frame, _AnswerFrame):
                     self._finish_handler(frame.handler, value)
-                    env = dict(frame.handler.environment)
+                    env = Scope.of(frame.handler.environment)
                     continue
                 if isinstance(frame, _ClauseFrame):
                     resumption = frame.resumption
@@ -2977,7 +3021,7 @@ class Evaluator:
                                 "operation": str(resumption._request.operation),
                             },
                         )
-                    env = dict(frame.environment)
+                    env = Scope.of(frame.environment)
                     resumption_path = frame.resumption_path
                     continue
                 raise AssertionError(f"unknown evaluator frame {frame!r}")
@@ -2987,7 +3031,7 @@ class Evaluator:
             if isinstance(current, Bind):
                 stack.append(
                     _BindFrame(
-                        binder=current.binder, then=current.then, environment=dict(env)
+                        binder=current.binder, then=current.then, environment=env
                     )
                 )
                 current = current.first
@@ -3019,7 +3063,7 @@ class Evaluator:
                         instance=current.instance,
                         lifecycle=lifecycle,
                         definition=definition,
-                        environment=dict(env),
+                        environment=env,
                         arguments=arguments,
                     )
                 )
@@ -3058,8 +3102,7 @@ class Evaluator:
                     raise EvaluationError(
                         "checked case branch/runtime constructor arity mismatch"
                     )
-                env = dict(env)
-                env.update(zip(branch.fields, scrutinee.fields, strict=True))
+                env = env.extend(zip(branch.fields, scrutinee.fields, strict=True))
                 current = branch.body
                 continue
             if isinstance(current, Call):
@@ -3103,9 +3146,9 @@ class Evaluator:
                                 "tail": True,
                             },
                         )
-                    caller_environment = finished.environment
+                    caller_environment = Scope.of(finished.environment)
                 else:
-                    caller_environment = dict(env)
+                    caller_environment = env
                 if self.trace_hook is not None:
                     self._emit_trace(
                         "call.entered",
@@ -3124,7 +3167,7 @@ class Evaluator:
                         environment=caller_environment,
                     )
                 )
-                env = dict(zip(parameters, arguments, strict=True))
+                env = Scope(zip(parameters, arguments, strict=True))
                 current = body
                 continue
             if isinstance(current, NewInstance):
@@ -3163,7 +3206,7 @@ class Evaluator:
                 )
                 stack.append(_PathFrame(resumption_path=resumption_path))
                 stack.extend(shot_frames)
-                env = dict(clause.resumption._captured_environment)
+                env = Scope.of(clause.resumption._captured_environment)
                 resumption_path = shot_path
                 current = _Returned(value=value)
                 continue
@@ -3189,7 +3232,7 @@ class Evaluator:
                 outcome = self._dispatch(runtime_request, env, stack, len(stack) - 1)
                 if isinstance(outcome, _Continue):
                     current = outcome.current
-                    env = outcome.environment
+                    env = Scope.of(outcome.environment)
                     resumption_path = outcome.resumption_path
                     continue
                 return outcome
@@ -3347,7 +3390,7 @@ class Evaluator:
     def _dispatch(
         self,
         request: RuntimeRequest,
-        environment: dict[Local, HeldValue],
+        environment: Scope[Local, HeldValue],
         stack: list[_Frame],
         search_index: int,
     ) -> object:
@@ -3448,7 +3491,7 @@ class Evaluator:
                     self,
                     request,
                     structural_clause.grade,
-                    dict(environment),
+                    environment,
                     captured_stack,
                     outer_stack,
                     self._validator_at(request.core.result_type),
@@ -3473,8 +3516,7 @@ class Evaluator:
                             "grade": structural_clause.grade.value,
                         },
                     )
-                clause_environment = frame.bindings()
-                clause_environment.update(
+                clause_environment = frame.bindings().extend(
                     zip(structural_clause.parameters, request.arguments, strict=True)
                 )
                 return _Continue(
@@ -3486,7 +3528,7 @@ class Evaluator:
                 self,
                 request,
                 structural_clause.grade,
-                dict(environment),
+                environment,
                 captured_stack,
                 outer_stack,
                 runtime_clause.result_validator,
@@ -3520,7 +3562,7 @@ class Evaluator:
                 stack.extend(shot_frames)
                 return _Continue(
                     current=_Returned(value=answer.value),
-                    environment=dict(resumption._captured_environment),
+                    environment=Scope.of(resumption._captured_environment),
                     resumption_path=shot_path,
                 )
             if isinstance(answer, Forward):
@@ -3565,7 +3607,7 @@ class Evaluator:
             del stack[index:]
             return _Continue(
                 current=_Returned(value=answer),
-                environment=dict(frame.environment),
+                environment=Scope.of(frame.environment),
                 resumption_path=request.resumption_path,
             )
         if self.trace_hook is not None:
@@ -3606,8 +3648,7 @@ class Evaluator:
         """
         if not isinstance(answer, ClauseComputation):
             return answer
-        env: dict[Local, HeldValue] = dict(context._environment)
-        env.update(answer.bindings)
+        env = Scope.of(context._environment).extend(answer.bindings)
         delimiter = _DelimiterFrame()
         stack = [*context._outer_stack, delimiter]
         return self._evaluate_delimited(
@@ -3622,7 +3663,7 @@ class Evaluator:
     def _evaluate_delimited(
         self,
         computation: Computation,
-        environment: dict[Local, HeldValue],
+        environment: Scope[Local, HeldValue],
         stack: list[_Frame],
         protected: tuple[_Frame, ...],
         resumption_path: tuple[int, ...],

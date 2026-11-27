@@ -637,6 +637,32 @@ class MonadicProgram(ContinuousMorphism):
         """
         return True
 
+    @property
+    def potential_sites(self) -> frozenset[str]:
+        """The trace names of the scores that are potentials of the prior.
+
+        Returns
+        -------
+        frozenset[str]
+            The name of every score step whose role is ``"potential"``,
+            through calls and scans; a tempered posterior counts these with
+            the prior, and every other score with the likelihood.
+        """
+        found: set[str] = set()
+        pending: list[MonadicProgram] = [self]
+        while pending:
+            program = pending.pop()
+            for step in program.steps:
+                if isinstance(step, Score) and step.role == "potential":
+                    found.add(step.name)
+                elif isinstance(step, Call) and isinstance(
+                    step.program, MonadicProgram
+                ):
+                    pending.append(step.program)
+                elif isinstance(step, Scan) and isinstance(step.step, MonadicProgram):
+                    pending.append(step.step)
+        return frozenset(found)
+
     def step_module(self, step: Draw | Observe) -> nn.Module:
         """The registered module a draw or observe step applies.
 

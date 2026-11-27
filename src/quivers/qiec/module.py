@@ -35,6 +35,7 @@ from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.identifiers import (
     ComputationId,
     EffectInstanceId,
+    HandlerId,
     QIEC_ABI,
     SiteProvenance,
     SourceOrigin,
@@ -368,6 +369,90 @@ def called_computations(body: Computation) -> frozenset[ComputationId]:
             pending.append(term.then)
         elif isinstance(term, NewInstance):
             pending.append(term.body)
+    return frozenset(found)
+
+
+def installed_handlers(body: Computation) -> frozenset[HandlerId]:
+    """The handlers a body installs, directly.
+
+    Parameters
+    ----------
+    body : Computation
+        The body to walk.
+
+    Returns
+    -------
+    frozenset[HandlerId]
+        The handler of every ``Handle`` in the body, at any depth.
+    """
+    found: set[HandlerId] = set()
+    pending: list[Computation] = [body]
+    while pending:
+        term = pending.pop()
+        if isinstance(term, Handle):
+            found.add(term.handler)
+            pending.append(term.computation)
+        elif isinstance(term, Bind):
+            pending.append(term.then)
+            pending.append(term.first)
+        elif isinstance(term, Case):
+            pending.extend(branch.body for branch in term.branches)
+        elif isinstance(term, If):
+            pending.append(term.otherwise)
+            pending.append(term.then)
+        elif isinstance(term, NewInstance):
+            pending.append(term.body)
+    return frozenset(found)
+
+
+def reached_handlers(module: QiecModule, root: ComputationId) -> frozenset[HandlerId]:
+    """The handlers a run of one computation may install.
+
+    Every computation the root reaches through calls is walked, and so is
+    every clause of an authored handler one of them installs, since a
+    clause body may call and install further.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module.
+    root : ComputationId
+        The computation run.
+
+    Returns
+    -------
+    frozenset[HandlerId]
+        The identity of every handler installed along the way.
+    """
+    computations = {computation.id: computation for computation in module.computations}
+    handlers = {handler.id: handler for handler in module.handlers}
+    seen_computations: set[ComputationId] = set()
+    found: set[HandlerId] = set()
+    bodies: list[Computation] = []
+    pending = [root]
+    while pending or bodies:
+        while pending:
+            identity = pending.pop()
+            if identity in seen_computations or identity not in computations:
+                continue
+            seen_computations.add(identity)
+            bodies.append(computations[identity].body)
+        if not bodies:
+            break
+        body = bodies.pop()
+        pending.extend(called_computations(body))
+        for handler in installed_handlers(body):
+            if handler in found:
+                continue
+            found.add(handler)
+            declaration = handlers.get(handler)
+            if declaration is None:
+                continue
+            bodies.extend(
+                clause.body for clause in declaration.clauses if clause.body is not None
+            )
+            if declaration.return_clause is not None:
+                bodies.append(declaration.return_clause.body)
     return frozenset(found)
 
 

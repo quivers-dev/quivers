@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from importlib.metadata import entry_points
 import json
 from pathlib import Path
+import weakref
 from types import MappingProxyType
 from typing import Literal, NoReturn, Protocol, cast
 
@@ -76,6 +77,7 @@ from quivers.qiec.kinds import (
     UserIndexSort,
 )
 from quivers.qiec.distributions import DistributionBackend
+from quivers.qiec.checking import KernelRegistry
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
 from quivers.qiec.numbers import (
     NumberDomain,
@@ -1840,7 +1842,7 @@ def run_named(
         emit("argument.validated", {"name": parameter.name, "position": position})
 
     try:
-        registry = validate_module(module)
+        registry = _registry_of(module)
     except Exception as error:
         _fail(
             "qiec-run-module",
@@ -1930,6 +1932,42 @@ def run_named(
         runtime=config.label,
         trace=tuple(recorder.events),
     )
+
+
+_REGISTRIES: weakref.WeakKeyDictionary[QiecModule, KernelRegistry] = (
+    weakref.WeakKeyDictionary()
+)
+"""The validated registry of each module a run has been given."""
+
+
+def _registry_of(module: QiecModule) -> KernelRegistry:
+    """A module's validated registry, resolved once per module.
+
+    A module is immutable, so every run of it reads the same registry; a
+    run validates and resolves a module it has not seen and reuses the
+    registry of one it has, so its cost does not grow with declarations it
+    does not use.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module.
+
+    Returns
+    -------
+    KernelRegistry
+        Its registry.
+
+    Raises
+    ------
+    KernelError
+        If the module fails validation.
+    """
+    registry = _REGISTRIES.get(module)
+    if registry is None:
+        registry = validate_module(module)
+        _REGISTRIES[module] = registry
+    return registry
 
 
 def _specialize(

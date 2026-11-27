@@ -1088,6 +1088,120 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
+        name="machine-unreached-site-ignored",
+        defect_class="site address",
+        provenance="a checked run ignores a given site it never reaches, so a run "
+        "whose recursion stops earlier is scored over fewer sites",
+        target="quivers.effects.checked_program:CheckedProgram._installations",
+        rewrites=(
+            Rewrite(
+                old="extra=ExtraValuePolicy.ERROR,",
+                new="extra=ExtraValuePolicy.IGNORE,",
+            ),
+        ),
+        rejected_by=("checked/sites/changed",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="checked-module-validated-per-run",
+        defect_class="graph work",
+        provenance="a checked run builds and validates its module again instead "
+        "of reusing it, so a run's cost grows with declarations it does not use",
+        target="quivers.effects.checked_program:CheckedProgram._run_module",
+        rewrites=(
+            Rewrite(
+                old="cached = self._run_modules.get(key)",
+                new="cached = None",
+            ),
+        ),
+        rejected_by=("work/checked-runs-of-a-module-with-unrelated-declarations",),
+        min_effect=1.7,
+    ),
+    Mutation(
+        name="callee-copied-per-call",
+        defect_class="graph work",
+        provenance="the machine copies a callee's immutable declaration at every "
+        "call, so a call costs the size of the callee rather than of the steps "
+        "it takes",
+        target="quivers.qiec.evaluator:Evaluator._run",
+        rewrites=(
+            Rewrite(
+                old="callee = self._computations.get(current.callee)",
+                new=(
+                    "callee = self._computations.get(current.callee)\n"
+                    "            callee = callee.with_(name=callee.name) "
+                    "if callee is not None else None"
+                ),
+            ),
+        ),
+        rejected_by=(
+            "work/checked-calls-of-a-computation-with-a-growing-untaken-branch",
+        ),
+        min_effect=0.5,
+    ),
+    Mutation(
+        name="environment-copied-per-bind",
+        defect_class="graph work",
+        provenance="a bind copies every local in scope into a new environment "
+        "rather than sharing the old one, so a run of n binds is quadratic",
+        target="quivers.qiec.scope:Scope.bind",
+        rewrites=(
+            Rewrite(
+                old="root, added = _bound(self._root, 0, _Leaf(_code(key), key, value))",
+                new="copied = Scope([*self.items(), (key, value)])\n"
+                "    root, added = copied._root, copied._size - self._size",
+            ),
+        ),
+        rejected_by=("work/checked-runs-of-a-long-sequence-of-binds",),
+        min_effect=0.5,
+    ),
+    Mutation(
+        name="observation-drawn-in-prior",
+        defect_class="role",
+        provenance="the prior of a checked program draws its observation and "
+        "scores the draw, so the observation's density counts as a prior term",
+        target="quivers.effects._observation_laws:observation_variant",
+        rewrites=(Rewrite(old="            if not drop:", new="            if True:"),),
+        also_in=("quivers.effects.checked_program",),
+        rejected_by=(
+            "checked/observations/roles",
+            "consumer/prior/recursive",
+        ),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="runs-of-a-pass-share-one-draw",
+        defect_class="effect sharing",
+        provenance="a draw in a pass over many runs is made once and shared by "
+        "every run, as a mapping with the same randomness for each run draws",
+        target="quivers._positions:draw",
+        rewrites=(
+            Rewrite(
+                old="drawn = function(tuple(leading), frame.count)",
+                new="drawn = function(tuple(t[:1] for t in leading), 1).expand("
+                "frame.count, *function(tuple(t[:1] for t in leading), 1).shape[1:])",
+            ),
+        ),
+        rejected_by=("checked/forward/one-pass",),
+        min_effect=0.39,
+    ),
+    Mutation(
+        name="every-foreign-handler-configured",
+        defect_class="graph work",
+        provenance="a run builds a handler for every foreign declaration of its "
+        "module rather than for those it can install",
+        target="quivers.qiec.program_runtime:foreign_handler_configuration",
+        rewrites=(
+            Rewrite(
+                old="if reached is not None and handler.id not in reached:",
+                new="if False:",
+            ),
+        ),
+        also_in=("quivers.effects.checked_program",),
+        rejected_by=("work/machine-runs-of-a-deduction-beside-unrelated-declarations",),
+        min_effect=0.5,
+    ),
+    Mutation(
         name="replayed-site-dropped",
         defect_class="site address",
         provenance="a replay that loses a recorded latent site draws it again",

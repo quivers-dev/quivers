@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from numbers import Integral
+import weakref
 
 import didactic.api as dx
 import torch
@@ -51,7 +52,7 @@ from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.numbers import NumberDomain, machine_value
 from quivers.qiec.foreign import Settlement
 from quivers.qiec.identifiers import ComputationId, HandlerId, SourceOrigin
-from quivers.qiec.module import NamedComputation, QiecModule
+from quivers.qiec.module import NamedComputation, QiecModule, reached_handlers
 from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.kinds import IndexBinder
 from quivers.qiec.primitives import primitive
@@ -217,7 +218,89 @@ def sample_module(module: QiecModule, name: str) -> tuple[QiecModule, str]:
     return _wrapped_module(module, name, sampling=True)
 
 
+_WRAPPERS: weakref.WeakKeyDictionary[
+    QiecModule, dict[tuple[str, str], tuple[QiecModule, str]]
+] = weakref.WeakKeyDictionary()
+"""The wrapped modules built from each module, by entry and role."""
+
+
+_REACHED: weakref.WeakKeyDictionary[QiecModule, dict[str, frozenset[HandlerId]]] = (
+    weakref.WeakKeyDictionary()
+)
+"""The handlers a run of each computation of a module may install."""
+
+
+def _reached(module: QiecModule, name: str) -> frozenset[HandlerId]:
+    """The handlers a run of a named computation may install, found once.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module.
+    name : str
+        The computation run.
+
+    Returns
+    -------
+    frozenset[HandlerId]
+        The handlers its calls and clauses may install.
+
+    Raises
+    ------
+    KeyError
+        If the module has no such computation.
+    """
+    found = _REACHED.setdefault(module, {})
+    handlers = found.get(name)
+    if handlers is None:
+        root = next(
+            (item.id for item in module.computations if item.name == name), None
+        )
+        if root is None:
+            raise KeyError(f"module {module.module!r} has no computation {name!r}")
+        handlers = reached_handlers(module, root)
+        found[name] = handlers
+    return handlers
+
+
 def _wrapped_module(
+    module: QiecModule, name: str, *, sampling: bool
+) -> tuple[QiecModule, str]:
+    """Extend a module with a wrapper, once per module, entry and role.
+
+    A module is immutable, so the wrapper of one of its entries is built
+    once and reused by every run, which then validates nothing of the
+    module again.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module holding the program.
+    name : str
+        The program's name.
+    sampling : bool
+        Whether the wrapper draws the sites it is not given.
+
+    Returns
+    -------
+    tuple[QiecModule, str]
+        The extended module and the wrapper computation's name.
+
+    Raises
+    ------
+    KeyError
+        If the module has no such program.
+    """
+    built = _WRAPPERS.setdefault(module, {})
+    key = (name, "sample" if sampling else "joint")
+    found = built.get(key)
+    if found is None:
+        found = _build_wrapped_module(module, name, sampling=sampling)
+        built[key] = found
+    return found
+
+
+def _build_wrapped_module(
     module: QiecModule, name: str, *, sampling: bool
 ) -> tuple[QiecModule, str]:
     """Extend a module with a wrapper handling one program's instances.
@@ -1042,7 +1125,9 @@ def _run_wrapped(
     }
     if any(handler.name == PARAMS_HANDLER for handler in extended.handlers):
         configured[PARAMS_HANDLER] = {"kind": "param", "values": dict(parameters or {})}
-    configured.update(foreign_handler_configuration(module))
+    configured.update(
+        foreign_handler_configuration(module, reached=_reached(extended, wrapper_name))
+    )
     runtime = RuntimeConfiguration(
         selections=(
             RuntimeSelection(provider="core", options={"handlers": configured}),
@@ -1070,6 +1155,7 @@ def foreign_handler_configuration(
     *,
     on_failure: FailurePolicy = FailurePolicy.REFUSE,
     reports: list[AccuracyReport] | None = None,
+    reached: frozenset[HandlerId] | None = None,
 ) -> dict[str, object]:
     """The runtime configuration of a module's foreign handlers.
 
@@ -1087,6 +1173,9 @@ def foreign_handler_configuration(
         record the report and resume with the value.
     reports : list of AccuracyReport or None
         Where the settlements record the reports of unestablished stops.
+    reached : frozenset of HandlerId or None
+        The handlers a run may install, so a run configures those and no
+        other declaration of its module; ``None`` configures every one.
 
     Returns
     -------
@@ -1096,6 +1185,8 @@ def foreign_handler_configuration(
     configured: dict[str, object] = {}
     for handler in module.handlers:
         if handler.implementation != "foreign" or handler.foreign is None:
+            continue
+        if reached is not None and handler.id not in reached:
             continue
         options: dict[str, object] = {"kind": "declared"}
         if isinstance(handler.foreign, Settlement):
@@ -1220,7 +1311,12 @@ def run_deduction(
         configured[PARAMS_HANDLER] = {"kind": "param", "values": dict(parameters or {})}
     reports: list[AccuracyReport] = []
     configured.update(
-        foreign_handler_configuration(module, on_failure=on_failure, reports=reports)
+        foreign_handler_configuration(
+            module,
+            on_failure=on_failure,
+            reports=reports,
+            reached=_reached(extended, wrapper_name),
+        )
     )
     result = run_named(
         extended,
@@ -1299,6 +1395,33 @@ def deduction_item(
 
 
 def _deduction_wrapper(
+    module: QiecModule, computation: NamedComputation
+) -> tuple[QiecModule, str]:
+    """Extend a module to serve a deduction's parameters, once per module.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module.
+    computation : NamedComputation
+        The deduction's entry.
+
+    Returns
+    -------
+    tuple[QiecModule, str]
+        The extended module and the wrapper's name, built once per module
+        and deduction and reused by every run.
+    """
+    built = _WRAPPERS.setdefault(module, {})
+    key = (computation.name, "deduction")
+    found = built.get(key)
+    if found is None:
+        found = _build_deduction_wrapper(module, computation)
+        built[key] = found
+    return found
+
+
+def _build_deduction_wrapper(
     module: QiecModule, computation: NamedComputation
 ) -> tuple[QiecModule, str]:
     """Extend a module with a computation serving a deduction's parameters.

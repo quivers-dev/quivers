@@ -517,6 +517,7 @@ nav:
       - Families: api/qiec/families.md
       - Primitives: api/qiec/primitives.md
       - Numbers: api/qiec/numbers.md
+      - Scopes: api/qiec/scope.md
       - Distributions: api/qiec/distributions.md
       - Reference families: api/qiec/reference_families.md
       - Reference support: api/qiec/reference_support.md

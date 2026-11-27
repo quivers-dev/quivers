@@ -274,6 +274,21 @@ export counted
 """
 """A program whose recursion flips a coin until a tail, at most twice."""
 
+CALLS = """
+object Unit : FinSet 1
+object V : Real 1
+define affine(v : Real, a : Real) : Real !{} =
+    return a * v + 1.0
+program calls : Unit -> V
+    sample t <- Normal(loc=0.0, scale=1.0)
+    let u <- affine(t, 2.0)
+    let w <- affine(u, 0.5)
+    observe y <- Normal(loc=w, scale=1.0)
+    return t
+export calls
+"""
+"""A program that calls one computation twice."""
+
 SOURCES: dict[str, str] = {
     "lexical": LEXICAL,
     "normalized": NORMALIZED,
@@ -293,6 +308,7 @@ SOURCES: dict[str, str] = {
     "recursive": RECURSIVE,
     "structured": STRUCTURED,
     "flips": FLIPS,
+    "calls": CALLS,
 }
 """The sources by name."""
 

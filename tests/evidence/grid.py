@@ -141,10 +141,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
         "Q2": ("linear-semiring-reads-logarithms",),
         "Q10": ("linear-semiring-reads-logarithms",),
     },
-    "machine-lexical": {"Q24": ("module-traversed-per-run",)},
-    "machine-nonlexical": {"Q24": ("module-traversed-per-run",)},
-    "machine-chained": {"Q24": ("module-traversed-per-run",)},
-    "machine-program": {"Q24": ("module-traversed-per-run",)},
     "einsum-wiring": {
         "Q6": (
             "certain-entry-clamped",
@@ -155,7 +151,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     "marginalize-ungrouped": {"Q6": ("nested-marginalize-asserts",)},
     "decoder": {"Q14": ("depth-bound-shifts-choices",)},
     "svi-laplace": {"R1": ("laplace-adds-jitter",)},
-    "trace": {"R6": ("checked-program-runs-per-row",)},
 }
 """The cells with known defects."""
 

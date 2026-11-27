@@ -11,7 +11,7 @@ from quivers.effects.base import EffectHandler, Installation, RunContext
 _POLICY = "__quivers_observation_scoring__"
 
 
-def _enabled(run: RunContext) -> bool:
+def observations_scored(run: RunContext) -> bool:
     """Read the innermost scoring policy installed for this execution.
 
     Parameters
@@ -144,4 +144,4 @@ def observation_scoring(enabled: bool = True) -> ObservationScoringHandler:
     return ObservationScoringHandler(enabled)
 
 
-__all__ = ["ObservationScoringHandler", "observation_scoring"]
+__all__ = ["ObservationScoringHandler", "observation_scoring", "observations_scored"]
