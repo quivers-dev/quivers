@@ -465,21 +465,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         self._require_proper("SMC evidence")
         return sampler.run(self.program, torch.zeros(1, 1), dict(self.observations))
 
-    def _require_proper(self, purpose: str) -> None:
-        """Refuse an operation needing a normalized prior on every site.
-
-        Parameters
-        ----------
-        purpose : str
-            Operation named in the error.
-
-        Raises
-        ------
-        ValueError
-            If a site carries the improper flat prior.
-        """
-        if self.prediction_plan is not None:
-            require_proper(self.prediction_plan.module, purpose)
+    def _prior_module(self) -> Module | None:
+        return None if self.prediction_plan is None else self.prediction_plan.module
 
     def prior_summary(self) -> PriorTable:
         """Tabulate the effective prior of every parameter, as brms ``prior_summary``.
@@ -624,42 +611,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             labels=self.predictor_labels(parameter)
             if method == "linpred"
             else self.category_labels,
-        )
-
-    def prior_draws(
-        self,
-        *,
-        num_samples: int = 100,
-        seed: int = 0,
-        method: Literal["ancestral"] | MCMC = "ancestral",
-    ) -> PriorDraws | MCMCResult:
-        """Draw conditional priors using retained designs and data-dependent priors.
-
-        Parameters
-        ----------
-        num_samples : int
-            Positive number of independent ancestral draws.
-        seed : int
-            Isolated CPU seed; the caller's stream is restored.
-        method : {"ancestral"} or MCMC
-            Independent conditional sampling, or an explicit configured driver
-            for global score potentials. Its own budgets control MCMC.
-
-        Returns
-        -------
-        PriorDraws or MCMCResult
-            Constrained samples with independent provenance or genuine chains.
-        """
-        from quivers.inference.prior import prior_draws
-
-        self._require_proper("prior_draws")
-        return prior_draws(
-            self.program,
-            torch.zeros(1, 1),
-            self.observations,
-            num_samples=num_samples,
-            seed=seed,
-            method=method,
         )
 
     def prior_view(

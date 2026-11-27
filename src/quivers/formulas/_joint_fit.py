@@ -129,7 +129,7 @@ from quivers.inference._response import (
 )
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
-from quivers.inference.prior import PriorDraws, PriorMode, prior_draws
+from quivers.inference.prior import PriorDraws, PriorMode
 from quivers.inference.pathfinder import draw_provenance
 from quivers.formulas._parallel_chains import FormulaChainWorker
 from quivers.formulas._data_options import formula_data_options
@@ -2037,30 +2037,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             for name, value in predictions.items()
         }
 
-    def prior_draws(
-        self, *, num_samples: int = 100, seed: int = 0
-    ) -> PriorDraws | MCMCResult:
-        """Draw the joint prior with the retained designs.
-
-        Parameters
-        ----------
-        num_samples : int
-            Independent ancestral draws.
-        seed : int
-            Isolated seed.
-
-        Returns
-        -------
-        PriorDraws or MCMCResult
-            Constrained prior samples.
-        """
-        return prior_draws(
-            self.program,
-            torch.zeros(1, 1),
-            self.observations,
-            num_samples=num_samples,
-            seed=seed,
-        )
+    def _prior_module(self) -> Module:
+        return self.emission.module
 
     def prior_view(
         self, *, num_samples: int | None = None, seed: int = 0

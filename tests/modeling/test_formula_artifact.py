@@ -72,6 +72,9 @@ def test_joint_artifact_restores_the_fitted_prior_policy(policy, tmp_path, monke
     restored = _restore(fitted, tmp_path, monkeypatch)
     assert restored.qvr_source == fitted.qvr_source
     assert restored.specification == fitted.specification
+    if policy == "brms":
+        with pytest.raises(ValueError, match="prior_draws requires a proper prior"):
+            restored.prior_draws(num_samples=3)
     draws = restored.draws(num_samples=3, seed=11)
     for name, value in fitted.draws(num_samples=3, seed=11).items():
         torch.testing.assert_close(draws[name], value, rtol=0, atol=0)
