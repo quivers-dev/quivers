@@ -241,6 +241,21 @@ def test_subsampled_loo_equals_full_loo_at_the_sampled_units(build):
     )
 
 
+def test_joint_dependent_subsample_reuses_the_fitted_program(monkeypatch):
+    fitted, selection = _joint_cosy()
+    units = [1, 5, 9, 17]
+    full = fitted.loo(**selection, **DRAWS)
+
+    def reject_compilation(*args, **kwargs):
+        pytest.fail("dependent joint subsampling should score the fitted rows")
+
+    monkeypatch.setattr(Compiler, "compile", reject_compilation)
+    sampled = fitted.loo_subsample(observations=units, **selection, **DRAWS)
+    torch.testing.assert_close(
+        sampled.pointwise_elpd[units], full.pointwise_elpd[units]
+    )
+
+
 def test_joint_r_squared_and_errors_read_fitted_responses(monkeypatch):
     frame = _frame()
     censored = fit(
