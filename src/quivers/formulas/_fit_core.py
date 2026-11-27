@@ -14,12 +14,14 @@ from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
 from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import Module
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._brms_priors import with_flat_catalog
+from quivers.formulas._brms_priors import derived_site_draws, with_flat_catalog
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._priors import PriorSet
+from quivers.inference._posterior import constrained_draws
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.prior import PriorDraws, PriorMode
+from quivers.inference.registry import LatentRegistry
 from quivers.program import Program
 
 
@@ -51,6 +53,52 @@ class FormulaFit(ValueModel):
     criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
         default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+
+    def draws(
+        self, *, num_samples: int | None = None, seed: int = 0
+    ) -> dict[str, torch.Tensor]:
+        """Return constrained posterior draws with separate chain and draw axes.
+
+        Parameters
+        ----------
+        num_samples : int or None
+            Maximum draws per MCMC chain, or fresh guide draws. Omission
+            keeps all MCMC draws and draws 100 variational samples.
+        seed : int
+            Seed for variational draws. The caller's CPU RNG is preserved.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Native site values with shape ``(chain, draw, *site_shape)``.
+            Guides produce one pseudo-chain, which supplies no MCMC diagnostics.
+
+        Raises
+        ------
+        ValueError
+            If the count is invalid or posterior sites mismatch the model.
+        """
+        registry = LatentRegistry.from_model(
+            self.program, observed_names=set(self.observations)
+        )
+        draws = constrained_draws(
+            self.posterior,
+            torch.zeros(1, 1, dtype=torch.long),
+            num_samples=num_samples,
+            seed=seed,
+            registry=registry,
+        )
+        bindings = self._derived_draw_bindings(draws)
+        if bindings is None:
+            return draws
+        module, names = bindings
+        return derived_site_draws(module, draws, names)
+
+    def _derived_draw_bindings(
+        self, draws: Mapping[str, torch.Tensor]
+    ) -> tuple[Module, list[str]] | None:
+        """Identify reported deterministic bindings of the sampled coordinates."""
+        raise NotImplementedError
 
 
 def compile_model(module: Module, families: FamilyCatalog | None) -> Program:

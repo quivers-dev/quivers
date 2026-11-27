@@ -40,7 +40,11 @@ from quivers.dsl.emit import module_to_source
 from quivers.dsl.ast_nodes import Module
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas.family import LOCATION, Family, families
-from quivers.formulas._mixture import mixture_component_count, mixture_distributional
+from quivers.formulas._mixture import (
+    equated_sites,
+    mixture_component_count,
+    mixture_distributional,
+)
 from quivers.formulas._mixture_predict import pp_mixture
 from quivers.formulas._category_formulas import (
     category_distributional,
@@ -130,6 +134,7 @@ from quivers.formulas._priors import PriorInput, normalize_priors
 
 # brms sampler and fitting controls.
 from quivers.formulas._fit_core import FormulaFit, compile_model
+from quivers.formulas._population_coordinates import reported_coefficients
 from quivers.formulas._fit_controls import (
     Algorithm,
     FileRefit,
@@ -183,7 +188,6 @@ from quivers.modeling.refit import RefitRecipe, SnapshotPolicy
 from quivers.formulas._posterior import (
     LinpredBinding,
     collect_draws,
-    posterior_draws,
     replay,
     response_distribution,
     response_rng,
@@ -803,31 +807,19 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
             for group, levels in predictor.group_levels.items()
         }
 
-    def draws(
-        self, *, num_samples: int | None = None, seed: int = 0
-    ) -> dict[str, torch.Tensor]:
-        """Return constrained posterior draws with separate chain and draw axes.
-
-        Parameters
-        ----------
-        num_samples : int or None
-            Maximum draws per MCMC chain, or fresh guide draws. Omission
-            keeps all MCMC draws and draws 100 variational samples.
-        seed : int
-            Seed for variational draws; the caller's CPU RNG is preserved.
-
-        Returns
-        -------
-        dict[str, torch.Tensor]
-            Site values with shape ``(chain, draw, *site_shape)``. Guides
-            produce one pseudo-chain, which supplies no MCMC diagnostics.
-
-        Raises
-        ------
-        ValueError
-            If the count is invalid or posterior sites mismatch the model.
-        """
-        return posterior_draws(self, num_samples, seed)
+    def _derived_draw_bindings(
+        self, draws: Mapping[str, torch.Tensor]
+    ) -> tuple[Module, list[str]] | None:
+        """Report coordinates of a fitted response in its native namespace."""
+        plan = self.prediction_plan
+        if plan is None:
+            return None
+        return (
+            plan.module,
+            reported_coefficients(self._predictor_items())
+            + [site for target in plan.prior_targets for site in target.sites]
+            + equated_sites(self.family, draws),
+        )
 
     def fixed_effects(
         self, *, parameter: str = "mu", num_samples: int | None = None, seed: int = 0

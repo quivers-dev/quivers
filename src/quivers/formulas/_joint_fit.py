@@ -59,7 +59,6 @@ from quivers.formulas._brms_priors import (
     FLAT_FAMILY,
     flat_prior_step,
     improper_sites,
-    derived_site_draws,
     require_proper,
 )
 from quivers.formulas._fit_core import FormulaFit, compile_model
@@ -121,7 +120,6 @@ from quivers.formulas.formula import Formula, _qvr_name
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.inference._posterior import (
     collect_site_draws,
-    constrained_draws,
     draw_count,
 )
 from quivers.inference._response import (
@@ -136,7 +134,6 @@ from quivers.inference.prior import PriorDraws
 from quivers.inference.pathfinder import draw_provenance
 from quivers.formulas._parallel_chains import FormulaChainWorker
 from quivers.formulas._data_options import formula_data_options
-from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace
 from quivers.modeling._row_attachments import original_positions, validate_split_rows
 from quivers.modeling.refit import RefitRecipe, refit_callback
@@ -498,33 +495,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         self.response_fits[name] = view
         return view
 
-    def draws(
-        self, *, num_samples: int | None = None, seed: int = 0
-    ) -> dict[str, torch.Tensor]:
-        """Return constrained draws of the native joint sites.
-
-        Parameters
-        ----------
-        num_samples : int or None
-            Draws per chain, or None for every retained draw (100 for a guide).
-        seed : int
-            Seed for draws from a variational guide.
-
-        Returns
-        -------
-        dict[str, torch.Tensor]
-            Constrained draws keyed by namespaced site, on chain and draw axes.
-        """
-        registry = LatentRegistry.from_model(
-            self.program, observed_names=set(self.observations)
-        )
-        draws = constrained_draws(
-            self.posterior,
-            torch.zeros(1, 1, dtype=torch.long),
-            num_samples=num_samples,
-            seed=seed,
-            registry=registry,
-        )
+    def _derived_draw_bindings(
+        self, draws: Mapping[str, torch.Tensor]
+    ) -> tuple[Module, list[str]]:
+        """Report coordinates of all fitted responses in the joint namespace."""
         # Constants, centered intercepts, and QR coefficients are derived sites.
         reported = [
             response.names.get(local, local)
@@ -544,9 +518,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             )
             if response.names.get(source, source) in draws
         ]
-        return derived_site_draws(
+        return (
             self.emission.module,
-            draws,
             reported
             + [site for target in self.emission.prior_targets for site in target.sites]
             + equated,

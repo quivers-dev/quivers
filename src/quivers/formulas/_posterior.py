@@ -12,7 +12,6 @@ import torch
 
 from quivers._values import ValueModel
 from quivers._rng import seeded_rng
-from quivers.inference._posterior import constrained_draws
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace, trace
 from quivers.inference._response import (
@@ -24,64 +23,12 @@ from quivers.inference._response import (
 
 from quivers.formulas._prediction import OrdinalReplay
 
-# Constants, centered intercepts and QR coefficients are derived sites.
-from quivers.formulas._brms_priors import derived_site_draws
-from quivers.formulas._mixture import equated_sites
-from quivers.formulas._population_coordinates import reported_coefficients
-
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
     from quivers.formulas._prediction import PredictionContext
 
 
 _MAX_FEASIBLE_GROUP_ATTEMPTS = 1024
-
-
-def posterior_draws(
-    fit: BayesianFit, num_samples: int | None, seed: int
-) -> dict[str, torch.Tensor]:
-    """Return constrained draws with chain and draw axes, preserving CPU RNG.
-
-    Parameters
-    ----------
-    fit : BayesianFit
-        The fitted formula, native program, observations, and posterior.
-    num_samples : int or None
-        Maximum draws per chain, or fresh guide draws.
-    seed : int
-        Seed for guide draws; the caller's CPU RNG is preserved.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Constrained site draws on chain, draw, and event axes.
-
-    Raises
-    ------
-    ValueError
-        If posterior sites or shapes do not match the fitted program.
-    """
-    registry = LatentRegistry.from_model(
-        fit.program, observed_names=set(fit.observations)
-    )
-    draws = constrained_draws(
-        fit.posterior,
-        torch.zeros(1, 1, dtype=torch.long),
-        num_samples=num_samples,
-        seed=seed,
-        registry=registry,
-    )
-    plan = fit.prediction_plan
-    if plan is None:
-        return draws
-    return derived_site_draws(
-        plan.module,
-        draws,
-        reported_coefficients(fit._predictor_items())
-        + [site for target in plan.prior_targets for site in target.sites]
-        # mixtures: parameters equated to a sampled one keep their own name.
-        + equated_sites(fit.family, draws),
-    )
 
 
 def replay(
