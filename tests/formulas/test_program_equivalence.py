@@ -276,6 +276,56 @@ export tensor_mean
     assert float((scores - wrong).abs().max()) > 1e-3
 
 
+@pytest.mark.parametrize("law", ["poisson", "negative_binomial", "geometric", "logits"])
+def test_a_program_count_observation_scales_with_exposure(law: str) -> None:
+    constructor = {
+        "poisson": "Poisson(rate=mu)",
+        "negative_binomial": "NegativeBinomial(total_count=mu, probs=0.25)",
+        "geometric": "Geometric(probs=mu)",
+        "logits": "Geometric(logits=mu)",
+    }[law]
+    source = f"""object Trial : FinSet 6
+
+program unit_count : Trial -> Trial
+    sample mu <- Beta(concentration1=2.0, concentration0=3.0)
+    observe y : Trial <- {constructor}
+    return y
+
+export unit_count
+"""
+    rows = frame().assign(y=np.arange(12) % 4, exposure=(np.arange(12) + 2) / 2)
+    fitted = fit(
+        program=source,
+        parameters={},
+        response="y | rate(exposure)",
+        data=rows,
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    mu = torch.tensor(0.375, dtype=torch.float64)
+    y = torch.tensor(rows["y"].to_numpy(), dtype=torch.float64)
+    exposure = torch.tensor(rows["exposure"].to_numpy())
+    distributions = torch.distributions
+    if law == "poisson":
+        accumulated = distributions.Poisson(mu * exposure)
+        unit = distributions.Poisson(mu)
+    elif law == "negative_binomial":
+        probability = mu.new_tensor(0.25)
+        accumulated = distributions.NegativeBinomial(mu * exposure, probs=probability)
+        unit = distributions.NegativeBinomial(mu, probs=probability)
+    elif law == "geometric":
+        accumulated = distributions.NegativeBinomial(exposure, probs=1.0 - mu)
+        unit = distributions.Geometric(probs=mu)
+    else:
+        accumulated = distributions.NegativeBinomial(exposure, logits=-mu)
+        unit = distributions.Geometric(logits=mu)
+    actual = pin(fitted, {"mu": mu.numpy()[None]}).log_likelihood()["y"].reshape(-1)
+    expected = accumulated.log_prob(y)
+    torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+    assert float((actual - unit.log_prob(y)).abs().max()) > 1e-2
+
+
 @pytest.mark.parametrize("estimate_sigma", [False, True])
 def test_the_program_observation_takes_known_errors(estimate_sigma: bool) -> None:
     rows = frame().assign(y=np.arange(-6, 6) / 8, error=(np.arange(12) + 2) / 8)

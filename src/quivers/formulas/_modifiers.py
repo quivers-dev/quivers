@@ -20,6 +20,7 @@ for a SAR term beside any of these terms.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal
 
 import didactic.api as dx
@@ -43,7 +44,7 @@ from quivers.formulas._kernel import KernelArguments, KernelEmission
 from quivers.formulas._observation import WEIGHTS, Observation
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._response_roles import event_option_columns
-from quivers.formulas.family import Family, families
+from quivers.formulas.family import Binding, Family, families
 from quivers.formulas.formula import FixedColumn, ResponseModifiers
 from quivers.qiec.families import family as semantic_family
 
@@ -234,6 +235,55 @@ class Modifier(dx.TaggedUnion, discriminator="kind"):
         return observation
 
 
+@dataclass(frozen=True, slots=True)
+class _NativeExposure:
+    """The law of an accumulated count in native constructor arguments.
+
+    Parameters
+    ----------
+    parameter : str
+        Constructor parameter this conversion reads.
+    arguments : tuple[Binding, ...]
+        Constructor arguments in terms of that parameter and ``exposure``.
+    kernel : str or None
+        Constructor of the accumulated count when it changes.
+    """
+
+    parameter: str
+    arguments: tuple[Binding, ...]
+    kernel: str | None = None
+
+
+_NATIVE_EXPOSURES: Mapping[str, tuple[_NativeExposure, ...]] = {
+    "Poisson": (
+        _NativeExposure("rate", (Binding(name="rate", expr="rate * exposure"),)),
+    ),
+    "NegativeBinomial": (
+        _NativeExposure(
+            "total_count", (Binding(name="total_count", expr="total_count * exposure"),)
+        ),
+    ),
+    "Geometric": (
+        _NativeExposure(
+            "probs",
+            (
+                Binding(name="total_count", expr="exposure"),
+                Binding(name="probs", expr="1.0 - probs"),
+            ),
+            kernel="NegativeBinomial",
+        ),
+        _NativeExposure(
+            "logits",
+            (
+                Binding(name="total_count", expr="exposure"),
+                Binding(name="logits", expr="0.0 - logits"),
+            ),
+            kernel="NegativeBinomial",
+        ),
+    ),
+}
+
+
 class RateExposure(Modifier):
     """A ``rate()`` denominator: the count of ``denominator`` exposure units.
 
@@ -286,6 +336,8 @@ class RateExposure(Modifier):
             law.
         """
         family = admission.family
+        if family.kernel_law is not None and family.observe_family in _NATIVE_EXPOSURES:
+            return
         # The exposure scales the law of each component of a mixture.
         laws = family.mixture.components if family.mixture is not None else (family,)
         for law in laws:
@@ -335,6 +387,66 @@ class RateExposure(Modifier):
                     for binding in exposure.observe_lets
                 ),
             ),
+        )
+
+    def apply_to_step(
+        self, observation: ObserveStep, family: Family
+    ) -> tuple[ObserveStep, tuple[ProgramStep, ...]]:
+        """Pass a native law its arguments over the exposure units.
+
+        Parameters
+        ----------
+        observation : ObserveStep
+            Authored observation of the unit-exposure count.
+        family : Family
+            Response law declaring the unit-exposure constructor.
+
+        Returns
+        -------
+        tuple[ObserveStep, tuple[ProgramStep, ...]]
+            The accumulated-count observation and bindings for its arguments.
+
+        Raises
+        ------
+        ValueError
+            If the constructor has no exposure law for the supplied arguments.
+        """
+        for rule in _NATIVE_EXPOSURES.get(observation.morphism, ()):
+            found = observation_argument(observation, rule.parameter)
+            if found is None:
+                continue
+            position, original = found
+            arguments = list(observation.args or ())
+            values = {
+                "exposure": _var(self.denominator),
+                rule.parameter: draw_argument_expression(original),
+            }
+            lets: list[ProgramStep] = []
+            replacements: list[DrawArgNamed] = []
+            for binding in rule.arguments:
+                name = f"FormulaProgramExposure_{binding.name}"
+                lets.append(_let(name, _bind(binding.expr, **values)))
+                replacements.append(
+                    DrawArgNamed(parameter=binding.name, value=DrawArgName(text=name))
+                )
+            if rule.kernel is None:
+                (replacement,) = replacements
+                arguments[position] = (
+                    replacement
+                    if isinstance(arguments[position], DrawArgNamed)
+                    else replacement.value
+                )
+            else:
+                arguments = list(replacements)
+            return (
+                observation.with_(
+                    morphism=rule.kernel or observation.morphism, args=tuple(arguments)
+                ),
+                tuple(lets),
+            )
+        raise ValueError(
+            f"rate() has no declared exposure law for the supplied "
+            f"{observation.morphism!r} arguments in {family.name!r}"
         )
 
 

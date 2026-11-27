@@ -1069,6 +1069,8 @@ observation before its enclosing marginalizations sum out latent values.
 An observation law that declares a residual scale takes `se(error)` to
 use the recorded standard errors as its scale. With `sigma=True`, it
 combines the recorded errors and the program's residual scale in quadrature.
+Poisson, negative binomial, and geometric observations take `rate(exposure)`
+for counts accumulated over the recorded exposure.
 
 Data the program reads at each row are data columns of the same name. Data on
 another axis and scalars come from `data2`. A saved fit keeps the program's
