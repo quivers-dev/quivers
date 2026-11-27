@@ -44,12 +44,14 @@ from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._postprocess_predict import PredictionMethod
 from quivers.formulas._response_modifiers import ExpectationOptions
 from quivers.formulas._design_variables import design_variables
-from quivers.formulas._smooth_effects import conditional_smooths as smooth_contribution
+from quivers.formulas._predictor_graph import predictor_items
+from quivers.formulas._smooth_effects import _smooth_contribution
 from quivers.formulas._fit_types import Fit
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
     from quivers.formulas._joint_fit import MultivariateFit
+    from quivers.formulas._linpred import PredictorReadout
 
 type EffectMethod = Literal[
     "epred",
@@ -262,8 +264,10 @@ def model_frame(fit: Fit) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
-def _views(fit: Fit, resp: str | Sequence[str] | None) -> dict[str, BayesianFit]:
-    """Return the single-response views of the selected responses.
+def _readouts(
+    fit: Fit, resp: str | Sequence[str] | None
+) -> dict[str, PredictorReadout]:
+    """Return fitted predictor metadata for the selected responses.
 
     Parameters
     ----------
@@ -274,8 +278,8 @@ def _views(fit: Fit, resp: str | Sequence[str] | None) -> dict[str, BayesianFit]
 
     Returns
     -------
-    dict[str, BayesianFit]
-        Views keyed by response name (an empty key for a single response).
+    dict[str, PredictorReadout]
+        Readouts keyed by response name (an empty key for a single response).
 
     Raises
     ------
@@ -285,18 +289,18 @@ def _views(fit: Fit, resp: str | Sequence[str] | None) -> dict[str, BayesianFit]
     if not _joint(fit):
         if resp is not None:
             raise ValueError("resp applies only to joint fits")
-        return {"": cast("BayesianFit", fit)}
+        return {"": cast("BayesianFit", fit)._predictor_readout}
     joint = cast("MultivariateFit", fit)
-    return {name: joint._response_fit(name) for name in joint._selection(resp)}
+    return {name: joint._predictor_readout(name) for name in joint._selection(resp)}
 
 
-def _effect_kinds(view: BayesianFit, prefix: str) -> dict[str, str]:
+def _effect_kinds(readout: PredictorReadout, prefix: str) -> dict[str, str]:
     """Return brms's type of each design term of one predictor.
 
     Parameters
     ----------
-    view : BayesianFit
-        Single-response fit or response view.
+    readout : PredictorReadout
+        Retained response metadata.
     prefix : str
         Namespace of the predictor.
 
@@ -307,9 +311,8 @@ def _effect_kinds(view: BayesianFit, prefix: str) -> dict[str, str]:
         several terms read, such as a smooth's unpenalized columns, has the
         type of the most specific one.
     """
-    plan = view.prediction_plan
     kinds: dict[str, str] = {}
-    for predictor in plan.predictors if plan is not None else ():
+    for predictor in readout.predictors:
         if predictor.prefix != prefix:
             continue
         for term in predictor.terms:
@@ -337,13 +340,13 @@ def _crossed(variables: list[str]) -> list[tuple[str, ...]]:
     return singles + pairs
 
 
-def _parameter_effects(view: BayesianFit) -> list[tuple[str, ...]]:
+def _parameter_effects(readout: PredictorReadout) -> list[tuple[str, ...]]:
     """Return brms's ``get_all_effects`` of one response.
 
     Parameters
     ----------
-    view : BayesianFit
-        Single-response fit or response view.
+    readout : PredictorReadout
+        Retained response metadata.
 
     Returns
     -------
@@ -351,15 +354,19 @@ def _parameter_effects(view: BayesianFit) -> list[tuple[str, ...]]:
         Variable combinations of at most two variables, predicted parameter
         by parameter: population-level terms, then special terms by type.
     """
-    plan = view.prediction_plan
     out: list[tuple[str, ...]] = []
-    if plan is None:
+    if readout.designs is None:
         return out
-    prefixes = {name: prefix for name, prefix, _ in view._predictor_items()}
-    for parameter, design in plan.designs.items():
+    prefixes = {
+        name: prefix
+        for name, prefix, _ in predictor_items(
+            readout.formula, readout.distributional, readout.predictor_graph
+        )
+    }
+    for parameter, design in readout.designs.items():
         if design.common is None:
             continue
-        kinds = _effect_kinds(view, prefixes[parameter])
+        kinds = _effect_kinds(readout, prefixes[parameter])
         typed: dict[str, list[list[str]]] = {"fe": [], "sp": [], "sm": [], "gp": []}
         for label, term in design.common.terms.items():
             variables = list(design_variables(term).names)
@@ -371,11 +378,11 @@ def _parameter_effects(view: BayesianFit) -> list[tuple[str, ...]]:
         for kind in ("sp", "sm", "gp"):
             for variables in typed[kind]:
                 out.extend(_crossed(variables))
-    graph = view.predictor_graph
+    graph = readout.predictor_graph
     if graph is not None and graph.inputs:
         # The data columns of a custom family (brms vreal()/vint()) are
         # addition-term data, which brms does not plot as effects.
-        custom = view.family.custom
+        custom = readout.family.custom
         reserved = {column for _, column in custom.data} if custom is not None else ()
         covariates = [name for name in graph.inputs if name not in reserved]
         out.extend((v,) for v in covariates)
@@ -387,13 +394,13 @@ def _parameter_effects(view: BayesianFit) -> list[tuple[str, ...]]:
     return unique
 
 
-def _formula_texts(view: BayesianFit) -> list[str]:
+def _formula_texts(readout: PredictorReadout) -> list[str]:
     """Return the authored formula texts of a response.
 
     Parameters
     ----------
-    view : BayesianFit
-        Single-response fit or response view.
+    readout : PredictorReadout
+        Retained response metadata.
 
     Returns
     -------
@@ -401,22 +408,24 @@ def _formula_texts(view: BayesianFit) -> list[str]:
         The main formula, then each distributional and nonlinear formula,
         then the data columns of a custom family (brms ``vreal``/``vint``).
     """
-    texts = [view.formula.formula]
-    texts.extend(f.formula for f in view.distributional.values())
-    if view.predictor_graph is not None:
-        texts.extend(f.formula for f in view.predictor_graph.leaves.values())
-    if view.family.custom is not None:
-        texts.extend(column for _, column in view.family.custom.data)
+    texts = [readout.formula.formula]
+    texts.extend(f.formula for f in readout.distributional.values())
+    if readout.predictor_graph is not None:
+        texts.extend(f.formula for f in readout.predictor_graph.leaves.values())
+    if readout.family.custom is not None:
+        texts.extend(column for _, column in readout.family.custom.data)
     return texts
 
 
-def model_variables(views: Mapping[str, BayesianFit], data: pd.DataFrame) -> list[str]:
+def model_variables(
+    readouts: Mapping[str, PredictorReadout], data: pd.DataFrame
+) -> list[str]:
     """Return the data variables of the formulas, in order of appearance.
 
     Parameters
     ----------
-    views : Mapping[str, BayesianFit]
-        Response views.
+    readouts : Mapping[str, PredictorReadout]
+        Response readouts.
     data : pandas.DataFrame
         Model frame.
 
@@ -426,8 +435,8 @@ def model_variables(views: Mapping[str, BayesianFit], data: pd.DataFrame) -> lis
         Responses, predictors, group variables and addition-term variables.
     """
     found: list[str] = []
-    for view in views.values():
-        for text in _formula_texts(view):
+    for readout in readouts.values():
+        for text in _formula_texts(readout):
             for match in _IDENTIFIER.finditer(text):
                 token = match.group(0)
                 if token in data.columns and token not in found:
@@ -435,13 +444,15 @@ def model_variables(views: Mapping[str, BayesianFit], data: pd.DataFrame) -> lis
     return found
 
 
-def _group_variables(views: Mapping[str, BayesianFit], data: pd.DataFrame) -> set[str]:
+def _group_variables(
+    readouts: Mapping[str, PredictorReadout], data: pd.DataFrame
+) -> set[str]:
     """Return the grouping variables of the varying-effect terms.
 
     Parameters
     ----------
-    views : Mapping[str, BayesianFit]
-        Response views.
+    readouts : Mapping[str, PredictorReadout]
+        Response readouts.
     data : pandas.DataFrame
         Model frame.
 
@@ -451,19 +462,19 @@ def _group_variables(views: Mapping[str, BayesianFit], data: pd.DataFrame) -> se
         Data columns that name a group, including the parts of ``g1:g2``.
     """
     out: set[str] = set()
-    for view in views.values():
-        for term in view.formula.random_terms:
+    for readout in readouts.values():
+        for term in readout.formula.random_terms:
             out.update(p for p in re.split(r"[:/]", term.group) if p in data.columns)
     return out
 
 
-def _integer_variables(views: Mapping[str, BayesianFit]) -> set[str]:
+def _integer_variables(readouts: Mapping[str, PredictorReadout]) -> set[str]:
     """Return brms's ``get_int_vars``: trial counts and monotonic variables.
 
     Parameters
     ----------
-    views : Mapping[str, BayesianFit]
-        Response views.
+    readouts : Mapping[str, PredictorReadout]
+        Response readouts.
 
     Returns
     -------
@@ -471,24 +482,23 @@ def _integer_variables(views: Mapping[str, BayesianFit]) -> set[str]:
         Variables valued on integers.
     """
     out: set[str] = set()
-    for view in views.values():
-        out.update(_trial_variables(view))
-        plan = view.prediction_plan
+    for readout in readouts.values():
+        out.update(_trial_variables(readout))
         # Every predictor: location, distributional, and per-category.
-        for design in plan.designs.values() if plan is not None else ():
+        for design in (readout.designs or {}).values():
             if design.common is not None:
                 for term in design.common.terms.values():
                     out.update(design_variables(term).integer)
     return out
 
 
-def _trial_variables(view: BayesianFit) -> list[str]:
+def _trial_variables(readout: PredictorReadout) -> list[str]:
     """Return the data columns of the ``trials`` addition term.
 
     Parameters
     ----------
-    view : BayesianFit
-        Response view.
+    readout : PredictorReadout
+        Retained response metadata.
 
     Returns
     -------
@@ -497,7 +507,7 @@ def _trial_variables(view: BayesianFit) -> list[str]:
     """
     return [
         str(value)
-        for key, value in view.formula.modifiers.sources
+        for key, value in readout.formula.modifiers.sources
         if key == "trials" and isinstance(value, str)
     ]
 
@@ -711,7 +721,7 @@ class _Context(ValueModel):
 
 def prepare_conditions(
     context: _Context,
-    views: Mapping[str, BayesianFit],
+    readouts: Mapping[str, PredictorReadout],
     conditions: IntoDataFrame | Mapping[str, Sequence[ConditionValue]] | None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Complete conditions with brms's defaults, as ``prepare_conditions``.
@@ -720,8 +730,8 @@ def prepare_conditions(
     ----------
     context : _Context
         Model frame and variable classes.
-    views : Mapping[str, BayesianFit]
-        Response views.
+    readouts : Mapping[str, PredictorReadout]
+        Response readouts.
     conditions : IntoDataFrame or Mapping or None
         User conditions, one row per condition, optionally with ``cond__``.
 
@@ -758,7 +768,7 @@ def prepare_conditions(
             raise ValueError("condition labels must be unique")
         frame = frame.reset_index(drop=True)
         required = [v for v in required if v not in frame.columns]
-    trial_vars = [v for view in views.values() for v in _trial_variables(view)]
+    trial_vars = [v for readout in readouts.values() for v in _trial_variables(readout)]
     for v in trial_vars:
         if v not in frame.columns or _col(frame, v).isna().all():
             frame[v] = 1
@@ -1509,8 +1519,8 @@ def brms_conditional_effects(
         raise ValueError("spaghetti and surface cannot be combined")
     probs = ((1.0 - prob) / 2.0, 1.0 - (1.0 - prob) / 2.0)
     # Effects and conditions come from every response; resp selects predictions.
-    every = _views(fit, None)
-    views = _views(fit, resp)
+    every = _readouts(fit, None)
+    readouts = _readouts(fit, resp)
     data = model_frame(fit)
     variables = model_variables(every, data)
     context = _Context(
@@ -1520,8 +1530,8 @@ def brms_conditional_effects(
         int_vars=tuple(sorted(_integer_variables(every))),
     )
     available: list[tuple[str, ...]] = []
-    for view in every.values():
-        for effect in _parameter_effects(view):
+    for readout in every.values():
+        for effect in _parameter_effects(readout):
             if effect not in available:
                 available.append(effect)
     combined = list(dict.fromkeys(v for e in available for v in e))
@@ -1537,8 +1547,8 @@ def brms_conditional_effects(
     out: list[EffectFrame] = []
     # brms loops effects, then responses (conditional_effects.mvbrmsterms).
     for effect in chosen:
-        for response, view in views.items():
-            family = view.family
+        for response, readout in readouts.items():
+            family = readout.family
             is_categorical = family.response is not None
             is_ordinal = family.response_ordinal() is not None
             frame, ordered, types, second_labels = prepare_cond_data(
@@ -1584,7 +1594,7 @@ def brms_conditional_effects(
                     raise ValueError(
                         "categorical applies only to categorical or ordinal models"
                     )
-                categories = view.category_labels
+                categories = readout.category_labels
                 frame = pd.concat([frame] * len(categories), ignore_index=True)
                 frame["cats__"] = pd.Categorical(
                     np.repeat(
@@ -1625,12 +1635,12 @@ def brms_conditional_effects(
             frame["se__"] = stats[:, 1]
             frame["lower__"] = stats[:, 2]
             frame["upper__"] = stats[:, 3]
-            observed = view.formula.response_name if not response else response
+            observed = readout.formula.response_name if not response else response
             response_values = (
                 _col(data, observed)
                 if observed in data.columns
                 else pd.Series(
-                    np.asarray(view.formula.response_values).reshape(len(data), -1)[
+                    np.asarray(readout.formula.response_values).reshape(len(data), -1)[
                         :, 0
                     ]
                 )
@@ -1651,7 +1661,7 @@ def brms_conditional_effects(
                     effects=tuple(names),
                     response=dpar
                     or nlpar
-                    or view.formula.formula.split("~", 1)[0].strip(),
+                    or readout.formula.formula.split("~", 1)[0].strip(),
                     frame=frame,
                     draws=draws,
                     surface=is_surface,
@@ -1742,14 +1752,14 @@ def brms_conditional_smooths(
         }
     )
     data = model_frame(fit)
-    views = _views(fit, resp)
+    readouts = _readouts(fit, resp)
     context = _Context(
         data=data,
-        variables=tuple(model_variables(views, data)),
-        group_vars=tuple(sorted(_group_variables(views, data))),
-        int_vars=tuple(sorted(_integer_variables(views))),
+        variables=tuple(model_variables(readouts, data)),
+        group_vars=tuple(sorted(_group_variables(readouts, data))),
+        int_vars=tuple(sorted(_integer_variables(readouts))),
     )
-    filled, _ = prepare_conditions(context, views, None)
+    filled, _ = prepare_conditions(context, readouts, None)
     resolved_int = dict(int_conditions or {})
     selected = _draw_ids(fit, ndraws, draw_ids, seed)
     replayed = fit if selected is None else fit._pp_view(selected, seed)
@@ -1757,22 +1767,31 @@ def brms_conditional_smooths(
     joint_draws = (
         cast("MultivariateFit", replayed).draws(seed=seed) if _joint(fit) else None
     )
+
+    def effect_draws() -> Mapping[str, torch.Tensor]:
+        if joint_draws is not None:
+            return joint_draws
+        return cast("BayesianFit", replayed).draws(seed=seed)
+
     out: list[EffectFrame] = []
-    for response, member in views.items():
-        plan = member.prediction_plan
-        if plan is None:
+    for response, readout in readouts.items():
+        if readout.designs is None:
             continue
-        view = member if _joint(fit) else cast("BayesianFit", replayed)
         site_prefix = (
             cast("MultivariateFit", fit).emission.responses[response].prefix
-            if _joint(fit)
+            if joint_draws is not None
             else ""
         )
-        prefixes = {name: prefix for name, prefix, _ in view._predictor_items()}
-        for parameter, design in plan.designs.items():
+        prefixes = {
+            name: prefix
+            for name, prefix, _ in predictor_items(
+                readout.formula, readout.distributional, readout.predictor_graph
+            )
+        }
+        for parameter, design in readout.designs.items():
             if design.common is None:
                 continue
-            kinds = _effect_kinds(view, prefixes[parameter])
+            kinds = _effect_kinds(readout, prefixes[parameter])
             for label, term in design.common.terms.items():
                 if kinds.get(label) != "sm":
                     continue
@@ -1837,18 +1856,18 @@ def brms_conditional_smooths(
                 for v in filled.columns:
                     if v not in newdata.columns:
                         newdata[v] = [filled[v].iloc[0]] * len(newdata)
-                eta = smooth_contribution(
-                    view,
+                eta = _smooth_contribution(
+                    readout,
                     label,
                     newdata,
                     parameter=parameter,
                     seed=seed,
-                    draws=joint_draws,
+                    get_draws=effect_draws,
                     site_prefix=site_prefix,
                 )
                 output = next(
                     term.output
-                    for item in plan.predictors
+                    for item in readout.predictors
                     if item.parameter == parameter
                     for term in item.terms
                     if any(

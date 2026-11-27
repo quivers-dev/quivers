@@ -1952,6 +1952,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
         return PredictorReadout(
             formula=self.formula,
             family=self.family,
+            designs=plan.designs if plan is not None else None,
             distributional=self.distributional,
             predictor_graph=self.predictor_graph,
             predictors=plan.predictors if plan is not None else (),

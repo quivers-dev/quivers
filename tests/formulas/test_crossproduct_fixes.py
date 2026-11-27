@@ -490,9 +490,9 @@ def test_smooth_labels_follow_brms_frame_sm() -> None:
         smooth_label("x + z")
 
 
-def test_joint_conditional_smooths_equal_the_linear_predictor_without_intercept() -> (
-    None
-):
+def test_joint_conditional_smooths_equal_the_linear_predictor_without_intercept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     joint = fit(bf("y ~ s(x)") + bf("y2 ~ x") + set_rescor(False), data=DATA, **SVI)
     rows = DATA.iloc[[1, 4, 9, 16]]
     draws = joint.draws(num_samples=4, seed=2)
@@ -500,8 +500,9 @@ def test_joint_conditional_smooths_equal_the_linear_predictor_without_intercept(
     # y's predictor is its intercept plus the smooth, so the smooth is the
     # linear predictor minus the intercept.
     linear = joint.posterior_linpred(resp="y", new_data=rows, num_samples=4, seed=2)
+    response = joint._response_fit("y")
     contribution = conditional_smooths(
-        joint._response_fit("y"), "s(x)", rows, draws=draws, site_prefix=prefix
+        response, "s(x)", rows, draws=draws, site_prefix=prefix
     )
     torch.testing.assert_close(
         contribution.double(),
@@ -509,8 +510,24 @@ def test_joint_conditional_smooths_equal_the_linear_predictor_without_intercept(
         rtol=1e-4,
         atol=1e-5,
     )
-    effects = joint.conditional_smooths(resolution=4, ndraws=3)
+
+    def rebuild(*_args):
+        raise AssertionError("joint conditional smooths must use retained predictors")
+
+    monkeypatch.setattr(type(joint), "_response_fit", rebuild)
+    draw_ids = [0, 2, 1]
+    effects = joint.conditional_smooths(resolution=4, draw_ids=draw_ids, seed=2)
     assert [effect.name for effect in effects.effects] == ["mu_y: s(x)"]
+    smoothed = effects.effects[0]
+    expected = conditional_smooths(
+        response,
+        "s(x)",
+        smoothed.frame[["x"]],
+        seed=2,
+        draws=joint._pp_view(draw_ids, 2).draws(seed=2),
+        site_prefix=prefix,
+    )
+    assert torch.equal(smoothed.draws, expected)
     assert len(joint.conditional_smooths(resp="y", resolution=4).effects) == 1
     with pytest.raises(ValueError, match="no valid smooth terms found"):
         joint.conditional_smooths(resp="y2", resolution=4)

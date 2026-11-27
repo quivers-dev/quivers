@@ -1898,6 +1898,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         return PredictorReadout(
             formula=response.formula,
             family=family,
+            designs=self.prepared[name].designs,
             distributional=lens._distributional,
             predictor_graph=lens._predictor_graph,
             predictors=lens._planned(response.formula),
@@ -2056,17 +2057,18 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             predictions = self.posterior_linpred(resp=resp, new_data=frame, **request)
         else:
             predictions = self.posterior_predict(resp=resp, new_data=frame, **request)
-        return {
-            name: grid.result(
+        effects = {}
+        for name, value in predictions.items():
+            readout = self._predictor_readout(name)
+            effects[name] = grid.result(
                 value,
                 kind=_kind(self.posterior),
                 method=method,
-                labels=self._response_fit(name).predictor_labels("mu")
+                labels=readout.predictor_labels("mu")
                 if method == "linpred"
-                else self._response_fit(name).category_labels,
+                else readout.category_labels,
             )
-            for name, value in predictions.items()
-        }
+        return effects
 
     def _prior_module(self) -> Module:
         return self.emission.module

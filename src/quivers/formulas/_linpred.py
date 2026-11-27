@@ -16,6 +16,7 @@ from quivers.formulas.family import LOCATION
 from quivers.formulas.formula import Formula, _qvr_name
 
 if TYPE_CHECKING:
+    from formulae.matrices import DesignMatrices
     from quivers.formulas._predictor_graph import PredictorGraph
     from quivers.formulas._residual_law import ResidualLaw
     from quivers.formulas.family import Family
@@ -61,6 +62,7 @@ class PredictorReadout:
 
     formula: Formula
     family: Family
+    designs: Mapping[str, DesignMatrices] | None
     distributional: Mapping[str, Formula]
     predictor_graph: PredictorGraph | None
     predictors: tuple[Predictor, ...]
