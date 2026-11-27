@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import pytest
+import torch
 
 from quivers.dsl import parse
 from quivers.dsl.ast_nodes import ObserveStep, OptionNumber, ProgramDecl
@@ -12,6 +13,7 @@ from quivers.dsl.qiec_lowering import QiecDiagnosticError, lower_qvr_to_qiec
 from quivers.qiec import QiecModule, dumps, loads
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.execution import ExecutionFailure
+from quivers.qiec.numbers import NumberDomain
 from quivers.qiec.primitives import IMPLEMENTATIONS
 from quivers.qiec.program_runtime import program_entry, run_program
 
@@ -21,6 +23,31 @@ BODY = """    sample a <- Normal(loc=0.0, scale=1.0)
     return a
 export main
 """
+
+
+def _machine(name: str, *arguments: float | bool) -> float:
+    """Apply a primitive of the reference machine to host numbers.
+
+    Parameters
+    ----------
+    name : str
+        The primitive.
+    *arguments : float | bool
+        Host numbers, made ``float64`` tensors (a truth value a ``bool``
+        tensor) as the machine holds them.
+
+    Returns
+    -------
+    float
+        The result.
+    """
+    tensors = [
+        torch.tensor(argument)
+        if isinstance(argument, bool)
+        else torch.tensor(argument, dtype=torch.float64)
+        for argument in arguments
+    ]
+    return float(IMPLEMENTATIONS[name](NumberDomain(), *tensors))
 
 
 def _module(source: str) -> QiecModule:
@@ -68,7 +95,7 @@ def test_scalar_weight_broadcasts_over_batch(weight: float) -> None:
 @pytest.mark.parametrize("invalid", [-1.0, math.inf, -math.inf, math.nan, True])
 def test_observation_weight_primitive_rejects_invalid_values(invalid) -> None:
     with pytest.raises(ValueError, match="finite and nonnegative"):
-        IMPLEMENTATIONS["observation_weight"](invalid)
+        _machine("observation_weight", invalid)
 
 
 @pytest.mark.parametrize("invalid", [-1.0, math.inf, math.nan])

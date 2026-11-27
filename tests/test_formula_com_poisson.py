@@ -305,7 +305,7 @@ def test_log_link_generated_program_preserves_overflowing_rate():
     )
     assert math.isfinite(reference.log_joint)
     assert recorded.log_joint.sum().item() == pytest.approx(
-        reference.log_joint, abs=1e-7
+        reference.log_joint.item(), abs=1e-7
     )
     assert "mu" not in recorded.sites
     assert torch.isfinite(recorded.sites["y"].log_prob).all()

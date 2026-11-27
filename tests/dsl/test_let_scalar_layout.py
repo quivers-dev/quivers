@@ -17,6 +17,7 @@ import torch.distributions as D
 
 from quivers.dsl import loads
 from quivers.inference import trace
+from quivers.qiec.numbers import host_value
 
 _PACK = """
 object Row : FinSet 1
@@ -84,7 +85,7 @@ def test_compiled_runtime_lays_out_the_list_one_vector_per_run(runs: int) -> Non
 
 def test_reference_machine_agrees() -> None:
     run = loads(_PACK).run("p", data={"y": _Y[0]}, sites={"h": _H[0]}, seed=0)
-    assert run.value == pytest.approx((_H[0], 1.0))
+    assert host_value(run.value) == pytest.approx((_H[0], 1.0))
     assert run.log_joint == pytest.approx(_oracle(_H[0], _Y[0]), rel=1e-6)
 
 

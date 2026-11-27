@@ -19,6 +19,7 @@ from quivers.qiec import (
     KernelRegistry,
     LiteralValue,
     Return,
+    HostLaw,
     RuntimeDistribution,
     dumps,
     loads as load_qiec,
@@ -102,12 +103,14 @@ def test_checked_reference_batch_event_partition_and_wire_roundtrip(shape, count
     expected = torch.distributions.Independent(
         torch.distributions.Normal(torch.zeros(shape), torch.ones(shape)), count
     ).log_prob(values)
-    actual = runtime.log_prob(_tuples(values.tolist()), keep_batch=True)
-    torch.testing.assert_close(torch.tensor(actual, dtype=torch.float64), expected)
-    assert runtime.log_mass(batch_axes=len(batch)) == (
-        0.0 if not batch else _tuples(torch.zeros(runtime.batch).tolist())
+    actual = runtime.log_prob(values, keep_batch=True)
+    real = runtime.numbers.real_dtype
+    torch.testing.assert_close(actual, expected.to(real))
+    torch.testing.assert_close(
+        runtime.log_mass(batch_axes=len(batch)), torch.zeros(runtime.batch, dtype=real)
     )
-    sample = torch.tensor(runtime.sample(random.Random(4)))
+    sample = runtime.sample(random.Random(4))
+    assert isinstance(sample, torch.Tensor)
     assert sample.shape == shape
 
 
@@ -116,10 +119,10 @@ def test_invalid_axis_counts_fail_native_reference_and_checked_kernel(count):
     base = torch.distributions.Normal(torch.zeros(2, 3), torch.ones(2, 3))
     with pytest.raises((TypeError, ValueError)):
         Independent(base, count)
-    runtime_base = RuntimeDistribution(
+    runtime_base = HostLaw(
         family="Normal", arguments={"loc": 0.0, "scale": 1.0}, batch=(2, 3)
     )
-    runtime = RuntimeDistribution(
+    runtime = HostLaw(
         family="Independent",
         arguments={"base": runtime_base, "reinterpreted_batch_ndims": count},
     )
@@ -135,7 +138,7 @@ def test_invalid_axis_counts_fail_native_reference_and_checked_kernel(count):
 
 
 def test_prefix_selection_preserves_unselected_trailing_broadcast_parameters():
-    base = RuntimeDistribution(
+    base = HostLaw(
         family="Normal", arguments={"loc": (1.0, 2.0, 3.0), "scale": 1.0}, batch=(2, 3)
     )
     first = base.at((1,))

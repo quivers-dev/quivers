@@ -156,13 +156,13 @@ def test_native_reference_fixed_carriers_and_mass_agree():
         atom_reference as reference_carrier,
         log_atom_mass as reference_mass,
     )
-    from quivers.qiec.distributions import RuntimeDistribution
+    from quivers.qiec.distributions import HostLaw
     from quivers.continuous._zero_inflated_asymmetric_laplace import (
         ZeroInflatedAsymmetricLaplace,
     )
 
     native = ZeroInflatedAsymmetricLaplace(0.3, 0.2, 1.0, 0.4)
-    reference = RuntimeDistribution(
+    reference = HostLaw(
         family="ZeroInflatedAsymmetricLaplace",
         arguments={"zero_prob": 0.3, "loc": 0.2, "scale": 1.0, "quantile": 0.4},
     )

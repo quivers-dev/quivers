@@ -211,7 +211,7 @@ def test_each_alternative_scores_the_torch_density(
             _tensor(value)
         )
     )
-    reference = ReferenceBackend().log_prob(family, arguments, value)
+    reference = ReferenceBackend().family_log_prob(family, arguments, value)
     assert reference == pytest.approx(expected, rel=1e-6, abs=1e-9)
 
 
@@ -219,7 +219,7 @@ def test_each_alternative_scores_the_torch_density(
 def test_each_alternative_draws_the_same_value_from_one_seed(family: str) -> None:
     fixed, alternatives, _, _ = _CASES[family]
     draws = [
-        ReferenceBackend().sample(
+        ReferenceBackend().family_sample(
             family, {**fixed, **alternatives[alternative]}, random.Random(7)
         )
         for alternative in sorted(alternatives)
@@ -236,7 +236,10 @@ def test_a_wishart_scale_factor_sets_the_mean_it_names() -> None:
     backend = ReferenceBackend()
     draws = [
         _tensor(
-            cast(Host, backend.sample("Wishart", {"df": 4.0, "scale_tril": _L}, rng))
+            cast(
+                Host,
+                backend.family_sample("Wishart", {"df": 4.0, "scale_tril": _L}, rng),
+            )
         )
         for _ in range(4000)
     ]
@@ -245,7 +248,7 @@ def test_a_wishart_scale_factor_sets_the_mean_it_names() -> None:
 
 
 def test_a_one_hot_draw_holds_integers() -> None:
-    draw = ReferenceBackend().sample(
+    draw = ReferenceBackend().family_sample(
         "OneHotCategorical", {"probs": _PROBS}, random.Random(3)
     )
     assert isinstance(draw, tuple)

@@ -62,7 +62,9 @@ def test_singleton_simplex_registry_and_source_have_exact_zero_coordinate_layout
         data={"out": (0.0,)},
         sites={"p": (1.0,), "profiles": ((1.0,), (1.0,)), "a": 0.0, "b": 0.0},
     )
-    assert result.value == (1.0,)
+    torch.testing.assert_close(
+        result.value, torch.ones(1, dtype=torch.float64), rtol=0, atol=0
+    )
     assert result.log_joint == pytest.approx(
         -torch.log(torch.tensor(2 * torch.pi)).item()
     )

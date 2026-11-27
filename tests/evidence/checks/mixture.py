@@ -243,9 +243,9 @@ def check_machine(name: str) -> None:
         data=data,
         sites={"prior": tuple(float(value) for value in PRIOR)},
     )
-    assert isinstance(run.log_joint, float)
+    assert run.log_joint.dtype == torch.float64 and run.log_joint.dim() == 0
     compare_number(
-        run.log_joint,
+        float(run.log_joint),
         logarithm(finite_effects.evidence(partial(mixture, groups=groups_of(name)))),
         mixture_accuracy(),
         f"machine {name}",

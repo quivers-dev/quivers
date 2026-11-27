@@ -192,10 +192,32 @@ These handlers state the reference behavior in executable form. A backend may im
 behavior with its own optimized routines. Samplers, observation tables, semiring operations,
 state cells, and trace recorders remain attachments.
 
+### Numbers are tensors
+
+Every number the machine computes is a tensor ([`quivers.qiec.numbers`](../api/qiec/numbers.md)):
+a `Real` or a `LogWeight` is a scalar tensor of the run's real dtype, an `Int` a scalar `int64`
+tensor, a `Bool` a scalar `bool` tensor, and a `Tensor` of one of these element types a tensor of
+its shape. Strings, constructors, products, and tensors of structured elements keep their host
+form. The run's dtype and device are a `NumberDomain`, fixed by its attachment table. A run of host
+values is in `float64`, the precision of a Python number; a run of tensors may take their dtype.
+
+Every primitive, reduction, gather, comprehension, and matrix operation is a torch operation, so the
+machine keeps the gradient of everything it computes, through calls, recursion, and handlers. A
+selection gives its whole gradient to the first of tied operands. A partial primitive refuses an
+argument outside its domain rather than answering NaN. A number leaves the tensor form only where
+a discrete value is read: the condition of a branch, an index into a tuple of structured values,
+the key of an item, and a number a report states. Values from the host are converted where they
+enter (a run's arguments, attached values, the sites and parameters a run is given), and
+[`host_value`][quivers.qiec.numbers.host_value] converts a result to plain data when it is
+serialized. [`invoke_entry`][quivers.qiec.entries.invoke_entry] keeps the tensors in its result.
+
 A distribution construction evaluates to a [`RuntimeDistribution`](../api/qiec/distributions.md),
-which samples and scores through an installed `DistributionBackend`. The reference backend
+which samples and scores through the run's `DistributionBackend`. The reference backend
 implements every family of the [distribution family registry](../api/qiec/families.md) in plain
-Python. The scalar families sit beside the backend, and the structured and compositional families
+Python. It reads its arguments as host numbers, so it has no derivative, and it refuses an argument
+that carries a gradient rather than detach it. The
+[tensor backend](../api/continuous/tensor_backend.md) builds each family's torch distribution as the
+compiled runtime does and keeps every gradient; a run whose log joint is differentiated uses it. The scalar families sit beside the backend, and the structured and compositional families
 are in [`quivers.qiec.reference_families`](../api/qiec/reference_families.md). The small amount of
 linear algebra that the matrix families need is written out rather than taken from a library.
 
@@ -251,7 +273,8 @@ Each invocation owns its state:
 - no handler stack outlives the call.
 
 [`run_program`][quivers.qiec.program_runtime.run_program] is the replaying form. It requires a
-value for every site and scores the log joint density.
+value for every site and scores the log joint density. Both return the value and the log joint as
+the machine holds them, as tensors with the gradient of every tensor the run was given.
 
 `--fuel STEPS` bounds the number of evaluation steps, since a recursive computation may never
 return. Running out of this fuel raises the `qiec-run-fuel` diagnostic. `--trace` writes stable

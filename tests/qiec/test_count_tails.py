@@ -4,7 +4,7 @@ import math
 import pytest
 from scipy import stats
 from quivers.qiec._count_tails import log_count_tails
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import HostLaw
 from quivers.qiec.reference_support import DistributionError
 
 
@@ -71,7 +71,7 @@ def test_reference_finite_logit_tail_coordinates_match_native(name, args):
 
 @pytest.mark.parametrize("args", [{"probs": 0.0}, {"logits": -math.inf}])
 def test_reference_geometric_improper_limit_is_rejected(args):
-    law = RuntimeDistribution(family="Geometric", arguments=args)
+    law = HostLaw(family="Geometric", arguments=args)
     with pytest.raises(DistributionError, match="proper success"):
         law.log_prob(0)
     with pytest.raises(DistributionError, match="proper success"):
@@ -81,7 +81,7 @@ def test_reference_geometric_improper_limit_is_rejected(args):
 def test_reference_geometric_sampling_refuses_unrepresentable_count_without_loop():
     import random
 
-    law = RuntimeDistribution(family="Geometric", arguments={"logits": -1000.0})
+    law = HostLaw(family="Geometric", arguments={"logits": -1000.0})
     with pytest.raises(DistributionError, match="capacity"):
         law.sample(random.Random(2))
 

@@ -212,7 +212,7 @@ def test_generated_vector_program_matches_checked_reference_joint(name):
         bindings[response] = bindings[response].long()
     recorded = trace(Compiler(module).compile().morphism, torch.zeros(1, 1), bindings)
     assert recorded.log_joint.sum().item() == pytest.approx(
-        reference.log_joint, abs=2e-5
+        reference.log_joint.item(), abs=2e-5
     )
 
 

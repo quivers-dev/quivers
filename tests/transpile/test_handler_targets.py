@@ -197,7 +197,7 @@ def test_a_python_target_scores_the_reference_joint(target: str, base: float) ->
     assert reference is not None
     score = pyro_log_density if target == "pyro" else pymc_log_density
     assert score(emitted, {"y": _Y4}, {"base": base}) == pytest.approx(
-        reference, rel=1e-6
+        reference.item(), rel=1e-6
     )
 
 
@@ -313,4 +313,4 @@ def test_python_runs_a_random_handler_program(seed: int) -> None:
     for point in ((0.3137, -0.7171), (-0.9049, 0.8117)):
         expected = run_named(compiler.qiec_module, "handled", point).value
         actual = namespace["qiec_handled"](*point)  # type: ignore[operator]
-        assert float(actual) == pytest.approx(expected, rel=1e-9)
+        assert float(actual) == pytest.approx(expected.item(), rel=1e-9)

@@ -1492,12 +1492,15 @@ def test_matrix_export_reads_back_in_row_major_order(backend: str) -> None:
     program = loads(_GRID_SOURCE)
     for a, row in zip(values, measured, strict=True):
         reference = program.run("grid", data={"y": (0.1, -0.4)}, sites={"a": a}).value
-        assert reference == tuple(
-            tuple(a + 10.0 * i + j for j in range(3)) for i in range(2)
+        assert isinstance(reference, torch.Tensor)
+        expected = torch.tensor(
+            [[a + 10.0 * i + j for j in range(3)] for i in range(2)],
+            dtype=torch.float64,
         )
+        torch.testing.assert_close(reference, expected, rtol=0, atol=0)
         (exported,) = row
         grid = torch.tensor(exported, dtype=torch.float64)
         assert tuple(grid.shape) == (2, 3)
         assert grid.reshape(-1).tolist() == pytest.approx(
-            [value for item in reference for value in item]
+            reference.reshape(-1).tolist()
         )

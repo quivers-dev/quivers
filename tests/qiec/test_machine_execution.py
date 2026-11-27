@@ -13,6 +13,7 @@ import sys
 from typing import cast
 
 import pytest
+import torch
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
@@ -26,6 +27,7 @@ from quivers.qiec import (
 from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.module import QiecModule
 from quivers.qiec.types import TypeApplication
+from quivers.qiec.numbers import host_value
 
 type _Address = tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
 
@@ -82,7 +84,7 @@ def _int_list(module: QiecModule, items: list[int]) -> RuntimeConstructor:
         value = RuntimeConstructor(
             constructor=constructors["Cons"].id,
             static_arguments=(),
-            fields=(item, value),
+            fields=(torch.tensor(item), value),
             result_type=type_,
         )
     return value
@@ -114,7 +116,7 @@ define last[A : Type](xs : List[A], fallback : A) : A !{} =
         )
     finally:
         sys.setrecursionlimit(previous)
-    assert result.value == depth - 1
+    assert host_value(result.value) == depth - 1
     entered = [event for event in result.trace if event.event == "call.entered"]
     assert len(entered) == depth
     # Every tail call retires the caller's frame, so the trace records each
@@ -154,7 +156,7 @@ define first[A : Type](xs : List[A], fallback : A) : A !{} =
         )
     finally:
         sys.setrecursionlimit(previous)
-    assert result.value == 0
+    assert host_value(result.value) == 0
     returned = [event for event in result.trace if event.event == "call.returned"]
     assert len(returned) == depth
     assert not any(event.detail.get("tail") for event in returned)
@@ -188,7 +190,7 @@ define odd_length[A : Type](xs : List[A]) : Bool !{} =
             (_int_list(module, list(range(length))),),
             static_arguments=statics,
         )
-        assert result.value is (length % 2 == 0)
+        assert host_value(result.value) is (length % 2 == 0)
         names = [
             event.detail["computation"]
             for event in result.trace
@@ -235,7 +237,7 @@ define counted(seed : Int) : Int !{} =
 """
     )
     result = run_named(module, "counted", (5,))
-    assert result.value == 0
+    assert host_value(result.value) == 0
     events = [event.event for event in result.trace]
     assert events.index("instance.allocated") < events.index("handler.entered")
     assert events.count("clause.entered") == 2
@@ -270,7 +272,7 @@ define flipped() : Int !{} =
 """
     )
     result = run_named(module, "flipped")
-    assert result.value == 1
+    assert host_value(result.value) == 1
     shots = [
         event.detail["shot"]
         for event in result.trace
@@ -408,7 +410,7 @@ define foreign_inside(seed : Int) : Int !{} =
     )
     for name in ("authored_inside", "foreign_inside"):
         result = run_named(module, name, (4,), runtime=runtime)
-        assert result.value == 0
+        assert host_value(result.value) == 0
         handled = [
             cast(str, event.detail["handler"])
             for event in result.trace

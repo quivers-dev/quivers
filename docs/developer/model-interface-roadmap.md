@@ -199,14 +199,12 @@ paths before adding a second parser, compiler, fitting loop, or prediction colle
 | Observed values | Lexical computed observations use the existing observation handler and latent registry. They add scores without allocating a second latent coordinate. |
 | Editor vocabularies | One generator writes the Tree-sitter and TextMate family/builtin sets. LSP, REPL, and Pygments read the same runtime registries. |
 
-The reference machine retains scalar standard-library arithmetic, while native
-kernels retain Torch arrays and automatic differentiation. Standalone emitted
-runtimes likewise require their host's array operations. These execution boundaries
-share semantic records and numerical recurrences where possible. Independent
-test oracles retain their own density, moment, and prediction calculations;
-reusing a production kernel as its own oracle would remove that check. These
-execution and verification boundaries are deliberate. Shared names alone do
-not establish agreement.
+The [reference machine](qiec.md#reference-evaluator) holds numeric values as
+tensors. Its tensor distribution backend keeps the graph for sampling and
+scoring where the distribution admits differentiation. The separate reference
+distribution backend computes densities with scalar standard-library arithmetic.
+Standalone emitted runtimes use their host's array operations. Independent test
+oracles use their own density, moment, and prediction calculations.
 
 ## Open enhancement issues
 

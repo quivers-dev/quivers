@@ -657,7 +657,9 @@ def test_the_reference_sampler_matches_the_closed_form_moments() -> None:
             _logit_beta_cumulants(0.02, 0.7),
         ),
     ):
-        values = [float(backend.sample(family, arguments, rng)) for _ in range(draws)]  # type: ignore[arg-type]
+        values = [
+            float(backend.family_sample(family, arguments, rng)) for _ in range(draws)
+        ]  # type: ignore[arg-type]
         assert all(math.isfinite(value) for value in values)
         mean, variance, _ = cumulants
         assert abs(sum(values) / draws - mean) < _Z * math.sqrt(variance / draws)

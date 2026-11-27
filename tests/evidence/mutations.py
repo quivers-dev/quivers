@@ -965,6 +965,58 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
+        name="machine-sum-read-as-a-number",
+        defect_class="scalar coercion",
+        provenance="a reduction of the machine turns its tensor into a Python number",
+        target="quivers.qiec.evaluator:_reduce",
+        rewrites=(
+            Rewrite(
+                old="        return flat.sum()\n",
+                new="        return torch.tensor(float(flat.sum()), dtype=flat.dtype)\n",
+            ),
+        ),
+        rejected_by=("evaluator/gradient/structures",),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="machine-product-read-as-a-number",
+        defect_class="scalar coercion",
+        provenance="a collector's product reads one factor as a Python number",
+        target="quivers.qiec.foreign:KernelSemiring.times",
+        rewrites=(
+            Rewrite(
+                old="self.member.tensor_op(self.tensor(left), self.tensor(right))",
+                new=(
+                    "self.member.tensor_op(torch.tensor(float(self.tensor(left)), "
+                    "dtype=torch.float64), self.tensor(right))"
+                ),
+            ),
+        ),
+        rejected_by=(
+            "machine/gradient/lexical/logprob",
+            "machine/gradient/nonlexical/logprob",
+        ),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="machine-shot-weight-detached",
+        defect_class="gradient path",
+        provenance="a search sums the weights of its shots without their gradients",
+        target=f"{BUILTINS}:search_handler",
+        rewrites=(
+            Rewrite(
+                old="weights.append(shot[0])",
+                new="weights.append(shot[0].detach())",
+            ),
+        ),
+        also_in=(EXECUTION,),
+        rejected_by=(
+            "machine/gradient/lexical/logprob",
+            "machine/gradient/nonlexical/logprob",
+        ),
+        min_effect=1.0,
+    ),
+    Mutation(
         name="replayed-site-dropped",
         defect_class="site address",
         provenance="a replay that loses one recorded site draws it again",

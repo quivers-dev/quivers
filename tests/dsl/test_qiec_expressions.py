@@ -34,6 +34,7 @@ from quivers.qiec import (
     run_named,
 )
 from quivers.qiec.types import product_type
+from quivers.qiec.numbers import host_value
 
 
 def _source_value(type_) -> str:
@@ -103,10 +104,10 @@ def test_negated_literals_fold_to_literals() -> None:
     """``-1`` stays a literal, as a static target needs it to."""
     negative = _lower("    return -1\n")
     assert isinstance(negative.body, Return)
-    assert negative.body.value == LiteralValue(value=-1, type=INT)
+    assert host_value(negative.body.value) == LiteralValue(value=-1, type=INT)
     real = _lower("    return -2.5\n", "() : Real !{}")
     assert isinstance(real.body, Return)
-    assert real.body.value == LiteralValue(value=-2.5, type=REAL)
+    assert host_value(real.body.value) == LiteralValue(value=-2.5, type=REAL)
 
 
 def test_tuples_and_projections_lower_and_run() -> None:
@@ -127,7 +128,7 @@ def test_tuples_and_projections_lower_and_run() -> None:
     projection = binding.then.value  # type: ignore[union-attr]
     assert isinstance(projection, Projection)
     assert projection.position == 1 and projection.result_type == STRING
-    assert run_named(module, "probe").value == "x"
+    assert host_value(run_named(module, "probe").value) == "x"
 
 
 def test_an_integer_beside_a_real_is_converted() -> None:
@@ -142,9 +143,9 @@ def test_an_integer_beside_a_real_is_converted() -> None:
     )
     rendered = dumps(module)
     assert rendered.count('"int_to_real"') == 3
-    assert run_named(module, "probe", (3, (1, 2, 3))).value == pytest.approx(
-        3 * 2.5 + 1 + 3.0
-    )
+    assert host_value(
+        run_named(module, "probe", (3, (1, 2, 3))).value
+    ) == pytest.approx(3 * 2.5 + 1 + 3.0)
 
 
 def test_builtins_resolve_by_argument_types() -> None:
@@ -157,7 +158,7 @@ def test_builtins_resolve_by_argument_types() -> None:
         ),
         file_path="probe.qvr",
     )
-    assert run_named(module, "probe", (-7,)).value == pytest.approx(
+    assert host_value(run_named(module, "probe", (-7,)).value) == pytest.approx(
         (max(-7 / 4.0, 0.5)) ** 0.5 + 1.0
     )
 
@@ -257,7 +258,9 @@ def test_expressions_emit_canonically_and_round_trip() -> None:
     assert module_to_source(module) == source
     assert parse(module_to_source(module)) == module
     lowered = lower_qvr_to_qiec(module, file_path="probe.qvr")
-    assert run_named(lowered, "probe", (3, 2.0)).value == pytest.approx(2.0 - 3.5)
+    assert host_value(run_named(lowered, "probe", (3, 2.0)).value) == pytest.approx(
+        2.0 - 3.5
+    )
     assert lowered.computations[0].type.result == REAL
 
 
@@ -295,9 +298,13 @@ define table() : Tensor[Real]([3, 2]) !{} =
     weights = run_named(module, "weights", (v,)).value
     assert sum(weights) == pytest.approx(1.0)
     assert weights[1] == pytest.approx(math.exp(1.0) / sum(math.exp(x) for x in v))
-    assert run_named(module, "squares").value == (0.0, 1.0, 4.0)
-    assert run_named(module, "pick", (v, 2)).value == pytest.approx(-0.5)
-    assert run_named(module, "table").value == ((0.0, 1.0), (1.0, 2.0), (2.0, 3.0))
+    assert host_value(run_named(module, "squares").value) == (0.0, 1.0, 4.0)
+    assert host_value(run_named(module, "pick", (v, 2)).value) == pytest.approx(-0.5)
+    assert host_value(run_named(module, "table").value) == (
+        (0.0, 1.0),
+        (1.0, 2.0),
+        (2.0, 3.0),
+    )
     assert module_to_source(parse(source)) == source
 
 

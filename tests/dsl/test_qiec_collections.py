@@ -24,6 +24,7 @@ from quivers.qiec import (
     validate_module,
 )
 from quivers.qiec.execution import run_named
+from quivers.qiec.numbers import host_value
 
 
 def _module(source: str):
@@ -38,7 +39,7 @@ def test_map_named_lambda_lowers_and_runs() -> None:
     return ys
 """
     )
-    assert run_named(module, "mapped", ()).value == (2.0, 4.0, 6.0)
+    assert host_value(run_named(module, "mapped", ()).value) == (2.0, 4.0, 6.0)
 
 
 def test_map_module_round_trips_through_the_qiec_wire_format() -> None:
@@ -62,8 +63,8 @@ define via_factor(xs : Tensor[Real]([3])) : Tensor[Real]([3]) !{} =
 """
     )
     values = (1.5, -2.0, 4.0)
-    mapped = run_named(module, "via_map", (values,)).value
-    factored = run_named(module, "via_factor", (values,)).value
+    mapped = host_value(run_named(module, "via_map", (values,)).value)
+    factored = host_value(run_named(module, "via_factor", (values,)).value)
     assert mapped == factored == (3.0, -4.0, 8.0)
 
 
@@ -78,8 +79,14 @@ define shadowed(xs : Tensor[Real]([2]), x : Real) : Tensor[Real]([2]) !{} =
     return map(xs, twice)
 """
     )
-    assert run_named(module, "captured", ((1.0, 2.0), 3.0)).value == (4.0, 5.0)
-    assert run_named(module, "shadowed", ((1.0, 2.0), 100.0)).value == (2.0, 4.0)
+    assert host_value(run_named(module, "captured", ((1.0, 2.0), 3.0)).value) == (
+        4.0,
+        5.0,
+    )
+    assert host_value(run_named(module, "shadowed", ((1.0, 2.0), 100.0)).value) == (
+        2.0,
+        4.0,
+    )
 
 
 def test_map_preserves_trailing_shape() -> None:
@@ -88,7 +95,7 @@ def test_map_preserves_trailing_shape() -> None:
     return map([[1.0, 2.0], [3.0, 4.0]], row -> row * 2.0)
 """
     )
-    assert run_named(module, "rows", ()).value == ((2.0, 4.0), (6.0, 8.0))
+    assert host_value(run_named(module, "rows", ()).value) == ((2.0, 4.0), (6.0, 8.0))
 
 
 def test_fold_uses_accumulator_then_item() -> None:
@@ -97,7 +104,7 @@ def test_fold_uses_accumulator_then_item() -> None:
     return fold([1.0, 2.0, 3.0], 0.0, acc -> item -> acc + item)
 """
     )
-    assert run_named(module, "folded", ()).value == 6.0
+    assert host_value(run_named(module, "folded", ()).value) == 6.0
 
 
 def test_length_and_logsumexp_over_run() -> None:
@@ -109,8 +116,8 @@ define normalizer() : Real !{} =
     return logsumexp_over([0.0, 1.0, 2.0], x -> x)
 """
     )
-    assert run_named(module, "count", ()).value == 3
-    assert run_named(module, "normalizer", ()).value == pytest.approx(
+    assert host_value(run_named(module, "count", ()).value) == 3
+    assert host_value(run_named(module, "normalizer", ()).value) == pytest.approx(
         math.log(sum(math.exp(x) for x in (0.0, 1.0, 2.0)))
     )
 
@@ -124,8 +131,9 @@ def test_length_returns_an_int_for_fixed_leading_extents(extent: int) -> None:
 """
     )
     result = run_named(module, "count", (values,)).value
-    assert result == extent
-    assert isinstance(result, int)
+    assert isinstance(result, torch.Tensor)
+    assert result.dtype == torch.int64 and result.dim() == 0
+    assert host_value(result) == extent
 
 
 def test_fold_argument_order_agrees_with_the_eager_evaluator() -> None:
@@ -169,7 +177,7 @@ define all_twice() : Tensor[Real]([3]) !{} =
     return ys
 """
     )
-    assert run_named(module, "all_twice", ()).value == (2.0, 4.0, 6.0)
+    assert host_value(run_named(module, "all_twice", ()).value) == (2.0, 4.0, 6.0)
     computation = next(item for item in module.computations if item.name == "all_twice")
     assert isinstance(computation.body, Bind)
     # The literal source is bound once, and every call reads an item of it.
@@ -266,4 +274,4 @@ def test_collection_delimiters_accept_hanging_indents() -> None:
     )
 """
     )
-    assert run_named(module, "hanging", ()).value == (2.0, 4.0)
+    assert host_value(run_named(module, "hanging", ()).value) == (2.0, 4.0)

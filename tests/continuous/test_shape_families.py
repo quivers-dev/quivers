@@ -129,12 +129,12 @@ def test_scalar_reference_density_and_support_sampling(cls, parameters, oracle):
     arguments = dict(zip(cls.arg_constraints, parameters, strict=True))
     backend = ReferenceBackend()
     for point in oracle.ppf([0.1, 0.4, 0.8]):
-        assert backend.log_prob(cls.__name__, arguments, float(point)) == pytest.approx(
-            oracle.logpdf(point), abs=2e-11
-        )
+        assert backend.family_log_prob(
+            cls.__name__, arguments, float(point)
+        ) == pytest.approx(oracle.logpdf(point), abs=2e-11)
     rng = random.Random(71)
     draws = np.array(
-        [backend.sample(cls.__name__, arguments, rng) for _ in range(4000)]
+        [backend.family_sample(cls.__name__, arguments, rng) for _ in range(4000)]
     )
     assert np.mean(draws <= oracle.ppf(0.3)) == pytest.approx(0.3, abs=0.025)
 

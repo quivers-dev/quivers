@@ -5,8 +5,18 @@ fixed monomorphic signature, and a capability tag a backend either
 supports or refuses. Overloading is a surface concern: a source ``+`` on
 two integers lowers to ``add_int`` and on two reals to ``add_real``, so
 the kernel never has to choose an implementation by inspecting a runtime
-value. The reference implementations here are what the evaluator runs;
-each host runtime carries the same table in its own language.
+value.
+
+The implementations here are what the reference machine runs. They take
+the run's `NumberDomain` and their arguments as the machine holds them,
+numbers as tensors, and keep every gradient: a primitive applied to a
+tensor of positions is applied entrywise by torch's own broadcasting. A
+partial primitive refuses an argument outside its domain rather than
+answering NaN: where its result is NaN and no argument it reads is (the
+logarithm of a negative number, say), and where it divides by zero. The
+probability primitives the compiled runtime shares are exported by name.
+The host scalar helpers below them compute the same functions on Python
+numbers for the reference distribution backend.
 """
 
 from __future__ import annotations
@@ -17,11 +27,14 @@ from types import MappingProxyType
 from typing import Literal
 
 import didactic.api as dx
+import torch
 
+from quivers._positions import demand, depends_on_position
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.qiec.identifiers import PrimitiveId
 from quivers.qiec.canonical import LOG_WEIGHT
+from quivers.qiec.numbers import NumberDomain, host_index
 from quivers.qiec.types import BOOL, INT, REAL, STRING, TypeExpr
 
 type PrimitiveCapability = Literal[
@@ -75,29 +88,6 @@ class PrimitiveSignature(QiecModel):
             module.
         """
         return PrimitiveId.derive("builtin", self.name)
-
-
-def _observation_weight(value: float) -> float:
-    """Validate a finite, nonnegative observation weight.
-
-    Parameters
-    ----------
-    value : float
-        The coefficient multiplying one observation's log density.
-
-    Returns
-    -------
-    float
-        The supplied coefficient, unchanged.
-
-    Raises
-    ------
-    ValueError
-        If the coefficient is negative, nonfinite, or boolean.
-    """
-    if isinstance(value, bool) or not math.isfinite(value) or value < 0:
-        raise ValueError("observation weights must be finite and nonnegative")
-    return value
 
 
 def _observation_status(value: int) -> int:
@@ -268,45 +258,186 @@ def _log_ndtr(value: float) -> float:
     return math.log(0.5 * math.erfc(-value / math.sqrt(2)))
 
 
-def _truncating_division(dividend: int, divisor: int) -> int:
+type Implementation = Callable[..., object]
+"""The tensor implementation of one primitive.
+
+It takes the run's `NumberDomain` and the primitive's arguments, numbers as
+tensors and strings as strings, and returns the result in the same form.
+"""
+
+
+def _refuse_new_nan(
+    name: str, result: torch.Tensor, *arguments: torch.Tensor
+) -> torch.Tensor:
+    """Refuse a result outside the real domain of a partial primitive.
+
+    A partial primitive applied outside its domain gives NaN where none of
+    its arguments is NaN: the logarithm of a negative number, the arcsine of
+    a number above one, a fractional power of a negative number. That is a
+    refusal, not a value, as the host arithmetic of every target treats it.
+
+    Parameters
+    ----------
+    name : str
+        The primitive.
+    result : torch.Tensor
+        Its result.
+    *arguments : torch.Tensor
+        Its numeric arguments.
+
+    Returns
+    -------
+    torch.Tensor
+        The result, unchanged.
+
+    Raises
+    ------
+    ValueError
+        If an entry is NaN and no argument entry it reads is.
+    """
+    inherited = torch.zeros_like(result, dtype=torch.bool)
+    for argument in arguments:
+        inherited = inherited | torch.isnan(argument)
+    demand(
+        ~torch.isnan(result) | inherited,
+        lambda: ValueError(f"{name} is applied outside its domain"),
+    )
+    return result
+
+
+def _refuse_zero_divisor(name: str, divisor: torch.Tensor) -> None:
+    """Refuse a quotient by zero.
+
+    Parameters
+    ----------
+    name : str
+        The primitive.
+    divisor : torch.Tensor
+        The divisor.
+
+    Raises
+    ------
+    ZeroDivisionError
+        If an entry of the divisor is zero.
+    """
+    demand(divisor != 0, lambda: ZeroDivisionError(f"{name} divides by zero"))
+
+
+def _partial(name: str, function: Callable[..., torch.Tensor]) -> Implementation:
+    """A real primitive that refuses arguments outside its domain.
+
+    Parameters
+    ----------
+    name : str
+        The primitive.
+    function : Callable[..., torch.Tensor]
+        The torch function of its real arguments.
+
+    Returns
+    -------
+    Implementation
+        The implementation.
+    """
+
+    def apply(_domain: NumberDomain, *arguments: torch.Tensor) -> torch.Tensor:
+        """Apply the function and refuse a result outside the domain.
+
+        Parameters
+        ----------
+        _domain : NumberDomain
+            The run's numbers, which the result's dtype already is.
+        *arguments : torch.Tensor
+            The arguments.
+
+        Returns
+        -------
+        torch.Tensor
+            The result.
+        """
+        return _refuse_new_nan(name, function(*arguments), *arguments)
+
+    return apply
+
+
+def _total(function: Callable[..., torch.Tensor]) -> Implementation:
+    """A primitive defined on every argument of its type.
+
+    Parameters
+    ----------
+    function : Callable[..., torch.Tensor]
+        The torch function of its arguments.
+
+    Returns
+    -------
+    Implementation
+        The implementation, ignoring the domain.
+    """
+
+    def apply(_domain: NumberDomain, *arguments: torch.Tensor) -> torch.Tensor:
+        """Apply the function.
+
+        Parameters
+        ----------
+        _domain : NumberDomain
+            The run's numbers, unused.
+        *arguments : torch.Tensor
+            The arguments.
+
+        Returns
+        -------
+        torch.Tensor
+            The result.
+        """
+        return function(*arguments)
+
+    return apply
+
+
+def _truncating_division(
+    _domain: NumberDomain, dividend: torch.Tensor, divisor: torch.Tensor
+) -> torch.Tensor:
     """Integer division rounding toward zero, as every host target does.
 
     Parameters
     ----------
-    dividend : int
+    _domain : NumberDomain
+        The run's numbers, unused.
+    dividend : torch.Tensor
         The number divided.
-    divisor : int
+    divisor : torch.Tensor
         The number divided by.
 
     Returns
     -------
-    int
-        The quotient truncated toward zero. Python's ``//`` floors, which
-        differs for a negative operand, so the host semantics are spelled
-        out rather than inherited.
+    torch.Tensor
+        The quotient truncated toward zero.
 
     Raises
     ------
     ZeroDivisionError
         If the divisor is zero.
     """
-    quotient = abs(dividend) // abs(divisor)
-    return quotient if (dividend < 0) == (divisor < 0) else -quotient
+    _refuse_zero_divisor("div_int", divisor)
+    return torch.div(dividend, divisor, rounding_mode="trunc")
 
 
-def _truncating_remainder(dividend: int, divisor: int) -> int:
+def _truncating_remainder(
+    _domain: NumberDomain, dividend: torch.Tensor, divisor: torch.Tensor
+) -> torch.Tensor:
     """The remainder of truncating division, carrying the dividend's sign.
 
     Parameters
     ----------
-    dividend : int
+    _domain : NumberDomain
+        The run's numbers, unused.
+    dividend : torch.Tensor
         The number divided.
-    divisor : int
+    divisor : torch.Tensor
         The number divided by.
 
     Returns
     -------
-    int
+    torch.Tensor
         ``dividend - divisor * trunc(dividend / divisor)``.
 
     Raises
@@ -314,194 +445,580 @@ def _truncating_remainder(dividend: int, divisor: int) -> int:
     ZeroDivisionError
         If the divisor is zero.
     """
-    return dividend - divisor * _truncating_division(dividend, divisor)
+    _refuse_zero_divisor("mod_int", divisor)
+    return torch.fmod(dividend, divisor)
 
 
-def _erfinv(value: float) -> float:
-    """The inverse error function.
+def _quotient(
+    _domain: NumberDomain, dividend: torch.Tensor, divisor: torch.Tensor
+) -> torch.Tensor:
+    """The real quotient, refused for a zero divisor.
 
     Parameters
     ----------
-    value : float
-        A number in the open interval from minus one to one.
+    _domain : NumberDomain
+        The run's numbers, unused.
+    dividend : torch.Tensor
+        The number divided.
+    divisor : torch.Tensor
+        The number divided by.
 
     Returns
     -------
-    float
-        The ``x`` with ``erf(x) == value``, refined by Newton steps from
-        a rational initial estimate; infinite at the endpoints.
+    torch.Tensor
+        ``dividend / divisor``.
+
+    Raises
+    ------
+    ZeroDivisionError
+        If the divisor is zero.
+    """
+    _refuse_zero_divisor("div_real", divisor)
+    return dividend / divisor
+
+
+def _reciprocal(_domain: NumberDomain, value: torch.Tensor) -> torch.Tensor:
+    """One over a number, refused at zero.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    value : torch.Tensor
+        The number.
+
+    Returns
+    -------
+    torch.Tensor
+        ``1 / value``.
+
+    Raises
+    ------
+    ZeroDivisionError
+        If the number is zero.
+    """
+    _refuse_zero_divisor("reciprocal", value)
+    return torch.reciprocal(value)
+
+
+def _reciprocal_root(_domain: NumberDomain, value: torch.Tensor) -> torch.Tensor:
+    """One over a square root, refused at zero and below.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    value : torch.Tensor
+        The number.
+
+    Returns
+    -------
+    torch.Tensor
+        ``1 / sqrt(value)``.
+
+    Raises
+    ------
+    ZeroDivisionError
+        If the number is zero.
+    ValueError
+        If it is negative.
+    """
+    _refuse_zero_divisor("rsqrt", value)
+    return _refuse_new_nan("rsqrt", torch.rsqrt(value), value)
+
+
+def _power(
+    _domain: NumberDomain, base: torch.Tensor, exponent: torch.Tensor
+) -> torch.Tensor:
+    """A real power, refused where it has no real value.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    base : torch.Tensor
+        The base.
+    exponent : torch.Tensor
+        The exponent.
+
+    Returns
+    -------
+    torch.Tensor
+        ``base ** exponent``.
+
+    Raises
+    ------
+    ZeroDivisionError
+        If the base is zero and the exponent negative.
+    ValueError
+        If the base is negative and the exponent not an integer.
+    """
+    demand(
+        (base != 0) | (exponent >= 0),
+        lambda: ZeroDivisionError("pow_real raises zero to a negative power"),
+    )
+    return _refuse_new_nan("pow_real", torch.pow(base, exponent), base, exponent)
+
+
+def _first_minimum(
+    _domain: NumberDomain, left: torch.Tensor, right: torch.Tensor
+) -> torch.Tensor:
+    """The smaller of two numbers, the first at a tie.
+
+    The tie rule is the one of every selective reduction of the library:
+    the first operand is selected, so it receives the whole gradient.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    left, right : torch.Tensor
+        The operands.
+
+    Returns
+    -------
+    torch.Tensor
+        The selected operand.
+    """
+    return torch.where(left <= right, left, right)
+
+
+def _first_maximum(
+    _domain: NumberDomain, left: torch.Tensor, right: torch.Tensor
+) -> torch.Tensor:
+    """The larger of two numbers, the first at a tie.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    left, right : torch.Tensor
+        The operands.
+
+    Returns
+    -------
+    torch.Tensor
+        The selected operand.
+    """
+    return torch.where(left >= right, left, right)
+
+
+def _select(
+    _domain: NumberDomain,
+    condition: torch.Tensor,
+    chosen: torch.Tensor,
+    other: torch.Tensor,
+) -> torch.Tensor:
+    """The first value where the condition holds, the second elsewhere.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    condition : torch.Tensor
+        The truth value.
+    chosen, other : torch.Tensor
+        The values.
+
+    Returns
+    -------
+    torch.Tensor
+        The selected value, with the gradient of the selected operand only.
+    """
+    return torch.where(condition, chosen, other)
+
+
+def _to_real(domain: NumberDomain, value: torch.Tensor) -> torch.Tensor:
+    """An integer or truth value as a real number.
+
+    Parameters
+    ----------
+    domain : NumberDomain
+        The run's numbers.
+    value : torch.Tensor
+        The value.
+
+    Returns
+    -------
+    torch.Tensor
+        The value in the real dtype.
+    """
+    return value.to(dtype=domain.real_dtype)
+
+
+def _to_integer(_domain: NumberDomain, value: torch.Tensor) -> torch.Tensor:
+    """A truth value as an integer.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    value : torch.Tensor
+        The truth value.
+
+    Returns
+    -------
+    torch.Tensor
+        ``1`` or ``0`` as ``int64``.
+    """
+    return value.to(dtype=torch.int64)
+
+
+def _truncate_to_integer(_domain: NumberDomain, value: torch.Tensor) -> torch.Tensor:
+    """A real number truncated toward zero, as an integer.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    value : torch.Tensor
+        The real number.
+
+    Returns
+    -------
+    torch.Tensor
+        The integer part as ``int64``.
 
     Raises
     ------
     ValueError
-        If the value lies outside the closed interval.
+        If the number is not finite.
     """
-    if value < -1.0 or value > 1.0:
-        raise ValueError("erfinv is defined on [-1, 1]")
-    if value == 1.0:
-        return math.inf
-    if value == -1.0:
-        return -math.inf
-    if value == 0.0:
-        return 0.0
-    sign = 1.0 if value > 0 else -1.0
-    magnitude = abs(value)
-    if magnitude < 0.7:
-        a = (0.886226899, -1.645349621, 0.914624893, -0.140543331)
-        b = (-2.118377725, 1.442710462, -0.329097515, 0.012229801)
-        square = magnitude * magnitude
-        estimate = (
-            magnitude
-            * (((a[3] * square + a[2]) * square + a[1]) * square + a[0])
-            / (
-                (((b[3] * square + b[2]) * square + b[1]) * square + b[0]) * square
-                + 1.0
-            )
-        )
-    else:
-        c = (-1.970840454, -1.62490649, 3.429567803, 1.641345311)
-        d = (3.543889200, 1.637067800)
-        tail = math.sqrt(-math.log((1.0 - magnitude) / 2.0))
-        estimate = (((c[3] * tail + c[2]) * tail + c[1]) * tail + c[0]) / (
-            (d[1] * tail + d[0]) * tail + 1.0
-        )
-    for _ in range(3):
-        error = math.erf(estimate) - magnitude
-        estimate -= error / (2.0 / math.sqrt(math.pi) * math.exp(-estimate * estimate))
-    return sign * estimate
+    demand(
+        torch.isfinite(value),
+        lambda: ValueError("real_to_int requires a finite real value"),
+    )
+    return torch.trunc(value).to(dtype=torch.int64)
 
 
-def _digamma(value: float) -> float:
-    """The logarithmic derivative of the gamma function.
+def _to_string(_domain: NumberDomain, value: torch.Tensor) -> str:
+    """An integer written in decimal.
 
     Parameters
     ----------
-    value : float
-        A positive number, or a negative non-integer reached through the
-        reflection formula.
+    _domain : NumberDomain
+        The run's numbers, unused.
+    value : torch.Tensor
+        The integer.
 
     Returns
     -------
-    float
-        ``psi(value)``, by recurrence up to a large argument and the
-        asymptotic series there.
+    str
+        Its decimal spelling; the integer is read as a host index, since a
+        string is a host value.
+    """
+    return str(host_index(value, "int_to_string"))
+
+
+def _string_relation(
+    relation: Callable[[str, str], bool],
+) -> Implementation:
+    """A relation between strings as a primitive answering a truth value.
+
+    Parameters
+    ----------
+    relation : Callable[[str, str], bool]
+        The relation.
+
+    Returns
+    -------
+    Implementation
+        The implementation.
+    """
+
+    def apply(domain: NumberDomain, left: str, right: str) -> torch.Tensor:
+        """Relate two strings.
+
+        Parameters
+        ----------
+        domain : NumberDomain
+            The run's numbers, which hold the truth value.
+        left, right : str
+            The strings.
+
+        Returns
+        -------
+        torch.Tensor
+            Whether the relation holds.
+        """
+        return domain.number("truth", relation(left, right))
+
+    return apply
+
+
+def _concatenate(_domain: NumberDomain, left: str, right: str) -> str:
+    """Two strings, one after the other.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The run's numbers, unused.
+    left, right : str
+        The strings.
+
+    Returns
+    -------
+    str
+        Their concatenation.
+    """
+    return left + right
+
+
+def observation_weight(value: torch.Tensor) -> torch.Tensor:
+    """Validate finite, nonnegative observation weights.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        A floating tensor of coefficients multiplying log densities.
+
+    Returns
+    -------
+    torch.Tensor
+        The supplied value, unchanged and retaining its gradient.
 
     Raises
     ------
     ValueError
-        If the value is a nonpositive integer, where the function has a
-        pole.
+        If a weight is nonfinite or negative, or the tensor is not real.
     """
-    if value <= 0.0 and value == math.floor(value):
-        raise ValueError("digamma has a pole at nonpositive integers")
-    if value < 0.0:
-        return _digamma(1.0 - value) - math.pi / math.tan(math.pi * value)
-    result = 0.0
-    while value < 6.0:
-        result -= 1.0 / value
-        value += 1.0
-    inverse = 1.0 / value
-    square = inverse * inverse
-    return (
-        result
-        + math.log(value)
-        - 0.5 * inverse
-        - square
-        * (
-            1.0 / 12.0
-            - square
-            * (
-                1.0 / 120.0
-                - square * (1.0 / 252.0 - square * (1.0 / 240.0 - square / 132.0))
-            )
-        )
+    error = ValueError("observation weights must be finite and nonnegative real values")
+    if not value.is_floating_point():
+        raise error
+    demand(torch.isfinite(value) & (value >= 0), lambda: error)
+    return value
+
+
+def observation_status(value: torch.Tensor) -> torch.Tensor:
+    """Validate recorded-outcome event codes.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        Integer codes from minus one through two.
+
+    Returns
+    -------
+    torch.Tensor
+        The codes, unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the tensor is not of integers or a code is outside the set.
+    """
+    error = ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    if value.dtype == torch.bool or value.is_floating_point() or value.is_complex():
+        raise error
+    demand((value >= -1) & (value <= 2), lambda: error)
+    return value
+
+
+def interval_upper(lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+    """Validate an active interval's finite, strictly larger upper endpoint.
+
+    Parameters
+    ----------
+    lower, upper : torch.Tensor
+        Real endpoints; the lower endpoint may be infinite.
+
+    Returns
+    -------
+    torch.Tensor
+        The upper endpoint broadcast to both shapes, with its gradient.
+
+    Raises
+    ------
+    ValueError
+        If an endpoint is not real, the lower is NaN, or the upper is not
+        finite or does not exceed the lower.
+    """
+    if any(
+        value.dtype == torch.bool or not value.is_floating_point()
+        for value in (lower, upper)
+    ):
+        raise ValueError("interval_upper requires real endpoints")
+    demand(
+        ~lower.isnan() & upper.isfinite() & (upper > lower),
+        lambda: ValueError(
+            "interval_upper requires a finite upper endpoint greater than its lower endpoint"
+        ),
+    )
+    shape = torch.broadcast_shapes(lower.shape, upper.shape)
+    return upper if upper.shape == shape else upper.expand(shape)
+
+
+def positive_parameter(value: torch.Tensor) -> torch.Tensor:
+    """Validate a positive real parameter without changing it.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        Natural-scale parameters.
+
+    Returns
+    -------
+    torch.Tensor
+        The value, unchanged and retaining its gradient.
+
+    Raises
+    ------
+    ValueError
+        If a value is not real, not finite, zero, or negative.
+    """
+    valid = (
+        torch.isfinite(value) & (value > 0)
+        if value.is_floating_point()
+        else torch.zeros_like(value, dtype=torch.bool)
+    )
+
+    def refusal() -> ValueError:
+        """The error, naming the invalid entries a run of one position has.
+
+        Returns
+        -------
+        ValueError
+            The error.
+        """
+        message = "positive_parameter requires finite strictly positive real values"
+        if depends_on_position(valid):
+            return ValueError(message)
+        found = (~valid).nonzero(as_tuple=False)[:16].detach().cpu().tolist()
+        return ValueError(f"{message}; invalid tensor positions {found}")
+
+    demand(valid, refusal)
+    return value
+
+
+def log_probability(value: torch.Tensor) -> torch.Tensor:
+    """Log probabilities, negative infinity at zero.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        Finite real probabilities in the closed unit interval.
+
+    Returns
+    -------
+    torch.Tensor
+        Their logarithms. The zero endpoint is masked before the logarithm,
+        so its inactive derivative does not leak.
+
+    Raises
+    ------
+    ValueError
+        If a value is not real, not finite, or outside [0, 1].
+    """
+    error = ValueError("log_probability requires finite real values in [0, 1]")
+    if not value.is_floating_point():
+        raise error
+    demand(torch.isfinite(value) & (value >= 0) & (value <= 1), lambda: error)
+    positive = value > 0
+    safe = torch.where(positive, value, torch.ones_like(value))
+    return torch.where(positive, safe.log(), -torch.inf)
+
+
+def log1mexp(value: torch.Tensor) -> torch.Tensor:
+    """``log(1 - exp(value))`` without cancellation.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        Nonpositive real values, including negative infinity.
+
+    Returns
+    -------
+    torch.Tensor
+        Negative infinity at zero and zero at negative infinity; the two
+        branches are evaluated at protected arguments only.
+
+    Raises
+    ------
+    ValueError
+        If a value is not real, NaN, or positive.
+    """
+    error = ValueError("log1mexp requires nonpositive real values")
+    if not value.is_floating_point():
+        raise error
+    demand(~torch.isnan(value) & (value <= 0), lambda: error)
+    interior = torch.isfinite(value) & (value < 0)
+    safe = torch.where(interior, value, -torch.ones_like(value))
+    near = safe > -math.log(2)
+    near_arg = torch.where(near, safe, -torch.ones_like(safe))
+    far_arg = torch.where(near, -torch.ones_like(safe), safe)
+    result = torch.where(
+        near, torch.log(-torch.expm1(near_arg)), torch.log1p(-far_arg.exp())
+    )
+    return torch.where(
+        value == 0, -torch.inf, torch.where(value.isneginf(), 0.0, result)
     )
 
 
-def _sigmoid(value: float) -> float:
-    """The logistic function, stably at both tails.
+def log_ndtr(value: torch.Tensor) -> torch.Tensor:
+    """The standard normal log distribution function.
 
     Parameters
     ----------
-    value : float
-        The argument.
+    value : torch.Tensor
+        Real values, including either infinity.
 
     Returns
     -------
-    float
-        ``1 / (1 + exp(-value))``.
+    torch.Tensor
+        Negative infinity at negative infinity, zero at infinity, with
+        the infinite endpoints masked before the function is applied.
+
+    Raises
+    ------
+    ValueError
+        If a value is not real or is NaN.
     """
-    if value >= 0.0:
-        return 1.0 / (1.0 + math.exp(-value))
-    exponent = math.exp(value)
-    return exponent / (1.0 + exponent)
+    error = ValueError("log_ndtr requires real values other than NaN")
+    if not value.is_floating_point():
+        raise error
+    demand(~torch.isnan(value), lambda: error)
+    safe = torch.where(torch.isfinite(value), value, torch.zeros_like(value))
+    result = torch.special.log_ndtr(safe)
+    return torch.where(
+        value.isneginf(), -torch.inf, torch.where(value.isposinf(), 0.0, result)
+    )
 
 
-def _softplus(value: float) -> float:
-    """``log(1 + exp(value))``, stably at both tails.
+def scale_weight(coefficient: torch.Tensor, density: torch.Tensor) -> torch.Tensor:
+    """Multiply log weights, a zero coefficient absorbing any density.
 
     Parameters
     ----------
-    value : float
-        The argument.
+    coefficient : torch.Tensor
+        The coefficient, a scalar or one per density position.
+    density : torch.Tensor
+        The log density at each position.
 
     Returns
     -------
-    float
-        The softplus.
+    torch.Tensor
+        The product, with zero-coefficient positions masked before the
+        multiplication, so an infinite density there gives zero and no NaN
+        gradient.
     """
-    return max(value, 0.0) + math.log1p(math.exp(-abs(value)))
+    safe = torch.where(coefficient == 0, torch.zeros_like(density), density)
+    return coefficient * safe
 
 
-def _gelu(value: float) -> float:
-    """The Gaussian error linear unit.
+def _sign(value: torch.Tensor) -> torch.Tensor:
+    """The sign of a number, with zero derivative.
 
     Parameters
     ----------
-    value : float
+    value : torch.Tensor
         The argument.
 
     Returns
     -------
-    float
-        ``value * Phi(value)`` with ``Phi`` the standard normal
-        distribution function.
-    """
-    return 0.5 * value * (1.0 + math.erf(value / math.sqrt(2.0)))
-
-
-def _selu(value: float) -> float:
-    """The scaled exponential linear unit.
-
-    Parameters
-    ----------
-    value : float
-        The argument.
-
-    Returns
-    -------
-    float
-        The unit at its self-normalizing constants.
-    """
-    alpha = 1.6732632423543772848170429916717
-    scale = 1.0507009873554804934193349852946
-    return scale * (value if value > 0.0 else alpha * (math.exp(value) - 1.0))
-
-
-def _sign(value: float) -> float:
-    """The sign of a number.
-
-    Parameters
-    ----------
-    value : float
-        The argument.
-
-    Returns
-    -------
-    float
+    torch.Tensor
         Minus one, zero, or one.
     """
-    return (value > 0.0) - (value < 0.0)
+    return torch.sign(value)
 
 
 def _signature(
@@ -509,11 +1026,11 @@ def _signature(
     parameters: tuple[TypeExpr, ...],
     result: TypeExpr,
     capability: PrimitiveCapability,
-    implementation: Callable[..., object],
+    implementation: Implementation,
     *,
     total: bool = False,
-) -> tuple[PrimitiveSignature, Callable[..., object]]:
-    """Pair a signature with its reference implementation.
+) -> tuple[PrimitiveSignature, Implementation]:
+    """Pair a signature with its tensor implementation.
 
     Parameters
     ----------
@@ -525,14 +1042,14 @@ def _signature(
         The result type.
     capability : PrimitiveCapability
         The feature tag.
-    implementation : Callable[..., object]
-        The reference implementation over host values.
+    implementation : Implementation
+        The implementation over machine values.
     total : bool
         Whether the primitive has no additional argument-domain restriction.
 
     Returns
     -------
-    tuple[PrimitiveSignature, Callable[..., object]]
+    tuple[PrimitiveSignature, Implementation]
         The signature and implementation, ready for the tables below.
     """
     return PrimitiveSignature(
@@ -544,139 +1061,154 @@ def _signature(
     ), implementation
 
 
-_ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
-    _signature(
-        "add_int", (INT, INT), INT, "arithmetic", lambda a, b: a + b, total=True
-    ),
-    _signature(
-        "sub_int", (INT, INT), INT, "arithmetic", lambda a, b: a - b, total=True
-    ),
-    _signature(
-        "mul_int", (INT, INT), INT, "arithmetic", lambda a, b: a * b, total=True
-    ),
+_F = torch.nn.functional
+
+_ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
+    _signature("add_int", (INT, INT), INT, "arithmetic", _total(torch.add), total=True),
+    _signature("sub_int", (INT, INT), INT, "arithmetic", _total(torch.sub), total=True),
+    _signature("mul_int", (INT, INT), INT, "arithmetic", _total(torch.mul), total=True),
     _signature("div_int", (INT, INT), INT, "arithmetic", _truncating_division),
     _signature("mod_int", (INT, INT), INT, "arithmetic", _truncating_remainder),
-    _signature("neg_int", (INT,), INT, "arithmetic", lambda a: -a, total=True),
-    _signature("abs_int", (INT,), INT, "arithmetic", abs, total=True),
-    _signature("min_int", (INT, INT), INT, "arithmetic", min, total=True),
-    _signature("max_int", (INT, INT), INT, "arithmetic", max, total=True),
+    _signature("neg_int", (INT,), INT, "arithmetic", _total(torch.neg), total=True),
+    _signature("abs_int", (INT,), INT, "arithmetic", _total(torch.abs), total=True),
+    _signature("min_int", (INT, INT), INT, "arithmetic", _first_minimum, total=True),
+    _signature("max_int", (INT, INT), INT, "arithmetic", _first_maximum, total=True),
     _signature(
-        "add_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a + b, total=True
+        "add_real", (REAL, REAL), REAL, "arithmetic", _total(torch.add), total=True
     ),
     _signature(
-        "sub_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a - b, total=True
+        "sub_real", (REAL, REAL), REAL, "arithmetic", _total(torch.sub), total=True
     ),
     _signature(
-        "mul_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a * b, total=True
+        "mul_real", (REAL, REAL), REAL, "arithmetic", _total(torch.mul), total=True
     ),
-    _signature("div_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a / b),
-    _signature("neg_real", (REAL,), REAL, "arithmetic", lambda a: -a, total=True),
-    _signature("abs_real", (REAL,), REAL, "arithmetic", abs, total=True),
-    _signature("min_real", (REAL, REAL), REAL, "arithmetic", min, total=True),
-    _signature("max_real", (REAL, REAL), REAL, "arithmetic", max, total=True),
-    _signature("pow_real", (REAL, REAL), REAL, "math", math.pow),
-    _signature("exp", (REAL,), REAL, "math", math.exp),
-    _signature("log", (REAL,), REAL, "math", math.log),
-    _signature("log_probability", (REAL,), REAL, "probability", _log_probability),
-    _signature("positive_parameter", (REAL,), REAL, "probability", _positive_parameter),
-    _signature("observation_status", (INT,), INT, "probability", _observation_status),
-    _signature("interval_upper", (REAL, REAL), REAL, "probability", _interval_upper),
-    _signature("log1mexp", (REAL,), REAL, "probability", _log1mexp),
-    _signature("log_ndtr", (REAL,), REAL, "probability", _log_ndtr),
-    _signature("sqrt", (REAL,), REAL, "math", math.sqrt),
-    _signature("eq_int", (INT, INT), BOOL, "comparison", lambda a, b: a == b),
-    _signature("ne_int", (INT, INT), BOOL, "comparison", lambda a, b: a != b),
-    _signature("lt_int", (INT, INT), BOOL, "comparison", lambda a, b: a < b),
-    _signature("le_int", (INT, INT), BOOL, "comparison", lambda a, b: a <= b),
-    _signature("gt_int", (INT, INT), BOOL, "comparison", lambda a, b: a > b),
-    _signature("ge_int", (INT, INT), BOOL, "comparison", lambda a, b: a >= b),
-    _signature("eq_real", (REAL, REAL), BOOL, "comparison", lambda a, b: a == b),
-    _signature("ne_real", (REAL, REAL), BOOL, "comparison", lambda a, b: a != b),
-    _signature("lt_real", (REAL, REAL), BOOL, "comparison", lambda a, b: a < b),
-    _signature("le_real", (REAL, REAL), BOOL, "comparison", lambda a, b: a <= b),
-    _signature("gt_real", (REAL, REAL), BOOL, "comparison", lambda a, b: a > b),
-    _signature("ge_real", (REAL, REAL), BOOL, "comparison", lambda a, b: a >= b),
-    _signature("eq_bool", (BOOL, BOOL), BOOL, "comparison", lambda a, b: a == b),
-    _signature("ne_bool", (BOOL, BOOL), BOOL, "comparison", lambda a, b: a != b),
-    _signature("eq_string", (STRING, STRING), BOOL, "comparison", lambda a, b: a == b),
-    _signature("ne_string", (STRING, STRING), BOOL, "comparison", lambda a, b: a != b),
-    _signature("and", (BOOL, BOOL), BOOL, "boolean", lambda a, b: a and b),
-    _signature("or", (BOOL, BOOL), BOOL, "boolean", lambda a, b: a or b),
-    _signature("not", (BOOL,), BOOL, "boolean", lambda a: not a),
-    _signature("concat", (STRING, STRING), STRING, "string", lambda a, b: a + b),
-    _signature("int_to_real", (INT,), REAL, "conversion", float),
-    _signature("int_to_string", (INT,), STRING, "conversion", str),
-    _signature("real_to_int", (REAL,), INT, "conversion", math.trunc),
-    _signature("bool_to_real", (BOOL,), REAL, "conversion", float),
-    _signature("bool_to_int", (BOOL,), INT, "conversion", int),
+    _signature("div_real", (REAL, REAL), REAL, "arithmetic", _quotient),
+    _signature("neg_real", (REAL,), REAL, "arithmetic", _total(torch.neg), total=True),
+    _signature("abs_real", (REAL,), REAL, "arithmetic", _total(torch.abs), total=True),
     _signature(
-        "select_real",
-        (BOOL, REAL, REAL),
-        REAL,
-        "boolean",
-        lambda c, a, b: a if c else b,
+        "min_real", (REAL, REAL), REAL, "arithmetic", _first_minimum, total=True
     ),
     _signature(
-        "select_int", (BOOL, INT, INT), INT, "boolean", lambda c, a, b: a if c else b
+        "max_real", (REAL, REAL), REAL, "arithmetic", _first_maximum, total=True
     ),
-    _signature("expm1", (REAL,), REAL, "math", math.expm1),
-    _signature("log1p", (REAL,), REAL, "math", math.log1p),
-    _signature("log2", (REAL,), REAL, "math", math.log2),
-    _signature("log10", (REAL,), REAL, "math", math.log10),
-    _signature("rsqrt", (REAL,), REAL, "math", lambda a: 1.0 / math.sqrt(a)),
-    _signature("square", (REAL,), REAL, "math", lambda a: a * a),
-    _signature("sign", (REAL,), REAL, "math", _sign),
-    _signature("reciprocal", (REAL,), REAL, "math", lambda a: 1.0 / a),
-    _signature("sin", (REAL,), REAL, "math", math.sin),
-    _signature("cos", (REAL,), REAL, "math", math.cos),
-    _signature("tan", (REAL,), REAL, "math", math.tan),
-    _signature("asin", (REAL,), REAL, "math", math.asin),
-    _signature("acos", (REAL,), REAL, "math", math.acos),
-    _signature("atan", (REAL,), REAL, "math", math.atan),
-    _signature("sinh", (REAL,), REAL, "math", math.sinh),
-    _signature("cosh", (REAL,), REAL, "math", math.cosh),
-    _signature("tanh", (REAL,), REAL, "math", math.tanh),
-    _signature("asinh", (REAL,), REAL, "math", math.asinh),
-    _signature("acosh", (REAL,), REAL, "math", math.acosh),
-    _signature("atanh", (REAL,), REAL, "math", math.atanh),
-    _signature("floor", (REAL,), REAL, "math", lambda a: float(math.floor(a))),
-    _signature("ceil", (REAL,), REAL, "math", lambda a: float(math.ceil(a))),
-    _signature("round", (REAL,), REAL, "math", lambda a: float(round(a))),
-    _signature("trunc", (REAL,), REAL, "math", lambda a: float(math.trunc(a))),
-    _signature("erf", (REAL,), REAL, "special", math.erf),
-    _signature("erfc", (REAL,), REAL, "special", math.erfc),
-    _signature("erfinv", (REAL,), REAL, "special", _erfinv),
-    _signature("lgamma", (REAL,), REAL, "special", math.lgamma),
-    _signature("digamma", (REAL,), REAL, "special", _digamma),
-    _signature("sigmoid", (REAL,), REAL, "activation", _sigmoid),
-    _signature("relu", (REAL,), REAL, "activation", lambda a: max(a, 0.0)),
-    _signature("relu6", (REAL,), REAL, "activation", lambda a: min(max(a, 0.0), 6.0)),
+    _signature("pow_real", (REAL, REAL), REAL, "math", _power),
+    _signature("exp", (REAL,), REAL, "math", _partial("exp", torch.exp)),
+    _signature("log", (REAL,), REAL, "math", _partial("log", torch.log)),
     _signature(
-        "elu", (REAL,), REAL, "activation", lambda a: a if a > 0.0 else math.expm1(a)
+        "log_probability", (REAL,), REAL, "probability", _total(log_probability)
     ),
-    _signature("selu", (REAL,), REAL, "activation", _selu),
-    _signature("gelu", (REAL,), REAL, "activation", _gelu),
-    _signature("silu", (REAL,), REAL, "activation", lambda a: a * _sigmoid(a)),
     _signature(
-        "mish", (REAL,), REAL, "activation", lambda a: a * math.tanh(_softplus(a))
+        "positive_parameter", (REAL,), REAL, "probability", _total(positive_parameter)
     ),
-    _signature("softplus", (REAL,), REAL, "activation", _softplus),
-    _signature("logsigmoid", (REAL,), REAL, "activation", lambda a: -_softplus(-a)),
-    _signature("softsign", (REAL,), REAL, "activation", lambda a: a / (1.0 + abs(a))),
-    _signature("observation_weight", (REAL,), REAL, "weight", _observation_weight),
-    _signature("as_weight", (REAL,), LOG_WEIGHT, "weight", float),
-    _signature("weight_value", (LOG_WEIGHT,), REAL, "weight", float),
     _signature(
-        "add_weight", (LOG_WEIGHT, LOG_WEIGHT), LOG_WEIGHT, "weight", lambda a, b: a + b
+        "observation_status", (INT,), INT, "probability", _total(observation_status)
+    ),
+    _signature(
+        "interval_upper", (REAL, REAL), REAL, "probability", _total(interval_upper)
+    ),
+    _signature("log1mexp", (REAL,), REAL, "probability", _total(log1mexp)),
+    _signature("log_ndtr", (REAL,), REAL, "probability", _total(log_ndtr)),
+    _signature("sqrt", (REAL,), REAL, "math", _partial("sqrt", torch.sqrt)),
+    _signature("eq_int", (INT, INT), BOOL, "comparison", _total(torch.eq)),
+    _signature("ne_int", (INT, INT), BOOL, "comparison", _total(torch.ne)),
+    _signature("lt_int", (INT, INT), BOOL, "comparison", _total(torch.lt)),
+    _signature("le_int", (INT, INT), BOOL, "comparison", _total(torch.le)),
+    _signature("gt_int", (INT, INT), BOOL, "comparison", _total(torch.gt)),
+    _signature("ge_int", (INT, INT), BOOL, "comparison", _total(torch.ge)),
+    _signature("eq_real", (REAL, REAL), BOOL, "comparison", _total(torch.eq)),
+    _signature("ne_real", (REAL, REAL), BOOL, "comparison", _total(torch.ne)),
+    _signature("lt_real", (REAL, REAL), BOOL, "comparison", _total(torch.lt)),
+    _signature("le_real", (REAL, REAL), BOOL, "comparison", _total(torch.le)),
+    _signature("gt_real", (REAL, REAL), BOOL, "comparison", _total(torch.gt)),
+    _signature("ge_real", (REAL, REAL), BOOL, "comparison", _total(torch.ge)),
+    _signature("eq_bool", (BOOL, BOOL), BOOL, "comparison", _total(torch.eq)),
+    _signature("ne_bool", (BOOL, BOOL), BOOL, "comparison", _total(torch.ne)),
+    _signature(
+        "eq_string",
+        (STRING, STRING),
+        BOOL,
+        "comparison",
+        _string_relation(lambda a, b: a == b),
+    ),
+    _signature(
+        "ne_string",
+        (STRING, STRING),
+        BOOL,
+        "comparison",
+        _string_relation(lambda a, b: a != b),
+    ),
+    _signature("and", (BOOL, BOOL), BOOL, "boolean", _total(torch.logical_and)),
+    _signature("or", (BOOL, BOOL), BOOL, "boolean", _total(torch.logical_or)),
+    _signature("not", (BOOL,), BOOL, "boolean", _total(torch.logical_not)),
+    _signature("concat", (STRING, STRING), STRING, "string", _concatenate),
+    _signature("int_to_real", (INT,), REAL, "conversion", _to_real),
+    _signature("int_to_string", (INT,), STRING, "conversion", _to_string),
+    _signature("real_to_int", (REAL,), INT, "conversion", _truncate_to_integer),
+    _signature("bool_to_real", (BOOL,), REAL, "conversion", _to_real),
+    _signature("bool_to_int", (BOOL,), INT, "conversion", _to_integer),
+    _signature("select_real", (BOOL, REAL, REAL), REAL, "boolean", _select),
+    _signature("select_int", (BOOL, INT, INT), INT, "boolean", _select),
+    _signature("expm1", (REAL,), REAL, "math", _partial("expm1", torch.expm1)),
+    _signature("log1p", (REAL,), REAL, "math", _partial("log1p", torch.log1p)),
+    _signature("log2", (REAL,), REAL, "math", _partial("log2", torch.log2)),
+    _signature("log10", (REAL,), REAL, "math", _partial("log10", torch.log10)),
+    _signature("rsqrt", (REAL,), REAL, "math", _reciprocal_root),
+    _signature("square", (REAL,), REAL, "math", _total(torch.square)),
+    _signature("sign", (REAL,), REAL, "math", _total(_sign)),
+    _signature("reciprocal", (REAL,), REAL, "math", _reciprocal),
+    _signature("sin", (REAL,), REAL, "math", _partial("sin", torch.sin)),
+    _signature("cos", (REAL,), REAL, "math", _partial("cos", torch.cos)),
+    _signature("tan", (REAL,), REAL, "math", _partial("tan", torch.tan)),
+    _signature("asin", (REAL,), REAL, "math", _partial("asin", torch.asin)),
+    _signature("acos", (REAL,), REAL, "math", _partial("acos", torch.acos)),
+    _signature("atan", (REAL,), REAL, "math", _partial("atan", torch.atan)),
+    _signature("sinh", (REAL,), REAL, "math", _partial("sinh", torch.sinh)),
+    _signature("cosh", (REAL,), REAL, "math", _partial("cosh", torch.cosh)),
+    _signature("tanh", (REAL,), REAL, "math", _partial("tanh", torch.tanh)),
+    _signature("asinh", (REAL,), REAL, "math", _partial("asinh", torch.asinh)),
+    _signature("acosh", (REAL,), REAL, "math", _partial("acosh", torch.acosh)),
+    _signature("atanh", (REAL,), REAL, "math", _partial("atanh", torch.atanh)),
+    _signature("floor", (REAL,), REAL, "math", _total(torch.floor)),
+    _signature("ceil", (REAL,), REAL, "math", _total(torch.ceil)),
+    _signature("round", (REAL,), REAL, "math", _total(torch.round)),
+    _signature("trunc", (REAL,), REAL, "math", _total(torch.trunc)),
+    _signature("erf", (REAL,), REAL, "special", _partial("erf", torch.erf)),
+    _signature("erfc", (REAL,), REAL, "special", _partial("erfc", torch.erfc)),
+    _signature("erfinv", (REAL,), REAL, "special", _partial("erfinv", torch.erfinv)),
+    _signature("lgamma", (REAL,), REAL, "special", _partial("lgamma", torch.lgamma)),
+    _signature("digamma", (REAL,), REAL, "special", _partial("digamma", torch.digamma)),
+    _signature("sigmoid", (REAL,), REAL, "activation", _total(torch.sigmoid)),
+    _signature("relu", (REAL,), REAL, "activation", _total(_F.relu)),
+    _signature("relu6", (REAL,), REAL, "activation", _total(_F.relu6)),
+    _signature("elu", (REAL,), REAL, "activation", _total(_F.elu)),
+    _signature("selu", (REAL,), REAL, "activation", _total(_F.selu)),
+    _signature("gelu", (REAL,), REAL, "activation", _total(_F.gelu)),
+    _signature("silu", (REAL,), REAL, "activation", _total(_F.silu)),
+    _signature("mish", (REAL,), REAL, "activation", _total(_F.mish)),
+    _signature("softplus", (REAL,), REAL, "activation", _total(_F.softplus)),
+    _signature("logsigmoid", (REAL,), REAL, "activation", _total(_F.logsigmoid)),
+    _signature("softsign", (REAL,), REAL, "activation", _total(_F.softsign)),
+    _signature(
+        "observation_weight", (REAL,), REAL, "weight", _total(observation_weight)
+    ),
+    _signature("as_weight", (REAL,), LOG_WEIGHT, "weight", _total(torch.clone)),
+    _signature("weight_value", (LOG_WEIGHT,), REAL, "weight", _total(torch.clone)),
+    _signature(
+        "add_weight",
+        (LOG_WEIGHT, LOG_WEIGHT),
+        LOG_WEIGHT,
+        "weight",
+        _total(torch.add),
     ),
     _signature(
         "scale_weight",
         (REAL, LOG_WEIGHT),
         LOG_WEIGHT,
         "weight",
-        lambda a, b: 0.0 if a == 0 else a * b,
+        _total(scale_weight),
     ),
 )
+
 
 PRIMITIVES: Mapping[str, PrimitiveSignature] = MappingProxyType(
     {signature.name: signature for signature, _ in _ENTRIES}
@@ -687,10 +1219,10 @@ The mapping is closed: a name absent here is not a primitive, and no backend
 may resolve one dynamically.
 """
 
-IMPLEMENTATIONS: Mapping[str, Callable[..., object]] = MappingProxyType(
+IMPLEMENTATIONS: Mapping[str, Implementation] = MappingProxyType(
     {signature.name: implementation for signature, implementation in _ENTRIES}
 )
-"""The reference evaluator's implementation of every primitive, by name."""
+"""The reference machine's tensor implementation of every primitive, by name."""
 
 
 def primitive(name: str) -> PrimitiveSignature:
@@ -721,8 +1253,17 @@ def primitive(name: str) -> PrimitiveSignature:
 
 __all__ = [
     "IMPLEMENTATIONS",
+    "Implementation",
     "PRIMITIVES",
     "PrimitiveCapability",
     "PrimitiveSignature",
+    "interval_upper",
+    "log1mexp",
+    "log_ndtr",
+    "log_probability",
+    "observation_status",
+    "observation_weight",
+    "positive_parameter",
     "primitive",
+    "scale_weight",
 ]

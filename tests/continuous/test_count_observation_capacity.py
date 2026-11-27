@@ -78,7 +78,7 @@ def test_original_integer_capacity_is_explicit_in_both_backends(name, count):
     with pytest.raises(ValueError, match=r"2\*\*53"):
         _law(name).log_prob(torch.tensor(event, dtype=torch.int64))
     with pytest.raises(ValueError, match=r"2\*\*53"):
-        ReferenceBackend().log_prob(name, CASES[name], event)
+        ReferenceBackend().family_log_prob(name, CASES[name], event)
 
 
 @pytest.mark.parametrize("name", CASES)
@@ -109,7 +109,7 @@ def test_shared_guard_preserves_exact_boundaries_without_conversion(value):
 def test_exact_positive_capacity_is_supported_without_loosening_count_law(name):
     event = _event(name, 2**53)
     score = _law(name).log_prob(torch.tensor(event, dtype=torch.int64))
-    reference = ReferenceBackend().log_prob(name, CASES[name], event)
+    reference = ReferenceBackend().family_log_prob(name, CASES[name], event)
     assert math.isfinite(float(score)) and float(score) <= 0
     assert math.isfinite(reference) and reference <= 0
     assert float(score) == pytest.approx(reference, rel=2e-13, abs=1e-8)
@@ -121,7 +121,7 @@ def test_invalid_counts_are_impossible_without_integer_truncation(name, value):
     event = _event(name, value)
     score = _law(name).log_prob(torch.tensor(event, dtype=torch.double))
     assert torch.isneginf(score)
-    assert ReferenceBackend().log_prob(name, CASES[name], event) == -math.inf
+    assert ReferenceBackend().family_log_prob(name, CASES[name], event) == -math.inf
 
 
 @pytest.mark.parametrize(
@@ -144,7 +144,7 @@ def test_finite_discrete_support_is_checked_before_casting_indices(name, law, va
     )
     assert torch.isneginf(law.log_prob(point))
     args = {"probs": [0.4, 0.6]} if name == "Categorical" else {"probs": 0.4}
-    assert ReferenceBackend().log_prob(name, args, value) == -math.inf
+    assert ReferenceBackend().family_log_prob(name, args, value) == -math.inf
 
 
 @pytest.mark.parametrize(

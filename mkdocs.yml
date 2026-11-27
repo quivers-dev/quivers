@@ -378,6 +378,7 @@ nav:
       - Ordered and Zero-Inflated: api/continuous/ordered.md
       - Family Registry: api/continuous/family_spec.md
       - Inline Builders: api/continuous/inline.md
+      - Tensor Distribution Backend: api/continuous/tensor_backend.md
       - Programs: api/continuous/programs.md
       - Program Steps: api/continuous/program_steps.md
       - Plates: api/continuous/plate.md
@@ -515,6 +516,7 @@ nav:
       - Canonical types: api/qiec/canonical.md
       - Families: api/qiec/families.md
       - Primitives: api/qiec/primitives.md
+      - Numbers: api/qiec/numbers.md
       - Distributions: api/qiec/distributions.md
       - Reference families: api/qiec/reference_families.md
       - Reference support: api/qiec/reference_support.md

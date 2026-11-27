@@ -129,11 +129,27 @@ from quivers.qiec.discharge import (
 )
 from quivers.qiec.distributions import (
     DistributionBackend,
+    HostLaw,
     ReferenceBackend,
     RuntimeDistribution,
     distribution_backend,
     install_distribution_backend,
     seed_reference_rng,
+)
+from quivers.qiec.numbers import (
+    Number,
+    NumberDomain,
+    NumberKind,
+    PositionDependentControl,
+    RealDtype,
+    decide,
+    discrete_key,
+    host_index,
+    host_real,
+    host_value,
+    machine_value,
+    number_kind,
+    static_shape,
 )
 from quivers.qiec.effects import (
     ArgumentDef,
@@ -301,9 +317,18 @@ from quivers.qiec.module import (
 from quivers.qiec.primitives import (
     IMPLEMENTATIONS,
     PRIMITIVES,
+    Implementation,
     PrimitiveCapability,
     PrimitiveSignature,
+    interval_upper,
+    log1mexp,
+    log_ndtr,
+    log_probability,
+    observation_status,
+    observation_weight,
+    positive_parameter,
     primitive,
+    scale_weight,
 )
 from quivers.qiec.program_runtime import (
     DeductionRun,
@@ -821,6 +846,29 @@ __all__ = [
     "validate_telescope",
     "weight_effect",
     "weight_handler",
+    "HostLaw",
+    "Implementation",
+    "Number",
+    "NumberDomain",
+    "NumberKind",
+    "PositionDependentControl",
+    "RealDtype",
+    "decide",
+    "discrete_key",
+    "host_index",
+    "host_real",
+    "host_value",
+    "interval_upper",
+    "log1mexp",
+    "log_ndtr",
+    "log_probability",
+    "machine_value",
+    "number_kind",
+    "observation_status",
+    "observation_weight",
+    "positive_parameter",
+    "scale_weight",
+    "static_shape",
 ]
 __all__ += contracts.__all__
 __all__ += foreign.__all__

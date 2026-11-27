@@ -21,7 +21,7 @@ import torch.distributions as td
 from quivers.continuous.families import _gauss_legendre_16
 from quivers.qiec.distributions import (
     ReferenceBackend,
-    RuntimeDistribution,
+    HostLaw,
     seed_reference_rng,
 )
 from quivers.qiec.families import FAMILIES
@@ -210,7 +210,7 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
         return float(distribution.log_prob(_tensor(point)))
     if family == "Mixture":
         component = arguments["component"]
-        assert isinstance(component, RuntimeDistribution)
+        assert isinstance(component, HostLaw)
         weights = _tensor(arguments["weights"])
         loc = _tensor(component.arguments["loc"])
         scale = _tensor(component.arguments["scale"])
@@ -220,7 +220,7 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
         return float(distribution.log_prob(_tensor(point)))
     if family == "Independent":
         base = arguments["base"]
-        assert isinstance(base, RuntimeDistribution)
+        assert isinstance(base, HostLaw)
         distribution = td.Independent(
             td.Normal(_tensor(base.arguments["loc"]), _tensor(base.arguments["scale"])),
             1,
@@ -228,7 +228,7 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
         return float(distribution.log_prob(_tensor(point)))
     if family == "Transformed":
         base = arguments["base"]
-        assert isinstance(base, RuntimeDistribution)
+        assert isinstance(base, HostLaw)
         distribution = td.TransformedDistribution(
             td.Normal(_tensor(base.arguments["loc"]), _tensor(base.arguments["scale"])),
             [td.transforms.ExpTransform(), td.transforms.SigmoidTransform()],
@@ -236,7 +236,7 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
         return float(distribution.log_prob(_tensor(point)))
     if family == "Truncated":
         base = arguments["base"]
-        assert isinstance(base, RuntimeDistribution)
+        assert isinstance(base, HostLaw)
         normal = td.Normal(
             _tensor(base.arguments["loc"]), _tensor(base.arguments["scale"])
         )
@@ -245,16 +245,16 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
         return float(normal.log_prob(_tensor(point)) - mass.log())
     if family == "Restrict":
         base = arguments["base"]
-        assert isinstance(base, RuntimeDistribution)
+        assert isinstance(base, HostLaw)
         normal = td.Normal(
             _tensor(base.arguments["loc"]), _tensor(base.arguments["scale"])
         )
         return float(normal.log_prob(_tensor(point)))
     if family == "Normalize":
         restricted = arguments["base"]
-        assert isinstance(restricted, RuntimeDistribution)
+        assert isinstance(restricted, HostLaw)
         base = restricted.arguments["base"]
-        assert isinstance(base, RuntimeDistribution)
+        assert isinstance(base, HostLaw)
         normal = td.Normal(
             _tensor(base.arguments["loc"]), _tensor(base.arguments["scale"])
         )
@@ -284,9 +284,9 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
     return float(_torch_class(family, **arguments).log_prob(_tensor(point)))
 
 
-def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribution:
+def _component(loc: Sequence[float], scale: Sequence[float]) -> HostLaw:
     """A normal plated over the components of a mixture."""
-    return RuntimeDistribution(
+    return HostLaw(
         family="Normal",
         arguments={"loc": tuple(loc), "scale": tuple(scale)},
         batch=(len(loc),),
@@ -426,18 +426,14 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     ),
     "Transformed": (
         {
-            "base": RuntimeDistribution(
-                family="Normal", arguments={"loc": 0.2, "scale": 0.7}
-            ),
+            "base": HostLaw(family="Normal", arguments={"loc": 0.2, "scale": 0.7}),
             "transforms": "exp, sigmoid",
         },
         (0.6, 0.9),
     ),
     "Truncated": (
         {
-            "base": RuntimeDistribution(
-                family="Normal", arguments={"loc": 0.5, "scale": 1.5}
-            ),
+            "base": HostLaw(family="Normal", arguments={"loc": 0.5, "scale": 1.5}),
             "low": -1.0,
             "high": 2.0,
         },
@@ -449,9 +445,7 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     ),
     "Restrict": (
         {
-            "base": RuntimeDistribution(
-                family="Normal", arguments={"loc": 0.5, "scale": 1.5}
-            ),
+            "base": HostLaw(family="Normal", arguments={"loc": 0.5, "scale": 1.5}),
             "low": -1.0,
             "high": 2.0,
         },
@@ -459,10 +453,10 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     ),
     "Normalize": (
         {
-            "base": RuntimeDistribution(
+            "base": HostLaw(
                 family="Restrict",
                 arguments={
-                    "base": RuntimeDistribution(
+                    "base": HostLaw(
                         family="Normal", arguments={"loc": 0.5, "scale": 1.5}
                     ),
                     "low": -1.0,
@@ -510,8 +504,8 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
 def test_measure_algebra_masses() -> None:
     """A restriction's mass is its base's on the interval, a mixture's the
     weighted sum, and normalizing divides the density by the mass."""
-    normal = RuntimeDistribution(family="Normal", arguments={"loc": 0.5, "scale": 1.5})
-    restricted = RuntimeDistribution(
+    normal = HostLaw(family="Normal", arguments={"loc": 0.5, "scale": 1.5})
+    restricted = HostLaw(
         family="Restrict", arguments={"base": normal, "low": -1.0, "high": 2.0}
     )
     torch_normal = td.Normal(0.5, 1.5)
@@ -520,18 +514,18 @@ def test_measure_algebra_masses() -> None:
     )
     assert restricted.log_mass() == pytest.approx(expected, rel=1e-7)
     assert normal.log_mass() == 0.0
-    counts = RuntimeDistribution(family="Poisson", arguments={"rate": 2.0})
-    bounded = RuntimeDistribution(
+    counts = HostLaw(family="Poisson", arguments={"rate": 2.0})
+    bounded = HostLaw(
         family="Restrict", arguments={"base": counts, "low": 1.0, "high": 3.0}
     )
     pmf = td.Poisson(2.0).log_prob(torch.tensor([1.0, 2.0, 3.0])).exp().sum().log()
     assert bounded.log_mass() == pytest.approx(float(pmf), rel=1e-7)
-    mixture = RuntimeDistribution(
+    mixture = HostLaw(
         family="Mixture",
         arguments={"weights": (0.3, 0.7), "component": (restricted, normal)},
     )
     assert mixture.log_mass() == pytest.approx(math.log(0.3 * math.exp(expected) + 0.7))
-    normalized = RuntimeDistribution(family="Normalize", arguments={"base": mixture})
+    normalized = HostLaw(family="Normalize", arguments={"base": mixture})
     assert normalized.log_mass() == 0.0
     point = 1.2
     density = float(torch_normal.log_prob(_tensor(point)))
@@ -539,7 +533,7 @@ def test_measure_algebra_masses() -> None:
     assert normalized.log_prob(point) == pytest.approx(
         unnormalized - mixture.log_mass(), rel=1e-7
     )
-    atom = RuntimeDistribution(family="PointMass", arguments={"value": 0.75})
+    atom = HostLaw(family="PointMass", arguments={"value": 0.75})
     assert atom.log_prob(0.75) == 0.0
     assert atom.log_prob(0.8) == -math.inf
     assert atom.sample() == 0.75
@@ -580,7 +574,7 @@ def test_reference_density_matches_the_oracle(family: str) -> None:
     backend = ReferenceBackend()
     for point in points:
         expected = _oracle_log_prob(family, arguments, point)
-        actual = backend.log_prob(family, arguments, point)
+        actual = backend.family_log_prob(family, arguments, point)
         assert actual == pytest.approx(expected, rel=1e-7, abs=1e-9), (family, point)
 
 
@@ -590,8 +584,11 @@ def test_reference_samples_land_in_the_support(family: str) -> None:
     backend = ReferenceBackend()
     rng = random.Random(3)
     for _ in range(50):
-        draw = backend.sample(family, arguments, rng)
-        assert backend.log_prob(family, arguments, draw) > -math.inf, (family, draw)
+        draw = backend.family_sample(family, arguments, rng)
+        assert backend.family_log_prob(family, arguments, draw) > -math.inf, (
+            family,
+            draw,
+        )
 
 
 _MOMENTS: dict[str, tuple[float, float]] = {
@@ -632,7 +629,7 @@ def test_reference_sample_means_match_closed_forms(family: str) -> None:
     arguments, _ = CASES[family]
     backend = ReferenceBackend()
     rng = random.Random(11)
-    draws = [float(backend.sample(family, arguments, rng)) for _ in range(4000)]  # type: ignore[arg-type]
+    draws = [float(backend.family_sample(family, arguments, rng)) for _ in range(4000)]  # type: ignore[arg-type]
     mean, tolerance = _MOMENTS[family]
     assert sum(draws) / len(draws) == pytest.approx(mean, abs=tolerance)
 
@@ -641,7 +638,7 @@ def test_lkj_samples_are_correlation_factors() -> None:
     backend = ReferenceBackend()
     rng = random.Random(5)
     for _ in range(20):
-        factor = backend.sample(
+        factor = backend.family_sample(
             "LKJCholesky", {"concentration": 2.0, "dimension": 3}, rng
         )
         rows = [list(row) for row in factor]  # type: ignore[union-attr]
@@ -652,7 +649,7 @@ def test_lkj_samples_are_correlation_factors() -> None:
 
 def test_a_constructed_lkj_distribution_reads_its_dimension_from_the_type() -> None:
     seed_reference_rng(2)
-    distribution = RuntimeDistribution(
+    distribution = HostLaw(
         family="LKJCholesky",
         arguments={"concentration": 2.0},
         natural=(3, 3),
@@ -675,10 +672,8 @@ def test_transform_chains_are_the_documented_names() -> None:
     }
     backend = ReferenceBackend()
     arguments = {
-        "base": RuntimeDistribution(
-            family="Normal", arguments={"loc": 0.0, "scale": 1.0}
-        ),
+        "base": HostLaw(family="Normal", arguments={"loc": 0.0, "scale": 1.0}),
         "transforms": "cube",
     }
     with pytest.raises(Exception, match="unknown transform"):
-        backend.log_prob("Transformed", arguments, 0.5)
+        backend.family_log_prob("Transformed", arguments, 0.5)

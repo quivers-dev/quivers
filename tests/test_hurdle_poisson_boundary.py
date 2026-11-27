@@ -10,7 +10,7 @@ import torch
 from quivers.continuous._zip_hurdle import HurdlePoisson
 from quivers.continuous._zero_truncated_poisson import positive_poisson_mean
 from quivers.dsl import loads
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import HostLaw
 
 
 @pytest.mark.parametrize("rate", [0.0, 1e-16, 1e-8, 1.0, 40.0])
@@ -37,7 +37,7 @@ def test_hurdle_density_matches_high_precision_pmf(rate: float) -> None:
     dist = HurdlePoisson(
         torch.tensor(0.3, dtype=torch.float64), torch.tensor(rate, dtype=torch.float64)
     )
-    reference = RuntimeDistribution(
+    reference = HostLaw(
         family="HurdlePoisson", arguments={"zero_prob": 0.3, "rate": rate}
     )
     with localcontext() as context:
@@ -125,9 +125,7 @@ export p
 
 def test_reference_hurdle_samples_its_zero_rate_limit() -> None:
     rng = random.Random(119)
-    dist = RuntimeDistribution(
-        family="HurdlePoisson", arguments={"zero_prob": 0.3, "rate": 0.0}
-    )
+    dist = HostLaw(family="HurdlePoisson", arguments={"zero_prob": 0.3, "rate": 0.0})
     draws = [dist.sample(rng) for _ in range(2000)]
     assert set(draws) == {0, 1}
     assert abs(draws.count(0) / 2000 - 0.3) < 6 * math.sqrt(0.21 / 2000)
@@ -138,7 +136,7 @@ def test_reference_hurdle_samples_its_zero_rate_limit() -> None:
 def test_reference_hurdle_refuses_invalid_parameters_before_either_branch(
     zero_prob: float, rate: float
 ) -> None:
-    dist = RuntimeDistribution(
+    dist = HostLaw(
         family="HurdlePoisson", arguments={"zero_prob": zero_prob, "rate": rate}
     )
     for value in [0, 1]:

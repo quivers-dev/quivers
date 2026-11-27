@@ -12,11 +12,11 @@ from functools import lru_cache
 
 from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
-import math
 import operator
 from typing import cast
 
 import didactic.api as dx
+import torch
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
@@ -60,7 +60,9 @@ from quivers.qiec.contracts import (
 )
 from quivers.qiec.distributions import RuntimeDistribution
 from quivers.qiec.families import family
-from quivers.qiec.foreign import KernelValue, SemiringSum, Settlement
+from quivers.core.algebras import LOG_PROB
+from quivers.qiec.foreign import SemiringSum, Settlement
+from quivers.qiec.numbers import NumberDomain, decide, host_real, machine_value
 from quivers.qiec.evaluator import (
     ClauseContext,
     Forward,
@@ -819,140 +821,58 @@ def draw_handler(
     )
 
 
-def add_weights(left: object, right: object) -> object:
+def add_weights(left: object, right: object) -> torch.Tensor:
     """Add two log weights, entrywise over tensors of them.
 
     Parameters
     ----------
     left : object
-        A float, or nested tuples of floats.
+        A log weight or a tensor of them.
     right : object
-        A float, or nested tuples of floats shaped like ``left`` when
-        both are tensors.
+        A log weight or a tensor of them; a scalar broadcasts over a
+        tensor.
 
     Returns
     -------
-    object
-        The entrywise sum; a scalar broadcasts over a tensor.
+    torch.Tensor
+        The entrywise sum, with the gradients of both.
 
     Raises
     ------
     RuntimeTypeMismatch
-        If two tensors differ in shape.
+        If a weight is not a tensor, or two tensors cannot be broadcast.
     """
-    if isinstance(left, tuple) and isinstance(right, tuple):
-        if len(left) != len(right):
-            raise RuntimeTypeMismatch(
-                f"weights of lengths {len(left)} and {len(right)} cannot be added"
-            )
-        return tuple(add_weights(a, b) for a, b in zip(left, right, strict=True))
-    if isinstance(left, tuple):
-        return tuple(add_weights(item, right) for item in left)
-    if isinstance(right, tuple):
-        return tuple(add_weights(left, item) for item in right)
-    return cast(float, left) + cast(float, right)
+    if not isinstance(left, torch.Tensor) or not isinstance(right, torch.Tensor):
+        raise RuntimeTypeMismatch("log weights are tensors of the run's numbers")
+    try:
+        return left + right
+    except RuntimeError as error:
+        raise RuntimeTypeMismatch(
+            f"weights of shapes {tuple(left.shape)} and {tuple(right.shape)} cannot "
+            "be added"
+        ) from error
 
 
-def _weight_shape(value: object) -> tuple[int, ...]:
-    """The shape of a host tensor of weights.
+def _aggregate(shots: torch.Tensor, reduction: str) -> torch.Tensor:
+    """Aggregate the weighted shots of an enumeration along the first axis.
 
     Parameters
     ----------
-    value : object
-        A float or nested tuples of floats.
-
-    Returns
-    -------
-    tuple[int, ...]
-        The extents, outermost first; empty for a float.
-    """
-    if isinstance(value, tuple):
-        return (len(value), *(_weight_shape(value[0]) if value else ()))
-    return ()
-
-
-def _entries(value: object) -> list[float]:
-    """Every entry of a host tensor of weights in row-major order.
-
-    Parameters
-    ----------
-    value : object
-        A float or nested tuples of floats.
-
-    Returns
-    -------
-    list[float]
-        The entries.
-    """
-    if isinstance(value, tuple):
-        return [entry for item in value for entry in _entries(item)]
-    return [cast(float, value)]
-
-
-def _reshape(entries: list[float], shape: tuple[int, ...]) -> object:
-    """Arrange entries as nested tuples of a shape.
-
-    Parameters
-    ----------
-    entries : list[float]
-        The entries in row-major order.
-    shape : tuple[int, ...]
-        The shape.
-
-    Returns
-    -------
-    object
-        The single entry for the empty shape, else nested tuples.
-    """
-    if not shape:
-        return entries[0]
-    stride = len(entries) // shape[0] if shape[0] else 0
-    return tuple(
-        _reshape(entries[index * stride : (index + 1) * stride], shape[1:])
-        for index in range(shape[0])
-    )
-
-
-def _aggregate(values: list[float], reduction: str) -> float:
-    """Aggregate the weighted shots of an enumeration at one position.
-
-    Parameters
-    ----------
-    values : list[float]
-        One weighted shot per support value.
+    shots : torch.Tensor
+        One weighted shot per support value along the first axis.
     reduction : str
         ``"logsumexp"``, ``"sum"``, or ``"mean"``.
 
     Returns
     -------
-    float
-        The aggregate.
+    torch.Tensor
+        The aggregate at each remaining position. A log-sum-exp of
+        impossible shots is negative infinity with zero gradient.
     """
     if reduction == "logsumexp":
-        return _log_sum_exp(values)
-    total = math.fsum(values)
-    return total / len(values) if reduction == "mean" else total
-
-
-def _log_sum_exp(values: list[float]) -> float:
-    """The log of a sum of exponentials, stably.
-
-    Parameters
-    ----------
-    values : list[float]
-        The logarithms summed.
-
-    Returns
-    -------
-    float
-        ``log(sum(exp(v)))``; negative infinity for an empty list or
-        one of only negative infinities.
-    """
-    finite = [value for value in values if value != float("-inf")]
-    if not finite:
-        return float("-inf")
-    peak = max(finite)
-    return peak + math.log(math.fsum(math.exp(value - peak) for value in finite))
+        return LOG_PROB.join(shots, 0)
+    total = shots.sum(dim=0)
+    return total / int(shots.shape[0]) if reduction == "mean" else total
 
 
 def _support(sampleable: object) -> tuple[object, ...]:
@@ -983,7 +903,7 @@ def _support(sampleable: object) -> tuple[object, ...]:
         return tuple(record.finite_support)
     if sampleable.family == "Categorical":
         weights = sampleable.arguments.get("probs", sampleable.arguments.get("logits"))
-        classes = _weight_shape(weights)
+        classes = tuple(weights.shape) if isinstance(weights, torch.Tensor) else ()
         if not classes:
             raise InvalidHandlerError(
                 "Categorical enumeration needs its probabilities or logits"
@@ -1097,10 +1017,12 @@ def enumerate_handler(
         support = _support(sampleable)
         distribution = cast(RuntimeDistribution, sampleable)
         shape = (*distribution.batch, *distribution.event)
-        totals: list[list[float]] = []
-        shapes: list[tuple[int, ...]] = []
+        element = family(distribution.family).element
+        weights: list[torch.Tensor] = []
         for choice in support:
-            value = _reshape([choice] * math.prod(shape), shape) if shape else choice  # type: ignore[list-item]
+            point = machine_value(element, choice, distribution.numbers)
+            assert isinstance(point, torch.Tensor)
+            value = point.expand(shape).clone() if shape else point
             prior = distribution.log_prob(value, keep_batch=True)
             answer = resume(value)
             if not isinstance(answer, tuple) or len(answer) != 2:
@@ -1108,30 +1030,24 @@ def enumerate_handler(
                     "enumeration expects each shot to answer with a value and "
                     "its accumulated weight"
                 )
-            weight = add_weights(prior, answer[1])
-            totals.append(_entries(weight))
-            shapes.append(_weight_shape(weight))
+            weights.append(add_weights(prior, answer[1]))
         if reduction == "table":
-            if any(len(entries) != 1 for entries in totals):
+            if any(weight.numel() != 1 for weight in weights):
                 raise InvalidHandlerError(
                     "enumeration keeps a table of one weight per support value "
                     "only for a single latent whose shots answer one weight"
                 )
-            return tuple(entries[0] for entries in totals)
-        width = max(len(entries) for entries in totals)
-        marginals = [
-            _aggregate([entries[position] for entries in totals], reduction)
-            for position in range(width)
-        ]
-        if not per_position:
-            return math.fsum(marginals)
-        widest = max(shapes, key=len)
-        if any(shape not in ((), widest) for shape in shapes):
+            return torch.stack([weight.reshape(()) for weight in weights])
+        widest = max((tuple(weight.shape) for weight in weights), key=len)
+        if any(tuple(weight.shape) not in ((), widest) for weight in weights):
             raise InvalidHandlerError(
                 "enumeration answers per-position weights only when every "
                 "shot's weights share one shape"
             )
-        return _reshape(marginals, widest)
+        marginals = _aggregate(
+            torch.stack([weight.expand(widest) for weight in weights]), reduction
+        )
+        return marginals if per_position else marginals.sum()
 
     return RuntimeHandler(
         definition=definition,
@@ -1696,6 +1612,7 @@ def replay_handler(
     answer_type: TypeExpr = ANSWER,
     key: str = "replay",
     type_validator: Callable[[TypeExpr], RuntimeValidator | None] = lambda _type: None,
+    host_numbers: NumberDomain | None = None,
 ) -> RuntimeHandler:
     """Replay selected sites under an explicit scoring/intervention policy.
 
@@ -1737,6 +1654,10 @@ def replay_handler(
         has none: each replayed value is checked against the type the
         request instantiates the site at, so a value of the wrong
         element type is refused where it enters, naming the site.
+    host_numbers
+        For values a host gives as host data, the run's numbers: each is
+        converted by the site's type where it is replayed. ``None`` for
+        values that are already the machine's.
 
     Returns
     -------
@@ -1835,6 +1756,8 @@ def replay_handler(
             else:
                 return Forward()
             value = values[site_key]
+            if host_numbers is not None:
+                value = machine_value(request.core.result_type, value, host_numbers)
             _require(
                 value,
                 result_validator,
@@ -2654,7 +2577,7 @@ def search_handler(
     def choose(
         request: RuntimeRequest,
         resume: Resumption,
-        _context: ClauseContext,
+        context: ClauseContext,
     ) -> object:
         """Answer a choice by resuming once per alternative.
 
@@ -2664,8 +2587,8 @@ def search_handler(
             The request being answered and its arguments.
         resume
             The continuation, resumed once per alternative.
-        _context
-            Runtime services, unused by this clause.
+        context
+            Runtime services, which hold the run's numbers.
 
         Returns
         -------
@@ -2680,34 +2603,40 @@ def search_handler(
             a shot does not answer a weight and a count.
         """
         (alternatives,) = _expect_arguments(request, 1, definition.name)
-        if not isinstance(alternatives, tuple):
+        if isinstance(alternatives, torch.Tensor) and alternatives.dim() > 0:
+            options: tuple[object, ...] = tuple(alternatives.unbind(0))
+        elif isinstance(alternatives, tuple):
+            options = alternatives
+        else:
             raise InvalidHandlerError("a search chooses among the entries of a tensor")
-        shots = [resume(alternative) for alternative in alternatives]
-        weights: list[KernelValue] = []
-        count = 0
+        numbers = context.attachments.numbers
+        shots = [resume(alternative) for alternative in options]
+        weights: list[torch.Tensor] = []
+        count = numbers.number("integer", 0)
         for shot in shots:
             if (
                 not isinstance(shot, tuple)
                 or len(shot) != 2
-                or isinstance(shot[1], bool)
-                or not isinstance(shot[1], int)
+                or not isinstance(shot[0], torch.Tensor)
+                or not isinstance(shot[1], torch.Tensor)
+                or shot[1].dtype != torch.int64
             ):
                 raise InvalidHandlerError(
                     "a search's shot answers its weight and its count"
                 )
-            weights.append(cast(KernelValue, shot[0]))
-            count += shot[1]
-        return (semiring.plus(weights), count)
+            weights.append(shot[0])
+            count = count + shot[1]
+        return (semiring.plus(weights, numbers), count)
 
-    def finish(value: object, _context: ClauseContext) -> object:
+    def finish(value: object, context: ClauseContext) -> object:
         """Reduce the handled computation's answer to its weight and count.
 
         Parameters
         ----------
         value
             The value paired with its accumulated weight.
-        _context
-            Runtime services, unused by this clause.
+        context
+            Runtime services, which hold the run's numbers.
 
         Returns
         -------
@@ -2724,7 +2653,7 @@ def search_handler(
                 "a search expects the handled computation to answer with a value "
                 "and its accumulated weight"
             )
-        return (value[1], 1)
+        return (value[1], context.attachments.numbers.number("integer", 1))
 
     return RuntimeHandler(
         definition=definition,
@@ -2886,11 +2815,23 @@ def settlement_handler(
             If the stop is by a control and the policy refuses.
         """
         value, certified, residual = _expect_arguments(request, 3, definition.name)
-        if not isinstance(certified, bool) or not isinstance(residual, float):
+        if (
+            not isinstance(residual, torch.Tensor)
+            or residual.dim() != 0
+            or not residual.is_floating_point()
+        ):
             raise InvalidHandlerError(
                 "a stop carries its value, whether it is certified, and its residual"
             )
-        report = settlement_report(contract, certified, residual)
+        try:
+            established = decide(certified, "a settlement's certificate")
+        except TypeError as error:
+            raise InvalidHandlerError(
+                "a stop carries its value, whether it is certified, and its residual"
+            ) from error
+        report = settlement_report(
+            contract, established, host_real(residual, "a settlement's residual")
+        )
         settled = settle(contract, value, report)
         if isinstance(settled, Unestablished):
             assert reports is not None

@@ -412,10 +412,10 @@ def test_closed_singleton_mass_preserves_original_count_capacity(backend: str) -
 
         base = ClosedPoisson(torch.tensor(3.0, dtype=torch.float64))
     else:
-        from quivers.qiec import RuntimeDistribution
+        from quivers.qiec import HostLaw
         from quivers.qiec._interval import log_interval_mass
 
-        base = RuntimeDistribution(family="Poisson", arguments={"rate": 3.0})
+        base = HostLaw(family="Poisson", arguments={"rate": 3.0})
     with pytest.raises(ValueError, match=r"2\*\*53"):
         log_interval_mass(base, count, count)
 

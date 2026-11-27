@@ -48,9 +48,9 @@ def test_native_rejects_raw_invalid_weights_even_when_validation_is_disabled(
 def test_reference_rejects_invalid_weights_before_density_or_sampling(weights):
     backend = ReferenceBackend()
     with pytest.raises(DistributionError, match="probs"):
-        backend.log_prob("Categorical", {"probs": weights}, 0)
+        backend.family_log_prob("Categorical", {"probs": weights}, 0)
     with pytest.raises(DistributionError, match="probs"):
-        backend.sample("Categorical", {"probs": weights}, random.Random(1))
+        backend.family_sample("Categorical", {"probs": weights}, random.Random(1))
 
 
 def test_one_bad_batch_row_cannot_be_normalized_into_a_valid_row():
@@ -72,10 +72,13 @@ def test_finite_nonnegative_weights_normalize_without_overflow_or_underflow(scal
     assert d.log_prob(torch.tensor(2)) == -torch.inf
     assert d.logits[2] == -torch.inf
     backend = ReferenceBackend()
-    assert backend.log_prob(
+    assert backend.family_log_prob(
         "Categorical", {"probs": weights.tolist()}, 0
     ) == pytest.approx(-math.log(2))
-    assert backend.log_prob("Categorical", {"probs": weights.tolist()}, 2) == -math.inf
+    assert (
+        backend.family_log_prob("Categorical", {"probs": weights.tolist()}, 2)
+        == -math.inf
+    )
     assert d.expand((4,)).sample((3,)).shape == (3, 4)
     assert (d.sample((100,)) < 2).all()
 

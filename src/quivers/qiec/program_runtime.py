@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from numbers import Integral
 
 import didactic.api as dx
+import torch
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY
 from quivers.qiec._models import QiecModel
@@ -45,7 +46,9 @@ from quivers.qiec.execution import (
     TraceObserver,
     run_named,
 )
+from quivers.qiec.distributions import DistributionBackend
 from quivers.qiec.evaluator import RuntimeConstructor
+from quivers.qiec.numbers import NumberDomain, machine_value
 from quivers.qiec.foreign import Settlement
 from quivers.qiec.identifiers import ComputationId, HandlerId, SourceOrigin
 from quivers.qiec.module import NamedComputation, QiecModule
@@ -91,16 +94,18 @@ class ProgramRun(QiecModel):
     Parameters
     ----------
     value
-        The value the program returned.
+        The value the program returned, as the machine holds it.
     log_joint
         The log joint density: every replayed site's log density under
-        its distribution plus every observation's and score's weight.
+        its distribution plus every observation's and score's weight, a
+        scalar tensor of the run's real dtype with the gradient of every
+        tensor the run was given.
     result
         The underlying execution result, with its trace.
     """
 
     value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    log_joint: float
+    log_joint: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
@@ -555,7 +560,11 @@ def broadcast_shared_data(
             and isinstance(plate.value, int)
             and _host_rank(value) == len(shape[1]) - 1
         ):
-            spread[parameter.name] = tuple(value for _ in range(plate.value))
+            spread[parameter.name] = (
+                value.expand(plate.value, *value.shape)
+                if isinstance(value, torch.Tensor)
+                else tuple(value for _ in range(plate.value))
+            )
     return spread
 
 
@@ -663,6 +672,8 @@ def run_program(
     fuel: int | None = None,
     observer: TraceObserver | None = None,
     providers: tuple[RuntimeProvider, ...] = (),
+    numbers: NumberDomain | None = None,
+    distributions: DistributionBackend | None = None,
 ) -> ProgramRun:
     """Run a program with every site replayed and score its log joint.
 
@@ -693,6 +704,14 @@ def run_program(
         A callback receiving every trace event as it is emitted.
     providers : tuple[RuntimeProvider, ...]
         Additional typed providers used by computations the program calls.
+    numbers : NumberDomain | None
+        The dtype and device of the run's numbers; ``float64`` on the CPU,
+        the precision of Python numbers, when ``None``. Data, sites and
+        weights are converted to it where they enter, and a tensor keeps
+        its gradient.
+    distributions : DistributionBackend | None
+        The backend that samples and scores the program's distributions;
+        the installed backend when ``None``.
 
     Returns
     -------
@@ -730,6 +749,8 @@ def run_program(
         fuel=fuel,
         observer=observer,
         providers=providers,
+        numbers=numbers,
+        distributions=distributions,
     )
 
 
@@ -744,6 +765,8 @@ def sample_program(
     fuel: int | None = None,
     observer: TraceObserver | None = None,
     providers: tuple[RuntimeProvider, ...] = (),
+    numbers: NumberDomain | None = None,
+    distributions: DistributionBackend | None = None,
 ) -> ProgramRun:
     """Run a program forward, drawing every site it is not given.
 
@@ -773,6 +796,14 @@ def sample_program(
         A callback receiving every trace event as it is emitted.
     providers : tuple[RuntimeProvider, ...]
         Additional typed providers used by computations the program calls.
+    numbers : NumberDomain | None
+        The dtype and device of the run's numbers; ``float64`` on the CPU,
+        the precision of Python numbers, when ``None``. Data, sites and
+        weights are converted to it where they enter, and a tensor keeps
+        its gradient.
+    distributions : DistributionBackend | None
+        The backend that samples and scores the program's distributions;
+        the installed backend when ``None``.
 
     Returns
     -------
@@ -811,6 +842,8 @@ def sample_program(
         fuel=fuel,
         observer=observer,
         providers=providers,
+        numbers=numbers,
+        distributions=distributions,
     )
 
 
@@ -933,6 +966,8 @@ def _run_wrapped(
     fuel: int | None,
     observer: TraceObserver | None,
     providers: tuple[RuntimeProvider, ...],
+    numbers: NumberDomain | None,
+    distributions: DistributionBackend | None,
 ) -> ProgramRun:
     """Run a program's wrapper under the core provider.
 
@@ -962,6 +997,10 @@ def _run_wrapped(
         A callback receiving every trace event as it is emitted.
     providers : tuple[RuntimeProvider, ...]
         Additional typed providers used by computations the program calls.
+    numbers : NumberDomain | None
+        The run's numbers.
+    distributions : DistributionBackend | None
+        The run's distribution backend.
 
     Returns
     -------
@@ -1018,9 +1057,12 @@ def _run_wrapped(
         runtime=runtime,
         fuel=fuel,
         observer=observer,
+        numbers=numbers,
+        distributions=distributions,
     )
     value, weight = result.value  # type: ignore[misc]
-    return ProgramRun(value=value, log_joint=float(weight), result=result)  # type: ignore[arg-type]
+    assert isinstance(weight, torch.Tensor)
+    return ProgramRun(value=value, log_joint=weight, result=result)
 
 
 def foreign_handler_configuration(
@@ -1217,7 +1259,7 @@ def deduction_item(
         The atom or constructor symbol, as the deduction spells it.
     *fields : object
         The constructor's fields: integers for position slots, items for
-        the rest.
+        the rest; numbers become the machine's tensors.
 
     Returns
     -------
@@ -1244,10 +1286,14 @@ def deduction_item(
             f"field(s), not {len(fields)}"
         )
     family = next(item for item in module.families if item.id == constructor.family)
+    numbers = NumberDomain()
     return RuntimeConstructor(
         constructor=constructor.id,
         static_arguments=(),
-        fields=tuple(fields),
+        fields=tuple(
+            machine_value(declared.type, field, numbers)
+            for declared, field in zip(constructor.fields, fields, strict=True)
+        ),
         result_type=TypeApplication(constructor=family.type_constructor, arguments=()),
     )
 

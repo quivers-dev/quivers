@@ -17,6 +17,7 @@ import torch
 
 from quivers.dsl import parse
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
+from quivers.qiec.numbers import NumberDomain
 from quivers.qiec.primitives import IMPLEMENTATIONS
 from quivers.transpile import available_targets, transpile, UnsupportedConstruct
 from quivers.transpile._builtin_spellings import BUILTIN_SPELLINGS, Refusal
@@ -27,6 +28,31 @@ from quivers.transpile._runtime_sources import (
 )
 from tests.transpile._tools import require_tool, require_scheme
 from tests.transpile._webppl import run_webppl
+
+
+def _machine(name: str, *arguments: float | bool) -> float:
+    """Apply a primitive of the reference machine to host numbers.
+
+    Parameters
+    ----------
+    name : str
+        The primitive.
+    *arguments : float | bool
+        Host numbers, made ``float64`` tensors (a truth value a ``bool``
+        tensor) as the machine holds them.
+
+    Returns
+    -------
+    float
+        The result.
+    """
+    tensors = [
+        torch.tensor(argument)
+        if isinstance(argument, bool)
+        else torch.tensor(argument, dtype=torch.float64)
+        for argument in arguments
+    ]
+    return float(IMPLEMENTATIONS[name](NumberDomain(), *tensors))
 
 
 NAMES = ("log_probability", "log1mexp", "log_ndtr", "positive_parameter")
@@ -113,9 +139,7 @@ def test_scalar_and_torch_probability_domains_endpoints_and_tail_oracles(name):
     helper = namespace["_qvr_" + name]
     for value in VALUES[name]:
         expected = _expected(name, value)
-        assert IMPLEMENTATIONS[name](value) == pytest.approx(
-            expected, rel=3e-14, abs=3e-15
-        )
+        assert _machine(name, value) == pytest.approx(expected, rel=3e-14, abs=3e-15)
         tensor = torch.tensor(value, dtype=torch.float64)
         assert float(helper(tensor)) == pytest.approx(expected, rel=3e-14, abs=3e-15)
         assert float(EAGER_BUILTINS[name](tensor)) == pytest.approx(

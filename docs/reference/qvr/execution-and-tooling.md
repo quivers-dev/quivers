@@ -116,9 +116,9 @@ run = compiled.run(
 print(run.value, run.log_joint)
 ```
 
-It returns an [`EntryRun`][quivers.qiec.entries.EntryRun]. `EntryRun.result.trace` holds the
-events that `qvr run --trace` prints, and `EntryRun.to_data()` returns the payload that
-`qvr run --json` prints.
+It returns an [`EntryRun`][quivers.qiec.entries.EntryRun]. Numeric values and the log joint
+remain tensors. The trace holds the events that `qvr run --trace` prints. The `to_data()` method
+converts the tensors to plain data for the payload that `qvr run --json` prints.
 
 ## Execution controls
 

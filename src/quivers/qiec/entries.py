@@ -33,6 +33,7 @@ from quivers.qiec.execution import (
     run_named,
 )
 from quivers.qiec.distributions import seed_reference_rng
+from quivers.qiec.numbers import host_value
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.kinds import IndexBinder
 from quivers.qiec.program_runtime import (
@@ -124,17 +125,18 @@ class EntryRun(QiecModel):
     entry
         The entry invoked.
     value
-        The validated host value the entry returned.
+        The value the entry returned. Numeric values are tensors and retain
+        their autograd graphs.
     log_joint
-        The log joint density a program run accumulated, or ``None`` for
-        a computation.
+        The log joint density a program run accumulated, as a scalar tensor
+        with its autograd graph, or ``None`` for a computation.
     result
         The underlying execution result, with its trace.
     """
 
     entry: EntryPoint = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    log_joint: float | None
+    log_joint: torch.Tensor | None = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def to_data(self) -> dict[str, object]:
@@ -149,7 +151,7 @@ class EntryRun(QiecModel):
         data = self.result.to_data()
         data["kind"] = self.entry.kind
         if self.log_joint is not None:
-            data["log_joint"] = self.log_joint
+            data["log_joint"] = host_value(self.log_joint)
         return data
 
 

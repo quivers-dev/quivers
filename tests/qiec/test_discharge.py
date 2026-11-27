@@ -10,6 +10,7 @@ requests under conditionals and inside callees.
 from __future__ import annotations
 
 import pytest
+import torch
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
@@ -101,7 +102,7 @@ def _agree(module: QiecModule, name: str, arguments: tuple[object, ...]) -> obje
     _discharged(module, name)
     original = run_named(module, name, arguments)
     rewritten = run_named(discharge_module(module).module, name, arguments)
-    assert rewritten.value == pytest.approx(original.value, rel=1e-9, abs=1e-12)
+    torch.testing.assert_close(rewritten.value, original.value, rtol=1e-9, atol=1e-12)
     assert not any(event.event.startswith("handler") for event in rewritten.trace)
     assert any(event.event == "handler.entered" for event in original.trace)
     return original.value

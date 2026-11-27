@@ -87,6 +87,8 @@ from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import StepArgument
 
 if TYPE_CHECKING:
+    from torch.distributions import Distribution
+
     from quivers.continuous.inline import (
         FixedDistribution,
         MixedInlineDistribution,
@@ -110,6 +112,10 @@ if TYPE_CHECKING:
         make_fixed_uniform,
         make_inline_distribution,
         reload_inline_registry,
+    )
+    from quivers.continuous.tensor_backend import (
+        TensorBackend as TensorBackend,
+        torch_law as torch_law,
     )
 
 # The inline-distribution builders. Their module reads the DSL's argument
@@ -141,11 +147,17 @@ _INLINE_EXPORTS = (
 )
 
 
-type _InlineExport = (
+_TENSOR_BACKEND_EXPORTS = ("TensorBackend", "torch_law")
+"""The tensor backend also depends on the inline distribution builders."""
+
+
+type _LazyExport = (
     type[ContinuousMorphism]
+    | type[TensorBackend]
     | Callable[
         ...,
         ContinuousMorphism
+        | Distribution
         | tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]
         | tuple[str, ...]
         | tuple[tuple[str, ...], ...]
@@ -154,8 +166,8 @@ type _InlineExport = (
 )
 
 
-def __getattr__(name: str) -> _InlineExport:
-    """Bind an inline-distribution builder on first access.
+def __getattr__(name: str) -> _LazyExport:
+    """Bind an inline-distribution or tensor-backend export on first access.
 
     Parameters
     ----------
@@ -164,18 +176,21 @@ def __getattr__(name: str) -> _InlineExport:
 
     Returns
     -------
-    _InlineExport
-        The builder `quivers.continuous.inline` defines under that name.
+    _LazyExport
+        The object defined under that name in the corresponding module.
 
     Raises
     ------
     AttributeError
-        If ``name`` is not an inline-distribution builder.
+        If neither module exports ``name``.
     """
-    if name in _INLINE_EXPORTS:
-        value: _InlineExport = getattr(
-            importlib.import_module("quivers.continuous.inline"), name
+    if name in _INLINE_EXPORTS or name in _TENSOR_BACKEND_EXPORTS:
+        module = (
+            "quivers.continuous.inline"
+            if name in _INLINE_EXPORTS
+            else "quivers.continuous.tensor_backend"
         )
+        value: _LazyExport = getattr(importlib.import_module(module), name)
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -230,3 +245,4 @@ __all__ += [
     "reload_inline_registry",
 ]
 __all__ += plate.__all__
+__all__ += ["TensorBackend", "torch_law"]

@@ -100,7 +100,7 @@ def _reference(
     """The reference machine's log joint at the same sites."""
     joint = loads(source).run(entry, data=data, sites=sites, seed=0).log_joint
     assert joint is not None
-    return joint
+    return joint.item()
 
 
 def _check(

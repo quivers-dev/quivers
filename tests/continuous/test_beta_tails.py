@@ -11,7 +11,7 @@ from quivers.continuous._beta_tails import log_beta_tails
 from quivers.qiec._beta_tails import beta_fraction, log_beta_tails as reference_tails
 from quivers.qiec._beta_tails import log_beta_interval_mass
 from quivers.continuous._interval import log_interval_mass
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import HostLaw
 
 
 @pytest.mark.parametrize(
@@ -178,10 +178,8 @@ def test_beta_interval_native_reference_and_restriction_use_independent_integral
     )
     native = log_interval_mass(law, low, high).item()
     scalar = log_beta_interval_mass(a, b, low, high)
-    base = RuntimeDistribution(
-        family="Beta", arguments=dict(concentration1=a, concentration0=b)
-    )
-    restricted = RuntimeDistribution(
+    base = HostLaw(family="Beta", arguments=dict(concentration1=a, concentration0=b))
+    restricted = HostLaw(
         family="Restrict", arguments=dict(base=base, low=low, high=high)
     )
     for actual in (native, scalar, restricted.log_mass()):

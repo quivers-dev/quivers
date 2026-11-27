@@ -65,7 +65,6 @@ from quivers.structural.decoder import Decoder
 from quivers.structural.signature import Signature
 from tests.evidence.checks.consumers import GUIDES, PROBLEMS
 from tests.evidence.checks.deduction import weighted
-from tests.evidence.checks.machine import module_of
 from tests.evidence.checks.span import (
     LEXICAL,
     chart_parser,
@@ -799,35 +798,6 @@ record(
     {"records of a run grow with unrelated declarations": "True"},
     {"records of a run grow with unrelated declarations": "False"},
     _graph_per_call,
-)
-
-
-def _machine_values() -> Facts:
-    """The type of a machine result under a tensor parameter.
-
-    Returns
-    -------
-    Facts
-        The type.
-    """
-    weight = scalar(-1.0)
-    found = run_deduction(
-        module_of("lexical", SEMIRING="LogProb"),
-        "G",
-        tokens=["a", "a"],
-        parameters={"G.rule.join:": weight, "G.rule.lift:": 0.0},
-    ).weight
-    return {"result of a run with a tensor parameter": type(found).__name__}
-
-
-record(
-    "machine-values-are-numbers",
-    "qiec/evaluator.py; qiec/builtins.py",
-    "the reference machine turns tensors into numbers, so its results carry no "
-    "gradient",
-    {"result of a run with a tensor parameter": "float"},
-    {"result of a run with a tensor parameter": "Tensor"},
-    _machine_values,
 )
 
 

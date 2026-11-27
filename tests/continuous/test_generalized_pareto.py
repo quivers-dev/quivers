@@ -66,15 +66,18 @@ def test_reference_density_sampling_and_support(concentration):
     oracle = genpareto(concentration, loc=-0.5, scale=1.3)
     for probability in (0.01, 0.5, 0.99):
         point = oracle.ppf(probability)
-        assert backend.log_prob(
+        assert backend.family_log_prob(
             "GeneralizedPareto", arguments, float(point)
         ) == pytest.approx(oracle.logpdf(point), abs=3e-12)
     rng = random.Random(327)
     draws = np.array(
-        [backend.sample("GeneralizedPareto", arguments, rng) for _ in range(5000)]
+        [
+            backend.family_sample("GeneralizedPareto", arguments, rng)
+            for _ in range(5000)
+        ]
     )
     assert np.mean(draws <= oracle.ppf(0.4)) == pytest.approx(0.4, abs=0.025)
-    assert backend.log_prob("GeneralizedPareto", arguments, -1.0) == -np.inf
+    assert backend.family_log_prob("GeneralizedPareto", arguments, -1.0) == -np.inf
 
 
 def test_reparameterized_samples_preserve_device_shape_and_gradients():
