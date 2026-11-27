@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from quivers.core.objects import SetObject, FinSet
-from quivers.core.morphisms import Morphism
+from quivers.core.morphisms import FiniteMorphism
 from quivers.core._util import EPS
 from quivers.core.algebras import MARKOV
 
@@ -25,7 +25,7 @@ class _DiscretizedModule(nn.Module):
     pass
 
 
-class DiscretizedNormal(Morphism):
+class DiscretizedNormal(FiniteMorphism):
     """A morphism whose codomain fibers are discretized normal densities.
 
     For each domain element, produces a probability distribution over
@@ -116,7 +116,7 @@ class DiscretizedNormal(Morphism):
         return self._module
 
 
-class DiscretizedLogitNormal(Morphism):
+class DiscretizedLogitNormal(FiniteMorphism):
     """A morphism with discretized logit-normal codomain fibers.
 
     The logit-normal distribution is a normal distribution on the logit
@@ -189,7 +189,7 @@ class DiscretizedLogitNormal(Morphism):
         return self._module
 
 
-class DiscretizedBeta(Morphism):
+class DiscretizedBeta(FiniteMorphism):
     """A morphism with discretized beta-distribution codomain fibers.
 
     The beta distribution Beta(α, β) is parameterized via learnable
@@ -260,7 +260,7 @@ class DiscretizedBeta(Morphism):
         return self._module
 
 
-class DiscretizedTruncatedNormal(Morphism):
+class DiscretizedTruncatedNormal(FiniteMorphism):
     """A morphism with discretized truncated-normal codomain fibers.
 
     Normal distribution truncated to [low, high]. Bin centers are

@@ -11,7 +11,7 @@ from typing import cast
 import torch
 import torch.nn as nn
 
-from quivers.core.morphisms import Morphism
+from quivers.core.morphisms import FiniteMorphism, _require_finite
 from quivers.core._util import EPS
 
 
@@ -23,7 +23,7 @@ class _ConditionedModule(nn.Module):
         self.inner = inner_mod
 
 
-class ConditionedMorphism(Morphism):
+class ConditionedMorphism(FiniteMorphism):
     """A morphism conditioned on evidence via Bayesian update.
 
     Given a morphism f: A → B and evidence tensor e over B,
@@ -35,14 +35,15 @@ class ConditionedMorphism(Morphism):
 
     Parameters
     ----------
-    inner : Morphism
+    inner : FiniteMorphism
         The unconditioned morphism.
     evidence : torch.Tensor
         Evidence tensor broadcastable to the codomain shape.
         Values should be non-negative (likelihoods).
     """
 
-    def __init__(self, inner: Morphism, evidence: torch.Tensor) -> None:
+    def __init__(self, inner: FiniteMorphism, evidence: torch.Tensor) -> None:
+        inner = _require_finite(inner)
         super().__init__(inner.domain, inner.codomain, algebra=inner._algebra)
         self._inner = inner
         self._evidence = evidence
@@ -83,7 +84,7 @@ class ConditionedMorphism(Morphism):
         return _ConditionedModule(self._inner.module())
 
 
-def condition(f: Morphism, evidence: torch.Tensor) -> ConditionedMorphism:
+def condition(f: FiniteMorphism, evidence: torch.Tensor) -> ConditionedMorphism:
     """Condition a morphism on evidence (Bayesian update).
 
     Computes the posterior: f|e(a, b) ∝ f(a, b) · e(b),
@@ -91,7 +92,7 @@ def condition(f: Morphism, evidence: torch.Tensor) -> ConditionedMorphism:
 
     Parameters
     ----------
-    f : Morphism
+    f : FiniteMorphism
         The prior morphism A → B.
     evidence : torch.Tensor
         Non-negative evidence tensor over B.
@@ -122,7 +123,7 @@ class _MixedModule(nn.Module):
         self.right = right_mod
 
 
-class MixtureMorphism(Morphism):
+class MixtureMorphism(FiniteMorphism):
     """Convex combination of two morphisms with a learnable weight.
 
     Given morphisms f, g: A → B and a mixing weight p ∈ [0, 1]:
@@ -133,9 +134,9 @@ class MixtureMorphism(Morphism):
 
     Parameters
     ----------
-    left : Morphism
+    left : FiniteMorphism
         First component morphism.
-    right : Morphism
+    right : FiniteMorphism
         Second component morphism (same domain and codomain).
     learnable : bool
         If True (default), the mixing weight is a learnable parameter.
@@ -152,11 +153,13 @@ class MixtureMorphism(Morphism):
 
     def __init__(
         self,
-        left: Morphism,
-        right: Morphism,
+        left: FiniteMorphism,
+        right: FiniteMorphism,
         learnable: bool = True,
         init_logit: float = 0.0,
     ) -> None:
+        left = _require_finite(left)
+        right = _require_finite(right)
         if left.domain != right.domain or left.codomain != right.codomain:
             raise TypeError(
                 f"cannot mix morphisms with different types: "
@@ -207,8 +210,8 @@ class MixtureMorphism(Morphism):
 
 
 def mix(
-    left: Morphism,
-    right: Morphism,
+    left: FiniteMorphism,
+    right: FiniteMorphism,
     learnable: bool = True,
     init_logit: float = 0.0,
 ) -> MixtureMorphism:
@@ -219,9 +222,9 @@ def mix(
 
     Parameters
     ----------
-    left : Morphism
+    left : FiniteMorphism
         First component.
-    right : Morphism
+    right : FiniteMorphism
         Second component (same type as left).
     learnable : bool
         Whether the mixing weight is trainable.
@@ -244,7 +247,7 @@ class _FactoredModule(nn.Module):
         self.inner = inner_mod
 
 
-class FactoredMorphism(Morphism):
+class FactoredMorphism(FiniteMorphism):
     """A morphism with pointwise likelihood weighting.
 
     Given a morphism f: A → B and a weight tensor w over B:
@@ -256,13 +259,14 @@ class FactoredMorphism(Morphism):
 
     Parameters
     ----------
-    inner : Morphism
+    inner : FiniteMorphism
         The base morphism.
     weights : torch.Tensor
         Non-negative weight tensor broadcastable to the codomain shape.
     """
 
-    def __init__(self, inner: Morphism, weights: torch.Tensor) -> None:
+    def __init__(self, inner: FiniteMorphism, weights: torch.Tensor) -> None:
+        inner = _require_finite(inner)
         super().__init__(inner.domain, inner.codomain, algebra=inner._algebra)
         self._inner = inner
         self._weights = weights
@@ -297,7 +301,7 @@ class FactoredMorphism(Morphism):
         return _FactoredModule(self._inner.module())
 
 
-def factor(f: Morphism, weights: torch.Tensor) -> FactoredMorphism:
+def factor(f: FiniteMorphism, weights: torch.Tensor) -> FactoredMorphism:
     """Apply pointwise likelihood weighting to a morphism.
 
     Computes: factor(f, w)(a, b) = f(a, b) · w(b).
@@ -305,7 +309,7 @@ def factor(f: Morphism, weights: torch.Tensor) -> FactoredMorphism:
 
     Parameters
     ----------
-    f : Morphism
+    f : FiniteMorphism
         The base morphism.
     weights : torch.Tensor
         Non-negative weight tensor over the codomain.
@@ -326,18 +330,19 @@ class _NormalizedModule(nn.Module):
         self.inner = inner_mod
 
 
-class NormalizedMorphism(Morphism):
+class NormalizedMorphism(FiniteMorphism):
     """A morphism with row-renormalized tensor.
 
     Divides each codomain fiber by its sum so that rows sum to 1.
 
     Parameters
     ----------
-    inner : Morphism
+    inner : FiniteMorphism
         The unnormalized morphism.
     """
 
-    def __init__(self, inner: Morphism) -> None:
+    def __init__(self, inner: FiniteMorphism) -> None:
+        inner = _require_finite(inner)
         super().__init__(inner.domain, inner.codomain, algebra=inner._algebra)
         self._inner = inner
 
@@ -367,12 +372,12 @@ class NormalizedMorphism(Morphism):
         return _NormalizedModule(self._inner.module())
 
 
-def normalize(f: Morphism) -> NormalizedMorphism:
+def normalize(f: FiniteMorphism) -> NormalizedMorphism:
     """Renormalize a morphism so codomain fibers sum to 1.
 
     Parameters
     ----------
-    f : Morphism
+    f : FiniteMorphism
         The unnormalized morphism.
 
     Returns

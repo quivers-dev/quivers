@@ -26,6 +26,7 @@ from quivers.core.objects import (
     ProductSet,
     CoproductSet,
     FreeMonoid,
+    StringSet,
     EnumSet,
     FreeResiduated,
 )
@@ -186,6 +187,7 @@ from quivers.core.trans import (
 )
 from quivers.core.morphisms import (
     Morphism,
+    FiniteMorphism,
     TransformedMorphism,
     ObservedMorphism,
     LatentMorphism,
@@ -307,6 +309,7 @@ __all__ = [
     "ProductSet",
     "CoproductSet",
     "FreeMonoid",
+    "StringSet",
     "EnumSet",
     "FreeResiduated",
     # algebras
@@ -410,6 +413,7 @@ __all__ = [
     "compose_trans",
     # morphisms
     "Morphism",
+    "FiniteMorphism",
     "TransformedMorphism",
     "ObservedMorphism",
     "LatentMorphism",

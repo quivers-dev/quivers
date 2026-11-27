@@ -5,8 +5,9 @@ so a set of three users and a set of three items have the same size and differen
 module defines finite and enumerated sets, [products and coproducts](../../guides/core.md#productset-and-coproductset)
 (tuples and tagged alternatives) [@maclane1998categories], free monoids, and `FreeResiduated`, the
 categorial (Lambek) types built from a set of atoms with `/`, `\`, and `*` up to a fixed depth
-[@lambek1958mathematics]. These objects index finite axes. Continuous supports have their own
-space types.
+[@lambek1958mathematics]. Finite objects index tensor axes. A `StringSet` ranges over all
+finite strings on its alphabet. Its `bounded` method returns a `FreeMonoid` after checking
+the cardinality of the length restriction. Continuous supports have their own space types.
 
 ::: quivers.core.objects
     options:
