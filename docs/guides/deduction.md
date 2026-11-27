@@ -485,6 +485,15 @@ case. For a response with likelihood $L(k)$ under key $k$, a QVR computation
 can traverse the normalized entries and sum $P(k\mid\text{sentence}) L(k)$,
 then pass the logarithm of that sum to `score`.
 
+The sentence can come from program data or from an earlier binding of type
+`Tensor[String]([n])`. For instance, `let sentence <- tokenize(input)` can
+call a checked computation before the query. The query takes the already bound
+tensor and specializes its own extent argument to `n`. Its input type thus
+matches the local's type exactly. Given the same tokens and weights, this call
+computes the same masses as a query on program data. The extent may be a
+program index specialized when the program runs. A computation with a
+data-dependent output length needs a checked extent to feed this query.
+
 These calls use the checked runtime and accept one sentence. The current
 fragment has one lexical span judgment and unit-width lexical entries.
 A rule combines contiguous spans in premise order or preserves the span of

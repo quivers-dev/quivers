@@ -4361,6 +4361,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return None
         source = expr.args[1]
         if not isinstance(source, LetExprVar):
+            if outcomes:
+                self._fail(
+                    node,
+                    f"{expr.func} requires a token tensor named by a program binding",
+                    code=OUTCOME_CODE,
+                )
             self._fail(
                 node,
                 f"parse reads the input of {target.name!r} from a program input "
@@ -4441,11 +4447,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     ) -> Call:
         """Call a deduction's entry on a sentence or a corpus the program takes.
 
-        The input is a program input of tokens: a sentence, whose length
-        is one of the program's open extents, or with a plate, a corpus of
-        one sentence per object of the plate, all of one open length,
-        whose answer is the semiring product of the sentences' inside
-        weights (their joint weight, the sentences being independent).
+        A named sentence can be supplied as program data, with its length
+        an open extent. An outcome query can also take a checked local
+        token tensor and instantiate its extent from that local's type.
+        With a plate, scalar ``parse`` reads data as a corpus whose
+        sentences share one extent, and multiplies their inside weights.
         Without bindings the deduction reads its learned weights through
         the module's ``params`` instance, which the program's row gains.
         With bindings, the deduction must be normalized per left-hand
@@ -4472,10 +4478,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         Raises
         ------
         QiecDiagnosticError
-            If the deduction takes its axioms rather than a sentence, the
-            input is bound by a step, the plate names no object with a
-            static extent, or the bindings do not fit the deduction (see
-            `_production_table`).
+            If the deduction takes its axioms rather than a sentence, a
+            scalar parse names a local, a local outcome input is not a
+            rank-one string tensor with a checked extent, the plate lacks
+            a static extent, or the production bindings do not fit the
+            deduction (see `_production_table`).
         """
         name, source = parse.deduction, parse.source
         signature = self.computation_signatures[f"{name}__run"]
@@ -4486,7 +4493,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "sentence; a program supplies items to it through a computation",
                 code="qiec-program",
             )
-        if scope.lookup(source) is not None:
+        tokens = scope.lookup(source)
+        if tokens is not None and parse.outcome_key is None:
             self._fail(
                 node,
                 f"parse reads {source!r}, which a step binds; the sentence a "
@@ -4505,21 +4513,6 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             extra = (*extra, self._production_table(parse, scope, state, node))
             suffix = f"weighted_{suffix}"
         signature = self.computation_signatures[f"{name}__{suffix}"]
-        binder = state.extents.get(f"{source}_extent")
-        if binder is None:
-            binder = IndexBinder(name=f"{source}_extent", sort=NAT)
-            state.extents[binder.name] = binder
-        extent = IndexVariable(name=binder.name, sort=binder.sort)
-        sentence_type = tensor_type(STRING, (extent,))
-        rows = None if parse.plate is None else self._axis(parse.plate, node).size
-        tokens = self._declare_parameter(
-            source,
-            sentence_type if rows is None else tensor_type(STRING, (rows, extent)),
-            "data",
-            scope,
-            state,
-            node,
-        )
         params = self.instances.get(PARAMS_INSTANCE)
         if params is not None and any(
             entry.instance == params.entry.instance
@@ -4535,18 +4528,42 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 node,
             ),
         )
-        if rows is None:
-            return Call(
-                callee=signature.id,
-                name=signature.name,
-                static_arguments=(extent,),
-                arguments=(Var(local=tokens), *extra),
-                result_type=signature.result,
-                effects=signature.effects,
-                origin=origin,
+        extent: IndexTerm
+        if tokens is None:
+            binder = state.extents.get(f"{source}_extent")
+            if binder is None:
+                binder = IndexBinder(name=f"{source}_extent", sort=NAT)
+                state.extents[binder.name] = binder
+            external_extent = IndexVariable(name=binder.name, sort=binder.sort)
+            rows = None if parse.plate is None else self._axis(parse.plate, node).size
+            shape = (external_extent,) if rows is None else (rows, external_extent)
+            tokens = self._declare_parameter(
+                source, tensor_type(STRING, shape), "data", scope, state, node
             )
-        return self._corpus_call(
-            signature, tokens, rows, extent, extra, state, node, origin
+            if rows is not None:
+                return self._corpus_call(
+                    signature, tokens, rows, external_extent, extra, state, node, origin
+                )
+            extent = external_extent
+        else:
+            layout = tensor_shape(tokens.type)
+            if layout is None or layout[0] != STRING or len(layout[1]) != 1:
+                self._fail(
+                    node,
+                    f"deduction outcome input {source!r} must be a rank-one "
+                    "Tensor[String] with a checked extent "
+                    f"(found {render_static(tokens.type)})",
+                    code=OUTCOME_CODE,
+                )
+            (extent,) = layout[1]
+        return Call(
+            callee=signature.id,
+            name=signature.name,
+            static_arguments=(extent,),
+            arguments=(Var(local=tokens), *extra),
+            result_type=signature.result,
+            effects=signature.effects,
+            origin=origin,
         )
 
     def _production_table(
@@ -11084,7 +11101,7 @@ class _ParseCall(dx.Model):
     deduction : str
         The deduction.
     source : str
-        The program input the deduction parses.
+        The program input or checked local token tensor the deduction parses.
     plate : str | None
         The object whose elements index the corpus's sentences, when the
         input is a corpus.
