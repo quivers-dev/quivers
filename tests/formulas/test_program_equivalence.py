@@ -15,7 +15,9 @@ import numpy as np
 import pytest
 import torch
 
-from quivers.formulas import fit, mixture
+from quivers.family_catalog import FamilyCatalog
+from quivers.formulas import AuxParam, custom_family, fit, links, mixture
+from quivers.qiec.families import family as semantic_family
 
 from tests.formulas._program_cases import (
     log_joint,
@@ -62,6 +64,49 @@ def test_the_gaussian_program_is_the_gaussian_family() -> None:
     assert joint == pytest.approx(log_joint(run(family, values)), rel=TOLERANCE)
     other = _svi("y ~ x + (1 | g)", distributional={"sigma": "~ x"})
     assert abs(joint - log_joint(run(other, values))) > 1e-3
+
+
+def test_the_student_program_is_the_custom_student_family() -> None:
+    source = GAUSS.replace(
+        "observe y : Trial <- Normal(loc=mu, scale=sigma)",
+        "observe y : Trial <- StudentT(df=5.0, loc=mu, scale=sigma)",
+    )
+    law = semantic_family("StudentT").with_(name="UserStudentT", targets={})
+    catalog = FamilyCatalog().with_family(
+        law,
+        lambda parameters: torch.distributions.StudentT(
+            parameters["df"], parameters["loc"], parameters["scale"]
+        ),
+    )
+    family = custom_family(
+        "UserStudentT",
+        catalog=catalog,
+        location="loc",
+        auxiliary={
+            "df": AuxParam(name="df", prior="HalfNormal(1.0)", link=links["log"]),
+            "scale": AuxParam(name="sigma", prior="HalfNormal(1.0)", link=links["log"]),
+        },
+    )
+    program = _svi(
+        program=source, parameters={"mu": "~ x", "sigma": "~ z"}, response="y"
+    )
+    custom = _svi(
+        "y ~ x",
+        family=family,
+        distributional={"sigma": "~ z"},
+        fixed_parameters={"df": 5.0},
+    )
+    names = latent_names(program)
+    assert set(names) == set(latent_names(custom))
+    values = _values(names, seed=1)
+    expected = log_joint(run(custom, values))
+    assert log_joint(run(program, values)) == pytest.approx(expected, rel=TOLERANCE)
+    other = _svi(
+        program=source.replace("StudentT(df=5.0", "StudentT(df=2.0"),
+        parameters={"mu": "~ x", "sigma": "~ z"},
+        response="y",
+    )
+    assert abs(log_joint(run(other, values)) - expected) > 1e-3
 
 
 def test_the_decay_program_is_the_nonlinear_formula() -> None:
