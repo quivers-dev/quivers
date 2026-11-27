@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.
 
+### Changed
+
+- Fixed-word path sums evaluate arcs in batches by topological level. Incoming terms use linear space even when states have very different numbers of incoming arcs.
+
 ## [0.70.0] - 2026-11-27
 
 ### Added

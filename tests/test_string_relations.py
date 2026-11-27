@@ -2,7 +2,7 @@
 
 from fractions import Fraction
 from itertools import product
-from math import prod
+from math import log, prod
 
 import pytest
 import torch
@@ -21,6 +21,7 @@ from quivers.core.relations import (
     RelationTopology,
 )
 from tests.evidence.compare import Accuracy, Mismatch, compare_gradients, compare_number
+from tests.evidence.counters import measure
 from tests.evidence.mutations import Mutation, Rewrite, installed
 from tests.evidence.oracles import paths
 
@@ -263,13 +264,14 @@ def test_live_weight_slots_preserve_shared_parameter_through_optimizer_updates()
             name="string-relation-occurrence-detached",
             defect_class="M7",
             provenance="use a detached value for the substitution occurrence of a shared parameter",
-            target="quivers.core.relations.queries:_PathPlan.evaluate",
+            target="quivers.core.relations._packed:_PackedPaths.evaluate",
             rewrites=(
                 Rewrite(
-                    old="value = algebra.tensor_op(prefix, weights[slot])",
+                    old="slots = _take(weights, self.slots)",
                     new=(
-                        "weight = weights[slot].detach() if arc_id == 4 else weights[slot]"
-                        "\n            value = algebra.tensor_op(prefix, weight)"
+                        "slots = _take(weights, self.slots)"
+                        "\n    substitution = torch.tensor(self.slots, device=weights.device) == 3"
+                        "\n    slots = torch.where(substitution, slots.detach(), slots)"
                     ),
                 ),
             ),
@@ -305,6 +307,128 @@ def test_live_weight_check_rejects_parameter_mutations(mutation):
     assert caught.value.deviation >= mutation.min_effect
 
 
+def test_packed_log_path_sum_and_edge_gradients_match_enumeration():
+    arcs = tuple(
+        paths.Arc(name=name, source=source, target=target, labels=(label,), weight=name)
+        for name, source, target, label in (
+            ("through", 0, 1, None),
+            ("absent1", 0, 2, None),
+            ("absent2", 0, 2, None),
+            ("choose1", 0, 3, None),
+            ("choose2", 0, 3, None),
+            ("choose3", 0, 3, None),
+            ("short", 0, 4, "a"),
+            ("first", 1, 4, "a"),
+            ("second", 2, 4, "a"),
+            ("third", 3, 4, "a"),
+            ("another", 3, 4, "a"),
+        )
+    )
+    oracle = paths.Machine(
+        arcs=arcs,
+        initial=(
+            paths.Mark(state=0, weight="start"),
+            paths.Mark(state=1, weight="skip"),
+        ),
+        final=(paths.Mark(state=4, weight="finish"),),
+    )
+    names = ("start", "skip", "finish", *(arc.name for arc in arcs))
+    slot = {name: index for index, name in enumerate(names)}
+    weight_of = {
+        name: Fraction(0) if name.startswith("absent") else Fraction(index + 1, 7)
+        for index, name in enumerate(names)
+    }
+    expected_counts = dict.fromkeys(names, Fraction(0))
+    expected = Fraction(0)
+    for path in paths.accepting_paths(oracle):
+        if path.strings() == (("a",),):
+            mass = prod(weight_of[name] for name in path.factors())
+            expected += mass
+            for name in path.factors():
+                expected_counts[name] += mass
+
+    tape = StringSet(alphabet=FinSet(name="a", cardinality=1))
+    topology = RelationTopology(
+        tapes=(tape,),
+        input_tapes=1,
+        n_states=5,
+        arcs=tuple(
+            Arc(
+                arc.source,
+                arc.target,
+                (None if arc.labels == (None,) else 0,),
+                slot[arc.name],
+            )
+            for arc in arcs
+        ),
+        initial=tuple(
+            Boundary(mark.state, slot[mark.weight]) for mark in oracle.initial
+        ),
+        final=tuple(Boundary(mark.state, slot[mark.weight]) for mark in oracle.final),
+        weight_names=names,
+    )
+    logits = nn.Parameter(
+        torch.tensor(tuple(map(float, weight_of.values())), dtype=torch.float64).log()
+    )
+    query = RationalRelation(topology, logits, algebra=LOG_PROB).query(((0,),))
+    weight = query.weight()
+    # Three joins of at most eight terms and four log products on a path.
+    # All finite log masses and rescaled log summands have magnitude below 8.
+    compare_number(
+        weight.item(),
+        log(float(expected)),
+        Accuracy(domain="log", operations=72, magnitude=8),
+        "packed path mass",
+    )
+    (gradient,) = torch.autograd.grad(weight, logits)
+    compare_gradients(
+        dict(zip(names, gradient, strict=True)),
+        {name: count / expected for name, count in expected_counts.items()},
+        Accuracy(domain="linear", operations=120),
+        "packed path log-weight derivatives",
+    )
+
+    with torch.no_grad():
+        logits.fill_(-float("inf"))
+    impossible = query.weight()
+    assert impossible.item() == -float("inf")
+    (gradient,) = torch.autograd.grad(impossible, logits)
+    torch.testing.assert_close(gradient, torch.zeros_like(logits), rtol=0, atol=0)
+
+
+def test_packed_path_work_at_fixed_depth_and_skewed_indegrees():
+    width = 512
+    sink = width + 1
+    tape = StringSet(alphabet=FinSet(name="a", cardinality=1))
+    topology = RelationTopology(
+        tapes=(tape,),
+        input_tapes=1,
+        n_states=sink + 1,
+        arcs=(
+            *(Arc(0, state, (None,), 0) for state in range(1, sink)),
+            *(Arc(0, 1, (None,), 0) for _ in range(width)),
+            *(Arc(state, sink, (0,), 0) for state in range(1, sink)),
+        ),
+        initial=(Boundary(0, 0),),
+        final=(Boundary(sink, 0),),
+        weight_names=("shared",),
+    )
+    weights = nn.Parameter(torch.ones(1, dtype=torch.float64))
+    query = RationalRelation(topology, weights).query(((0,),))
+    forward = measure(query.weight)
+    value = query.weight()
+    (gradient,) = torch.autograd.grad(value, weights)
+    assert value.item() == 2 * width
+    assert gradient.item() == 8 * width
+    assert query.work.active_arcs == 3 * width
+    # The original scalar pass dispatched at least one product per arc.
+    # Padding every row to the largest indegree would require width squared
+    # elements in the join at the intermediate layer.
+    assert forward.kernels < query.work.active_arcs // 12
+    assert forward.scalar < 4 * query.work.active_arcs
+    assert forward.allocated < 12 * query.work.active_arcs
+
+
 def test_program_requires_explicit_restriction_but_accepts_legacy_finite_morphisms():
     obj = FinSet(name="one", cardinality=1)
     legacy = LegacyTensorMorphism(obj)
@@ -338,6 +462,10 @@ def test_fixed_word_plan_matches_an_emitting_cycle_and_refuses_a_live_silent_cyc
     )
     machine = RationalRelation(topology, torch.tensor([2.0, 1.0, 0.0]))
     assert machine.weight(((0, 0, 0),)).item() == 8.0
+    length = 96
+    long_query = machine.query(((0,) * length,))
+    assert long_query.weight().item() == 2**length
+    assert measure(long_query.weight).kernels < 3 * length // 2
     assert machine.weight(((),)).item() == 0.0
     with pytest.raises(ProductiveEpsilonCycleError, match="productive epsilon cycle"):
         machine.weight(((1,),))
