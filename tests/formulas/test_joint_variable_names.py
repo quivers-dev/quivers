@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import cast
 
 import pandas as pd
+import pytest
 import torch
 
 from quivers.formulas import bf, fit, set_rescor
@@ -51,9 +52,14 @@ def test_joint_variables_equal_brms_names():
     assert {"b_y_f", "b_y_x:f", "b_y2_h_1", "sd_g__y_f"}.isdisjoint(named)
 
 
-def test_renamed_variables_hold_the_native_draws():
+def test_renamed_variables_hold_the_native_draws(monkeypatch: pytest.MonkeyPatch):
     fitted = _joint()
     draws = fitted.draws(num_samples=3)
+
+    def rebuild(*_args):
+        raise AssertionError("naming a joint draw must not compile a response fit")
+
+    monkeypatch.setattr(MultivariateFit, "_response_fit", rebuild)
     named = fitted.variables(num_samples=3)
     assert torch.equal(named["b_y_fq"], draws["response_y__beta_f"])
     assert torch.equal(named["b_y_x:fq"], draws["response_y__beta_x_f"])

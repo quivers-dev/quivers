@@ -148,8 +148,8 @@ from quivers.formulas._postprocess_methods import (
 # brms coefficient renaming shared with single fits.
 from quivers.formulas._postprocess_names import (
     _ordinal_thresholds,
-    coefficient_labels,
-    name_scope,
+    design_coefficient_labels,
+    design_name_scope,
     coordinate_labels,
     distributional_classes,
     shrinkage_scales,
@@ -615,11 +615,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             minus the location intercept, shaped
             ``(chain, draw, row, threshold)``. Empty without such a response.
         """
-        names = [
-            name
-            for name in self.response_names
-            if _ordinal_thresholds(self._response_fit(name))
-        ]
+        names = {}
+        for name in self.response_names:
+            readout = self._predictor_readout(name)
+            if _ordinal_thresholds(
+                readout, self.specification.responses[name].thresholds_by
+            ):
+                ordinal = readout.family.ordinal
+                assert ordinal is not None
+                names[name] = len(readout.category_labels) - (
+                    2 if ordinal.kind == "hurdle_cumulative" else 1
+                )
         if not names:
             return {}
         prepared = self._prepare(
@@ -645,17 +651,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
                 Row-by-threshold values keyed by response.
             """
             result = {}
-            for name in names:
-                view = self._response_fit(name)
+            for name, width in names.items():
+                response = self.emission.responses[name]
                 site = (
                     "row_cutpoints"
-                    if view.formula.modifiers.threshold_groups is not None
+                    if response.formula.modifiers.threshold_groups is not None
                     else "cutpoints"
                 )
                 result[name] = row_binding(
-                    recorded.sites[self.emission.responses[name].names[site]].value,
+                    recorded.sites[response.names[site]].value,
                     prepared.rows[name],
-                    len(view.threshold_labels),
+                    width,
                 )
             return result
 
@@ -692,12 +698,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         result: dict[str, torch.Tensor] = {}
         # brms omits the response from names of a one-response model.
         joint = len(self.response_names) > 1
-        # Coefficient labels as single fits name them:
-        # brms's renaming of each response's design labels (f[q] -> fq).
-        renamed = {
-            resp: coefficient_labels(self._response_fit(resp))
-            for resp in self.response_names
-        }
+        readouts = {resp: self._predictor_readout(resp) for resp in self.response_names}
 
         special: dict[tuple[str, str, str], str] = {}
 
@@ -739,14 +740,17 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         scopes: dict[str, NameScope] = {}
         outputs: dict[str, OutputAxis | None] = {}
         for resp, response in self.emission.responses.items():
-            plan = self._response_fit(resp).prediction_plan
-            assert plan is not None
+            designs = self.prepared[resp].designs
+            items = response.lens._predictor_items(response.formula)
+            labels = design_coefficient_labels(items, designs)
             local = {
                 site.removeprefix(response.prefix): value
                 for site, value in draws.items()
                 if site.startswith(response.prefix)
             }
-            planned = {predictor.prefix: predictor for predictor in plan.predictors}
+            planned = {
+                predictor.prefix: predictor for predictor in readouts[resp].predictors
+            }
             outputs |= {
                 response.prefix + key: item.output for key, item in planned.items()
             }
@@ -756,17 +760,15 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
                 result |= threshold_variables(
                     thresholds[resp],
                     infix=tag(resp),
-                    groups=self._response_fit(resp).formula.modifiers.threshold_groups,
+                    groups=response.formula.modifiers.threshold_groups,
                 )
-            for parameter, prefix, predictor in response.lens._predictor_items(
-                response.formula
-            ):
-                scope = name_scope(
-                    self._response_fit(resp),
+            for parameter, prefix, predictor in items:
+                scope = design_name_scope(
                     parameter,
                     prefix,
                     predictor,
-                    renamed[resp],
+                    labels,
+                    designs.get(parameter),
                     response=resp if joint else "",
                     special={
                         column: label
@@ -890,7 +892,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
                     else target,
                     value,
                     infix=self._infix(target),
-                    labels=coordinate_labels(self._response_fit(resp), target)
+                    labels=coordinate_labels(readouts[resp], target)
                     if resp is not None
                     else tuple(str(label) for label in target.component_labels),
                 )
@@ -945,7 +947,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
                 [
                     name
                     for resp in self.response_names
-                    for name in distributional_classes(self._response_fit(resp))
+                    for name in distributional_classes(readouts[resp])
                 ],
             ),
             (chains, count),
