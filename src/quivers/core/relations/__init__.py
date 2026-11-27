@@ -34,6 +34,8 @@ __all__ = [
     "EPSILON",
     "Arc",
     "Boundary",
+    "ComposedRelation",
+    "ComposedStringQuery",
     "FixedStringQuery",
     "FiniteRelationRestriction",
     "Label",
@@ -363,3 +365,9 @@ class FiniteRelationRestriction(FiniteMorphism):
         return torch.stack([plan.evaluate(values, algebra) for plan in plans]).reshape(
             self.tensor_shape
         )
+
+
+from quivers.core.relations.calculus import (  # noqa: E402
+    ComposedRelation,
+    ComposedStringQuery,
+)
