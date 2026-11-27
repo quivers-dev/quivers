@@ -42,6 +42,7 @@ from quivers.qiec import (
     run_named,
     validate_module,
 )
+from quivers.qiec.serialization import dumps, loads
 from tests._handler_programs import HANDLERS, random_body
 
 _POINTS = ((0.3137, -0.7171), (1.2113, 0.4092), (-0.9049, 0.8117))
@@ -400,6 +401,169 @@ def test_an_interleaved_linear_runtime_handler_allows_discharge(
     expected = ((draw, (("call", "mixed_linear#1"),), (0,)),)
     for checked in (module, discharged.module):
         assert _request_addresses(checked, "mixed_linear_run", -1.0) == expected
+
+
+_CLAUSE_SOURCE = """
+effect Tap
+    echo : Real -> Real
+
+instance tap : Tap
+
+handler recording_relay for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    pass(v : Real) resumes 1 =>
+        perform score.add(weight(v))
+        resume(v)
+
+handler nesting_relay for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score, tap}, implementation=authored]
+    return x =>
+        return x
+    pass(v : Real) resumes 1 =>
+        let forwarded <- perform tap.echo(v)
+        perform score.add(weight(forwarded))
+        resume(forwarded)
+
+handler recording_tap for Tap : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    echo(v : Real) resumes 1 =>
+        perform score.add(weight(v))
+        resume(v)
+
+handler delegating_relay for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    pass(v : Real) resumes 1 =>
+        let result <- report_twice(v)
+        resume(result)
+
+define report_twice(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let first <- perform relay.pass(x)
+        let second <- perform relay.pass(first)
+        perform score.add(weight(second))
+        return second
+
+define report_nested(x : Real) : Real !{score} =
+    handle tap with recording_tap in
+        handle relay with nesting_relay in
+            let first <- perform relay.pass(x)
+            let second <- perform relay.pass(first)
+            perform score.add(weight(second))
+            return second
+
+define report_through_call(x : Real) : Real !{score} =
+    handle relay with delegating_relay in
+        let first <- perform relay.pass(x)
+        let second <- perform relay.pass(first)
+        return second
+
+define report_twice_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- report_twice(x)
+        perform score.add(weight(y))
+        return y
+
+define report_nested_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- report_nested(x)
+        perform score.add(weight(y))
+        return y
+
+define report_through_call_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_through_call(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def clause_address_module() -> tuple[QiecModule, DischargedModule]:
+    module = _module(_ADDRESS_SOURCE + _CLAUSE_SOURCE)
+    return module, discharge_module(module)
+
+
+def _effect_sites(body: Computation, effect: str) -> tuple[str, ...]:
+    requests = [
+        term.request
+        for term in _terms(body)
+        if isinstance(term, Perform) and term.request.effect.name == effect
+    ]
+    requests.sort(key=lambda request: request.origin.origin.line or 0)
+    return tuple(str(request.origin.static_site) for request in requests)
+
+
+def _effect_clause_body(module: QiecModule, handler: str) -> Computation:
+    body = (
+        next(item for item in module.handlers if item.name == handler).clauses[0].body
+    )
+    assert body is not None
+    return body
+
+
+@pytest.mark.parametrize("nested", (False, True))
+def test_linear_clauses_address_repeated_effects_by_trigger_site(
+    clause_address_module: tuple[QiecModule, DischargedModule], nested: bool
+) -> None:
+    module, discharged = clause_address_module
+    name = "report_nested" if nested else "report_twice"
+    assert discharged.obstacle(name) is None
+    original = _computation(module, name)
+    rewritten = _computation(discharged.module, name)
+    assert not any(isinstance(item, Handle) for item in _terms(rewritten.body))
+    triggers = _effect_sites(original.body, "Relay")
+    assert len(triggers) == 2
+    handler = "nesting_relay" if nested else "recording_relay"
+    clause = _effect_clause_body(module, handler)
+    (clause_score,) = _effect_sites(clause, "Score")
+    (after_resume,) = _effect_sites(original.body, "Score")
+    (outside,) = _effect_sites(_computation(module, name + "_run").body, "Score")
+    call = (("call", f"{name}#1"),)
+    expected = []
+    for trigger in triggers:
+        path = (*call, ("handler-clause", trigger))
+        if nested:
+            (relay,) = _effect_sites(clause, "Tap")
+            (relay_score,) = _effect_sites(
+                _effect_clause_body(module, "recording_tap"), "Score"
+            )
+            expected.append((relay_score, (*path, ("handler-clause", relay)), ()))
+        expected.append((clause_score, path, ()))
+    expected.extend(((after_resume, call, ()), (outside, (), ())))
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
+
+
+def test_an_effectful_call_inside_a_linear_clause_keeps_the_reference_path(
+    clause_address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = clause_address_module
+    name = "report_through_call"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "`report_twice`" in obstacle.reason
+    original = _computation(module, name)
+    assert _computation(discharged.module, name) is original
+    assert discharged.obstacle("report_twice") is None
+    callee = _computation(module, "report_twice").body
+    nested = _effect_sites(callee, "Relay")
+    (after_resume,) = _effect_sites(callee, "Score")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    expected = []
+    for index, trigger in enumerate(_effect_sites(original.body, "Relay"), start=2):
+        path = (
+            ("call", f"{name}#1"),
+            ("call", f"report_twice#{index}"),
+            ("handler-clause", trigger),
+        )
+        expected.extend(
+            (score, (*path, ("handler-clause", site)), ()) for site in nested
+        )
+        expected.append((after_resume, path, ()))
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
 
 
 # ---------------------------------------------------------------------------
