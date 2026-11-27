@@ -47,7 +47,6 @@ from quivers.continuous.morphisms import (
 )
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
-from quivers.effects.subsample import active_subsets, subsampled_rows
 from quivers.inference.guides.base import Guide
 from quivers.inference.registry import LatentSite
 
@@ -487,7 +486,10 @@ class AmortizedGuide(Guide):
         For a site reached through the bijector :math:`T`,
         :math:`\\log q(v) = \\log e(T^{-1}(v) \\mid y) + \\log
         |\\det J_{T^{-1}}(v)|`; otherwise :math:`\\log e(v \\mid y)`.
-        A plate site's rows add up within a run; under a
+        Each site's value is read per run (`LatentSite.align_runs`), and
+        the encoder rows a run reads are its own rows of the datum, or
+        the rows every run shares when the datum has no run axis. A
+        plate site's rows add up within a run; under a
         [`subsample`][quivers.effects.subsample] block only the subset's
         rows do, times the plate's size over the subset's.
 
@@ -496,7 +498,8 @@ class AmortizedGuide(Guide):
         x : torch.Tensor
             The program input.
         sites : dict[str, torch.Tensor]
-            Trace-side values of the bound sites.
+            Trace-side values of the bound sites, each one per run or one
+            the runs share (`Guide.log_prob`).
 
         Returns
         -------
@@ -507,76 +510,36 @@ class AmortizedGuide(Guide):
         ------
         KeyError
             If a bound site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
         """
-        batch = int(x.shape[0])
-        total = torch.zeros(batch, device=x.device)
-        subsets = active_subsets()
+        runs = int(x.shape[0])
+        total = torch.zeros(runs, device=x.device)
         for name, binding in self._bindings.items():
             if name not in sites:
                 raise KeyError(f"AmortizedGuide.log_prob: missing site {name!r}")
-            rows, leading = self._datum(binding, batch)
             site = binding.site
-            value = sites[name].reshape(*leading, *self._event(site))
+            elements = site.plate_index_size if site.is_plate else 1
+            domain = _event_shape(binding.encoder.domain)
+            codomain = _event_shape(binding.encoder.codomain)
+            rows, _ = self._datum(binding, runs)
+            rows = rows.reshape(-1, elements, *domain).expand(runs, elements, *domain)
             if binding.through_bijector:
-                z, log_det = site.unconstrain(value)
-                log_det = log_det.reshape(*leading, -1).sum(-1)
+                z, log_det = site.unconstrain_runs(sites[name], runs)
+                log_det = log_det.reshape(runs, elements)
             else:
-                z = value
-                log_det = torch.zeros(leading, device=value.device)
-            flat = z.reshape(-1, *_event_shape(binding.encoder.codomain))
-            log_q = binding.encoder.log_prob(rows, flat).reshape(leading) + log_det
-            if not site.is_plate:
-                per_run = log_q
+                z = site.align_runs(sites[name], runs)
+                log_det = z.new_zeros(runs, elements)
+            log_q = binding.encoder.log_prob(
+                rows.reshape(runs * elements, *domain),
+                z.reshape(runs * elements, *codomain),
+            ).reshape(runs, elements)
+            terms = log_q + log_det
+            if site.is_plate:
+                total = total + self._plate_run_totals(site, terms)
             else:
-                per_run = self._plate_total(site, log_q, batch, subsets)
-            total = total + per_run
+                total = total + terms.reshape(runs)
         return total
-
-    def _plate_total(
-        self,
-        site: LatentSite,
-        log_q: torch.Tensor,
-        batch: int,
-        subsets: dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """A plate site's log-density per run, over the rows it is scored at.
-
-        Parameters
-        ----------
-        site : LatentSite
-            The site.
-        log_q : torch.Tensor
-            One term per plate element, the plate's shape leading, behind
-            a run axis when each run has its own value.
-        batch : int
-            The number of runs.
-        subsets : dict[str, torch.Tensor]
-            The active subsampled plates' rows.
-
-        Returns
-        -------
-        torch.Tensor
-            Shape ``(batch,)``.
-        """
-        plate = tuple(site.plate_shape or (site.plate_index_size,))
-        per_run = log_q.reshape(-1, *plate)
-        kept = (
-            subsampled_rows(
-                site.name, self._registry.model.site_plates.get(site.name, ()), subsets
-            )
-            if subsets
-            else None
-        )
-        if kept is not None:
-            rows, factor = kept
-            for axis, index in enumerate(rows):
-                per_run = per_run.index_select(axis + 1, index.to(per_run.device))
-            per_run = factor * per_run
-        totals = per_run.reshape(per_run.shape[0], -1).sum(-1)
-        if totals.shape[0] == 1:
-            # One value of the plate the runs share.
-            return totals.expand(batch)
-        return totals
 
     @staticmethod
     def _event(site: LatentSite) -> tuple[int, ...]:

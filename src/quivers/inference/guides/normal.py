@@ -14,37 +14,8 @@ import torch.distributions as D
 import torch.nn as nn
 
 from quivers.continuous.programs import MonadicProgram
-from quivers.effects.subsample import active_subsets, subsampled_rows
 from quivers.inference.guides.base import Guide
 from quivers.inference.registry import LatentRegistry, LatentSite
-
-
-def _kept_rows(
-    values: torch.Tensor,
-    plate_shape: tuple[int, ...],
-    rows: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    """Sum a plate site's per-element terms over the rows kept.
-
-    Parameters
-    ----------
-    values : torch.Tensor
-        One term per element of the plate, the plate's elements leading
-        in row-major order, any event axes after them.
-    plate_shape : tuple[int, ...]
-        The extents of the plate's axes.
-    rows : tuple[torch.Tensor, ...]
-        One index per plate axis.
-
-    Returns
-    -------
-    torch.Tensor
-        The sum of the terms of the kept elements.
-    """
-    kept = values.reshape(*plate_shape, -1)
-    for axis, index in enumerate(rows):
-        kept = kept.index_select(axis, index.to(kept.device))
-    return kept.sum()
 
 
 class AutoNormalGuide(Guide):
@@ -280,74 +251,48 @@ class AutoNormalGuide(Guide):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Pushforward log-density at constrained values ``sites``.
+        """Pushforward log-density of each run's constrained values.
 
-        Uses the change-of-variables identity:
+        Uses the change-of-variables identity, run by run:
 
-            log q(v) = log Normal(z; loc, scale) + log|det J_{T^{-1}}(v)|
+            log q(v_b) = log Normal(z_b; loc, scale) + log|det J_{T^{-1}}(v_b)|
 
-        where ``z = bijector.inv(v)``. The plate / scalar shape
-        dispatch matches `rsample`'s convention. A latent in a plate
-        that a [`subsample`][quivers.effects.subsample] block is
-        active for is scored at the subset's rows, times the plate's
-        size over the subset's.
+        where ``z_b = bijector.inv(v_b)`` is read from
+        `LatentRegistry.unconstrain_runs`. A latent in a plate that a
+        [`subsample`][quivers.effects.subsample] block is active for is
+        scored at the subset's rows, times the plate's size over the
+        subset's.
 
         Parameters
         ----------
         x : torch.Tensor
             Execution input carrying the leading run axis.
         sites : dict[str, torch.Tensor]
-            Constrained latent values to score.
+            Constrained latent values to score, each one per run or one
+            the runs share (`Guide.log_prob`).
 
         Returns
         -------
         torch.Tensor
             One variational log density per execution run.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
         """
-        batch = x.shape[0]
-        total = torch.zeros(batch, device=x.device)
-        subsets = active_subsets()
+        runs = int(x.shape[0])
+        coordinates = self._registry.unconstrain_runs(sites, runs)
+        total = torch.zeros(runs, device=x.device)
         for site in self._registry.sites.values():
-            if site.name not in sites:
-                continue
-            v = sites[site.name]
-            z, log_abs_det = site.unconstrain(v)
-            loc = self._loc(site.name)
-            scale = self._scale(site.name)
+            z = coordinates.unconstrained[site.name]
+            log_q_z = D.Normal(self._loc(site.name), self._scale(site.name)).log_prob(z)
+            terms = log_q_z.sum(-1) + coordinates.log_abs_det[site.name]
             if site.is_plate:
-                # Plate latent: single shared sample, scalar density
-                # broadcast against the batch accumulator.
-                log_q_z = D.Normal(loc, scale).log_prob(z)
-                plate_shape = site.plate_shape or (site.plate_index_size,)
-                kept = (
-                    subsampled_rows(
-                        site.name,
-                        self._registry.model.site_plates.get(site.name, ()),
-                        subsets,
-                    )
-                    if subsets
-                    else None
-                )
-                if kept is None:
-                    contribution = (
-                        log_q_z.reshape(-1).sum() + log_abs_det.reshape(-1).sum()
-                    )
-                else:
-                    rows, factor = kept
-                    contribution = factor * (
-                        _kept_rows(log_q_z, plate_shape, rows)
-                        + _kept_rows(log_abs_det, plate_shape, rows)
-                    )
-                total = total + contribution
-            else:
-                loc_b = loc.unsqueeze(0).expand(batch, *site.unconstrained_shape)
-                scale_b = scale.unsqueeze(0).expand(batch, *site.unconstrained_shape)
-                log_q_z = D.Normal(loc_b, scale_b).log_prob(z)
-                while log_q_z.dim() > 1:
-                    log_q_z = log_q_z.sum(dim=-1)
-                while log_abs_det.dim() > 1:
-                    log_abs_det = log_abs_det.sum(dim=-1)
-                total = total + log_q_z + log_abs_det
+                terms = self._plate_run_totals(site, terms)
+            total = total + terms
         return total
 
     @property

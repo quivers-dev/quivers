@@ -171,8 +171,8 @@ class AutoLaplaceApproximation(Guide):
         sigma = 0.5 * (sigma + sigma.t())
         sigma = sigma + jitter * torch.eye(self._D, device=sigma.device)
         L = torch.linalg.cholesky(sigma)
-        self._scale_tril.copy_(L)
-        self._hessian_fitted.fill_(True)
+        self.get_buffer("_scale_tril").copy_(L)
+        self.get_buffer("_hessian_fitted").fill_(True)
 
     # ------------------------------------------------------------------
     # Sampling
@@ -182,7 +182,9 @@ class AutoLaplaceApproximation(Guide):
         if not bool(self._hessian_fitted):
             # MAP phase: return the point estimate.
             return self.map_z
-        return D.MultivariateNormal(self.map_z, scale_tril=self._scale_tril).rsample()
+        return D.MultivariateNormal(
+            self.map_z, scale_tril=self.get_buffer("_scale_tril")
+        ).rsample()
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """Sample from the Laplace posterior, unflatten, and biject."""
@@ -208,33 +210,43 @@ class AutoLaplaceApproximation(Guide):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Log-density at the supplied constrained sites.
+        """Log-density of each run's constrained values.
 
-        Returns zero before `fit_hessian` (MAP-phase delta
-        convention); after `fit_hessian` returns the Gaussian
-        log-density plus the per-site bijector Jacobian correction.
+        Returns zero for every run before `fit_hessian` (MAP-phase delta
+        convention); after `fit_hessian` returns, for run ``b``, the
+        Gaussian log-density of run ``b``'s flat unconstrained point plus
+        the per-site bijector Jacobian correction at its values, read by
+        `LatentRegistry.unconstrain_runs`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+        sites : dict[str, torch.Tensor]
+            Constrained values of every latent site, each one per run or
+            one the runs share (`Guide.log_prob`).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(B,)``, one log density per run.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
         """
-        batch = x.shape[0]
+        runs = int(x.shape[0])
+        coordinates = self._registry.unconstrain_runs(sites, runs)
         if not bool(self._hessian_fitted):
-            return torch.zeros(batch, device=x.device)
-
-        unconstrained_per_site: dict[str, torch.Tensor] = {}
-        bijector_log_det = torch.zeros((), device=x.device)
-        for site in self._registry.sites.values():
-            if site.name not in sites:
-                raise KeyError(
-                    f"{type(self).__name__}.log_prob: missing site {site.name!r}"
-                )
-            v = sites[site.name]
-            if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
-                v = v[0]
-            z_site, log_det = site.unconstrain(v)
-            unconstrained_per_site[site.name] = z_site
-            bijector_log_det = bijector_log_det + log_det.sum()
-        z_flat = self._registry.flatten_unconstrained(unconstrained_per_site)
-        gauss = D.MultivariateNormal(self.map_z, scale_tril=self._scale_tril)
-        log_q_z = gauss.log_prob(z_flat)
-        return (log_q_z + bijector_log_det).expand(batch)
+            return torch.zeros(runs, device=x.device)
+        z_flat = self._registry.flatten_unconstrained(coordinates.unconstrained)
+        gauss = D.MultivariateNormal(
+            self.map_z, scale_tril=self.get_buffer("_scale_tril")
+        )
+        return gauss.log_prob(z_flat) + coordinates.total_log_abs_det()
 
     @property
     def latent_names(self) -> list[str]:

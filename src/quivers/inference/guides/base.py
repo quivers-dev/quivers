@@ -9,7 +9,9 @@ ABC fixes a uniform contract:
   (plate latents at ``(|A|, *B.shape)``, scalar latents at
   ``(batch, *B.shape)`` or ``(batch,)`` for scalar event shape).
 * `Guide.log_prob` evaluates the variational density of a
-  per-site dict and returns a ``(batch,)``-shaped tensor.
+  per-site dict run by run and returns a ``(batch,)``-shaped tensor
+  whose entry ``b`` is the density of run ``b`` alone (the run-wise
+  contract on `Guide.log_prob`).
 * `Guide.rsample_strata` returns weighted draws, each a `GuideDraw`
   carrying its own guide log-density, whose weighted average
   estimates expectations under the guide. The variational objectives
@@ -21,7 +23,8 @@ ABC fixes a uniform contract:
 
 Every concrete subclass under [`quivers.inference.guides`][quivers.inference.guides] is
 constructed against a `quivers.inference.registry.LatentRegistry`,
-with no per-guide model walk. New guides supply the *variational
+with no per-guide model walk, and reads site values per run through
+`LatentRegistry.unconstrain_runs`. New guides supply the *variational
 family's structure* (Normal vs MVN vs flow), not its
 introspection.
 """
@@ -39,8 +42,8 @@ import torch.nn as nn
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
-from quivers.effects.subsample import active_subsets
-from quivers.inference.registry import LatentRegistry
+from quivers.effects.subsample import active_subsets, subsampled_rows
+from quivers.inference.registry import LatentRegistry, LatentSite
 
 # A structure-only recording lets laws without draws answer with a placeholder.
 from quivers.inference._latent_recording import latent_structure_recording
@@ -259,15 +262,84 @@ class Guide(nn.Module, ABC):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Log density of ``sites`` under :math:`q_\\phi(z \\mid x)`,
-        with the change-of-variables Jacobian correction baked in.
+        """Log density of ``sites`` under :math:`q_\\phi(z \\mid x)`, run by run.
+
+        An input ``x`` of ``B`` rows is ``B`` independent runs of the
+        program, and the guide's law :math:`q_\\phi` is a law over the
+        latents of one run. The value of each site in ``sites`` either
+        has a leading run axis, shape ``(B, *constrained_shape)``, with
+        run ``b``'s value at index ``b``, or has shape
+        `LatentSite.constrained_shape` and is one value every run
+        shares; `LatentSite.align_runs` states the rule, and any other
+        shape is refused. Entry ``b`` of the result is
+        :math:`\\log q_\\phi(v_b)`, the log density of run ``b``'s
+        values :math:`v_b` alone, with the change-of-variables term of
+        each site's bijector at :math:`v_b`: it equals the density
+        ``log_prob`` gives with a one-row input and run ``b``'s values,
+        whatever the other runs hold. A shared value thus enters every
+        run's density in full.
+
+        The draws `rsample` returns for the ``B`` runs each follow
+        :math:`q_\\phi`, but need not be independent of one another: a
+        guide with one joint draw (`AutoMultivariateNormalGuide`, a
+        flow, `AutoStructured`, `AutoLaplaceApproximation`) gives every
+        run the same draw. `log_prob` scores any values, its own draws
+        or not.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+        sites : dict[str, torch.Tensor]
+            Constrained values of the sites the guide covers, each one
+            per run or one the runs share.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(batch,)``.
+            Shape ``(B,)``.
         """
         ...
+
+    def _plate_run_totals(self, site: LatentSite, terms: torch.Tensor) -> torch.Tensor:
+        """Add a plate site's per-element density terms within each run.
+
+        Under a [`subsample`][quivers.effects.subsample] block active for
+        the site's plate, only the subset's rows add up, times the
+        plate's size over the subset's, as the model scores the site;
+        otherwise every element does.
+
+        Parameters
+        ----------
+        site : LatentSite
+            A plate site of the guide's registry.
+        terms : torch.Tensor
+            One term per run and plate element, shape
+            ``(runs, plate_index_size)``, the elements in row-major
+            order over the plate's axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(runs,)``.
+        """
+        runs = terms.shape[0]
+        plate_shape = site.plate_shape or (site.plate_index_size,)
+        per_run = terms.reshape(runs, *plate_shape)
+        subsets = active_subsets()
+        kept = (
+            subsampled_rows(
+                site.name, self.registry.model.site_plates.get(site.name, ()), subsets
+            )
+            if subsets
+            else None
+        )
+        if kept is not None:
+            rows, factor = kept
+            for axis, index in enumerate(rows):
+                per_run = per_run.index_select(axis + 1, index.to(per_run.device))
+            per_run = factor * per_run
+        return per_run.reshape(runs, -1).sum(-1)
 
     @property
     @abstractmethod

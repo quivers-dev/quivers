@@ -36,7 +36,7 @@ from __future__ import annotations
 from quivers.inference.trace import Trace, SampleSite, trace
 from quivers.inference.prior import PriorDraws, PriorMode, prior_draws
 from quivers.inference.conditioning import Conditioned, condition
-from quivers.inference.registry import LatentRegistry, LatentSite
+from quivers.inference.registry import LatentRegistry, LatentSite, RunCoordinates
 from quivers.inference.guides import (
     AutoDelta,
     AutoDeltaGuide,
@@ -176,6 +176,7 @@ __all__ = [
     "Conditioned",
     "condition",
     "LatentRegistry",
+    "RunCoordinates",
     "LatentSite",
     "Guide",
     "GuideDraw",

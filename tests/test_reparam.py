@@ -7,6 +7,8 @@ handler.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 import torch
 
@@ -27,7 +29,9 @@ from quivers.effects.reparam import (
     SiteRequest,
     TransformReparam,
 )
+from quivers.dsl import loads
 from quivers.effects.sites import TorchSampleable
+from quivers.inference import AutoIAFGuide, AutoNormalGuide
 from quivers.inference.trace import trace
 
 
@@ -137,32 +141,180 @@ class TestTransformReparam:
         torch.testing.assert_close(tr.sites["z"].log_prob, expected)
 
 
+def _neutra_model() -> MonadicProgram:
+    """A program with a bounded scalar, a simplex, and a plate of scales.
+
+    Returns
+    -------
+    MonadicProgram
+        ``theta`` on the unit interval, ``w`` on the 3-simplex, ``tau``
+        three positive plate latents, and six observed responses.
+    """
+    program = loads(
+        "object Subj : FinSet 3\n"
+        "object Resp : FinSet 6\n"
+        "program p : Resp -> Resp\n"
+        "    sample theta <- Beta(concentration1=2.0, concentration0=3.0)\n"
+        "    sample w <- Dirichlet(concentration=[1.0, 2.0, 3.0])\n"
+        "    sample tau : Subj <- HalfNormal(scale=1.0)\n"
+        "    observe r : Resp <- Bernoulli(probs=theta)\n"
+        "    return theta\n"
+        "export p\n"
+    ).morphism
+    assert isinstance(program, MonadicProgram)
+    return program
+
+
+_RESPONSES = {"r": torch.tensor([1.0, 0.0, 1.0, 1.0, 0.0, 1.0])}
+
+
+@pytest.fixture
+def _float64() -> Iterator[None]:
+    """Run a test in double precision.
+
+    Yields
+    ------
+    None
+        Control, with float64 as the default dtype.
+    """
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    yield
+    torch.set_default_dtype(previous)
+
+
+def _trained_flow(model: MonadicProgram, observed: set[str]) -> AutoIAFGuide:
+    """A flow guide moved off its initial parameters.
+
+    Parameters
+    ----------
+    model : MonadicProgram
+        The model.
+    observed : set[str]
+        The names the guide treats as observed.
+
+    Returns
+    -------
+    AutoIAFGuide
+        The guide.
+    """
+    torch.manual_seed(0)
+    guide = AutoIAFGuide(model, observed, num_flows=2)
+    generator = torch.Generator().manual_seed(1)
+    with torch.no_grad():
+        for parameter in guide.parameters():
+            parameter.add_(0.05 * torch.randn(parameter.shape, generator=generator))
+    return guide
+
+
+@pytest.mark.usefixtures("_float64")
 class TestNeuTraReparam:
-    """`NeuTraReparam` passes through when the guide does not cover
-    the site."""
+    """`NeuTraReparam` draws a flow guide's sites as its pushforward and
+    keeps the model's joint density."""
 
-    def test_falls_through_when_site_not_covered(self) -> None:
-        # Minimal fake guide with an empty registry.
-        class _FakeGuide:
-            class _EmptyRegistry:
-                def names(self) -> list[str]:
-                    return []
+    def test_reparameterized_run_takes_the_pushforward_and_the_model_joint(
+        self,
+    ) -> None:
+        model = _neutra_model()
+        guide = _trained_flow(model, {"r"})
+        neutra = NeuTraReparam(guide)
+        x = torch.zeros(1, 1)
+        torch.manual_seed(5)
+        with reparam({"theta": neutra, "w": neutra, "tau": neutra}):
+            tr = trace(model, x, observations=dict(_RESPONSES))
+        draw = neutra.current_draw
+        assert draw is not None
+        # The sites take the draw's values, shaped as the sites' own draws.
+        values = {name: tr.sites[name].value for name in ("theta", "w", "tau")}
+        torch.testing.assert_close(
+            values["theta"].reshape(()), draw.sites["theta"], rtol=0, atol=0
+        )
+        torch.testing.assert_close(values["w"][0], draw.sites["w"], rtol=0, atol=0)
+        torch.testing.assert_close(values["tau"], draw.sites["tau"], rtol=0, atol=0)
+        # The draw is B(T(u)) for its base point.
+        z, _ = guide.push_forward(draw.base)
+        constrained, _ = guide.registry.to_constrained(
+            guide.registry.unflatten_unconstrained(z)
+        )
+        for name, value in constrained.items():
+            torch.testing.assert_close(draw.sites[name], value, rtol=0, atol=0)
+        # The reparameterized run reports the model's joint density.
+        reported = sum(site.log_prob.sum() for site in tr.sites.values())
+        joint = model.log_joint(x, {**values, **_RESPONSES}).sum()
+        torch.testing.assert_close(reported, joint, rtol=1e-12, atol=1e-12)
+        # The change of variables gives the guide's density of the draw.
+        trace_side = guide.registry.trace_values(draw.sites, 1)
+        torch.testing.assert_close(
+            guide.log_prob(x, trace_side)[0],
+            draw.log_density(),
+            rtol=1e-12,
+            atol=1e-12,
+        )
 
-            registry = _EmptyRegistry()
+    def test_the_log_jacobian_is_the_flow_and_bijector_terms(self) -> None:
+        """For a model of real and positive sites the map from the base
+        point to the values is square, and its log-determinant by
+        autograd equals the draw's."""
+        program = loads(
+            "object Resp : FinSet 2\n"
+            "program p : Resp -> Resp\n"
+            "    sample a <- Normal(loc=0.0, scale=1.0)\n"
+            "    sample b <- HalfNormal(scale=1.0)\n"
+            "    sample c <- Beta(concentration1=2.0, concentration0=2.0)\n"
+            "    observe r : Resp <- Bernoulli(probs=c)\n"
+            "    return c\n"
+            "export p\n"
+        ).morphism
+        assert isinstance(program, MonadicProgram)
+        guide = _trained_flow(program, {"r"})
+        neutra = NeuTraReparam(guide)
+        base = torch.randn(3, generator=torch.Generator().manual_seed(3))
 
-            def sample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-                return {}
+        def values(u: torch.Tensor) -> torch.Tensor:
+            sites = neutra.push(u).sites
+            return torch.stack([sites[name].reshape(()) for name in ("a", "b", "c")])
 
-        prog = _simple_program()
-        x = _batch(4)
-        with reparam({"z": NeuTraReparam(_FakeGuide())}):  # type: ignore[arg-type]
-            tr = trace(prog, x)
-        # Because the guide does not cover z, NeuTra scores it under
-        # the model's own prior; the trace is well-defined.
-        prior = tr.sites["z"].morphism
+        jacobian = torch.autograd.functional.jacobian(values, base)
+        expected = torch.linalg.slogdet(jacobian)[1]
+        torch.testing.assert_close(
+            neutra.push(base).log_abs_det, expected, rtol=1e-10, atol=1e-10
+        )
+
+    def test_each_run_draws_its_own_point(self) -> None:
+        model = _neutra_model()
+        guide = _trained_flow(model, {"r"})
+        neutra = NeuTraReparam(guide)
+        with reparam({"theta": neutra, "w": neutra, "tau": neutra}):
+            tr = trace(model, torch.zeros(3, 1), observations=dict(_RESPONSES))
+        theta = tr.sites["theta"].value.reshape(-1)
+        assert theta.shape == (3,)
+        assert len({float(v) for v in theta.detach()}) == 3
+
+    def test_a_site_the_guide_does_not_cover_takes_its_own_draw(self) -> None:
+        model = _neutra_model()
+        guide = _trained_flow(model, {"r", "tau"})
+        neutra = NeuTraReparam(guide)
+        x = torch.zeros(1, 1)
+        with reparam({"theta": neutra, "w": neutra, "tau": neutra}):
+            tr = trace(model, x, observations=dict(_RESPONSES))
+        draw = neutra.current_draw
+        assert draw is not None
+        assert set(draw.sites) == {"theta", "w"}
+        prior = tr.sites["tau"].morphism
         assert prior is not None
-        expected = prior.log_prob(x, tr.sites["z"].value)
-        torch.testing.assert_close(tr.sites["z"].log_prob, expected)
+        torch.testing.assert_close(
+            tr.sites["tau"].log_prob, prior.log_prob(x, tr.sites["tau"].value)
+        )
+
+    def test_refuses_a_guide_that_is_not_a_flow(self) -> None:
+        guide = AutoNormalGuide(_neutra_model(), {"r"})
+        with pytest.raises(TypeError, match="flow guide"):
+            NeuTraReparam(guide)  # type: ignore[arg-type]
+
+    def test_refuses_a_base_point_of_another_width(self) -> None:
+        neutra = NeuTraReparam(_trained_flow(_neutra_model(), {"r"}))
+        with pytest.raises(ValueError, match=r"takes \(6,\)"):
+            neutra.push(torch.zeros(5))
 
 
 class TestConjugateReparam:

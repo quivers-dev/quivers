@@ -115,36 +115,37 @@ class _MVNCommon(Guide):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Pushforward log-density at the supplied constrained values.
+        """Pushforward log-density of each run's constrained values.
 
-        :math:`\\log q(v) = \\log p_z(z) + \\sum_i \\log|\\det J_{T_i^{-1}}(v_i)|`
-        where the first term is the joint MVN log-density and the
-        sum is over the per-site bijector inverses.
+        :math:`\\log q(v_b) = \\log p_z(z_b) + \\sum_i \\log|\\det J_{T_i^{-1}}(v_{b,i})|`
+        for run ``b``, where :math:`z_b` is the flat unconstrained point
+        of run ``b``'s values, read by `LatentRegistry.unconstrain_runs`,
+        the first term is the joint MVN log-density, and the sum is over
+        the per-site bijector inverses.
 
-        Scalar-site values arrive with a leading batch axis; we
-        collapse it by taking the first slice (the joint MVN
-        emitted one shared draw across the batch in `rsample`,
-        so every batch index carries the same value).
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+        sites : dict[str, torch.Tensor]
+            Constrained values of every latent site, each one per run or
+            one the runs share (`Guide.log_prob`).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(B,)``, one log density per run.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
         """
-        batch = x.shape[0]
-        unconstrained_per_site: dict[str, torch.Tensor] = {}
-        log_det_total = torch.zeros((), device=x.device)
-        for site in self._registry.sites.values():
-            if site.name not in sites:
-                raise KeyError(
-                    f"{type(self).__name__}.log_prob: missing site {site.name!r}"
-                )
-            v = sites[site.name]
-            if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
-                v = v[0]
-            z_site, log_det = site.unconstrain(v)
-            unconstrained_per_site[site.name] = z_site
-            log_det_total = log_det_total + log_det.sum()
-
-        z_flat = self._registry.flatten_unconstrained(unconstrained_per_site)
-        log_q_z = self._base_dist().log_prob(z_flat)
-        total = (log_q_z + log_det_total).expand(batch)
-        return total
+        coordinates = self._registry.unconstrain_runs(sites, int(x.shape[0]))
+        z_flat = self._registry.flatten_unconstrained(coordinates.unconstrained)
+        return self._base_dist().log_prob(z_flat) + coordinates.total_log_abs_det()
 
     @property
     def latent_names(self) -> list[str]:

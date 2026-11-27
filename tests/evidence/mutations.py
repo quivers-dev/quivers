@@ -948,5 +948,26 @@ MUTATIONS: tuple[Mutation, ...] = (
         rejected_by=("consumer/replay/beta", "consumer/replay/hmm"),
         min_effect=1.0,
     ),
+    Mutation(
+        name="guide-scores-first-row",
+        defect_class="run batching",
+        provenance=(
+            "a guide that reads one point for every run scores the first run "
+            "and repeats its density for the others"
+        ),
+        target="quivers.inference.registry:LatentSite.unconstrain_runs",
+        rewrites=(
+            Rewrite(
+                old="self.unconstrain(self.align_runs(value, runs))",
+                new="self.unconstrain(self.align_runs(value[:1].expand_as(value), runs))",
+            ),
+        ),
+        rejected_by=(
+            "consumer/rows-alone/mvn",
+            "consumer/rows-alone/low-rank",
+            "consumer/rows-alone/structured",
+        ),
+        min_effect=0.05,
+    ),
 )
 """The catalogue."""

@@ -52,6 +52,21 @@ so its samples lie inside that support, and its `log_prob` includes the log abso
 determinant of the
 [Jacobian](https://en.wikipedia.org/wiki/Jacobian_matrix_and_determinant).
 
+An input of `B` rows is `B` independent runs of the program, and a guide's law is a law
+over the latents of one run. `log_prob(x, sites)` returns `B` log densities, and entry `b`
+is the density of run `b`'s values alone: it equals what `log_prob` gives for a one-row
+input holding run `b`'s values, whatever the other runs hold. A site's value has a leading
+run axis, shape `(B, *constrained_shape)`, or has the site's
+[`constrained_shape`](../api/inference/guide.md#quivers.inference.registry.LatentSite.constrained_shape)
+and is one value every run shares, which then enters every run's density in full. Any
+other shape is refused, so a run axis of size one does not stand for `B` runs. Every
+guide reads site values per run through
+[`LatentRegistry.unconstrain_runs`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.unconstrain_runs),
+which also keeps each run's Jacobian term apart. The draws `rsample` gives the runs each
+follow the guide's law but need not be independent: a guide with one joint draw, such as
+`AutoMultivariateNormalGuide`, a flow, `AutoStructured`, or `AutoLaplaceApproximation`,
+gives every run the same draw.
+
 Guides and named initialization use the same
 [`LatentSite`](../api/inference/guide.md#quivers.inference.registry.LatentSite)
 geometry. Unconstrained coordinates are flat within each site; constrained
@@ -677,7 +692,8 @@ so inspect fit quality before interpreting them as posterior uncertainty.
 A custom guide subclasses
 [`Guide`](../api/inference/guide.md#quivers.inference.guides.Guide) and gives
 `latent_names`, `rsample`, which returns one draw per input row of every latent site it
-covers, and `log_prob`, which returns one log density per row. A normal guide for the
+covers, and `log_prob`, which returns one log density per row, the density of that row's
+values alone. A normal guide for the
 slope of the regression above:
 
 <!-- python: skip -->

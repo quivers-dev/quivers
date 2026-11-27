@@ -61,6 +61,34 @@ from quivers.inference.transforms import (
 )
 
 
+def _tensor(value: torch.Tensor | None, layer: TransformModule) -> torch.Tensor:
+    """Check that a flow layer returned a tensor.
+
+    Parameters
+    ----------
+    value : torch.Tensor | None
+        What the layer returned.
+    layer : TransformModule
+        The layer, for the message.
+
+    Returns
+    -------
+    torch.Tensor
+        The value.
+
+    Raises
+    ------
+    TypeError
+        If the layer returned something other than a tensor.
+    """
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(
+            f"flow layer {type(layer).__name__} returned "
+            f"{type(value).__name__}, not a tensor"
+        )
+    return value
+
+
 class AutoNormalizingFlow(Guide):
     """Normalising-flow variational guide over the flat latent vector.
 
@@ -109,6 +137,7 @@ class AutoNormalizingFlow(Guide):
             )
         self._D = D_total
         self.flow = nn.ModuleList(transforms)
+        self._layers: list[TransformModule] = list(transforms)
         self.register_buffer("base_loc", torch.zeros(D_total))
         self.register_buffer("base_scale", torch.ones(D_total))
 
@@ -116,30 +145,89 @@ class AutoNormalizingFlow(Guide):
     # Flow forward / inverse
     # ------------------------------------------------------------------
 
-    def _forward(self, z0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Push ``z0`` through the flow; return ``(z_K, sum log|det|)``."""
-        log_det_total = torch.zeros(z0.shape[:-1], device=z0.device)
+    def push_forward(self, z0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Push base points through the flow.
+
+        Parameters
+        ----------
+        z0 : torch.Tensor
+            Points of the base space, shape ``(..., D)``; each row is
+            mapped alone.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The images :math:`z_K = T_K \\circ \\dots \\circ T_1(z_0)`
+            and :math:`\\sum_k \\log|\\det J_{T_k}|` along the way,
+            shape ``z0.shape[:-1]``.
+        """
+        log_det_total = torch.zeros(z0.shape[:-1], device=z0.device, dtype=z0.dtype)
         z = z0
-        for layer in self.flow:
-            z_next = layer(z)
+        for layer in self._layers:
+            z_next = _tensor(layer(z), layer)
             log_det_total = log_det_total + layer.log_abs_det_jacobian(z, z_next)
             z = z_next
         return z, log_det_total
 
-    def _inverse(self, z_K: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Reverse the flow; return ``(z_0, sum log|det|)`` where the
-        log-det is accumulated in the *forward* direction so adding
-        it to ``log p_0(z_0)`` produces the correct ``log q(z_K)``."""
-        log_det_total = torch.zeros(z_K.shape[:-1], device=z_K.device)
+    def pull_back(self, z_K: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pull points of the flow's codomain back to the base space.
+
+        Parameters
+        ----------
+        z_K : torch.Tensor
+            Points of the codomain, shape ``(..., D)``; each row is
+            mapped alone.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The base points :math:`z_0` and the forward
+            :math:`\\sum_k \\log|\\det J_{T_k}|` at them, so that
+            :math:`\\log q(z_K) = \\log p_0(z_0) - \\sum_k
+            \\log|\\det J_{T_k}|`.
+        """
+        log_det_total = torch.zeros(z_K.shape[:-1], device=z_K.device, dtype=z_K.dtype)
         z = z_K
-        for layer in reversed(self.flow):
-            z_prev = layer.inv(z)
+        for layer in reversed(self._layers):
+            z_prev = _tensor(layer.inv(z), layer)
             log_det_total = log_det_total + layer.log_abs_det_jacobian(z_prev, z)
             z = z_prev
         return z, log_det_total
 
+    def update_statistics(self, num_draws: int) -> None:
+        """Refresh every layer's data-dependent state from base draws.
+
+        Draws ``num_draws`` base points, and walks the stack: each layer
+        folds the batch of its inputs into its state
+        (`TransformModule.update_statistics`) and then maps the batch
+        on, so a later layer sees the inputs the updated earlier layers
+        give it. Objectives never call this; call it between steps.
+
+        Parameters
+        ----------
+        num_draws : int
+            Number of base draws, at least two.
+
+        Raises
+        ------
+        ValueError
+            If ``num_draws`` is less than two.
+        """
+        if num_draws < 2:
+            raise ValueError(
+                f"{type(self).__name__}.update_statistics: num_draws must be >= 2, "
+                f"got {num_draws}"
+            )
+        with torch.no_grad():
+            z = self._base_dist().sample((num_draws,))
+            for layer in self._layers:
+                layer.update_statistics(z)
+                z = _tensor(layer(z), layer)
+
     def _base_dist(self) -> D.Distribution:
-        return D.Independent(D.Normal(self.base_loc, self.base_scale), 1)
+        return D.Independent(
+            D.Normal(self.get_buffer("base_loc"), self.get_buffer("base_scale")), 1
+        )
 
     # ------------------------------------------------------------------
     # Sample / log-prob
@@ -149,7 +237,7 @@ class AutoNormalizingFlow(Guide):
         """One flow draw, unflattened and bijected to constrained space."""
         batch = x.shape[0]
         z0 = self._base_dist().rsample()
-        z_K, _ = self._forward(z0)
+        z_K, _ = self.push_forward(z0)
         per_site = self._registry.unflatten_unconstrained(z_K)
         result: dict[str, torch.Tensor] = {}
         for site in self._registry.sites.values():
@@ -165,29 +253,42 @@ class AutoNormalizingFlow(Guide):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Log-density at the supplied constrained sites."""
-        batch = x.shape[0]
-        unconstrained_per_site: dict[str, torch.Tensor] = {}
-        bijector_log_det = torch.zeros((), device=x.device)
-        for site in self._registry.sites.values():
-            if site.name not in sites:
-                raise KeyError(
-                    f"{type(self).__name__}.log_prob: missing site {site.name!r}"
-                )
-            v = sites[site.name]
-            if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
-                v = v[0]
-            z_site, log_det = site.unconstrain(v)
-            unconstrained_per_site[site.name] = z_site
-            bijector_log_det = bijector_log_det + log_det.sum()
+        """Log-density of each run's constrained values.
 
-        z_K = self._registry.flatten_unconstrained(unconstrained_per_site)
-        z_0, flow_log_det = self._inverse(z_K)
-        log_p_base = self._base_dist().log_prob(z_0)
-        # log q(z_K) = log p_0(z_0) - log|det dT/dz_0|
-        #            = log p_0(z_0) - flow_log_det
-        log_q_z = log_p_base - flow_log_det
-        return (log_q_z + bijector_log_det).expand(batch)
+        For run ``b`` the flat unconstrained point :math:`z_{K,b}` of its
+        values, read by `LatentRegistry.unconstrain_runs`, is pulled back
+        through the flow, and
+        :math:`\\log q(v_b) = \\log p_0(z_{0,b}) - \\sum_k \\log|\\det J_{T_k}|
+        + \\sum_i \\log|\\det J_{T_i^{-1}}(v_{b,i})|`, the last sum over
+        the per-site bijectors. Every transform in
+        [`quivers.inference.transforms`][quivers.inference.transforms]
+        maps each row of the ``(B, D)`` matrix of points alone.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input; its leading axis has one row per run.
+        sites : dict[str, torch.Tensor]
+            Constrained values of every latent site, each one per run or
+            one the runs share (`Guide.log_prob`).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(B,)``, one log density per run.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``sites``.
+        ValueError
+            If a value is neither one per run nor one the runs share.
+        """
+        coordinates = self._registry.unconstrain_runs(sites, int(x.shape[0]))
+        z_K = self._registry.flatten_unconstrained(coordinates.unconstrained)
+        z_0, flow_log_det = self.pull_back(z_K)
+        log_q_z = self._base_dist().log_prob(z_0) - flow_log_det
+        return log_q_z + coordinates.total_log_abs_det()
 
     @property
     def latent_names(self) -> list[str]:
@@ -211,13 +312,13 @@ class _ReversePermutation(TransformModule):
         self.domain = _constraints.real_vector
         self.codomain = _constraints.real_vector
         self.register_buffer("perm", torch.arange(dim - 1, -1, -1, dtype=torch.long))
-        self.register_buffer("inv_perm", torch.argsort(self.perm))
+        self.register_buffer("inv_perm", torch.argsort(self.get_buffer("perm")))
 
     def _call(self, x: torch.Tensor) -> torch.Tensor:
-        return x.index_select(-1, self.perm)
+        return x.index_select(-1, self.get_buffer("perm"))
 
     def _inverse(self, y: torch.Tensor) -> torch.Tensor:
-        return y.index_select(-1, self.inv_perm)
+        return y.index_select(-1, self.get_buffer("inv_perm"))
 
     def log_abs_det_jacobian(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         del y

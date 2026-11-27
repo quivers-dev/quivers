@@ -35,6 +35,23 @@ from quivers.inference.transforms import (
 )
 
 
+def _image(value: torch.Tensor | None) -> torch.Tensor:
+    """Check that a transform returned a tensor.
+
+    Parameters
+    ----------
+    value : torch.Tensor | None
+        What the transform returned.
+
+    Returns
+    -------
+    torch.Tensor
+        The value.
+    """
+    assert isinstance(value, torch.Tensor)
+    return value
+
+
 def _numeric_log_abs_det(transform, x: torch.Tensor) -> torch.Tensor:
     """Compute log|det J_T(x)| numerically via torch.autograd.
 
@@ -70,8 +87,8 @@ def test_affine_coupling_inverse_roundtrip() -> None:
     layer = AffineCouplingTransform(dim, net, mask)
 
     x = torch.randn(8, dim)
-    y = layer(x)
-    x_back = layer.inv(y)
+    y = _image(layer(x))
+    x_back = _image(layer.inv(y))
     assert torch.allclose(x, x_back, atol=1e-5), (x - x_back).abs().max().item()
 
 
@@ -86,7 +103,7 @@ def test_affine_coupling_log_det_matches_numerical_jacobian() -> None:
     layer = AffineCouplingTransform(dim, net, mask)
 
     x = torch.randn(4, dim)
-    y = layer(x)
+    y = _image(layer(x))
     analytic = layer.log_abs_det_jacobian(x, y)
     numeric = _numeric_log_abs_det(layer, x)
     assert torch.allclose(analytic, numeric, atol=1e-4), (
@@ -116,8 +133,8 @@ def test_maf_inverse_roundtrip() -> None:
     layer = MaskedAutoregressiveTransform(made)
 
     x = torch.randn(6, dim)
-    y = layer(x)
-    x_back = layer.inv(y)
+    y = _image(layer(x))
+    x_back = _image(layer.inv(y))
     assert torch.allclose(x, x_back, atol=1e-4), (x - x_back).abs().max().item()
 
 
@@ -130,7 +147,7 @@ def test_maf_log_det_matches_numerical_jacobian() -> None:
     layer = MaskedAutoregressiveTransform(made)
 
     x = torch.randn(3, dim)
-    y = layer(x)
+    y = _image(layer(x))
     analytic = layer.log_abs_det_jacobian(x, y)
     numeric = _numeric_log_abs_det(layer, x)
     assert torch.allclose(analytic, numeric, atol=1e-4)
@@ -148,12 +165,12 @@ def test_maf_autoregressive_property() -> None:
     layer = MaskedAutoregressiveTransform(made)
 
     x = torch.randn(1, dim)
-    y_base = layer(x)
+    y_base = _image(layer(x))
     ordering = made.ordering.tolist()
     for k in range(dim):
         x_perturb = x.clone()
         x_perturb[0, k] += 1.0
-        y_perturb = layer(x_perturb)
+        y_perturb = _image(layer(x_perturb))
         for j in range(dim):
             if ordering[k] > ordering[j]:
                 assert torch.allclose(y_base[0, j], y_perturb[0, j], atol=1e-5), (
@@ -176,8 +193,8 @@ def test_iaf_inverse_roundtrip() -> None:
     layer = InverseAutoregressiveTransform(made)
 
     x = torch.randn(6, dim)
-    y = layer(x)
-    x_back = layer.inv(y)
+    y = _image(layer(x))
+    x_back = _image(layer.inv(y))
     assert torch.allclose(x, x_back, atol=1e-4)
 
 
@@ -190,7 +207,7 @@ def test_iaf_log_det_matches_numerical_jacobian() -> None:
     layer = InverseAutoregressiveTransform(made)
 
     x = torch.randn(3, dim)
-    y = layer(x)
+    y = _image(layer(x))
     analytic = layer.log_abs_det_jacobian(x, y)
     numeric = _numeric_log_abs_det(layer, x)
     assert torch.allclose(analytic, numeric, atol=1e-4)
@@ -215,8 +232,8 @@ def test_nsf_coupling_inverse_roundtrip() -> None:
     )
 
     x = torch.randn(8, dim) * 1.5  # stay well inside tail_bound
-    y = layer(x)
-    x_back = layer.inv(y)
+    y = _image(layer(x))
+    x_back = _image(layer.inv(y))
     assert torch.allclose(x, x_back, atol=1e-3), (x - x_back).abs().max().item()
 
 
@@ -236,7 +253,7 @@ def test_nsf_identity_outside_tail_bound() -> None:
     # Values far outside the spline tail; transformed coordinates
     # must come back unchanged.
     x = torch.tensor([[10.0, 10.0, -10.0, -10.0]])
-    y = layer(x)
+    y = _image(layer(x))
     transformed = y[..., ~mask]
     untransformed = x[..., ~mask]
     assert torch.allclose(transformed, untransformed)
@@ -254,8 +271,8 @@ def test_lu_linear_inverse_roundtrip() -> None:
         if p.requires_grad and p.dim() > 0:
             p.data = torch.randn_like(p) * 0.2
     x = torch.randn(6, dim)
-    y = layer(x)
-    x_back = layer.inv(y)
+    y = _image(layer(x))
+    x_back = _image(layer.inv(y))
     assert torch.allclose(x, x_back, atol=1e-4)
 
 
@@ -266,7 +283,7 @@ def test_lu_linear_log_det_matches_numerical_jacobian() -> None:
         if p.requires_grad and p.dim() > 0:
             p.data = torch.randn_like(p) * 0.2
     x = torch.randn(3, dim)
-    y = layer(x)
+    y = _image(layer(x))
     analytic = layer.log_abs_det_jacobian(x, y)
     # LULinear's log-det is constant across x; numeric reference
     # is per-row but every row should match the constant.
@@ -280,41 +297,97 @@ def test_lu_linear_log_det_matches_numerical_jacobian() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_batchnorm_inverse_roundtrip_in_eval_mode() -> None:
-    """In eval mode the running stats are used for both directions,
-    so the round-trip is exact."""
-    dim = 5
-    layer = BatchNormTransform(dim)
-    x = torch.randn(20, dim)
-    # Run a few training-mode forward passes to populate running
-    # stats.
-    layer.train(True)
-    for _ in range(5):
-        _ = layer(torch.randn(20, dim))
-    layer.eval()
-    y = layer(x)
-    x_back = layer.inv(y)
-    assert torch.allclose(x, x_back, atol=1e-4)
+def _batchnorm_at_random_parameters(dim: int, seed: int) -> BatchNormTransform:
+    """A batch-norm layer with random scale, shift, and moments.
+
+    Parameters
+    ----------
+    dim : int
+        Number of coordinates.
+    seed : int
+        The seed.
+
+    Returns
+    -------
+    BatchNormTransform
+        The layer, its moments folded in from two random batches.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    layer = BatchNormTransform(dim, momentum=0.5)
+    with torch.no_grad():
+        layer._gamma.copy_(0.5 * torch.randn(dim, generator=generator))
+        layer._beta.copy_(torch.randn(dim, generator=generator))
+    for _ in range(2):
+        batch = 3.0 * torch.randn(16, dim, generator=generator) + 1.5
+        layer.update_statistics(batch.to(torch.get_default_dtype()))
+    return layer
 
 
-def test_batchnorm_log_det_matches_numerical_jacobian() -> None:
-    """In eval mode the BatchNorm transform is a per-coordinate
-    affine map, so the log-det is the sum of per-coordinate
-    log scales. Match against the numerical Jacobian."""
-    dim = 4
-    layer = BatchNormTransform(dim)
-    layer.train(True)
-    for _ in range(5):
-        _ = layer(torch.randn(10, dim))
-    layer.eval()
-    x = torch.randn(3, dim)
-    y = layer(x)
-    analytic = layer.log_abs_det_jacobian(x, y)
-    numeric = _numeric_log_abs_det(layer, x)
-    assert torch.allclose(analytic, numeric, atol=1e-4), (
-        f"BatchNorm log-det mismatch: analytic={analytic.tolist()}, "
-        f"numeric={numeric.tolist()}"
-    )
+def test_batchnorm_update_statistics_folds_the_batch_moments_in() -> None:
+    dim = 3
+    layer = BatchNormTransform(dim, momentum=0.25)
+    batch = torch.randn(10, dim)
+    layer.update_statistics(batch)
+    mean = layer.get_buffer("_running_mean")
+    var = layer.get_buffer("_running_var")
+    torch.testing.assert_close(mean, 0.25 * batch.mean(0))
+    torch.testing.assert_close(var, 0.75 + 0.25 * batch.var(0, unbiased=False))
+    for bad in (torch.randn(1, dim), torch.randn(dim), torch.randn(4, dim + 1)):
+        with pytest.raises(ValueError, match="update_statistics"):
+            layer.update_statistics(bad)
+    with pytest.raises(ValueError, match="momentum"):
+        BatchNormTransform(dim, momentum=0.0)
+    with pytest.raises(ValueError, match="eps"):
+        BatchNormTransform(dim, eps=0.0)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_batchnorm_is_the_written_out_affine_bijection(seed: int) -> None:
+    """Forward, inverse, and log-det are one affine map of each row.
+
+    The map is checked against its formula at random parameters, the
+    inverse against the forward, the inverse log-det against minus the
+    forward one, the log-det against the Jacobian by autograd, and the
+    batch against its rows one at a time; training mode does not
+    change the map.
+    """
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        dim = 4
+        layer = _batchnorm_at_random_parameters(dim, seed)
+        mean = layer.get_buffer("_running_mean").clone()
+        var = layer.get_buffer("_running_var").clone()
+        gamma, beta = layer._gamma.detach(), layer._beta.detach()
+        x = torch.randn(7, dim, generator=torch.Generator().manual_seed(seed + 10))
+        expected = (x - mean) / torch.sqrt(var + 1e-5) * gamma.exp() + beta
+        expected_log_det = (gamma - 0.5 * torch.log(var + 1e-5)).sum().expand(7)
+        for mode in (True, False):
+            layer.train(mode)
+            y = _image(layer(x))
+            torch.testing.assert_close(y, expected, rtol=1e-12, atol=1e-12)
+            torch.testing.assert_close(_image(layer.inv(y)), x, rtol=1e-12, atol=1e-12)
+            torch.testing.assert_close(
+                layer.log_abs_det_jacobian(x, y), expected_log_det, rtol=0, atol=1e-12
+            )
+            torch.testing.assert_close(
+                layer.inv.log_abs_det_jacobian(y, x),
+                -expected_log_det,
+                rtol=0,
+                atol=1e-12,
+            )
+            rows = torch.stack([_image(layer(x[i])) for i in range(7)])
+            torch.testing.assert_close(rows, y, rtol=0, atol=0)
+            torch.testing.assert_close(
+                layer.log_abs_det_jacobian(x, y),
+                _numeric_log_abs_det(layer, x),
+                rtol=0,
+                atol=1e-10,
+            )
+        torch.testing.assert_close(layer.get_buffer("_running_mean"), mean)
+        torch.testing.assert_close(layer.get_buffer("_running_var"), var)
+    finally:
+        torch.set_default_dtype(previous)
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +411,7 @@ def test_nsf_log_det_matches_numerical_jacobian() -> None:
         dim, net, mask, num_bins=num_bins, tail_bound=4.0
     )
     x = torch.randn(3, dim) * 1.5  # well inside tail
-    y = layer(x)
+    y = _image(layer(x))
     analytic = layer.log_abs_det_jacobian(x, y)
     numeric = _numeric_log_abs_det(layer, x)
     assert torch.allclose(analytic, numeric, atol=1e-3), (
@@ -365,12 +438,12 @@ def test_iaf_autoregressive_property() -> None:
         p.data = torch.randn_like(p) * 0.2
     layer = InverseAutoregressiveTransform(made)
     x = torch.randn(1, dim)
-    y_base = layer(x)
+    y_base = _image(layer(x))
     ordering = made.ordering
     for k in range(dim):
         x_pert = x.clone()
         x_pert[0, k] = x_pert[0, k] + 1.0
-        y_pert = layer(x_pert)
+        y_pert = _image(layer(x_pert))
         for j in range(dim):
             if int(ordering[k].item()) > int(ordering[j].item()):
                 assert torch.isclose(y_pert[0, j], y_base[0, j], atol=1e-5), (
@@ -415,8 +488,8 @@ def test_reverse_permutation_inverse_roundtrip() -> None:
     dim = 5
     perm = _ReversePermutation(dim)
     x = torch.randn(4, dim)
-    y = perm(x)
-    x_back = perm.inv(y)
+    y = _image(perm(x))
+    x_back = _image(perm.inv(y))
     assert torch.allclose(x, x_back, atol=1e-6)
     assert torch.allclose(perm.log_abs_det_jacobian(x, y), torch.zeros(4), atol=1e-6)
 
@@ -444,6 +517,6 @@ def test_multilayer_flow_roundtrip() -> None:
     flow = ComposeTransform(layers)
 
     x = torch.randn(8, dim)
-    y = flow(x)
-    x_back = flow.inv(y)
+    y = _image(flow(x))
+    x_back = _image(flow.inv(y))
     assert torch.allclose(x, x_back, atol=1e-3)

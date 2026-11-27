@@ -130,6 +130,16 @@ class Reparam(ABC):
     override :meth:`apply`.
     """
 
+    def begin_run(self) -> None:
+        """Start a run of the program.
+
+        The `ReparamOrchestrator` calls this once per run, before the
+        run's first site, for every strategy it holds. A strategy whose
+        sites share one draw within a run (`NeuTraReparam`) discards the
+        previous run's draw here; a strategy without per-run state has
+        nothing to do, which this default states.
+        """
+
     @abstractmethod
     def apply(self, site: SiteRequest) -> tuple[torch.Tensor, torch.Tensor]:
         """Rewrite one site.
@@ -177,6 +187,8 @@ class ReparamOrchestrator(EffectHandler):
         kernel = run.kernel
         score_instance = kernel.score.entry.instance
         seen: dict[str, TorchSampleable] = {}
+        for strategy in {id(s): s for s in self.strategies.values()}.values():
+            strategy.begin_run()
         definition = _handler_def(
             "Random.reparam",
             RANDOM,
