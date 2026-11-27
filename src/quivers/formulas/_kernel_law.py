@@ -32,6 +32,25 @@ type KernelDatum = np.ndarray | pd.DataFrame | torch.Tensor | float | int
 """A value the kernel reads by name that is not indexed by the rows."""
 
 
+def elliptical_family(family: Family) -> Family:
+    """Read the declaration of the observation's elliptical residual law.
+
+    Parameters
+    ----------
+    family : Family
+        Family of the response block.
+
+    Returns
+    -------
+    Family
+        The native declaration of the observation's argument roles, or the
+        response family's own declaration.
+    """
+    law = family.kernel_law
+    native = law.elliptical_family if law is not None else None
+    return native if native is not None else family
+
+
 class KernelLaw(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """A response law that builds its own kernel."""
 

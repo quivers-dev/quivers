@@ -74,17 +74,26 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.latent_weights import _references
-from quivers.dsl.program_templates import _bound_names, static_program_parameters
+from quivers.dsl.program_templates import (
+    _bound_names,
+    draw_argument_expression,
+    static_program_parameters,
+)
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.step_resolution import _draw_arg_value_names, _step_value_names
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _add, _call, _factor, _index, _let, _mul, _var
 from quivers.formulas._blocks import Namespace, rename_program
-from quivers.formulas._family_kernel import graph_row_roots, precompose_graph
+from quivers.formulas._family_kernel import (
+    graph_row_roots,
+    precompose_graph,
+    residual_sources,
+)
 from quivers.formulas._kernel import (
     BindSlot,
     Completion,
     ConstantSource,
+    KernelArguments,
     KernelEmission,
     KernelInputs,
     KernelPart,
@@ -97,10 +106,12 @@ from quivers.formulas._kernel import (
 from quivers.formulas._kernel_law import KernelDatum, KernelLaw
 from quivers.formulas._modifiers import (
     Modifier,
+    ResidualDependence,
     observation_argument,
     response_modifiers,
 )
 from quivers.formulas._observation import Observation
+from quivers.formulas._observation import observation as native_observation
 from quivers.formulas._predictor_graph import NonlinearExpression
 from quivers.formulas._brms_priors import flat_event_rank
 from quivers.formulas._term import AxisDecl, InputDecl
@@ -1562,6 +1573,82 @@ class ObserveResponse(KernelPart):
             emission.host.observed(self.observation)
 
 
+class ObserveResidual(KernelPart):
+    """Compose an authored observation with a declared residual law.
+
+    Parameters
+    ----------
+    observation : Observation
+        Original constructor arguments and recording options.
+    """
+
+    kind: Literal["program_residual_observation"] = "program_residual_observation"
+    observation: Observation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Write the observation under the same residual law as a formula.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program being emitted.
+        """
+        state = self.observation
+        observed = ResidualDependence().apply(
+            KernelArguments(
+                kernel=state.kernel, parameters=state.parameters, values=state.values
+            ),
+            emission,
+        )
+        result = native_observation(
+            state.site,
+            observed.kernel,
+            observed.values,
+            plate=state.plate,
+            event=observed.event,
+            catalog=emission.host.response_laws,
+        ).with_(
+            factorized=observed.factorized,
+            weights=state.weights,
+            event_options=state.event_options,
+            event_columns=state.event_columns,
+        )
+        emission.steps.extend(observed.lets)
+        emission.steps.append(result.step())
+        emission.host.observed(result)
+
+
+def _bind_observation_expressions(
+    observation: ObserveStep,
+) -> tuple[ObserveStep, tuple[ProgramStep, ...]]:
+    """Give names to compound arguments of an authored observation.
+
+    Parameters
+    ----------
+    observation : ObserveStep
+        Native observation whose arguments a law will transform.
+
+    Returns
+    -------
+    tuple[ObserveStep, tuple[ProgramStep, ...]]
+        Observation over names and constants, and its new bindings.
+    """
+    arguments: list[DrawArg] = []
+    bindings: list[ProgramStep] = []
+    for position, argument in enumerate(observation.args or ()):
+        value = argument.value if isinstance(argument, DrawArgNamed) else argument
+        if isinstance(value, (DrawArgName, DrawArgScalar)):
+            arguments.append(argument)
+            continue
+        name = f"FormulaProgramObservationArgument_{position}"
+        bindings.append(_let(name, draw_argument_expression(value)))
+        bound = DrawArgName(text=name)
+        arguments.append(
+            argument.with_(value=bound) if isinstance(argument, DrawArgNamed) else bound
+        )
+    return observation.with_(args=tuple(arguments)), tuple(bindings)
+
+
 def _enclosing(
     steps: Sequence[ProgramStep], response: str
 ) -> tuple[ObserveStep, tuple[MarginalizeStep, ...]] | None:
@@ -2135,7 +2222,18 @@ class ProgramKernelSpec(KernelLaw):
         draws = renamed.program.draws
         bindings: list[ProgramStep] = []
         for modifier in modifiers:
-            observed, needed = modifier.apply_to_step(observed, inputs.family)
+            if isinstance(modifier, ResidualDependence):
+                if enclosing:
+                    raise ValueError(
+                        "a residual law needs the response observation in the outer program scope"
+                    )
+                if observed.options:
+                    raise ValueError(
+                        "give the observation's recorded-event roles with the formula residual law"
+                    )
+                observed, needed = _bind_observation_expressions(observed)
+            else:
+                observed, needed = modifier.apply_to_step(observed, inputs.family)
             bindings.extend(needed)
         observation = _observation(observed, factorized)
         if modifiers:
@@ -2168,18 +2266,33 @@ class ProgramKernelSpec(KernelLaw):
             ),
             *(binds[name] for name in replaced_inputs),
         ]
+        structural = residual_sources(inputs)
+        slots.extend(ParameterSlot(name=name) for name in structural)
+        sources.update(structural)
+        residual_part = None
+        if inputs.residual is not None:
+            assert observation is not None
+            residual_part = ObserveResidual(observation=observation)
         literal: list[ProgramStep] = []
         for step in draws:
+            part: KernelPart | None = None
             if isinstance(step, SampleStep) and step.vars[0] in declarations:
-                if literal:
-                    body.append(Steps(steps=tuple(literal)))
-                    literal = []
-                body.append(binds[step.vars[0]])
+                part = binds[step.vars[0]]
+            elif isinstance(step, ObserveStep) and step.vars[0] == self.response:
+                part = residual_part
+            if part is None:
+                literal.append(step)
                 continue
-            literal.append(step)
+            if literal:
+                body.append(Steps(steps=tuple(literal)))
+                literal = []
+            if part is residual_part:
+                body.extend(BindSlot(slot=name) for name in structural)
+            body.append(part)
         if literal:
             body.append(Steps(steps=tuple(literal)))
-        body.append(ObserveResponse(observation=observation))
+        if residual_part is None:
+            body.append(ObserveResponse(observation=observation))
         data = tuple(
             InputDecl(
                 name=item.name,

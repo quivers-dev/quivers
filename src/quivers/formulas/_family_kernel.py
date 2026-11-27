@@ -1006,6 +1006,28 @@ def precompose_graph(
     return kernel.with_prelude(leaves, parts, data)
 
 
+def residual_sources(inputs: KernelInputs) -> dict[str, ParameterSource]:
+    """Bind the scalar structural parameters of the residual law.
+
+    Parameters
+    ----------
+    inputs : KernelInputs
+        Residual law and fixed parameter values.
+
+    Returns
+    -------
+    dict[str, ParameterSource]
+        Sources in the order of the residual law's signature.
+    """
+    law = inputs.residual
+    return {
+        site.name: ConstantSource(value=float(inputs.fixed[site.name]))
+        if site.name in inputs.fixed
+        else SiteSource(site=site)
+        for site in (() if law is None else law.sites)
+    }
+
+
 def family_kernel(
     inputs: KernelInputs, formula: Formula
 ) -> tuple[ResponseKernel, dict[str, ParameterSource]]:
@@ -1119,15 +1141,10 @@ def family_kernel(
                 if source is not None:
                     sources[aux.name] = source
         body.append(BindSlot(slot=aux.name))
-    residual = inputs.residual
-    for site in residual.sites if residual is not None else ():
-        slots.append(ParameterSlot(name=site.name))
-        sources[site.name] = (
-            ConstantSource(value=float(inputs.fixed[site.name]))
-            if site.name in inputs.fixed
-            else SiteSource(site=site)
-        )
-        body.append(BindSlot(slot=site.name))
+    structural = residual_sources(inputs)
+    slots.extend(ParameterSlot(name=name) for name in structural)
+    sources.update(structural)
+    body.extend(BindSlot(slot=name) for name in structural)
     if response is not None:
         if family.vector_response:
             assert response.kind in (

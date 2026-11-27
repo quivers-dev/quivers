@@ -358,6 +358,36 @@ def test_the_program_observation_takes_known_errors(estimate_sigma: bool) -> Non
     assert abs(actual - float(prior + wrong.sum())) > 1e-2
 
 
+def test_a_program_fixed_residual_covariance_scores_the_rows_together() -> None:
+    rows = frame().assign(y=np.arange(-6, 6) / 8)
+    covariance = 0.75 * np.eye(len(rows)) + 0.25
+    correlated = fit(
+        program=GAUSS.replace("sigma", "spread"),
+        parameters={"mu": "~ 1 + fcor(V)"},
+        response="y",
+        data=rows,
+        data2={"V": covariance},
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    mean = torch.tensor(0.375, dtype=torch.float64)
+    scale = torch.tensor(0.75, dtype=torch.float64)
+    values = {"intercept": mean, "spread": scale}
+    y = torch.tensor(rows["y"].to_numpy())
+    prior = torch.distributions.Normal(0.0, 5.0).log_prob(
+        mean
+    ) + torch.distributions.HalfNormal(1.0).log_prob(scale)
+    multivariate = torch.distributions.MultivariateNormal(
+        mean.expand(len(rows)),
+        covariance_matrix=scale.square() * torch.tensor(covariance),
+    )
+    actual = log_joint(run(correlated, values))
+    assert actual == pytest.approx(float(prior + multivariate.log_prob(y)), rel=1e-9)
+    independent = prior + torch.distributions.Normal(mean, scale).log_prob(y).sum()
+    assert abs(actual - float(independent)) > 1e-2
+
+
 def test_the_program_observation_composes_weights_and_recorded_events() -> None:
     rows = frame().assign(
         y=np.linspace(-1.0, 1.0, 12),

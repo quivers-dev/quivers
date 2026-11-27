@@ -30,6 +30,7 @@ from torch.distributions import Distribution, Independent
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import ProgramStep
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._kernel_law import elliptical_family
 from quivers.formulas._autocor import (
     AutocorMatrix,
     AutocorTerm,
@@ -569,25 +570,33 @@ class ResidualLaw(ValueModel):
             self.term.kind == "arma" and not self.term.cov
         )
 
-    def arguments(self, location: str, scale: str) -> tuple[str, ...]:
+    def arguments(
+        self,
+        location: str | int | float,
+        scale: str | int | float,
+        *,
+        degrees: str | int | float | None = None,
+    ) -> tuple[str | int | float, ...]:
         """Name the bindings passed to the kernel, in signature order.
 
         Parameters
         ----------
-        location : str
-            Binding of the location.
-        scale : str
-            Binding of the residual scale, or of the total scale under known
-            errors.
+        location : str or int or float
+            Binding or constant of the location.
+        scale : str or int or float
+            Residual scale, or total scale under known errors.
+        degrees : str or int or float or None
+            Binding or constant of Student degrees of freedom, when given by
+            the observation.
 
         Returns
         -------
-        tuple[str, ...]
-            One binding per parameter of `record`.
+        tuple[str or int or float, ...]
+            One argument per parameter of `record`.
         """
         bound = {"loc": location, "scale": scale, "factor": TIME_FACTOR}
         if self.elliptical.df is not None:
-            bound["nu"] = self.elliptical.df
+            bound["nu"] = self.elliptical.df if degrees is None else degrees
         bound.update((name, name) for name in self.coefficients)
         return tuple(bound[parameter.name] for parameter in self.record.parameters)
 
@@ -852,7 +861,8 @@ def residual_law(
     assert term is not None
     recursion = conditional if structural else None
     label = " + ".join(item.label for item in terms)
-    elliptical = family.elliptical
+    declared = elliptical_family(family)
+    elliptical = declared.elliptical
     if elliptical is None:
         raise ValueError(
             f"{caller}: {label} requires a family declaring an elliptical "
@@ -987,9 +997,10 @@ def bind_autocor_terms(
         return None, formula
     if nonlinear and any(term.kind == "car" for term in terms):
         raise ValueError("CAR terms are not implemented for non-linear models.")
-    if residual and nonlinear and family.elliptical is None:
+    declared = elliptical_family(family)
+    if residual and nonlinear and declared.elliptical is None:
         raise ValueError("Latent residuals are not implemented for non-linear models.")
-    if residual and family.elliptical is None:
+    if residual and declared.elliptical is None:
         # A SAR or fixed-covariance term raises brms's refusal before any
         # second latent term could be added.
         ordered = sorted(residual, key=lambda term: term.dimension == "time")

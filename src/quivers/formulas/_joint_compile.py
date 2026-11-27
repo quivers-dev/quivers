@@ -55,6 +55,7 @@ from quivers.formulas._group_law import (
     renamed_law,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._kernel_law import elliptical_family
 from quivers.formulas._group_emission import draw_level, emit_group_block
 from quivers.formulas._group_plan import (
     block_covariance,
@@ -94,7 +95,6 @@ from quivers.formulas._joint_residual import (
     RecursiveResidualFactory,
     recursive_residual_record,
 )
-from quivers.formulas.family import Family
 from quivers.formulas.formula import Formula, FormulaData, RandomTerm, _qvr_name
 
 #: Response label to its prepared lens and formula.
@@ -660,24 +660,6 @@ def _member_axis(
     return axis.with_(name="response_" + _qvr_name(name) + "__" + axis.name)
 
 
-def _elliptical_family(family: Family) -> Family:
-    """Read the declaration of the observation's residual roles.
-
-    Parameters
-    ----------
-    family : Family
-        Family of the response block.
-
-    Returns
-    -------
-    Family
-        The family declaring the roles of the observation's arguments.
-    """
-    law = family.kernel_law
-    native = law.elliptical_family if law is not None else None
-    return native if native is not None else family
-
-
 def _validate_residual_rows(components: _Components) -> None:
     """Require an actual common observation domain for a joint residual event.
 
@@ -695,7 +677,7 @@ def _validate_residual_rows(components: _Components) -> None:
         share one ``nu``.
     """
     laws = {
-        _elliptical_family(lens._family).elliptical for lens, _ in components.values()
+        elliptical_family(lens._family).elliptical for lens, _ in components.values()
     }
     # A conditional ARMA recursion moves each row's location and keeps the law
     # of the row's residual vector (RecursiveResiduals). A covariance across
@@ -940,7 +922,7 @@ def _correlated_residual(
         for name, observed in observations.items()
     }
     declarations = {
-        name: _elliptical_family(response.lens._family)
+        name: elliptical_family(response.lens._family)
         for name, response in responses.items()
     }
     elliptical = declarations[names[0]].elliptical
@@ -967,7 +949,11 @@ def _correlated_residual(
         else _shared_student_degrees(
             df,
             tuple(
-                arguments_by_response[name][declarations[name].native_parameter(df)]
+                arguments_by_response[name][
+                    "nu"
+                    if responses[name].lens._residual is not None
+                    else declarations[name].native_parameter(df)
+                ]
                 for name in names
             ),
             program.draws,

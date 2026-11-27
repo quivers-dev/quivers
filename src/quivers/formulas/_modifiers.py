@@ -39,8 +39,9 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.let_expr_traversal import substitute_let_expr
 from quivers.dsl.program_templates import draw_argument_expression
-from quivers.formulas._ast import _add, _bind, _call, _div, _let, _mul, _var
+from quivers.formulas._ast import _add, _bind, _call, _div, _let, _mul, _var, row_zero
 from quivers.formulas._kernel import KernelArguments, KernelEmission
+from quivers.formulas._kernel_law import elliptical_family
 from quivers.formulas._observation import WEIGHTS, Observation
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._response_roles import event_option_columns
@@ -718,10 +719,46 @@ class ResidualDependence(Modifier):
         for axis in law.axes():
             emission.declare(axis)
         scale = law.elliptical.scale
+        bindings = arguments.lets
+        if arguments.parameters is None:
+            values = law.arguments("mu", emission.names.get(scale, scale))
+        else:
+            family = elliptical_family(emission.inputs.family)
+            native = dict(zip(arguments.parameters, arguments.values, strict=True))
+            df = law.elliptical.df
+            zeros = "formula_residual_zeros"
+            row = ("response", emission.kernel.row_axis)
+            location_binding, scale_binding = (
+                "formula_residual_loc",
+                "formula_residual_scale",
+            )
+
+            def row_value(quantity: str) -> LetExprNode:
+                """Broadcast an authored scalar or vector over the rows."""
+                value = native[family.native_parameter(quantity)]
+                item = (
+                    _var(value)
+                    if isinstance(value, str)
+                    else LetExprLiteral(value=value)
+                )
+                return _add(item, _var(zeros))
+
+            bindings = (
+                *bindings,
+                row_zero(zeros, row),
+                _let(location_binding, row_value("mu")),
+                _let(scale_binding, row_value(scale)),
+            )
+            values = law.arguments(
+                location_binding,
+                scale_binding,
+                degrees=None if df is None else native[family.native_parameter(df)],
+            )
         return arguments.with_(
             kernel=law.name,
-            values=law.arguments("mu", emission.names.get(scale, scale)),
-            lets=(*arguments.lets, *law.steps(emission.terms)),
+            values=values,
+            parameters=None,
+            lets=(*bindings, *law.steps(emission.terms)),
             factorized=law.factorized,
         )
 
