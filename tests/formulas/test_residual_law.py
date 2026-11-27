@@ -18,6 +18,7 @@ from quivers.diagnostics.regression import bayesian_r2
 from quivers.formulas import bf, fit, formula_to_qvr, lf, nlf, set_rescor
 from quivers.formulas._joint_residual import coordinate, marginal
 from quivers.inference.mcmc import PotentialFn
+from quivers.inference.prior import PriorDraws
 from quivers.inference.registry import LatentRegistry
 
 ROWS = 24
@@ -84,6 +85,61 @@ def test_joint_incl_autocor_false_scores_independent_rows():
         "response_y1__beta_x"
     ].reshape(1, 3, 1) * torch.as_tensor(frame["x"].to_numpy())
     torch.testing.assert_close(means.double(), eta.double(), rtol=1e-5, atol=1e-6)
+
+
+def test_joint_latent_residuals_replay_training_and_sample_fresh_rows():
+    frame = _frame()
+    fitted = fit(
+        bf("n ~ x + cosy(time = t, gr = g)", family="poisson")
+        + bf("y2 ~ x")
+        + set_rescor(False),
+        data=frame,
+        **SVI,
+    )
+    count = 96
+    retained = {
+        site: value[0, 0] for site, value in fitted.draws(num_samples=1).items()
+    }
+    retained["response_n__sderr"] = torch.full_like(retained["response_n__sderr"], 0.6)
+    retained["response_n__cosy"] = torch.full_like(retained["response_n__cosy"], 0.35)
+    retained["response_n__err"] = torch.full_like(retained["response_n__err"], 8)
+    fitted = fitted.with_(
+        posterior=PriorDraws(
+            samples={
+                site: value.expand((1, count, *value.shape)).clone()
+                for site, value in retained.items()
+            },
+            num_samples=count,
+        ),
+        response_fits={},
+    )
+
+    def baseline(rows: pd.DataFrame, draws: int) -> torch.Tensor:
+        intercept = retained["response_n__intercept"]
+        x = torch.as_tensor(rows["x"].to_numpy(copy=True), dtype=intercept.dtype)
+        return (intercept + retained["response_n__beta_x"] * x).expand(1, draws, -1)
+
+    options = {"resp": "n", "num_samples": 4, "seed": 12}
+    train = fitted.posterior_linpred(**options)["n"]
+    train_plain = fitted.posterior_linpred(**options, incl_autocor=False)["n"]
+    torch.testing.assert_close(train, baseline(frame, 4) + 8)
+    torch.testing.assert_close(train_plain, baseline(frame, 4))
+
+    fresh_rows = pd.DataFrame(
+        {"x": [0.1, 0.2, 0.3], "t": [0, 1, 0], "g": ["a", "a", "b"]}
+    )
+    fresh_options = {**options, "new_data": fresh_rows, "num_samples": count}
+    fresh = fitted.posterior_linpred(**fresh_options)["n"]
+    fresh_plain = fitted.posterior_linpred(**fresh_options, incl_autocor=False)["n"]
+    torch.testing.assert_close(fresh_plain, baseline(fresh_rows, count))
+
+    residuals = (fresh - fresh_plain)[0].T
+    expected = 0.6**2 * residuals.new_tensor([[1, 0.35, 0], [0.35, 1, 0], [0, 0, 1]])
+    standard_error = (
+        (expected.diag().outer(expected.diag()) + expected.square()) / (count - 1)
+    ).sqrt()
+    assert torch.all((torch.cov(residuals) - expected).abs() < 6 * standard_error)
+    assert torch.all(residuals.mean(dim=1).abs() < 6 * (expected.diag() / count).sqrt())
 
 
 def test_joint_unstructured_correlation_predicts_new_rows():

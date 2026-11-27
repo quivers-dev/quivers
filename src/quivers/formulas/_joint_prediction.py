@@ -510,10 +510,14 @@ def prepare_joint_prediction(
         rescor=fit.specification.rescor,
         rows=sources,
     )
+    terms = {
+        name: lens._terms(formula, sources[name])
+        for name, (lens, formula) in components.items()
+    }
     fresh_sites = tuple(
         emission.responses[name].names.get(site.name, site.name)
-        for name, (lens, formula) in components.items()
-        for term in lens._terms(formula, sources[name])
+        for name, response_terms in terms.items()
+        for term in response_terms
         for site in term.sites()
         if site.fresh
     )
@@ -551,7 +555,6 @@ def prepare_joint_prediction(
                     observations[
                         response.names[_qvr_name(response.formula.response_name)]
                     ] = response_tensor(response.formula, fit.prepared[label].family)
-            observations |= missing_inputs
         else:
             emission, missing_inputs, _ = apply_missing(
                 emission,
@@ -565,43 +568,42 @@ def prepare_joint_prediction(
     program = compiled.morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("joint prediction requires a native monadic program")
+    parameters = {
+        parameter.name
+        for statement in emission.module.statements
+        if isinstance(statement, ProgramDecl)
+        for parameter in statement.value_parameters
+    }
     if new_data is not None:
-        parameters = {
-            parameter.name
-            for statement in emission.module.statements
-            if isinstance(statement, ProgramDecl)
-            for parameter in statement.value_parameters
-        }
         observations = {
             key: value
             for key, value in emission.fixed_inputs.items()
             if key != JOINT_RESPONSE
         }
-        for name, context in contexts.items():
-            response = emission.responses[name]
+    for name, response in emission.responses.items():
+        if (context := contexts.get(name)) is not None:
             for key, value in context.observations.items():
                 target = response.names.get(key)
                 if target is not None:
                     observations[target] = value
                 elif key in parameters:
                     observations[key] = value
-            lens, formula = components[name]
-            observations.update(
-                {
-                    response.names.get(key, key): value
-                    for key, value in bind_inputs(
-                        (
-                            *law_inputs(lens.group_laws),
-                            *(
-                                item
-                                for term in lens._terms(formula, sources[name])
-                                for item in term.inputs()
-                            ),
-                        )
-                    ).items()
-                    if key in response.names or key in parameters
-                }
-            )
+        # Even retained rows can have different term inputs, such as when
+        # a request excludes latent residuals.
+        lens, _ = components[name]
+        observations.update(
+            {
+                response.names.get(key, key): value
+                for key, value in bind_inputs(
+                    (
+                        *law_inputs(lens.group_laws),
+                        *(item for term in terms[name] for item in term.inputs()),
+                    )
+                ).items()
+                if key in response.names or key in parameters
+            }
+        )
+    if new_data is not None:
         observations.update(
             {
                 f"{_qvr_name(group)}_idx": remap.row_indices
@@ -618,7 +620,8 @@ def prepare_joint_prediction(
                 ),
                 dim=-1,
             )
-        observations |= missing_inputs
+    observations |= missing_inputs
+    if new_data is not None:
         if missing := parameters - set(observations):
             raise ValueError(
                 f"joint prediction left program inputs unbound: {sorted(missing)!r}"
