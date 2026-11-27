@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from enum import Enum
 import operator
 from typing import cast
@@ -1338,6 +1338,32 @@ def _log_density(sampleable: object, value: object) -> object:
     return log_prob(value)
 
 
+def _zero_weight(sampleable: object) -> object:
+    """The zero log weight of a site whose density is not evaluated.
+
+    Parameters
+    ----------
+    sampleable
+        The site's distribution.
+
+    Returns
+    -------
+    object
+        Zero in the numbers of the distribution's run.
+
+    Raises
+    ------
+    InvalidHandlerError
+        If the distribution is not one the machine constructed, whose
+        numbers are known.
+    """
+    if not isinstance(sampleable, RuntimeDistribution):
+        raise InvalidHandlerError(
+            "an unscored observation needs a distribution of the machine's numbers"
+        )
+    return sampleable.numbers.zero()
+
+
 def _emit_score(
     context: ClauseContext,
     request: RuntimeRequest,
@@ -1417,6 +1443,35 @@ def _emit_score(
     )
 
 
+class MissingSiteValue(InvalidHandlerError, KeyError):
+    """A run reached a site it was required to be given a value for.
+
+    A run that scores given values must be given every site it reaches;
+    reaching one it was not given, as a run whose recursion went deeper
+    than the values describe does, is a change of the site set, refused
+    by name.
+
+    Parameters
+    ----------
+    site : object
+        The site.
+    """
+
+    def __init__(self, site: object) -> None:
+        super().__init__(f"missing observation for site {site!r}")
+        self.site = site
+
+    def __str__(self) -> str:
+        """The message, which a key error would otherwise quote.
+
+        Returns
+        -------
+        str
+            The message naming the site.
+        """
+        return f"missing observation for site {self.site!r}"
+
+
 def _occurrence_key(
     site: object,
     occurrence: int,
@@ -1482,6 +1537,7 @@ def condition_handler(
     answer_type: TypeExpr = ANSWER,
     key: str = "condition",
     at_run: Callable[[object, object], object] | None = None,
+    unscored: Collection[object] = (),
 ) -> RuntimeHandler:
     """Supply likelihood observations and emit their densities as Score.
 
@@ -1515,12 +1571,16 @@ def condition_handler(
         Given an observation and the site's sampleable, the value of the
         run being executed, for observations given once for every run of
         a call; ``None`` takes each observation as it is.
+    unscored
+        Sites whose observations are supplied without evaluating their
+        density: each sends a zero to Score, so the site is still observed.
 
     Returns
     -------
     RuntimeHandler
         The attachment, ready to bind into a runtime environment.
     """
+    silent = frozenset(unscored)
     definition = _handler_def(
         "Random.condition",
         RANDOM,
@@ -1584,7 +1644,9 @@ def condition_handler(
             key = _occurrence_key(site, occurrence, observations, "observation")
             if key is None:
                 if missing is MissingValuePolicy.ERROR:
-                    raise InvalidHandlerError(f"missing observation for site {site!r}")
+                    raise MissingSiteValue(
+                        site if occurrence == 0 else f"{site}@{occurrence}"
+                    )
                 return Forward()
             value = observations[key]
             if at_run is not None:
@@ -1596,7 +1658,11 @@ def condition_handler(
                 f"observation {key!r}",
             )
             seen.add(key)
-            weight = _log_density(sampleable, value)
+            weight = (
+                _zero_weight(sampleable)
+                if site in silent
+                else _log_density(sampleable, value)
+            )
             _emit_score(
                 context,
                 request,
@@ -3746,6 +3812,7 @@ def param_handler(
 
 
 __all__ = [
+    "MissingSiteValue",
     "ABORT",
     "ABORT_ABORT",
     "ABORT_EFFECT",

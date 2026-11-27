@@ -31,14 +31,8 @@ from quivers.core.objects import FinSet, ProductSet
 from quivers.dsl import loads
 from quivers.dsl.ast_nodes import LetExprCall, LetExprVar, SchemaDecl, TypeName
 from quivers.dsl.compiler.programs import LetValue, _ProgramsMixin
-from quivers.effects.checked_program import CheckedProgram
 from quivers.enriched.kan_extensions import Projection, left_kan
 from quivers.inference import AutoLaplaceApproximation
-from quivers.qiec.evaluator import Evaluator
-from quivers.qiec.module import QiecModule
-from quivers.qiec.program_runtime import (
-    run_deduction,
-)
 from quivers.monadic.instances import Identity
 from quivers.stochastic.agenda import (
     AgendaResult,
@@ -76,8 +70,7 @@ from tests.evidence.counters import CallCounter
 from tests.evidence.oracles import closed_forms, derivations
 from tests.evidence.oracles.derivations import Variable
 from tests.evidence.problems import logarithm
-from tests.evidence.sources import LEXICAL as LEXICAL_SOURCE
-from tests.evidence.sources import deduction, program
+from tests.evidence.sources import deduction
 
 type Facts = dict[str, str]
 """Named facts."""
@@ -727,104 +720,6 @@ record(
 
 
 # -- the reference machine and the checked program -----------------------
-
-
-def _models_made(module: QiecModule) -> int:
-    """How many records one short run of a deduction validates.
-
-    Parameters
-    ----------
-    module : QiecModule
-        The module.
-
-    Returns
-    -------
-    int
-        The number.
-    """
-    run_deduction(module, "G", tokens=["b"])
-    with CallCounter({"made": dx.Model._validate_instance}) as calls:
-        run_deduction(module, "G", tokens=["b"])
-    return calls.counts["made"]
-
-
-def _unrelated(count: int) -> QiecModule:
-    """A module with unrelated deductions beside the one that is run.
-
-    Parameters
-    ----------
-    count : int
-        The number of unrelated deductions.
-
-    Returns
-    -------
-    QiecModule
-        The module.
-    """
-    extra = "".join(
-        f"""
-deduction X{k} : Term -> Term [semiring=Counting, start=S, depth=1]
-    atoms S, span, a
-    rule join : span(I, K, S), span(K, J, S) |- span(I, J, S)
-    lexicon
-        "a" : S = a
-"""
-        for k in range(count)
-    )
-    module = loads(LEXICAL_SOURCE.replace("SEMIRING", "Counting") + extra).qiec
-    assert module is not None
-    return module
-
-
-def _graph_per_call() -> Facts:
-    """How the records of one run depend on unrelated declarations.
-
-    Returns
-    -------
-    Facts
-        Whether a run with unrelated deductions makes more records.
-    """
-    alone, beside = _models_made(_unrelated(0)), _models_made(_unrelated(4))
-    return {
-        "records of a run grow with unrelated declarations": str(beside > 2 * alone)
-    }
-
-
-record(
-    "module-traversed-per-run",
-    "qiec/program_runtime.py: run_deduction, run_named",
-    "every run rebuilds records of the whole module, so its cost grows with "
-    "declarations it does not use",
-    {"records of a run grow with unrelated declarations": "True"},
-    {"records of a run grow with unrelated declarations": "False"},
-    _graph_per_call,
-)
-
-
-def _checked() -> Facts:
-    """How many machine runs a checked program's joint of three rows makes.
-
-    Returns
-    -------
-    Facts
-        The number of machine runs for three rows.
-    """
-    model = program("recursive").morphism
-    assert isinstance(model, CheckedProgram)
-    data = {"t": torch.tensor([0.5]), "y": torch.tensor([0.5])}
-    with CallCounter({"runs": Evaluator.evaluate_validated}) as calls:
-        model.log_joint(torch.zeros(3, 1), data)
-    return {"machine runs for three rows": str(calls.counts["runs"])}
-
-
-record(
-    "checked-program-runs-per-row",
-    "effects/checked_program.py: CheckedProgram.log_joint",
-    "a checked program's log joint is computed by one machine run per row",
-    {"machine runs for three rows": "3"},
-    {"machine runs for three rows": "1"},
-    _checked,
-)
 
 
 def _nested_marginalize() -> Facts:

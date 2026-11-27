@@ -437,9 +437,15 @@ When a well-typed call cannot be expressed as a chain of steps, the program beco
 [`CheckedProgram`][quivers.effects.checked_program.CheckedProgram] and runs on tensors on the
 reference machine. This includes recursive calls, case analysis, and handlers that remain
 in the computation. MCMC and SVI read site types and addresses from a trace and use the
-program's differentiable log joint. The machine evaluates each run of a call separately.
-An observation is read from the given data. Prior projection and predictive draws require
-declared generative steps. Draw from a program with `sample y <- sub(...)`.
+program's differentiable log joint. A call scores or draws its runs in one pass when the runs
+follow the same control flow and the active handlers permit it. The program reports the number
+of passes and the reason for separate runs. A sampling run that reaches a different set of sites
+from its trace raises an error.
+
+When the program declares a generative law for an observation, predictive sampling draws from
+that law and prior sampling omits the observation. Tempered inference reads the prior and
+observation contributions separately. A score without a generative law is refused by prior and
+predictive sampling. Draw from a program with `sample y <- sub(...)`.
 
 Dynamic transpile targets emit every reachable call. The static targets state an inlined call as
 deterministic statements, Stan also accepts a callee that is a closed, monomorphic scalar

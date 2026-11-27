@@ -955,10 +955,28 @@ def check_prior(name: str, draws: int) -> None:
             lambda p: 1 - (1 - p) ** 2,
             "emission",
         )
+    elif name == "recursive":
+        compare_distribution(samples["t"], _normal_cdf(0.0), "prior t")
     else:
         share = float(samples["a"].double().mean())
         if abs(share - 0.25) > uniform_bound(draws):
             raise Mismatch("value", abs(share - 0.25), f"share {share} of ones")
+
+
+def _normal_cdf(mean: float) -> Callable[[float], float]:
+    """The distribution function of a normal of unit scale.
+
+    Parameters
+    ----------
+    mean : float
+        The mean.
+
+    Returns
+    -------
+    Callable[[float], float]
+        The distribution function.
+    """
+    return lambda value: 0.5 * (1.0 + math.erf((value - mean) / math.sqrt(2.0)))
 
 
 def check_predictive(name: str) -> None:
@@ -1000,6 +1018,11 @@ def check_predictive(name: str) -> None:
         share = float(rows.mean())
         if abs(share - wanted) > uniform_bound(count):
             raise Mismatch("value", abs(share - wanted), f"share {share} of ones")
+    if name == "recursive":
+        # The observation is drawn from its law at the recorded draw: a
+        # normal whose mean the recursion shifts by three.
+        rows = found["y"].double().reshape(-1)
+        compare_distribution(rows, _normal_cdf(0.25 + 3.0), "predictive y")
 
 
 RECORDED: dict[str, dict[str, torch.Tensor]] = {
@@ -1019,6 +1042,7 @@ RECORDED: dict[str, dict[str, torch.Tensor]] = {
         "p_v": torch.tensor([0.5, 0.5], dtype=torch.float64),
     },
     "discrete": {"a": torch.tensor(1.0, dtype=torch.float64)},
+    "recursive": {"t": torch.tensor(0.25, dtype=torch.float64)},
 }
 """One fixed draw of each problem."""
 
@@ -1658,9 +1682,8 @@ def _register() -> None:
             partial(check_registry, name),
         )
         # A score step is a potential of the prior law, which a particle
-        # run refuses to draw from; a checked program's joint states no
-        # factor roles, which tempering reads.
-        if name not in ("parsed", "recursive"):
+        # run refuses to draw from.
+        if name != "parsed":
             add(
                 f"consumer/tempered/{name}",
                 "smc",
@@ -1696,7 +1719,7 @@ def _register() -> None:
                 question,
                 partial(check_objective, name, guide),
             )
-    for name in ("beta", "ungrouped", "hmm", "discrete"):
+    for name in ("beta", "ungrouped", "hmm", "discrete", "recursive"):
         add(
             f"consumer/prior/{name}",
             "prior",
@@ -1710,9 +1733,7 @@ def _register() -> None:
             partial(check_prior, name, 4000),
             slow=True,
         )
-    # A checked program scores its observation as a datum it is given, so
-    # it has no draw of the observation to predict.
-    for name in (name for name in PROBLEMS if name != "recursive"):
+    for name in PROBLEMS:
         add(
             f"consumer/predictive/{name}",
             "predictive",

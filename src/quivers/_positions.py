@@ -35,6 +35,12 @@ is called with the position axis as an explicit leading axis.
 Reading the axis itself. `lift` calls a function written for an explicit
 leading axis, a step's callable declared ``batched`` for instance, with
 that axis leading every value that has one.
+
+Drawing. The mapping draws independently at every position, but a draw
+that fills a tensor in place, as torch's distributions draw, cannot. `draw`
+calls a drawing function beneath the mapping level, with the position
+axis leading every tensor, so its in-place draws fill one entry per
+position.
 """
 
 from __future__ import annotations
@@ -49,10 +55,13 @@ from typing import ParamSpec, Protocol, TypeVar, cast
 import didactic.api as dx
 import torch
 from torch._C._functorch import (
+    _add_batch_dim,
+    _unwrap_batched,
     current_level,
     is_batchedtensor,
     maybe_get_level,
 )
+from torch._functorch.pyfunctorch import temporarily_pop_interpreter_stack
 from torch.autograd.function import FunctionCtx
 from torch.distributions import constraints as _constraints
 from torch.distributions.continuous_bernoulli import ContinuousBernoulli
@@ -667,6 +676,60 @@ def lift(
     for check, valid in zip(recorded, outputs[count:], strict=True):
         frame.add(_Check(valid=valid, defect=check.defect))
     return cast("Result", pytree.tree_unflatten(list(outputs[:count]), spec))
+
+
+def draw(
+    function: Callable[[tuple[torch.Tensor, ...], int | None], torch.Tensor],
+    tensors: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    """Draw independently at every position.
+
+    Outside `map_positions` the function is called as it is, with no
+    position count. Inside it, the function runs beneath the mapping
+    level: every tensor is given with the position axis leading, a value
+    every position shares expanded along it, and the function returns a
+    draw that leads with the position axis, which is mapped again. Every
+    position thus draws its own value however the function draws, in place
+    or not, and the draw keeps the gradient of every tensor.
+
+    Parameters
+    ----------
+    function : Callable[[tuple[torch.Tensor, ...], int | None], torch.Tensor]
+        The drawing function: it receives the tensors and the number of
+        positions, ``None`` outside an evaluation at many positions, and
+        returns a draw that leads with the position axis when there is one.
+    tensors : tuple[torch.Tensor, ...]
+        Its tensors, each of the shape it has at one position.
+
+    Returns
+    -------
+    torch.Tensor
+        The draw at the position.
+
+    Raises
+    ------
+    PositionLayoutError
+        If the draw does not lead with the position axis.
+    """
+    frame = _FRAME.get()
+    if frame is None or current_level() != frame.level:
+        return function(tensors, None)
+    level = frame.level
+    leading: list[torch.Tensor] = []
+    for tensor in tensors:
+        value, axis = _unwrap_batched(tensor, level)
+        leading.append(
+            value.expand(frame.count, *value.shape)
+            if axis is None
+            else value.movedim(axis, 0)
+        )
+    with temporarily_pop_interpreter_stack():
+        drawn = function(tuple(leading), frame.count)
+    if drawn.dim() == 0 or int(drawn.shape[0]) != frame.count:
+        raise PositionLayoutError(
+            f"a draw at {frame.count} positions has shape {tuple(drawn.shape)}"
+        )
+    return _add_batch_dim(drawn, 0, level)
 
 
 def branch(

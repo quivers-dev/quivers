@@ -1,4 +1,4 @@
-"""Conformance of deductions and programs on the reference machine."""
+"""Compare the reference machine with independent oracles and the compiled runtime."""
 
 from __future__ import annotations
 
@@ -12,9 +12,11 @@ from tests.evidence.conformance import parameters, run
     parameters(
         "machine",
         "checked",
+        "equivalence",
         "repeat/machine-lexical",
         "repeat/machine-nonlexical",
         "repeat/machine-chained",
+        "repeat/machine-program",
     ),
 )
 def test_check(name: str) -> None:

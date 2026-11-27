@@ -387,12 +387,38 @@ authored handlers is lowered as any other.
 
 A program that keeps any other call (recursion, an `if` whose branches draw, a handler that is not
 discharged, `case`, static arguments) has no step table the compiler can build. It compiles to a
-[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram]. Each run installs handlers
-for its `Random`, `Score`, and `Param` instances and evaluates the checked computation on
-tensors. Its returned value and log joint retain their gradients. MCMC and SVI build the
-latent registry from a trace, which records the site's sampleable, address, value, and score.
-The program's `refusal` records the located diagnostic of the call the compiler could not
-lower to steps.
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], a `MonadicProgram` with no
+host steps whose body is the program's computation in the checked module. A run installs the
+handlers on the effect handler stack on the module's `random`, `score` and `Param` instances, as a
+run of a compiled program does, and runs the computation on the reference machine with tensor
+numbers and the [tensor backend](../api/continuous/tensor_backend.md). The log joint, a
+reparameterized draw and the returned value keep the gradient of every tensor the run is given, so
+`trace`, `log_joint`, `rsample` and the inference consumers built on them fit such a program; its
+`refusal` keeps the located diagnostic of the call the compiler could not lower.
+
+A run of a checked program may reach different sites from one run to the next: a recursion whose
+depth a draw decides reaches each site of its body once per level. A trace names a label reached
+once by itself and the occurrences of a label reached more than once `"<label>@<n>"`, in the order
+the run reaches them, as a replay addresses them; a score the program adds itself is the
+deterministic site `"score:<path>"`. The latent registry of such a program is read from a run
+(`LatentRegistry.from_trace`), and a run given values for a set of sites must reach exactly those:
+reaching another raises `MissingSiteValue`, and leaving one unreached is refused by the
+conditioning handler, so a sampler never scores a different set of sites without saying so.
+
+The joint of a call with several runs is one pass of the machine over all of them: every value
+given once per run is mapped along the run axis by `quivers._positions.map_positions`. A branch,
+an index into structured values or an item key that differs between the runs cannot be taken once
+for all of them, so the runs are then made one by one; `CheckedProgram.work` counts the passes and
+`CheckedProgram.vectorization_obstacle` says why. A forward call is one pass too, each run drawing
+its own values (`quivers._positions.draw` makes torch's in-place draws beneath the mapping, over
+arguments that lead with the run axis), unless a handler on the stack, a trace for instance, watches
+each run's sites: those runs are made one by one.
+
+Each combination of static arguments, program variant, and installed handler declarations
+gets one specialized wrapper and validated registry. Later calls with the same key reuse both.
+Handlers still receive fresh runtime state and the current data on every call. The evaluator binds
+locals in a persistent [`Scope`](../api/qiec/scope.md), so a pending frame keeps its bindings
+without copying them.
 
 ## Discharging handlers {#discharging-handlers}
 
