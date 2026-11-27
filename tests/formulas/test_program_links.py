@@ -12,19 +12,23 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 import torch
 from torch.distributions import constraints
 
-from quivers.formulas import fit, get_prior
+from quivers.formulas import NonlinearExpression, fit, get_prior
 from quivers.formulas._program_kernel import support_law
 
 from tests.formulas._program_cases import (
     log_joint,
     BOUNDED,
     GAUSS,
+    HALFWIDTH,
+    SIMPLEX,
     frame,
     latent_names,
+    pin,
     run,
 )
 
@@ -136,3 +140,44 @@ def test_a_positive_scale_takes_the_log_link() -> None:
         seed=0,
     )
     assert "let sigma = exp(dpar_sigma_eta)" in fitted.qvr_source
+
+
+def test_a_program_simplex_keeps_its_reference_coordinate() -> None:
+    # Binary fractions keep the Float32 response carrier exact.
+    rows = frame().assign(y=np.arange(-6, 6) / 8)
+    fitted = fit(
+        program=SIMPLEX,
+        parameters={
+            "weights": NonlinearExpression(expression={1: "lo", 2: "hi"}),
+            "lo": "~ 1",
+            "hi": "~ 1",
+        },
+        response="y",
+        data=rows,
+        data2={"halfwidth": HALFWIDTH},
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    logits = torch.tensor([0.0, -0.5, 1.7], dtype=torch.float64)
+    sigma = 0.9
+    actual = (
+        pin(
+            fitted,
+            {
+                "nlpar_lo_intercept": np.array([float(logits[1])]),
+                "nlpar_hi_intercept": np.array([float(logits[2])]),
+                "sigma": np.array([sigma]),
+            },
+        )
+        .log_likelihood()["y"]
+        .reshape(-1)
+    )
+    response = torch.tensor(rows["y"].to_numpy(), dtype=torch.float64)
+    conditional = torch.distributions.Normal(torch.tensor(HALFWIDTH), sigma).log_prob(
+        response[:, None]
+    )
+    expected = torch.logsumexp(conditional + logits.log_softmax(0), dim=-1)
+    torch.testing.assert_close(actual, expected, rtol=1e-10, atol=0.0)
+    wrong = torch.logsumexp(conditional + torch.roll(logits, 1).log_softmax(0), dim=-1)
+    assert float((actual - wrong).abs().max()) > 1e-3
