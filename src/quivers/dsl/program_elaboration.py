@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.dsl._deduction_outcomes import OUTCOME_CALLS, OUTCOME_CODE
+from quivers.qiec.foreign import DEDUCTION_OUTCOME_KEYS
 from quivers.dsl.ast_nodes import (
     CallStep,
     ContinuousConstructor,
@@ -4335,12 +4337,27 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             by a variable, or an argument after the input and the
             optional plate is not a pair of a string label and a value.
         """
-        if not isinstance(expr, LetExprCall) or expr.func != "parse":
+        if not isinstance(expr, LetExprCall) or (
+            expr.func != "parse" and expr.func not in OUTCOME_CALLS
+        ):
             return None
+        outcomes = expr.func in OUTCOME_CALLS
         if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
+            if outcomes:
+                self._fail(
+                    node,
+                    f"{expr.func} needs a deduction, a sentence and an outcome key",
+                    code=OUTCOME_CODE,
+                )
             return None
         target = expr.args[0]
         if target.name not in getattr(self, "_deductions", {}):
+            if outcomes:
+                self._fail(
+                    node,
+                    f"{expr.func} names unknown deduction {target.name!r}",
+                    code=OUTCOME_CODE,
+                )
             return None
         source = expr.args[1]
         if not isinstance(source, LetExprVar):
@@ -4352,7 +4369,34 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         rest = list(expr.args[2:])
         plate: str | None = None
-        if rest and isinstance(rest[0], LetExprVar):
+        key: str | None = None
+        if outcomes:
+            if target.name not in self._outcome_queries:
+                self._fail(
+                    node,
+                    f"{expr.func} requires a direct program let binding",
+                    code=OUTCOME_CODE,
+                )
+            if (
+                not rest
+                or not isinstance(rest[0], LetExprString)
+                or rest[0].value not in DEDUCTION_OUTCOME_KEYS
+            ):
+                self._fail(
+                    node,
+                    f'{expr.func} requires one of "item", "category", or "form" as the outcome key',
+                    code=OUTCOME_CODE,
+                )
+            selector, *rest = rest
+            assert isinstance(selector, LetExprString)
+            key = selector.value
+            if key == "form" and not self._deductions[target.name].uses_forms_cell[0]:
+                self._fail(
+                    node,
+                    f"deduction {target.name!r} has no logical form field",
+                    code=OUTCOME_CODE,
+                )
+        elif rest and isinstance(rest[0], LetExprVar):
             plate = rest[0].name
             rest = rest[1:]
         bindings: list[_ParseBinding] = []
@@ -4384,6 +4428,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             source=source.name,
             plate=plate,
             bindings=tuple(bindings),
+            outcome_key=key,
+            normalize_outcomes=expr.func == "parse_normalized_outcomes",
         )
 
     def _deduction_call(
@@ -4447,10 +4493,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "deduction parses is a program input",
                 code="qiec-program",
             )
-        table: TensorValue | None = None
+        suffix = "run"
+        extra: tuple[Value, ...] = ()
+        if parse.outcome_key is not None:
+            suffix = "outcomes"
+            extra = (
+                LiteralValue(value=parse.outcome_key, type=STRING),
+                LiteralValue(value=parse.normalize_outcomes, type=BOOL),
+            )
         if parse.bindings:
-            table = self._production_table(parse, scope, state, node)
-            signature = self.computation_signatures[f"{name}__weighted_run"]
+            extra = (*extra, self._production_table(parse, scope, state, node))
+            suffix = f"weighted_{suffix}"
+        signature = self.computation_signatures[f"{name}__{suffix}"]
         binder = state.extents.get(f"{source}_extent")
         if binder is None:
             binder = IndexBinder(name=f"{source}_extent", sort=NAT)
@@ -4481,7 +4535,6 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 node,
             ),
         )
-        extra = () if table is None else (table,)
         if rows is None:
             return Call(
                 callee=signature.id,
@@ -4627,16 +4680,27 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 total = self._primitive(
                     "add_real", (total, item), node, (*path, "table", label, "total")
                 )
+            if parse.outcome_key is not None:
+                total = self._primitive(
+                    "positive_parameter",
+                    (total,),
+                    node,
+                    (*path, "table", label, "total"),
+                )
             normalizer = self._primitive(
                 "log", (total,), node, (*path, "table", label, "normalizer")
             )
+            logarithm = "log" if parse.outcome_key is None else "log_probability"
             for position, item in enumerate(probabilities):
                 entries.append(
                     self._primitive(
                         "sub_real",
                         (
                             self._primitive(
-                                "log", (item,), node, (*path, "table", label, position)
+                                logarithm,
+                                (item,),
+                                node,
+                                (*path, "table", label, position),
                             ),
                             normalizer,
                         ),
@@ -4657,7 +4721,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         tokens: Local,
         rows: IndexTerm,
         extent: IndexVariable,
-        extra: tuple[TensorValue, ...],
+        extra: tuple[Value, ...],
         state: _ProgramState,
         node: LetStep,
         origin: SourceOrigin,
@@ -11026,12 +11090,18 @@ class _ParseCall(dx.Model):
         input is a corpus.
     bindings : tuple[_ParseBinding, ...]
         The production probabilities, by left-hand side.
+    outcome_key : str or None
+        One of the structural projections of a full-span goal for an outcome query.
+    normalize_outcomes : bool
+        Whether to normalize the outcome weights by the total goal mass.
     """
 
     deduction: str
     source: str
     plate: str | None
     bindings: tuple[_ParseBinding, ...]
+    outcome_key: str | None = None
+    normalize_outcomes: bool = False
 
 
 def _sampled_support(

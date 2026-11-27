@@ -72,6 +72,7 @@ __all__ = [
     "expected_embedding",
     "fold_derivations",
     "forest_fold",
+    "forest_folds",
     "nonlinear_fold",
 ]
 
@@ -243,8 +244,24 @@ class DerivationForest(ValueModel):
             The items reachable from ``goal`` through premises, with
             their edges, in the same orders.
         """
-        reached = {goal}
-        stack = [goal]
+        return self.below_all((goal,))
+
+    def below_all(self, goals: Sequence[Item]) -> DerivationForest:
+        """The part of the forest used by derivations of any of the goals.
+
+        Parameters
+        ----------
+        goals : Sequence of Item
+            The requested items.
+
+        Returns
+        -------
+        DerivationForest
+            The items reachable from the goals through premises, with their
+            edges, in the same orders.
+        """
+        reached = set(goals)
+        stack = list(reached)
         while stack:
             item = stack.pop()
             for edge in self.edges.get(item, ()):
@@ -695,53 +712,80 @@ def forest_fold(
     ForestRefused
         If the forest has a cycle and no height is given.
     """
+    return forest_folds(forest, (goal,), algebra, value, like=like, height=height)[goal]
 
-    def combine(edge: ForestEdge, children: Sequence[torch.Tensor]) -> torch.Tensor:
-        """The product of the premises' values, then the edge's.
 
-        Parameters
-        ----------
-        edge : ForestEdge
-            The edge.
-        children : Sequence of torch.Tensor
-            The premises' values.
+def forest_folds(
+    forest: DerivationForest,
+    goals: Sequence[Item],
+    algebra: OrderPreservingSemiring,
+    value: Callable[[ForestEdge], torch.Tensor],
+    *,
+    like: torch.Tensor,
+    height: int | None = None,
+) -> dict[Item, torch.Tensor]:
+    """Evaluate linear proof folds sharing one table for all requested items.
 
-        Returns
-        -------
-        torch.Tensor
-            The product.
-        """
-        total = value(edge)
-        if children:
-            total = children[0]
-            for child in children[1:]:
-                total = algebra.tensor_op(total, child)
-            total = algebra.tensor_op(total, value(edge))
-        return total
+    For each incoming edge, the premise occurrences independently choose
+    derivations of their items. Distributivity factors this sum of products
+    into the product of the already-computed premise sums and the edge's
+    value. Repeated occurrences of an item each contribute a factor.
 
-    part = forest.below(goal)
+    Parameters
+    ----------
+    forest : DerivationForest
+        The forest.
+    goals : Sequence of Item
+        The requested items.
+    algebra : OrderPreservingSemiring
+        The algebra of the values.
+    value : Callable[[ForestEdge], torch.Tensor]
+        The value of each edge.
+    like : torch.Tensor
+        The dtype and device of the zero.
+    height : int or None
+        The bound on height, required for a cyclic forest.
+
+    Returns
+    -------
+    dict of Item to torch.Tensor
+        The requested folds, with zero for any goal with no derivation.
+
+    Raises
+    ------
+    ForestRefused
+        If the forest has a cycle and no height is given.
+    """
+    part = forest.below_all(goals)
+
     values: dict[Key, torch.Tensor] = {}
     for level in _levels(part, height):
         for key in level:
             below = _below(key)
             total: torch.Tensor | None = None
             for edge in part.edges.get(key[0], ()):
-                if edge.occurrence is not None:
-                    term = value(edge)
-                else:
-                    if below is not None and below < 0:
-                        continue
-                    premises = [(premise, below) for premise in edge.premises]
-                    if not all(premise in values for premise in premises):
-                        continue
-                    term = combine(edge, [values[premise] for premise in premises])
+                if edge.occurrence is None and below is not None and below < 0:
+                    continue
+                premises = [(premise, below) for premise in edge.premises]
+                if not all(premise in values for premise in premises):
+                    continue
+                weight = value(edge)
+                term = weight
+                if premises:
+                    first, *rest = premises
+                    term = values[first]
+                    for premise in rest:
+                        term = algebra.tensor_op(term, values[premise])
+                    term = algebra.tensor_op(term, weight)
                 total = term if total is None else _join(algebra, total, term)
             if total is not None:
                 values[key] = total
-    goal_key = (goal, height)
-    if goal_key not in values:
-        return algebra.zero_like((), like)
-    return values[goal_key]
+    return {
+        goal: values[(goal, height)]
+        if (goal, height) in values
+        else algebra.zero_like((), like)
+        for goal in goals
+    }
 
 
 # ---------------------------------------------------------------------------

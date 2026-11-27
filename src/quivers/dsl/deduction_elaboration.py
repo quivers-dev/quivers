@@ -64,6 +64,12 @@ from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec._models import QiecModel
 
 from quivers.dsl._deduction_chart import declare_chart, elaborate_chart
+from quivers.dsl._deduction_outcomes import (
+    OUTCOME_CALLS,
+    OutcomeQuery,
+    declare_outcomes,
+    elaborate_outcomes,
+)
 
 from quivers.dsl.ast_nodes import (
     BundleDecl,
@@ -1268,7 +1274,7 @@ def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
             value = getattr(step, "value", None)
             if (
                 isinstance(value, LetExprCall)
-                and value.func == "parse"
+                and (value.func == "parse" or value.func in OUTCOME_CALLS)
                 and value.args
                 and isinstance(value.args[0], LetExprVar)
                 and any(isinstance(argument, LetExprTuple) for argument in value.args)
@@ -1355,6 +1361,7 @@ class _DeductionElaboration:
             not cover.
         """
         self._deductions: dict[str, _System] = {}
+        self._outcome_queries: dict[str, OutcomeQuery] = {}
         declarations = [
             statement
             for statement in self.source.syntax.statements
@@ -1365,6 +1372,16 @@ class _DeductionElaboration:
         declarations.extend(declaration for declaration, _ in schema_parsers)
         if not declarations:
             return
+        outcome_calls = {
+            value.args[0].name: value
+            for statement in self.source.syntax.statements
+            if isinstance(statement, ProgramDecl)
+            for step in statement.draws
+            if isinstance(value := getattr(step, "value", None), LetExprCall)
+            and value.func in OUTCOME_CALLS
+            and value.args
+            and isinstance(value.args[0], LetExprVar)
+        }
         self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
         for declaration in declarations:
@@ -1396,6 +1413,11 @@ class _DeductionElaboration:
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
+            query = outcome_calls.get(declaration.name)
+            if query is not None:
+                self._outcome_queries[declaration.name] = declare_outcomes(
+                    self, system, query
+                )
             if not system.searched:
                 declare_chart(self, system)
             if system.chained:
@@ -2705,7 +2727,7 @@ class _DeductionElaboration:
         threaded = (
             {
                 system.name(suffix): system.name(f"weighted_{suffix}")
-                for suffix in THREADED
+                for suffix in (*THREADED, "outcomes")
             }
             if weighted
             else {}
@@ -2926,6 +2948,18 @@ class _DeductionElaboration:
         if system.depth_cell[0] is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
         normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
+        outcome_query = self._outcome_queries.get(system.decl.name)
+        outcome_entry = (
+            declare(
+                system.name("outcomes"),
+                (extent,),
+                (tokens_type, STRING, BOOL),
+                outcome_query.handler.output_type,
+                outer,
+            )
+            if outcome_query is not None
+            else None
+        )
         if system.normalized_cell[0] and not weighted:
             for index, group in enumerate(system.groups_cell[0]):
                 if len(group.productions) > 1 and any(
@@ -2947,6 +2981,10 @@ class _DeductionElaboration:
         computations: list[NamedComputation] = [
             context.normalizer(signature, group) for signature, group in normalizers
         ]
+        if outcome_query is not None and outcome_entry is not None:
+            computations.append(
+                elaborate_outcomes(context, outcome_query, outcome_entry)
+            )
         if not weighted:
             computations.extend(
                 (

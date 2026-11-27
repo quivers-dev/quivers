@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from itertools import product
+
 import pytest
 import torch
 
-from quivers.core.algebras import REAL
+from quivers.core.algebras import LOG_PROB, REAL
 from quivers.core.laws import FOLD_LINEAR, ClaimSubject, LawClaim, Proved
 from quivers.qiec.contracts import (
     Acyclic,
@@ -20,12 +22,15 @@ from quivers.qiec.contracts import (
     Recursion,
 )
 from quivers.qiec.identifiers import ComputationId
+from quivers.qiec.rules import Item
 from quivers.stochastic.forest import (
+    ForestEdge,
     ForestRefusal,
     ForestRefused,
     build_forest,
     edge_weight,
     forest_fold,
+    forest_folds,
 )
 from quivers.stochastic.planning import (
     FOREST_ALGORITHM,
@@ -168,6 +173,51 @@ def test_forest_fold_agrees_with_the_two_pass_run() -> None:
     )
     assert torch.allclose(folded, value, rtol=1e-12)
     assert forest.size >= len(edges)
+
+
+def test_log_folds_share_premise_values_and_keep_occurrence_multiplicity() -> None:
+    """Three uses of one ambiguous item give independent derivation choices."""
+    edges = [(0, 1), (0, 1), (0, 2), (0, 3), (0, 3)]
+    forest = build_forest(graphs.PRESENTATION, graphs.occurrences(edges))
+    weights = LIKE.new_tensor([-0.4, -1.6, -0.8, -torch.inf, -torch.inf])
+    weights.requires_grad_()
+    inputs: dict[ParameterId | OccurrenceId, torch.Tensor] = {
+        graphs.edge_id(index): weight for index, weight in enumerate(weights.unbind())
+    }
+    first = graphs.node(1)
+    tripled = Item(family=graphs.TRIPLE, arguments=(1,))
+    other = graphs.node(2)
+    impossible = graphs.node(3)
+    goals = (first, tripled, other, impossible)
+    visited: list[ForestEdge] = []
+
+    def weight(edge: ForestEdge) -> torch.Tensor:
+        """Read a weight and count one visit to its edge."""
+        visited.append(edge)
+        return edge_weight(forest, edge, LOG_PROB, inputs, like=LIKE)
+
+    folded = forest_folds(forest, goals, LOG_PROB, weight, like=LIKE)
+    one_proof = weights[2]
+    two_proofs = torch.logsumexp(weights[:2], 0)
+    eight_proofs = torch.logsumexp(
+        torch.stack([sum(path) for path in product(weights[:2], repeat=3)]), 0
+    )
+    expected = torch.stack((two_proofs, eight_proofs, one_proof))
+    actual = torch.stack([folded[goal] for goal in goals[:-1]])
+    assert torch.allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    assert torch.isneginf(folded[impossible])
+
+    # A zero chart row with two -inf inputs adjoins finite alternatives.
+    score = LOG_PROB.join(torch.stack([folded[goal] for goal in goals]), 0)
+    expected_score = torch.logsumexp(expected, 0)
+    (gradient,) = torch.autograd.grad(score, weights, retain_graph=True)
+    (expected_gradient,) = torch.autograd.grad(expected_score, weights)
+    assert torch.allclose(gradient, expected_gradient, rtol=1e-12, atol=1e-12)
+    assert torch.equal(gradient[-2:], weights.new_zeros(2))
+
+    part = forest.below_all(goals)
+    assert len(visited) == sum(len(incoming) for incoming in part.edges.values())
+    assert len(visited) == len(set(visited))
 
 
 def test_an_absent_goal_has_no_derivations() -> None:

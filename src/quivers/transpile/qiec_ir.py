@@ -9,6 +9,7 @@ an opaque JSON side channel.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from enum import Enum
 from typing import Literal, cast
 
@@ -30,6 +31,7 @@ from quivers.qiec import types as ty
 from quivers.qiec.identifiers import SourceOrigin, StableId
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.families import FAMILIES, DistributionFamily
+from quivers.transpile._api import UnsupportedConstruct
 
 
 type IRScalar = None | bool | int | float | str
@@ -2754,6 +2756,8 @@ def lower_qiec_ir(module: QiecModule) -> IRQiecModule:
         The mirror, with the program computations recorded so a renderer
         need not walk every body to find them.
     """
+    module = outcome_target_scope(module)
+    _refuse_outcome_projection(module, "ir")
     reachable = m.reachable_computations(module)
     standalone_deduction_roots = (
         {
@@ -2820,6 +2824,7 @@ def project_for_target(
     IRQiecModule
         The projection.
     """
+    _refuse_outcome_projection(module, target)
     supported = capabilities or capabilities_for_target(target)
     if supported.supports("handle"):
         return lower_qiec_ir(module)
@@ -2882,6 +2887,7 @@ type QiecFeature = Literal[
     "table-map",
     "neural-attachment",
     "search",
+    "deduction-outcomes",
     "reduction",
     "rowwise",
     "cholesky-factor",
@@ -3488,6 +3494,9 @@ def analyze_qiec_capabilities(
     """
     if module_or_ir is None:
         return ()
+    if isinstance(module_or_ir, QiecModule):
+        if native := outcome_capability_diagnostics(module_or_ir, target):
+            return native
     module = (
         module_or_ir
         if isinstance(module_or_ir, IRQiecModule)
@@ -3666,6 +3675,102 @@ def _core_host_runtime_root_ids(module: QiecModule) -> frozenset[StableId]:
     )
 
 
+def _outcome_dependents(module: QiecModule) -> frozenset[StableId]:
+    """Find every computation or handler that needs the native chart."""
+    pending: list[StableId] = [
+        handler.id
+        for handler in module.handlers
+        if isinstance(handler.foreign, fo.DeductionOutcomes)
+    ]
+    if not pending:
+        return frozenset()
+    dependents: dict[StableId, set[StableId]] = defaultdict(set)
+
+    def register(owner: StableId, body: tm.Computation) -> None:
+        """Record incoming dependencies of one body."""
+        for dependency in (*m.called_computations(body), *m.installed_handlers(body)):
+            dependents[dependency].add(owner)
+
+    for computation in module.computations:
+        register(computation.id, computation.body)
+    for handler in module.handlers:
+        for clause in handler.clauses:
+            if clause.body is not None:
+                register(handler.id, clause.body)
+        if handler.return_clause is not None:
+            register(handler.id, handler.return_clause.body)
+    found = set(pending)
+    while pending:
+        for dependent in dependents[pending.pop()] - found:
+            found.add(dependent)
+            pending.append(dependent)
+    return frozenset(found)
+
+
+def outcome_target_scope(module: QiecModule, selected: str | None = None) -> QiecModule:
+    """Omit native-only declarations when the selected program cannot use them."""
+    affected = _outcome_dependents(module)
+    if not affected or any(
+        entry.computation in affected
+        for entry in module.entries
+        if selected is None or selected == entry.name
+    ):
+        return module
+    return module.with_(
+        entries=tuple(
+            entry for entry in module.entries if entry.computation not in affected
+        ),
+        computations=tuple(
+            computation
+            for computation in module.computations
+            if computation.id not in affected
+        ),
+        handlers=tuple(
+            handler for handler in module.handlers if handler.id not in affected
+        ),
+    )
+
+
+def outcome_capability_diagnostics(
+    module: QiecModule, target: str
+) -> tuple[QiecCapabilityDiagnostic, ...]:
+    """Locate programs that call native-only packed chart queries."""
+    affected = _outcome_dependents(module)
+    roots = {entry.computation for entry in module.entries} & affected
+
+    def origin(computation: m.NamedComputation) -> SourceOrigin:
+        """Find the first source call that leads to the native chart."""
+        pending: list[object] = [computation.body]
+        visited: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if id(node) in visited:
+                continue
+            visited.add(id(node))
+            if isinstance(node, tm.Call) and node.callee in affected:
+                return node.origin
+            pending.extend(reversed(m._children(node)))
+        return computation.origin
+
+    return tuple(
+        QiecCapabilityDiagnostic(
+            target=target,
+            feature="deduction-outcomes",
+            computation=computation.name,
+            origin=cast(IRQiecSourceOrigin, _convert(origin(computation))),
+            detail="has no checked runtime for packed deduction outcomes",
+        )
+        for computation in module.computations
+        if computation.id in roots
+    )
+
+
+def _refuse_outcome_projection(module: QiecModule, target: str) -> None:
+    diagnostics = outcome_capability_diagnostics(module, target)
+    if diagnostics:
+        raise UnsupportedConstruct(f"qvr-{target}", [item.kind for item in diagnostics])
+
+
 def host_runtime_capability_diagnostics(
     module_or_ir: QiecModule | IRQiecModule,
     target: str,
@@ -3707,7 +3812,7 @@ def host_runtime_capability_diagnostics(
         if not candidates:
             return ()
         roots = _core_host_runtime_root_ids(module_or_ir)
-        diagnostics: list[QiecCapabilityDiagnostic] = []
+        diagnostics = list(outcome_capability_diagnostics(module_or_ir, target))
         for computation in candidates:
             if computation.id not in roots:
                 continue

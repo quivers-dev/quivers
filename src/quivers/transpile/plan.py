@@ -112,7 +112,10 @@ from quivers.qiec.types import (
 import didactic.api as dx
 
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.qiec_ir import host_runtime_capability_diagnostics
+from quivers.transpile.qiec_ir import (
+    host_runtime_capability_diagnostics,
+    outcome_target_scope,
+)
 from quivers.transpile._expand_composites import expand_composite_lets
 from quivers.transpile.family_meta import (
     FAMILY_META,
@@ -212,11 +215,18 @@ class _TargetPreparation:
         The selected target.
     """
 
-    def __init__(self, module: QiecModule, source: Module, target: str) -> None:
-        self.module = module
+    def __init__(
+        self,
+        module: QiecModule,
+        source: Module,
+        target: str,
+        *,
+        selected: str | None = None,
+    ) -> None:
+        self.module = _select_outcome_scope(module, source, selected)
         self.source = source
         self.target = target
-        self.discharged: DischargedModule = discharge_module(module)
+        self.discharged: DischargedModule = discharge_module(self.module)
         self._projection: IRQiecModule | None = None
 
     @property
@@ -3046,8 +3056,17 @@ def checked_module(
         ) from error
     validate_module(qiec_module)
     if require_target_runtime:
-        _refuse_host_runtime_calls(qiec_module, target)
+        _refuse_host_runtime_calls(_select_outcome_scope(qiec_module, module), target)
     return qiec_module
+
+
+def _select_outcome_scope(
+    module: QiecModule, source: Module, selected: str | None = None
+) -> QiecModule:
+    """Restrict the native chart capability check to the selected export."""
+    if not module.entries:
+        return module
+    return outcome_target_scope(module, selected or pick_program(source).name)
 
 
 #: A diagnostic that leads with a structured kind, `family:X: ...` or
@@ -3280,7 +3299,9 @@ def program_plan(
     IRProgram
         The plan.
     """
-    return _Planner(_TargetPreparation(module, source, target), source).plan(program)
+    return _Planner(
+        _TargetPreparation(module, source, target, selected=program.name), source
+    ).plan(program)
 
 
 def checked_program_plan(

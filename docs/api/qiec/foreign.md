@@ -12,6 +12,8 @@ from that statement and from nothing else, in particular never from the handler'
 - [`Enumeration`][quivers.qiec.foreign.Enumeration]: an enumeration of a finite draw.
 - [`Settlement`][quivers.qiec.foreign.Settlement]: the stop of an iteration, answered with its value
   only when the stop certifies it.
+- [`DeductionOutcomes`][quivers.qiec.foreign.DeductionOutcomes] folds a finite packed lexical
+  chart in `LogProb` and groups full-span goal masses by a structural key.
 
 A [`KernelSemiring`][quivers.qiec.foreign.KernelSemiring] names a member of the
 [algebra hierarchy](../core/algebras.md) by the subject of its [law claims](contracts.md#law-claims)

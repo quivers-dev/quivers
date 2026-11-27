@@ -52,9 +52,20 @@ from quivers.core.laws import (
 )
 from quivers._positions import demand
 from quivers.qiec._models import QiecModel
+from quivers.qiec.contracts import ParameterId
+from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.numbers import NumberDomain, machine_value
 from quivers.qiec.canonical import LOG_WEIGHT
-from quivers.qiec.types import BOOL, INT, REAL as REAL_TYPE, TypeExpr
+from quivers.qiec.types import (
+    BOOL,
+    INT,
+    REAL as REAL_TYPE,
+    STRING,
+    IndexTerm,
+    IndexVariable,
+    TypeApplication,
+    TypeExpr,
+)
 
 KERNEL_ALGEBRAS: Mapping[str, Semiring] = MappingProxyType(
     {
@@ -517,11 +528,152 @@ class Settlement(QiecModel):
     tag: Literal["settlement"] = "settlement"
 
 
-type ForeignSemantics = SemiringSum | SemiringProduct | Enumeration | Settlement
+DEDUCTION_OUTCOME_KEYS = frozenset({"item", "category", "form"})
+
+
+class DeductionOutcomes(QiecModel):
+    """A finite lexical LogProb chart returning typed weighted outcomes.
+
+    The operation receives a token tensor, the corresponding lexical
+    entries' category and optional form values in lexicon order, the log
+    weights of those entries and the listed rule parameters, and the
+    structural key and normalization choices. Lexical occurrences have
+    positive width one. A rule combines at least two contiguous positive
+    spans and has no other premises, so every premise is narrower than
+    its conclusion and a finite sentence generates a finite acyclic chart.
+
+    Parameters
+    ----------
+    presentation
+        The checked `RulePresentation`. Its model base in the annotation
+        keeps the rule checker's dependency on effects acyclic at import.
+    words
+        One word per lexical row, preserving distinct occurrences.
+    parameters
+        Rule parameters supplied after the lexical weights, in order.
+    span
+        The name of the single lexical judgment and corresponding item
+        constructor, whose fields are the endpoints, category, and any form.
+    start
+        The start category, or ``None`` to accept all full-span items.
+    item_type
+        The runtime constructor family for the span and its data fields.
+    item_constructors
+        Source names and constructor identities of that family.
+    empty, entry
+        The constructors of the result family. An entry has a key of
+        ``item_type``, its log weight as ``Real``, and the remaining entries.
+    """
+
+    presentation: QiecModel = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    words: tuple[str, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    parameters: tuple[ParameterId, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    span: str
+    start: str | None = None
+    item_type: TypeApplication = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    item_constructors: tuple[tuple[str, ConstructorId], ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    empty: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    entry: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["deduction-outcomes"] = "deduction-outcomes"
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Verify that the carried presentation satisfies the finite span contract.
+
+        Raises
+        ------
+        ValueError
+            If the presentation, lexical slot, rule spans or weight address
+            mapping fall outside this fragment.
+        """
+        from quivers.qiec.kinds import NAT, IndexBinder, UserIndexSort
+        from quivers.qiec.rules import RulePresentation
+
+        presentation = self.presentation
+        if not isinstance(presentation, RulePresentation):
+            raise ValueError("deduction outcomes require a checked rule presentation")
+        if presentation.conditions or presentation.equations:
+            raise ValueError(
+                "deduction outcomes require unconditional rules without proof equations"
+            )
+        if len(presentation.judgments) != 1 or len(presentation.axioms) != 1:
+            raise ValueError("deduction outcomes require one lexical span judgment")
+        (form,) = presentation.judgments
+        (slot,) = presentation.axioms
+        sorts = tuple(
+            binder.sort for binder in form.indices if isinstance(binder, IndexBinder)
+        )
+        if (
+            form.name != self.span
+            or len(sorts) not in (3, 4)
+            or sorts[:2] != (NAT, NAT)
+            or not all(isinstance(sort, UserIndexSort) for sort in sorts[2:])
+            or slot.judgment.family != form.id
+            or tuple(field.type for field in slot.values) != (STRING,)
+        ):
+            raise ValueError("deduction outcomes require one lexical span judgment")
+        bindings = tuple(
+            index.name
+            for index in slot.judgment.arguments
+            if isinstance(index, IndexVariable)
+        )
+        if len(bindings) != len(sorts) or bindings != tuple(
+            binder.name for binder in slot.telescope
+        ):
+            raise ValueError(
+                "deduction outcome axioms must bind ordered span arguments"
+            )
+        names = dict(self.item_constructors)
+        if (
+            self.span not in names
+            or len(names) != len(self.item_constructors)
+            or len(set(names.values())) != len(names)
+            or self.entry == self.empty
+        ):
+            raise ValueError("deduction outcomes require distinct typed constructors")
+        parameters = {
+            rule.weight for rule in presentation.rules if rule.weight is not None
+        }
+        if (
+            len(set(self.parameters)) != len(self.parameters)
+            or set(self.parameters) != parameters
+            or slot.weight is not None
+        ):
+            raise ValueError(
+                "deduction outcomes require exactly the rule weight addresses"
+            )
+        for rule in presentation.rules:
+            start, end = rule.conclusion.arguments[:2]
+            path: list[IndexTerm] = [start]
+            for premise in rule.premises:
+                left, right = premise.judgment.arguments[:2]
+                if left != path[-1] or premise.hypotheses:
+                    break
+                path.append(right)
+            if (
+                len(rule.premises) < 2
+                or rule.values
+                or len(path) != len(rule.premises) + 1
+                or path[-1] != end
+                or not all(isinstance(position, IndexVariable) for position in path)
+                or len(set(path)) != len(path)
+            ):
+                raise ValueError(
+                    f"deduction outcome rule {rule.name!r} must combine "
+                    "two or more contiguous spans in premise order"
+                )
+
+
+type ForeignSemantics = (
+    SemiringSum | SemiringProduct | Enumeration | Settlement | DeductionOutcomes
+)
 """What a foreign handler computes."""
 
 
 __all__ = [
+    "DeductionOutcomes",
     "EXACT_COUNT",
     "Enumeration",
     "EnumerationReduction",
