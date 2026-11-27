@@ -393,8 +393,9 @@ def test_the_compiled_program_runs_the_callee_in_place(source_path: Path) -> Non
         },
     )
     assert joint.shape == (2,)
-    assert float(joint[0]) == pytest.approx(run.log_joint, rel=1e-5)
-    assert float(joint[1]) == pytest.approx(run.log_joint, rel=1e-5)
+    reference_joint = float(run.log_joint)
+    assert float(joint[0]) == pytest.approx(reference_joint, rel=1e-5)
+    assert float(joint[1]) == pytest.approx(reference_joint, rel=1e-5)
     assert program.morphism.observed_names == {"y"}
     sampled = program.morphism.rsample(
         torch.zeros(1, 1), torch.Size([3]), observations={"y": torch.tensor(DATA)}
