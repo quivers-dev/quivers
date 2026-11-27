@@ -128,6 +128,9 @@ def restore_joint(manifest: dict, codec: _Codec) -> MultivariateFit:
     specification = bound.arguments["formula"]
     if not isinstance(specification, MultivariateFormula):
         raise TypeError("a joint artifact must retain a MultivariateFormula")
+    policy = bound.arguments["default_priors"]
+    if policy != "quivers":
+        specification = specification.with_default_priors(policy)
     recipe = cast(
         RefitRecipe[IntoDataFrame, Mapping[str, object], MultivariateFit],
         capture_recipe(
