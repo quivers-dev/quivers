@@ -2421,7 +2421,7 @@ class JointPostprocess(_PostprocessCore):
         return frozenset(
             aux.name
             for name in fit.response_names
-            for aux in fit._response_fit(name).family.aux_params
+            for aux in fit.prepared[name].family.aux_params
         )
 
     def _pp_describe(self) -> tuple[str, str]:
@@ -2437,7 +2437,7 @@ class JointPostprocess(_PostprocessCore):
             fit.specification.responses[name].formula for name in fit.response_names
         )
         families = ", ".join(
-            fit._response_fit(name).family.name for name in fit.response_names
+            fit.prepared[name].family.name for name in fit.response_names
         )
         return formulas, families
 
@@ -2467,10 +2467,10 @@ class JointPostprocess(_PostprocessCore):
         residuals = {
             name: scale.name
             for name in fit.response_names
-            if (scale := fit._response_fit(name).family.residual_scale) is not None
+            if (scale := fit.prepared[name].family.residual_scale) is not None
         }
         if any(
-            scale in fit._response_fit(name).distributional
+            scale in fit.emission.responses[name].lens._distributional
             for name, scale in residuals.items()
         ):
             return None
@@ -2668,7 +2668,7 @@ class JointPostprocess(_PostprocessCore):
         return {
             name: summarize_prediction(
                 value,
-                categories=fit._response_fit(name).category_labels,
+                categories=fit._predictor_readout(name).category_labels,
                 discrete_table=self._pp_categorical(name),
                 probs=probs,
                 robust=robust,
@@ -2726,7 +2726,9 @@ class JointPostprocess(_PostprocessCore):
             draws = self._pp_prediction(
                 "posterior_epred", resp, options, draw_ids=draw_ids
             )
-            labels = {name: fit._response_fit(name).category_labels for name in draws}
+            labels = {
+                name: fit._predictor_readout(name).category_labels for name in draws
+            }
         else:
             name_ = parameter or "mu"
             draws = self._pp_prediction(
@@ -2738,7 +2740,8 @@ class JointPostprocess(_PostprocessCore):
                 transform=scale == "response",
             )
             labels = {
-                name: fit._response_fit(name).predictor_labels(name_) for name in draws
+                name: fit._predictor_readout(name).predictor_labels(name_)
+                for name in draws
             }
         if not summary:
             return draws

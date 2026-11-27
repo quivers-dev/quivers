@@ -27,7 +27,8 @@ from quivers.diagnostics import (
     predictive_interval,
 )
 from quivers.diagnostics.posterior_tables import SummaryTable
-from quivers.formulas import BayesianFit, fit
+from quivers.dsl import Compiler
+from quivers.formulas import BayesianFit, fit, set_rescor
 from quivers.formulas._multivariate import bf
 from quivers.formulas._postprocess_names import brms_rename
 from quivers.formulas._postprocess_summary import (
@@ -710,6 +711,51 @@ def test_joint_fit_tables(frame: pd.DataFrame) -> None:
         data["y2"].to_numpy(), dtype=torch.float64
     ) - joint.posterior_epred(resp="y2", num_samples=20)["y2"].to(torch.float64)
     np.testing.assert_allclose(residuals["y2"].numpy(), expected.numpy(), rtol=1e-12)
+
+
+def test_joint_prediction_tables_read_fitted_labels_without_compiling(
+    frame, monkeypatch
+):
+    categories = ("blue", "green", "red")
+    data = frame.assign(
+        r=frame["r"].astype(int),
+        category=pd.Categorical(
+            np.resize(categories, len(frame)), categories=categories
+        ),
+    )
+    joint = fit(
+        bf("y ~ x")
+        + bf("r ~ x", family="cumulative")
+        + bf("category ~ x", family="categorical")
+        + set_rescor(False),
+        data=data,
+        method="svi",
+        num_steps=1,
+    )
+
+    def reject_compilation(*args, **kwargs):
+        pytest.fail("joint training tables should read fitted metadata")
+
+    monkeypatch.setattr(Compiler, "compile", reject_compilation)
+    assert "sigma" in joint._pp_dpars()
+    assert joint._pp_describe() == (
+        "y ~ x + r ~ x + category ~ x",
+        "gaussian, cumulative, categorical",
+    )
+    sigma = torch.ones(1, 3)
+    scales, pairs = joint._pp_residual({"sigma_y": sigma})
+    assert len(scales) == 1 and scales[0][0] == "y" and scales[0][1] is sigma
+    assert pairs is None
+
+    predicted = joint.predict(num_samples=3, seed=1)
+    assert tuple(predicted["category"].columns) == tuple(
+        f"P(Y = {label})" for label in categories
+    )
+    means = joint.fitted(num_samples=3, seed=1)
+    assert means["r"].components == (0, 1, 2, 3)
+    assert means["category"].components == categories
+    linear = joint.fitted(resp="category", scale="linear", num_samples=3, seed=1)
+    assert linear["category"].components == categories
 
 
 def test_criteria_survive_artifact_round_trip(
