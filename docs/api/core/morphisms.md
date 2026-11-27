@@ -16,6 +16,8 @@ identifies arcs by position in the arc table, so parallel arcs contribute separa
 they read the same symbols and use the same weight slot. Initial and final states have explicit
 weights. Every slot must belong to the declared semiring carrier. The relation checks the
 current weight vector each time it reads the vector for evaluation.
+The [QIEC codec](../qiec/serialization.md#sparse-relations) records the topology and
+weight identities for later runtime binding.
 
 For a fixed tuple of $k$ words, a query state consists of a machine state and $k$ positions in
 the observed words. An arc labeled with a symbol on a tape advances that tape only if the symbol

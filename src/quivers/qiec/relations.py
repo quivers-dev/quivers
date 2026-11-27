@@ -1,0 +1,207 @@
+"""Stable sparse relation specifications and their process-local weight bindings."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from functools import cached_property
+from typing import cast
+
+import didactic.api as dx
+import torch
+from torch import nn
+
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.core.algebras import Semiring
+from quivers.core.laws import ClaimSubject
+from quivers.core.objects import FinSet, StringSet
+from quivers.core.relations import (
+    Arc,
+    Boundary,
+    Label,
+    RationalRelation,
+    RelationTopology,
+)
+from quivers.qiec._models import QiecModel
+from quivers.qiec.contracts import ParameterId
+from quivers.qiec.foreign import KERNEL_ALGEBRAS
+
+
+class _RelationWeights(nn.Module):
+    def __init__(
+        self,
+        slots: tuple[ParameterId, ...],
+        values: Mapping[ParameterId, torch.Tensor],
+    ) -> None:
+        super().__init__()
+        self._slots = tuple(f"weight_{id_.digest}" for id_ in slots)
+        for id_, value in values.items():
+            name = f"weight_{id_.digest}"
+            if isinstance(value, nn.Parameter):
+                self.register_parameter(name, value)
+            else:
+                self.register_buffer(name, value)
+
+    def forward(self) -> torch.Tensor:
+        if not self._slots:
+            return torch.empty(0)
+        return torch.stack(
+            [cast(torch.Tensor, getattr(self, name)) for name in self._slots]
+        )
+
+
+class RationalRelationSpec(QiecModel):
+    """An ordered sparse topology with a stable parameter identity for each slot.
+
+    Tape records contain the alphabet's nominal name and cardinality,
+    in tape order. Arc records contain source, target, labels, and a
+    weight slot, in occurrence order. Initial and final records contain
+    a state and a weight slot. A label of None denotes epsilon.
+
+    The order of `weight_names` names the local slots. The corresponding
+    entries of `weight_parameters` can repeat a ParameterId. This ties
+    weight values without identifying arc or boundary occurrences.
+    `algebra` states the trusted claim subject of a shipped scalar semiring.
+    Live values are supplied to `bind` after decoding.
+    """
+
+    tapes: tuple[tuple[str, int], ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    input_tapes: int
+    n_states: int
+    arcs: tuple[tuple[int, int, tuple[Label, ...], int], ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    initial: tuple[tuple[int, int], ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    final: tuple[tuple[int, int], ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    weight_names: tuple[str, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    weight_parameters: tuple[ParameterId, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    algebra: ClaimSubject
+
+    @dx.model_validator()
+    def _validate_spec(self) -> None:
+        if self._algebra is None:
+            raise ValueError(
+                "relation requires a trusted scalar semiring claim subject"
+            )
+        if len(self.weight_parameters) != len(self.weight_names):
+            raise ValueError("relation requires one parameter identity per weight slot")
+        _ = self.topology
+
+    @property
+    def _algebra(self) -> Semiring | None:
+        member = KERNEL_ALGEBRAS.get(self.algebra.name)
+        return member if member is not None and member.subject == self.algebra else None
+
+    @classmethod
+    def of(
+        cls,
+        topology: RelationTopology,
+        algebra: Semiring,
+        weight_parameters: tuple[ParameterId, ...],
+    ) -> RationalRelationSpec:
+        """Describe a sparse topology and its weight identities as QIEC data.
+
+        The topology uses the shipped string sets, finite alphabets, arcs
+        and boundaries. The algebra must be a shipped scalar semiring
+        singleton from the kernel registry.
+        """
+        if (
+            type(topology) is not RelationTopology
+            or any(
+                type(tape) is not StringSet or type(tape.alphabet) is not FinSet
+                for tape in topology.tapes
+            )
+            or any(type(arc) is not Arc for arc in topology.arcs)
+            or any(
+                type(mark) is not Boundary
+                for mark in (*topology.initial, *topology.final)
+            )
+        ):
+            raise TypeError("relation topology uses an unsupported representation")
+        if (
+            not isinstance(algebra, Semiring)
+            or KERNEL_ALGEBRAS.get(algebra.subject.name) is not algebra
+        ):
+            raise TypeError("relation requires a shipped scalar semiring")
+        return cls(
+            tapes=tuple(
+                (tape.alphabet.name, tape.alphabet.cardinality)
+                for tape in topology.tapes
+            ),
+            input_tapes=topology.input_tapes,
+            n_states=topology.n_states,
+            arcs=tuple(
+                (arc.source, arc.target, arc.labels, arc.weight)
+                for arc in topology.arcs
+            ),
+            initial=tuple((mark.state, mark.weight) for mark in topology.initial),
+            final=tuple((mark.state, mark.weight) for mark in topology.final),
+            weight_names=topology.weight_names,
+            weight_parameters=weight_parameters,
+            algebra=algebra.subject,
+        )
+
+    @cached_property
+    def topology(self) -> RelationTopology:
+        """The validated topology, including its sparse indexes."""
+        return RelationTopology(
+            tapes=tuple(
+                StringSet(alphabet=FinSet(name=name, cardinality=size))
+                for name, size in self.tapes
+            ),
+            input_tapes=self.input_tapes,
+            n_states=self.n_states,
+            arcs=tuple(Arc(*record) for record in self.arcs),
+            initial=tuple(Boundary(*record) for record in self.initial),
+            final=tuple(Boundary(*record) for record in self.final),
+            weight_names=self.weight_names,
+        )
+
+    def bind(self, parameters: Mapping[ParameterId, torch.Tensor]) -> RationalRelation:
+        """Bind original scalar leaves by stable identity and return a live relation.
+
+        Values must be dense scalar leaf tensors in the algebra's
+        carrier, with a common dtype and device. Trainable values must
+        be original torch.nn.Parameter objects. Each distinct identity
+        binds one object, and shared slots must use the same identity.
+        The mapping may also provide identities for other relations.
+        """
+        if not isinstance(parameters, Mapping):
+            raise TypeError("relation weights require an explicit parameter mapping")
+        values: dict[ParameterId, torch.Tensor] = {}
+        for id_ in dict.fromkeys(self.weight_parameters):
+            if id_ not in parameters:
+                raise ValueError(f"missing relation parameter {id_}")
+            value = parameters[id_]
+            if (
+                type(value) not in (torch.Tensor, nn.Parameter)
+                or value.ndim != 0
+                or not value.is_leaf
+                or value.layout != torch.strided
+                or value.device.type == "meta"
+                or value.is_quantized
+            ):
+                raise TypeError(
+                    f"relation parameter {id_} requires a dense scalar leaf tensor"
+                )
+            if value.requires_grad and not isinstance(value, nn.Parameter):
+                raise TypeError(
+                    f"trainable relation parameter {id_} requires torch.nn.Parameter"
+                )
+            values[id_] = value
+        if len({id(value) for value in values.values()}) != len(values):
+            raise ValueError(
+                "shared relation weights must use the same parameter identity"
+            )
+        if len({(value.dtype, value.device) for value in values.values()}) > 1:
+            raise ValueError("relation parameters require a common dtype and device")
+        algebra = self._algebra
+        assert algebra is not None  # Checked when constructing the specification.
+        weights = _RelationWeights(self.weight_parameters, values)
+        with torch.no_grad():
+            algebra.validate(weights())
+        return RationalRelation(self.topology, weights, algebra=algebra)
+
+
+__all__ = ["RationalRelationSpec"]
