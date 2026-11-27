@@ -330,6 +330,9 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/value/fifo/logprob/equal_proofs",
             "deduction/outcomes/fifo",
             "span/chart-parser/logprob/none",
+            "partition/machine-lexical",
+            "partition/agenda-fifo",
+            "partition/einsum-wiring",
         ),
         min_effect=0.016,
     ),
@@ -397,6 +400,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "deduction/gradient/fifo/logprob/reach",
             "deduction/gradient/fifo/counting/ambiguous",
             "deduction/gradient/lifo/logprob/high_arity",
+            "partition/agenda-fifo",
         ),
         min_effect=1.0,
     ),
@@ -445,6 +449,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         rejected_by=(
             "contraction/gradient/real/chain",
             "contraction/gradient/markov/triangle",
+            "partition/einsum-wiring",
         ),
         min_effect=1.0,
     ),
@@ -872,6 +877,29 @@ MUTATIONS: tuple[Mutation, ...] = (
         min_effect=1.0,
     ),
     Mutation(
+        name="partition-floors-zero-mass",
+        defect_class="support",
+        provenance="an all-zero partition gets a finite log floor",
+        target=f"{ALGEBRAS}:LogProbAlgebra.join",
+        rewrites=(
+            Rewrite(
+                old='torch.full_like(total, -float("inf"))',
+                new="torch.full_like(total, -100.0)",
+            ),
+        ),
+        rejected_by=("partition/machine-lexical", "partition/einsum-wiring"),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="partition-drops-a-lexical-choice",
+        defect_class="omitted alternative",
+        provenance="the V lexical row for a is keyed by another word",
+        target="source:weighted-lexical",
+        rewrites=(Rewrite(old='"a" : V = a', new='"c" : V = a'),),
+        rejected_by=("partition/machine-lexical", "partition/agenda-fifo"),
+        min_effect=0.1,
+    ),
+    Mutation(
         name="log-weights-exponentiated",
         defect_class="scaling",
         provenance="a sum in the linear domain",
@@ -1012,6 +1040,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         also_in=(EXECUTION,),
         rejected_by=(
             "machine/gradient/lexical/logprob",
+            "partition/machine-lexical",
             "machine/gradient/nonlexical/logprob",
         ),
         min_effect=1.0,
