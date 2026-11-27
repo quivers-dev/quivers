@@ -231,7 +231,8 @@ def test_a_template_entry_takes_its_extent_as_a_static_argument() -> None:
     assert entry.statics == ("K",)
     seed_reference_rng(3)
     run = invoke_entry(module, "school_effects", (0.6,), static_arguments=("K=8",))
-    assert isinstance(run.value, tuple) and len(run.value) == 8
+    assert isinstance(run.value, torch.Tensor)
+    assert run.value.shape == (8,)
     assert render_static(run.result.result_type) == "Tensor[Real]([8])"
     assert run.log_joint is not None
     with pytest.raises(ExecutionFailure) as failure:
@@ -279,7 +280,9 @@ def test_cli_lists_and_runs_entry_points(source_path: Path, capsys) -> None:
     module = Compiler(parse(SOURCE)).qiec_module
     assert module is not None
     expected = invoke_entry(module, "prog", (DATA,), sites={"a": 0.5}, seed=0)
-    assert payload["value"] == expected.value
+    assert isinstance(expected.value, torch.Tensor) and expected.value.shape == ()
+    scalar = expected.value.item()
+    assert payload["value"] == scalar
     assert payload["log_joint"] == expected.log_joint
 
     by_name = _run_args(
@@ -292,7 +295,7 @@ def test_cli_lists_and_runs_entry_points(source_path: Path, capsys) -> None:
     )
     assert run_main(by_name) == 0
     line = capsys.readouterr().out
-    assert line.startswith(f"prog = {expected.value!r} : Real  log_joint = ")
+    assert line.startswith(f"prog = {scalar!r} : Real  log_joint = ")
 
     assert (
         run_main(_run_args(source_path, computation="shift", arguments=["1", "2.5"]))
