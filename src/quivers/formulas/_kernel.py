@@ -1112,6 +1112,16 @@ class KernelHost(Protocol):
         """
         ...
 
+    def place_names(self, names: ProgramNames) -> None:
+        """Name columns and bindings as a placed nested block names them.
+
+        Parameters
+        ----------
+        names : ProgramNames
+            The block's names, in the model's names.
+        """
+        ...
+
     @property
     def supplied(self) -> Mapping[tuple[str, str, str], LetExprNode]:
         """The group coefficients another program emits.
@@ -1190,8 +1200,6 @@ class KernelEmission:
         Group-block laws of the nested blocks, in the model's names.
     catalogs : list[FamilyCatalog]
         Laws the terms of the nested blocks draw from.
-    program_names : ProgramNames
-        Names of the nested blocks' columns and bindings.
     placed : dict[str, PlacedBlock]
         Nested blocks emitted, by the model parameter of their location.
     shared : frozenset[str]
@@ -1230,7 +1238,6 @@ class KernelEmission:
         self.targets: list[PriorTarget] = []
         self.laws: list[GroupBlockLaw] = []
         self.catalogs: list[FamilyCatalog] = []
-        self.program_names = ProgramNames()
         self.placed: dict[str, PlacedBlock] = {}
         self.shared: frozenset[str] = frozenset()
 
@@ -1239,7 +1246,8 @@ class KernelEmission:
 
         The block's declarations of axes the model already declares are
         left out, its runtime parameters are kept after any of the same
-        name, and its prior targets, laws, term laws and names are joined.
+        name, its prior targets, laws and term laws are joined, and the
+        model names columns and bindings as the block does.
 
         Parameters
         ----------
@@ -1261,10 +1269,8 @@ class KernelEmission:
             self.parameters.setdefault(parameter.name, parameter)
         self.targets.extend(block.prior_targets)
         self.laws.extend(block.group_laws)
-        self.program_names = ProgramNames(
-            inputs=self.program_names.inputs | block.names.inputs,
-            bindings=self.program_names.bindings | block.names.bindings,
-        )
+        # The names a block gives its columns are the model's from now on.
+        self.host.place_names(block.names)
         if block.families is not None:
             self.catalogs.append(block.families)
         self.placed[label] = block

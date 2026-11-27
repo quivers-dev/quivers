@@ -4035,7 +4035,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             correlated,
             formula,
         )
-        # The nested blocks' laws, prior targets, term laws and names.
+        # The nested blocks' laws, prior targets and term laws.
         self._block_laws = tuple(emission.laws)
         self._block_targets = tuple(emission.targets)
         for catalog in emission.catalogs:
@@ -4044,10 +4044,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 if self._term_laws is None
                 else self._term_laws.with_catalog(catalog)
             )
-        self._names = ProgramNames(
-            inputs=self._names.inputs | emission.program_names.inputs,
-            bindings=self._names.bindings | emission.program_names.bindings,
-        )
         check_names(self.group_laws)
         # A runtime parameter is declared once, by its first declaration.
         parameters = {
@@ -4281,6 +4277,20 @@ class _LensHost:
             The catalog, or None when the law is built in.
         """
         return self._lens.response_laws
+
+    def place_names(self, names: ProgramNames) -> None:
+        """Name columns and bindings as a placed nested block names them.
+
+        Parameters
+        ----------
+        names : ProgramNames
+            The block's names, in the model's names.
+        """
+        lens = self._lens
+        lens._names = ProgramNames(
+            inputs=lens._names.inputs | names.inputs,
+            bindings=lens._names.bindings | names.bindings,
+        )
 
     @property
     def supplied(self) -> Mapping[tuple[str, str, str], LetExprNode]:

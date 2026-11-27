@@ -822,3 +822,20 @@ def test_template_links_are_the_links_of_its_component():
     assert source != formula_to_qvr("y ~ x", data=frame, family="mixture")
     with pytest.raises(ValueError, match="admissible links"):
         families["mixture"].with_links(mu="softmax")
+
+
+def test_a_component_covariate_named_like_the_row_axis_is_declared_over_the_rows():
+    """A component renames a covariate ``Resp``; the mixture declares it by row."""
+    frame = pd.DataFrame(
+        {
+            "y": np.linspace(0.0, 1.0, 8),
+            "x": np.arange(8.0),
+            "Resp": np.arange(8.0) ** 2,
+        }
+    )
+    source = formula_to_qvr(
+        "y ~ x + Resp", data=frame, family=mixture("gaussian", "gaussian")
+    )
+    header = next(line for line in source.splitlines() if "program model" in line)
+    for component in (1, 2):
+        assert f"dpar_mu{component}_data_Resp : Tensor[Real]([Resp])" in header
