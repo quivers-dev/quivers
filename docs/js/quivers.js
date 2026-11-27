@@ -4,6 +4,7 @@
         '<path d="M7 3H3v4h2V5h2V3m10 0v2h2v2h2V3h-6M5 17H3v4h4v-2H5v-2m16 0h-2v2h-2v2h6v-4Z"/>',
         "</svg>",
     ].join("");
+    let sidebarResizeObserver;
 
     function storedFocusMode() {
         try {
@@ -112,9 +113,38 @@
         });
     }
 
+    function keepSidebarEndVisible() {
+        sidebarResizeObserver?.disconnect();
+        const panes = Array.from(document.querySelectorAll(".md-sidebar__scrollwrap"), (pane) => ({
+            pane,
+            height: pane.clientHeight,
+            end: pane.scrollHeight - pane.clientHeight,
+        }));
+        sidebarResizeObserver = new ResizeObserver(() => {
+            for (const state of panes) {
+                const { pane } = state;
+                const height = pane.clientHeight;
+                const end = pane.scrollHeight - height;
+                // Keep the last link visible if Material shortens the pane at the footer.
+                if (height < state.height && state.end > 0 && pane.scrollTop >= state.end - 1) {
+                    pane.scrollTop = end;
+                }
+                state.height = height;
+                state.end = end;
+            }
+        });
+        for (const { pane } of panes) {
+            sidebarResizeObserver.observe(pane);
+            if (pane.firstElementChild) {
+                sidebarResizeObserver.observe(pane.firstElementChild);
+            }
+        }
+    }
+
     function initializeQuiversUI() {
         installFocusToggle();
         installGlobalEscape();
+        keepSidebarEndVisible();
         window.setTimeout(installDiagramZoom, 0);
     }
 

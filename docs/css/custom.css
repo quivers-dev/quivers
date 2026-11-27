@@ -240,6 +240,35 @@ body {
   width: 12rem;
 }
 
+.md-sidebar__scrollwrap {
+  overscroll-behavior-y: contain;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-sidebar:has(> .md-sidebar__scrollwrap:not([style*="height:"])) {
+    height: auto;
+  }
+
+  .md-sidebar__scrollwrap:not([style*="height:"]) {
+    /* Reserve space for the header, tabs, and sidebar padding before Material sizes the pane. */
+    max-height: calc(100vh - 8.05rem - 2px);
+    max-height: calc(100dvh - 8.05rem - 2px);
+  }
+}
+
+@media screen and (min-width: 76.25em) and (max-height: 20em) {
+  .md-sidebar {
+    height: auto;
+  }
+
+  .md-sidebar__scrollwrap {
+    /* Material's footer adjustment can otherwise leave less than one line visible. */
+    height: auto !important;
+    max-height: calc(100vh - 8.05rem - 2px);
+    max-height: calc(100dvh - 8.05rem - 2px);
+  }
+}
+
 .md-sidebar--primary .md-sidebar__scrollwrap {
   border-right: 1px solid var(--qv-faint);
 }
@@ -1171,6 +1200,10 @@ body.qv-focus .md-content__inner {
 
   .md-nav--primary .md-nav__list {
     background: var(--qv-canvas);
+  }
+
+  .md-nav--primary .md-nav__title ~ .md-nav__list {
+    overscroll-behavior-y: contain;
   }
 
   /* The desktop rail marker sits outside the link. Keep the drawer marker
