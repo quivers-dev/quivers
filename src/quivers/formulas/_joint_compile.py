@@ -1608,17 +1608,23 @@ def emit_joint(
         program, targets, fixed_inputs, joint_laws, joint = _correlated_residual(
             program, responses, emitter, statements, targets, fixed_inputs
         )
-    module = Module(
-        statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
-    )
+    shared_by_response: dict[str | None, list[PriorTarget]] = {}
+    for target in global_targets:
+        shared_by_response.setdefault(target.response, []).append(target)
+    selected = {}
+    for name, shared in shared_by_response.items():
+        lens, formula = (emitter, grouping) if name is None else components[name]
+        selected.update(lens._brms_defaults(formula, tuple(shared)))
     if plan.rules:
-        selected = resolve_priors(plan, targets)
-        ordinary = {
-            site: rule
-            for site, rule in selected.items()
-            if isinstance(rule.distribution, str)
-        }
-        by_site = {target.site: target for target in targets}
+        selected.update(resolve_priors(plan, targets))
+    ordinary = {
+        site: rule
+        for site, rule in selected.items()
+        if isinstance(rule.distribution, str)
+    }
+    by_site = {target.site: target for target in targets}
+    shared_sites = {target.site for target in global_targets}
+    if plan.rules:
         # Re-enter the ordinary emitter after global selector resolution so its
         # existing dynamic support restrictions remain conditional and normalized.
         # This is source emission only; the native program is compiled once.
@@ -1628,7 +1634,11 @@ def emit_joint(
                 global_name: local for local, global_name in response.names.items()
             }
             for site, rule in ordinary.items():
-                if by_site[site].response == name and site in reverse:
+                if (
+                    site not in shared_sites
+                    and by_site[site].response == name
+                    and site in reverse
+                ):
                     local_rules.append(
                         PriorSpec(
                             distribution=rule.distribution,
@@ -1668,59 +1678,57 @@ def emit_joint(
             program, _, fixed_inputs, joint_laws, joint = _correlated_residual(
                 program, responses, emitter, statements, targets, fixed_inputs
             )
-        replacements = {
-            site: ordinary_prior_step(by_site[site], rule, draw=emitter._parse_prior)
-            for site, rule in ordinary.items()
-            if by_site[site] in global_targets or by_site[site].response is None
-        }
-        program = program.with_(
-            draws=tuple(
-                step.with_(
-                    morphism=replacements[step.vars[0]].morphism,
-                    args=replacements[step.vars[0]].args,
-                    static_args=replacements[step.vars[0]].static_args,
-                )
-                if isinstance(step, SampleStep) and step.vars[0] in replacements
-                else step
-                for step in program.draws
+    replacements = {
+        site: ordinary_prior_step(by_site[site], rule, draw=emitter._parse_prior)
+        for site, rule in ordinary.items()
+        if site in shared_sites or by_site[site].response is None
+    }
+    program = program.with_(
+        draws=tuple(
+            step.with_(
+                morphism=replacements[step.vars[0]].morphism,
+                args=replacements[step.vars[0]].args,
+                static_args=replacements[step.vars[0]].static_args,
             )
+            if isinstance(step, SampleStep) and step.vars[0] in replacements
+            else step
+            for step in program.draws
         )
-        module = module.with_(
-            statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
-        )
-        special = {
-            site: rule
-            for site, rule in selected.items()
-            if not isinstance(rule.distribution, str)
+    )
+    module = Module(
+        statements=(*statements, program, ExportDecl(expr=ExprIdent(name="model")))
+    )
+    special = {
+        site: rule
+        for site, rule in selected.items()
+        if not isinstance(rule.distribution, str)
+    }
+    if special:
+        row_counts = {
+            target.site: len(responses[target.response].formula.response_values)
+            for target in targets
+            if target.response is not None
         }
-        if special:
-            row_counts = {
-                target.site: len(responses[target.response].formula.response_values)
-                for target in targets
-                if target.response is not None
-            }
-            sigmas = {}
-            for target in targets:
-                if target.response is None:
-                    continue
-                response = responses[target.response]
-                residual = response.lens._family.residual_scale
-                if (
-                    residual is not None
-                    and residual.name in response.names
-                    and residual.name not in response.lens._distributional
-                ):
-                    sigmas[target.site] = response.names[residual.name]
-            module = apply_prior_plan(
-                module,
-                targets,
-                special,
-                draw=emitter._parse_prior,
-                training_rows=row_counts,
-                sigma=sigmas,
-            )
-        else:
-            module = order_prior_dependencies(module)
+        sigmas = {}
+        for target in targets:
+            if target.response is None:
+                continue
+            response = responses[target.response]
+            residual = response.lens._family.residual_scale
+            if (
+                residual is not None
+                and residual.name in response.names
+                and residual.name not in response.lens._distributional
+            ):
+                sigmas[target.site] = response.names[residual.name]
+        module = apply_prior_plan(
+            module,
+            targets,
+            special,
+            draw=emitter._parse_prior,
+            training_rows=row_counts,
+            sigma=sigmas,
+        )
     module = order_prior_dependencies(module)
     catalog = FamilyCatalog() if joint_laws is None else joint_laws
     for response in responses.values():
