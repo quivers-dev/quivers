@@ -188,16 +188,14 @@ def test_derived_parameter_and_distributional_roots_replay_on_new_rows_once(
             "nlpar_log_sigma_intercept": torch.tensor(-1.0),
         },
     )
-    from quivers.formulas._prediction import Compiler as PredictionCompiler
-
-    compile_ = PredictionCompiler.compile
+    compile_ = Compiler.compile
     calls = []
 
     def counted(self):
         calls.append(self)
         return compile_(self)
 
-    monkeypatch.setattr(PredictionCompiler, "compile", counted)
+    monkeypatch.setattr(Compiler, "compile", counted)
     fresh = pd.DataFrame({"x": [0.25, 0.75, 1.25]})
     expected = 2 * (1 - torch.exp(-0.5 * torch.tensor(fresh.x.to_numpy())))
     torch.testing.assert_close(
