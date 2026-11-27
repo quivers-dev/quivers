@@ -939,7 +939,7 @@ def bf(
     program: str | tuple[str | Path, str] | None = None,
     entry: str | None = None,
     static: Mapping[str, int] | None = None,
-    parameters: Mapping[str, str] | None = None,
+    parameters: Mapping[str, str | NonlinearExpression] | None = None,
     response: str | None = None,
     family: str | Family | None = None,
     nl: bool = False,
@@ -975,7 +975,7 @@ def bf(
         The program name when it is given separately from the source text.
     static : Mapping[str, int] or None
         Finite extents of the program, by binder name.
-    parameters : Mapping[str, str] or None
+    parameters : Mapping[str, str or NonlinearExpression] or None
         Formulas of the program's parameters, by name.
     response : str or None
         The site the program observes.

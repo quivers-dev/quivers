@@ -2551,7 +2551,7 @@ def fit(
     program: str | tuple[str | Path, str] | None = None,
     entry: str | None = None,
     static: Mapping[str, int] | None = None,
-    parameters: Mapping[str, str] | None = None,
+    parameters: Mapping[str, str | NonlinearExpression] | None = None,
     response: str | None = None,
     family: str | Family = "gaussian",
     weights: str | None = None,
@@ -2640,10 +2640,11 @@ def fit(
         The program name when it is given separately from the source text.
     static : Mapping[str, int] or None
         Finite extents of the program, by binder name.
-    parameters : Mapping[str, str] or None
+    parameters : Mapping[str, str or NonlinearExpression] or None
         Formulas of the program's parameters, as ``{"noise": "~ 1 + (1 | g)"}``.
-        Their priors are those of distributional formulas, with
-        ``dpar=<parameter>``.
+        A `NonlinearExpression` gives a link-scale expression and can read
+        additional parameter formulas in the mapping. Priors of the program's
+        parameter formulas use ``dpar=<parameter>``.
     response : str or None
         The site the program observes, a data column.
     family : str or Family
@@ -3044,7 +3045,7 @@ def formula_to_qvr(
     program: str | tuple[str | Path, str] | None = None,
     entry: str | None = None,
     static: Mapping[str, int] | None = None,
-    parameters: Mapping[str, str] | None = None,
+    parameters: Mapping[str, str | NonlinearExpression] | None = None,
     response: str | None = None,
     family: str | Family = "gaussian",
     weights: str | None = None,
@@ -3103,7 +3104,7 @@ def formula_to_qvr(
         The program name when it is given separately from the source text.
     static : Mapping[str, int] or None
         Finite extents of the program, by binder name.
-    parameters : Mapping[str, str] or None
+    parameters : Mapping[str, str or NonlinearExpression] or None
         Formulas of the program's parameters, by name.
     response : str or None
         The site the program observes.
@@ -3246,7 +3247,7 @@ def get_prior(
     program: str | tuple[str | Path, str] | None = None,
     entry: str | None = None,
     static: Mapping[str, int] | None = None,
-    parameters: Mapping[str, str] | None = None,
+    parameters: Mapping[str, str | NonlinearExpression] | None = None,
     response: str | None = None,
     family: str | Family = "gaussian",
     weights: str | None = None,
@@ -3296,7 +3297,7 @@ def get_prior(
         The program name when it is given separately from the source text.
     static : Mapping[str, int] or None
         Finite extents of the program, by binder name.
-    parameters : Mapping[str, str] or None
+    parameters : Mapping[str, str or NonlinearExpression] or None
         Formulas of the program's parameters, by name.
     response : str or None
         The site the program observes.

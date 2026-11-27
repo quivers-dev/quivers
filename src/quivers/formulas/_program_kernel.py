@@ -75,6 +75,7 @@ from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.step_resolution import _draw_arg_value_names, _step_value_names
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._blocks import Namespace, rename_program
+from quivers.formulas._family_kernel import graph_row_roots, precompose_graph
 from quivers.formulas._kernel import (
     BindSlot,
     Completion,
@@ -1617,11 +1618,12 @@ class ProgramKernelSpec(KernelLaw):
                 f"the response terms {[modifier.kind for modifier in modifiers]} "
                 "change that law, so the program must state them itself"
             )
-        if inputs.host is not None or inputs.graph is not None:
+        if inputs.host is not None:
             raise ValueError(
-                f"the program {entry!r} has no location for a neural predictor or a "
-                "nonlinear formula to feed; give its parameters formulas instead"
+                f"the program {entry!r} has no location for a neural predictor to feed"
             )
+        roots = {} if inputs.graph is None else inputs.graph.roots
+        row_roots = graph_row_roots(inputs)
         site = _response_site(analysis, self.response)
         declarations = {
             name: parameter_decl(analysis, name, self.response)
@@ -1664,6 +1666,9 @@ class ProgramKernelSpec(KernelLaw):
                         + "; give it a formula such as '~ 1'"
                     )
                 sources[name] = ConstantSource(value=float(inputs.fixed[name]))
+            elif name in roots:
+                if name in row_roots or declaration.rows:
+                    varying[name] = frozenset({name})
             else:
                 predictor = inputs.predictor(prefix)
                 sources[name] = PredictorSource(predictor=predictor)
@@ -1742,16 +1747,14 @@ class ProgramKernelSpec(KernelLaw):
             for item in analysis.data(self.parameters)
         )
         assert site.name == self.response
-        return (
-            ResponseKernel(
-                slots=tuple(slots),
-                objects=analysis.objects,
-                data=data,
-                body=tuple(body),
-                response=self.response,
-            ),
-            sources,
+        kernel = ResponseKernel(
+            slots=tuple(slots),
+            objects=analysis.objects,
+            data=data,
+            body=tuple(body),
+            response=self.response,
         )
+        return precompose_graph(kernel, inputs, formula, sources), sources
 
 
 def _tensor(item: KernelInput, array: np.ndarray, rows: int | None) -> torch.Tensor:
@@ -1909,7 +1912,8 @@ def program_source(
 def program_spec(
     program: str | tuple[str | Path, str],
     response: str,
-    parameters: Collection[str],
+    parameters: Mapping[str, str | NonlinearExpression],
+    fixed: Collection[str],
     *,
     entry: str | None,
     static: Mapping[str, int] | None,
@@ -1922,8 +1926,10 @@ def program_spec(
         QVR source, or a source file path and its program name.
     response : str
         The observed site.
-    parameters : Collection[str]
-        The sites and inputs given a formula or a fixed value.
+    parameters : Mapping[str, str or NonlinearExpression]
+        Program predictors and their nonlinear dependencies, by name.
+    fixed : Collection[str]
+        The program parameters given fixed values.
     entry : str or None
         The program name given separately.
     static : Mapping[str, int] or None
@@ -1947,14 +1953,22 @@ def program_spec(
     extents = tuple(sorted((static or {}).items()))
     analysis = program_analysis(source, entry, extents)
     order = {name: index for index, name in enumerate(analysis.parameters)}
-    unknown = sorted(set(parameters) - order.keys())
-    for name in unknown:
-        parameter_decl(analysis, name, response)
+    replaced = parameters.keys() & order.keys()
+    graph = any(isinstance(parameters[name], NonlinearExpression) for name in replaced)
+    unknown = (parameters.keys() | set(fixed)) - order.keys()
+    for name in sorted(unknown):
+        if (
+            not graph
+            or name in fixed
+            or analysis.site(name) is not None
+            or analysis.input(name) is not None
+        ):
+            parameter_decl(analysis, name, response)
     return ProgramKernelSpec(
         source=source,
         entry=analysis.entry,
         response=response,
-        parameters=tuple(sorted(parameters, key=lambda name: order[name])),
+        parameters=tuple(sorted(replaced | set(fixed), key=order.__getitem__)),
         static_arguments=dict(extents),
     )
 
@@ -1965,7 +1979,7 @@ def program_arguments[Authored](
     program: str | tuple[str | Path, str] | None,
     entry: str | None,
     static: Mapping[str, int] | None,
-    parameters: Mapping[str, str] | None,
+    parameters: Mapping[str, str | NonlinearExpression] | None,
     response: str | None,
     family: str | Family,
     distributional: Mapping[str, str | NonlinearExpression] | None,
@@ -1994,8 +2008,8 @@ def program_arguments[Authored](
         The program name given separately.
     static : Mapping[str, int] or None
         Finite extents of the program, by binder name.
-    parameters : Mapping[str, str] or None
-        Formulas of the program's parameters, by name.
+    parameters : Mapping[str, str or NonlinearExpression] or None
+        Predictors of the program parameters and their nonlinear dependencies.
     response : str or None
         The observed site, with any response terms.
     family : str or Family
@@ -2051,13 +2065,15 @@ def program_arguments[Authored](
     spec = program_spec(
         program,
         site,
-        {*formulas, *(fixed_parameters or {})},
+        formulas,
+        tuple(fixed_parameters or ()),
         entry=entry,
         static=static,
     )
-    location = formulas.pop(LOCATION, None)
+    location = formulas.get(LOCATION)
     right = "~ 0"
-    if location is not None:
+    if isinstance(location, str):
+        del formulas[LOCATION]
         left, tilde, right = location.partition("~")
         if not tilde or left.strip() not in ("", LOCATION):
             raise ValueError(

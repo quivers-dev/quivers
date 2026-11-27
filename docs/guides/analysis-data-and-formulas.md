@@ -1050,6 +1050,13 @@ the intercept, such as `PriorSpec("Normal(-3.0, 1.0)", class_="Intercept",
 dpar="noise")`, states the intended one. The program's own sites are not prior
 targets: their laws are the program's.
 
+A [`NonlinearExpression`](../api/formulas/fit.md#quivers.formulas.NonlinearExpression)
+in `parameters=` gives the parameter's value on the link scale. Its named
+predictors can have their own formulas in that mapping. For instance,
+`{"noise": NonlinearExpression(expression="a + b * x"), "a": "~ 1", "b": "~ 1"}`
+lets the response-noise parameter depend on `x`. A vector parameter takes
+one expression per free coordinate, keyed by its zero-based index.
+
 Data the program reads at each row are data columns of the same name. Data on
 another axis and scalars come from `data2`. A saved fit keeps the program's
 text, so it loads without the `.qvr` file.

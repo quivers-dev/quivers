@@ -16,7 +16,14 @@ import pytest
 import torch
 
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas import AuxParam, custom_family, fit, links, mixture
+from quivers.formulas import (
+    AuxParam,
+    NonlinearExpression,
+    custom_family,
+    fit,
+    links,
+    mixture,
+)
 from quivers.qiec.families import family as semantic_family
 
 from tests.formulas._program_cases import (
@@ -136,6 +143,63 @@ def test_the_decay_program_is_the_nonlinear_formula() -> None:
         priors={"sigma": "HalfNormal(1.0)"},
     )
     assert abs(joint - log_joint(run(growth, renamed))) > 1e-3
+
+
+def test_a_program_parameter_uses_the_shared_nonlinear_predictor() -> None:
+    parameters = {
+        "sigma": NonlinearExpression(expression="a + b * z"),
+        "a": "~ 1",
+        "b": "~ 1",
+    }
+    program = _svi(program=GAUSS, parameters={"mu": "~ x", **parameters}, response="y")
+    family = _svi("y ~ x", distributional=parameters)
+    names = latent_names(program)
+    assert set(names) == set(latent_names(family))
+    values = _values(names, seed=1)
+    assert log_joint(run(program, values)) == pytest.approx(
+        log_joint(run(family, values)), rel=TOLERANCE
+    )
+    other = _svi(
+        program=GAUSS,
+        parameters={
+            "mu": "~ x",
+            **parameters,
+            "sigma": NonlinearExpression(expression="a - b * z"),
+        },
+        response="y",
+    )
+    assert abs(log_joint(run(program, values)) - log_joint(run(other, values))) > 1e-3
+
+
+def test_a_program_vector_parameter_keeps_its_coordinate_axis() -> None:
+    program = _svi(
+        program=MIX2,
+        parameters={
+            "centers": NonlinearExpression(expression={0: "lo", 1: "hi"}),
+            "lo": "~ 1",
+            "hi": "~ 1",
+        },
+        response="y",
+    )
+    center = np.array([[-0.5, 1.7]])
+    logits = np.array([[0.3, -0.4]])
+    sigma = np.array([0.9])
+    predicted = pin(
+        program,
+        {
+            "nlpar_lo_intercept": center[:, 0],
+            "nlpar_hi_intercept": center[:, 1],
+            "logits": logits,
+            "sigma": sigma,
+        },
+    ).log_likelihood()["y"]
+    direct = _svi(program=MIX2, parameters={}, response="y")
+    recorded = pin(
+        direct, {"centers": center, "logits": logits, "sigma": sigma}
+    ).log_likelihood()["y"]
+    torch.testing.assert_close(
+        predicted.double(), recorded.double(), rtol=TOLERANCE, atol=0
+    )
 
 
 def test_the_two_class_program_is_the_gaussian_mixture_row_by_row() -> None:
