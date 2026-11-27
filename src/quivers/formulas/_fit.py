@@ -190,7 +190,7 @@ from quivers.formulas._posterior import (
     response_rng,
     row_binding,
 )
-from quivers.formulas._linpred import PredictorReadout
+from quivers.formulas._linpred import PredictorReadout, population_coefficients
 from quivers.inference._posterior import draw_count
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
@@ -2098,13 +2098,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
             raise ValueError(
                 "coefficient extraction requires retained emission metadata"
             )
-        return {
-            coefficient.label: draws[namespace + coefficient.site]
-            for predictor in self.prediction_plan.predictors
-            if predictor.prefix == prefix
-            for term in predictor.terms
-            for coefficient in term.population()
-        }
+        return population_coefficients(
+            self.prediction_plan.predictors, draws, prefix, namespace
+        )
 
     def _random_effects(
         self,

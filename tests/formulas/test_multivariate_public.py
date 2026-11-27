@@ -406,7 +406,9 @@ def test_uncorrelated_units_sum_responses_per_row_as_brms_does():
 # New-data prediction and new grouping levels.
 
 
-def test_new_rows_reuse_fitted_encodings_and_shared_group_effects():
+def test_new_rows_reuse_fitted_encodings_and_shared_group_effects(
+    monkeypatch: pytest.MonkeyPatch,
+):
     data = _frame()
     fitted = fit(
         bf("y_1 ~ x + (1|p|g)") + bf("z ~ x + (1|p|g)") + set_rescor(False),
@@ -415,21 +417,38 @@ def test_new_rows_reuse_fitted_encodings_and_shared_group_effects():
         num_steps=2,
         seed=5,
     )
+    assert isinstance(fitted, MultivariateFit)
     fresh = pd.DataFrame({"x": [0.5, -1.0, 2.0], "g": ["c", "a", "c"]})
     linear = fitted.posterior_linpred(new_data=fresh, num_samples=4, seed=1)
-    for resp in ("y1", "z"):
-        fixed = fitted.fixed_effects(resp=resp, num_samples=4, seed=1)
-        effects = fitted.random_effects(resp=resp, num_samples=4, seed=1)["g"][
-            "Intercept"
-        ]
-        levels = fitted.group_levels["g"]
-        codes = [levels.index(label) for label in fresh.g]
-        expected = (
-            fixed["Intercept"][..., None]
-            + fixed["x"][..., None] * torch.tensor(fresh.x.to_numpy()).float()
-            + effects[..., codes]
+    draws = fitted.draws(num_samples=4, seed=1)
+
+    def rebuild(*_args):
+        raise AssertionError(
+            "reading joint coefficients must not compile a response fit"
         )
-        torch.testing.assert_close(linear[resp], expected)
+
+    with monkeypatch.context() as coefficients:
+        coefficients.setattr(MultivariateFit, "_response_fit", rebuild)
+        for resp in ("y1", "z"):
+            fixed = fitted.fixed_effects(resp=resp, num_samples=4, seed=1)
+            effects = fitted.random_effects(resp=resp, num_samples=4, seed=1)["g"][
+                "Intercept"
+            ]
+            namespace = fitted.emission.responses[resp].prefix
+            assert torch.equal(fixed["Intercept"], draws[f"{namespace}intercept"])
+            assert torch.equal(fixed["x"], draws[f"{namespace}beta_x"])
+            combined = fitted.coefficients(resp=resp, num_samples=4, seed=1)["g"]
+            assert torch.equal(
+                combined["Intercept"], fixed["Intercept"][..., None] + effects
+            )
+            levels = fitted.group_levels["g"]
+            codes = [levels.index(label) for label in fresh.g]
+            expected = (
+                fixed["Intercept"][..., None]
+                + fixed["x"][..., None] * torch.tensor(fresh.x.to_numpy()).float()
+                + effects[..., codes]
+            )
+            torch.testing.assert_close(linear[resp], expected)
     means = fitted.posterior_epred(resp="z", new_data=fresh, num_samples=4, seed=1)
     assert set(means) == {"z"}
     torch.testing.assert_close(means["z"], linear["z"])

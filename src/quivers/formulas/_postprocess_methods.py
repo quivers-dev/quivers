@@ -57,6 +57,8 @@ from quivers.formulas._postprocess_loo import (
 from quivers.formulas._name_scope import level_coefficients
 from quivers.formulas._postprocess_names import (
     coefficient_labels,
+    design_coefficient_labels,
+    design_name_scope,
     name_scope,
     single_variables,
 )
@@ -2384,14 +2386,15 @@ class JointPostprocess(_PostprocessCore):
         fit = self._pp_fit()
         result: dict[str, list[tuple[str, torch.Tensor]]] = {}
         for name in fit.response_names:
-            view = fit._response_fit(name)
-            labels = coefficient_labels(view)
-            plan = view.prediction_plan
+            response = fit.emission.responses[name]
+            designs = fit.prepared[name].designs
+            items = response.lens._predictor_items(response.formula)
+            labels = design_coefficient_labels(items, designs)
             outputs = {
                 item.prefix: item.output
-                for item in (plan.predictors if plan is not None else ())
+                for item in fit._predictor_readout(name).predictors
             }
-            for parameter, prefix, predictor in view._predictor_items():
+            for parameter, prefix, predictor in items:
                 if not predictor.random_terms:
                     continue
                 for item in level_coefficients(
@@ -2401,8 +2404,13 @@ class JointPostprocess(_PostprocessCore):
                         num_samples=num_samples,
                         seed=seed,
                     ),
-                    name_scope(
-                        view, parameter, prefix, predictor, labels, response=name
+                    design_name_scope(
+                        parameter,
+                        prefix,
+                        predictor,
+                        labels,
+                        designs.get(parameter),
+                        response=name,
                     ),
                     outputs.get(prefix),
                 ):

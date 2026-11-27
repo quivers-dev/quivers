@@ -104,7 +104,7 @@ from quivers.formulas._joint_missing import (
 from quivers.formulas.formula import RowSelection
 from quivers.formulas._posterior import replay, row_binding
 from quivers.formulas._prediction import FormulaPredictionPlan, JointResponsePreparation
-from quivers.formulas._linpred import PredictorReadout
+from quivers.formulas._linpred import PredictorReadout, population_coefficients
 from quivers.formulas._refit import update_fit
 from quivers.formulas._prior_emission import ordinary_prior_step
 from quivers.formulas.compile import FormulaToQVRModule
@@ -1013,7 +1013,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         tuple[Formula, str]
             The retained predictor and its namespaced prefix.
         """
-        predictor, prefix = self._response_fit(resp)._formula_predictor(parameter)
+        predictor, prefix = self._predictor_readout(resp)._formula_predictor(parameter)
         return predictor, self.emission.responses[resp].prefix + prefix
 
     def fixed_effects(
@@ -1043,10 +1043,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             Column labels mapped to coefficient draws on chain and draw axes.
         """
         self._selection(resp)
-        view = self._response_fit(resp)
-        return view._fixed_effects(
+        readout = self._predictor_readout(resp)
+        _, prefix = readout._formula_predictor(parameter)
+        return population_coefficients(
+            readout.predictors,
             self.draws(num_samples=num_samples, seed=seed),
-            view._formula_predictor(parameter)[1],
+            prefix,
             self.emission.responses[resp].prefix,
         )
 
@@ -1146,15 +1148,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             population coefficients.
         """
         self._selection(resp)
-        predictor, prefix = self._predictor(resp, parameter)
+        readout = self._predictor_readout(resp)
+        predictor, prefix = readout._formula_predictor(parameter)
+        namespace = self.emission.responses[resp].prefix
         draws = self.draws(num_samples=num_samples, seed=seed)
-        view = self._response_fit(resp)
-        fixed = view._fixed_effects(
-            draws,
-            view._formula_predictor(parameter)[1],
-            self.emission.responses[resp].prefix,
-        )
-        varying = self._random(draws, predictor, prefix)
+        fixed = population_coefficients(readout.predictors, draws, prefix, namespace)
+        varying = self._random(draws, predictor, namespace + prefix)
         for group, values in varying.items():
             for name, coefficient in fixed.items():
                 population = coefficient.unsqueeze(2)

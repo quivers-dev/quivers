@@ -22,6 +22,39 @@ if TYPE_CHECKING:
     from quivers.inference.trace import Trace
 
 
+def population_coefficients(
+    predictors: tuple[Predictor, ...],
+    draws: Mapping[str, torch.Tensor],
+    prefix: str,
+    namespace: str = "",
+) -> dict[str, torch.Tensor]:
+    """Read the population coefficients named by fitted terms.
+
+    Parameters
+    ----------
+    predictors : tuple[Predictor, ...]
+        Retained predictors in the response's local names.
+    draws : Mapping[str, torch.Tensor]
+        Native draws on chain and draw axes.
+    prefix : str
+        Local prefix of the selected predictor.
+    namespace : str
+        Prefix applied to the response's bindings in the native draws.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Coefficients by fitted design-column label.
+    """
+    return {
+        coefficient.label: draws[namespace + coefficient.site]
+        for predictor in predictors
+        if predictor.prefix == prefix
+        for term in predictor.terms
+        for coefficient in term.population()
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class PredictorReadout:
     """Fitted response metadata used to read and label one predictor."""
