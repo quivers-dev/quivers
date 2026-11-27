@@ -298,11 +298,11 @@ def _chart_outcomes(
         raise InvalidHandlerError("deduction outcome lexical terms have the wrong size")
     if weights.shape != (len(semantics.words) + len(semantics.parameters),):
         raise InvalidHandlerError("deduction outcome weights have the wrong size")
-    # A derivation of n tokens has n lexical leaves and at most n - 1
-    # internal nodes. Leave room for its log product, the joins at every
-    # item, and the final subtraction, so finite mass cannot underflow
-    # to the distinguished zero during the fold.
-    limit = torch.finfo(weights.dtype).max / max(1, 4 * len(tokens))
+    # Without unary chains, n leaves admit at most n - 1 internal nodes.
+    # Each node can have at most unary_height unary rules directly above
+    # it. Leave room for their log weights and the final normalization.
+    width_bound = max(1, 4 * len(tokens) * (1 + semantics.unary_height))
+    limit = torch.finfo(weights.dtype).max / width_bound
     demand(
         ((weights.abs() <= limit) | torch.isneginf(weights)).all(),
         lambda: EvaluationError(

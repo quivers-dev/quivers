@@ -6,6 +6,7 @@ import json
 import math
 import sys
 
+import didactic.api as dx
 import pytest
 import torch
 
@@ -21,7 +22,7 @@ from quivers.qiec import deduction_outcomes
 from quivers.qiec.checking import KernelError
 from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.foreign import DeductionOutcomes
-from quivers.qiec.kinds import UserIndexSort
+from quivers.qiec.kinds import NAT, IndexBinder, UserIndexSort
 from quivers.qiec.module import QiecModule, validate_module
 from quivers.qiec.numbers import NumberDomain
 from quivers.qiec.program_runtime import run_program
@@ -335,6 +336,74 @@ deduction Mix : Token -> Token [semiring=LogProb]
     assert result.value == pytest.approx(proofs, rel=1e-12)
 
 
+def test_acyclic_unary_diamond_preserves_weights_and_gradients() -> None:
+    """The two unary paths build fresh forms and coalesce at one goal item."""
+    grammar = (
+        GRAMMAR.replace("semiring=LogProb]", "semiring=LogProb, start=Goal]")
+        .replace("same, inverse, lex", "same, inverse, lex, Left, Right, Goal, wrap")
+        .replace(
+            "    lexicon\n",
+            "    rule via_left : span(I, J, S, same) |- span(I, J, Left(same), wrap(same))\n"
+            "    rule via_right : span(I, J, S, same) |- span(I, J, Right, wrap(same))\n"
+            "    rule left_goal : span(I, J, Left(L), wrap(L)) |- span(I, J, Goal, L)\n"
+            "    rule right_goal : span(I, J, Right, wrap(L)) |- span(I, J, Goal, L)\n"
+            "    rule inverse_goal : span(I, J, S, inverse) |- span(I, J, Goal, inverse)\n"
+            "    lexicon\n",
+        )
+    )
+    module = loads(dumps(lower_qvr_to_qiec(parse(grammar + "\n" + QUERY))))
+    assert isinstance(module, QiecModule)
+    declaration = next(
+        handler.foreign
+        for handler in module.handlers
+        if isinstance(handler.foreign, DeductionOutcomes)
+    )
+    assert declaration.unary_height == 2
+    weights = torch.tensor([-0.4, -0.8, -1.2], dtype=torch.float64, requires_grad=True)
+    parameters = {
+        f"Mix.lex.{index}": weight for index, weight in enumerate(weights.unbind())
+    }
+    data = {"sentence": ("x", "y"), "a": 0.8, "b": 0.3}
+    proof_weights = weights[[0, 0, 2]]
+    likelihood = torch.tensor([0.8, 0.8, 0.3], dtype=weights.dtype).log()
+    expected = torch.logsumexp(proof_weights + likelihood, 0) - torch.logsumexp(
+        proof_weights, 0
+    )
+    run = run_program(module, "example", data=data, sites={}, parameters=parameters)
+    torch.testing.assert_close(run.log_joint, expected)
+    torch.testing.assert_close(
+        torch.autograd.grad(run.log_joint, weights)[0],
+        torch.autograd.grad(expected, weights)[0],
+    )
+    raw = run_program(
+        module,
+        "raw",
+        data={**data, "a": 1.0, "b": 0.0},
+        sites={},
+        parameters=parameters,
+    )
+    assert isinstance(raw.value, torch.Tensor)
+    torch.testing.assert_close(raw.value, 2 * weights[0].exp())
+
+
+def test_entire_rule_telescope_is_grounded_by_premises() -> None:
+    """An unused natural index would leave infinitely many groundings."""
+    module = lower_qvr_to_qiec(parse(GRAMMAR + "\n" + QUERY))
+    declaration = next(
+        handler.foreign
+        for handler in module.handlers
+        if isinstance(handler.foreign, DeductionOutcomes)
+    )
+    first, *rest = declaration.presentation.rules
+    unused = IndexBinder(name="Unused", sort=NAT)
+    rule = first.with_(telescope=(*first.telescope, unused))
+    unchecked = declaration.presentation.with_(rules=(rule, *rest))
+    with pytest.raises(
+        dx.ValidationError, match="bind its entire telescope through its premises"
+    ):
+        declaration.with_(presentation=unchecked)
+
+
 def test_private_deduction_sorts_are_scoped_and_outer_adapter_is_checked() -> None:
     """Two different private Term sorts coexist with a third public Term."""
     second = (
@@ -465,10 +534,24 @@ program unrelated : Token -> Result
             "Free weights",
         ),
         (
+            GRAMMAR.replace("span(K, J, D, lex)", "span(M, J, D, lex)", 1),
+            "combine contiguous spans",
+        ),
+        (
             GRAMMAR.replace(
-                "span(I, K, A, lex), span(K, J, D, lex)", "span(I, J, A, lex)"
+                "    lexicon\n",
+                "    rule grows : span(I, J, S, L) |- span(I, J, S, wrap(L))\n"
+                "    lexicon\n",
             ),
-            "two or more contiguous spans",
+            "unary category heads must be acyclic",
+        ),
+        (
+            GRAMMAR.replace(
+                "    lexicon\n",
+                "    rule unknown : span(I, J, S, L) |- span(I, J, L, lex)\n"
+                "    lexicon\n",
+            ),
+            "needs fixed category heads",
         ),
         (
             GRAMMAR.replace("semiring=LogProb]", "semiring=LogProb, depth=0]"),

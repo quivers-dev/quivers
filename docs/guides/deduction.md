@@ -486,19 +486,23 @@ can traverse the normalized entries and sum $P(k\mid\text{sentence}) L(k)$,
 then pass the logarithm of that sum to `score`.
 
 These calls use the checked runtime and accept one sentence. The current
-fragment has one lexical span judgment and unit-width lexical entries. Each
-rule combines at least two contiguous spans in premise order, and every
-premise is strictly narrower than its conclusion. The rules use unit weights
-or weights from `normalize=lhs` groups. Learned lexical log weights remain
+fragment has one lexical span judgment and unit-width lexical entries.
+A rule combines contiguous spans in premise order or preserves the span of
+one premise. In the latter case its two category heads must be fixed, and
+the graph from unary premise heads to conclusion heads must be acyclic.
+The pair of span width and category rank thus grows along each rule edge.
+The rules use unit weights or weights from `normalize=lhs` groups.
+Learned lexical log weights remain
 available. The normalized groups also accept the same labeled probability
 bindings as `parse`, with components in $[0,1]$ and positive total mass in
-each bound group. The fragment excludes category depth bounds, unary and
-zero-premise rules, open hypotheses, and rule weights computed from bindings.
+each bound group. The fragment excludes category depth bounds, zero-premise
+rules, open hypotheses, and rule weights computed from bindings.
 Lexical categories and forms must inhabit the vocabulary of the deduction's
 closed rule presentation. The query supports derivatives on fixed positive
-support, with zero masses omitted from its output. Finite log weights must
-fit a range that leaves room for a derivation's sum in the run's number type.
-The query raises an error if the input exceeds this range.
+support, with zero masses omitted from its output. A derivation for $n > 0$
+tokens has at most $(2n - 1)(h + 1)$ nodes when the longest unary path
+has length $h$. The runtime checks that the finite log weights leave room
+for their sum and normalization in the run's number type.
 
 The runtime grounds a packed forest and computes one inside value per useful
 item, shared across all requested goals. For each incoming rule instance, a

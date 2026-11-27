@@ -23,6 +23,8 @@ counting algebra refuses its own closure, and a truth value is ``0`` or
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from functools import cached_property
+from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
 from typing import Literal
 
@@ -61,6 +63,8 @@ from quivers.qiec.types import (
     INT,
     REAL as REAL_TYPE,
     STRING,
+    IndexConstructor,
+    IndexLiteral,
     IndexTerm,
     IndexVariable,
     TypeApplication,
@@ -538,9 +542,10 @@ class DeductionOutcomes(QiecModel):
     entries' category and optional form values in lexicon order, the log
     weights of those entries and the listed rule parameters, and the
     structural key and normalization choices. Lexical occurrences have
-    positive width one. A rule combines at least two contiguous positive
-    spans and has no other premises, so every premise is narrower than
-    its conclusion and a finite sentence generates a finite acyclic chart.
+    positive width one. A rule either concatenates contiguous positive
+    spans or preserves a unary premise's span and advances in an acyclic
+    graph on category heads. The pair of span width and the category's
+    rank increases strictly along each premise-to-conclusion edge.
 
     Parameters
     ----------
@@ -644,7 +649,46 @@ class DeductionOutcomes(QiecModel):
             raise ValueError(
                 "deduction outcomes require exactly the rule weight addresses"
             )
+        _ = self.unary_height
+
+    @cached_property
+    def unary_height(self) -> int:
+        """Check the span order and bound consecutive unary rules.
+
+        Every binding at a particular span is generated from shorter spans
+        or lower category ranks. Lexical axioms are finite, and each rule
+        has finitely many bindings over a finite set of premises. Induction
+        over this lexicographic order establishes finite grounding even when
+        unary rules construct new category arguments or forms.
+
+        Returns
+        -------
+        int
+            The longest path in the finite unary category-head graph.
+
+        Raises
+        ------
+        ValueError
+            If a rule's span relation cannot establish the order, a unary
+            category has no fixed head, or the head graph contains a cycle.
+        """
+        from quivers.qiec.rules import RulePresentation, _variables
+
+        presentation = self.presentation
+        assert isinstance(presentation, RulePresentation)
+        predecessors: dict[str, set[str]] = {}
         for rule in presentation.rules:
+            bound = {
+                variable.name
+                for premise in rule.premises
+                for argument in premise.judgment.arguments
+                for variable in _variables(argument)
+            }
+            if any(binder.name not in bound for binder in rule.telescope):
+                raise ValueError(
+                    f"deduction outcome rule {rule.name!r} must bind its "
+                    "entire telescope through its premises"
+                )
             start, end = rule.conclusion.arguments[:2]
             path: list[IndexTerm] = [start]
             for premise in rule.premises:
@@ -653,7 +697,7 @@ class DeductionOutcomes(QiecModel):
                     break
                 path.append(right)
             if (
-                len(rule.premises) < 2
+                not rule.premises
                 or rule.values
                 or len(path) != len(rule.premises) + 1
                 or path[-1] != end
@@ -661,9 +705,38 @@ class DeductionOutcomes(QiecModel):
                 or len(set(path)) != len(path)
             ):
                 raise ValueError(
-                    f"deduction outcome rule {rule.name!r} must combine "
-                    "two or more contiguous spans in premise order"
+                    f"deduction outcome rule {rule.name!r} must preserve a unary "
+                    "span or combine contiguous spans in premise order"
                 )
+            if len(rule.premises) == 1:
+                heads = []
+                for term in (
+                    rule.premises[0].judgment.arguments[2],
+                    rule.conclusion.arguments[2],
+                ):
+                    if isinstance(term, IndexConstructor):
+                        heads.append(term.name)
+                    elif isinstance(term, IndexLiteral) and isinstance(term.value, str):
+                        heads.append(term.value)
+                    else:
+                        raise ValueError(
+                            f"deduction outcome unary rule {rule.name!r} needs "
+                            "fixed category heads to establish acyclicity"
+                        )
+                premise, result = heads
+                predecessors.setdefault(result, set()).add(premise)
+        ranks: dict[str, int] = {}
+        try:
+            for category in TopologicalSorter(predecessors).static_order():
+                ranks[category] = max(
+                    (ranks[premise] + 1 for premise in predecessors.get(category, ())),
+                    default=0,
+                )
+        except CycleError as error:
+            raise ValueError(
+                "deduction outcome unary category heads must be acyclic"
+            ) from error
+        return max(ranks.values(), default=0)
 
 
 type ForeignSemantics = (
