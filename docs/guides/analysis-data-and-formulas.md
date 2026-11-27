@@ -1061,6 +1061,8 @@ axes in row-major order. The kernel puts the linked values back on those axes
 before the program reads the parameter. A positive-definite matrix takes one
 predictor per entry of its lower Cholesky factor, in row-major order, with a
 log link on the diagonal. Each matrix in a batch has its own coordinates.
+A batch of simplex parameters fixes the first coordinate of each simplex at
+zero on the link scale and normalizes each simplex separately.
 The `predictor=` module adds to the link-scale predictor of a scalar `mu`
 with a formula. A program with an observation at the top level takes
 `weights()` on that response. A native observation law that declares

@@ -1058,6 +1058,8 @@ class ParameterDecl(ValueModel):
         The program parameter's own axes other than the rows.
     matrix : MatrixSupport or None
         Matrix reconstructed from the free coordinates, if any.
+    simplex_reference : int or None
+        Reference coordinate of each simplex in a batched parameter.
     prior : str
         The program's law of a site; empty for an input.
     """
@@ -1070,6 +1072,7 @@ class ParameterDecl(ValueModel):
     coordinates: ParameterCoordinates | None = None
     axes: tuple[AxisDecl, ...] = ()
     matrix: MatrixSupport | None = None
+    simplex_reference: int | None = None
     prior: str = ""
 
 
@@ -1125,14 +1128,16 @@ def parameter_decl(
         coordinates, axes = _coordinates(
             entry, name, site.axes, site.sizes, law.reference, law.matrix
         )
+        reference = law.reference if len(axes) > 1 else None
         return ParameterDecl(
             name=name,
             origin="site",
-            link=law.link,
+            link=links["identity"] if reference is not None else law.link,
             domain=law.domain,
             coordinates=coordinates,
             axes=axes,
             matrix=law.matrix,
+            simplex_reference=reference,
             prior=site.prior,
         )
     item = analysis.input(name)
@@ -1206,8 +1211,8 @@ def _coordinates(
     Raises
     ------
     ValueError
-        If an axis has no size, the matrix event is not square, or reference
-        coordinates belong to more than one independently normalized simplex.
+        If an axis has no size, the matrix event is not square, or a simplex
+        has no free coordinates.
     """
     shape = tuple(
         AxisDecl(name=axis, size=size) for axis, size in zip(axes, sizes, strict=True)
@@ -1236,10 +1241,12 @@ def _coordinates(
             axis=axis.name, size=axis.size, reference=reference
         ), shape
     if reference is not None:
-        raise ValueError(
-            f"the parameter {name!r} of {entry!r} has simplex coordinates across "
-            f"{list(axes)}; each simplex needs its own reference coordinate"
-        )
+        if sizes[-1] < 2:
+            raise ValueError(
+                f"the simplex parameter {name!r} of {entry!r} has no free coordinates"
+            )
+        width = math.prod(sizes[:-1]) * (sizes[-1] - 1)
+        return ParameterCoordinates(axis=flat, size=width), shape
     return ParameterCoordinates(axis=flat, size=math.prod(sizes)), shape
 
 
@@ -1344,12 +1351,15 @@ class BindTensorSlot(KernelPart):
         Axes of the parameter other than the response rows.
     matrix : MatrixSupport or None
         Matrix reconstructed from the free coordinates, if any.
+    simplex_reference : int or None
+        Reference coordinate of each simplex in a batched parameter.
     """
 
     kind: Literal["bind_tensor_slot"] = "bind_tensor_slot"
     slot: str
     axes: tuple[AxisDecl, ...]
     matrix: MatrixSupport | None = None
+    simplex_reference: int | None = None
 
     def emit(self, emission: KernelEmission) -> None:
         """Group the linked coordinates under the declared axes.
@@ -1368,6 +1378,31 @@ class BindTensorSlot(KernelPart):
         rows = emission.shape(self.slot).rows
         row = (("program_row", ROWS),) if rows else ()
         leading = (_var("program_row"),) if rows else ()
+        if self.simplex_reference is not None:
+            reference = self.simplex_reference
+            *batch, event = dimensions
+            size = self.axes[-1].size
+            offset = _flat_offset(self.axes[:-1], size - 1)
+            logits = _factor(
+                (event,),
+                cases=tuple(
+                    (
+                        index,
+                        LetExprLiteral(value=0.0)
+                        if index == reference
+                        else _index(
+                            flat,
+                            *leading,
+                            _add(offset, _integer(index - int(index > reference))),
+                        ),
+                    )
+                    for index in range(size)
+                ),
+            )
+            emission.steps.append(
+                _let(self.slot, _factor((*row, *batch), body=_call("softmax", logits)))
+            )
+            return
         if self.matrix is None:
             emission.steps.append(
                 _let(
@@ -2082,7 +2117,10 @@ class ProgramKernelSpec(KernelLaw):
         }
         binds = {
             name: BindTensorSlot(
-                slot=name, axes=declaration.axes, matrix=declaration.matrix
+                slot=name,
+                axes=declaration.axes,
+                matrix=declaration.matrix,
+                simplex_reference=declaration.simplex_reference,
             )
             if len(declaration.axes) > 1
             else BindSlot(slot=name)

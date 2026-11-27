@@ -187,6 +187,49 @@ def test_a_positive_scale_takes_the_log_link() -> None:
     assert "let sigma = exp(dpar_sigma_eta)" in fitted.qvr_source
 
 
+def test_each_program_simplex_in_a_batch_has_its_own_reference() -> None:
+    source = """object Trial : FinSet 6
+object Group : FinSet 2
+object Class : FinSet 3
+
+program batched_simplex(trial_idx : Tensor[Int]([Trial]), means : Tensor[Real]([Class])) : Trial -> Trial
+    sample weights : Group <- Dirichlet(concentration=[1.0, 1.0, 1.0]) [over=Class, iid_over=Group]
+    let probabilities = weights[1]
+    marginalize c : Class <- Categorical(probs=probabilities) [over=Trial, reduction=logsumexp]
+        let mean = means[c]
+        observe y : Trial <- Normal(loc=mean, scale=0.5) [via=trial_idx]
+    return y
+
+export batched_simplex
+"""
+    rows = frame().assign(y=np.arange(-6, 6) / 8)
+    means = torch.tensor([-1.0, 0.125, 0.75], dtype=torch.float64)
+    fitted = fit(
+        program=source,
+        parameters={"weights": "~ 1"},
+        response="y",
+        data=rows,
+        data2={"means": means.numpy()},
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    logits = torch.tensor([[0.0, 0.5, -0.7], [0.0, -0.4, 0.9]], dtype=torch.float64)
+    coordinates = logits[:, 1:].reshape(1, -1)
+    scores = (
+        pin(fitted, {"dpar_weights_intercept": coordinates.numpy()})
+        .log_likelihood()["y"]
+        .reshape(-1)
+    )
+    component = torch.distributions.Normal(means, 0.5).log_prob(
+        torch.tensor(rows["y"].to_numpy())[:, None]
+    )
+    expected = torch.logsumexp(component + logits[1].log_softmax(0), -1)
+    torch.testing.assert_close(scores, expected, atol=1e-10, rtol=1e-10)
+    wrong_group = torch.logsumexp(component + logits[0].log_softmax(0), -1)
+    assert float((scores - wrong_group).abs().max()) > 1e-2
+
+
 def test_a_program_simplex_keeps_its_reference_coordinate() -> None:
     # Binary fractions keep the Float32 response carrier exact.
     rows = frame().assign(y=np.arange(-6, 6) / 8)
