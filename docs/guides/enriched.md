@@ -260,6 +260,13 @@ $k$ of their product and the hom value $\mathcal C(C_k, A_i \otimes B_j)$. In th
 decomposition is $A \otimes B = A \times B$, and under `GODEL` the result is
 $\min(0.6, 0.7) = 0.6$ at that index and zero elsewhere.
 
+The algebra must be an `IdempotentSemiring`, since the sum over decompositions is a
+join; any other algebra raises `TypeError`. The products over all pairs of objects are
+one [contraction](transformations.md#python-api), and each product is then summed
+into the object it decomposes, so for $n$ objects the work is $2n^2$ products and at
+most $n$ times the largest number of decompositions of one object in sums, quadratic
+rather than cubic in $n$.
+
 ```python
 import torch
 from quivers.enriched.day_convolution import day_convolution, day_unit

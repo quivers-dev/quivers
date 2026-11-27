@@ -31,9 +31,28 @@ $K$ of weights; the axioms $\mathrm{ax}$, the weighted items given by the input;
 the goal items $\mathrm{goal} \subseteq I$, whose weights are the answer
 [@goodman1999semiring]. A rule with several premises is a hyperedge of a
 [hypergraph](https://en.wikipedia.org/wiki/Hypergraph), an edge that joins several
-inputs to one output [@klein2001parsing]. The library's `DeductionSystem` also takes
-an agenda factory and a chart factory, which choose how the system is evaluated and
-not what it derives.
+inputs to one output [@klein2001parsing]. The library's
+[`DeductionSystem`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem)
+also takes an agenda factory and a chart factory, which choose how the system is
+evaluated and not what it derives. The chart factory is called with the system's
+`tolerance`, so a custom [`Chart`](../api/stochastic/agenda.md#quivers.stochastic.agenda.Chart)
+accepts it, and its `lookup(pattern, bindings)` receives the values the run has
+already bound. A system whose items cover stretches of the input declares
+`goal_extent`, the positions an item covers, and its goal items must then cover the
+whole input. A compiled deduction with a lexicon declares it for its span items;
+without the declaration the goal is the goal predicate alone.
+
+The default
+[`HashChart`](../api/stochastic/agenda.md#quivers.stochastic.agenda.HashChart) keys
+its lookups on the positions the bindings fix, each item that arrives is matched
+only against premises of its own form, and the other premises of a rule are found by
+[Generic Join](../api/stochastic/joins.md), so over a run a rule's comparisons stay
+within the [AGM bound](../api/stochastic/agenda.md#finding-rule-instances) of its body
+and no item is compared against every premise of every rule.
+[`AgendaResult.work`](../api/stochastic/agenda.md#quivers.stochastic.agenda.AgendaResult)
+reports the pops, matches, sums, products, and chart and queue operations of a run,
+and `AgendaResult.applications` lists every rule application as
+`(rule_index, rule_name, antecedents, conclusion)`.
 
 A derivation's weight is the $\otimes$-product of its rule and axiom weights, and the
 weights of different derivations of one item combine with $\oplus$. The same rules
@@ -84,9 +103,11 @@ its name, here `CG`.
 
 ## Charts as first-class differentiable values
 
-Running a deduction returns a `ChartView` that maps items to weights. Its `weight`
-method reads one item, `enumerate` lists the items matching a pattern, and
-`goal_weight` reads the goal. The weights are PyTorch tensors, and the agenda
+Running a deduction returns a
+[`ChartView`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView) that maps
+items to weights. Its `weight` method reads one item, `enumerate` lists the items
+matching a pattern, `derivations` lists the rule applications that derive an item as
+`(rule_index, rule_name, antecedents)` triples, and `goal_weight` reads the goal. The weights are PyTorch tensors, and the agenda
 combines them with the semiring's operations, so gradients flow from any chart weight
 back to every rule or axiom weight with `requires_grad=True`.
 
@@ -136,6 +157,31 @@ algorithm of Eisner, Goldlust, and Smith [@eisner2005compiling]: when one item f
 of a rule, as a single `NP` of weight $w$ fills both premises of `NP, NP ⊢ S`, the rule fires once
 for that pair, and `S` receives $w \otimes w$. A rule's `weight_fn` must distribute over the
 semiring sum in each premise weight for this count to hold.
+
+The agenda reaches a cyclic system's value only by iterating, and a `tolerance` stops
+that iteration once no weight changes by more than it. A cyclic system whose cycles
+are linear, each strongly connected group of items deriving one another through at
+most one premise of each rule, can be solved without iterating.
+[`plan`](../api/stochastic/planning.md#quivers.stochastic.planning.plan) with the
+recursion contract
+[`LinearCyclic`](../api/qiec/contracts.md#quivers.qiec.contracts.LinearCyclic) and an
+algebra with the
+[`Star`](../api/core/algebras.md#quivers.core.algebras.Star) capability computes its
+least solution through
+[`solve`](../api/stochastic/recursion.md#quivers.stochastic.recursion.solve), which
+visits the groups so that every premise from outside a group is final before the
+group, and solves each group through the algebra's closure [@lehmann1977algebraic].
+The plan takes the rule presentation of the system,
+[`DeductionSystem.presentation`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem),
+and refuses a group whose rules put it on both sides of a product that does not
+commute, or whose closure diverges or cannot be decided.
+
+For a rule presentation in span form, `plan` can choose a
+[span executor](../api/stochastic/planning.md) for a weight, support, or marginal
+query that keeps no derivation records. It sums over the split points for each
+premise pair before applying the rules that use the pair. Empty spans are admitted
+when their dependencies and the within-cell closure satisfy the recursion
+contract. Unreachable items have the algebra's zero weight.
 
 ## Pre-registered stdlib {#pre-registered-stdlib}
 
@@ -400,10 +446,14 @@ iterates the chart instead, reading its axioms off the sentence through its lexi
 arithmetic the chart stops on agreeing weights only once a cycle is shown, so an acyclic
 deduction always settles with equal counts. A cycle of unary rules raises the number of
 times a chain may repeat an item until two weights agree or the number of derivations stops
-growing, and its stop is judged as the chart's is. The searches, collectors, and settlements a
-deduction declares state the semiring they compute in as data, a
-[`KernelSemiring`](../api/qiec/foreign.md#quivers.qiec.foreign.KernelSemiring), and the runtime
-builds them from that statement, never from their names. Each requires the laws it relies on.
+growing, and its stop is judged as the chart's is. A deduction `D` declares three handlers,
+`D__search`, `D__collect`, and `D__settle`, whose
+[`HandlerDef.foreign`](../api/qiec/effects.md#quivers.qiec.effects.HandlerDef) field states what
+each computes: the semiring sum over the search's choices, the semiring product of the
+weights, and the settlement of an iteration, each in the deduction's semiring given as
+data, a
+[`KernelSemiring`](../api/qiec/foreign.md#quivers.qiec.foreign.KernelSemiring). The runtime
+builds each handler from that statement, never from its name, and requires the laws it relies on.
 Learned weights reach the
 computation through the module's `params` instance under the names the chart engine
 gives its parameters, so a run can use the parameters of a fitted system.

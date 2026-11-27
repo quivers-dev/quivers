@@ -15,7 +15,7 @@ are retained by `FormulaData.source` and returned by `fixed_column_observations`
 A retained `Formula.modifiers.weights` column becomes an explicitly typed row
 input and an observation-only `[weights=formula_weights]` option. The lens binds
 its data without coefficient or prior sites and preserves the column through
-`backward`. A decision modifier additionally supplies a typed binary row input;
+`backward`. A decision modifier additionally provides a typed binary row input;
 the generated program visibly combines it with the raw response before scoring
 the joint law. Modifier declarations describe inputs and do not add effects.
 
@@ -23,7 +23,7 @@ Censoring and truncation become typed row inputs and explicit observation
 event metadata. Censoring selects the recorded event; truncation normalizes
 the sampling law before that event is scored. Standard-error roles modify
 the family scale, and `sigma=False` removes the residual-scale site.
-The same role record supplies retained columns for fresh prediction; the
+The same role record provides retained columns for fresh prediction; the
 compiler does not create a second response-data schema.
 
 `reparameterize` selects coordinates for all Gaussian group blocks,
@@ -63,7 +63,7 @@ coefficient correlations. Gaussian blocks use the existing MatrixNormal law
 on explicit support coordinates; positive-semidefinite rank declarations keep
 only genuine stochastic dimensions. Prediction shares the same layout and
 conditions new levels through the retained covariance. See the
-[supplied-covariance workflow](../../guides/analysis-data-and-formulas.md#supplied-covariance-between-grouping-levels).
+[known-covariance workflow](../../guides/analysis-data-and-formulas.md#known-covariance-between-grouping-levels).
 
 ::: quivers.formulas.GroupCovariance
 

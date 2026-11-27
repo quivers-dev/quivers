@@ -85,8 +85,10 @@ those of
 [`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint),
 bit for bit. A program with a scan, whose recursion runs over its
 sequence, is scored by `log_joint` at every evaluation, and so is any
-evaluation made while an effect handler is in scope or of a program
-whose `log_joint` is overridden.
+evaluation made while an effect handler that does more than fix sites is in scope, or of
+a program whose `log_joint` is overridden. An intervention by
+[`do`](../api/effects/handlers.md#quivers.effects.do.do), which only fixes sites, is
+replayed like any other evaluation.
 
 Each chain derives an independent local generator from `seed`, and that stream
 controls initialization, momentum, tree direction, subtree
@@ -149,9 +151,9 @@ uniform.
 
 ### Named initial values
 
-`MCMC(initial_values={"sigma": 0.5})` supplies starting values in the latent
+`MCMC(initial_values={"sigma": 0.5})` sets starting values in the latent
 sites' natural coordinates. The driver first runs `init_strategy` (`"jitter"`,
-`"prior"`, `"zero"`, or a supplied `"guide"`) with each chain's seeded generator,
+`"prior"`, `"zero"`, or a given `"guide"`) with each chain's seeded generator,
 then replaces the named sites in every chain. Unspecified sites retain the
 strategy's values, so a partial mapping can set a constrained scale while
 allowing dispersed starting locations.
@@ -204,7 +206,7 @@ since no bijector is inverted: `initial_values={"side": 1}` starts a
 `Categorical(probs=[0.5, 0.5])` site at its second category. The Gibbs sites
 left unnamed are drawn from the program given the named ones.
 
-The driver detaches and copies the supplied tensors, so later changes to the
+The driver detaches and copies the given tensors, so later changes to the
 caller's mapping or tensors do not change its initialization. Named values are
 part of [checkpoint compatibility](#checkpoints-budgets-and-sampler-statistics):
 resume with the same mapping values as the original run.
@@ -686,13 +688,14 @@ except UnbatchableProgramError as refusal:
 A few programs are refused whatever they declare, because the number of terms in their joint
 would differ between positions. These are an observation whose weights depend on a latent,
 since a zero weight removes its row, and a `filter` over values that depend on one. A program
-whose `log_joint` is overridden, and any evaluation made while effect handlers are on the
-stack, is refused as well, since its density is not its steps' alone.
+whose `log_joint` is overridden, and any evaluation made while a handler that does more than
+fix sites is on the stack, is refused as well, since its density is not its steps' alone. A
+`do` intervention only fixes sites, so a program under one is evaluated at many positions.
 
 [`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint)
 over an input of `B` rows scores its independent runs together under the same declarations,
-and one by one when a step declares neither, draws at random, or reads a host datum given per
-run.
+and one by one when a step declares neither, draws at random, reads a host datum given per
+run, or runs under a handler that does more than fix sites.
 
 The whole batch is held in memory at once, at `B` times the memory of one evaluation. A grid
 of millions of positions is split into calls of a size that fits.

@@ -113,7 +113,7 @@ log_q = guide.log_prob(x, latents)
 #### Named initial centers
 
 `AutoNormalGuide(initial_values={...})` accepts natural-scale values keyed by
-latent site name. A supplied value $v_i$ sets the unconstrained Normal location
+latent site name. A given value $v_i$ sets the unconstrained Normal location
 to $T_i^{-1}(v_i)$; the transformed guide's expectation can differ from $v_i$.
 Unspecified locations remain zero, and `init_scale` sets the unconstrained
 standard deviations, with default `0.1`.

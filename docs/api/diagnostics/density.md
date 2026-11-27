@@ -18,7 +18,7 @@ $$
 where $\phi$ is the standard Normal density. Input shape is
 `(chain, draw, *event)`: chain and draw axes are pooled, while each event
 coordinate receives its own marginal estimate. These marginal ordinates do
-not supply a joint density at a vector null.
+not give a joint density at a vector null.
 
 The default `bandwidth="nrd0"` uses
 $0.9\min(\operatorname{SD},\operatorname{IQR}/1.34)N^{-1/5}$, with SD replacing
@@ -33,7 +33,7 @@ cubic spline evaluation, or negative-value clipping.
 `bandwidth="scott"` instead uses $\operatorname{SD}N^{-1/5}$, following the
 one-dimensional covariance-factor convention of
 [SciPy's `gaussian_kde`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.gaussian_kde.html).
-A positive scalar or event-shaped tensor supplies an absolute bandwidth.
+A positive scalar or event-shaped tensor gives an absolute bandwidth.
 `adjust` multiplies the selected bandwidth. The same rule is applied
 separately to posterior and prior draws, using each distribution's own scale
 and count; `prior_bandwidth` can override the prior rule or absolute value.
@@ -74,7 +74,7 @@ Bandwidth sensitivity and chain diagnostics matter, especially in tails.
 ## Density ratios and their assumptions
 
 `DensityRatio.log_ratio` always means posterior log density minus prior log
-density. Its separate `log_bayes_factor_01` field is supplied only when both
+density. Its separate `log_bayes_factor_01` field is present only when both
 `PointNullAssumptions` declarations are true:
 
 1. The encompassing prior is proper and induces a continuous contrast with a
@@ -121,7 +121,7 @@ Each `DensityOrdinate` retains `log_density`, `log_bandwidth`, the absolute
 `kernel_effective_count` reports
 $(\sum_s w_s)^2/\sum_s w_s^2$ for local Gaussian weights. It describes
 local weight concentration, without measuring MCMC mixing or approximation
-error. None of these values supplies a universal KDE accuracy guarantee.
+error. None of these values gives a universal KDE accuracy guarantee.
 
 Inputs must be finite floating tensors with at least two pooled draws and
 nonzero spread on every coordinate. Known Boolean/integer samples, missing
@@ -189,7 +189,7 @@ assert comparison.point_evidence.log_bayes_factor_01 is None
 ```
 
 This request returns a diagnostic density ratio. To request a point-null Bayes
-factor, supply `assumptions=PointNullAssumptions(...)` in the configuration,
+factor, pass `assumptions=PointNullAssumptions(...)` in the configuration,
 with both declarations justified by the model described above. Each event
 coordinate remains a separate scalar comparison. The returned `log_ratio`
 retains the factored tail calculation; subtracting the displayed ordinate

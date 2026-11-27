@@ -28,7 +28,7 @@ scalar upper endpoint thus contributes once per queried row, with its gradient
 summed over those rows.
 
 The native and reference implementations preserve these domains. Dynamic
-external runtimes supply checked helpers; ordinary Stan calls use checked
+external runtimes provide checked helpers; ordinary Stan calls use checked
 functions, while BUGS/JAGS refuse them. Retained canonical computations
 require a target with the probability capability. A partial operation in
 an inactive conditional branch must stay inactive; unsupported symbolic

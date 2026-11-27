@@ -532,19 +532,31 @@ deduction CCG : Term -> Term [semiring=LogProb, start=S, depth=6]
   identifier that is neither a declared atom nor a numeral is a pattern variable,
   whatever its spelling, and a variable that occurs twice in a rule must match the same
   term at both occurrences. A declared atom in a slot for a chart position, such as the first
-  two slots of `span`, is a compile error naming the rule and the identifier.
+  two slots of `span`, is a compile error naming the rule and the identifier. A premise
+  or conclusion that is a bare variable, and does not also occur inside a term of the
+  rule, ranges over every judgment form: the rule is the family of its instances, one
+  per form, which share its weight parameter.
 - **`rule NAME : premises |- conclusion`** is an inference rule with any number of
   comma-separated premises. A trailing `#[learnable]` pragma gives the rule a learnable
   weight, one for each distinct binding of its category variables and shared across
   chart positions, so a rule whose variables are all positions has one weight.
-- **`semiring=`** selects `LogProb`, `Viterbi`, `Boolean`, or `Counting`.
-- **`start=`** names the category of the goal items.
+- **`semiring=`** selects `LogProb`, `Viterbi`, `Boolean`, or `Counting`. A learned
+  rule weight is a log weight, so it enters the chart as it is under `LogProb` and
+  `Viterbi`, whose elements are log weights
+  ([`ChartSemiring.log_weights`](../api/stochastic/semiring.md#quivers.stochastic.semiring.ChartSemiring.log_weights)),
+  and contributes the unit under `Boolean` and `Counting`.
+- **`start=`** names the category of the goal items. With a lexicon, a goal span item
+  must also cover the whole input; without `start=` every item is a goal.
 - **`depth=`** bounds the constructor depth of the categories in rule conclusions, so
   the agenda terminates on cyclic rules.
 - **`tolerance=`** (optional) stops the iteration of a cyclic chart once its weights
-  change by less than the tolerance, which computes the Kleene closure of a cycle
-  [@mohri2002semiring]. It is used with rule weights marked `#[learnable, bounded]`,
-  which keeps cyclic weights below one.
+  change by less than the tolerance, which approximates the Kleene closure of a cycle
+  [@mohri2002semiring]. The chart engine returns the stopped weights. The reference
+  machine does not treat a stop within the tolerance as the value: it raises
+  [`ContractNotMet`](../api/qiec/contracts.md#quivers.qiec.contracts.ContractNotMet)
+  ([the deduction as a QIEC computation](deduction.md#the-deduction-as-a-kernel-computation)).
+  It is used with rule weights marked `#[learnable, bounded]`, which keeps cyclic
+  weights below one.
 
 Slash, product, and modal type constructors are declared atoms, not built-in syntax.
 In Steedman notation [@steedman2000syntactic], `Fwd(X, Y)` is `X/Y`, which takes a `Y`

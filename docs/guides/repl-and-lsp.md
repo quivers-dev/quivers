@@ -362,7 +362,7 @@ conditions one of its sample sites and leaves every other site drawn, and
 `--seed N` seeds the reference generator the draws use. The response carries
 the program's value and the log joint of the drawn and given sites together
 with its observations and scores. A program's extents are read off its data,
-and an unsolved static object or index parameter is supplied with
+and an unsolved static object or index parameter is given with
 `--static NAME=TERM`. A program's handlers are fixed by the run,
 so the session's runtime configuration applies to computations only.
 
@@ -1219,7 +1219,7 @@ session. The compiler defers only declarations that depend on unresolved
 dimensions, and still reports errors in independent declarations.
 
 Program headers use the same telescope convention as checked computations:
-`[...]` binds static parameters, while `(...)` binds values supplied to execution.
+`[...]` binds static parameters, while `(...)` binds values given to execution.
 A later parameter's type may refer to an earlier static parameter. The header
 describes the inputs; an `observe` step separately determines which input
 contributes a likelihood. Thus an observed response remains an ordinary typed
@@ -1245,7 +1245,7 @@ browsers. Scoped inspection exposes the declarations:
 ```
 
 `:type regression::x` reports `x :: Tensor[Real]([Row])`. `:run` lists the checked
-entry with its input roles, while the invocation infers `Row` from the supplied
+entry with its input roles, while the invocation infers `Row` from the given
 arrays. Conflicting row lengths fail at the data boundary.
 
 The QVR Jupyter kernel accepts the same source and meta-commands in cells; its

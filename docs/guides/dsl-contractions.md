@@ -173,7 +173,12 @@ export final
 
 The inferred wiring is `id,de,es->is`: both feature axes are reduced and the
 one-element `Scalar` axis remains. The result has shape `(1024, 1)`, one score per item
-against the shared target vector.
+against the shared target vector. `real` is a commutative semiring, so the contraction
+is evaluated by variable elimination, summing out one feature axis at a time, and the
+product over all of `Item`, `LeftFeature`, and `RightFeature` is never formed. A rule
+that is not a commutative semiring, such as the default `product_fuzzy`, is evaluated
+in the written order
+([evaluation of contractions](transformations.md#python-api)).
 
 ## See also
 

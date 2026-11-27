@@ -18,7 +18,7 @@ does not add a predictor column.
 
 For `family="gaussian"` and `family="student_t"`, the residual terms change
 the response law, as brms's natural-residual formulation does. The fit keeps
-the family it was given (`fit.family` is still `gaussian`) and holds the
+the family it was given (`fit.family` is `gaussian`) and holds the
 dependence as its residual law, `fit.residual`. For every
 other family with one location predictor, brms adds latent residuals to the
 linear predictor instead, and QVR does the same (see below). A `car` term

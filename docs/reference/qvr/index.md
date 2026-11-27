@@ -55,7 +55,7 @@ the delimiters do not begin a body or change a parameter's stage.
 The brackets contain static parameters used in checking and specialization.
 The parentheses contain runtime values. A runtime value may vary between
 executions of one specialized program; a static argument selects that program's
-types and structure. Supplying an argument implicitly is a separate question:
+types and structure. Giving an argument implicitly is a separate question:
 binding can recover an omitted extent from a tensor's checked shape, but that
 extent still occupies the static context.
 
@@ -78,9 +78,9 @@ The table gives the corresponding interpretation for each declaration and applic
 | `schema app[X, Y : Cat] : ...` and `rule app[X, Y] : ...` | category-pattern variables filled by static substitution | the resulting morphism's arguments, after matching |
 | `construct C[A, n](field) as F[A](n)` | family parameters and constructor indices | constructor fields |
 | parameterized effects and handlers | interfaces, indices, and types selected by their static telescopes | operation arguments, return values, and resumed values |
-| `family Vec[A : Type](n : Nat) : Type` | both the uniform parameter `A` and the refinable index `n` | no value is supplied by declaring the family |
-| `Tensor[A]([n])` | element type and shape | tensor entries supplied by a value parameter |
-| `contraction f(g : A -> B, ...)` | the declared types of its inputs | supplied morphisms to compose under the contraction's wiring |
+| `family Vec[A : Type](n : Nat) : Type` | both the uniform parameter `A` and the refinable index `n` | no value is given by declaring the family |
+| `Tensor[A]([n])` | element type and shape | tensor entries given by a value parameter |
+| `contraction f(g : A -> B, ...)` | the declared types of its inputs | the morphisms given, composed under the contraction's wiring |
 
 Parentheses thus do not universally mean runtime application. In a *family type*,
 `Vec[A](n)` separates uniform parameters from indices that constructors and case
@@ -94,8 +94,8 @@ not become a static index merely because it is called a shape parameter.
 
 Rule and schema variables use brackets because they are substituted in types
 and patterns. A contraction's morphism inputs remain parenthesized because the
-contraction combines the supplied morphisms. Likewise, names attached to an
-encoder or decoder identify supplied components, rather than quantified type
+contraction combines the morphisms given. Likewise, names attached to an
+encoder or decoder identify given components, rather than quantified type
 variables. These forms retain their own typing rules while making the stage
 of a program or computation parameter explicit.
 
@@ -111,12 +111,12 @@ finite objects and natural-number extents; a structured computation may remain
 a `CheckedProgram`, with its checked interface intact. The
 [execution reference](execution-and-tooling.md) gives the separate capability boundary.
 
-The shared binder sorts do not yet give every source application the same
-argument grammar. A program call's `[...]` currently accepts names and
+The shared binder sorts do not give every source application the same
+argument grammar. A program call's `[...]` accepts names and
 signed numeric literals, followed by kind checking. It does not accept
 arbitrary structured type, effect, or index-constructor expressions there.
 Typed `define` calls use the QIEC static-argument grammar. This is a
-restriction of the current program-call syntax, separate from what its
+restriction of the program-call syntax, separate from what its
 checked telescope can represent.
 
 ## A minimal mixed module

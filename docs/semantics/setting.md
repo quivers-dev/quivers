@@ -232,7 +232,7 @@ $\rho$ when it is clear from the context.
 For a declaration with a static telescope $\Delta$, interpretation is relative
 to a static valuation $\delta\in\llbracket\Delta\rrbracket$ before runtime
 values are assigned. An input telescope $\Gamma_v(\delta)$ may depend on that
-valuation, as a tensor's shape depends on a static extent. Supplying
+valuation, as a tensor's shape depends on a static extent. Giving
 $d\in\llbracket\Gamma_v(\delta)\rrbracket$ extends the runtime environment
 without performing an effect. The
 [parameter semantics](programs.md#31-static-and-runtime-telescopes) makes this

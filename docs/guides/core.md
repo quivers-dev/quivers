@@ -103,7 +103,10 @@ and only the meaning of the resulting number changes.
 An `Algebra` also gives a unit $\mathbf 1$ for $\otimes$ (the diagonal of the
 identity morphism), a zero $\mathbf 0$ for $\bigoplus$ (the score of "no route"), a
 second reduction $\bigwedge$ (`meet`), used for universal quantification, and a
-negation $\neg$ (`negate`). The class checks none of the laws these names suggest.
+negation $\neg$ (`negate`). The names alone promise no law: each algebra's class
+declares the laws it claims, each with its evidence (a proof, a decision procedure,
+tests, or an assumption), in one [law record](../api/core/laws.md), and the
+algorithms that rely on a law ask for it by that record, not by the algebra's name.
 When $\otimes$ and $\bigoplus$ form a
 [semiring](https://en.wikipedia.org/wiki/Semiring), that is, both are associative,
 $\bigoplus$ is commutative, $\otimes$ distributes over $\bigoplus$, and $\mathbf 0$

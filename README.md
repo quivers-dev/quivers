@@ -155,7 +155,7 @@ explains this convention across computations, programs, and indexed types. The
 gives an executable example and shows input errors before inference.
 
 The [end-to-end quickstart](https://quivers.dev/getting-started/quickstart/)
-shows how to supply data, fit this model, and summarize its posterior. For
+shows how to pass data, fit this model, and summarize its posterior. For
 regression from a dataframe, the
 [formula interface](https://quivers.dev/guides/analysis-data-and-formulas/)
 provides an alternative to writing QVR by hand.

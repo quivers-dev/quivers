@@ -7,8 +7,8 @@ variational guide once; later methods reuse the retained tensors. Tensor mapping
 are held by identity, so callers own their storage.
 
 `summary` returns means, sample standard deviations, and requested quantiles on
-each latent site's event coordinates. Recorded MCMC chains also supply a
-`ConvergenceSummary`; variational draws supply `None`. Their one pseudo-chain
+each latent site's event coordinates. Recorded MCMC chains also give a
+`ConvergenceSummary`; variational draws give `None`. Their one pseudo-chain
 records array shape, without asserting MCMC convergence. Original integer
 capacity is checked before Float64 conversion. A coordinate containing a
 nonfinite draw has NaN mean, SD, and quantiles; draws are not deleted, and
@@ -16,7 +16,7 @@ valid coordinates remain independent of that failure. The same scaled
 arithmetic and type-7 quantile kernel serve recorded-chain and retained
 uncertainty summaries.
 
-A source program with no latent sites can still supply observation likelihoods.
+A source program with no latent sites can still give observation likelihoods.
 Its recorded posterior count determines the chain/draw layout; the checked
 registry must establish that no unobserved variable is missing. Such an analysis
 has an empty parameter summary, while raw likelihoods, WAIC, and LOO remain
@@ -99,7 +99,7 @@ gives an executable fit and analysis. Low-level samplers can construct
 A **posterior archive** retains the analysis tensors and their coordinate contract.
 `to_netcdf` writes the existing ArviZ DataTree groups, and `from_netcdf` restores
 owned CPU tensors without replaying the model. `from_datatree` accepts the same
-groups directly. The optional `diagnostics` extra supplies this storage path.
+groups directly. The optional `diagnostics` extra provides this storage path.
 
 Archives retain (i) original tensor dtypes and draw provenance, (ii) chain, draw,
 and event labels, and (iii) group-specific event dimensions. The last distinction
@@ -107,7 +107,7 @@ matters for vector observations: their recorded response can retain a category
 axis even when each raw likelihood has already reduced that event to one score.
 The same converter serves ordinary ArviZ analysis and storage.
 
-`coords` and `dims` on `PosteriorAnalysis` supply defaults for later conversion and
+`coords` and `dims` on `PosteriorAnalysis` set defaults for later conversion and
 covariance requests; explicit method arguments override them. `group_dims`
 preserves dimensions that differ between observed data and reduced likelihoods.
 Readers validate sample-axis labels across groups, rather than matching draws by

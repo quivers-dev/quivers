@@ -12,7 +12,7 @@ The count-mixture reference kernels include `ZeroInflatedNegativeBinomial`,
 structural-zero mixture from positive truncation; the
 [formal count semantics](../../semantics/programs.md#zero-inflated-and-hurdle-count-kernels)
 states their masses and endpoint conventions. All 11 external renderers
-currently refuse these four count families with a `family:<Family>`
+refuse these four count families with a `family:<Family>`
 diagnostic, independently of native and reference support.
 
 `GeneralizedPareto(loc, scale, concentration)` also has a reference
@@ -26,7 +26,7 @@ Reference support does not establish an external target mapping.
 samplers, independently checked against their native laws. Their
 [formal parameter maps](../../semantics/programs.md#scalar-response-kernels-and-regression-parameters)
 distinguish native location/scale parameters from regression means.
-All 11 external renderers currently refuse these four families explicitly.
+All 11 external renderers refuse these four families explicitly.
 
 `DiscreteWeibull` and `ZeroInflatedAsymmetricLaplace` also have native
 and checked-reference implementations, with nonnegative count and mixed

@@ -15,10 +15,10 @@ reparameterization. These checks cannot prove that a user density integrates
 to one or that its sampler implements that density.
 
 Factories are never sampled or called to discover their support during source
-checking. A factory with non-real support therefore supplies an explicit native
+checking. A factory with non-real support therefore declares an explicit native
 `support` constraint; `FamilySpec` already retains one. The runtime binds the
 semantic record to a shallow copy of the returned distribution, retaining its
-parameter tensors and autograd graph. This supplies the existing measure and
+parameter tensors and autograd graph. This gives the existing measure and
 atom machinery with the law's declared reference-measure contract without
 mutating a factory-owned object or registering its class globally.
 
@@ -31,7 +31,7 @@ into a trial count.
 
 Catalog copies and refit snapshots retain catalog identity. Pickling executable
 factories is refused. QIEC serialization retains only custom semantic records;
-execution requires explicitly supplied native implementations. Native factories
+execution requires explicitly provided native implementations. Native factories
 have no implicit pure-reference or external-target implementation, and those
 execution paths report a capability error instead of emitting an undefined
 family. Recorded-event censoring and restriction additionally require the law's

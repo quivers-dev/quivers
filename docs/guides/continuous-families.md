@@ -24,14 +24,14 @@ step.
 Registry membership, checked source construction, and external rendering are
 separate capabilities. `Independent` supports native and checked-reference
 execution, including inline source construction. Its nested distribution
-arguments remain explicitly unsupported by all eleven external renderers.
+arguments are explicitly unsupported by all eleven external renderers.
 
 ### Independent product events
 
 `Independent` moves a specified number of trailing base batch axes into the
 event. The remaining batch axes retain separate pointwise scores. A typed
 runtime header states the parameter and observation shapes; a static telescope
-can leave the row extent to be inferred from supplied data:
+can leave the row extent to be inferred from the given data:
 
 ```qvr
 object Coordinate : FinSet 3
@@ -80,7 +80,7 @@ export count_vectors
 `[over=Category]` marks a single vector event. Its log probability reduces
 the category coordinates together, leaving one score per observation row.
 This distinction also holds when row and category extents happen to be equal.
-The supplied trials may vary by row; responses must sum to those trials.
+The given trials may vary by row; responses must sum to those trials.
 Zero trials require an all-zero response. Replacing the kernel with
 `DirichletMultinomial(total_count=trials, concentration=concentrations)`
 uses a typed concentration tensor with the same axes.
@@ -88,7 +88,7 @@ uses a typed concentration tensor with the same axes.
 Both native kernels check finite trial counts in `0..2**53` before conversion,
 use float64 scores and moments, and draw int64 vectors without pathwise
 sampling gradients. The static `[n : Nat]` determines a shape; the runtime
-`trials` tensor supplies counts to the probability law. Native and
+`trials` tensor gives counts to the probability law. Native and
 checked-reference execution support these kernels; the
 [native API](../api/continuous/families.md#vector-count-events) gives the
 constructors and conditional learned-parameter variants.
@@ -120,7 +120,7 @@ export event_times
 The sample is scalar even though its baseline contains a matrix. The same
 shape contract checks `s + 1` boundaries against `s` coefficient rows at
 compilation and data binding. Declaring the tables adds no effects;
-`observe` supplies the likelihood role.
+`observe` gives the likelihood role.
 
 `MSplineBasis` constructs normalized M-splines and integrated I-splines
 from retained knots. `CoxPH` combines them with simplex weights and uses
@@ -243,7 +243,7 @@ export count_model
 Here `n` specializes the response extent, while `shape` is a runtime
 dispersion parameter. The family argument's name does not make it a
 static shape index, and the typed response declaration alone contributes
-no likelihood; the `observe` step supplies it.
+no likelihood; the `observe` step gives it.
 
 ### Core families {#hand-written-core-families}
 
@@ -372,12 +372,12 @@ sign to the shape argument of
 
 Static response extents and runtime distribution parameters remain
 separate. In the following program, `n` fixes a shared row axis;
-`sigma`, `nu`, and the other real inputs supply distribution values.
+`sigma`, `nu`, and the other real inputs give distribution values.
 Their declarations add no draws or scores.
 
 Native and checked-reference execution support all four families. Each of
-the 11 external renderers currently refuses them explicitly; family
-registration does not supply an external implementation.
+the 11 external renderers refuses them explicitly; family
+registration does not give an external implementation.
 
 ```qvr
 object Out : Real 1
@@ -416,7 +416,7 @@ program tail(scale: Real) : Row -> Row
 export tail
 ```
 
-The native family supplies density, CDF, inverse CDF, broadcasting, and
+The native family gives density, CDF, inverse CDF, broadcasting, and
 reparameterized sampling, including differentiable zero-index limits.
 Its mean exists for `concentration < 1` and its variance for
 `concentration < 0.5`; the implementation returns `NaN` outside those
@@ -601,7 +601,7 @@ The [formula interface](analysis-data-and-formulas.md#zero-inflated-and-hurdle-c
 provides mean/precision parameterizations and known trial counts. The
 [native API](../api/continuous/families.md#zero-inflated-and-hurdle-counts)
 gives the constructors and sampling behavior. Native and reference execution
-support these families. All 11 external renderers currently refuse each
+support these families. All 11 external renderers refuse each
 with a `family:<Family>` diagnostic; the 44 family/backend cells are checked
 by `tests/transpile/test_family_matrix.py`. These family fixtures are separate
 from the gallery and construct rows of the general support matrix.
@@ -612,7 +612,7 @@ cancellation at large counts. Gradients still reach the original learned
 heads, including float32 heads. Finite trial counts are checked before
 conversion and must lie between zero and `2**53`, inclusive. This bound
 preserves their exact integer representation in float64; `Int` remains a
-signed 64-bit carrier. Supply large counts as integer tensors or integer
+signed 64-bit carrier. Pass large counts as integer tensors or integer
 source literals. Converting an already-rounded float32 count to float64
 does not restore the original integer.
 Arithmetic count observations use the same exact-integer limit. Native and
@@ -631,7 +631,7 @@ A runtime header can declare `trials : Tensor[Int]([Row])` and pass it as
 `Binomial(total_count=trials, probs=p)`; the checked integer input reaches
 the count kernel before floating-point conversion.
 A shared scalar count can instead use `(trials : Nat)`. A static
-`[trials : Nat]` is an index extent; it cannot directly supply the
+`[trials : Nat]` is an index extent; it cannot directly give the
 family's runtime `total_count` argument. The source checker reports this
 stage mismatch explicitly.
 
@@ -735,7 +735,7 @@ capabilities must produce an explicit error.
 
 The native wrapper reads the base's scalar-coordinate distributions and
 computes deterministic interval masses. It uses log-CDF or log-survival
-methods where supplied, stable Normal tails, and incomplete-gamma
+methods where given, stable Normal tails, and incomplete-gamma
 calculations for Gamma and Poisson. Beta intervals use log-CDF and
 log-survival calculations from a shared continued-fraction recurrence;
 positive affine transforms delegate interval probabilities to their base.
@@ -768,7 +768,7 @@ The Gamma interval normalizer supports shape and rate derivatives through
 converged float64 tail recurrences. Its lower-tail series, upper-tail
 continued fraction, and small-shape complement calculations have a
 512-iteration convergence limit; nonconvergence raises explicitly. This
-policy supplies no uniform accuracy or convergence guarantee across all
+policy gives no uniform accuracy or convergence guarantee across all
 parameter regimes. Beta tails support derivatives in both concentrations
 and the evaluation point through float64 recurrences with a 4096-iteration
 limit. Short interior intervals use a positive eight-node Gauss–Legendre
@@ -876,9 +876,9 @@ the first axis in `over` takes the row covariance and the second the column
 covariance ([Latent morphism prior](dsl-declarations.md#latent-morphism-prior)).
 
 MatrixNormal also accepts `row_scale_tril` and `col_scale_tril` independently
-of one another. Supply exactly one covariance or lower Cholesky factor for
+of one another. Pass exactly one covariance or lower Cholesky factor for
 each axis. The same triangular-solve density and reparameterized sampler serve
-all four combinations. Supplied factors avoid forming covariance products or
+all four combinations. Given factors avoid forming covariance products or
 performing Cholesky factorization; `expand` and batch selection retain those
 factor coordinates. `ConditionalMatrixNormal` passes its learned factors
 directly through this constructor. Its row and column dimensions remain

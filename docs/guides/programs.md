@@ -188,7 +188,10 @@ log_pjoint = program.log_joint(x, intermediates)
 `log_joint` returns one value per run, shape `(B,)` for `B` input rows, each the sum of
 that run's draw, observe, and score terms, so `log_joint(x, values).sum()`
 is the joint of all the runs. A value in `intermediates` either has one entry per run,
-along a leading axis of length `B`, or is shared by every run.
+along a leading axis of length `B`, or is shared by every run. The runs are scored together
+in one pass when every step declares that it can be evaluated at many positions, and one by
+one otherwise, with the same values
+([Densities at many positions](inference-mcmc.md#densities-at-many-positions)).
 [`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) calls it
 after the guide has drawn the latent values.
 
@@ -220,7 +223,7 @@ must match the names the program observes or reads.
 
 To state these inputs explicitly, use typed runtime parameters in the program
 header, as in `program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out`.
-The annotations constrain supplied values without drawing or scoring them.
+The annotations constrain given values without drawing or scoring them.
 `observe y` assigns the response its likelihood role. Static object, morphism,
 and extent parameters use a preceding bracketed telescope; see the
 [parameter reference](../reference/qvr/index.md#parameter-telescopes).
@@ -353,8 +356,8 @@ source. The step records are:
 |---|---|---|
 | [`Draw`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Draw) | `sample x <- f(a, b)` | `names`, `morphism`, `args` |
 | [`Observe`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Observe) | `observe y <- f(a, b)` | `names`, `morphism`, `args`, and `law` inside a `marginalize` block |
-| [`Let`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) | `let w = expression` | `name`, `value` |
-| [`Score`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) | a `marginalize` block | `name`, `score`, `units` |
+| [`Let`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) | `let w = expression` | `name`, `value`, `batched` |
+| [`Score`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) | a `marginalize` block | `name`, `score`, `role`, `batched`, `units` |
 
 A draw's `args` are names of earlier bindings or
 [`Indexed`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Indexed)
@@ -362,6 +365,12 @@ gathers such as `mu[group]`, and `None` reads the program input. A `Let`'s `valu
 constant, the name of an earlier binding, or a function of the environment, which may
 declare the names it reads with
 [`reading`](../api/continuous/program_steps.md#quivers.continuous.program_steps.reading).
+A `Let` or `Score` function written over a leading batch axis sets `batched=True`, and one
+that [`torch.func.vmap`](https://docs.pytorch.org/docs/stable/generated/torch.func.vmap.html)
+can map is wrapped in
+[`mappable`](../api/continuous/program_steps.md#quivers.continuous.program_steps.mappable),
+so the program can be scored at
+[many positions in one pass](inference-mcmc.md#densities-at-many-positions).
 The morphisms are the ones the compiler emits. A family with fixed parameters comes
 from a `make_fixed_*` factory such as
 [`make_fixed_normal`](../api/continuous/inline.md#quivers.continuous.inline.make_fixed_normal),

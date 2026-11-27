@@ -11,9 +11,13 @@ gives the `trace` and `partial_trace` functions.
 as its monoidal product and sums paths through a feedback block. It is a
 [partial trace](../../guides/categorical.md#coproduct-feedback): its method is
 defined only when the entire feedback closure is finite
-[@malherbe2012partially]. It accepts the Boolean, Counting, Markov,
-log-probability, and max-plus semirings, with float32 or float64 matrices in
-their declared carriers. An undefined closure raises
-[`DivergentClosureError`](#quivers.categorical.traced.DivergentClosureError).
+[@malherbe2012partially]. It accepts a semiring by its capability: any
+[`Semiring`][quivers.core.algebras.Semiring] with a [`Star`][quivers.core.algebras.Star] that establishes the
+least-solution law, which includes the Boolean, Gödel, tropical, max-plus, log,
+counting, and Markov semirings. Matrices are float32 or float64 in the
+algebra's carrier. An undefined closure raises
+[`DivergentClosureError`](#quivers.categorical.traced.DivergentClosureError),
+and a loop that rounding cannot decide raises
+[`UndecidedClosureError`][quivers.core.algebras.UndecidedClosureError].
 
 ::: quivers.categorical.traced

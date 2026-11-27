@@ -112,7 +112,7 @@ and with `[effects=[Sample]]` it reports that the body uses `Score`. Pyro and Nu
 
 The [model interface](../../guides/model-data-and-fitting.md) derives input names,
 types, and observation roles from the checked program. `Model(source).bind(data)`
-checks the supplied values before fitting; neither a guide nor an extra list of
+checks the given values before fitting; neither a guide nor an extra list of
 observed names is required. `object Item : FinSet _` also permits the data to fix
 the number of rows, and optional typed parameters in the program header constrain external values.
 

@@ -362,6 +362,20 @@ wiring = einsum_wiring(mi, "ij, jk -> ik")
 out    = wiring.apply(f_tensor, g_tensor)
 ```
 
+How a contraction is evaluated depends on the laws its rule establishes. A rule that
+establishes the commutative-semiring laws
+([`ELIMINATION_LAWS`](../api/core/elimination.md#quivers.core.elimination.ELIMINATION_LAWS))
+is contracted by [variable elimination](https://en.wikipedia.org/wiki/Variable_elimination),
+summing out one letter at a time in a greedy order, so the full product of all inputs
+is never formed. Any other rule, such as material implication, is evaluated in the
+written order: the inputs are folded left to right with $\otimes$ and the contracted
+letters reduced at once with $\bigoplus$.
+[`EinsumWiring.plan`](../api/core/wiring.md#quivers.core.wiring.EinsumWiring.plan)
+returns the chosen plan, and
+[`EinsumWiring.apply_with_work`](../api/core/wiring.md#quivers.core.wiring.EinsumWiring.apply_with_work)
+returns the output with a count of its operations. Binary composition and
+[Day convolution](enriched.md#day-convolution) use the same engine.
+
 ## See also
 
 - [QVR tutorial chapter 7](../tutorials/qvr/07-categorical.md): transformations and

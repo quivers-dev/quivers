@@ -2583,8 +2583,9 @@ def fit(
     point composes `formula_from_data`, `FormulaToQVRModule`,
     `Compiler`, and the inference layer in one call.
 
-    ``family="categorical"`` infers contiguous labels ``0..K-1`` and uses
-    label zero as the reference. An attached categorical predictor may return
+    ``family="categorical"`` uses the sorted distinct integer labels or the
+    declared factor levels and takes the first category as the default
+    reference. An attached categorical predictor may return
     ``(N, K-1)`` reference logits or ``(N, K)`` full logits. For
     ``family="mixture"``, ``mixture_components`` selects any finite component
     count of at least two; the likelihood integrates assignments exactly.

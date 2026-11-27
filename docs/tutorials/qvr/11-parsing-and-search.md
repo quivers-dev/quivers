@@ -87,7 +87,7 @@ qvr> :info lp_parser__run
 qvr> :dump lp_parser__run --json
 ```
 
-The derivation step performs search choices, weight additions, and reads of parameters. The run entry point installs handlers that collect every derivation, so its residual row, the effects left after its own handlers, is empty. The dump shows the generated family of items, with constructors for the categories and the span positions.
+The derivation step performs search choices, weight additions, and reads of parameters. The run entry point installs the generated handlers `lp_parser__search`, `lp_parser__collect`, and `lp_parser__settle`, which sum over every derivation, multiply the weights along each, and settle any iteration, so its residual row, the effects left after its own handlers, is empty. The dump shows the generated family of items, with constructors for the categories and the span positions.
 
 ## 4. Call a deduction from a probabilistic program
 

@@ -252,11 +252,11 @@ The call checks that each argument has as many entries as its declared type, and
 `CompileError`.
 
 A program specialization such as `p[Row](data)` uses the static list to
-select the program's types before supplying its runtime values. Its
+select the program's types before giving its runtime values. Its
 denotation is the corresponding member of the kernel family in
 [Programs as kernels §3.1](programs.md#31-static-and-runtime-telescopes).
 The brackets do not change a contraction's parenthesized morphism inputs;
-contraction application combines the supplied morphisms under its declared
+contraction application combines the given morphisms under its declared
 wiring.
 
 ## 3. Copying, iteration, and recurrence
@@ -331,7 +331,8 @@ rule names, resolved through the morphism, schema, and bundle environments
 bound $d$ on the nesting depth of categorial types, and the type constructors allowed. From these
 it builds a lexical morphism, a binary rule morphism, and optionally a unary rule morphism over the
 finite set of categorial types of depth at most $d$ ([Schemas §4](schemas.md#4-the-free-residuated-universe)),
-and passes them to the class `InsideAlgorithm`.
+and passes them to
+[`InsideAlgorithm`](../api/stochastic/inside.md#quivers.stochastic.inside.InsideAlgorithm).
 
 The denotation sends a token string $w = w_1 \cdots w_n$ to the log of the inside weight of the start
 category over the whole string,
@@ -346,7 +347,8 @@ recursion in the log semiring, whatever the module's composition rule. When the 
 morphisms are stochastic, so that the rules form a probabilistic context-free grammar,
 $\beta(s, 0, n)$ is the [inside probability](https://en.wikipedia.org/wiki/Inside%E2%80%93outside_algorithm)
 of $w$ [@baker1979trainable; @goodman1999semiring]. The value depends only on the rules and the
-string, not on the order in which the chart is filled.
+string, not on the order in which the chart is filled. A rule of weight zero contributes
+the exact log zero $-\infty$, and a string with no derivation has that same log weight.
 
 With a unary rule matrix $U$, a chain of unary rules derives a category over a span from another
 category over the same span, so the inside weights of a cell are closed under unary chains: the
@@ -355,7 +357,10 @@ runtime multiplies the cell that the lexical and binary rules produce, once, by 
 $U^* = I \oplus U \oplus U^2 \oplus \cdots$, the sum over every chain of the product of its
 weights [@goodman1999semiring; @mohri2002semiring]. For probabilities $U^* = (I - U)^{-1}$, which
 exists when the spectral radius of $U$ is below one. A closure whose series diverges, as for a
-row-stochastic $U$, whose spectral radius is one, has no value, and parsing raises `ValueError`.
+row-stochastic $U$, whose spectral radius is one, has no value, and parsing raises
+[`DivergentClosureError`](../api/core/algebras.md#quivers.core.algebras.DivergentClosureError).
+When a loop weight lies so close to one that rounding cannot decide whether the series converges,
+parsing raises [`UndecidedClosureError`](../api/core/algebras.md#quivers.core.algebras.UndecidedClosureError).
 
 ### 4.2 `chart_fold`
 

@@ -29,7 +29,9 @@ result = fit(
 ```
 
 The result is a [`BayesianFit`](../api/formulas/fit.md), a frozen
-[`dx.Model`](https://didactic.dev/api/Model) with `.formula`, `.family`, `.program`
+[`dx.Model`](https://didactic.dev/api/Model) with `.formula`, `.family` (the family
+given), `.residual` (the residual dependence of an autocorrelation term such as
+`ar()`, or `None` for independent rows), `.program`
 (the compiled [`MonadicProgram`](../api/continuous/programs.md)), `.posterior` (an
 [`MCMCResult`](../api/inference/mcmc.md) or a [`Guide`](../api/inference/guide.md)),
 and `.observations` (the observations dict used for inference).
@@ -136,8 +138,16 @@ the features the model is meant to explain.
 Both source and formula fits expose `analysis(num_samples=100, seed=7)`.
 The returned object retains posterior draws and raw response likelihoods for
 `summary`, `waic`, `loo`, and `to_datatree`, without replaying the model for
-each operation. Recorded MCMC chains supply convergence diagnostics;
-variational draws supply uncertainty summaries without convergence claims.
+each operation. Recorded MCMC chains give convergence diagnostics;
+variational draws give uncertainty summaries without convergence claims.
+The rows of a `marginalize` block have scores of their own only when no two of
+them share a latent class. Otherwise the source fit's `analysis` raises
+[`UnfactoredObservationError`](../api/effects/units.md#quivers.effects.units.UnfactoredObservationError),
+and `analysis(units="factors")` retains one score per independent unit instead,
+the scores that
+[`ModelFit.unit_log_likelihood`](../api/modeling.md#quivers.modeling.model.ModelFit.unit_log_likelihood)
+returns, so `loo` and `waic` leave out one unit at a time
+([units and row scores](../semantics/programs.md#271-units-and-row-scores)).
 The [executable workflow](analysis-data-and-formulas.md#raw-likelihoods-and-retained-analysis)
 shows the shared interface. Lower-level samplers can use the adapters below
 when they need custom coordinates or predictive groups.
@@ -189,7 +199,7 @@ The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inferen
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
 with ArviZ-compatible groups. A formula fit's `posterior_predict` method
-supplies replicated responses on its retained training rows, or on a `new_data`
+gives replicated responses on its retained training rows, or on a `new_data`
 frame evaluated with fitted transforms and known group levels. It includes response
 noise and preserves separate chain and draw axes. The
 [new-row workflow](analysis-data-and-formulas.md#predictions-on-new-rows)
@@ -283,7 +293,7 @@ assert scores["y"].shape == (1, 3, 2)
 ```
 
 The small optimization budget illustrates the interface; inference still needs
-the checks described above. Supply the response and any authored censoring,
+the checks described above. Pass the response and any authored censoring,
 truncation, measurement-error, decision, subset, or trial columns. Subsets select
 fresh rows before response evaluation, and neural `predictor_data` follows the
 same selection. Vector count responses infer fresh row totals; an explicit
@@ -294,7 +304,9 @@ retain the training level order even when a fresh batch omits some levels.
 as in posterior prediction. These scores condition on the selected group-effect
 policy; they are not an integration over every possible new group. Omitting
 `new_data` scores the fitted outcomes. Source `ModelFit.log_likelihood(data=...)`
-uses its existing checked rebinding interface for the corresponding operation.
+uses its existing checked rebinding interface for the corresponding operation,
+and `ModelFit.unit_log_likelihood(data=...)` scores the units of marginalized
+observations whose rows share a latent.
 
 ### Convergence diagnostics for any draws
 
