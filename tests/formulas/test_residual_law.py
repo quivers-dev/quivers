@@ -15,6 +15,7 @@ import torch
 
 from quivers.continuous._multivariate_student_t import MultivariateStudentT
 from quivers.diagnostics.regression import bayesian_r2
+from quivers.dsl import Compiler
 from quivers.formulas import bf, fit, formula_to_qvr, lf, nlf, set_rescor
 from quivers.formulas._joint_residual import coordinate, marginal
 from quivers.inference.mcmc import PotentialFn
@@ -240,7 +241,7 @@ def test_subsampled_loo_equals_full_loo_at_the_sampled_units(build):
     )
 
 
-def test_joint_r_squared_reads_each_response_as_a_single_fit():
+def test_joint_r_squared_and_errors_read_fitted_responses(monkeypatch):
     frame = _frame()
     censored = fit(
         bf("y1 | cens(w0) ~ x") + bf("y2 ~ x") + set_rescor(False), data=frame, **SVI
@@ -248,17 +249,35 @@ def test_joint_r_squared_reads_each_response_as_a_single_fit():
     with pytest.raises(ValueError, match="censoring bounds"):
         censored.bayes_r2(resp="y1", method="residual", num_samples=3)
     fitted = fit(bf("y1 ~ x") + bf("y2 ~ x") + set_rescor(False), data=frame, **SVI)
-    automatic = fitted.bayes_r2(num_samples=3)
-    model = fitted.bayes_r2(method="model", num_samples=3)
-    residual = fitted.bayes_r2(method="residual", num_samples=3)
-    for name in ("y1", "y2"):
-        # A Gaussian response defaults to the model form, as a single fit does.
-        torch.testing.assert_close(automatic[f"R2{name}"], model[f"R2{name}"])
-        means = fitted.posterior_epred(resp=name, num_samples=3)[name]
-        torch.testing.assert_close(
-            residual[f"R2{name}"],
-            bayesian_r2(means, observed=torch.as_tensor(frame[name].to_numpy())),
-        )
+
+    def reject_compilation(*args, **kwargs):
+        pytest.fail("training R-squared and errors should reuse the fitted program")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Compiler, "compile", reject_compilation)
+        automatic = fitted.bayes_r2(num_samples=3)
+        model = fitted.bayes_r2(method="model", num_samples=3)
+        residual = fitted.bayes_r2(method="residual", num_samples=3)
+        errors = fitted.predictive_error(method="fitted", num_samples=3)
+        loo = fitted.loo_r2(resp="y1", summary=False, **DRAWS)
+        assert loo["R2y1"].shape == (DRAWS["num_samples"],)
+        for name in ("y1", "y2"):
+            torch.testing.assert_close(automatic[f"R2{name}"], model[f"R2{name}"])
+            means = fitted.posterior_epred(resp=name, num_samples=3)[name]
+            outcomes = torch.as_tensor(frame[name].to_numpy(copy=True))
+            torch.testing.assert_close(
+                residual[f"R2{name}"], bayesian_r2(means, observed=outcomes)
+            )
+            torch.testing.assert_close(errors[name], outcomes - means.double())
+
+    fresh = frame.iloc[:5].assign(y1=[-0.2, 0.3, 0.1, 0.4, 0.8], x=lambda d: -d.x)
+    options = {"resp": "y1", "new_data": fresh, "num_samples": 3}
+    fresh_r2 = fitted.bayes_r2(method="residual", **options)["R2y1"]
+    fresh_means = fitted.posterior_epred(**options)["y1"]
+    fresh_outcomes = torch.as_tensor(fresh["y1"].to_numpy(copy=True))
+    torch.testing.assert_close(
+        fresh_r2, bayesian_r2(fresh_means, observed=fresh_outcomes)
+    )
 
 
 def test_r_squared_under_residual_correlation_uses_the_coordinate_marginal():

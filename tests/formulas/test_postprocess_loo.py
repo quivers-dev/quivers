@@ -696,9 +696,13 @@ def test_kfold_partitions_follow_brms(conjugate: BayesianFit) -> None:
         conjugate.kfold(K=2, Ksub=[5])
 
 
-def test_kfold_predict_with_saved_refits() -> None:
-    frame = pd.DataFrame({"y": Y[:8], "x": np.linspace(-1, 1, 8)})
-    model = fit("y ~ x", data=frame, method="svi", num_steps=30, seed=0)
+@pytest.mark.parametrize("multivariate", [False, True])
+def test_kfold_predict_with_saved_refits(multivariate: bool) -> None:
+    frame = pd.DataFrame({"y": Y[:8], "z": -Y[:8], "x": np.linspace(-1, 1, 8)})
+    specification = (
+        bf("y ~ x") + bf("z ~ x") + set_rescor(False) if multivariate else "y ~ x"
+    )
+    model = fit(specification, data=frame, method="svi", num_steps=30, seed=0)
     result = model.kfold(K=2, save_fits=True, joint="fold", num_samples=20)
     assert result.estimate.num_observations == 2 and result.estimate.joint == "fold"
     prediction = kfold_predict(result, num_samples=20)

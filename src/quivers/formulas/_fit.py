@@ -71,7 +71,7 @@ from quivers.formulas._predictor_graph import (
 )
 
 from quivers.formulas._prediction import FormulaPredictionPlan, prepare_prediction
-from quivers.formulas._r_squared import formula_r2
+from quivers.formulas._r_squared import _responses, formula_r2
 from quivers.formulas._autocor import (
     AutocorMatrix,
     fields_and_design,
@@ -1426,11 +1426,14 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
             )
 
         return formula_r2(
-            self,
+            self._response_data,
+            self._response_readout,
+            self.residual,
             method,
             observed,
             new_data=options.get("new_data"),
             mc_samples=options.get("mc_samples"),
+            recorded=lambda: _responses(self, options),
             expected=lambda: self.posterior_epred(**options),
             laws=laws,
         )

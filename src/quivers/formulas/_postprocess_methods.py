@@ -82,7 +82,7 @@ from quivers.formulas._postprocess_summary import (
     vcov_table,
 )
 from quivers.formulas._autocor import AutocorMatrix
-from quivers.formulas._r_squared import _responses, formula_r2
+from quivers.formulas._r_squared import _responses, evaluate_responses, formula_r2
 from quivers.formulas._fit_controls import SamplerControl, mcmc_kernel, sampler_control
 from quivers.formulas._initial_values import chain_initial_values
 from quivers.inference.mcmc.hmc import _HamiltonianKernel
@@ -2624,8 +2624,7 @@ class JointPostprocess(_PostprocessCore):
         bool
             True for ordinal and categorical families.
         """
-        family = self._pp_fit()._response_fit(name).family
-        return family.category_response
+        return self._pp_fit().prepared[name].family.category_response
 
     def predict(
         self,
@@ -2803,9 +2802,8 @@ class JointPostprocess(_PostprocessCore):
         )
         result: dict[str, torch.Tensor] = {}
         for name in names:
-            observed = _responses(
-                fit._response_fit(name),
-                ExpectationOptions(new_data=options.get("new_data")),
+            observed = evaluate_responses(
+                fit._response_data(name), options.get("new_data")
             )
             scale = (
                 reference[name]
@@ -3388,15 +3386,20 @@ class JointPostprocess(_PostprocessCore):
         one more for the model form.
         """
         fit = self._pp_fit()
+        new_data = options.get("new_data")
         values: dict[str, torch.Tensor] = {}
         for name in fit._selection(resp):
-            view = fit._response_fit(name)
+            data = fit._response_data(name)
+            readout = fit._response_readout(name)
+            dependence = fit.emission.responses[name].lens._residual
 
-            def expected(name: str = name, view: BayesianFit = view) -> torch.Tensor:
+            def expected(
+                name: str = name, ordinal: bool = readout.ordinal
+            ) -> torch.Tensor:
                 means = fit.posterior_epred(
                     resp=name, mc_samples=mc_samples, **options
                 )[name]
-                if view.family.response_ordinal() is None and means.ndim != 3:
+                if not ordinal and means.ndim != 3:
                     raise ValueError(
                         f"bayes_R2 is defined for one value per row; response {name!r} "
                         f"has conditional means of shape {tuple(means.shape[2:])}"
@@ -3404,11 +3407,14 @@ class JointPostprocess(_PostprocessCore):
                 return means
 
             values[f"R2{name}"] = formula_r2(
-                view,
+                data,
+                readout,
+                dependence,
                 method,
                 None if observed is None else observed.get(name),
-                new_data=options.get("new_data"),
+                new_data=new_data,
                 mc_samples=mc_samples,
+                recorded=lambda: evaluate_responses(data, new_data),
                 expected=expected,
                 laws=lambda name=name: fit._response_laws(name, options),
             )
@@ -3456,8 +3462,7 @@ class JointPostprocess(_PostprocessCore):
         fit = self._pp_fit()
         values: dict[str, torch.Tensor] = {}
         for index, name in enumerate(fit._selection(resp)):
-            view = fit._response_fit(name)
-            if view.family.unordered_categories:
+            if fit._response_readout(name).unordered:
                 raise ValueError(
                     "loo_R2 is not defined for unordered categorical models"
                 )
@@ -3472,7 +3477,7 @@ class JointPostprocess(_PostprocessCore):
                 :, 0
             ]
             values[f"R2{name}"] = loo_r2_draws(
-                _responses(view, ExpectationOptions()),
+                evaluate_responses(fit._response_data(name), None),
                 loo_mean,
                 torch.Generator().manual_seed(seed + index),
                 expected.shape[0] * expected.shape[1],
@@ -3726,9 +3731,7 @@ def kfold_predict(
             name = resp if resp is not None else joint_fit.response_names[0]
             call = getattr(joint_fit, canonical)
             draws = call(resp=name, **options)[name]
-            truth = _responses(
-                joint_fit._response_fit(name), ExpectationOptions(new_data=frame)
-            )
+            truth = evaluate_responses(joint_fit._response_data(name), frame)
         else:
             single = cast("BayesianFit", fitted)
             draws = getattr(single, canonical)(**options)
