@@ -14,7 +14,8 @@ morphism utilities.
 A `RationalRelation` assigns a weight to each tuple of words on its ordered tapes. Its topology
 identifies arcs by position in the arc table, so parallel arcs contribute separately, even when
 they read the same symbols and use the same weight slot. Initial and final states have explicit
-weights. PyTorch reads the current weight slots when a query is evaluated.
+weights. Every slot must belong to the declared semiring carrier. The relation checks the
+current weight vector each time it reads the vector for evaluation.
 
 For a fixed tuple of $k$ words, a query state consists of a machine state and $k$ positions in
 the observed words. An arc labeled with a symbol on a tape advances that tape only if the symbol
@@ -34,9 +35,10 @@ takes at most $O(k E \log(E+1))$ operations, in addition to reading the boundary
 weight-slot names. For $S$ reached configurations and $A$ candidate arcs inspected, building a
 query takes $O(k(S + A))$ operations after reading the words and the initial states, with
 $O(kS + A)$ space. The pass over the trimmed graph takes a number of semiring operations
-linear in its arc count and its initial and final state counts. The cost of computing the
-weight vector is separate. A bounded tensor restriction repeats construction for each entry,
-subject to the explicit tensor size limit and optional state and arc budgets.
+linear in its arc count and its initial and final state counts. Computing the weight vector
+has a separate cost, and validation tests membership once per weight slot. A bounded tensor
+restriction reads and validates the vector once for the whole table. It repeats construction
+for each entry, subject to the explicit tensor size limit and optional state and arc budgets.
 
 ::: quivers.core.relations
     options:
