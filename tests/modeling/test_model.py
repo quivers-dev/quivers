@@ -7,6 +7,7 @@ import torch
 
 from quivers.dsl import CompileError, loads, module_to_source, parse
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.effects.checked_program import CheckedProgram
 from quivers.inference import MCMC, NUTSKernel
 from quivers.modeling import MCMCMethod, Model, VariationalMethod
 
@@ -322,7 +323,7 @@ export grouped
         trace(native, torch.zeros(1, 1), invalid)
 
 
-def test_reference_only_entry_validates_binding_before_custom_inference():
+def test_recursive_entry_validates_binding_before_checked_execution():
     source = """object One : FinSet 1
 object Out : Real 1
 define shift(x : Real) : Real !{} =
@@ -339,9 +340,20 @@ export m
     model = Model(source)
     with pytest.raises(TypeError, match="dtype"):
         model.bind({"x": torch.tensor(1, dtype=torch.long)})
-    bound = model.bind({"x": torch.tensor(1.0)})
-    with pytest.raises(TypeError, match="enhancement #232"):
-        bound.require_tensor_program()
+    bound = model.bind({"x": torch.tensor(3.0)})
+    program = bound.require_tensor_program()
+    assert isinstance(program, CheckedProgram)
+    refusal = program.refusal
+    assert isinstance(refusal, CompileError)
+    line = source.splitlines().index("    let z <- shift(x)") + 1
+    message = str(refusal)
+    assert message.startswith(f"line {line}, col 4: program 'm' cannot be fit")
+    assert (
+        "`let z <- shift(...)` reaches a recursive call (`shift` -> `shift`)" in message
+    )
+    recorded = bound.trace()
+    torch.testing.assert_close(recorded.output, torch.tensor([6.0]), rtol=0, atol=0)
+    torch.testing.assert_close(recorded.log_joint, torch.zeros(1), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("invalid", ["typo", True, torch.tensor(1.0)])
