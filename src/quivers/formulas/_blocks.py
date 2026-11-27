@@ -48,7 +48,7 @@ from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._group_law import GroupBlockLaw, level_names, renamed_law
 from quivers.formulas._modifiers import response_columns
 from quivers.formulas._observation import Observation
-from quivers.formulas._priors import PriorTarget
+from quivers.formulas._priors import PriorSpec, PriorTarget
 from quivers.formulas._residual_law import ResidualLaw
 from quivers.formulas._term import ColumnName, ProgramNames
 from quivers.formulas.family import Family
@@ -427,6 +427,7 @@ def emit_block(
     supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None,
     supplied_sites: Collection[str],
     rows: RowSource | None,
+    resolved_priors: Mapping[str, PriorSpec] | None = None,
 ) -> tuple[Module, FormulaData]:
     """Emit one block of a model under its local names.
 
@@ -443,6 +444,8 @@ def emit_block(
         Level hyperparameters the model draws and the block reads.
     rows : RowSource or None
         Rows the block covers; None for its training rows.
+    resolved_priors : Mapping[str, PriorSpec] or None
+        Rules selected by the model, keyed by the block's local sites.
 
     Returns
     -------
@@ -455,6 +458,7 @@ def emit_block(
         supplied_sites=supplied_sites,
         check=False,
         rows=rows,
+        resolved_priors=resolved_priors,
     )
 
 

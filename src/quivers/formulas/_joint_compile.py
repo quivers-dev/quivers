@@ -410,6 +410,7 @@ def _namespace(
     supplied_sites: Collection[str] = (),
     supplied_inputs: Mapping[str, LetExprNode] | None = None,
     rows: RowSource | None = None,
+    resolved_priors: Mapping[str, PriorSpec] | None = None,
 ) -> _ResponseEmission:
     """Apply the existing program-template substitution to one emitted response.
 
@@ -435,6 +436,8 @@ def _namespace(
         Explicit expressions for response inputs over joint bindings.
     rows : RowSource or None
         Rows the response covers; None for its training rows.
+    resolved_priors : Mapping[str, PriorSpec] or None
+        Joint prior selections keyed by their local sites in this response.
 
     Returns
     -------
@@ -455,6 +458,7 @@ def _namespace(
         supplied_groups=supplied_groups,
         supplied_sites=supplied_sites,
         rows=rows,
+        resolved_priors=resolved_priors,
     )
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     prefix = "response_" + _qvr_name(name) + "__"
@@ -1629,7 +1633,7 @@ def emit_joint(
         # existing dynamic support restrictions remain conditional and normalized.
         # This is source emission only; the native program is compiled once.
         for name, response in tuple(responses.items()):
-            local_rules = []
+            local_rules = {}
             reverse = {
                 global_name: local for local, global_name in response.names.items()
             }
@@ -1639,18 +1643,19 @@ def emit_joint(
                     and by_site[site].response == name
                     and site in reverse
                 ):
-                    local_rules.append(
-                        PriorSpec(
-                            distribution=rule.distribution,
-                            class_=None,
-                            site=reverse[site],
-                            lower=rule.lower,
-                            upper=rule.upper,
-                        )
+                    local = reverse[site]
+                    local_rules[local] = PriorSpec(
+                        distribution=rule.distribution,
+                        class_=None,
+                        site=local,
+                        lower=rule.lower,
+                        upper=rule.upper,
                     )
             if local_rules:
                 lens = copy(response.lens)
-                lens._set_prior_configuration(PriorSet(rules=tuple(local_rules)))
+                lens._set_prior_configuration(
+                    PriorSet(rules=tuple(local_rules.values()))
+                )
                 responses[name] = _namespace(
                     name,
                     lens,
@@ -1661,6 +1666,7 @@ def emit_joint(
                     supplied_sites=emitter._drawn_sites,
                     supplied_inputs=supplied_inputs.get(name),
                     rows=(rows or {}).get(name),
+                    resolved_priors=local_rules,
                 )
         statements, steps, parameters, returned, _, layouts = _response_parts(
             responses,

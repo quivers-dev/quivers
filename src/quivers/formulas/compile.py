@@ -1231,6 +1231,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         supplied_sites: Collection[str] = (),
         check: bool = True,
         rows: RowSource | None = None,
+        resolved_priors: Mapping[str, PriorSpec] | None = None,
     ) -> tuple[Module, FormulaData]:
         """Compile a formula to a QVR module and its complement.
 
@@ -1250,6 +1251,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Rows the program covers; None for the training rows of
             ``formula``. The fitted coordinates, priors and response
             metadata stay those of ``formula``.
+        resolved_priors : Mapping[str, PriorSpec] or None
+            Rules selected from the enclosing model's prior catalogue,
+            keyed by this block's local sites. None uses this block's rules.
 
         Returns
         -------
@@ -1527,7 +1531,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     f"unused prior overrides {sorted(missing)}; available parameters are {sorted(target.site for target in targets)}"
                 )
-            selected = {**defaults, **resolve_priors(self._prior_set, targets)}
+            rules = (
+                resolve_priors(self._prior_set, targets)
+                if resolved_priors is None
+                else resolved_priors
+            )
+            selected = {**defaults, **rules}
             ordinary = {
                 site: rule
                 for site, rule in selected.items()
