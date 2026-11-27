@@ -6,11 +6,13 @@ quantities, as brms does [@burkner2017brms]. A response declared with
 missing value is a latent coordinate drawn from that law. A predictor term
 `mi(x)` uses those completed values. A predictor `me(x, sdx)` replaces a
 noisy covariate by a latent true value with a known measurement error.
-These terms compile through the joint program of
-[multivariate formulas](formula-multivariate.md), so a model with them is
-built with `bf` and fitted by the ordinary [`fit`](../api/formulas/fit.md).
-A formula string passed directly to `fit` with these terms is refused with
-a pointer to `bf`.
+Pass a single-response formula such as `"x | mi() ~ z"` or
+`"y ~ me(x, sdx)"` directly to [`fit`](../api/formulas/fit.md). The resulting
+`BayesianFit` keeps ordinary site names such as `intercept` and returns
+prediction tensors. Use `bf` to compose [multivariate
+formulas](formula-multivariate.md) when `mi(x)` refers to an `x` modeled
+as a separate response. An explicit `bf` formula with missing-data terms
+keeps the joint site names and predictions keyed by response.
 
 ## Imputation during fitting with `mi()`
 
@@ -204,12 +206,12 @@ for fresh rows whose `mi()` or `me()` values are missing, so QVR refuses
 such rows with that reason. Pointwise log-likelihoods of an `mi()`
 response are zero at its missing rows, which have no recorded likelihood
 (brms reports `NA`).
-`refit_callback` thus defines held-out units on the rows whose
+For joint fits, `refit_callback` defines held-out units on the rows whose
 `mi()` values used by the scored responses are recorded. The true values
 of an `mi(sdx)` response are replayed from their posterior draws, which is
 brms's behavior when they are saved with `save_pars(latent = TRUE)`.
 Without saved values brms redraws them from the measurement model. `update`,
-`save_fit`, and `load_fit` work as for any joint fit.
+`save_fit`, and `load_fit` work for both individual and joint fits.
 
 ## Multiple imputation before fitting
 

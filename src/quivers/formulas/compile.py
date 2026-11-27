@@ -1814,7 +1814,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         module, _ = self.forward(formula)
         return self._prior_calls(formula, module)
 
-    def _prior_calls(self, formula: Formula, module: Module) -> dict[str, str]:
+    def _prior_calls(
+        self,
+        formula: Formula,
+        module: Module,
+        *,
+        targets: tuple[PriorTarget, ...] | None = None,
+    ) -> dict[str, str]:
         """Collect overrideable priors from the same AST used for fitting.
 
         Parameters
@@ -1823,17 +1829,20 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Evaluated predictor metadata, combined with auxiliary predictors.
         module : Module
             Emitted native model declarations and program steps.
+        targets : tuple[PriorTarget, ...] or None
+            Prior targets of an enclosing rewrite, or the emitted block's own.
 
         Returns
         -------
         dict[str, str]
             Overrideable site names and effective canonical distribution calls.
         """
-        targets = (
-            self._prior_targets
-            if self._prior_module is module
-            else self._catalogue_prior_targets(formula, module)
-        )
+        if targets is None:
+            targets = (
+                self._prior_targets
+                if self._prior_module is module
+                else self._catalogue_prior_targets(formula, module)
+            )
         names = {target.site for target in targets} | self._hierarchy_sites
         calls: dict[str, str] = {}
         for statement in module.statements:

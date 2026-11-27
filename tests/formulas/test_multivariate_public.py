@@ -139,7 +139,7 @@ def test_fit_refuses_raw_mvbind_strings_and_response_options():
             method="svi",
             num_steps=1,
         )
-    with pytest.raises(ValueError, match="pass bf"):
+    with pytest.raises(ValueError, match=r"mi\(x\).*requires a response"):
         fit("y_1 ~ mi(x)", data=data, method="svi", num_steps=1)
 
 

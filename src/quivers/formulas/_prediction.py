@@ -22,6 +22,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas.formula import (
     Formula,
+    RowSelection,
     _CS_ONES,
     _qvr_name,
 )
@@ -30,6 +31,15 @@ from quivers.formulas._blocks import ResponseData
 from quivers.formulas._residual_law import ResidualLaw, recorded_history
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
+from quivers.formulas._joint_compile import place_single_response
+from quivers.formulas._joint_missing import (
+    SingleMissing,
+    apply_missing,
+    fitted_measurement_prior,
+    fresh_values,
+    missing_multipliers,
+    missing_site_exclusions,
+)
 from quivers.formulas._predictor import Predictor
 from quivers.formulas._row_source import RowSource, finite_inputs
 from quivers.formulas._term import bind_inputs
@@ -82,6 +92,8 @@ class FormulaPredictionPlan(ValueModel):
         Actual emitted parameter roles, authored labels, and nominal axes.
     predictors : tuple[Predictor, ...]
         Planned predictors of the training program.
+    missing : SingleMissing or None
+        Retained missing-value plans and fitted design evaluators.
     version : str
         Runtime-plan schema identifier. This plan contains formulae objects
         and is deliberately not a portable serialized model representation.
@@ -108,6 +120,9 @@ class FormulaPredictionPlan(ValueModel):
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    missing: SingleMissing | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     version: Literal["qvr-formula-prediction/v1"] = "qvr-formula-prediction/v1"
 
@@ -411,6 +426,7 @@ def prepare_prediction(
     require_trials: bool = True,
     incl_autocor: bool = True,
     data2: Mapping[str, AutocorMatrix] | None = None,
+    retain_law: bool = True,
 ) -> PredictionContext:
     """Prepare and validate prediction rows before sampling posterior draws.
 
@@ -440,6 +456,9 @@ def prepare_prediction(
     data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
         Matrices of ``sar`` and ``fcor`` terms over the rows of ``new_data``
         (brms ``newdata2``).
+    retain_law : bool
+        Expose the law on every retained row of a missing response so replay
+        can read its moments or sample it. Training likelihood uses recorded events.
 
     Returns
     -------
@@ -501,7 +520,10 @@ def prepare_prediction(
         if fit.residual is not None
         else None
     )
-    if re_formula is None and incl_autocor:
+    plan = fit.prediction_plan
+    missing = plan.missing if plan is not None else None
+    restore_law = retain_law and missing is not None and missing.score_site is not None
+    if re_formula is None and incl_autocor and not restore_law:
         if predictor_data is not None:
             raise ValueError("predictor_data requires new_data")
         return PredictionContext(
@@ -509,25 +531,52 @@ def prepare_prediction(
             observations=retained_observations,
             rows=len(data.values),
         )
-    plan = fit.prediction_plan
     if predictor_data is not None:
         raise ValueError("predictor_data requires new_data")
     if plan is None:
         raise ValueError("this fit has no retained formula prediction plan")
     source = RowSource(selected=selected, include=incl_autocor)
     lens = fit._formula_lens(residual=residual)
-    module, _ = lens._forward(response_formula, rows=source)
-    program = compile_model(module, lens.families()).morphism
+    module, complement = lens._forward(response_formula, rows=source)
+    families = lens.families()
+    observations = dict(retained_observations) | bind_inputs(
+        item for term in lens._terms(response_formula, source) for item in term.inputs()
+    )
+    if missing is not None:
+        if plan.preparation_data is None:
+            raise ValueError("mi() prediction requires the retained training rows")
+        original = nw.from_native(plan.preparation_data, eager_only=True).to_pandas()
+        selection = response_formula.modifiers.subset or RowSelection(
+            size=len(original), positions=tuple(range(len(original)))
+        )
+        emission, extra, removed = apply_missing(
+            place_single_response(
+                missing.label, lens, response_formula, module, complement
+            ),
+            missing.plan,
+            missing.specs,
+            original,
+            keep_observation=restore_law,
+            consumer_rows={missing.label: selection},
+            prior=fitted_measurement_prior(plan.module),
+        )
+        module, families = emission.module, emission.families
+        observations = {
+            name: value for name, value in observations.items() if name not in removed
+        } | extra
+        if restore_law:
+            from quivers.formulas._response import response_point
+            from quivers.formulas._response_modifiers import response_input_name
+
+            observations[response_input_name(response_formula)] = response_point(
+                response_formula, fit.family
+            ).expand(len(data.values), *data.layout.event_shape)
+    program = compile_model(module, families).morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("prediction requires a native monadic program")
     return PredictionContext(
         program=program,
-        observations=dict(retained_observations)
-        | bind_inputs(
-            item
-            for term in lens._terms(response_formula, source)
-            for item in term.inputs()
-        ),
+        observations=observations,
         rows=len(data.values),
         source=source,
         seed=seed,
@@ -701,7 +750,8 @@ def prepare_prediction_rows(
         },
         residual=residual,
     )
-    module, _ = specialized_lens._forward(specialized_response, rows=source)
+    module, complement = specialized_lens._forward(specialized_response, rows=source)
+    families = specialized_lens.families()
     terms = specialized_lens._terms(specialized_response, source)
     observations = finite_inputs(
         bind_inputs(item for term in terms for item in term.inputs())
@@ -800,9 +850,26 @@ def prepare_prediction_rows(
 
     # The level inputs of every block on the compact prediction levels.
     observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
+    if (missing := plan.missing) is not None:
+        emission, extra, _ = apply_missing(
+            place_single_response(
+                missing.label,
+                specialized_lens,
+                specialized_response,
+                module,
+                complement,
+            ),
+            missing.plan,
+            missing.specs,
+            frame,
+            fresh=fresh_values(missing.plan, frame, consumed_only=True),
+            multipliers=missing_multipliers(missing.plan, missing.designs, frame),
+        )
+        module, families = emission.module, emission.families
+        observations.update(extra)
     return PreparedPredictionRows(
         module=module,
-        families=specialized_lens.families(),
+        families=families,
         observations=observations,
         rows=rows,
         groups=groups,
@@ -842,6 +909,9 @@ def compile_prediction_rows(
     }
     # Sites drawn for the new rows are not replayed.
     covariance_sites = covariance_sites | set(fresh_sites)
+    plan = fit.prediction_plan
+    if plan is not None and plan.missing is not None:
+        covariance_sites |= missing_site_exclusions(plan.missing.plan, original.names)
     if (
         set(original.names) - covariance_sites
         != set(specialized_registry.names) - covariance_sites

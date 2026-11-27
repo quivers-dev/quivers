@@ -8,7 +8,7 @@ per shared grouping factor, and compiled once per request.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from copy import copy
 from typing import TYPE_CHECKING
 
@@ -20,10 +20,7 @@ from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
-from quivers.dsl.ast_nodes import (
-    ProgramDecl,
-    SampleStep,
-)
+from quivers.dsl.ast_nodes import ProgramDecl
 from quivers.formulas._autocor import AutocorMatrix
 from quivers.formulas._group_law import KnownCovariance
 from quivers.formulas._group_prediction import (
@@ -37,14 +34,16 @@ from quivers.formulas._joint_compile import emit_joint
 from quivers.formulas._fit_core import compile_model
 from quivers.formulas._joint_missing import (
     apply_missing,
+    fitted_measurement_prior,
     fresh_values,
     missing_multipliers,
+    missing_site_exclusions,
+    split_measurement_priors,
 )
 from quivers.formulas._row_source import RowSource
 from quivers.formulas._group_law import law_inputs
 from quivers.formulas._term import bind_inputs
 from quivers.formulas._response import response_tensor
-from quivers.formulas._priors import PriorSet
 from quivers.formulas._likelihood import prepare_likelihood_rows
 from quivers.formulas._prediction import (
     JointResponsePreparation,
@@ -503,13 +502,7 @@ def prepare_joint_prediction(
     emission = emit_joint(
         components,
         # me() hyperparameter rules apply to the me() rewrite below.
-        priors=PriorSet(
-            rules=tuple(
-                rule
-                for rule in fit.priors.rules
-                if rule.class_ not in {"meanme", "sdme", "corme"}
-            )
-        ),
+        priors=split_measurement_priors(fit.priors)[0],
         rescor=fit.specification.rescor,
         rows=sources,
     )
@@ -536,7 +529,7 @@ def prepare_joint_prediction(
                 fit.missing_specs,
                 original,
                 keep_observation=True,
-                prior=_fitted_prior(fit),
+                prior=fitted_measurement_prior(fit.emission.module),
                 consumer_rows={
                     name: fit.emission.responses[name].formula.modifiers.subset
                     or RowSelection(
@@ -565,7 +558,11 @@ def prepare_joint_prediction(
                 fit.missing_specs,
                 frame,
                 fresh=fresh,
-                multipliers=missing_multipliers(fit.missing, fit.prepared, frame),
+                multipliers=missing_multipliers(
+                    fit.missing,
+                    {name: part.designs for name, part in fit.prepared.items()},
+                    frame,
+                ),
             )
     compiled = compile_model(emission.module, emission.families)
     program = compiled.morphism
@@ -681,49 +678,6 @@ def prepare_joint_prediction(
     )
 
 
-def _fitted_prior(fit: MultivariateFit) -> Callable[[str, str, str | None], SampleStep]:
-    """Reuse the fitted prior draws of ``me()`` hyperparameters.
-
-    Parameters
-    ----------
-    fit : MultivariateFit
-        Joint fit.
-
-    Returns
-    -------
-    Callable[[str, str, str or None], SampleStep]
-        Returns the fitted draw of a site, ignoring its class and label.
-    """
-    steps = {
-        step.vars[0]: step
-        for statement in fit.emission.module.statements
-        if isinstance(statement, ProgramDecl)
-        for step in statement.draws
-        if isinstance(step, SampleStep)
-    }
-
-    def prior(site: str, kind: str, coef: str | None) -> SampleStep:
-        """Return the fitted prior draw of one site.
-
-        Parameters
-        ----------
-        site : str
-            Latent site.
-        kind : str
-            brms class.
-        coef : str or None
-            brms label.
-
-        Returns
-        -------
-        SampleStep
-            The fitted draw, without its nominal axis.
-        """
-        return steps[site].with_(index=None)
-
-    return prior
-
-
 def _check_layout(
     fit: MultivariateFit,
     program: MonadicProgram,
@@ -756,19 +710,11 @@ def _check_layout(
         fit.program, observed_names=set(fit.observations)
     )
     fresh = LatentRegistry.from_model(program, observed_names=set(observations))
-    covariance = {site for group in groups.values() for site in group.support_sites} | {
-        # Latent training values of mi() and me() terms are not coordinates of
-        # fresh rows, which use their recorded values.
-        name
-        for name in original.names
-        if any(name.startswith(f"mi_{label}__") for label in fit.missing.responses)
-        or any(name.startswith(f"me_{key}__") for key in fit.missing.measurements)
-        or any(
-            name.startswith(f"me_{_qvr_name(term.consumer)}_")
-            for term in fit.missing.measurements.values()
-        )
-    }
-    covariance |= set(fresh_sites)
+    covariance = (
+        {site for group in groups.values() for site in group.support_sites}
+        | missing_site_exclusions(fit.missing, original.names)
+        | set(fresh_sites)
+    )
     if set(original.names) - covariance != set(fresh.names) - covariance:
         raise TypeError("joint new_data specialization changed the fitted latent names")
     widths = {

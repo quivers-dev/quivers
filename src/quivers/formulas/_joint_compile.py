@@ -461,8 +461,33 @@ def _namespace(
         rows=rows,
         resolved_priors=resolved_priors,
     )
+    return _place_response(
+        name,
+        lens,
+        formula,
+        module,
+        complement,
+        Namespace(
+            prefix="response_" + _qvr_name(name) + "__",
+            shared=frozenset(global_names),
+            shared_objects=dict(shared_objects),
+        ),
+        supplied_inputs=supplied_inputs,
+    )
+
+
+def _place_response(
+    name: str,
+    lens: FormulaToQVRModule,
+    formula: Formula,
+    module: Module,
+    complement: FormulaData,
+    namespace: Namespace,
+    *,
+    supplied_inputs: Mapping[str, LetExprNode] | None = None,
+) -> _ResponseEmission:
+    """Place an emitted response and substitute its symbolic inputs."""
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
-    prefix = "response_" + _qvr_name(name) + "__"
     explicit_inputs = supplied_inputs or {}
     supplied_inputs = lens.symbolic_column_expressions(formula)
     symbolic = set(supplied_inputs)
@@ -488,13 +513,9 @@ def _namespace(
     renamed = place_block(
         lens,
         module,
-        Namespace(
-            prefix=prefix,
-            shared=frozenset(global_names),
-            shared_objects=dict(shared_objects),
-        ),
+        namespace,
         inputs=supplied_inputs,
-        omitted=supplied_inputs.keys() | global_names,
+        omitted=supplied_inputs.keys() | namespace.shared,
     )
     names = renamed.names
     families = lens.response_laws
@@ -519,7 +540,7 @@ def _namespace(
     objects = renamed.object_names
     return _ResponseEmission(
         name,
-        prefix,
+        namespace.prefix,
         lens,
         formula,
         Module(statements=tuple(statements)),
@@ -527,6 +548,38 @@ def _namespace(
         names,
         objects,
         families,
+    )
+
+
+def place_single_response(
+    name: str,
+    lens: FormulaToQVRModule,
+    formula: Formula,
+    module: Module,
+    complement: FormulaData,
+) -> _JointEmission:
+    """Provide an identity-namespaced response to the missing-data rewrite."""
+    response = _place_response(
+        name, lens, formula, module, complement, Namespace(prefix="")
+    )
+    program = next(
+        item for item in response.module.statements if isinstance(item, ProgramDecl)
+    )
+    return _JointEmission(
+        module=module.with_(
+            statements=tuple(
+                program if isinstance(item, ProgramDecl) else item
+                for item in module.statements
+            )
+        ),
+        responses={name: response},
+        group_laws=complement.group_laws,
+        level_sites=complement.level_sites,
+        prior_targets=complement.prior_targets,
+        fixed_inputs={},
+        families=response.families
+        if response.families is not None
+        else FamilyCatalog(),
     )
 
 

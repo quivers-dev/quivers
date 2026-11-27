@@ -1114,8 +1114,7 @@ def bf(
     bound = _MVBIND.match(formula)
     if bound is None:
         single = response_model(formula)
-        # mi() and me() terms compile through the joint program, so one
-        # response with them is a one-response joint formula.
+        # An explicit bf with missing terms retains its joint result and namespace.
         if uses_missing_syntax(formula, *formulas):
             return MultivariateFormula(responses={single.label: single})
         return single

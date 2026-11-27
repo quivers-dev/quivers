@@ -17,7 +17,7 @@ from __future__ import annotations
 import inspect
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
 from quivers.formulas._count_data import checked_integer_data
@@ -73,7 +73,11 @@ from quivers.formulas._predictor_graph import (
     predictor_items,
 )
 
-from quivers.formulas._prediction import FormulaPredictionPlan, prepare_prediction
+from quivers.formulas._prediction import (
+    FormulaPredictionPlan,
+    PredictionContext,
+    prepare_prediction,
+)
 from quivers.formulas._r_squared import _responses, formula_r2
 from quivers.formulas._autocor import (
     AutocorMatrix,
@@ -89,6 +93,7 @@ from quivers.formulas._residual_law import (
 # Joint (multivariate) formulas: typed overload contracts and dispatch target.
 from typing import overload
 from quivers.formulas._joint_options import FormulaFitOptions, JointFitOptions
+from quivers.formulas._joint_missing import SingleMissing, split_measurement_priors
 from quivers.formulas._program_kernel import program_arguments, program_source
 from quivers.formulas._multivariate import (
     MultivariateFormula,
@@ -648,7 +653,12 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
         FormulaToQVRModule
             A fresh lens retaining every fitted prior and compiler option.
         """
-        return residual_lens(
+        plan = self.prediction_plan
+        missing = plan.missing if plan is not None else None
+        priors = self.priors
+        if missing is not None:
+            priors, _ = split_measurement_priors(priors, missing.plan.measurements)
+        lens = residual_lens(
             self.residual if residual is None else residual,
             self.fixed_parameters,
             lambda fixed: FormulaToQVRModule(
@@ -658,7 +668,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
                 random_scale_prior=self.random_scale_prior,
                 correlation_prior=self.correlation_prior,
                 group_covariances=self.group_covariances,
-                user_priors=self.priors,
+                user_priors=priors,
                 reparameterize=self.reparameterize,
                 binomial_trials=self.binomial_trials,
                 thresholds_by=self.thresholds_by,
@@ -675,6 +685,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
                 decomp=self.decomp,
             ),
         )
+        if missing is not None and missing.recorded is not None:
+            lens._recorded_rows = self._response_data.recorded
+        return lens
 
     @property
     def _response_data(self) -> ResponseData:
@@ -718,6 +731,9 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
         str
             Canonical source emitted from the retained formula AST.
         """
+        plan = self.prediction_plan
+        if plan is not None and plan.missing is not None:
+            return module_to_source(plan.module)
         module, _ = self._formula_lens().forward(self.formula)
         return module_to_source(module)
 
@@ -1160,6 +1176,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
             require_trials=False,
             incl_autocor=incl_autocor,
             data2=data2,
+            retain_law=False,
         )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
@@ -1675,17 +1692,15 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
-        with torch.no_grad():
-            likelihood = pointwise_scores(
-                replay(self, draws, shape, score_observations=True),
-                {response},
-                {response} if self.residual is not None else set(),
-                shape,
-            )
+        plan = self.prediction_plan
+        missing = plan.missing if plan is not None else None
+        values = self.formula
+        if missing is not None and missing.recorded is not None:
+            values = values.with_(response_values=self._response_data.values)
         return PosteriorAnalysis(
             samples=draws,
-            log_likelihood=likelihood,
-            observed_data={response: response_tensor(self.formula, self.family)},
+            log_likelihood=self._response_scores(draws, shape, missing=missing),
+            observed_data={response: response_tensor(values, self.family)},
             sample_stats=_sample_stats(self.posterior, shape[1]),
             kind=draw_provenance(self.posterior),
         )
@@ -1743,7 +1758,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
         -------
         dict[str, torch.Tensor]
             Response name to raw scores with shape ``(chain, draw, row)``.
-            Likelihood weights are excluded; event coordinates are reduced.
+            Likelihood weights are excluded and event coordinates are reduced.
+            Rows without a recorded ``mi()`` outcome score zero.
 
         Raises
         ------
@@ -1751,7 +1767,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
             If a hidden response needs a marginal-likelihood observer.
         """
 
-        context = None
         if new_data is not None:
             from quivers.formulas._likelihood import prepare_likelihood
 
@@ -1792,6 +1807,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
                 seed=seed,
                 incl_autocor=incl_autocor,
                 data2=data2,
+                retain_law=False,
             )
             if trials is not None:
                 name = response_input_name(self.formula)
@@ -1803,15 +1819,37 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
                 )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
+        plan = self.prediction_plan
+        missing = plan.missing if plan is not None and new_data is None else None
+        return self._response_scores(draws, shape, context=context, missing=missing)
+
+    def _response_scores(
+        self,
+        draws: dict[str, torch.Tensor],
+        shape: tuple[int, int],
+        *,
+        context: PredictionContext | None = None,
+        missing: SingleMissing | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Replay raw scores into the original response's row coordinates."""
         response = _qvr_name(self.formula.response_name)
+        score_site = missing.score_site if missing is not None else None
+        site = score_site or response
         with torch.no_grad():
             # Correlated residuals score brms's leave-one-out conditionals.
-            return pointwise_scores(
+            scores = pointwise_scores(
                 replay(self, draws, shape, context=context, score_observations=True),
-                {response},
-                {response} if self.residual is not None else set(),
+                {site},
+                {site} if score_site is None and self.residual is not None else set(),
                 shape,
-            )
+            )[site]
+        if score_site is not None:
+            assert missing is not None and missing.recorded is not None
+            rows = len(self._response_data.values) if context is None else context.rows
+            full = scores.new_zeros((*scores.shape[:2], rows))
+            full[..., list(missing.recorded.observed_positions)] = scores
+            scores = full
+        return {response: scores}
 
     def posterior_predict(
         self,
@@ -2025,6 +2063,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
         return (
             self.residual is None
             and plan is not None
+            and plan.missing is None
             and all(
                 term.separable
                 for predictor in plan.predictors
@@ -2613,6 +2652,7 @@ def fit(
             mixture_components=mixture_components,
             predictor_name=predictor_name,
             caller="fit",
+            allow_missing=True,
             default_priors=default_priors,
             center=center,
             decomp=decomp,
@@ -2846,7 +2886,7 @@ def formula_to_qvr(
         caller="formula_to_qvr",
     )
     _refuse_joint_syntax(formula, "formula_to_qvr")
-    lens, parsed = _formula_lens(
+    prepared = _prepare_formula_entry(
         formula,
         data=data,
         family=family,
@@ -2875,7 +2915,10 @@ def formula_to_qvr(
         knots=knots,
         drop_unused_levels=drop_unused_levels,
     )
-    module, _ = lens.forward(parsed)
+    if prepared.missing is None:
+        module, _ = prepared.lens.forward(prepared.formula)
+    else:
+        module = prepared.missing.emission.module
     source = module_to_source(module)
     if path is not None:
         Path(path).write_text(source)
@@ -3049,7 +3092,7 @@ def get_prior(
         caller="get_prior",
     )
     _refuse_joint_syntax(formula, "get_prior")
-    lens, parsed = _formula_lens(
+    prepared = _prepare_formula_entry(
         formula,
         data=data,
         family=family,
@@ -3078,7 +3121,12 @@ def get_prior(
         knots=knots,
         drop_unused_levels=drop_unused_levels,
     )
-    return lens.get_prior(parsed)
+    if prepared.missing is not None:
+        emission = prepared.missing.emission
+        return prepared.lens._prior_calls(
+            prepared.formula, emission.module, targets=emission.prior_targets
+        )
+    return prepared.lens.get_prior(prepared.formula)
 
 
 def residual_lens(
@@ -3153,6 +3201,7 @@ class _PreparedFormula:
     graph: PredictorGraph | None
     trials: torch.Tensor | None
     inputs: dict[str, torch.Tensor]
+    missing: _joint_fit.JointComposition | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3282,8 +3331,18 @@ def _prepare_fit(
             "fit: a trainable external predictor requires method='svi'; "
             "freeze its parameters before using NUTS or HMC"
         )
-    module, complement = lens.forward(parsed)
-    program_runtime = compile_model(module, lens.families())
+    missing = prepared.missing
+    if missing is None:
+        module, complement = lens.forward(parsed)
+        catalog = lens.families()
+    else:
+        emission = missing.emission
+        module, catalog = emission.module, emission.families
+        (response,) = emission.responses.values()
+        complement = response.complement.with_(
+            prior_targets=emission.prior_targets,
+        )
+    program_runtime = compile_model(module, catalog)
     morphism = program_runtime.morphism
     if not isinstance(morphism, MonadicProgram):
         raise TypeError(
@@ -3291,8 +3350,12 @@ def _prepare_fit(
             f"{type(morphism).__name__}, expected MonadicProgram"
         )
     program = morphism
+    observations = (
+        _formula_observations(prepared)
+        if missing is None
+        else dict(missing.observations)
+    )
 
-    observations = _formula_observations(prepared)
     if predictor is not None:
         assert predictor_data is not None
         assert predictor_name is not None
@@ -3680,6 +3743,25 @@ def _assemble_fit(
     BayesianFit
         Retained result with a rebuilt live prediction plan.
     """
+    formula = prepared.formula
+    response = response_data(
+        formula.formula, formula.lens._residual, formula.designs["mu"]
+    )
+    missing = None
+    if (composition := formula.missing) is not None:
+        (label,) = composition.prepared
+        missing = SingleMissing(
+            label=label,
+            plan=composition.missing,
+            specs=composition.specs,
+            designs={label: formula.designs},
+        )
+    if missing is not None and (spec := missing.recorded) is not None:
+        recorded = np.zeros(len(response.recorded), dtype=bool)
+        recorded[list(spec.observed_positions)] = True
+        values = np.full(response.values.shape, np.nan)
+        values[recorded] = spec.observed.data
+        response = response.with_(values=values, recorded=recorded)
     return BayesianFit(
         refit_recipe=refit_recipe,
         formula=prepared.formula.formula,
@@ -3717,46 +3799,25 @@ def _assemble_fit(
             module=prepared.module,
             preparation_data=prepared.preparation_data,
             designs=prepared.formula.designs,
-            response=response_data(
-                prepared.formula.formula,
-                prepared.formula.lens._residual,
-                prepared.formula.designs["mu"],
-            ),
+            response=response,
             group_laws=prepared.complement.group_laws,
             level_sites=prepared.complement.level_sites,
             prior_targets=prepared.complement.prior_targets,
             predictors=prepared.formula.lens._planned(prepared.formula.formula),
+            missing=missing,
         ),
     )
 
 
 def _refuse_joint_syntax(formula: str | ResponseModel, caller: str) -> None:
-    """Refuse joint-program terms written in a plain formula string.
-
-    Parameters
-    ----------
-    formula : str or ResponseModel
-        Authored formula. Only a string is inspected.
-    caller : str
-        Public entry point named in the diagnostic.
-
-    Raises
-    ------
-    ValueError
-        If a formula string uses ``mvbind()``, ``mi()``, ``me()``, or
-        ``index()``, which compile through the joint program reached by
-        `bf`.
-    """
-    if isinstance(formula, str) and (
-        is_mvbind(formula) or uses_missing_syntax(formula)
-    ):
+    """Direct bare multivariate syntax to the corresponding `bf` entry."""
+    if isinstance(formula, str) and is_mvbind(formula):
         raise ValueError(
-            f"{caller}: mvbind(), mi(), me(), and index() terms compile through "
-            f"the joint program; pass bf({formula!r})"
+            f"{caller}: mvbind() terms compile through the joint program; pass bf({formula!r})"
         )
 
 
-def _formula_lens(
+def _prepare_formula_entry(
     formula: str | ResponseModel,
     *,
     data: IntoDataFrame,
@@ -3785,7 +3846,7 @@ def _formula_lens(
     unused: Sequence[str] = (),
     knots: Knots | None = None,
     drop_unused_levels: bool = True,
-) -> tuple[FormulaToQVRModule, Formula]:
+) -> _PreparedFormula:
     """Use common preparation for source emission and prior inspection.
 
     Parameters
@@ -3856,8 +3917,8 @@ def _formula_lens(
         levels their group effects, as brms keeps them.
     Returns
     -------
-    tuple[FormulaToQVRModule, Formula]
-        Existing compiler lens and its evaluated input.
+    _PreparedFormula
+        Checked formula preparation, including any missing-data emission.
     """
     # A single-response bf carries the response keywords of this call.
     if isinstance(formula, ResponseModel):
@@ -3890,7 +3951,7 @@ def _formula_lens(
         center, decomp = authored["center"], authored["decomp"]
         cmc, sparse = authored["cmc"], authored["sparse"]
         unused = authored["unused"]
-    prepared = _prepare_formula(
+    return _prepare_formula(
         formula,
         data=data,
         family=family,
@@ -3910,6 +3971,7 @@ def _formula_lens(
         thresholds_by=thresholds_by,
         mixture_components=mixture_components,
         predictor_name=predictor_name,
+        allow_missing=True,
         default_priors=default_priors,
         center=center,
         decomp=decomp,
@@ -3919,7 +3981,52 @@ def _formula_lens(
         knots=knots,
         drop_unused_levels=drop_unused_levels,
     )
-    return prepared.lens, prepared.formula
+
+
+def _prepare_single_missing(
+    response: ResponseModel,
+    data: IntoDataFrame,
+    *,
+    fixed_prior: str,
+    random_scale_prior: str,
+    correlation_prior: str,
+    group_covariances: Mapping[str, GroupCovariance] | None,
+    priors: PriorInput | None,
+    reparameterize: Literal["centered", "noncentered"],
+    data2: Mapping[str, AutocorMatrix] | None,
+    caller: str,
+    predictor_name: str | None,
+    knots: Knots | None,
+    drop_unused_levels: bool | None,
+) -> _PreparedFormula:
+    """Prepare one checked missing-data block under its ordinary QVR names."""
+    label = response.label
+    with formula_data_options(knots, drop_unused_levels):
+        composition = _joint_fit.compose_joint(
+            MultivariateFormula(responses={label: response}),
+            data,
+            fixed_prior=fixed_prior,
+            random_scale_prior=random_scale_prior,
+            correlation_prior=correlation_prior,
+            group_covariances=group_covariances,
+            priors=priors,
+            reparameterize=reparameterize,
+            data2=data2,
+            caller=caller,
+            predictor_name=predictor_name,
+            identity_namespace=True,
+        )
+    part = composition.prepared[label]
+    emitted = composition.emission.responses[label]
+    lens = emitted.lens
+    return replace(
+        part,
+        formula=emitted.formula.with_(formula=response.formula),
+        lens=lens,
+        distributional=dict(lens._distributional),
+        graph=lens._predictor_graph,
+        missing=composition,
+    )
 
 
 def _prepare_formula(
@@ -3951,6 +4058,7 @@ def _prepare_formula(
     sparse: bool = False,
     unused: Sequence[str] = (),
     rows: tuple[int, ...] | None = None,
+    allow_missing: bool = False,
     knots: Knots | None = None,
     drop_unused_levels: bool | None = None,
 ) -> _PreparedFormula:
@@ -4018,6 +4126,9 @@ def _prepare_formula(
     unused : Sequence[str]
         brms ``unused``: further columns kept with the model rows, so rows
         missing them are excluded as for model variables.
+    allow_missing : bool
+        Send a bare missing-data specification through the shared rewrite.
+        Preparation of each response block receives its stripped formula.
     knots : Mapping[str, Sequence[float]] or None
         brms ``knots`` of the smooth constructors. None keeps the knots of an
         enclosing `formula_data_options` scope, which joint preparation sets
@@ -4035,6 +4146,51 @@ def _prepare_formula(
     ValueError
         If a family, response role, predictor, or trial contract is invalid.
     """
+    if allow_missing and uses_missing_syntax(
+        formula,
+        *(
+            text
+            for formulas in (distributional, nonlinear)
+            for text in (formulas or {}).values()
+            if isinstance(text, str)
+        ),
+    ):
+        return _prepare_single_missing(
+            ResponseModel(
+                formula=formula,
+                family=family,
+                distributional=dict(distributional)
+                if distributional is not None
+                else None,
+                nonlinear=dict(nonlinear) if nonlinear is not None else None,
+                fixed_parameters=dict(fixed_parameters)
+                if fixed_parameters is not None
+                else None,
+                weights=weights,
+                decision=decision,
+                binomial_trials=binomial_trials,
+                thresholds_by=thresholds_by,
+                mixture_components=mixture_components,
+                center=center,
+                decomp=decomp,
+                default_priors=default_priors,
+                cmc=cmc,
+                sparse=sparse,
+                unused=tuple(unused),
+            ),
+            data,
+            fixed_prior=fixed_prior,
+            random_scale_prior=random_scale_prior,
+            correlation_prior=correlation_prior,
+            group_covariances=group_covariances,
+            priors=priors,
+            reparameterize=reparameterize,
+            data2=data2,
+            caller=caller,
+            predictor_name=predictor_name,
+            knots=knots,
+            drop_unused_levels=drop_unused_levels,
+        )
     if isinstance(family, str):
         if family not in families:
             raise ValueError(

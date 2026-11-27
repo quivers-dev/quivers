@@ -424,6 +424,7 @@ def _restore_formula(manifest: dict, codec: _Codec) -> BayesianFit:
                 "data": data,
                 "predictor_name": predictor_name,
                 "caller": "load_fit",
+                "allow_missing": True,
             },
         )
     )

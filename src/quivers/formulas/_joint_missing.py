@@ -30,9 +30,10 @@ replayed completed values.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from copy import copy
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import didactic.api as dx
 from formulae.matrices import DesignMatrices
@@ -48,6 +49,7 @@ from quivers.dsl.ast_nodes import (
     ExportDecl,
     LetExprLiteral,
     LetExprNode,
+    Module,
     ObserveStep,
     ProgramDecl,
     ProgramStep,
@@ -71,7 +73,6 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._brms_priors import flat_prior_step
 from quivers.formulas._design import SymbolicColumn
-from quivers.formulas._fit import _PreparedFormula
 from quivers.formulas._joint_compile import (
     _JointEmission,
     _ResponseEmission,
@@ -87,7 +88,7 @@ from quivers.formulas._predictor import data_terms
 from quivers.formulas._row_source import RowSource, finite_inputs
 from quivers.formulas._term import bind_inputs
 from quivers.formulas._prior_emission import order_prior_dependencies
-from quivers.formulas._priors import PriorTarget
+from quivers.formulas._priors import PriorSet, PriorTarget
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas.formula import (
     FixedColumn,
@@ -98,6 +99,9 @@ from quivers.formulas.formula import (
 )
 from quivers.qiec import NAT, REAL, IndexLiteral, ProgramParameter
 from quivers.qiec.canonical import tensor_type
+
+if TYPE_CHECKING:
+    from quivers.formulas._fit import _PreparedFormula
 
 __all__: list[str] = []
 
@@ -284,6 +288,87 @@ class MissingPlan(ValueModel):
             True without ``mi()`` responses and ``me()`` terms.
         """
         return not self.responses and not self.measurements
+
+
+@dataclass(frozen=True, slots=True)
+class SingleMissing:
+    """Retained identity-namespaced missing data for one fitted response."""
+
+    label: str
+    plan: MissingPlan
+    specs: Mapping[str, LatentResponseSpec]
+    designs: Mapping[str, Mapping[str, DesignMatrices]]
+
+    @property
+    def recorded(self) -> LatentResponseSpec | None:
+        """Return the recorded and latent coordinates of the response."""
+        return self.specs.get(self.label)
+
+    @property
+    def score_site(self) -> str | None:
+        """Return the shortened observation site when training rewrote it."""
+        spec = self.recorded
+        if spec is not None and (
+            spec.standard_error is not None or spec.latent_positions
+        ):
+            return f"mi_{self.label}__observed"
+        return None
+
+
+MEASUREMENT_CLASSES = frozenset({"meanme", "sdme", "corme"})
+
+
+def split_measurement_priors(
+    priors: PriorSet, measurements: Mapping[str, MeasurementTerm] | None = None
+) -> tuple[PriorSet, PriorSet]:
+    """Separate the ordinary and measurement hyperparameter prior rules."""
+    terms = (measurements or {}).values()
+    sites = {
+        *(f"me_{term.key}__{site}" for term in terms for site in ("mean", "sd")),
+        *(f"me_{_measurement_block(term.consumer, term.group)}__cor" for term in terms),
+    }
+    ordinary, measurement = [], []
+    for rule in priors.rules:
+        target = (
+            measurement
+            if rule.class_ in MEASUREMENT_CLASSES or rule.site in sites
+            else ordinary
+        )
+        target.append(rule)
+    return PriorSet(rules=tuple(ordinary)), PriorSet(rules=tuple(measurement))
+
+
+def _measurement_block(consumer: str, group: str | None) -> str:
+    """Name the common truth and correlation axes of a measurement block."""
+    return _qvr_name(f"{consumer}_{group or 'rows'}")
+
+
+def fitted_measurement_prior(
+    module: Module,
+) -> Callable[[str, str, str | None], SampleStep]:
+    """Reuse each fitted measurement prior draw without its nominal axis."""
+    steps = {
+        step.vars[0]: step
+        for statement in module.statements
+        if isinstance(statement, ProgramDecl)
+        for step in statement.draws
+        if isinstance(step, SampleStep)
+    }
+
+    def prior(site: str, kind: str, coef: str | None) -> SampleStep:
+        return steps[site].with_(index=None)
+
+    return prior
+
+
+def missing_site_exclusions(plan: MissingPlan, names: Collection[str]) -> set[str]:
+    """Find training-only latent sites of missing outcomes and noisy inputs."""
+    prefixes = (
+        *(f"mi_{label}__" for label in plan.responses),
+        *(f"me_{key}__" for key in plan.measurements),
+        *(f"me_{_qvr_name(term.consumer)}_" for term in plan.measurements.values()),
+    )
+    return {name for name in names if name.startswith(prefixes)}
 
 
 def _rewrite_response(
@@ -1193,7 +1278,7 @@ def apply_missing(
         assert prior is not None
         targets = _append_measurements(statements, steps, inputs, plan, specs, prior)
     for key in plan.measurements:
-        if fresh is not None:
+        if fresh is not None and key in fresh:
             inputs[f"me_{key}__values"] = fresh[key]
     joint = emission.joint
     for label in plan.responses:
@@ -1202,7 +1287,8 @@ def apply_missing(
         site = response.names[_qvr_name(response.formula.response_name)]
         completed = f"mi_{label}__completed"
         if fresh is not None:
-            inputs[completed] = fresh[label]
+            if label in fresh:
+                inputs[completed] = fresh[label]
             continue
         spec = specs[label]
         if joint is not None:
@@ -1487,7 +1573,7 @@ def _append_measurements(
         blocks.setdefault((term.consumer, term.group), []).append(term)
     targets: list[PriorTarget] = []
     for (consumer, group), terms in blocks.items():
-        name = _qvr_name(f"{consumer}_{group or 'rows'}")
+        name = _measurement_block(consumer, group)
         truth = f"MeTruth_{name}"
         size = specs[terms[0].key].truth_size
         _object(statements, truth, size)
@@ -1608,7 +1694,7 @@ def _append_measurements(
 
 def missing_multipliers(
     plan: MissingPlan,
-    designs: Mapping[str, _PreparedFormula],
+    designs: Mapping[str, Mapping[str, DesignMatrices]],
     frame: pd.DataFrame,
 ) -> dict[str, torch.Tensor]:
     """Evaluate each symbolic column's non-``mi()`` factor on fresh rows.
@@ -1617,8 +1703,8 @@ def missing_multipliers(
     ----------
     plan : MissingPlan
         ``mi()`` declarations.
-    designs : Mapping[str, _PreparedFormula]
-        Response preparations with the fitted design evaluators.
+    designs : Mapping[str, Mapping[str, DesignMatrices]]
+        Fitted design evaluators by response and predictor.
     frame : pandas.DataFrame
         Fresh rows.
 
@@ -1637,7 +1723,6 @@ def missing_multipliers(
     ones = frame.assign(**dict.fromkeys(variables, 1.0))
     result = {}
     for item in plan.inputs:
-        part = designs[item.consumer]
         column = item.column
         predictor = (
             Formula(
@@ -1657,7 +1742,7 @@ def missing_multipliers(
             )
         )
         values = _evaluated_columns(
-            predictor, part.designs[item.parameter], ones, item.prefix
+            predictor, designs[item.consumer][item.parameter], ones, item.prefix
         )
         result[item.binding] = values[item.input_name]
     return result
@@ -1694,7 +1779,9 @@ def _evaluated_columns(
     )
 
 
-def fresh_values(plan: MissingPlan, frame: pd.DataFrame) -> dict[str, torch.Tensor]:
+def fresh_values(
+    plan: MissingPlan, frame: pd.DataFrame, *, consumed_only: bool = False
+) -> dict[str, torch.Tensor]:
     """Read recorded ``mi()`` values on fresh rows.
 
     brms returns missing predictions for fresh rows whose ``mi()`` values
@@ -1706,6 +1793,9 @@ def fresh_values(plan: MissingPlan, frame: pd.DataFrame) -> dict[str, torch.Tens
         ``mi()`` declarations.
     frame : pandas.DataFrame
         Fresh rows.
+    consumed_only : bool
+        Read only values used as predictors. A missing-response declaration
+        alone does not require the outcome in prediction data.
 
     Returns
     -------
@@ -1721,6 +1811,10 @@ def fresh_values(plan: MissingPlan, frame: pd.DataFrame) -> dict[str, torch.Tens
     columns = {label: item.variable for label, item in plan.responses.items()} | {
         key: term.variable for key, term in plan.measurements.items()
     }
+    if consumed_only:
+        columns = {
+            source: columns[source] for term in plan.inputs for source in term.sources
+        }
     for label, variable in columns.items():
         item = MissingResponse(label=label, variable=variable)
         if item.variable not in frame:

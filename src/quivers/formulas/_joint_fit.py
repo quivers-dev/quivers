@@ -78,7 +78,11 @@ from quivers.formulas._row_retention import (
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._group_law import group_coefficients
 from quivers.formulas._group_prediction import NewLevelPolicy
-from quivers.formulas._joint_compile import _JointEmission, emit_joint
+from quivers.formulas._joint_compile import (
+    _JointEmission,
+    emit_joint,
+    place_single_response,
+)
 from quivers.formulas._joint_options import JointFitOptions
 from quivers.formulas._joint_prediction import (
     JOINT_RESPONSE,
@@ -99,6 +103,7 @@ from quivers.formulas._joint_missing import (
     latent_specs,
     missing_frame,
     missing_specification,
+    split_measurement_priors,
     symbolize,
 )
 from quivers.formulas.formula import RowSelection
@@ -109,7 +114,7 @@ from quivers.formulas._refit import update_fit
 from quivers.formulas._prior_emission import ordinary_prior_step
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._priors import PriorSpec, resolve_priors
-from quivers.formulas._priors import PriorInput, PriorSet, PriorTarget, normalize_priors
+from quivers.formulas._priors import PriorInput, PriorTarget, normalize_priors
 from quivers.formulas._response import (
     ResponseReadout,
     expected_response,
@@ -2515,6 +2520,8 @@ def compose_joint(
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     data2: Mapping[str, AutocorMatrix] | None = None,
     caller: str = "fit",
+    identity_namespace: bool = False,
+    predictor_name: str | None = None,
 ) -> JointComposition:
     """Prepare every response and compose one joint program.
 
@@ -2540,6 +2547,10 @@ def compose_joint(
         Named matrices available to every response, as brms ``data2``.
     caller : str
         Entry point named in located errors.
+    identity_namespace : bool
+        Keep the ordinary names and group laws of a bare response.
+    predictor_name : str or None
+        External predictor binding of a bare response.
 
     Returns
     -------
@@ -2550,33 +2561,31 @@ def compose_joint(
     original = nw.from_native(data, eager_only=True).to_pandas()
     frame = missing_frame(original, declared) if declared else data
     # me() hyperparameter rules are resolved on the me() targets.
-    rules = normalize_priors(priors).rules
-    measurement_rules = PriorSet(
-        rules=tuple(rule for rule in rules if rule.class_ in MEASUREMENT_CLASSES)
-    )
-    priors = PriorSet(
-        rules=tuple(rule for rule in rules if rule.class_ not in MEASUREMENT_CLASSES)
+    priors, measurement_rules = split_measurement_priors(
+        normalize_priors(priors), measurements if identity_namespace else None
     )
     # brms na_omit: one row decision for every response together.
-    rows = joint_complete_rows(
-        nw.from_native(frame, eager_only=True).to_pandas(),
-        tuple(
-            (
-                model_texts(
-                    response.formula, (response.distributional, response.nonlinear)
-                ),
-                model_columns(
-                    response.weights,
-                    response.decision,
-                    response.binomial_trials,
-                    response.thresholds_by,
-                    # brms bf(unused = ): kept columns join row retention.
-                    *response.unused,
-                ),
-            )
-            for response in (plain.responses[name] for name in plain.response_names)
-        ),
-    )
+    rows = None
+    if not identity_namespace:
+        rows = joint_complete_rows(
+            nw.from_native(frame, eager_only=True).to_pandas(),
+            tuple(
+                (
+                    model_texts(
+                        response.formula, (response.distributional, response.nonlinear)
+                    ),
+                    model_columns(
+                        response.weights,
+                        response.decision,
+                        response.binomial_trials,
+                        response.thresholds_by,
+                        # brms bf(unused = ): kept columns join row retention.
+                        *response.unused,
+                    ),
+                )
+                for response in (plain.responses[name] for name in plain.response_names)
+            ),
+        )
     prepared: dict[str, _PreparedFormula] = {}
     for name in plain.response_names:
         response = plain.responses[name]
@@ -2597,7 +2606,9 @@ def compose_joint(
             random_scale_prior=random_scale_prior,
             correlation_prior=correlation_prior,
             group_covariances=group_covariances,
+            priors=priors if identity_namespace else None,
             reparameterize=reparameterize,
+            predictor_name=predictor_name,
             data2=data2,
             caller=caller,
             # brms bf(center, decomp) and the fit's default prior policy.
@@ -2631,9 +2642,12 @@ def compose_joint(
         )
         components[name] = (lens, formula)
         inputs.extend(columns)
-    emission = emit_joint(
-        components, priors=normalize_priors(priors), rescor=specification.rescor
-    )
+    if identity_namespace:
+        ((name, (lens, formula)),) = components.items()
+        module, complement = lens.forward(formula)
+        emission = place_single_response(name, lens, formula, module, complement)
+    else:
+        emission = emit_joint(components, priors=priors, rescor=specification.rescor)
     plan = MissingPlan(
         responses=declared,
         inputs=tuple(inputs),
@@ -2719,10 +2733,6 @@ def compose_joint(
         missing=plan,
         specs=specs,
     )
-
-
-#: brms prior classes of me() hyperparameters.
-MEASUREMENT_CLASSES: frozenset[str | None] = frozenset({"meanme", "sdme", "corme"})
 
 
 def _replace_priors(
