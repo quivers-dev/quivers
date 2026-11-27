@@ -362,7 +362,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
         """
         from quivers.formulas._refit import update_fit
 
-        return update_fit(self, data, overrides)
+        return update_fit(self.refit_recipe, data, overrides)
 
     def refit_callback(
         self,

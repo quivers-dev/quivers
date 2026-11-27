@@ -3,7 +3,6 @@
 from collections.abc import Callable, Mapping
 import inspect
 from types import MappingProxyType
-from typing import TYPE_CHECKING
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -12,17 +11,14 @@ from quivers.modeling.refit import RefitRecipe, SnapshotPolicy, _snapshot
 from quivers.formulas._formula_options import expand_dot_formula
 from quivers.formulas._ordinal_coding import zero_coded_columns
 
-if TYPE_CHECKING:
-    from quivers.formulas._fit import BayesianFit
 
-
-def capture_recipe(
-    fitter: Callable[..., BayesianFit],
+def capture_recipe[Result](
+    fitter: Callable[..., Result],
     *,
     data: IntoDataFrame,
     arguments: Mapping[str, object],
     snapshot_policy: SnapshotPolicy,
-) -> RefitRecipe[IntoDataFrame, Mapping[str, object], BayesianFit]:
+) -> RefitRecipe[IntoDataFrame, Mapping[str, object], Result]:
     """Snapshot original rows and every canonical fitting argument before training."""
     signature = inspect.signature(fitter)
     options = _snapshot(
@@ -35,7 +31,7 @@ def capture_recipe(
 
     def run(
         frame: IntoDataFrame, settings: Mapping[str, object], seed: int | None
-    ) -> BayesianFit:
+    ) -> Result:
         # Module state and initial values are copied before every fit, so a
         # refit cannot train the retained initial predictor or another result.
         values = _snapshot(dict(settings))
@@ -61,11 +57,12 @@ def capture_recipe(
     )
 
 
-def update_fit(
-    fitted: BayesianFit, data: IntoDataFrame | None, overrides: Mapping[str, object]
-) -> BayesianFit:
+def update_fit[Result](
+    recipe: RefitRecipe[IntoDataFrame, Mapping[str, object], Result] | None,
+    data: IntoDataFrame | None,
+    overrides: Mapping[str, object],
+) -> Result:
     """Merge explicit overrides into a recipe without another fitting path."""
-    recipe = fitted.refit_recipe
     if recipe is None:
         raise ValueError("this fit has no retained refit recipe")
     # R update.formula: "." stands for the fitted sides.

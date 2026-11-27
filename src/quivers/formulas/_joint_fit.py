@@ -2211,9 +2211,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         ValueError
             If no recipe was retained.
         """
-        return cast(
-            MultivariateFit, update_fit(cast(BayesianFit, self), data, overrides)
-        )
+        return update_fit(self.refit_recipe, data, overrides)
 
     def refit_callback(
         self,
@@ -3046,7 +3044,7 @@ def fit_entry(
     formula: MultivariateFormula,
     data: IntoDataFrame,
     options: Mapping[str, object],
-    refit_recipe: RefitRecipe[IntoDataFrame, Mapping[str, object], BayesianFit],
+    refit_recipe: RefitRecipe[IntoDataFrame, Mapping[str, object], MultivariateFit],
 ) -> MultivariateFit:
     """Fit a joint formula from the canonical arguments captured by `fit`.
 
@@ -3094,11 +3092,7 @@ def fit_entry(
     return fit_joint(
         formula,
         data,
-        # The recipe reruns `fit`, which returns a MultivariateFit for this formula.
-        refit_recipe=cast(
-            RefitRecipe[IntoDataFrame, Mapping[str, object], MultivariateFit],
-            refit_recipe,
-        ),
+        refit_recipe=refit_recipe,
         **cast(
             JointFitOptions,
             {name: value for name, value in options.items() if name in keys},
