@@ -28,6 +28,7 @@ from quivers.dsl.ast_nodes import (
     ObserveStep,
     TypeName,
 )
+from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.program_templates import (
     _bound_names,
 )
@@ -85,6 +86,7 @@ from quivers.formulas._priors import (
     component_rules,
     resolve_priors,
 )
+from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._response import response_tensor
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._observation import Observation, observation
@@ -92,6 +94,7 @@ from quivers.formulas._joint_residual import (
     RecursiveResidualFactory,
     recursive_residual_record,
 )
+from quivers.formulas.family import Family
 from quivers.formulas.formula import Formula, FormulaData, RandomTerm, _qvr_name
 
 #: Response label to its prepared lens and formula.
@@ -657,6 +660,24 @@ def _member_axis(
     return axis.with_(name="response_" + _qvr_name(name) + "__" + axis.name)
 
 
+def _elliptical_family(family: Family) -> Family:
+    """Read the declaration of the observation's residual roles.
+
+    Parameters
+    ----------
+    family : Family
+        Family of the response block.
+
+    Returns
+    -------
+    Family
+        The family declaring the roles of the observation's arguments.
+    """
+    law = family.kernel_law
+    native = law.elliptical_family if law is not None else None
+    return native if native is not None else family
+
+
 def _validate_residual_rows(components: _Components) -> None:
     """Require an actual common observation domain for a joint residual event.
 
@@ -673,7 +694,9 @@ def _validate_residual_rows(components: _Components) -> None:
         a response is censored or truncated, or Student responses do not
         share one ``nu``.
     """
-    laws = {lens._family.elliptical for lens, _ in components.values()}
+    laws = {
+        _elliptical_family(lens._family).elliptical for lens, _ in components.values()
+    }
     # A conditional ARMA recursion moves each row's location and keeps the law
     # of the row's residual vector (RecursiveResiduals). A covariance across
     # rows beside one across responses has no single composition: a Kronecker
@@ -731,12 +754,128 @@ def _validate_residual_rows(components: _Components) -> None:
             raise ValueError(
                 f"correlated Student responses use one shared {df} parameter"
             )
-    if df is not None:
-        values = {lens._fixed_parameters.get(df) for lens, _ in components.values()}
-        if len(values) != 1:
-            raise ValueError(
-                f"correlated Student responses require one common fixed or sampled {df}"
-            )
+
+
+@dataclass(frozen=True, slots=True)
+class _SharedDegrees:
+    """Bindings for the common degrees of freedom of Student responses.
+
+    Parameters
+    ----------
+    name : str
+        Binding passed to the vector observation.
+    steps : tuple[ProgramStep, ...]
+        Bindings added before the vector observation.
+    replaced : frozenset[str]
+        Scalar degrees-of-freedom draws replaced by the shared draw.
+    target : PriorTarget or None
+        Formula prior target carried to the shared draw, if there is one.
+    """
+
+    name: str
+    steps: tuple[ProgramStep, ...] = ()
+    replaced: frozenset[str] = frozenset()
+    target: PriorTarget | None = None
+
+
+def _shared_student_degrees(
+    df: str,
+    arguments: tuple[LetExprNode, ...],
+    steps: tuple[ProgramStep, ...],
+    observations: set[str],
+    targets: Sequence[PriorTarget],
+) -> _SharedDegrees:
+    """Unify the scalar degrees of freedom of one Student residual event.
+
+    Parameters
+    ----------
+    df : str
+        Name of the shared binding.
+    arguments : tuple[LetExprNode, ...]
+        Degrees of freedom passed to each scalar observation, in response order.
+    steps : tuple[ProgramStep, ...]
+        Existing steps of the composed body.
+    observations : set[str]
+        Scalar observations replaced by the joint event.
+    targets : Sequence[PriorTarget]
+        Existing prior targets of the composed body.
+
+    Returns
+    -------
+    _SharedDegrees
+        Common constant, existing binding, or common draw and its prior target.
+
+    Raises
+    ------
+    ValueError
+        If the responses cannot share one scalar degrees of freedom argument.
+    """
+    error = f"correlated Student responses require one common fixed or sampled {df}"
+    lets = {step.name: step.value for step in steps if isinstance(step, LetStep)}
+
+    def resolve(expression: LetExprNode) -> LetExprNode:
+        """Follow aliases to a literal or one program binding."""
+        seen: set[str] = set()
+        while (
+            isinstance(expression, LetExprVar)
+            and expression.name in lets
+            and expression.name not in seen
+        ):
+            seen.add(expression.name)
+            expression = lets[expression.name]
+        return expression
+
+    resolved = tuple(resolve(argument) for argument in arguments)
+    constants = {
+        float(value.value) for value in resolved if isinstance(value, LetExprLiteral)
+    }
+    if len(constants) == 1 and all(
+        isinstance(value, LetExprLiteral) for value in resolved
+    ):
+        (value,) = constants
+        return _SharedDegrees(df, steps=(_let(df, LetExprLiteral(value=value)),))
+    bindings = tuple(value.name for value in resolved if isinstance(value, LetExprVar))
+    if len(bindings) != len(arguments):
+        raise ValueError(error)
+    sites = frozenset(bindings)
+    if len(sites) == 1:
+        return _SharedDegrees(bindings[0])
+    draws = {
+        step.vars[0]: step
+        for step in steps
+        if isinstance(step, SampleStep) and step.vars[0] in sites
+    }
+    if draws.keys() != sites or any(step.index is not None for step in draws.values()):
+        raise ValueError(error)
+    prior_targets = {target.site: target for target in targets if target.site in sites}
+    if (
+        sites - prior_targets.keys()
+        and len(
+            {
+                draw_call_to_source(
+                    step.morphism, step.args, static_args=step.static_args
+                )
+                for step in draws.values()
+            }
+        )
+        != 1
+    ):
+        raise ValueError(error + " with the same authored prior")
+    if any(
+        _step_value_names(step) & sites
+        for step in steps
+        if not isinstance(step, ObserveStep) or step.vars[0] not in observations
+    ):
+        raise ValueError(error + " used only by the correlated observations")
+    original = next(
+        (prior_targets[name] for name in bindings if name in prior_targets), None
+    )
+    return _SharedDegrees(
+        df,
+        steps=(next(iter(draws.values())).with_(vars=(df,)),),
+        replaced=sites,
+        target=None if original is None else original.with_(site=df, response=None),
+    )
 
 
 def _correlated_residual(
@@ -800,23 +939,44 @@ def _correlated_residual(
         }
         for name, observed in observations.items()
     }
-    shared = next(iter(responses.values())).lens
-    elliptical = shared._family.elliptical
+    declarations = {
+        name: _elliptical_family(response.lens._family)
+        for name, response in responses.items()
+    }
+    elliptical = declarations[names[0]].elliptical
     assert elliptical is not None
+    direct = {
+        step.vars[0]: step
+        for step in program.draws
+        if isinstance(step, ObserveStep) and step.vars[0] in removed
+    }
+    if direct.keys() != removed:
+        raise ValueError(
+            "rescor requires response observations in the same program scope"
+        )
+    for observed in observations.values():
+        allowed = {"weights"} if observed.weights is not None else set()
+        if {option.key for option in direct[observed.site].options} - allowed:
+            raise ValueError(
+                "rescor requires one joint recording law for the response observations"
+            )
     df = elliptical.df
-    nu_sites = (
-        {response.names.get(df) for response in responses.values()}
-        if df is not None
-        else set()
+    degrees = (
+        None
+        if df is None
+        else _shared_student_degrees(
+            df,
+            tuple(
+                arguments_by_response[name][declarations[name].native_parameter(df)]
+                for name in names
+            ),
+            program.draws,
+            removed,
+            targets,
+        )
     )
-    nu_prior = next(
-        (
-            step
-            for step in program.draws
-            if isinstance(step, SampleStep) and step.vars[0] in nu_sites
-        ),
-        None,
-    )
+    df_binding = None if degrees is None else degrees.name
+    nu_sites = frozenset() if degrees is None else degrees.replaced
     steps = [
         step
         for step in program.draws
@@ -839,27 +999,17 @@ def _correlated_residual(
             component_labels=names,
         )
     )
-    if df is not None:
-        fixed_nu = shared._fixed_parameters.get(df)
-        if fixed_nu is None:
-            assert nu_prior is not None
-            steps.append(nu_prior.with_(vars=(df,)))
-            original = next(
-                target
-                for response in responses.values()
-                for target in response.lens.prior_targets
-                if target.site == df
-            )
-            targets.append(original.with_(site=df, response=None))
-        else:
-            steps.append(_let(df, LetExprLiteral(value=float(fixed_nu))))
+    if degrees is not None:
+        steps.extend(degrees.steps)
+        if degrees.target is not None:
+            targets.append(degrees.target)
     rows, zero = ("row", row), "formula_joint_zeros"
 
     def stacked(quantity: str) -> Iterator[tuple[int, LetExprNode]]:
         # Scalar-to-row broadcasting uses the ordinary typed binary operation;
         # nominal row ownership never depends on coincident axis cardinalities.
-        for index, (name, response) in enumerate(responses.items()):
-            argument = response.lens._family.native_parameter(quantity)
+        for index, name in enumerate(responses):
+            argument = declarations[name].native_parameter(quantity)
             yield index, _add(arguments_by_response[name][argument], _var(zero))
 
     component = ("component", axis)
@@ -890,13 +1040,13 @@ def _correlated_residual(
     weights = next(iter(observations.values())).weights
     location = ("formula_joint_mu", "formula_joint_scale")
     recursions = recursion_kernel(
-        responses, arguments_by_response, student=df is not None
+        responses, arguments_by_response, student=df_binding is not None
     )
     joint = (
         observation(
             "formula_joint_response",
             elliptical.kernel,
-            location if df is None else (df, *location),
+            location if df_binding is None else (df_binding, *location),
             plate=row,
             event=axis,
             parameterization=elliptical.parameterization,
@@ -905,7 +1055,11 @@ def _correlated_residual(
         else observation(
             "formula_joint_response",
             recursions[0].definitions[0].name,
-            (*((df,) if df is not None else ()), *location, *recursions[1]),
+            (
+                *((df_binding,) if df_binding is not None else ()),
+                *location,
+                *recursions[1],
+            ),
             plate=row,
             event=axis,
             catalog=recursions[0],
@@ -918,7 +1072,7 @@ def _correlated_residual(
             "formula_joint_response",
             recursions[0].definitions[1].name,
             (
-                *((df,) if df is not None else ()),
+                *((df_binding,) if df_binding is not None else ()),
                 *location,
                 *recursions[1],
                 COMPLETION,

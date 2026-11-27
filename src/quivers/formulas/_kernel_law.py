@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from quivers.dsl.ast_nodes import Module
     from quivers.family_catalog import FamilyCatalog
     from quivers.formulas._kernel import KernelInputs, ParameterSource, ResponseKernel
+    from quivers.formulas.family import Family
     from quivers.formulas.formula import Formula
 
 __all__: list[str] = []
@@ -33,6 +34,17 @@ type KernelDatum = np.ndarray | pd.DataFrame | torch.Tensor | float | int
 
 class KernelLaw(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """A response law that builds its own kernel."""
+
+    @property
+    def elliptical_family(self) -> Family | None:
+        """Return the native family declaring an elliptical observation law.
+
+        Returns
+        -------
+        Family or None
+            The declaration of the native observation's parameter roles.
+        """
+        return None
 
     @property
     def error_scale_argument(self) -> str | None:

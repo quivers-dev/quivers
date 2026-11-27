@@ -1809,6 +1809,27 @@ class ProgramKernelSpec(KernelLaw):
         )
 
     @property
+    def elliptical_family(self) -> Family | None:
+        """Read the declared elliptical law of the named observation.
+
+        Returns
+        -------
+        Family or None
+            The native law and its constructor parameter roles, if declared.
+        """
+        site = self.analysis.site(self.response)
+        return next(
+            (
+                family
+                for family in families.values()
+                if site is not None
+                and family.observe_family == site.law
+                and family.elliptical is not None
+            ),
+            None,
+        )
+
+    @property
     def error_scale_argument(self) -> str | None:
         """Read the native argument corresponding to a declared error scale.
 
