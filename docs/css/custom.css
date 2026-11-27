@@ -332,7 +332,6 @@ body {
 }
 
 .md-content__inner > :is(
-  .tabbed-set,
   .md-typeset__table,
   .mermaid,
   figure,
@@ -1257,6 +1256,29 @@ body.qv-focus .md-content__inner {
     width: calc(100% + 1rem);
     margin-right: -0.5rem;
     margin-left: -0.5rem;
+  }
+
+  .md-typeset .tabbed-block > .highlight {
+    width: 100%;
+    margin-inline: 0;
+  }
+
+  /* Material expands the tab strip separately on narrow viewports. */
+  .md-typeset.md-content__inner > .tabbed-set .tabbed-labels {
+    max-width: 100%;
+    margin-inline: 0;
+    padding-inline: 0;
+    scroll-padding-inline-start: 0;
+  }
+
+  .md-typeset.md-content__inner > .tabbed-set .tabbed-labels::after {
+    padding-inline: 0;
+  }
+
+  .md-typeset.md-content__inner > .tabbed-set .tabbed-labels ~ .tabbed-control {
+    width: 1.2rem;
+    margin-inline: 0;
+    padding-inline: 0;
   }
 
   .qv-hero {
