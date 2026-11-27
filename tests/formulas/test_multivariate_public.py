@@ -548,6 +548,35 @@ def test_joint_training_expected_responses_reuse_the_fitted_program(monkeypatch)
     )
 
 
+@pytest.mark.parametrize(
+    "method", ["posterior_epred", "posterior_predict", "log_likelihood"]
+)
+def test_fresh_joint_rows_compile_one_program(monkeypatch, method):
+    data = _frame()
+    fitted = fit(
+        bf("y_1 ~ x + (1 | shared | g)")
+        + bf("z ~ x + (1 | shared | g)")
+        + set_rescor(False),
+        data=data,
+        method="svi",
+        num_steps=1,
+    )
+    compile_model = Compiler.compile
+    compilations = []
+
+    def compile_once(compiler, *args, **kwargs):
+        compilations.append(compiler)
+        return compile_model(compiler, *args, **kwargs)
+
+    monkeypatch.setattr(Compiler, "compile", compile_once)
+    fresh = data.iloc[:3].assign(g=["a", "new", "b"])
+    draws = getattr(fitted, method)(
+        new_data=fresh, allow_new_levels=True, num_samples=2, seed=12
+    )
+    assert len(compilations) == 1
+    assert all(value.shape == (1, 2, 3) for value in draws.values())
+
+
 def test_correlated_predictions_keep_the_joint_residual_law_on_new_rows():
     data = _frame()
     fitted = fit(

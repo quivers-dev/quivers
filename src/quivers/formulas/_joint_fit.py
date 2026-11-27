@@ -103,7 +103,7 @@ from quivers.formulas._joint_missing import (
 )
 from quivers.formulas.formula import RowSelection
 from quivers.formulas._posterior import replay, row_binding
-from quivers.formulas._prediction import FormulaPredictionPlan
+from quivers.formulas._prediction import FormulaPredictionPlan, JointResponsePreparation
 from quivers.formulas._refit import update_fit
 from quivers.formulas._prior_emission import ordinary_prior_step
 from quivers.formulas.compile import FormulaToQVRModule
@@ -422,12 +422,54 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         )
         return laws, shape, prepared.rows[name]
 
-    def _response_fit(self, name: str) -> BayesianFit:
-        """Build the response view used by the ordinary row preparation.
+    def _response_plan(
+        self, name: str
+    ) -> tuple[FormulaToQVRModule, FormulaPredictionPlan]:
+        """Emit local group laws and fitted row metadata for one response."""
+        response = self.emission.responses[name]
+        part = self.prepared[name]
+        lens = copy(response.lens)
+        lens._emitted_groups = []
+        module, complement = lens.forward(response.formula)
+        return lens, FormulaPredictionPlan(
+            module=module,
+            designs=part.designs,
+            response=response_data(
+                response.formula, response.lens._residual, part.designs["mu"]
+            ),
+            preparation_data=self.preparation_data,
+            group_laws=complement.group_laws,
+            level_sites=complement.level_sites,
+            prior_targets=complement.prior_targets,
+            predictors=lens._planned(response.formula),
+        )
 
-        The view retains the response's fitted designs, joint grouping codes,
-        and its own compiled program, so `prepare_prediction` applies the
-        single-response row rules unchanged. Its posterior is never sampled.
+    def _response_preparation(self, name: str) -> JointResponsePreparation:
+        """Retain the local response metadata needed to bind fresh joint rows."""
+        response = self.emission.responses[name]
+        part = self.prepared[name]
+        lens, plan = self._response_plan(name)
+        data = plan.response
+        assert data is not None
+        return JointResponsePreparation(
+            formula=response.formula,
+            family=part.family,
+            lens=lens,
+            observations=_formula_observations(
+                part, formula=response.formula, lens=response.lens
+            ),
+            prediction_plan=plan,
+            binomial_trials=part.binomial_trials,
+            thresholds_by=self.specification.responses[name].thresholds_by,
+            _response_data=data,
+            _response_readout=self._response_readout(name),
+        )
+
+    def _response_fit(self, name: str) -> BayesianFit:
+        """Build the single-response view used by joint parameter readers.
+
+        The view retains fitted designs, joint grouping codes, and its own
+        compiled program. Joint prediction binds rows through `_response_preparation`.
 
         Parameters
         ----------
@@ -449,11 +491,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
         response = self.emission.responses[name]
         authored = self.specification.responses[name]
         part = self.prepared[name]
-        lens = copy(response.lens)
-        lens._emitted_groups = []
-        module, complement = lens.forward(response.formula)
+        lens, plan = self._response_plan(name)
         family = part.family
-        program = compile_model(module, lens.families()).morphism
+        program = compile_model(plan.module, lens.families()).morphism
         if not isinstance(program, MonadicProgram):
             raise TypeError("a joint response must compile to one MonadicProgram")
         view = BayesianFit(
@@ -479,18 +519,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
             default_priors=response.lens._default_priors,
             center=response.lens._center,
             decomp=response.lens._decomp,
-            prediction_plan=FormulaPredictionPlan(
-                module=module,
-                designs=part.designs,
-                response=response_data(
-                    response.formula, response.lens._residual, part.designs["mu"]
-                ),
-                preparation_data=self.preparation_data,
-                group_laws=complement.group_laws,
-                level_sites=complement.level_sites,
-                prior_targets=complement.prior_targets,
-                predictors=lens._planned(response.formula),
-            ),
+            prediction_plan=plan,
         )
         self.response_fits[name] = view
         return view

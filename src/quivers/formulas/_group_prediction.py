@@ -32,8 +32,7 @@ from quivers.formulas.formula import (
 )
 
 if TYPE_CHECKING:
-    from quivers.formulas._fit import BayesianFit
-    from quivers.formulas._prediction import PredictionContext
+    from quivers.formulas._prediction import PredictionContext, PredictionDesign
 
 
 type NewLevelPolicy = Literal[
@@ -292,7 +291,7 @@ def selected_effects(
 
 
 def compact_groups(
-    fit: BayesianFit,
+    fit: PredictionDesign,
     frame: pd.DataFrame,
     selected: frozenset[tuple[str, str]],
     allow_new_levels: bool,
@@ -301,7 +300,7 @@ def compact_groups(
 
     Parameters
     ----------
-    fit : BayesianFit
+    fit : PredictionDesign
         Fitted formulas and reparameterization policy.
     frame : pandas.DataFrame
         Prediction rows.

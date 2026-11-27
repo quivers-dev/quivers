@@ -1,11 +1,9 @@
 """Prepare joint (multivariate) prediction rows through the response preparations.
 
-Each response's fresh rows are bound by the ordinary `prepare_prediction` or
-`prepare_likelihood` of its own response view, so transforms, contrasts,
-trials, response roles, and group coding follow exactly the single-response
-rules. The joint program is then emitted once by `emit_joint` over the
-specialized response formulas, with one compact axis per grouping factor
-shared by every response, and compiled once per request.
+Each response's fresh rows use the ordinary response binders for transforms,
+contrasts, trials, response roles, and group coding. The joint program is
+emitted once over the specialized response formulas, with one compact axis
+per shared grouping factor, and compiled once per request.
 """
 
 from __future__ import annotations
@@ -47,11 +45,13 @@ from quivers.formulas._group_law import law_inputs
 from quivers.formulas._term import bind_inputs
 from quivers.formulas._response import response_tensor
 from quivers.formulas._priors import PriorSet
-from quivers.formulas._likelihood import prepare_likelihood
+from quivers.formulas._likelihood import prepare_likelihood_rows
 from quivers.formulas._prediction import (
+    JointResponsePreparation,
     OrdinalReplay,
     PredictionContext,
-    prepare_prediction,
+    PredictionRows,
+    prepare_prediction_rows,
     residual_at,
 )
 from quivers.formulas._response_modifiers import response_input_name
@@ -60,7 +60,6 @@ from quivers.inference._prior_projection import project_prior_sites
 from quivers.inference.registry import LatentRegistry
 
 if TYPE_CHECKING:
-    from quivers.formulas._fit import BayesianFit
     from quivers.formulas._joint_fit import MultivariateFit
 
 #: Name of the stacked observation of a residual-correlation event.
@@ -163,7 +162,7 @@ def _joint_selection(
 
 
 def _response_rows(
-    context: PredictionContext,
+    context: PredictionRows,
     groups: Mapping[str, GroupRemap],
     selected: frozenset[tuple[str, str]],
 ) -> RowSource:
@@ -171,8 +170,8 @@ def _response_rows(
 
     Parameters
     ----------
-    context : PredictionContext
-        Prediction of the response alone.
+    context : PredictionRows
+        Prepared rows of the response alone.
     groups : Mapping[str, GroupRemap]
         Compact levels shared by the responses.
     selected : frozenset[tuple[str, str]]
@@ -189,7 +188,7 @@ def _response_rows(
 
 def _merge_groups(
     fit: MultivariateFit,
-    contexts: Mapping[str, PredictionContext],
+    contexts: Mapping[str, PredictionRows],
     active: Mapping[str, frozenset[str]],
 ) -> dict[str, GroupRemap]:
     """Merge compact response axes into one axis per grouping factor.
@@ -198,8 +197,8 @@ def _merge_groups(
     ----------
     fit : MultivariateFit
         Joint fit with namespaced group layouts.
-    contexts : Mapping[str, PredictionContext]
-        Response-local prepared contexts.
+    contexts : Mapping[str, PredictionRows]
+        Response-local prepared row bindings.
     active : Mapping[str, frozenset[str]]
         Grouping factors whose identities each response evaluates.
 
@@ -271,14 +270,14 @@ def _merge_groups(
 
 
 def _active_groups(
-    fit_view: BayesianFit, selected: frozenset[tuple[str, str]]
+    response: JointResponsePreparation, selected: frozenset[tuple[str, str]]
 ) -> frozenset[str]:
     """Return the grouping factors whose identities a response evaluates.
 
     Parameters
     ----------
-    fit_view : BayesianFit
-        Response view.
+    response : JointResponsePreparation
+        Prepared response metadata.
     selected : frozenset[tuple[str, str]]
         The response's selected grouping-factor and slope pairs.
 
@@ -288,10 +287,10 @@ def _active_groups(
         Selected grouping factors, threshold groups, and baseline groups.
     """
     groups = {group for group, _ in selected}
-    if fit_view.thresholds_by is not None:
-        groups.add(fit_view.thresholds_by)
-    if fit_view.family.baseline is not None and fit_view.family.baseline.by:
-        groups.add(fit_view.family.baseline.by)
+    if response.thresholds_by is not None:
+        groups.add(response.thresholds_by)
+    if response.family.baseline is not None and response.family.baseline.by:
+        groups.add(response.family.baseline.by)
     return frozenset(groups)
 
 
@@ -388,7 +387,7 @@ def prepare_joint_prediction(
     selection = _joint_selection(fit, re_formula)
     observations: dict[str, torch.Tensor]
     groups: dict[str, GroupRemap] = {}
-    contexts: dict[str, PredictionContext] = {}
+    contexts: dict[str, PredictionRows] = {}
     order_groups: set[str] = set()
     frame = (
         nw.from_native(new_data, eager_only=True).to_pandas()
@@ -405,12 +404,12 @@ def prepare_joint_prediction(
     else:
         active: dict[str, frozenset[str]] = {}
         for name in fit.response_names:
-            view = fit._response_fit(name)
-            formulas = {parameter: f for parameter, _, f in view._predictor_items()}
+            response = fit._response_preparation(name)
+            formulas = {parameter: f for parameter, _, f in response._predictor_items()}
             selector = _response_selector(formulas, selection[name])
-            contexts[name] = (
-                prepare_likelihood(
-                    view,
+            if name in recorded:
+                context, bindings = prepare_likelihood_rows(
+                    response,
                     frame,
                     None,
                     re_formula=selector,
@@ -420,9 +419,10 @@ def prepare_joint_prediction(
                     incl_autocor=incl_autocor,
                     data2=data2,
                 )
-                if name in recorded
-                else prepare_prediction(
-                    view,
+                contexts[name] = context.with_(observations=bindings)
+            else:
+                contexts[name] = prepare_prediction_rows(
+                    response,
                     frame,
                     None,
                     re_formula=selector,
@@ -433,11 +433,10 @@ def prepare_joint_prediction(
                     incl_autocor=incl_autocor,
                     data2=data2,
                 )
-            )
             rows[name] = contexts[name].rows
             if contexts[name].retain_ordinal_cutpoints:
                 order_groups.update(contexts[name].ordinal_order_groups)
-            active[name] = _active_groups(view, selection[name])
+            active[name] = _active_groups(response, selection[name])
         groups = _merge_groups(fit, contexts, active)
         observations = {}
     components = {}
@@ -449,7 +448,11 @@ def prepare_joint_prediction(
         # A residual law is rebuilt over the requested rows.
         if lens._residual is not None and (frame is not None or not incl_autocor):
             lens._residual = residual_at(
-                fit._response_fit(name), frame, include=incl_autocor, data2=data2
+                lens._residual,
+                fit._response_data(name),
+                frame,
+                include=incl_autocor,
+                data2=data2,
             )
         formula = response.formula
         if groups:
@@ -643,18 +646,23 @@ def prepare_joint_prediction(
         )
     # Cumulative responses with category-specific effects replay their fitted
     # thresholds, exactly as a single-response prediction does.
-    replays = tuple(
-        OrdinalReplay(
-            prefix=fit.emission.responses[name].prefix,
-            thresholds_by=view.thresholds_by,
-            fitted_levels=len(fit.group_levels[view.thresholds_by])
-            if view.thresholds_by is not None
-            else 0,
-            rows=rows[name],
-        )
-        for name in fit.response_names
-        if _constrained_thresholds(view := fit._response_fit(name))
-    )
+    replays: list[OrdinalReplay] = []
+    for name, response in fit.emission.responses.items():
+        if (
+            response.formula.category_specific
+            and fit._response_readout(name).constrains_cutpoints
+        ):
+            group = fit.specification.responses[name].thresholds_by
+            replays.append(
+                OrdinalReplay(
+                    prefix=response.prefix,
+                    thresholds_by=group,
+                    fitted_levels=len(fit.group_levels[group])
+                    if group is not None
+                    else 0,
+                    rows=rows[name],
+                )
+            )
     return JointPredictionContext(
         context=PredictionContext(
             program=program,
@@ -666,7 +674,7 @@ def prepare_joint_prediction(
             seed=seed,
             retain_ordinal_cutpoints=bool(replays),
             ordinal_order_groups=tuple(sorted(order_groups)),
-            ordinal_replays=replays,
+            ordinal_replays=tuple(replays),
             fresh_sites=fresh_sites,
         ),
         rows=rows,
@@ -714,30 +722,6 @@ def _fitted_prior(fit: MultivariateFit) -> Callable[[str, str, str | None], Samp
         return steps[site].with_(index=None)
 
     return prior
-
-
-def _constrained_thresholds(view: BayesianFit) -> bool:
-    """Report whether a response replays retained cumulative thresholds.
-
-    This is the condition `prepare_prediction` applies to a single response:
-    a cumulative or hurdle-cumulative family with category-specific effects.
-
-    Parameters
-    ----------
-    view : BayesianFit
-        Response view.
-
-    Returns
-    -------
-    bool
-        True when fitted thresholds are retained during prediction.
-    """
-    ordinal = view.family.ordinal
-    return (
-        ordinal is not None
-        and ordinal.kind in {"cumulative", "hurdle_cumulative"}
-        and (view.formula.category_specific)
-    )
 
 
 def _check_layout(

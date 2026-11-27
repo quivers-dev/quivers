@@ -15,7 +15,10 @@ from quivers.formulas._autocor import AutocorMatrix
 from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._prediction import (
     PredictionContext,
-    prepare_prediction,
+    PredictionDesign,
+    PreparedPredictionRows,
+    compile_prediction_rows,
+    prepare_prediction_rows,
     _set_trial_rows,
 )
 from quivers.formulas._response import (
@@ -85,6 +88,35 @@ def prepare_likelihood(
     ValueError
         If rows, recorded outcomes, trials, or observation-event inputs are invalid.
     """
+    rows, observations = prepare_likelihood_rows(
+        fit,
+        new_data,
+        predictor_data,
+        trials=trials,
+        re_formula=re_formula,
+        allow_new_levels=allow_new_levels,
+        sample_new_levels=sample_new_levels,
+        seed=seed,
+        incl_autocor=incl_autocor,
+        data2=data2,
+    )
+    return compile_prediction_rows(fit, rows).with_(observations=observations)
+
+
+def prepare_likelihood_rows(
+    fit: PredictionDesign,
+    new_data: IntoDataFrame,
+    predictor_data: torch.Tensor | None,
+    *,
+    trials: int | str | None = None,
+    re_formula: str | None = None,
+    allow_new_levels: bool = False,
+    sample_new_levels: NewLevelPolicy = "uncertainty",
+    seed: int = 0,
+    incl_autocor: bool = True,
+    data2: Mapping[str, AutocorMatrix] | None = None,
+) -> tuple[PreparedPredictionRows, dict[str, torch.Tensor]]:
+    """Bind fresh recorded outcomes separately from the predictive placeholders."""
     if fit.prediction_plan is None:
         raise ValueError(
             "fresh likelihood rows require a retained formula prediction plan"
@@ -173,7 +205,7 @@ def prepare_likelihood(
             prediction_trials = None
     else:
         prediction_trials = trials
-    context = prepare_prediction(
+    rows = prepare_prediction_rows(
         fit,
         frame,
         predictor_data,
@@ -186,7 +218,7 @@ def prepare_likelihood(
         incl_autocor=incl_autocor,
         data2=data2,
     )
-    observations = dict(context.observations)
+    observations = dict(rows.observations)
     if counts is not None:
         _set_trial_rows(fit, observations, counts, specification=specification)
     observations.update(
@@ -199,4 +231,4 @@ def prepare_likelihood(
         }
     )
     observations[response_input_name(fit.formula)] = outcome
-    return context.with_(observations=observations)
+    return rows, observations
