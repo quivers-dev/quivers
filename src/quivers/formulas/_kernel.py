@@ -1379,16 +1379,19 @@ class KernelEmission:
         if source is not None:
             source.emit(slot, self)
 
-    def bind_slot(self, name: str) -> None:
+    def bind_slot(self, name: str, *, binding: str | None = None) -> None:
         """Bind a slot through the levels after its source.
 
         Parameters
         ----------
         name : str
             Slot name.
+        binding : str or None
+            Destination of the linked value, or None for the slot's name.
         """
         self.emit_slot(name)
         slot = self.kernel.slot(name)
+        target = name if binding is None else binding
         precomposition = slot.precomposition
         if precomposition is not None and precomposition.level == "name":
             return
@@ -1432,18 +1435,20 @@ class KernelEmission:
                         "have no row form"
                     )
                 value = _bind(
-                    slot.link.inverse_expr.format(eta="eta", name=slot.name),
+                    slot.link.inverse_expr.format(eta="eta", name=target),
                     eta=value,
                 )
             self.steps.append(
                 _let(
-                    slot.name,
+                    target,
                     _factor(((slot.row_binder, self.kernel.row_axis),), body=value),
                 )
             )
             self._shapes[name] = ValueShape(rows=True)
         elif slot.link is not None:
-            append_link(self.steps, slot.name, _var(slot.eta), slot.link)
+            append_link(self.steps, target, _var(slot.eta), slot.link)
+        elif binding is not None:
+            self.steps.append(_let(target, _var(slot.eta)))
 
 
 def append_link(

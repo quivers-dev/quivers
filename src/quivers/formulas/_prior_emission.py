@@ -533,6 +533,8 @@ def build_prior_targets(
         for site in drawn:
             add(site, "cor", group=law.group, **scope)
     for auxiliary in family.aux_params if auxiliaries is None else auxiliaries:
+        if auxiliary.name not in samples and auxiliary.name not in separated:
+            continue
         default = draw(auxiliary.name, auxiliary.prior)
         support = semantic_family(default.morphism).support
         lower = 0.0 if support in {"positive", "nonnegative", "unit_interval"} else None

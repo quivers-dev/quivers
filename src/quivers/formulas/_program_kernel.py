@@ -50,6 +50,7 @@ from quivers.dsl.ast_nodes import (
     ExportDecl,
     ExprIdent,
     LetExprFactor,
+    LetExprLiteral,
     MarginalizeStep,
     Module,
     ObjectDecl,
@@ -74,6 +75,7 @@ from quivers.dsl.program_templates import _bound_names, static_program_parameter
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.step_resolution import _draw_arg_value_names, _step_value_names
 from quivers.family_catalog import FamilyCatalog
+from quivers.formulas._ast import _add, _factor, _index, _let, _mul, _var
 from quivers.formulas._blocks import Namespace, rename_program
 from quivers.formulas._family_kernel import graph_row_roots, precompose_graph
 from quivers.formulas._kernel import (
@@ -1035,7 +1037,9 @@ class ParameterDecl(ValueModel):
     rows : bool
         Whether the program reads one value per row.
     coordinates : ParameterCoordinates or None
-        The axis of a vector parameter.
+        The predictor coordinates, flattened for a tensor parameter.
+    axes : tuple[AxisDecl, ...]
+        The program parameter's own axes other than the rows.
     prior : str
         The program's law of a site; empty for an input.
     """
@@ -1046,6 +1050,7 @@ class ParameterDecl(ValueModel):
     domain: Domain
     rows: bool = False
     coordinates: ParameterCoordinates | None = None
+    axes: tuple[AxisDecl, ...] = ()
     prior: str = ""
 
 
@@ -1073,7 +1078,7 @@ def parameter_decl(
     ValueError
         If the name is the response, another observation, an unknown name, a
         site the program does not draw at its top level, or a value without
-        a link or with more than one axis besides the rows.
+        a link or with nonfinite axes.
     """
     entry = analysis.entry
     if name == response:
@@ -1098,13 +1103,16 @@ def parameter_decl(
                 f"the program {entry!r} draws {name!r} once per row; a formula "
                 "gives a parameter that the program draws once"
             )
-        coordinates = _coordinates(entry, name, site.axes, site.sizes, law.reference)
+        coordinates, axes = _coordinates(
+            entry, name, site.axes, site.sizes, law.reference
+        )
         return ParameterDecl(
             name=name,
             origin="site",
             link=law.link,
             domain=law.domain,
             coordinates=coordinates,
+            axes=axes,
             prior=site.prior,
         )
     item = analysis.input(name)
@@ -1133,13 +1141,15 @@ def parameter_decl(
         next((axis.size for axis in analysis.objects if axis.name == written), 0)
         for written in item.axes
     )
+    coordinates, axes = _coordinates(entry, name, item.axes, sizes, None)
     return ParameterDecl(
         name=name,
         origin="input",
         link=links["identity"],
         domain=Domain(lower=None),
         rows=item.rows,
-        coordinates=_coordinates(entry, name, item.axes, sizes, None),
+        coordinates=coordinates,
+        axes=axes,
     )
 
 
@@ -1149,8 +1159,8 @@ def _coordinates(
     axes: Sequence[str],
     sizes: Sequence[int],
     reference: int | None,
-) -> ParameterCoordinates | None:
-    """Read the coordinates of a parameter with at most one axis.
+) -> tuple[ParameterCoordinates | None, tuple[AxisDecl, ...]]:
+    """Read the free predictor coordinates and their axes in the program.
 
     Parameters
     ----------
@@ -1167,27 +1177,38 @@ def _coordinates(
 
     Returns
     -------
-    ParameterCoordinates or None
-        The coordinates of a vector parameter; None for a scalar one.
+    tuple[ParameterCoordinates or None, tuple[AxisDecl, ...]]
+        The predictor coordinates (None for a scalar) and the program axes.
 
     Raises
     ------
     ValueError
-        If the parameter has more than one axis or an axis without a size.
+        If an axis has no size, or reference coordinates belong to more than
+        one independently normalized simplex.
     """
-    if not axes:
-        return None
-    if len(axes) > 1:
+    shape = tuple(
+        AxisDecl(name=axis, size=size) for axis, size in zip(axes, sizes, strict=True)
+    )
+    if not shape:
+        return None, ()
+    for axis in shape:
+        if axis.size < 1:
+            raise ValueError(
+                f"the axis {axis.name!r} of {name!r} in the program {entry!r} is not a "
+                "finite object with a size"
+            )
+    if len(shape) == 1:
+        axis = shape[0]
+        return ParameterCoordinates(
+            axis=axis.name, size=axis.size, reference=reference
+        ), shape
+    if reference is not None:
         raise ValueError(
-            f"the program {entry!r} reads {name!r} over the axes {list(axes)}; a "
-            "formula gives a parameter with at most one axis besides the rows"
+            f"the parameter {name!r} of {entry!r} has simplex coordinates across "
+            f"{list(axes)}; each simplex needs its own reference coordinate"
         )
-    if sizes[0] < 1:
-        raise ValueError(
-            f"the axis {axes[0]!r} of {name!r} in the program {entry!r} is not a "
-            "finite object with a size"
-        )
-    return ParameterCoordinates(axis=axes[0], size=sizes[0], reference=reference)
+    flat = f"FormulaProgramCoordinates_{name}"
+    return ParameterCoordinates(axis=flat, size=math.prod(sizes)), shape
 
 
 def _response_site(analysis: ProgramAnalysis, response: str) -> KernelSite:
@@ -1234,6 +1255,63 @@ def _response_site(analysis: ProgramAnalysis, response: str) -> KernelSite:
             f"{analysis.row_axis!r} alone"
         )
     return site
+
+
+class BindTensorSlot(KernelPart):
+    """Bind a program parameter on its nominal axes from flat coordinates.
+
+    Parameters
+    ----------
+    slot : str
+        Name of the program parameter.
+    axes : tuple[AxisDecl, ...]
+        Axes of one parameter event, in its declared order.
+    """
+
+    kind: Literal["bind_tensor_slot"] = "bind_tensor_slot"
+    slot: str
+    axes: tuple[AxisDecl, ...]
+
+    def emit(self, emission: KernelEmission) -> None:
+        """Group the linked coordinates under the declared axes.
+
+        Parameters
+        ----------
+        emission : KernelEmission
+            Program receiving the parameter binding.
+        """
+        flat = f"FormulaProgramValue_{self.slot}"
+        emission.bind_slot(self.slot, binding=flat)
+        dimensions = tuple(
+            (f"program_index_{position}", axis.name)
+            for position, axis in enumerate(self.axes)
+        )
+        linear = _add(
+            *(
+                _mul(
+                    _var(index),
+                    LetExprLiteral(
+                        value=math.prod(
+                            axis.size for axis in self.axes[position + 1 :]
+                        ),
+                        integral=True,
+                    ),
+                )
+                for position, (index, _) in enumerate(dimensions)
+            )
+        )
+        rows = emission.shape(self.slot).rows
+        emission.steps.append(
+            _let(
+                self.slot,
+                _factor(
+                    (("program_row", ROWS), *dimensions) if rows else dimensions,
+                    body=_index(flat, _var("program_row"), linear)
+                    if rows
+                    else _index(flat, linear),
+                ),
+            )
+        )
 
 
 class ProgramParameters(KernelPart):
@@ -1812,6 +1890,12 @@ class ProgramKernelSpec(KernelLaw):
         replaced_inputs = {
             name for name, item in declarations.items() if item.origin == "input"
         }
+        binds = {
+            name: BindTensorSlot(slot=name, axes=declaration.axes)
+            if len(declaration.axes) > 1
+            else BindSlot(slot=name)
+            for name, declaration in declarations.items()
+        }
         body: list[KernelPart] = [
             ProgramDeclarations(statements=analysis.statements),
             ProgramParameters(
@@ -1821,7 +1905,7 @@ class ProgramKernelSpec(KernelLaw):
                     if parameter.name not in replaced_inputs
                 )
             ),
-            *(BindSlot(slot=name) for name in replaced_inputs),
+            *(binds[name] for name in replaced_inputs),
         ]
         literal: list[ProgramStep] = []
         for step in draws:
@@ -1829,7 +1913,7 @@ class ProgramKernelSpec(KernelLaw):
                 if literal:
                     body.append(Steps(steps=tuple(literal)))
                     literal = []
-                body.append(BindSlot(slot=step.vars[0]))
+                body.append(binds[step.vars[0]])
                 continue
             literal.append(step)
         if literal:

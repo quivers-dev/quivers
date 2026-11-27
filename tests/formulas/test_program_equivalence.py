@@ -229,6 +229,53 @@ def test_a_program_vector_parameter_keeps_its_coordinate_axis() -> None:
     )
 
 
+@pytest.mark.parametrize("per_row", [False, True])
+def test_a_program_tensor_parameter_retains_its_nominal_coordinates(
+    per_row: bool,
+) -> None:
+    shape = "[Trial, Dept, Kind]" if per_row else "[Dept, Kind]"
+    location = "factor trial : Trial in grid[trial, 1, 0]" if per_row else "grid[1, 0]"
+    source = f"""object Trial : FinSet 6
+object Dept : FinSet 2
+object Kind : FinSet 3
+
+program tensor_mean(grid : Tensor[Real]({shape})) : Trial -> Trial
+    let mu = {location}
+    observe y : Trial <- Normal(loc=mu, scale=1.0)
+    return y
+
+export tensor_mean
+"""
+    rows = frame().assign(y=np.arange(-6, 6) / 8, x=np.arange(12) / 8)
+    fitted = fit(
+        program=source,
+        parameters={"grid": "~ x" if per_row else "~ 1"},
+        response="y",
+        data=rows,
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    intercept = torch.tensor([0.6, -0.5, 0.9, -0.2, 1.75, -1.5], dtype=torch.float64)
+    slope = torch.tensor([-0.4, 0.65, 1.1, 0.125, 0.2, -0.9], dtype=torch.float64)
+    values = {"dpar_grid_intercept": intercept}
+    if per_row:
+        values["dpar_grid_beta_x"] = slope
+    scores = (
+        pin(fitted, {name: value.numpy()[None] for name, value in values.items()})
+        .log_likelihood()["y"]
+        .reshape(-1)
+    )
+    mean = intercept[3]
+    if per_row:
+        mean = mean + slope[3] * torch.tensor(rows["x"].to_numpy())
+    response = torch.tensor(rows["y"].to_numpy())
+    expected = torch.distributions.Normal(mean, 1.0).log_prob(response)
+    torch.testing.assert_close(scores, expected, rtol=TOLERANCE, atol=0.0)
+    wrong = torch.distributions.Normal(intercept[1], 1.0).log_prob(response)
+    assert float((scores - wrong).abs().max()) > 1e-3
+
+
 def test_the_program_observation_composes_weights_and_recorded_events() -> None:
     rows = frame().assign(
         y=np.linspace(-1.0, 1.0, 12),
