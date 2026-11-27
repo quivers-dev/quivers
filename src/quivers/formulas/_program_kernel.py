@@ -29,7 +29,7 @@ import functools
 import math
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import didactic.api as dx
 import numpy as np
@@ -39,6 +39,7 @@ from torch.distributions import constraints
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl import Compiler, CompileError, ParseError, QiecDiagnosticError, parse
+from quivers.dsl._data_inference import _specialize_program_parameters
 from quivers.dsl.ast_nodes import (
     AxisSpec,
     DiscreteConstructor,
@@ -52,10 +53,13 @@ from quivers.dsl.ast_nodes import (
     MarginalizeStep,
     Module,
     ObjectDecl,
+    ObjectParam,
     ObserveStep,
     ProgramDecl,
     ProgramStep,
+    QiecIndexBinder,
     QiecIndexName,
+    QiecNatSort,
     QiecShapeIndex,
     QiecTypeApplication,
     QiecValueParameter,
@@ -66,7 +70,7 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.latent_weights import _references
-from quivers.dsl.program_templates import _bound_names
+from quivers.dsl.program_templates import _bound_names, static_program_parameters
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.step_resolution import _draw_arg_value_names, _step_value_names
 from quivers.family_catalog import FamilyCatalog
@@ -770,8 +774,78 @@ def _program_module(source: str) -> Module:
         raise ValueError(f"the program source does not parse: {error}") from error
 
 
+def _fix_extents(
+    module: Module,
+    program: ProgramDecl,
+    arguments: tuple[tuple[str, int], ...],
+) -> Module:
+    """Check a formula's explicit extents and specialize only its entry.
+
+    Parameters
+    ----------
+    module : Module
+        Source containing the entry and its declarations.
+    program : ProgramDecl
+        The selected entry.
+    arguments : tuple[tuple[str, int], ...]
+        Nonnegative integer extents, by binder name.
+
+    Returns
+    -------
+    Module
+        Source with the entry's finite binders specialized.
+
+    Raises
+    ------
+    ValueError
+        If a binder is missing, unknown, or does not take an extent.
+    """
+    extents = dict(arguments)
+    binders = {
+        cast(str, binder.name): binder for binder in static_program_parameters(program)
+    }
+    if unknown := sorted(extents.keys() - binders.keys()):
+        raise ValueError(
+            f"the program {program.name!r} has no static parameters {unknown}"
+        )
+    if missing := sorted(binders.keys() - extents.keys()):
+        raise ValueError(
+            f"the program {program.name!r} has static parameters {missing}; "
+            "give their extents in static="
+        )
+    for name, binder in binders.items():
+        if not (
+            isinstance(binder, ObjectParam)
+            and binder.universe == "FinSet"
+            or isinstance(binder, QiecIndexBinder)
+            and isinstance(binder.sort, QiecNatSort)
+        ):
+            raise ValueError(
+                f"the static parameter {name!r} of {program.name!r} does not take "
+                "an extent; static= binds natural numbers and finite set sizes"
+            )
+        if (
+            isinstance(extents[name], bool)
+            or not isinstance(extents[name], int)
+            or extents[name] < 0
+        ):
+            raise ValueError(
+                f"static parameter {name!r} requires a nonnegative integer"
+            )
+    if not extents:
+        return module
+    try:
+        return _specialize_program_parameters(module, extents, entry_name=program.name)
+    except (QiecDiagnosticError, CompileError) as error:
+        raise ValueError(
+            f"the program does not specialize with static={extents}: {error}"
+        ) from error
+
+
 @functools.lru_cache(maxsize=32)
-def program_analysis(source: str, entry: str) -> ProgramAnalysis:
+def program_analysis(
+    source: str, entry: str, static_arguments: tuple[tuple[str, int], ...] = ()
+) -> ProgramAnalysis:
     """Check a program with its row axis left symbolic and read its parts.
 
     Parameters
@@ -780,6 +854,8 @@ def program_analysis(source: str, entry: str) -> ProgramAnalysis:
         QVR source declaring the program.
     entry : str
         Program name in the source.
+    static_arguments : tuple[tuple[str, int], ...]
+        Nonnegative integer extents, by binder name.
 
     Returns
     -------
@@ -794,11 +870,12 @@ def program_analysis(source: str, entry: str) -> ProgramAnalysis:
         its rows.
     """
     module = _program_module(source)
+    module = _fix_extents(module, _entry(module, entry), static_arguments)
     program = _entry(module, entry)
-    if program.params or program.type_params or program.binders:
+    if program.params:
         raise ValueError(
-            f"the program {program.name!r} has static parameters; a formula block "
-            "reads a program whose parameters are all values"
+            f"the program {program.name!r} names domain parameters {list(program.params)}; "
+            "the formula uses the program's domain for the rows of the response"
         )
     domain = program.domain
     objects = {
@@ -1365,6 +1442,8 @@ class ProgramKernelSpec(KernelLaw):
     parameters : tuple[str, ...]
         The sites and inputs a formula or a fixed value replaces, in program
         order.
+    static_arguments : dict[str, int]
+        Finite extents of the program, by binder name.
     """
 
     kind: Literal["program"] = "program"
@@ -1372,6 +1451,7 @@ class ProgramKernelSpec(KernelLaw):
     entry: str
     response: str
     parameters: tuple[str, ...] = ()
+    static_arguments: dict[str, int] = dx.field(default_factory=dict)
 
     @property
     def analysis(self) -> ProgramAnalysis:
@@ -1382,7 +1462,9 @@ class ProgramKernelSpec(KernelLaw):
         ProgramAnalysis
             The checked program.
         """
-        return program_analysis(self.source, self.entry)
+        return program_analysis(
+            self.source, self.entry, tuple(sorted(self.static_arguments.items()))
+        )
 
     @property
     def row_columns(self) -> tuple[str, ...]:
@@ -1830,6 +1912,7 @@ def program_spec(
     parameters: Collection[str],
     *,
     entry: str | None,
+    static: Mapping[str, int] | None,
 ) -> ProgramKernelSpec:
     """Read the kernel law of a program from the arguments of a formula call.
 
@@ -1843,6 +1926,8 @@ def program_spec(
         The sites and inputs given a formula or a fixed value.
     entry : str or None
         The program name given separately.
+    static : Mapping[str, int] or None
+        Finite extents of the program, by binder name.
 
     Returns
     -------
@@ -1859,7 +1944,8 @@ def program_spec(
     source, entry = program_source(program, entry)
     if entry is None:
         entry = _entry(_program_module(source), None).name
-    analysis = program_analysis(source, entry)
+    extents = tuple(sorted((static or {}).items()))
+    analysis = program_analysis(source, entry, extents)
     order = {name: index for index, name in enumerate(analysis.parameters)}
     unknown = sorted(set(parameters) - order.keys())
     for name in unknown:
@@ -1869,6 +1955,7 @@ def program_spec(
         entry=analysis.entry,
         response=response,
         parameters=tuple(sorted(parameters, key=lambda name: order[name])),
+        static_arguments=dict(extents),
     )
 
 
@@ -1877,6 +1964,7 @@ def program_arguments[Authored](
     *,
     program: str | tuple[str | Path, str] | None,
     entry: str | None,
+    static: Mapping[str, int] | None,
     parameters: Mapping[str, str] | None,
     response: str | None,
     family: str | Family,
@@ -1904,6 +1992,8 @@ def program_arguments[Authored](
         QVR source, or a source file path and its program name.
     entry : str or None
         The program name given separately.
+    static : Mapping[str, int] or None
+        Finite extents of the program, by binder name.
     parameters : Mapping[str, str] or None
         Formulas of the program's parameters, by name.
     response : str or None
@@ -1929,9 +2019,9 @@ def program_arguments[Authored](
         parameter formulas, or gives program keywords without a program.
     """
     if program is None:
-        if entry is not None or parameters is not None or response is not None:
+        if any(item is not None for item in (entry, static, parameters, response)):
             raise ValueError(
-                f"{caller}: entry=, parameters= and response= describe a program; pass its "
+                f"{caller}: entry=, static=, parameters= and response= describe a program; pass its "
                 "source as program="
             )
         if formula is None:
@@ -1959,7 +2049,11 @@ def program_arguments[Authored](
     site = response.partition("|")[0].strip()
     formulas = dict(parameters or {})
     spec = program_spec(
-        program, site, {*formulas, *(fixed_parameters or {})}, entry=entry
+        program,
+        site,
+        {*formulas, *(fixed_parameters or {})},
+        entry=entry,
+        static=static,
     )
     location = formulas.pop(LOCATION, None)
     right = "~ 0"

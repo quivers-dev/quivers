@@ -1031,8 +1031,9 @@ through `data`, because the column keeps its fitted numeric carrier.
 A QVR program whose observation scores one response can take its design from
 formulas. `program=` takes QVR source text or a pair `(path, entry)` naming a
 program in a source file. Give `entry=` to choose a program from source
-text that declares several. A saved fit keeps the source text and the entry
-name. `response=` names the observed site, and `parameters=` gives a formula
+text that declares several. For a program with a natural-number or finite
+set binder, `static={"K": 3}` sets the extent of `K`. A saved fit keeps the
+source text, entry name, and extents. `response=` names the observed site, and `parameters=` gives a formula
 for each sample site or input the design should drive. The program's domain
 is the rows of the data, so its row object takes the number of rows. A parameter with a formula has its prior replaced by
 the regression, on the link its support requires: a real parameter is its

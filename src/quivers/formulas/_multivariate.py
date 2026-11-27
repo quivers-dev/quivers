@@ -938,6 +938,7 @@ def bf(
     *formulas: str,
     program: str | tuple[str | Path, str] | None = None,
     entry: str | None = None,
+    static: Mapping[str, int] | None = None,
     parameters: Mapping[str, str] | None = None,
     response: str | None = None,
     family: str | Family | None = None,
@@ -972,6 +973,8 @@ def bf(
         QVR source, or a source file path and a program name, as in `fit`.
     entry : str or None
         The program name when it is given separately from the source text.
+    static : Mapping[str, int] or None
+        Finite extents of the program, by binder name.
     parameters : Mapping[str, str] or None
         Formulas of the program's parameters, by name.
     response : str or None
@@ -1028,6 +1031,7 @@ def bf(
             formula,
             program=program,
             entry=entry,
+            static=static,
             parameters=parameters,
             response=response,
             family="gaussian" if family is None else family,
@@ -1055,6 +1059,7 @@ def bf(
     if (
         formula is None
         or entry is not None
+        or static is not None
         or parameters is not None
         or response is not None
     ):

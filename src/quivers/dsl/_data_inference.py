@@ -79,13 +79,15 @@ def _checked_source(
 
 def _walk(value: object) -> Iterator[dx.Model]:
     pending = [value]
-    seen = set()
+    seen: dict[int, dx.Model] = {}
     while pending:
         node = pending.pop()
         if id(node) in seen:
             continue
         if isinstance(node, dx.Model):
-            seen.add(id(node))
+            # Decoded child records may otherwise release their identities
+            # before another field is read.
+            seen[id(node)] = node
             yield node
             pending.extend(getattr(node, name) for name in type(node).__field_specs__)
         elif isinstance(node, tuple):
@@ -305,6 +307,7 @@ def _specialize_program_parameters(
     module: Module,
     data: Mapping[str, object],
     *,
+    entry_name: str | None = None,
     checked_source: tuple[Module, QiecModule] | None = None,
     families: FamilyCatalog | None = None,
 ) -> Module:
@@ -312,6 +315,8 @@ def _specialize_program_parameters(
 
     Each entry has its own binder namespace. Substitution changes only syntax
     carrying static indices or object references; external values stay shared.
+    An entry name limits specialization to that entry and retains other
+    programs' own interfaces.
     """
     candidates = {
         declaration.name: {
@@ -324,6 +329,7 @@ def _specialize_program_parameters(
         }
         for declaration in module.statements
         if isinstance(declaration, ProgramDecl)
+        and (entry_name is None or declaration.name == entry_name)
     }
     candidates = {name: binders for name, binders in candidates.items() if binders}
     if not candidates or not data:

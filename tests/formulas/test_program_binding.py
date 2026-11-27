@@ -171,10 +171,24 @@ def test_a_second_observation_is_refused() -> None:
         _emit(two, {"mu": "~ x"}, "y")
 
 
-def test_static_parameters_are_refused() -> None:
-    static = GAUSS.replace("program gauss :", "program gauss[k : Nat] :")
+@pytest.mark.parametrize("kind", ["Nat", "FinSet"])
+def test_static_extents_specialize_the_program(kind: str) -> None:
+    static = (
+        GAUSS.replace("program gauss :", f"program gauss[k : {kind}] :")
+        .replace("HalfNormal(scale=1.0)", "HalfNormal(scale=1.0) [over=k]")
+        .replace("    observe y", "    let first_sigma = sigma[0]\n    observe y")
+        .replace("scale=sigma)", "scale=first_sigma)")
+    )
     with pytest.raises(ValueError, match="static parameters"):
         _emit(static, {"mu": "~ x"}, "y")
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        _emit(static, {"mu": "~ x"}, "y", static={"k": -1})
+    for size in (2, 3):
+        source = _emit(static, {"mu": "~ x"}, "y", static={"k": size})
+        explicit = static.replace(f"[k : {kind}]", "").replace("[over=k]", "[over=K]")
+        explicit = f"object K : FinSet {size}\n" + explicit
+        expected = _emit(explicit, {"mu": "~ x"}, "y")
+        assert source.replace("__qvr_gauss_k", "K") == expected
 
 
 def test_priors_follow_the_formula_conventions() -> None:
