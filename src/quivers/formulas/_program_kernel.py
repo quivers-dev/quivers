@@ -1618,9 +1618,12 @@ class ProgramKernelSpec(KernelLaw):
                 f"the response terms {[modifier.kind for modifier in modifiers]} "
                 "change that law, so the program must state them itself"
             )
-        if inputs.host is not None:
+        if inputs.host is not None and (
+            LOCATION not in self.parameters or LOCATION in inputs.fixed
+        ):
             raise ValueError(
-                f"the program {entry!r} has no location for a neural predictor to feed"
+                f"the neural predictor feeds the location of {entry!r}; "
+                "give its mu parameter a formula in parameters="
             )
         roots = {} if inputs.graph is None else inputs.graph.roots
         row_roots = graph_row_roots(inputs)

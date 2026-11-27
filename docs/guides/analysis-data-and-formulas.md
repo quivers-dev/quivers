@@ -1056,6 +1056,8 @@ predictors can have their own formulas in that mapping. For instance,
 `{"noise": NonlinearExpression(expression="a + b * x"), "a": "~ 1", "b": "~ 1"}`
 lets the response-noise parameter depend on `x`. A vector parameter takes
 one expression per free coordinate, keyed by its zero-based index.
+The `predictor=` module adds to the link-scale predictor of a scalar `mu`
+with a formula.
 
 Data the program reads at each row are data columns of the same name. Data on
 another axis and scalars come from `data2`. A saved fit keeps the program's

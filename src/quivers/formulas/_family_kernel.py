@@ -850,6 +850,7 @@ def graph_row_roots(inputs: KernelInputs) -> frozenset[str]:
         name
         for name, expression in graph.roots.items()
         if _value_names(expression) & varying
+        or (name == "mu" and inputs.host is not None)
     )
 
 

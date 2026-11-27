@@ -171,6 +171,33 @@ def test_a_program_parameter_uses_the_shared_nonlinear_predictor() -> None:
     assert abs(log_joint(run(program, values)) - log_joint(run(other, values))) > 1e-3
 
 
+@pytest.mark.parametrize("nonlinear", [False, True])
+def test_a_neural_predictor_adds_to_the_program_location(nonlinear: bool) -> None:
+    data = torch.tensor(frame()["z"].to_numpy(), dtype=torch.float64)
+    neural = {"predictor": torch.nn.Identity(), "predictor_data": data.square()}
+    parameters = (
+        {"mu": NonlinearExpression(expression="location"), "location": "~ 1"}
+        if nonlinear
+        else {"mu": "~ 1"}
+    )
+    program = _svi(program=GAUSS, parameters=parameters, response="y", **neural)
+    ordinary = {"distributional": parameters} if nonlinear else {}
+    family = _svi(
+        "y ~ 0" if nonlinear else "y ~ 1",
+        priors={"sigma": "HalfNormal(1.0)"},
+        **neural,
+        **ordinary,
+    )
+    names = latent_names(program)
+    assert set(names) == set(latent_names(family))
+    values = _values(names, seed=1)
+    assert log_joint(run(program, values)) == pytest.approx(
+        log_joint(run(family, values)), rel=TOLERANCE
+    )
+    other = _svi(program=GAUSS, parameters=parameters, response="y")
+    assert abs(log_joint(run(program, values)) - log_joint(run(other, values))) > 1e-3
+
+
 def test_a_program_vector_parameter_keeps_its_coordinate_axis() -> None:
     program = _svi(
         program=MIX2,
