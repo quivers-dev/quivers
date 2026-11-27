@@ -28,6 +28,7 @@ Eisner, J. (2023). Time-and-space-efficient weighted deduction.
 from __future__ import annotations
 
 import itertools
+import math
 from collections import deque
 from collections.abc import Mapping, Sequence
 from enum import Enum
@@ -38,9 +39,13 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
-from quivers.core.algebras import OrderPreservingSemiring, Star
+from quivers.core.algebras import OrderPreservingSemiring, RealEmbedding, Star
 from quivers.core.elimination import fiber_join
 from quivers.core.laws import (
+    PLUS_IDEMPOTENT,
+    REAL_EMBEDDING,
+    STAR_LEAST_SOLUTION,
+    TIMES_COMMUTATIVE,
     NO_ZERO_DIVISORS,
     ZERO_SUM_FREE,
     DISTRIBUTIVE,
@@ -56,6 +61,27 @@ from quivers.core.laws import (
 )
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import (
+    NOT_DIFFERENTIATED,
+    SPECTRAL_RADIUS_BELOW_ONE,
+    AbsoluteError,
+    AbsoluteLogError,
+    AccuracyReport,
+    Attainment,
+    BudgetExhausted,
+    Certified,
+    Completed,
+    DerivativeEntry,
+    DerivativeReport,
+    DerivativeSemantics,
+    Enclosure,
+    Exact,
+    Heuristic,
+    FailurePolicy,
+    MonotonePolynomial,
+    Unestablished,
+    attained_guarantee,
+    settle,
+    unmet_fields,
     ALGEBRA_OPERATIONS,
     AccuracyContract,
     Acyclic,
@@ -108,7 +134,15 @@ from quivers.qiec.rules import (
 from quivers.qiec.types import IndexLiteral, IndexSum, IndexTerm, IndexVariable
 from quivers.stochastic.forest import DerivationForest, ForestEdge, build_forest
 from quivers.stochastic.indexed import ChartWork, IndexedChart, generic_joinable
-from quivers.stochastic.recursion import Component, CyclicRefusal, CyclicRefused, solve
+from quivers.stochastic.recursion import (
+    Component,
+    CyclicRefusal,
+    CyclicRefused,
+    NewtonComponent,
+    PolynomialSolution,
+    solve,
+    solve_polynomial,
+)
 from quivers.stochastic.joins import agm_bound, body_query
 from quivers.stochastic.span import (
     SpanGrammar,
@@ -129,6 +163,9 @@ __all__ = [
     "PlanRecord",
     "PlanRefusal",
     "CYCLIC_ALGORITHM",
+    "NEWTON_ALGORITHM",
+    "NEWTON_MEASURES",
+    "NEWTON_WORK",
     "SPAN_ALGORITHM",
     "SPAN_MEASURES",
     "SPAN_RECOGNITION_ALGORITHM",
@@ -916,6 +953,111 @@ SPAN_RECOGNITION_WORK = ComplexityClaim(
 """The cost of span recognition by Boolean matrix products."""
 
 
+_EY = Citation(
+    reference=(
+        "Etessami and Yannakakis 2009, Recursive Markov chains, stochastic grammars, "
+        "and monotone systems of nonlinear equations"
+    ),
+    locator="section 6, the decomposed Newton's method and its monotone convergence",
+    doi="10.1145/1462153.1462154",
+)
+_EKL = Citation(
+    reference=(
+        "Esparza, Kiefer and Luttenberger 2010, Computing the least fixed point of "
+        "positive polynomial systems"
+    ),
+    locator=(
+        "SIAM Journal on Computing 39(6); section 6, the number of iterations of "
+        "the decomposed method, k_f + i n 2^n for i bits"
+    ),
+    doi="10.1137/090749591",
+)
+
+NEWTON_WORK = ComplexityClaim(
+    query="least fixed point of every item of a monotone polynomial presentation",
+    parameters=(
+        ComplexityParameter(name="V", meaning="items"),
+        ComplexityParameter(name="E", meaning="grounded rule instances and inputs"),
+        ComplexityParameter(
+            name="J", meaning="candidates the keyed lookups return, at least E"
+        ),
+        ComplexityParameter(name="P", meaning="the most premises of one rule"),
+        ComplexityParameter(
+            name="S", meaning="the size of the largest strongly connected component"
+        ),
+        ComplexityParameter(name="K", meaning="Newton steps over all components"),
+    ),
+    model=ALGEBRA_OPERATIONS,
+    bounds=(
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="time",
+            expression="V + P E + J + K (S^3 + P^2 E)",
+            status=Unresolved(
+                obligation=(
+                    "the steps K grow with the bits asked for, linearly after a "
+                    "threshold k_f that is only shown to exist, and up to n 2^n "
+                    "steps per bit in a component of n items; a bound polynomial "
+                    "in the bits for every system was not checked"
+                )
+            ),
+        ),
+        ComplexityBound(
+            phase=Phase.EXECUTION,
+            resource="space",
+            expression="V + P E + S^2",
+            status=BestKnown(sources=(_EY, _EKL)),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="time",
+            expression="V + P E + J + V S^2",
+            status=BestKnown(sources=(_EY,)),
+        ),
+        ComplexityBound(
+            phase=Phase.DIFFERENTIATION,
+            resource="space",
+            expression="V + P E + V S",
+            status=BestKnown(sources=(_EY,)),
+        ),
+    ),
+    inapplicable=(
+        PhaseInapplicable(
+            phase=Phase.CONSTRUCTION,
+            reason="join plans and indexes are built from the presentation alone",
+        ),
+        PhaseInapplicable(
+            phase=Phase.REFIT,
+            reason="a refit is one more solve at the new weights",
+        ),
+    ),
+    conditions=(
+        "the edges are kept to build each component's polynomials",
+        "each step solves one linear system of the component's Jacobian",
+        "the derivative is implicit, (I - J)^-1 dF at the solution, one inverse "
+        "per component; the tape holds the polynomials at the solution only",
+        "a least fixed point certified infinite is refused, never truncated",
+    ),
+)
+"""The cost of solving a monotone polynomial system component by component."""
+
+NEWTON_MEASURES: tuple[WorkField, ...] = measuring(
+    {
+        WorkField.ITERATIONS,
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.SCALAR_DIVISIONS,
+        WorkField.STAR_PIVOTS,
+        WorkField.EXACT_OPERATIONS,
+        WorkField.HASH_OPERATIONS,
+        WorkField.KEY_COMPARISONS,
+    }
+)
+"""The counters a Newton run counts: its steps, the sums and products of
+its floating evaluations, its outward rounded operations, and the chart's
+lookups and candidates."""
+
+
 FOREST_WORK = ComplexityClaim(
     query="the packed forest of a presentation, and folds over its derivations",
     parameters=(
@@ -1239,6 +1381,18 @@ class Evaluation(ValueModel):
         Elements of the tensors a span run formed.
     peak : int
         Elements a span run held at once.
+    iterations : int
+        Newton steps of a monotone polynomial run.
+    lower : dict of Item to float
+        A certified lower bound of every item's real value, in a monotone
+        polynomial run; empty otherwise.
+    upper : dict of Item to float
+        A certified upper bound, ``inf`` where none was certified.
+    newton : tuple of NewtonComponent
+        Each component of a monotone polynomial run, with its conditioning.
+    accuracy : AccuracyReport or None
+        What a run of an inexact method reached, which its contract
+        settles; ``None`` for exact methods.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1261,6 +1415,19 @@ class Evaluation(ValueModel):
     )
     allocated: int = 0
     peak: int = 0
+    iterations: int = 0
+    lower: dict[Item, float] = dx.field(
+        default={}, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    upper: dict[Item, float] = dx.field(
+        default={}, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    newton: tuple[NewtonComponent, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    accuracy: AccuracyReport | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     @property
     def retained(self) -> int:
@@ -1312,6 +1479,7 @@ class Evaluation(ValueModel):
 
         return WorkReport(
             phase=Phase.EXECUTION,
+            iterations=kept(WorkField.ITERATIONS, self.iterations),
             scalar_sums=kept(WorkField.SCALAR_SUMS, self.sums),
             scalar_products=kept(WorkField.SCALAR_PRODUCTS, self.products),
             star_pivots=kept(WorkField.STAR_PIVOTS, self.pivots),
@@ -1449,7 +1617,7 @@ class Plan(ValueModel):
         *,
         like: torch.Tensor,
     ) -> Evaluation:
-        """Run both passes.
+        """Run the plan's executor.
 
         Parameters
         ----------
@@ -1465,16 +1633,84 @@ class Plan(ValueModel):
         Returns
         -------
         Evaluation
-            The value of every item.
+            The value of every item. A run of an inexact method is
+            returned only when it meets its accuracy contract.
+
+        Raises
+        ------
+        PlanRefused
+            If the derived hypergraph has a cycle, the recursion is
+            bounded, or the method is inexact and the contract may return
+            an unestablished value, which `settled` returns.
+        ContractNotMet
+            If an inexact run does not meet a contract that refuses.
+        """
+        self._two_pass()
+        self._returns_values()
+        evaluation = _run(self, axioms, inputs, like)
+        if evaluation.accuracy is None:
+            return evaluation
+        settled = settle(self.record.accuracy, evaluation, evaluation.accuracy)
+        assert isinstance(settled, Evaluation)
+        return settled
+
+    def settled(
+        self,
+        axioms: Sequence[AxiomOccurrence],
+        inputs: Mapping[InputId, torch.Tensor],
+        *,
+        like: torch.Tensor,
+    ) -> Evaluation | Unestablished:
+        """Run the plan's executor and settle the result by its contract.
+
+        Parameters
+        ----------
+        axioms : Sequence of AxiomOccurrence
+            The input occurrences.
+        inputs : Mapping of InputId to torch.Tensor
+            The input weights.
+        like : torch.Tensor
+            The dtype and device of units and zeros.
+
+        Returns
+        -------
+        Evaluation or Unestablished
+            The values when the run meets the contract, or an exact
+            method's values; otherwise the values wrapped as unestablished,
+            when the contract says to return them.
 
         Raises
         ------
         PlanRefused
             If the derived hypergraph has a cycle, or the recursion is
             bounded.
+        ContractNotMet
+            If the run does not meet a contract that refuses.
         """
         self._two_pass()
-        return _run(self, axioms, inputs, like)
+        evaluation = _run(self, axioms, inputs, like)
+        if evaluation.accuracy is None:
+            return evaluation
+        return settle(self.record.accuracy, evaluation, evaluation.accuracy)
+
+    def _returns_values(self) -> None:
+        """Refuse a plain run of a plan that may return an unestablished value.
+
+        Raises
+        ------
+        PlanRefused
+            If the method is inexact and the contract returns values that
+            fail it.
+        """
+        if (
+            not self.record.recursion.finite_method
+            and self.record.accuracy.on_failure is FailurePolicy.RETURN_UNESTABLISHED
+        ):
+            raise PlanRefused(
+                PlanRefusal.INADMISSIBLE,
+                "the contract may return an unestablished value, which settled "
+                "and settled_gradient return",
+            )
 
     def gradient(
         self,
@@ -1510,7 +1746,55 @@ class Plan(ValueModel):
         -------
         dict of InputId to torch.Tensor
             The gradient of each input, zero for an input the goal does
-            not use.
+            not use; for an inexact method, only when the run meets its
+            contract.
+
+        Raises
+        ------
+        PlanRefused
+            If the derived hypergraph has a cycle, or the method is
+            inexact and the contract may return an unestablished value,
+            which `settled_gradient` returns.
+        KeyError
+            If the goal is not derived.
+        ContractNotMet
+            If an inexact run does not meet a contract that refuses.
+        """
+        self._returns_values()
+        found = self.settled_gradient(axioms, inputs, goal, like=like, adjoint=adjoint)
+        assert isinstance(found, dict)
+        return found
+
+    def settled_gradient(
+        self,
+        axioms: Sequence[AxiomOccurrence],
+        inputs: Mapping[InputId, torch.Tensor],
+        goal: Item,
+        *,
+        like: torch.Tensor,
+        adjoint: torch.Tensor | None = None,
+    ) -> dict[InputId, torch.Tensor] | Unestablished:
+        """The gradient of a goal's value, settled by the contract.
+
+        Parameters
+        ----------
+        axioms : Sequence of AxiomOccurrence
+            The input occurrences.
+        inputs : Mapping of InputId to torch.Tensor
+            The input weights.
+        goal : Item
+            The item differentiated.
+        like : torch.Tensor
+            The dtype and device of units and zeros.
+        adjoint : torch.Tensor or None
+            The cotangent of the goal's value; ones by default.
+
+        Returns
+        -------
+        dict of InputId to torch.Tensor or Unestablished
+            The gradient, as `gradient` computes it; for an inexact method
+            that does not meet its contract, wrapped as unestablished when
+            the contract says to return it.
 
         Raises
         ------
@@ -1518,6 +1802,8 @@ class Plan(ValueModel):
             If the derived hypergraph has a cycle.
         KeyError
             If the goal is not derived.
+        ContractNotMet
+            If the run does not meet a contract that refuses.
         """
         self._two_pass()
         if self.record.backward == "autograd":
@@ -1527,16 +1813,20 @@ class Plan(ValueModel):
             evaluation = _run(self, axioms, leaves, like)
             value = evaluation.value(goal)
             if not value.requires_grad:
-                return {key: torch.zeros_like(leaf) for key, leaf in leaves.items()}
-            cotangent = torch.ones_like(value) if adjoint is None else adjoint
-            keys = list(leaves)
-            grads = torch.autograd.grad(
-                value, [leaves[key] for key in keys], cotangent, allow_unused=True
-            )
-            return {
-                key: torch.zeros_like(leaves[key]) if grad is None else grad
-                for key, grad in zip(keys, grads, strict=True)
-            }
+                found = {key: torch.zeros_like(leaf) for key, leaf in leaves.items()}
+            else:
+                cotangent = torch.ones_like(value) if adjoint is None else adjoint
+                keys = list(leaves)
+                grads = torch.autograd.grad(
+                    value, [leaves[key] for key in keys], cotangent, allow_unused=True
+                )
+                found = {
+                    key: torch.zeros_like(leaves[key]) if grad is None else grad
+                    for key, grad in zip(keys, grads, strict=True)
+                }
+            if evaluation.accuracy is None:
+                return found
+            return settle(self.record.accuracy, found, evaluation.accuracy)
         with torch.no_grad():
             detached = {key: value.detach() for key, value in inputs.items()}
             evaluation = _evaluate(self, axioms, detached, like)
@@ -1629,6 +1919,12 @@ SPAN_RECOGNITION_ALGORITHM = (
 )
 """The observer plan of the support of a presentation in span form."""
 
+NEWTON_ALGORITHM = (
+    "strongly connected components of the derived hypergraph, each polynomial "
+    "component solved by Newton's method with a certified enclosure"
+)
+"""The executor for monotone polynomial systems."""
+
 CYCLIC_ALGORITHM = (
     "strongly connected components of the derived hypergraph, each linear "
     "component solved by the algebra's closure"
@@ -1705,24 +2001,41 @@ def plan(
             accuracy,
             algebra=algebra.subject,
             claims=(*algebra.claims(), *claims),
-            uses=requirements(TWO_PASS_LAWS, algebra.subject),
+            uses=requirements(
+                (*TWO_PASS_LAWS, *_newton_laws(algebra))
+                if isinstance(recursion, MonotonePolynomial)
+                else TWO_PASS_LAWS,
+                algebra.subject,
+            ),
         )
     except InadmissibleContract as error:
         raise PlanRefused(PlanRefusal.INADMISSIBLE, str(error)) from error
     kept = isinstance(retention, PackedForest)
     bounded = isinstance(recursion, Bounded) and recursion.measure == "height"
     cyclic = isinstance(recursion, LinearCyclic)
+    polynomial = isinstance(recursion, MonotonePolynomial)
+    if polynomial and kept:
+        raise PlanRefused(
+            PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
+            "a monotone polynomial system is solved by Newton's method, without a "
+            "forest of its infinitely many derivations",
+        )
     if cyclic and (kept or not isinstance(algebra, Star)):
         raise PlanRefused(
             PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
             "a linear cyclic system is solved by the algebra's closure, without "
             "a forest of its infinitely many derivations",
         )
-    if not isinstance(recursion, Acyclic) and not (kept and bounded) and not cyclic:
+    if (
+        not isinstance(recursion, Acyclic)
+        and not (kept and bounded)
+        and not cyclic
+        and not polynomial
+    ):
         raise PlanRefused(
             PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
-            f"the executors here solve acyclic, linear cyclic and height-bounded "
-            f"systems, not {recursion.tag}",
+            f"the executors here solve acyclic, linear cyclic, monotone polynomial "
+            f"and height-bounded systems, not {recursion.tag}",
         )
     if any(
         premise.hypotheses for rule in presentation.rules for premise in rule.premises
@@ -1801,7 +2114,9 @@ def plan(
     budget = accuracy.budget
     backward: Literal["autograd", "recompute"] = (
         "recompute"
-        if (budget.elements is not None or budget.bytes is not None) and not cyclic
+        if (budget.elements is not None or budget.bytes is not None)
+        and not cyclic
+        and not polynomial
         else "autograd"
     )
     span, declined = _span_form(query, presentation, retention, recursion, backward)
@@ -1821,8 +2136,18 @@ def plan(
             "the presentation is in span form: the spans of each length are final "
             "once the shorter ones are, so they are computed length by length"
         )
+    if polynomial:
+        assumptions.append(
+            "each strongly connected component of a run is a polynomial system with "
+            "nonnegative coefficients in the reals of the algebra's embedding; "
+            "Newton's method from zero keeps a certified lower bound and a "
+            "pre-fixed point bounds it from above, both in outward rounded "
+            "arithmetic, and the bounds of a component feed those above it"
+        )
     algorithm = (
-        FOREST_ALGORITHM
+        NEWTON_ALGORITHM
+        if polynomial
+        else FOREST_ALGORITHM
         if kept
         else SPAN_RECOGNITION_ALGORITHM
         if recognizes
@@ -1833,7 +2158,9 @@ def plan(
         else TWO_PASS_ALGORITHM
     )
     complexity = (
-        SPAN_RECOGNITION_WORK
+        NEWTON_WORK
+        if polynomial
+        else SPAN_RECOGNITION_WORK
         if recognizes
         else SPAN_WORK
         if span is not None
@@ -2288,6 +2615,8 @@ def _run(
     """
     if plan.span is not None:
         return _run_span(plan, plan.span, axioms, inputs, like)
+    if isinstance(plan.record.recursion, MonotonePolynomial):
+        return _solve_monotone(plan, axioms, inputs, like)
     if isinstance(plan.record.recursion, LinearCyclic):
         return _solve_cyclic(plan, axioms, inputs, like)
     return _evaluate(plan, axioms, inputs, like)
@@ -2564,6 +2893,309 @@ def _value_seed(
     stacked = torch.stack([weight for _, _, weight in entries])
     summed = fiber_join(algebra, stacked, fibers, algebra.zero_like((1,), like), axis=0)
     return summed.reshape(rows, size, *stacked.shape[1:])
+
+
+def _newton_laws(algebra: OrderPreservingSemiring) -> tuple[Law, ...]:
+    """The laws Newton's method uses in an algebra.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra.
+
+    Returns
+    -------
+    tuple of Law
+        A commutative product, and the real embedding for certified Newton
+        or, without one, an idempotent sum with a star for exact Newton.
+    """
+    if isinstance(algebra, RealEmbedding):
+        return (TIMES_COMMUTATIVE, REAL_EMBEDDING)
+    return (TIMES_COMMUTATIVE, PLUS_IDEMPOTENT, STAR_LEAST_SOLUTION)
+
+
+def _rounding(algebra: OrderPreservingSemiring) -> int:
+    """The rounding of an algebra's embedding in the reals.
+
+    Parameters
+    ----------
+    algebra : OrderPreservingSemiring
+        The algebra, a `RealEmbedding` under a monotone polynomial plan.
+
+    Returns
+    -------
+    int
+        Units in the last place.
+    """
+    assert isinstance(algebra, RealEmbedding)
+    return algebra.embedding_rounding
+
+
+def _exact_newton(
+    plan: Plan, forest: DerivationForest, solution: PolynomialSolution
+) -> Evaluation:
+    """The evaluation and report of exact Newton in an idempotent algebra.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+    forest : DerivationForest
+        The derived hypergraph.
+    solution : PolynomialSolution
+        The solution.
+
+    Returns
+    -------
+    Evaluation
+        The values and the report: exact when every component took its
+        steps, without a guarantee when the budget ended one first.
+    """
+    contract = plan.record.accuracy
+    stop = (
+        BudgetExhausted(
+            resource="iterations", limit=Rational.of(contract.budget.iterations or 0)
+        )
+        if solution.stopped == "budget"
+        else Completed()
+    )
+    guarantee = attained_guarantee(stop, Exact(), None)
+    wanted = contract.gradient
+    derivative = (
+        NOT_DIFFERENTIATED
+        if wanted.missing
+        else DerivativeSemantics.none(
+            "the least fixed point of an idempotent system is piecewise in its "
+            "weights; no implicit derivative is claimed"
+        )
+    )
+    derivatives = (
+        DerivativeReport()
+        if wanted.missing
+        else DerivativeReport(
+            entries=tuple(
+                DerivativeEntry(
+                    output="least fixed point", wrt=key, semantics=derivative
+                )
+                for key in plan.record.query.differentiate_with_respect_to
+            )
+        )
+    )
+    work = WorkReport(
+        phase=Phase.EXECUTION,
+        iterations=solution.iterations,
+        scalar_sums=solution.sums,
+        scalar_products=solution.products,
+        hash_operations=forest.work.lookups,
+        key_comparisons=forest.work.candidates,
+        measured=NEWTON_MEASURES,
+    )
+    attainment = Attainment(
+        guarantee=guarantee,
+        metric=contract.target.metric,
+        rounding=Rational.of(0),
+        derivative=derivative,
+    )
+    report = AccuracyReport(
+        attainment=attainment,
+        stop=stop,
+        unmet=unmet_fields(contract, attainment, (work,)),
+        derivatives=derivatives,
+        work=(work,),
+        claims=tuple(
+            plan.algebra.claim(law)
+            for law in (*TWO_PASS_LAWS, *_newton_laws(plan.algebra))
+        ),
+    )
+    return Evaluation(
+        values=solution.values,
+        order=tuple(solution.values),
+        work=forest.work,
+        sums=solution.sums,
+        products=solution.products,
+        iterations=solution.iterations,
+        measures=NEWTON_MEASURES,
+        newton=solution.components,
+        accuracy=report,
+    )
+
+
+def _solve_monotone(
+    plan: Plan,
+    axioms: Sequence[AxiomOccurrence],
+    inputs: Mapping[InputId, torch.Tensor],
+    like: torch.Tensor,
+) -> Evaluation:
+    """Solve a monotone polynomial system by decomposed Newton, and report it.
+
+    The report's guarantee is the certified bound of the widest interval
+    in the contract's metric, with that interval as its certificate; a
+    component whose upper end is not certified leaves the run without a
+    guarantee, which names the conditioning there.
+
+    Parameters
+    ----------
+    plan : Plan
+        The plan.
+    axioms : Sequence of AxiomOccurrence
+        The input occurrences.
+    inputs : Mapping of InputId to torch.Tensor
+        The input weights.
+    like : torch.Tensor
+        The dtype and device of units and zeros.
+
+    Returns
+    -------
+    Evaluation
+        The values, their intervals, and the accuracy report.
+
+    Raises
+    ------
+    PlanRefused
+        If a component's least fixed point is certified infinite.
+    """
+    forest = build_forest(plan.presentation, axioms)
+    contract = plan.record.accuracy
+    try:
+        solution = solve_polynomial(
+            forest,
+            plan.algebra,
+            inputs,
+            like=like,
+            budget=contract.budget.iterations,
+        )
+    except CyclicRefused as refused:
+        raise PlanRefused(_CYCLIC_CODES[refused.code], refused.reason) from refused
+    if solution.decided or not isinstance(plan.algebra, RealEmbedding):
+        return _exact_newton(plan, forest, solution)
+    metric = contract.target.metric
+    logarithmic = not isinstance(metric, AbsoluteError)
+    widest: tuple[float, float] | None = None
+    certified = all(part.certified for part in solution.components)
+    if certified:
+        for item in solution.values:
+            low, high = solution.lower[item], solution.upper[item]
+            if logarithmic:
+                if high == 0:
+                    continue
+                if low == 0:
+                    certified = False
+                    break
+                ends = (
+                    math.nextafter(math.nextafter(math.log(low), -math.inf), -math.inf),
+                    math.nextafter(math.nextafter(math.log(high), math.inf), math.inf),
+                )
+            else:
+                ends = (low, high)
+            if widest is None or ends[1] - ends[0] > widest[1] - widest[0]:
+                widest = ends
+    if certified and widest is None:
+        widest = (0.0, 0.0)
+    stop = (
+        BudgetExhausted(
+            resource="iterations", limit=Rational.of(contract.budget.iterations or 0)
+        )
+        if solution.stopped == "budget"
+        else Completed()
+    )
+    worst = max(
+        (part for part in solution.components if not part.certified),
+        key=lambda part: part.condition or math.inf,
+        default=None,
+    )
+    if certified and widest is not None:
+        certificate = Enclosure(
+            lower=Rational.of(widest[0]),
+            upper=Rational.of(widest[1]),
+            conditions=(
+                "every item lies in its interval, a certified lower bound of "
+                "Newton's iteration and a pre-fixed point; the widest is shown",
+                "the embedding's maps within "
+                f"{_rounding(plan.algebra)} units in the last place",
+            ),
+        )
+        method: Certified | Heuristic = Certified(
+            bound=Rational.of(math.nextafter(widest[1] - widest[0], math.inf)),
+            conditions=certificate.conditions,
+            certificate=certificate,
+        )
+    else:
+        method = Heuristic(
+            reason="no pre-fixed point was certified above the estimate"
+            + (
+                f"; the spectral radius there is about {worst.spectral} and the "
+                f"condition number {worst.condition}"
+                if worst is not None
+                else ""
+            )
+        )
+    guarantee = attained_guarantee(
+        stop, method, method.certificate if isinstance(method, Certified) else None
+    )
+    implicit = all(part.implicit for part in solution.components)
+    wanted = contract.gradient
+    if wanted.missing:
+        derivative = NOT_DIFFERENTIATED
+        derivatives = DerivativeReport()
+    else:
+        derivative = (
+            DerivativeSemantics.implicit(SPECTRAL_RADIUS_BELOW_ONE)
+            if implicit
+            else DerivativeSemantics.none(
+                "the spectral radius at the solution is not certified below one"
+            )
+        )
+        derivatives = DerivativeReport(
+            entries=tuple(
+                DerivativeEntry(
+                    output="least fixed point", wrt=key, semantics=derivative
+                )
+                for key in plan.record.query.differentiate_with_respect_to
+            )
+        )
+    work = WorkReport(
+        phase=Phase.EXECUTION,
+        iterations=solution.iterations,
+        scalar_sums=solution.sums,
+        scalar_products=solution.products,
+        exact_operations=solution.exact,
+        hash_operations=forest.work.lookups,
+        key_comparisons=forest.work.candidates,
+        measured=NEWTON_MEASURES,
+    )
+    attainment = Attainment(
+        guarantee=guarantee,
+        metric=metric
+        if isinstance(metric, (AbsoluteError, AbsoluteLogError))
+        else AbsoluteLogError(),
+        rounding=Rational.of(0),
+        derivative=derivative,
+    )
+    used = tuple(
+        plan.algebra.claim(law) for law in (*TWO_PASS_LAWS, *_newton_laws(plan.algebra))
+    )
+    report = AccuracyReport(
+        attainment=attainment,
+        stop=stop,
+        unmet=unmet_fields(contract, attainment, (work,)),
+        derivatives=derivatives,
+        work=(work,),
+        claims=used,
+    )
+    return Evaluation(
+        values=solution.values,
+        order=tuple(solution.values),
+        work=forest.work,
+        sums=solution.sums,
+        products=solution.products,
+        exact=solution.exact,
+        iterations=solution.iterations,
+        measures=NEWTON_MEASURES,
+        lower=solution.lower,
+        upper=solution.upper,
+        newton=solution.components,
+        accuracy=report,
+    )
 
 
 _CYCLIC_CODES = {

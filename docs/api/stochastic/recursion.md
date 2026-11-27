@@ -1,4 +1,4 @@
-# Linear cyclic systems
+# Cyclic systems
 
 A plan whose recursion contract is [`LinearCyclic`][quivers.qiec.contracts.LinearCyclic] and whose
 algebra is a [`Star`][quivers.core.algebras.Star] solves its system component by component.
@@ -66,8 +66,81 @@ A divergent closure has no value: no partial sum is returned. The cost is
 [`CYCLIC_WORK`][quivers.stochastic.planning.CYCLIC_WORK]: the edges, plus $S^3$ operations of the
 algebra for a component of $S$ items, which a ring would lower to $S^\omega$.
 
+## Monotone polynomial systems
+
+Under [`MonotonePolynomial`][quivers.qiec.contracts.MonotonePolynomial] a component may have
+edges with several premises inside it. In an algebra with a
+[`RealEmbedding`][quivers.core.algebras.RealEmbedding], such as
+[`MarkovAlgebra`][quivers.core.algebras.MarkovAlgebra] or
+[`LogProbAlgebra`][quivers.core.algebras.LogProbAlgebra], each item's real value is then a
+polynomial with nonnegative coefficients in the component's items, $x = f(x)$, whose coefficients
+carry the values of the components below. Its least fixed point $\mu$ lies in $[0, \infty]^n$
+(Etessami and Yannakakis 2009). [`solve_polynomial`][quivers.stochastic.recursion.solve_polynomial]
+solves the components one after another by Newton's method, the decomposed method of Etessami and
+Yannakakis (2009, section 6), whose convergence Esparza, Kiefer and Luttenberger (2010) bound.
+
+**Theorem (lower bound).** Let $0 \le l \le \mu$, let $J$ be the Jacobian of $f$ at $l$ with
+spectral radius below one, and let $d$ satisfy $(I - J)\,d \le f(l) - l$. Then $l + d \le \mu$.
+
+*Proof.* Write $\mu = l + e$ with $e \ge 0$. A polynomial with nonnegative coefficients has
+$f(l + e) \ge f(l) + J e$ (Taylor's expansion, every further term nonnegative), so
+$(I - J)\,e \ge f(l) - l \ge (I - J)\,d$. Since the spectral radius of $J \ge 0$ is below one,
+$(I - J)^{-1} = \sum_k J^k \ge 0$, so $e \ge d$. QED.
+
+Each step solves $(I - J)\,d = f(l) - l$ in floating point, shortens $d$, and then checks the two
+hypotheses in outward rounded arithmetic: $J v < v$ for $v = (I - J)^{-1} \mathbf 1 > 0$, which
+bounds the spectral radius below one (Collatz and Wielandt), and each row of
+$(I - J)\,d \le f(l) - l$, compared exactly in rationals. The coefficients enter by certified lower
+bounds, so the theorem holds of a system below $f$ whose least fixed point is below $\mu$. The
+iteration starts at $l = 0$ and stops when no step moves $l$, or when the budget's iterations are
+spent.
+
+**Upper bound.** A point $u$ with $f(u) \le u$ is a pre-fixed point, and the least fixed point is
+the least pre-fixed point (Knaster and Tarski), so $\mu \le u$. The candidate is
+$u = e + t\,(I - J)^{-1}\mathbf 1$ above the floating estimate $e$, for growing $t$, checked with
+the coefficients' certified upper bounds. A component's interval $[l, u]$ thus holds $\mu$, and
+the interval of an item above it holds its value because its coefficients' bounds come from the
+intervals below. The value returned is the estimate, inside its interval.
+
+At a critical system, where the Jacobian at $\mu$ has spectral radius one, the only pre-fixed
+points may be $\mu$ itself: $x = x^2/2 + 1/2$ has $f(u) - u = (u - 1)^2/2$. No upper end then
+certifies, the run's report has no guarantee and names the spectral radius and the condition
+number $\|(I - J)^{-1}\|_\infty$ at the estimate, and the contract refuses the value or returns it
+unestablished. A component with $f(l) > l$ in every item has $l < \mu$; below a finite least fixed
+point of a strongly connected clean system the spectral radius is below one (Esparza, Kiefer and
+Luttenberger 2010, section 4), so a spectral radius certified at least one there shows $\mu$
+infinite, and the plan refuses it as divergent.
+
+**Idempotent algebras.** In an algebra without an embedding whose sum is idempotent, whose
+product commutes and which has a [`Star`][quivers.core.algebras.Star], such as
+[`TropicalAlgebra`][quivers.core.algebras.TropicalAlgebra] or
+[`MaxPlusAlgebra`][quivers.core.algebras.MaxPlusAlgebra], the Newton sequence is
+$\nu^{(0)} = f(0)$ and $\nu^{(i+1)} = Df|_{\nu^{(i)}}^*\,(f(\nu^{(i)}))$ (Esparza, Kiefer and
+Luttenberger 2010, *Newtonian program analysis*, Proposition 7.1), and for a system of $n$
+variables $\nu^{(n)} = \mu f$ (their Theorem 7.7), in the omega-continuous completion of the
+weights. With a commutative product $Df|_v$ is the matrix $J(v)$ of formal derivatives, whose
+repeated occurrences add to one occurrence, so each step is $J(v)^* f(v)$ by the algebra's star on
+its declared domain; a star outside it is refused, so a returned value is the completion's least
+fixed point and lies in the carrier. Each component of $n$ items takes $n$ steps, and the report
+states the result exact; a budget that ends the steps first leaves it without a guarantee.
+
+**Derivative.** At the fixed point $x = F(x, w)$ the implicit derivative is
+$dx = (I - J)^{-1}\,\partial F / \partial w \; dw$, which exists when the spectral radius at
+$\mu$ is below one; the solver certifies it from $J(u)\,v < v$, since $J$ grows with its argument.
+The value is returned as $x + (I - J)^{-1}(F - F_{\text{detached}})$, which is $x$ and has that
+derivative.
+
 ## References
 
+- Etessami, K., and Yannakakis, M. (2009). Recursive Markov chains, stochastic grammars, and
+  monotone systems of nonlinear equations. *Journal of the ACM* 56(1), 1-66.
+  [doi:10.1145/1462153.1462154](https://doi.org/10.1145/1462153.1462154)
+- Esparza, J., Kiefer, S., and Luttenberger, M. (2010). Newtonian program analysis. *Journal of
+  the ACM* 57(6), 33:1-33:47.
+  [doi:10.1145/1857914.1857917](https://doi.org/10.1145/1857914.1857917)
+- Esparza, J., Kiefer, S., and Luttenberger, M. (2010). Computing the least fixed point of
+  positive polynomial systems. *SIAM Journal on Computing* 39(6), 2282-2335.
+  [doi:10.1137/090749591](https://doi.org/10.1137/090749591)
 - Lehmann, D. J. (1977). Algebraic structures for transitive closure. *Theoretical Computer
   Science* 4(1), 59-76.
   [doi:10.1016/0304-3975(77)90056-1](https://doi.org/10.1016/0304-3975(77)90056-1)

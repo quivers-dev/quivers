@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from collections.abc import Callable, Sequence
 from typing import Literal
@@ -39,6 +40,9 @@ from quivers.core.carriers import (
     SecondOrderExpectationSemiring,
 )
 from quivers.core.algebras import (
+    Algebra,
+    LogProbAlgebra,
+    RealEmbedding,
     BOOLEAN,
     BOOLEAN_DUAL,
     COUNTING,
@@ -2118,6 +2122,105 @@ def check_division(member: Member, dtype: torch.dtype) -> None:
     raise Mismatch("refusal", math.inf, f"{member.name}: division by the zero")
 
 
+def _exactly(value: float, log: bool) -> Decimal:
+    """``exp`` or ``log`` of a float in fifty digits.
+
+    Parameters
+    ----------
+    value : float
+        The argument, exactly.
+    log : bool
+        Whether the logarithm is taken; else the exponential.
+
+    Returns
+    -------
+    Decimal
+        The value.
+    """
+    with localcontext() as context:
+        context.prec = 50
+        argument = Decimal(value)
+        return argument.ln() if log else argument.exp()
+
+
+def check_real_embedding(member: Member, dtype: torch.dtype) -> None:
+    """The embedding into the reals is a homomorphism, monotone and inverted.
+
+    On the finite samples: the zero goes to ``0`` and the unit to ``1``;
+    the image of a sum and of a product are the sum and the product of
+    the images within the rounding of the maps and one operation; a
+    natural order ``a ⊕ b = b`` maps to ``to_reals(a) <= to_reals(b)``;
+    ``from_reals`` inverts ``to_reals``; and each map is within the
+    declared units in the last place of the value in fifty digits.
+
+    Parameters
+    ----------
+    member : Member
+        The row.
+    dtype : torch.dtype
+        The precision.
+
+    Raises
+    ------
+    Mismatch
+        If any of these fails.
+    """
+    structure = member.structure
+    assert isinstance(structure, RealEmbedding) and isinstance(structure, Algebra)
+    pool = samples(member, dtype)
+    finite = pool[torch.isfinite(structure.to_reals(pool))]
+    eps = torch.finfo(dtype).eps
+    slack = (2 * structure.embedding_rounding + 2) * eps
+    zero = structure.to_reals(zero_tensor(structure, pool[:1]))
+    unit = structure.to_reals(unit_tensor(structure, pool[:1]))
+    if float(zero) != 0.0 or float(unit) != 1.0:
+        raise Mismatch(
+            "value", math.inf, f"{member.name}: zero and unit map to {zero}, {unit}"
+        )
+    for a, b in itertools.product(finite.tolist(), repeat=2):
+        x, y = torch.tensor(a, dtype=dtype), torch.tensor(b, dtype=dtype)
+        ra, rb = float(structure.to_reals(x)), float(structure.to_reals(y))
+        for what, found, wanted in (
+            ("sum", float(structure.to_reals(structure.join_pair(x, y))), ra + rb),
+            ("product", float(structure.to_reals(structure.tensor_op(x, y))), ra * rb),
+        ):
+            if abs(found - wanted) > slack * abs(wanted) + torch.finfo(dtype).tiny:
+                raise Mismatch(
+                    "value",
+                    abs(found - wanted) / max(abs(wanted), 1e-300),
+                    f"{member.name}: the {what} of {a} and {b} maps to {found}",
+                )
+        below = bool(structure.join_pair(x, y) == y)
+        if below and ra > rb * (1 + slack):
+            raise Mismatch(
+                "order", math.inf, f"{member.name}: {a} <= {b} maps to {ra} > {rb}"
+            )
+        back = float(structure.from_reals(structure.to_reals(x)))
+        if abs(back - a) > slack * max(abs(a), 1.0):
+            raise Mismatch(
+                "value", abs(back - a), f"{member.name}: {a} returns as {back}"
+            )
+    if structure.embedding_rounding and dtype == torch.float64:
+        for a in finite.tolist():
+            image = float(structure.to_reals(torch.tensor(a, dtype=dtype)))
+            exact = _exactly(a, log=False)
+            ulp = math.ulp(float(exact))
+            if abs(Decimal(image) - exact) > structure.embedding_rounding * Decimal(
+                ulp
+            ):
+                raise Mismatch("value", math.inf, f"{member.name}: exp({a}) is {image}")
+            if image > 0:
+                back = float(structure.from_reals(torch.tensor(image, dtype=dtype)))
+                exact = _exactly(image, log=True)
+                ulp = math.ulp(float(exact)) if float(exact) else math.ulp(0.0)
+                if abs(Decimal(back) - exact) > structure.embedding_rounding * Decimal(
+                    ulp
+                ):
+                    raise Mismatch(
+                        "value", math.inf, f"{member.name}: log({image}) is {back}"
+                    )
+
+
 def check_additive_inverse(member: Member, dtype: torch.dtype) -> None:
     """``a ⊕ (0 ⊖ a) = 0`` and ``(a ⊖ b) ⊕ b = a``.
 
@@ -2986,6 +3089,7 @@ LAW_CHECKS: dict[str, Callable[[Member, torch.dtype], int | None]] = {
     "zero-sum-free": check_zero_sum_free,
     "no-zero-divisors": check_no_zero_divisors,
     "division": check_division,
+    "real-embedding": check_real_embedding,
     "additive-inverse": check_additive_inverse,
     "semimodule-action": check_semimodule_action,
     "star-least-solution": check_star,
@@ -3682,6 +3786,25 @@ class _Subtracting(MarkovAlgebra):
         return a - b
 
 
+class _Squared(LogProbAlgebra):
+    """The embedding replaced by the square of the probability."""
+
+    def to_reals(self, t: torch.Tensor) -> torch.Tensor:
+        """``exp(2 t)``.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Log weights.
+
+        Returns
+        -------
+        torch.Tensor
+            The squares of the probabilities.
+        """
+        return torch.exp(2 * t)
+
+
 class _Adding(RealAlgebra):
     """Subtraction replaced by addition."""
 
@@ -3920,6 +4043,7 @@ LAWLESS: dict[str, Member] = {
     ),
     "no-zero-divisors": _lawless("dividing", _DividingStandardMV(), "core/Lukasiewicz"),
     "division": _lawless("subtracting", _Subtracting(), "core/Markov"),
+    "real-embedding": _lawless("squared", _Squared(), "core/LogProb"),
     "additive-inverse": _lawless("adding", _Adding(), "core/Real"),
     "semimodule-action": _lawless(
         "twice", _TwiceModule(COUNTING, 3), "vector/Counting"

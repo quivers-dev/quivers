@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from tests.evidence.oracles import (
+    enclosures,
     closed_forms,
     derivations,
     exact,
@@ -681,3 +682,23 @@ def test_every_sequence_of_draws_is_run_once() -> None:
     assert finite_effects.joint(
         lambda d: d.choose("a", (Fraction(1, 4), Fraction(3, 4))), {"a": 1}
     ) == Fraction(3, 4)
+
+
+def test_pre_fixed_points_are_decided_exactly() -> None:
+    """Require the enclosure oracle to accept exactly the pre-fixed points.
+
+    For the critical ``x = x^2 / 2 + 1/2`` the only pre-fixed point is
+    ``1``: ``f(u) - u = (u - 1)^2 / 2``. For ``x = (2/3) x^2 + 1/3`` the
+    pre-fixed points are ``[1/2, 1]``, and ``1/2`` is the least.
+    """
+    critical = [[(Fraction(1, 2), (0, 0)), (Fraction(1, 2), ())]]
+    assert enclosures.pre_fixed(critical, [1.0])
+    assert not enclosures.pre_fixed(critical, [math.nextafter(1.0, 2.0)])
+    assert not enclosures.pre_fixed(critical, [math.nextafter(1.0, 0.0)])
+    proper = [[(Fraction(2, 3), (0, 0)), (Fraction(1, 3), ())]]
+    assert enclosures.pre_fixed(proper, [0.5])
+    assert enclosures.pre_fixed(proper, [0.75])
+    assert not enclosures.pre_fixed(proper, [math.nextafter(0.5, 0.0)])
+    assert enclosures.image(proper, [Fraction(1, 2)]) == [Fraction(1, 2)]
+    assert enclosures.encloses(0.25, 0.5, Fraction(1, 3))
+    assert not enclosures.encloses(0.5, 0.75, Fraction(1, 3))

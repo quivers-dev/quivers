@@ -92,7 +92,7 @@ ALL_LAWS = (
     laws.ZERO_SUM_FREE,
     laws.NO_ZERO_DIVISORS,
     laws.STAR_LEAST_SOLUTION,
-    laws.OMEGA_CONTINUOUS,
+    laws.REAL_EMBEDDING,
 )
 """Every law some combination needs."""
 

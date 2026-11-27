@@ -209,6 +209,17 @@ OMEGA_CONTINUOUS = Law(
 )
 """Continuity, which gives a least fixed point of a monotone polynomial system."""
 
+REAL_EMBEDDING = Law(
+    name="real-embedding",
+    statement=(
+        "to_reals is an injective homomorphism of semirings into the nonnegative "
+        "reals that preserves the natural order, and from_reals inverts it on its "
+        "image"
+    ),
+)
+"""An embedding into the nonnegative reals, whose completion ``[0, inf]`` gives a
+monotone polynomial system its least fixed point and its certificate."""
+
 FOLD_LINEAR = Law(
     name="fold-linear",
     statement="h(x + y) = h(x) + h(y) and h(k x) = k h(x) for weights k",
@@ -320,6 +331,7 @@ LAWS: Mapping[str, Law] = MappingProxyType(
             NO_ZERO_DIVISORS,
             SEMIMODULE_ACTION,
             OMEGA_CONTINUOUS,
+            REAL_EMBEDDING,
             FOLD_LINEAR,
             OPERATIONS_CLOSED,
             JOIN_ITERATED,
@@ -879,6 +891,7 @@ __all__ = [
     "NO_ZERO_DIVISORS",
     "SEMIMODULE_ACTION",
     "OMEGA_CONTINUOUS",
+    "REAL_EMBEDDING",
     "FOLD_LINEAR",
     "OPERATIONS_CLOSED",
     "JOIN_ITERATED",

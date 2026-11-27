@@ -40,7 +40,6 @@ from quivers.core.laws import (
     DIVISION,
     FOLD_LINEAR,
     NO_ZERO_DIVISORS,
-    OMEGA_CONTINUOUS,
     PLUS_SELECTIVE,
     SEMIMODULE_ACTION,
     SEMIRING_LAWS,
@@ -1693,9 +1692,13 @@ class MonotonePolynomial(QiecModel):
         Returns
         -------
         tuple of Law
-            Continuity, which gives the least fixed point.
+            None of their own: the least fixed point lies in the
+            omega-continuous completion of the weights, and the executor
+            that solves the system states the laws it uses, an embedding in
+            the nonnegative reals for certified Newton or an idempotent sum
+            with a star for exact Newton.
         """
-        return (OMEGA_CONTINUOUS,)
+        return ()
 
     def admits(self, gradient: DerivativeSemantics) -> bool:
         """Whether a requested derivative is available.

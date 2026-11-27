@@ -46,7 +46,14 @@ When the semiring is ordered completely and the rules are monotone, this is the 
 fixed point of the rules. Whether that fixed point exists, whether iteration reaches
 it, and whether the result is the same for every processing order depend on the
 semiring, on cycles among the rules, and on the agenda
-([Strategy independence](#strategy-independence)).
+([Strategy independence](#strategy-independence)). A
+[plan](../api/stochastic/planning.md#monotone-polynomial-plans) under the
+[`MonotonePolynomial`](../api/qiec/contracts.md#quivers.qiec.contracts.MonotonePolynomial)
+contract computes it without iterating to a residual: in `LogProb` and `Markov` by Newton's method
+with a certified interval around each value, in an idempotent semiring with a closure such as
+`Viterbi` (max-plus) or `Tropical` exactly, after as many Newton steps as a cycle has items, and a
+system whose least fixed point is infinite is refused
+([Cyclic systems](../api/stochastic/recursion.md#monotone-polynomial-systems)).
 
 ## QVR syntax
 
