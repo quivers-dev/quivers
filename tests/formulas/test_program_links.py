@@ -17,6 +17,7 @@ import pytest
 import torch
 from torch.distributions import constraints
 
+from quivers.continuous._matrix import PositiveDefiniteTransform
 from quivers.formulas import NonlinearExpression, fit, get_prior
 from quivers.formulas._program_kernel import support_law
 
@@ -85,8 +86,6 @@ def test_a_simplex_takes_a_softmax_with_its_first_coordinate_fixed() -> None:
         (constraints.nonnegative_integer, "discrete"),
         (constraints.boolean, "discrete"),
         (constraints.corr_cholesky, "not free"),
-        (constraints.positive_definite, "not free"),
-        (constraints.lower_cholesky, "not free"),
         (constraints.interval(torch.tensor([0.0, 1.0]), 2.0), "differs between"),
     ],
 )
@@ -94,6 +93,52 @@ def test_supports_without_a_link_are_refused_by_name(support, reason) -> None:
     law = support_law("theta", support)
     assert law.link is None
     assert law.obstacle is not None and reason in law.obstacle
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_a_positive_definite_site_takes_log_cholesky_coordinates(batched: bool) -> None:
+    iid = ", iid_over=Group" if batched else ""
+    coordinate = "1, " if batched else ""
+    source = f"""object Trial : FinSet 6
+object Dim : FinSet 2
+object Group : FinSet 2
+
+program covariance_mean : Trial -> Trial
+    sample covariance <- Wishart(df=4.0,scale_tril=[[1.0,0.0],[0.0,1.0]]) [over=[Dim,Dim]{iid}]
+    let mu = covariance[{coordinate}1, 0]
+    let sigma = sqrt(covariance[{coordinate}1, 1])
+    observe y : Trial <- Normal(loc=mu, scale=sigma)
+    return y
+
+export covariance_mean
+"""
+    rows = frame().assign(y=np.arange(-6, 6) / 8)
+    fitted = fit(
+        program=source,
+        parameters={"covariance": "~ 1"},
+        response="y",
+        data=rows,
+        method="svi",
+        num_steps=1,
+        seed=0,
+    )
+    coordinates = torch.tensor([0.3, -0.65, -0.4], dtype=torch.float64)
+    if batched:
+        coordinates = torch.cat((-coordinates, coordinates))
+    transform = PositiveDefiniteTransform(2)
+    covariance = transform(coordinates[-3:])
+    assert isinstance(covariance, torch.Tensor)
+    response = torch.tensor(rows["y"].to_numpy())
+    likelihood = torch.distributions.Normal(
+        covariance[1, 0], covariance[1, 1].sqrt()
+    ).log_prob(response)
+    prior = torch.distributions.Normal(0.0, 5.0).log_prob(coordinates).sum()
+    latent = "dpar_covariance_intercept"
+    assert set(latent_names(fitted)) == {latent}
+    actual = log_joint(run(fitted, {latent: coordinates}))
+    assert actual == pytest.approx(float(prior + likelihood.sum()), rel=1e-10)
+    jacobian = transform.log_abs_det_jacobian(coordinates[-3:], covariance)
+    assert abs(actual - float(prior + likelihood.sum() + jacobian)) > 1e-2
 
 
 def test_a_replaced_site_adds_no_density_term() -> None:

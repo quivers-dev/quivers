@@ -1058,7 +1058,9 @@ lets the response-noise parameter depend on `x`. A vector parameter takes
 one expression per free coordinate, keyed by its zero-based index.
 For a real tensor parameter, the predictor coordinates follow the declared
 axes in row-major order. The kernel puts the linked values back on those axes
-before the program reads the parameter.
+before the program reads the parameter. A positive-definite matrix takes one
+predictor per entry of its lower Cholesky factor, in row-major order, with a
+log link on the diagonal. Each matrix in a batch has its own coordinates.
 The `predictor=` module adds to the link-scale predictor of a scalar `mu`
 with a formula. A program with an observation at the top level takes
 `weights()` on that response. A native observation law that declares

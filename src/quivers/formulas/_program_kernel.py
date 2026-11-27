@@ -19,8 +19,10 @@ Links by support: a real parameter is its predictor; one on ``(a, inf)`` is
 ``b - exp(eta)``; one on ``(a, b)`` is ``a + (b - a) sigmoid(eta)``; a simplex
 is the softmax of a predictor with the first coordinate fixed at zero. A
 replaced site becomes a deterministic binding, so no density term comes from
-the link. A discrete, ordered, positive definite, Cholesky or improper site
-has no such link and is refused by name.
+the link. Cholesky coordinates form a lower triangle with an exponential on
+the diagonal. A positive-definite matrix is the product of this factor with
+its transpose. A support without a declared coordinate map is refused by
+name.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
     LetExprFactor,
     LetExprLiteral,
+    LetExprNode,
     MarginalizeStep,
     Module,
     ObjectDecl,
@@ -75,7 +78,7 @@ from quivers.dsl.program_templates import _bound_names, static_program_parameter
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.step_resolution import _draw_arg_value_names, _step_value_names
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._ast import _add, _factor, _index, _let, _mul, _var
+from quivers.formulas._ast import _add, _call, _factor, _index, _let, _mul, _var
 from quivers.formulas._blocks import Namespace, rename_program
 from quivers.formulas._family_kernel import graph_row_roots, precompose_graph
 from quivers.formulas._kernel import (
@@ -137,6 +140,9 @@ _CARRIERS: dict[str, Literal["Real", "Int", "Bool"]] = {
 """Element carriers of a program input, by the name of its checked type."""
 
 
+type MatrixSupport = Literal["lower_cholesky", "positive_definite"]
+
+
 class SiteLaw(ValueModel):
     """The link a parameter's support requires, or why it has none.
 
@@ -149,6 +155,8 @@ class SiteLaw(ValueModel):
         The interval of each coordinate.
     reference : int or None
         Coordinate of a simplex fixed at zero on the link scale.
+    matrix : MatrixSupport or None
+        Matrix reconstructed from the free coordinates, if any.
     obstacle : str or None
         Why the parameter cannot be given a formula; None when it can.
     """
@@ -156,6 +164,7 @@ class SiteLaw(ValueModel):
     link: Link | None = None
     domain: Domain = Domain(lower=None)
     reference: int | None = None
+    matrix: MatrixSupport | None = None
     obstacle: str | None = None
 
 
@@ -524,11 +533,14 @@ def support_law(name: str, support: constraints.Constraint) -> SiteLaw:
             domain=Domain(lower=0.0, upper=1.0),
             reference=0,
         )
+    if type(support) is type(constraints.lower_cholesky):
+        return SiteLaw(link=links["identity"], matrix="lower_cholesky")
+    if type(support) is type(constraints.positive_definite):
+        return SiteLaw(link=links["identity"], matrix="positive_definite")
     if support.event_dim:
         return SiteLaw(
             obstacle=f"{name!r} has the support {support!r}, whose coordinates are "
-            "not free (an ordered vector, a positive definite matrix or a "
-            "Cholesky factor); no link maps a predictor onto it"
+            "not free and have no declared coordinate map"
         )
     if type(support) is type(constraints.real):
         return SiteLaw(link=links["identity"])
@@ -1040,6 +1052,8 @@ class ParameterDecl(ValueModel):
         The predictor coordinates, flattened for a tensor parameter.
     axes : tuple[AxisDecl, ...]
         The program parameter's own axes other than the rows.
+    matrix : MatrixSupport or None
+        Matrix reconstructed from the free coordinates, if any.
     prior : str
         The program's law of a site; empty for an input.
     """
@@ -1051,6 +1065,7 @@ class ParameterDecl(ValueModel):
     rows: bool = False
     coordinates: ParameterCoordinates | None = None
     axes: tuple[AxisDecl, ...] = ()
+    matrix: MatrixSupport | None = None
     prior: str = ""
 
 
@@ -1104,7 +1119,7 @@ def parameter_decl(
                 "gives a parameter that the program draws once"
             )
         coordinates, axes = _coordinates(
-            entry, name, site.axes, site.sizes, law.reference
+            entry, name, site.axes, site.sizes, law.reference, law.matrix
         )
         return ParameterDecl(
             name=name,
@@ -1113,6 +1128,7 @@ def parameter_decl(
             domain=law.domain,
             coordinates=coordinates,
             axes=axes,
+            matrix=law.matrix,
             prior=site.prior,
         )
     item = analysis.input(name)
@@ -1159,6 +1175,7 @@ def _coordinates(
     axes: Sequence[str],
     sizes: Sequence[int],
     reference: int | None,
+    matrix: MatrixSupport | None = None,
 ) -> tuple[ParameterCoordinates | None, tuple[AxisDecl, ...]]:
     """Read the free predictor coordinates and their axes in the program.
 
@@ -1174,6 +1191,8 @@ def _coordinates(
         Their sizes.
     reference : int or None
         Coordinate fixed at zero on the link scale.
+    matrix : MatrixSupport or None
+        Matrix reconstructed from the free coordinates, if any.
 
     Returns
     -------
@@ -1183,20 +1202,30 @@ def _coordinates(
     Raises
     ------
     ValueError
-        If an axis has no size, or reference coordinates belong to more than
-        one independently normalized simplex.
+        If an axis has no size, the matrix event is not square, or reference
+        coordinates belong to more than one independently normalized simplex.
     """
     shape = tuple(
         AxisDecl(name=axis, size=size) for axis, size in zip(axes, sizes, strict=True)
     )
-    if not shape:
-        return None, ()
     for axis in shape:
         if axis.size < 1:
             raise ValueError(
                 f"the axis {axis.name!r} of {name!r} in the program {entry!r} is not a "
                 "finite object with a size"
             )
+    flat = f"FormulaProgramCoordinates_{name}"
+    if matrix is not None:
+        if len(shape) < 2 or sizes[-1] != sizes[-2]:
+            raise ValueError(
+                f"the program {entry!r} must declare two equally sized matrix "
+                f"axes for {name!r}"
+            )
+        dim = sizes[-1]
+        width = math.prod(sizes[:-2]) * (dim * (dim + 1) // 2)
+        return ParameterCoordinates(axis=flat, size=width), shape
+    if not shape:
+        return None, ()
     if len(shape) == 1:
         axis = shape[0]
         return ParameterCoordinates(
@@ -1207,7 +1236,6 @@ def _coordinates(
             f"the parameter {name!r} of {entry!r} has simplex coordinates across "
             f"{list(axes)}; each simplex needs its own reference coordinate"
         )
-    flat = f"FormulaProgramCoordinates_{name}"
     return ParameterCoordinates(axis=flat, size=math.prod(sizes)), shape
 
 
@@ -1257,6 +1285,50 @@ def _response_site(analysis: ProgramAnalysis, response: str) -> KernelSite:
     return site
 
 
+def _integer(value: int) -> LetExprLiteral:
+    """Construct a literal index from a known integer.
+
+    Parameters
+    ----------
+    value : int
+        The index.
+
+    Returns
+    -------
+    LetExprLiteral
+        An integral token in the surface syntax.
+    """
+    return LetExprLiteral(value=value, integral=True)
+
+
+def _flat_offset(axes: tuple[AxisDecl, ...], width: int = 1) -> LetExprNode:
+    """Read the flat offset of a tensor coordinate in row-major order.
+
+    Parameters
+    ----------
+    axes : tuple[AxisDecl, ...]
+        The axes indexed by ``program_index_0`` and so on.
+    width : int
+        The number of consecutive entries at each index.
+
+    Returns
+    -------
+    LetExprNode
+        The offset of the first entry.
+    """
+    if not axes:
+        return _integer(0)
+    return _add(
+        *(
+            _mul(
+                _var(f"program_index_{position}"),
+                _integer(width * math.prod(axis.size for axis in axes[position + 1 :])),
+            )
+            for position, _ in enumerate(axes)
+        )
+    )
+
+
 class BindTensorSlot(KernelPart):
     """Bind a program parameter on its nominal axes from flat coordinates.
 
@@ -1265,12 +1337,15 @@ class BindTensorSlot(KernelPart):
     slot : str
         Name of the program parameter.
     axes : tuple[AxisDecl, ...]
-        Axes of one parameter event, in its declared order.
+        Axes of the parameter other than the response rows.
+    matrix : MatrixSupport or None
+        Matrix reconstructed from the free coordinates, if any.
     """
 
     kind: Literal["bind_tensor_slot"] = "bind_tensor_slot"
     slot: str
     axes: tuple[AxisDecl, ...]
+    matrix: MatrixSupport | None = None
 
     def emit(self, emission: KernelEmission) -> None:
         """Group the linked coordinates under the declared axes.
@@ -1286,32 +1361,94 @@ class BindTensorSlot(KernelPart):
             (f"program_index_{position}", axis.name)
             for position, axis in enumerate(self.axes)
         )
-        linear = _add(
-            *(
-                _mul(
-                    _var(index),
-                    LetExprLiteral(
-                        value=math.prod(
-                            axis.size for axis in self.axes[position + 1 :]
-                        ),
-                        integral=True,
+        rows = emission.shape(self.slot).rows
+        row = (("program_row", ROWS),) if rows else ()
+        leading = (_var("program_row"),) if rows else ()
+        if self.matrix is None:
+            emission.steps.append(
+                _let(
+                    self.slot,
+                    _factor(
+                        (*row, *dimensions),
+                        body=_index(flat, *leading, _flat_offset(self.axes)),
                     ),
                 )
-                for position, (index, _) in enumerate(dimensions)
             )
+            return
+
+        *batch, outer, inner = dimensions
+        dim = self.axes[-1].size
+        width = dim * (dim + 1) // 2
+        offset = _flat_offset(self.axes[:-2], width)
+        factor_name = (
+            self.slot if self.matrix == "lower_cholesky" else f"{flat}_cholesky"
         )
-        rows = emission.shape(self.slot).rows
+        triangle = _factor(
+            (outer,),
+            cases=tuple(
+                (
+                    i,
+                    _factor(
+                        (inner,),
+                        cases=tuple(
+                            (j, self._entry(flat, leading, offset, i, j))
+                            for j in range(dim)
+                        ),
+                    ),
+                )
+                for i in range(dim)
+            ),
+        )
+        binders = (*row, *batch)
         emission.steps.append(
-            _let(
-                self.slot,
-                _factor(
-                    (("program_row", ROWS), *dimensions) if rows else dimensions,
-                    body=_index(flat, _var("program_row"), linear)
-                    if rows
-                    else _index(flat, linear),
-                ),
-            )
+            _let(factor_name, _factor(binders, body=triangle) if binders else triangle)
         )
+        if self.matrix == "positive_definite":
+            indices = (*leading, *(_var(index) for index, _ in batch))
+            factor = _index(factor_name, *indices) if indices else _var(factor_name)
+            transpose = _factor(
+                (inner, outer),
+                body=_index(factor_name, *indices, _var(outer[0]), _var(inner[0])),
+            )
+            product = _call("matmul", factor, transpose)
+            emission.steps.append(
+                _let(self.slot, _factor(binders, body=product) if binders else product)
+            )
+
+    @staticmethod
+    def _entry(
+        flat: str,
+        leading: tuple[LetExprNode, ...],
+        offset: LetExprNode,
+        row: int,
+        column: int,
+    ) -> LetExprNode:
+        """Read an entry of the lower triangle in row-major order.
+
+        Parameters
+        ----------
+        flat : str
+            Binding holding the free coordinates.
+        leading : tuple[LetExprNode, ...]
+            Indices of the response rows, if any.
+        offset : LetExprNode
+            Starting index of the current matrix in the free coordinates.
+        row : int
+            Matrix row.
+        column : int
+            Matrix column.
+
+        Returns
+        -------
+        LetExprNode
+            Zero above the diagonal, the exponential on it, and a free
+            coordinate below it.
+        """
+        if column > row:
+            return LetExprLiteral(value=0.0)
+        position = _integer(row * (row + 1) // 2 + column)
+        coordinate = _index(flat, *leading, _add(offset, position))
+        return _call("exp", coordinate) if row == column else coordinate
 
 
 class ProgramParameters(KernelPart):
@@ -1891,7 +2028,9 @@ class ProgramKernelSpec(KernelLaw):
             name for name, item in declarations.items() if item.origin == "input"
         }
         binds = {
-            name: BindTensorSlot(slot=name, axes=declaration.axes)
+            name: BindTensorSlot(
+                slot=name, axes=declaration.axes, matrix=declaration.matrix
+            )
             if len(declaration.axes) > 1
             else BindSlot(slot=name)
             for name, declaration in declarations.items()
