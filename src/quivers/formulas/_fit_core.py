@@ -1,12 +1,56 @@
-"""Compilation of formula models for fitting, replay, and prediction."""
+"""Fitted formula state and compilation shared by all response models."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Literal
+
+import didactic.api as dx
+import torch
+
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers.continuous.programs import MonadicProgram
+from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
 from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import Module
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._brms_priors import with_flat_catalog
+from quivers.formulas._group_covariance import GroupCovariance
+from quivers.formulas._priors import PriorSet
+from quivers.inference.guides.base import Guide
+from quivers.inference.mcmc.driver import MCMCResult
+from quivers.inference.prior import PriorDraws, PriorMode
 from quivers.program import Program
+
+
+class FormulaFit(ValueModel):
+    """State shared by fitted single-response and joint formula models."""
+
+    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    posterior: MCMCResult | PriorDraws | Guide = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    observations: Mapping[str, torch.Tensor] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    sample_prior: PriorMode = "no"
+    prior: PriorDraws | MCMCResult | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    losses: tuple[float, ...] = ()
+    reparameterize: Literal["centered", "noncentered"] = "noncentered"
+    fixed_prior: str = "Normal(0.0, 5.0)"
+    random_scale_prior: str = "HalfNormal(1.0)"
+    correlation_prior: str = "LKJCholesky(1.0)"
+    group_covariances: dict[str, GroupCovariance] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    priors: PriorSet = dx.field(
+        default_factory=PriorSet, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
+        default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def compile_model(module: Module, families: FamilyCatalog | None) -> Program:

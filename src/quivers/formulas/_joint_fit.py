@@ -62,7 +62,7 @@ from quivers.formulas._brms_priors import (
     derived_site_draws,
     require_proper,
 )
-from quivers.formulas._fit_core import compile_model
+from quivers.formulas._fit_core import FormulaFit, compile_model
 from quivers.formulas._fit_controls import (
     InferenceControls,
     checked_cores,
@@ -132,7 +132,7 @@ from quivers.inference._response import (
 )
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
-from quivers.inference.prior import PriorDraws, PriorMode
+from quivers.inference.prior import PriorDraws
 from quivers.inference.pathfinder import draw_provenance
 from quivers.formulas._parallel_chains import FormulaChainWorker
 from quivers.formulas._data_options import formula_data_options
@@ -141,8 +141,7 @@ from quivers.inference.trace import Trace
 from quivers.modeling._row_attachments import original_positions, validate_split_rows
 from quivers.modeling.refit import RefitRecipe, refit_callback
 
-# brms post-processing methods (summaries, accessors, LOO family) and stored criteria.
-from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
+# brms post-processing methods (summaries, accessors, LOO family).
 from quivers.formulas._postprocess_methods import (
     JointPostprocess,
     JointPredictionOptions,
@@ -241,7 +240,7 @@ def _kind(
     return draw_provenance(posterior)
 
 
-class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
+class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, FormulaFit):
     """A fitted joint (multivariate) formula model.
 
     Parameters
@@ -294,32 +293,10 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
     """
 
     specification: MultivariateFormula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    posterior: MCMCResult | PriorDraws | Guide = dx.field(
-        opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    observations: Mapping[str, torch.Tensor] = dx.field(
-        opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
     emission: _JointEmission = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     prepared: Mapping[str, _PreparedFormula] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    losses: tuple[float, ...] = ()
-    prior: PriorDraws | MCMCResult | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    sample_prior: PriorMode = "no"
-    priors: PriorSet = dx.field(
-        default_factory=PriorSet, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    fixed_prior: str = "Normal(0.0, 5.0)"
-    random_scale_prior: str = "HalfNormal(1.0)"
-    correlation_prior: str = "LKJCholesky(1.0)"
-    group_covariances: dict[str, GroupCovariance] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    reparameterize: Literal["centered", "noncentered"] = "noncentered"
     preparation_data: IntoDataFrame | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -337,10 +314,6 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
     )
     data2: dict[str, AutocorMatrix] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    # Criteria stored by add_criterion (brms ``x$criteria``), kept in artifacts.
-    criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
-        default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @property

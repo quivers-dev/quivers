@@ -33,7 +33,7 @@ from torch import nn
 from torch.distributions import Distribution
 from narwhals.typing import IntoDataFrame
 
-from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.continuous.programs import MonadicProgram
 from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
 from quivers.dsl.emit import module_to_source
@@ -126,10 +126,10 @@ from quivers.formulas._response import (
     response_readout,
     response_tensor,
 )
-from quivers.formulas._priors import PriorInput, PriorSet, normalize_priors
+from quivers.formulas._priors import PriorInput, normalize_priors
 
 # brms sampler and fitting controls.
-from quivers.formulas._fit_core import compile_model
+from quivers.formulas._fit_core import FormulaFit, compile_model
 from quivers.formulas._fit_controls import (
     Algorithm,
     FileRefit,
@@ -202,8 +202,7 @@ from quivers.diagnostics.contrast import ContrastExpression
 from quivers.diagnostics.hypothesis import HypothesisSummary
 from quivers.diagnostics.density import PointNullSpec
 
-# brms post-processing methods (summaries, accessors, LOO family) and stored criteria.
-from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
+# brms post-processing methods (summaries, accessors, LOO family).
 from quivers.formulas._postprocess_methods import SinglePostprocess
 
 # brms evidence, effects and predictive checks.
@@ -231,7 +230,7 @@ from quivers.formulas._parallel_chains import (
 )
 
 
-class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
+class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, FormulaFit):
     """A fitted Bayesian regression: the compiled program, the
     parsed formula, the family, the user-supplied data, and the
     posterior samples.
@@ -301,31 +300,12 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
     residual: ResidualLaw | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    posterior: MCMCResult | PriorDraws | Guide = dx.field(
-        opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    sample_prior: PriorMode = "no"
-    prior: PriorDraws | MCMCResult | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
-    losses: tuple[float, ...] = ()
     observations: Mapping[str, torch.Tensor] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    reparameterize: Literal["centered", "noncentered"] = "noncentered"
     binomial_trials: int | str | None = None
     thresholds_by: str | None = None
     mixture_components: int = 2
-    fixed_prior: str = "Normal(0.0, 5.0)"
-    random_scale_prior: str = "HalfNormal(1.0)"
-    correlation_prior: str = "LKJCholesky(1.0)"
-    group_covariances: dict[str, GroupCovariance] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    priors: PriorSet = dx.field(
-        default_factory=PriorSet, opaque=True, extras=OPAQUE_BY_VALUE
-    )
     predictor: nn.Module | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -347,10 +327,6 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
     refit_recipe: (
         RefitRecipe[IntoDataFrame, Mapping[str, object], BayesianFit] | None
     ) = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
-    # Criteria stored by add_criterion (brms ``x$criteria``), kept in artifacts.
-    criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
-        default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
-    )
     # brms prior policy and population-coordinate options.
     default_priors: DefaultPriorPolicy = "quivers"
     center: bool | None = None
