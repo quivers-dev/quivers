@@ -26,6 +26,11 @@ deduction G : Term -> Term [semiring=SEMIRING, start=S, depth=1]
 """
 """An ambiguous lexical deduction with two rule weights."""
 
+WEIGHTED_LEXICAL = LEXICAL.replace(" = a\n", " = a #[learnable]\n").replace(
+    " = b\n", " = b #[learnable]\n"
+)
+"""The same lexical fragment with a parameter on each of its three rows."""
+
 NORMALIZED = """
 object Term : FinSet 4
 deduction G : Term -> Term [semiring=LogProb, start=S, depth=1, normalize=lhs]
@@ -291,6 +296,7 @@ export calls
 
 SOURCES: dict[str, str] = {
     "lexical": LEXICAL,
+    "weighted-lexical": WEIGHTED_LEXICAL,
     "normalized": NORMALIZED,
     "chained": CHAINED,
     "nonlexical": NONLEXICAL,
