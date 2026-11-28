@@ -11,7 +11,12 @@ import torch
 from torch import nn
 
 from quivers.core.algebras import LOG_PROB, MARKOV, Semiring
-from quivers.core.relations import Arc, Boundary, RelationTopology
+from quivers.core.relations import (
+    Arc,
+    Boundary,
+    ProductiveEpsilonCycleError,
+    RelationTopology,
+)
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     LOG_WEIGHT,
@@ -204,9 +209,19 @@ def _ambiguous_request(algebra):
             LOG_PROB,
             "bc0a1302bd4fac3d9b71d639e8fad1204ce64e13f9e31cfbf80ed3906197dd46",
         ),
+        (
+            "path_entropy",
+            MARKOV,
+            "c16aa7bfa78c7cd395ef10b0e17813376d4bf6f606370a9ed16ff13b576b9b09",
+        ),
+        (
+            "path_entropy",
+            LOG_PROB,
+            "4298073db80a1f57929cf5f582525f1051618b7b43a58b15a159ab4613b1c0c2",
+        ),
     ),
 )
-def test_pair_and_conditional_requests_keep_their_original_wire_bytes(
+def test_fixed_relation_requests_keep_their_original_wire_bytes(
     operation, algebra, original_sha
 ):
     request, _, _ = _request(operation, algebra)
@@ -337,3 +352,114 @@ def test_serialized_shared_cyclic_cost_reuses_checked_closure():
         FixedRelationRuntimeProvider(
             decoded.with_(max_closure_size=1), parameters, handler_name="channel"
         )
+
+
+@pytest.mark.parametrize(
+    "algebra, original_sha",
+    (
+        (MARKOV, "0fe3b5eb27cb2d8edb3da6c029c334eed27ceb64af278674f92627fb2a5b053b"),
+        (LOG_PROB, "b8af7fe4d234e8bacde0bce917a6ce74bba460325609c1ffc5bbbedd3aa745bf"),
+    ),
+)
+def test_signed_cost_requests_keep_their_original_wire_bytes(algebra, original_sha):
+    request, _, _ = _request("path_entropy", algebra)
+    cost = FixedRelationCostRequest(
+        relation=request.relation,
+        words=request.words,
+        max_states=16,
+        max_work=16,
+        arc_costs=(-1.0, 1.0, 0.0),
+    )
+    encoded = dumps(cost)
+    assert sha256(encoded.encode("utf-8")).hexdigest() == original_sha
+    assert loads(encoded) == cost
+
+
+@pytest.mark.parametrize(
+    "algebra, scalar_name, scalar_type",
+    [(MARKOV, "Real", REAL), (LOG_PROB, "LogWeight", LOG_WEIGHT)],
+)
+def test_checked_best_path_weight_uses_exact_ranking_and_tied_occurrence_gradients(
+    algebra, scalar_name, scalar_type
+):
+    base, parameters, (a_id, b_id, _) = _request("pair_weight", algebra)
+    relation = base.relation.with_(
+        n_states=3,
+        arcs=(
+            (0, 1, (0, None), 0),
+            (0, 1, (0, None), 2),
+            (1, 2, (None, 0), 1),
+        ),
+        final=((2, 3),),
+    )
+    request = base.with_(relation=relation, operation="best_path_weight")
+    decoded = loads(dumps(request))
+    assert isinstance(decoded, FixedRelationRequest)
+    assert decoded == request and decoded.result_type == scalar_type
+    a, b = parameters[a_id], parameters[b_id]
+    tied = Fraction(1, 8) if algebra is MARKOV else Fraction(-1000)
+    with torch.no_grad():
+        a.fill_(float(tied))
+        b.fill_(float(tied))
+    evaluator = _module(scalar_name)
+
+    def evaluate(observation: FixedRelationRequest) -> torch.Tensor:
+        runtime = RuntimeConfiguration(
+            selections=(),
+            providers=(
+                CoreRuntimeProvider(),
+                FixedRelationRuntimeProvider(
+                    observation, parameters, handler_name="channel"
+                ),
+            ),
+        )
+        result = run_named(evaluator, "evaluate", (None,), runtime=runtime)
+        assert result.result_type == scalar_type
+        assert isinstance(result.value, torch.Tensor)
+        return result.value
+
+    tied_result = evaluate(decoded)
+    assert tied_result.item() == (tied * tied if algebra is MARKOV else 2 * tied)
+    tie_gradient = torch.autograd.grad(tied_result, (a, b))
+    assert tuple(derivative.item() for derivative in tie_gradient) == (
+        (float(2 * tied), 0.0) if algebra is MARKOV else (2.0, 0.0)
+    )
+    query = relation.bind(parameters).query(base.words)
+    chosen = query.best_path()
+    assert chosen is not None and chosen.arc_ids == (0, 2)
+    sum_mass = evaluate(decoded.with_(operation="pair_weight"))
+    assert sum_mass.item() == pytest.approx(
+        float(2 * tied * tied) if algebra is MARKOV else float(2 * tied) + log(2)
+    )
+    with torch.no_grad():
+        b.fill_(float(2 * tied if algebra is MARKOV else tied + 1))
+    chosen = query.best_path()
+    assert chosen is not None and chosen.arc_ids == (1, 2)
+    updated = evaluate(decoded)
+    assert updated.item() == (2 * tied * tied if algebra is MARKOV else 2 * tied + 1)
+    updated_gradient = torch.autograd.grad(updated, (a, b))
+    assert tuple(derivative.item() for derivative in updated_gradient) == (
+        (float(2 * tied), float(tied)) if algebra is MARKOV else (1.0, 1.0)
+    )
+
+    absent = evaluate(decoded.with_(words=((1,), (0,))))
+    assert absent.item() == (0.0 if algebra is MARKOV else -torch.inf)
+    assert not absent.requires_grad
+
+
+def test_checked_best_path_rejects_productive_cycles_and_closure_options():
+    base, parameters, _ = _request("pair_weight")
+    relation = base.relation.with_(
+        n_states=1,
+        arcs=((0, 0, (None, None), 0),),
+        final=((0, 3),),
+    )
+    best = base.with_(
+        relation=relation,
+        operation="best_path_weight",
+        words=((), ()),
+    )
+    with pytest.raises(dx.ValidationError, match="acyclic query without closure"):
+        best.with_(max_closure_size=1)
+    with pytest.raises(ProductiveEpsilonCycleError, match="productive"):
+        FixedRelationRuntimeProvider(best, parameters, handler_name="channel")

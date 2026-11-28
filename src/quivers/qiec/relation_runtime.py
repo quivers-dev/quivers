@@ -171,6 +171,8 @@ class FixedRelationRuntimeProvider:
             self._score = partial(_expected_path_cost, query, initial, arcs, final)
         elif request.operation == "pair_weight":
             self._score = relation.query(request.words, **limits).weight
+        elif request.operation == "best_path_weight":
+            self._score = relation.query(request.words, **limits).best_path_weight
         elif request.operation == "path_entropy":
             query = relation.query(request.words, **limits)
             self._score = lambda: query.path_statistics().entropy
@@ -245,7 +247,7 @@ class FixedRelationRuntimeProvider:
         score = self._score()
         if self._result_type == LOG_WEIGHT:
             result_algebra = LOG_PROB
-        elif self._operation == "pair_weight":
+        elif self._operation in ("pair_weight", "best_path_weight"):
             result_algebra = MARKOV
         else:
             result_algebra = REAL_ALGEBRA

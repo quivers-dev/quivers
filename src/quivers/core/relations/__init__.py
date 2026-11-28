@@ -474,6 +474,20 @@ class FixedStringQuery:
         paths = self.k_best_paths(1)
         return paths[0] if paths else None
 
+    def best_path_weight(self) -> torch.Tensor:
+        """Return the best positive path weight, or the semiring zero.
+
+        The same exact ranking and deterministic tie order as
+        `best_path` select the path. The result differentiates its
+        original occurrences with the selected path held fixed. At a
+        tie the derivative is that of the selected path. If no positive
+        path exists, the result is a constant semiring zero.
+        """
+        weights = self._relation._weights()
+        algebra = self._relation.algebra
+        paths = self._walks.k_best(1, weights, algebra)
+        return paths[0].weight if paths else algebra.zero_like((), weights)
+
     def k_best_paths(self, k: int) -> tuple[RelationPath, ...]:
         """Return up to `k` positive paths in decreasing weight order.
 
