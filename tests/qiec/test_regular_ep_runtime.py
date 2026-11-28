@@ -1,0 +1,197 @@
+"""An authored regular string EP query runs through the ordinary QIEC provider."""
+
+from math import log
+
+import didactic.api as dx
+import pytest
+import torch
+
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    ExecutionFailure,
+    ParameterId,
+    QiecModule,
+    RegularStringEPConfig,
+    RegularStringEPRequest,
+    RegularStringEPRuntimeProvider,
+    RuntimeConfiguration,
+    discharge_module,
+    dumps,
+    loads,
+    run_named,
+)
+from quivers.transpile import project_for_target
+
+_MODULE = "regular_ep_query"
+_GRAPH = """object Segments : FinSet 2
+object Wrong : FinSet 2
+
+relation lexicon [algebra=logprob, states=2]
+    output Segments
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0), weight=zero_word]
+    arc 0 -> 1 [labels=(1), weight=one_word]
+    final 1 [weight=one]
+
+relation reference [algebra=logprob, states=2]
+    output Segments
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0), weight=one]
+    arc 0 -> 1 [labels=(1), weight=one]
+    final 1 [weight=one]
+
+relation wrong [algebra=logprob, states=2]
+    output Wrong
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0), weight=one]
+    arc 0 -> 1 [labels=(1), weight=one]
+    final 1 [weight=one]
+
+string_graph latent
+    variable word : Segments
+    factor lexicon(word)
+"""
+
+
+def _fixture():
+    compiler = Compiler(parse(_GRAPH), module_name=_MODULE)
+    config = RegularStringEPConfig(
+        bases=(("word", compiler.relation_specs["reference"]),),
+        features=(("word", ((0,), (1,))),),
+        penalty=0.0,
+        max_sweeps=2,
+        max_states=128,
+        max_work=256,
+        tolerance=1e-9,
+        projection_tolerance=1e-12,
+    )
+    request = RegularStringEPRequest(
+        graph=compiler.string_graph_specs["latent"],
+        config=config,
+        variable="word",
+        words=((1,), (), (0,)),
+    )
+    result_type = (
+        "(String * String * Int * Bool * Real * Bool * Tensor[LogWeight]([3]) * Int)"
+    )
+    name = request.handler_name
+    source = (
+        _GRAPH
+        + f"""
+instance projection : Compute[Unit, {result_type}]
+handler {name} for Compute[Unit, {result_type}] : {result_type} -> {result_type} [coverage=total, forwards=none, implementation=foreign]
+    apply resumes 1
+
+define belief : {result_type} !{{}} =
+    handle projection with {name} in
+        let report <- perform projection.apply(unit)
+        return report
+"""
+    )
+    module = Compiler(parse(source), module_name=_MODULE).qiec_module
+    wire_module = loads(dumps(module))
+    assert isinstance(wire_module, QiecModule)
+    owner = torch.nn.Parameter(torch.tensor(log(3), dtype=torch.float64))
+    parameters = {
+        ParameterId.derive(_MODULE, "relation_weights", name): value
+        for name, value in (
+            ("zero_word", owner),
+            ("one_word", owner.new_zeros(())),
+            ("one", owner.new_zeros(())),
+        )
+    }
+    return compiler, wire_module, request, parameters, owner
+
+
+def _run(module, provider):
+    return run_named(
+        module, "belief", runtime=RuntimeConfiguration(providers=(provider,))
+    )
+
+
+def test_checked_regular_belief_matches_current_normalized_weights_and_nominal_word_order():
+    _, module, request, parameters, owner = _fixture()
+    wire = dumps(request)
+    restored = loads(wire)
+    assert isinstance(restored, RegularStringEPRequest) and dumps(restored) == wire
+    assert restored == request
+    provider = RegularStringEPRuntimeProvider(restored, parameters)
+    for mass in (3.0, 0.25):
+        with torch.no_grad():
+            owner.fill_(log(mass))
+        run = _run(module, provider)
+        assert run.result_type == request.result_type
+        status, reason, sweeps, measured, residual, available, scores, attempted = (
+            run.value
+        )
+        assert (
+            status,
+            reason,
+            sweeps.item(),
+            measured.item(),
+            available.item(),
+            attempted.item(),
+        ) == (
+            "converged",
+            "",
+            1,
+            True,
+            True,
+            1,
+        )
+        assert residual.item() <= request.config.tolerance
+        assert scores[1].item() == -torch.inf
+        assert scores.exp().tolist() == pytest.approx(
+            [1 / (1 + mass), 0.0, mass / (1 + mass)], abs=1e-10
+        )
+        assert not scores.requires_grad
+
+
+def test_checked_regular_belief_reports_distinct_outer_inner_and_resource_limits():
+    _, module, request, parameters, _ = _fixture()
+    for options, status, available in (
+        ({"max_sweeps": 1, "tolerance": None}, "limit", True),
+        ({"projection_max_iterations": 1}, "projection_failed", True),
+        ({"max_states": 1}, "resource_limit", False),
+    ):
+        changed = request.with_(config=request.config.with_(**options))
+        assert changed.handler_name == request.handler_name
+        provider = RegularStringEPRuntimeProvider(changed, parameters)
+        actual, reason, sweeps, measured, _, usable, scores, attempted = _run(
+            module, provider
+        ).value
+        assert actual == status and usable.item() is available
+        assert measured.item() is (status == "limit")
+        if status == "resource_limit":
+            assert "max_states" in reason
+            assert attempted.item() == sweeps.item() == 0
+            assert scores.isneginf().all()
+        elif status == "projection_failed":
+            assert reason == "limit" and sweeps.item() == 0 and attempted.item() == 1
+            assert scores.exp().tolist() == [0.5, 0.0, 0.5]
+
+
+def test_regular_belief_refuses_same_shape_substitution_and_reports_foreign_target_boundary():
+    compiler, module, request, parameters, _ = _fixture()
+    with pytest.raises(dx.ValidationError, match="nominal tapes"):
+        request.with_(
+            config=request.config.with_(
+                bases=(("word", compiler.relation_specs["wrong"]),)
+            )
+        )
+    with pytest.raises(dx.ValidationError, match="distinct words"):
+        request.with_(words=((1,), (1,)))
+    with pytest.raises(dx.ValidationError, match="query alphabet"):
+        request.with_(words=((2,),))
+    changed = request.with_(words=tuple(reversed(request.words)))
+    assert (
+        changed.result_type == request.result_type
+        and changed.handler_name != request.handler_name
+    )
+    with pytest.raises(ExecutionFailure, match="unknown fixed relation handler"):
+        _run(module, RegularStringEPRuntimeProvider(changed, parameters))
+    report = project_for_target(module, discharge_module(module), "stan")
+    assert any(
+        item.computation == "belief" and request.handler_name in item.reason
+        for item in report.obstacles
+    )

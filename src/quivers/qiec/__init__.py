@@ -385,6 +385,10 @@ from quivers.qiec.pruned_string_graph_runtime import (
     PrunedStringGraphRuntimeProvider,
     pruned_string_graph_handler,
 )
+from quivers.qiec.regular_ep_runtime import (
+    RegularStringEPRequest,
+    RegularStringEPRuntimeProvider,
+)
 from quivers.qiec.contextual_edit_runtime import (
     ContextualEditRuntimeProvider,
     FixedContextualEditRequest,
@@ -775,6 +779,8 @@ __all__ = [
     "PrunedStringGraphRuntimeProvider",
     "pruned_string_graph_handler",
     "RegularStringEPConfig",
+    "RegularStringEPRequest",
+    "RegularStringEPRuntimeProvider",
     "TreeStringGraphRequest",
     "TreeStringGraphRuntimeProvider",
     "tree_string_graph_handler",

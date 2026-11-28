@@ -447,7 +447,7 @@ class RegularStringEPConfig(QiecModel):
     def infer(
         self,
         model: StringFactorGraphSpec,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
     ) -> RegularStringEPResult:
         """Run projected sum-product on a bound graph and its reference languages.
 
@@ -455,7 +455,7 @@ class RegularStringEPConfig(QiecModel):
         ----------
         model : StringFactorGraphSpec
             The checked string factors, variables, and observations.
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The original scalar tensors used by the graph and its references.
 
         Returns

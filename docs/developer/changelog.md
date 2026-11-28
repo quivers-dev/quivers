@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked regular EP reports.** A named QVR computation can query normalized word scores, projection outcomes, and sweep diagnostics on its authored graph through the existing regular EP runtime.
 - **Typed paired alignment-MAP decomposition.** Optional bounded one-tape joins coordinate exact grouped decoders. Feasible solutions retain each original factor's boundary states, arc occurrences, and rational score.
 - **Independent local verification for alignment MAP.** Returned bounds and certificates check original traces, exact suffix optima and centered multipliers, with reported verification work.
 - **Source-authored pruned graph queries.** A native QVR foreign computation can call a checked graph belief provider with its exact graph and candidate identity.

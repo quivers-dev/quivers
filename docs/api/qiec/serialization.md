@@ -572,3 +572,83 @@ returned approximate result.
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
 
 ::: quivers.qiec.string_solvers.PrunedStringBPConfig
+
+## Checked regular belief queries
+
+`RegularStringEPRequest` selects one variable and an ordered list of words
+in a checked graph. The graph, nominal reference tapes, candidate n-grams,
+variable, and word order determine the foreign handler name. The same
+declaration can run with different schedules, penalties, and resource limits.
+
+The result carries the solver status and diagnostic, accepted sweeps, a
+Boolean and a value for the measured residual, a Boolean and an ordered
+tensor of available log probabilities, and the number of local projections
+attempted on the last sweep. A failed local projection retains the belief
+from the last accepted update. A resource limit records why the query
+could not complete and marks the belief unavailable. An available belief
+assigns log zero to words outside its support.
+
+The solver snapshots the original weights on each invocation. The report
+does not differentiate through the projection or certify a global posterior
+error. Scoring $k$ probes adds $k$ bounded word queries to the work of the
+regular EP schedule. The request does not enumerate the reference language.
+
+<!-- python: run -->
+```python
+import torch
+
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    ParameterId, RegularStringEPConfig, RegularStringEPRequest,
+    RegularStringEPRuntimeProvider, RuntimeConfiguration, run_named,
+)
+
+source = """
+object Letter : FinSet 2
+
+relation alternatives [algebra=logprob, states=2]
+    output Letter
+    initial 0 [weight=unit_weight]
+    arc 0 -> 1 [labels=(0), weight=unit_weight]
+    arc 0 -> 1 [labels=(1), weight=unit_weight]
+    final 1 [weight=unit_weight]
+
+string_graph vocabulary
+    variable word : Letter
+    factor alternatives(word)
+"""
+compiler = Compiler(parse(source), module_name="regular-belief")
+request = RegularStringEPRequest(
+    graph=compiler.string_graph_specs["vocabulary"],
+    config=RegularStringEPConfig(
+        bases=(("word", compiler.relation_specs["alternatives"]),),
+        features=(("word", ((1,),)),),
+        penalty=0.0, max_sweeps=2, max_states=128, max_work=256,
+    ),
+    variable="word", words=((1,), ()),
+)
+handler = request.handler_name
+report = "(String * String * Int * Bool * Real * Bool * Tensor[LogWeight]([2]) * Int)"
+source += f"""
+instance estimate : Compute[Unit, {report}]
+handler {handler} for Compute[Unit, {report}] : {report} -> {report} [coverage=total, forwards=none, implementation=foreign]
+    apply resumes 1
+
+define belief : {report} !{{}} =
+    handle estimate with {handler} in
+        let result <- perform estimate.apply(unit)
+        return result
+"""
+module = Compiler(parse(source), module_name="regular-belief").qiec_module
+assert module is not None
+owner = ParameterId.derive(module.module, "relation_weights", "unit_weight")
+provider = RegularStringEPRuntimeProvider(request, {owner: torch.zeros((), dtype=torch.float64)})
+runtime = RuntimeConfiguration(providers=(provider,))
+status, _, _, _, _, available, scores, _ = run_named(module, "belief", runtime=runtime).value
+assert status == "converged" and available.item()
+torch.testing.assert_close(scores.exp(), torch.tensor([0.5, 0.0], dtype=torch.float64))
+```
+
+::: quivers.qiec.regular_ep_runtime.RegularStringEPRequest
+
+::: quivers.qiec.regular_ep_runtime.RegularStringEPRuntimeProvider

@@ -120,6 +120,7 @@ from quivers.qiec.contracts import (
 from quivers.qiec.contextual_edit_runtime import FixedContextualEditRequest
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
+from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
@@ -416,6 +417,7 @@ _NODE_CLASSES = (
     PrunedStringBPConfig,
     RegularStringEPConfig,
     TreeStringGraphRequest,
+    RegularStringEPRequest,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,
