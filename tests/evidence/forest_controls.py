@@ -764,7 +764,12 @@ MUTATIONS: tuple[Mutation, ...] = (
         defect_class="premature stop",
         provenance="the declared limit is not checked before enumerating",
         target=f"{FOREST}:fold_derivations_many",
-        rewrites=(Rewrite(old="if total > limit:", new="if False:"),),
+        rewrites=(
+            Rewrite(
+                old="if total > limit:\n        raise ForestRefused(",
+                new="if False:\n        raise ForestRefused(",
+            ),
+        ),
         rejected_by=("forest/limit",),
         min_effect=1.0,
     ),
