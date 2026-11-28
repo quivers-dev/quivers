@@ -40,11 +40,16 @@ from quivers.core.laws import (
     DIVISION,
     FOLD_LINEAR,
     NO_ZERO_DIVISORS,
+    PLUS_ASSOCIATIVE,
+    PLUS_COMMUTATIVE,
     PLUS_SELECTIVE,
     SEMIMODULE_ACTION,
     SEMIRING_LAWS,
     STAR_LEAST_SOLUTION,
     SUPERIOR,
+    TIMES_ASSOCIATIVE,
+    TIMES_UNIT,
+    ZERO_ANNIHILATES,
     ZERO_SUM_FREE,
     Citation,
     ClaimSubject,
@@ -2252,6 +2257,97 @@ class Outcome(_Observable):
     tag: Literal["outcome"] = "outcome"
 
 
+class NormalizedWeightRows(_Observable):
+    """A finite collection of weight rows divided by their common total.
+
+    The source fixes the row key. All supported rows share one divisor.
+    The normalization is defined only for positive total mass.
+
+    Parameters
+    ----------
+    source
+        The unnormalized item weights or weighted outcome pushforward.
+    tag
+        Always `"normalized-weight-rows"`.
+    """
+
+    source: Weight | Outcome = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["normalized-weight-rows"] = "normalized-weight-rows"
+
+    def requirements(self, algebra: ClaimSubject) -> tuple[Requirement, ...]:
+        """Require the source weighting laws and division by a nonzero total.
+
+        Parameters
+        ----------
+        algebra
+            The weight algebra.
+
+        Returns
+        -------
+        tuple of Requirement
+            The source requirements followed by division.
+        """
+        return (*self.source.requirements(algebra), *requirements((DIVISION,), algebra))
+
+
+class WeightedProofRows(_Observable):
+    """The positive-weight derivations and their individual log masses.
+
+    Rows preserve proof occurrences, even if their checked proof values
+    coincide. A normalized result divides their weights by the common
+    positive total mass.
+
+    Parameters
+    ----------
+    normalized
+        Whether to normalize the returned proof weights.
+    tag
+        Always `"weighted-proof-rows"`.
+    """
+
+    normalized: bool = False
+    tag: Literal["weighted-proof-rows"] = "weighted-proof-rows"
+
+    @property
+    def needs_finite_derivations(self) -> bool:
+        """Whether a guaranteed result lists finitely many derivations.
+
+        Returns
+        -------
+        bool
+            True. The observable lists all supported proof occurrences.
+        """
+        return True
+
+    def requirements(self, algebra: ClaimSubject) -> tuple[Requirement, ...]:
+        """The laws needed to assign the proof weights.
+
+        Parameters
+        ----------
+        algebra
+            The weight algebra.
+
+        Returns
+        -------
+        tuple of Requirement
+            An associative ordered product with a unit and absorbing zero.
+            Normalization also needs an associative commutative sum and division.
+        """
+        laws = (
+            (
+                TIMES_ASSOCIATIVE,
+                TIMES_UNIT,
+                ZERO_ANNIHILATES,
+                PLUS_ASSOCIATIVE,
+                PLUS_COMMUTATIVE,
+                DIVISION,
+            )
+            if self.normalized
+            else (TIMES_ASSOCIATIVE, TIMES_UNIT, ZERO_ANNIHILATES)
+        )
+        return requirements(laws, algebra)
+
+
 class Statistic(_Observable):
     """The weight and the expectation of a statistic, in a semimodule.
 
@@ -2510,6 +2606,8 @@ type Observable = (
     | Best
     | KBest
     | Outcome
+    | NormalizedWeightRows
+    | WeightedProofRows
     | Statistic
     | Marginal
     | Sample
@@ -4635,6 +4733,7 @@ __all__ = [
     "NOT_DIFFERENTIATED",
     "NoRetention",
     "NonlinearFold",
+    "NormalizedWeightRows",
     "Numerics",
     "ObjectiveGap",
     "Observable",
@@ -4674,6 +4773,7 @@ __all__ = [
     "Unrolled",
     "WORD_RAM_EXPECTED_HASHING",
     "Weight",
+    "WeightedProofRows",
     "SPACE_FIELDS",
     "TIME_FIELDS",
     "UnmeasuredWork",

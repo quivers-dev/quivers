@@ -70,7 +70,7 @@ from quivers.qiec.types import (
 if TYPE_CHECKING:
     from quivers.qiec._span_finiteness import SpanOrder
     from quivers.qiec.rules import RulePresentation
-    from quivers.stochastic.planning import Plan
+    from quivers.stochastic.planning import Plan, RuleJoin
 
 
 KERNEL_ALGEBRAS: Mapping[str, Semiring] = MappingProxyType(
@@ -825,6 +825,21 @@ class DeductionOutcomes(QiecModel):
             The longest chain of unary category-head transitions.
         """
         return self.span_order.unary_height
+
+    @cached_property
+    def _item_outcome_joins(self) -> tuple[RuleJoin, ...]:
+        """Describe the indexed forest's join strategy once per descriptor.
+
+        Returns
+        -------
+        tuple of RuleJoin
+            The generic or keyed strategy actually used for each rule.
+        """
+        from quivers.qiec.rules import RulePresentation
+        from quivers.stochastic.planning import rule_joins
+
+        assert isinstance(self.presentation, RulePresentation)
+        return rule_joins(self.presentation)
 
 
 class DeductionProofs(QiecModel):

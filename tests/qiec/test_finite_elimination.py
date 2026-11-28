@@ -20,6 +20,7 @@ from quivers.qiec import (
 )
 from quivers.qiec import finite_elimination as elimination
 from quivers.qiec.builtins import RANDOM_SAMPLE
+from quivers.qiec.discharge import discharge_module
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -798,3 +799,98 @@ def test_draw_through_a_call_or_masked_row_is_refused_before_any_evaluation(
     monkeypatch.setattr(elimination, "run_named", unexpected_evaluation)
     with pytest.raises(FiniteLawUnsupported, match=message):
         eliminate_finite_source(module, algebra, factor, ("x",))
+
+
+_NONLINEAR_OBSERVER = """
+effect Observe
+    nand : Bool * Bool -> Bool
+
+instance observer : Observe
+
+handler nonlinear for Observe : Bool -> Bool [coverage=total, forwards=none, implementation=authored]
+    nand(x : Bool, y : Bool) resumes 0 =>
+        if x then
+            if y then
+                return false
+            else
+                return true
+        else
+            return true
+
+define detect(x : Bool, y : Bool) : Bool !{} =
+    handle observer with nonlinear in
+        perform observer.nand(x, y)
+
+define original(w : Bool, x : Bool, y : Bool) : Bool !{} =
+    let value <- detect(x, y)
+    multiply(w, value)
+
+define weight_moved(w : Bool, x : Bool, y : Bool) : Bool !{} =
+    let wx <- multiply(w, x)
+    let wy <- multiply(w, y)
+    detect(wx, wy)
+"""
+
+
+def test_closed_row_does_not_license_moving_weight_through_a_handler(monkeypatch):
+    module = _compiled(
+        _BOOLEAN_SOURCE + _NONLINEAR_OBSERVER, "nonlinear-handler-barrier"
+    )
+    owners = {owner.name: owner for owner in module.computations}
+    names = ("original", "weight_moved")
+    assert all(owners[name].type.effects == EMPTY_ROW for name in (*names, "detect"))
+    operation = next(item for item in module.effects if item.ref.name == "Observe")
+    operation_id = str(operation.operations[0].id)
+
+    truth = (False, True)
+    tables = ({}, {})
+    for w, x, y in product(truth, repeat=3):
+        point = (w, x, y)
+        expected = (w and not (x and y), not ((w and x) and (w and y)))
+        for name, table, value in zip(names, tables, expected, strict=True):
+            run = run_named(module, name, point)
+            assert bool(run.value) is value
+            table[point] = value
+            assert tuple(
+                event.detail["operation"]
+                for event in run.trace
+                if event.event == "operation.requested"
+            ) == (operation_id,)
+    original, moved = tables
+    assert {point for point in original if original[point] != moved[point]} == {
+        (False, x, y) for x, y in product(truth, repeat=2)
+    }
+
+    algebra = _algebra(module, False, True)
+    factors = _source_factors(module, *((name, ("w", "x", "y")) for name in names))
+
+    def unexpected_evaluation(*_args, **_kwargs):
+        pytest.fail("neither factor cells nor algebra operators may run")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(elimination, "run_named", unexpected_evaluation)
+        for factor in factors:
+            with pytest.raises(
+                FiniteLawUnsupported,
+                match="source factor reaches `detect` with an effect or handler",
+            ):
+                eliminate_finite_source(module, algebra, (factor,), ("x", "y"))
+
+    discharged = discharge_module(module)
+    assert discharged.obstacles == ()
+    assert [(item.computation, item.method) for item in discharged.rewrites] == [
+        (owners["detect"].id, "handler-discharge")
+    ]
+    contractions = []
+    for factor, table in zip(factors, tables, strict=True):
+        result = eliminate_finite_source(
+            discharged.module, algebra, (factor,), ("x", "y")
+        )
+        assert result.source_evaluations == 8
+        expected = tuple(
+            any(table[w, x, y] for w in truth) for x, y in product(truth, repeat=2)
+        )
+        assert result.result.factor.axes == ("x", "y")
+        assert result.result.factor.cells == expected
+        contractions.append(result.result.factor.cells)
+    assert contractions == [(True, True, True, False), (True, True, True, True)]

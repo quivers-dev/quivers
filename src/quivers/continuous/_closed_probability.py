@@ -47,6 +47,7 @@ from torch.distributions.utils import lazy_property
 
 from quivers._positions import demand
 from quivers._count_capacity import _MAX_EXACT_COUNT, _check_scalar_count_capacity
+from quivers.continuous._bernoulli_score import _qvr_bernoulli_log_score
 from quivers.continuous._count_cdf import _CountCDF
 
 
@@ -793,16 +794,11 @@ class ClosedBernoulli(_CountCDF, D.Bernoulli):
         """
         if self._validate_args:
             self._validate_sample(value)
+        if self._closed_probs is not None:
+            return _qvr_bernoulli_log_score(self._closed_probs, value)
         valid = _constraints.boolean.check(value)
         point = torch.where(valid, value, 0)
-        probs = self._closed_probs
-        if probs is None:
-            result = super().log_prob(point.to(self.logits.dtype))
-        else:
-            point, probs = torch.broadcast_tensors(point.to(probs.dtype), probs)
-            result = _count_log(point, probs) + _count_log_complement(
-                1.0 - point, probs
-            )
+        result = super().log_prob(point.to(self.logits.dtype))
         return torch.where(valid, result, -torch.inf)
 
 

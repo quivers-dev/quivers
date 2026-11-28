@@ -16,6 +16,7 @@ from torch import nn
 from quivers.core.algebras import LOG_PROB, MARKOV, REAL, Semiring
 from quivers.core.morphisms import FiniteMorphism, Morphism
 from quivers.core.objects import FreeMonoid, ProductSet, SetObject, Unit
+from quivers.core.relations._centered import CenteredStringLogScore
 from quivers.core.relations.paths import (
     ArcCounts,
     PathStatistics,
@@ -51,6 +52,7 @@ __all__ = [
     "ComposedRelation",
     "ComposedStringQuery",
     "ConditionalStringQuery",
+    "CenteredStringLogScore",
     "ContextualEditChannel",
     "ContextualEditPlan",
     "FixedStringQuery",

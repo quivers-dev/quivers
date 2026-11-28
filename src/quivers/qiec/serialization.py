@@ -84,6 +84,7 @@ from quivers.qiec.contracts import (
     MonotonePolynomial,
     NoRetention,
     NonlinearFold,
+    NormalizedWeightRows,
     Numerics,
     ObjectiveGap,
     OccurrenceId,
@@ -115,6 +116,7 @@ from quivers.qiec.contracts import (
     Unresolved,
     Unrolled,
     Weight,
+    WeightedProofRows,
     WorkReport,
 )
 from quivers.qiec.contextual_edit_runtime import FixedContextualEditRequest
@@ -128,6 +130,8 @@ from quivers.qiec.effect_law_schema import (
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
+from quivers.qiec.alignment_map_runtime import JointAlignmentMapRequest
+from quivers.qiec.paired_alignment_map_runtime import PairedAlignmentMapRequest
 from quivers.qiec.finite_ep_runtime import FiniteStringEPRequest
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
@@ -150,6 +154,7 @@ from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
 )
+from quivers.qiec.centered_string_runtime import CenteredStringLogProbRequest
 from quivers.qiec.relation_log_path_certificate import (
     FixedCyclicLogProbPathCertificateRequest,
     FixedLogProbPathCertificateRequest,
@@ -339,6 +344,13 @@ from quivers.qiec.types import (
     TypeConstructorRef,
     TypeVariable,
 )
+from quivers.stochastic.planning import (
+    Alternative,
+    MeasureCertificate,
+    MeasureComponent,
+    PlanRecord,
+    RuleJoin,
+)
 
 
 QIEC_WIRE_FORMAT = "qiec-json/v2"
@@ -432,6 +444,7 @@ _NODE_CLASSES = (
     FixedCyclicLogProbPathCertificateRequest,
     FixedLogProbPathCertificateRequest,
     FixedMarkovPathCertificateRequest,
+    CenteredStringLogProbRequest,
     FixedRelationPathRankRequest,
     FixedCappedCyclicRelationPathSampleRequest,
     FixedCyclicRelationPathSampleRequest,
@@ -449,6 +462,8 @@ _NODE_CLASSES = (
     TreeStringGraphRequest,
     RegularStringEPRequest,
     FiniteStringEPRequest,
+    JointAlignmentMapRequest,
+    PairedAlignmentMapRequest,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,
@@ -625,6 +640,7 @@ _NODE_CLASSES = (
     PackedForest,
     Support,
     Weight,
+    WeightedProofRows,
     Best,
     KBest,
     Outcome,
@@ -633,6 +649,7 @@ _NODE_CLASSES = (
     Sample,
     Fold,
     NonlinearFold,
+    NormalizedWeightRows,
     Forest,
     QuerySpec,
     ComputationModel,
@@ -676,6 +693,11 @@ _NODE_CLASSES = (
     ScopedInterpretationBinding,
     ClosedInterpretationBinding,
     PackedBooleanInterpretationBinding,
+    Alternative,
+    MeasureCertificate,
+    MeasureComponent,
+    PlanRecord,
+    RuleJoin,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}

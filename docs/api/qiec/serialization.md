@@ -405,6 +405,28 @@ and serialized fields.
 
 ::: quivers.qiec.relation_path_law.RelationPathLaw
 
+### Centered acyclic string log probabilities
+
+`CenteredStringLogProbRequest` wraps either an authored fixed-input
+conditional request or an authored tree word query with LogProb
+weights. The [centered evaluator](../core/morphisms.md#centered-acyclic-string-likelihoods)
+requires binary64 weights and acyclic productive observations. Both
+likelihood sums read one evaluated vector of live original weights.
+The request sets a combined occurrence limit and an exact-work limit
+in addition to the original observation limits.
+
+An ordinary QVR foreign `Compute` declaration uses the checked handler
+name from the request. The name records the exact original relation and
+ordered words, or the original graph, variable, and word. Execution
+returns the differentiable log probability and a four-element Int
+tensor of productive states, occurrences, weight slots, and dyadic
+work. Other policy bounds can reuse the same declaration. Stan, BUGS,
+and JAGS report the named native capability as unavailable.
+
+::: quivers.qiec.centered_string_runtime.CenteredStringLogProbRequest
+
+::: quivers.qiec.centered_string_runtime.CenteredStringLogProbRuntimeProvider
+
 ### A tail outcome for capped cyclic paths
 
 `FixedCappedCyclicRelationPathSampleRequest` specifies a different
@@ -805,6 +827,106 @@ returned approximate result.
 ::: quivers.qiec.string_solvers.JointAlignmentMapGapConfig
 
 ::: quivers.qiec.string_solvers.JointAlignmentMapDecomposition
+
+## Checked native joint alignment MAP
+
+`JointAlignmentMapRequest` combines a checked string factor graph
+with a portable singleton exact-local solver or its objective-gap
+policy. Compile the ordinary QVR graph to get its specification.
+Declare a total foreign `Compute[Unit, A]` handler using the request's
+handler name and result carrier, then bind a
+`JointAlignmentMapRuntimeProvider` to the original live scalar owners.
+The handler identity binds the ordered graph, nominal tapes and
+observations, parameter identities, complete solver record, and
+word capacity. The solver reads the current weights on each
+invocation.
+
+For $V$ declared variables and word capacity $K$, the report follows
+this order.
+
+| Field | QVR carrier |
+| --- | --- |
+| Search status and diagnostic | `String * String` |
+| Feasible assignment availability | `Bool` |
+| Word tokens in variable declaration order | `Tensor[Int]([V, K])` |
+| Word lengths in the same order | `Tensor[Int]([V])` |
+| Feasible score, dual upper bound, absolute gap, relative gap | `Tensor[String]([4, 2])` |
+| Agreement certificate and attained gap target | `Bool * Bool` |
+| Iterations, peak local states, local arc examinations, peak verification states, verification arc examinations | `Tensor[Int]([5])` |
+
+Words use `-1` suffix padding. An available empty word has length
+zero. An absent assignment uses length `-1` and a false availability
+flag. A run without a feasible assignment may still report an exact
+dual upper bound.
+
+Each available rational has its signed hexadecimal numerator and
+positive denominator. Their exact integers can exceed both the
+floating-point mantissa and the QVR `Int` range. An unavailable
+ratio has two empty strings. A request admits $V(K+1)$ assignment
+cells before any output allocation. Each report checks the actual
+word lengths, symbol and count ranges, and total integer bit
+count before formatting ratios or packing observed words. A
+`report_limit` returns absent evidence when the encoding cannot
+represent the result. A solver state or work limit returns
+`resource_limit`.
+
+An agreement certificate flag means the solver independently
+verified the original local trace scores and the exact local optima
+under the cancelling multipliers. The `optimal` status requires
+whole-word agreement. A verified absolute or relative gap may yield
+`gap` and an attained target with the agreement flag false. The
+result concerns the discrete optimization of the evaluated parameter
+snapshot, with no optimizer derivative. Native targets requiring
+foreign calls to be discharged report the exact missing handler.
+
+::: quivers.qiec.alignment_map_runtime.JointAlignmentMapRequest
+
+::: quivers.qiec.alignment_map_runtime.JointAlignmentMapRuntimeProvider
+
+### Checked paired alignment MAP
+
+`PairedAlignmentMapRequest` binds the same authored graph to its
+portable `JointAlignmentMapDecomposition`. The checked foreign
+identity includes the ordered factor groups, all exact solver
+settings, and both output capacities. Each pair shares exactly one
+nominal tape variable. The portable solver verifies its exact
+local witnesses and expands its feasible paths into original
+occurrences before the runtime formats the evidence.
+
+The first nine fields are the ordinary MAP report. Four more fields
+describe the paired run. Let $F$ be the original factor count, $P$
+the allocated original arc positions per trace, and $G$ the
+number of groups.
+
+| Field | QVR carrier |
+| --- | --- |
+| Original start state, final state, and length per factor | `Tensor[Int]([F, 3])` |
+| Original ordered arc occurrence IDs with `-1` padding | `Tensor[Int]([F, P])` |
+| Exact original trace scores as signed hexadecimal rational pairs | `Tensor[String]([F, 2])` |
+| Actual product states and arcs per group | `Tensor[Int]([G, 2])` |
+
+Trace rows follow original factor order. Each trace's word tuple is
+given by the common assignment at that factor's ordered variable
+scope. A feasible limit or gap result can include these traces.
+A genuine empty trace retains its two boundaries and length zero.
+Absent traces use `-1` integer fields and empty rational pairs.
+Group rows follow the declared decomposition order, with
+`(-1, -1)` for singleton groups. Product sizes can be available
+on a completed solve with no feasible assignment.
+
+The assignment and length arrays preflight $V(K+1)$ cells as above.
+The extra integer arrays preflight $F(P+3)+2G$ cells. The runtime
+checks ordinal ranges, actual lengths, and the declared score bit
+limits before encoding the report. A representational limit
+returns absent evidence and the available measured search counts.
+The solver's own pair construction and decoder budgets have a
+`resource_limit` outcome. The common certification flags retain
+their exact local and objective-gap meanings. A checked target
+without the paired handler reports that missing capability.
+
+::: quivers.qiec.paired_alignment_map_runtime.PairedAlignmentMapRequest
+
+::: quivers.qiec.paired_alignment_map_runtime.PairedAlignmentMapRuntimeProvider
 
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
 

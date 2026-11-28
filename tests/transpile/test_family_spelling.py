@@ -148,6 +148,7 @@ def test_matrix_dimension_families_need_a_square_event_shape() -> None:
 def test_helper_families_are_the_ones_each_runtime_file_defines() -> None:
     assert helper_families("pyro") == frozenset(
         {
+            "Bernoulli",
             "TruncatedNormal",
             "LogitNormal",
             "HalfStudentT",
@@ -157,6 +158,9 @@ def test_helper_families_are_the_ones_each_runtime_file_defines() -> None:
             "LogitBeta",
             "OrderedProbit",
         }
+    )
+    assert helper_roots("pyro", frozenset({"Bernoulli"})) == frozenset(
+        {"Bernoulli", "_qvr_bernoulli_log_score"}
     )
     assert "Categorical" in helper_families("webppl")
     assert helper_roots("pymc", frozenset({"Normal", "LKJCholesky"})) == frozenset(

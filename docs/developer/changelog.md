@@ -8,10 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked centered string likelihoods.** A named QVR computation can return a centered conditional or tree log probability with live gradients and measured dyadic work.
+- **Centered acyclic string likelihoods.** Opt-in binary64 LogProb queries keep fixed-word conditional and tree probabilities usable when rounded absolute log masses erase their difference.
 - **Certified acyclic LogProb path accuracy.** A fixed-word query can bound its float64 score's absolute log error using a sparse directed verifier, including for inputs near log weight −1000. The checked native provider returns the log score and exact rational evidence from one live snapshot.
 - **Certified cyclic LogProb path accuracy.** Bounded productive epsilon components can use exact rational endpoint stars to certify the ordinary log score, including when a path mass underflows in binary64. The checked native report distinguishes proven local divergence from an unverified upper star.
 - **A tail outcome for capped cyclic paths.** Checked QVR can draw or score the normalized law that retains short original traces and groups every longer walk into one tagged tail.
 - **Checked finite-unrolled string EP.** A fixed native unigram schedule can return live differentiable word scores with warm sites, local trial counts, and explicit construction limits.
+- **Checked joint alignment MAP.** A named QVR computation can return padded words, exact rational primal and dual evidence, and the verified agreement or gap status on its authored string graph.
+- **Checked paired alignment MAP.** A named QVR report returns verified paired results, original factor traces with exact scores, and the constructed product sizes in group order.
 - **Checked Markov path certificate reports.** Native QVR can request a value-only forward-error certificate with exact rational evidence or a typed unavailable outcome.
 - **Certified Markov path accuracy.** A bounded fixed-word query can establish an exact absolute or relative forward-error bound for its float64 score, using rational sparse verification and the existing local closure.
 - **Checked deduction guards.** QVR rules can use a pure Boolean guard over matched natural coordinates. Checked search and eligible indexed item outcomes evaluate the guard before accepting a grounded rule.
@@ -106,6 +110,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Pruned string proposal-scale gradients.** Full, retained, and omitted candidate sums restore the reported raw scale after evaluating the local reduction in centered log space.
+- **Pruned string message normalization.** Center candidate weights before damping so a large common log offset preserves the normalized message and its convergence residual.
+- **String log-ratio overflow.** Conditional and exact tree queries report a precision error when normalizing a finite log score would overflow. Impossible words retain log zero.
 - **Scalar parsing of computed tokens.** Ordinary QVR deduction can consume checked rank-one string tensors within lexical scopes, with live grammar weights.
 - **Finite n-gram EP near convergence.** Newton backtracking compares the centered objective change, preserving improvements smaller than one ulp of the absolute objective.
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.

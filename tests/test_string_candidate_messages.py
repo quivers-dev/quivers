@@ -18,6 +18,8 @@ from quivers.core.relations import (
     StringCandidatePlan,
 )
 
+from quivers.core.relations.messages import _candidate_log_mass
+
 
 _TAPE = StringSet(alphabet=FinSet(name="CandidateAlphabet", cardinality=2))
 _CANDIDATES = ((), (1,), (0,))
@@ -121,3 +123,12 @@ def test_full_support_zero_beam_and_resource_refusal_are_distinct():
     cyclic, _ = _geometric()
     with pytest.raises(ProductiveEpsilonCycleError):
         StringCandidatePlan(cyclic, ((0,),), max_states=64, max_work=192)
+
+
+@pytest.mark.parametrize("size", (0, 4))
+def test_candidate_log_mass_preserves_zero_support_and_zero_gradient(size):
+    weights = torch.full((size,), -torch.inf, dtype=torch.float64, requires_grad=True)
+    result = _candidate_log_mass(weights)
+    assert result.item() == -torch.inf
+    (gradient,) = torch.autograd.grad(result, weights)
+    assert gradient.tolist() == [0] * size

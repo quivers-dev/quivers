@@ -607,8 +607,10 @@ def plan_bernoulli_gradient(
 
     The entry must take scalar reals and return a scalar real with one
     nominal Random instance in its row. The fragment admits ordinary
-    sequencing, conditionals and calls and direct scalar Boolean draws
-    from Bernoulli probabilities. Every reached site needs one explicit
+    sequencing, conditionals, calls and direct scalar Boolean draws
+    from Bernoulli probabilities. It also admits cases over closed
+    monomorphic families with scalar fields and the linear call-address
+    scopes of the checked discharged stage. Every reached site needs one explicit
     `enumerate`, `score` or `measure` policy. The conditional probabilities must
     be strictly interior, and comparisons must be locally stable under
     the exact scalar derivative rules.
@@ -664,7 +666,9 @@ def plan_bernoulli_gradient(
                 f"unsupported Bernoulli estimator {policy.estimator!r}"
             )
         methods[policy.site] = policy.estimator
-    _check_first_order_graph(module, owner, "Bernoulli", _check_request)
+    _check_first_order_graph(
+        module, owner, "Bernoulli", _check_request, allow_closed_cases=True
+    )
     environment = {
         parameter: _dual(_fraction(value), _fraction(tangent), True)
         for parameter, value, tangent in zip(

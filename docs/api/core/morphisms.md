@@ -186,6 +186,9 @@ compares the score of a supplied output to that normalizer. The
 denominator includes every alignment and output permitted by the
 relation. A productive insertion cycle uses the usual closure check
 and size bound. Each call uses the same live weights in both sums.
+A finite LogProb score whose normalized log ratio overflows the
+evaluation dtype raises `OverflowError`. An impossible output retains
+log zero. Exact tree marginals apply the same precision check.
 
 `union` adds relations with identical tape types by taking the disjoint
 union of their topologies. `concatenate` uses a connecting state, so
@@ -425,6 +428,45 @@ weight source once across the numerator and denominator within a call.
 A cyclic factor graph is refused by the tree schedule. Cycles within a
 single relation use the ordinary productive closure checks.
 
+### Centered acyclic string likelihoods
+
+`ConditionalStringQuery.centered_query` and `TreeStringMarginal.centered_query`
+compile an opt-in binary64 LogProb likelihood. The fixed-word numerator
+and its all-word denominator use the same evaluated weight vector. Both
+productive observation graphs must be acyclic. Disconnected tree
+components retain their existing normalizer requirements.
+
+For each graph, let $h_q$ be the maximum log weight of a positive suffix
+from state $q$, including its final mark. Compute these maxima by a reverse
+topological pass over the exact dyadic input weights. For an arc $q\to r$,
+replace its log weight $w$ by $w+h_r-h_q$. Subtract $h_q$ from a final
+mark at $q$. An initial mark at $q$ receives $h_q-M$, where $M$
+is the maximum log weight of a full path. The total shift is $-M$ on
+every accepting path, for any path length. At each productive positive
+state, at least one suffix attains its maximum and thus has reduced
+log weight zero. A reverse packed sum operates on these centered suffixes.
+
+The evaluator combines the exact difference of the two maxima with
+the two rounded packed log sums before rounding the scalar result.
+Every included occurrence retains the derivative of its original live
+log weight, with the chosen gauge held fixed. The gauge cancels from
+each full path, even when distinct arcs use the same parameter.
+A zero-weight prefix or suffix contributes no positive path. A zero
+numerator returns log zero. A zero denominator is undefined. A reduced
+factor or resulting log probability outside binary64 precision raises
+`OverflowError`. The packed sums and their derivatives still use
+binary64 arithmetic. This method gives no requested-error certificate.
+
+The state and candidate-arc budgets apply to each observation as usual.
+The combined productive charts contain $V$ states and $A$ occurrences,
+counting both boundary marks and arcs. With $W$ weight slots, the exact
+pass preflights $W+2V+5A$ visits before building the lifted charts. Together the
+observations must fit within the combined occurrence cap. The
+reported work counts visits actually made. A pass uses a linear number of
+dyadic operations. Once scaled by $2^{1074}$, its exact integers have
+$O(2098+\log(V+1))$ bits. The packed charts and their backward tape have
+linear storage in the two active graphs, apart from the source weights
+and observation construction.
 
 ## Certified finite string MAP
 
@@ -560,7 +602,12 @@ too small to recover by subtracting the retained mass from the total.
 An optional beam retains the highest-scoring candidates, breaking ties
 lexicographically and reporting a tie across the boundary. The full
 message scale and the weights of the selected words stay differentiable
-on the selected support. Construction limits raise a distinct error.
+on the selected support. The normalized message uses centered log
+weights. Finite full, retained, and omitted candidate reductions
+restore their original log scale after summing centered weights.
+Their gradients use the relative weights within each reduction.
+A finite normalized candidate that overflows raises `OverflowError`.
+Construction limits raise a distinct error.
 
 ## Batched contextual edits
 
@@ -1228,6 +1275,7 @@ choices held fixed.
         - ComposedRelation
         - ComposedStringQuery
         - ConditionalStringQuery
+        - CenteredStringLogScore
         - ContextualEditChannel
         - ContextualEditPlan
         - QueryWork

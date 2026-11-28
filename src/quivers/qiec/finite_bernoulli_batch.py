@@ -361,6 +361,8 @@ def plan_bernoulli_batch(
     Source inputs start with the shared deterministic parameters, followed
     by that row's local inputs. All reached requests must be direct
     Bernoulli draws on one nominal Random row. The call graph is acyclic.
+    Closed scalar constructor cases and linear call-address scopes may
+    remain in the discharged graph.
     Every complete trace of every row must have the same ordered local
     addresses. Row random choices are separate even when all row inputs
     and local address sequences coincide.
@@ -417,7 +419,12 @@ def plan_bernoulli_batch(
         raise JvpLimit(f"Bernoulli batch exceeds {max_rows} rows")
     _, owner = _random_computation(module, computation, "Bernoulli batch")
     _check_first_order_graph(
-        module, owner, "Bernoulli batch", _check_request, require_acyclic=True
+        module,
+        owner,
+        "Bernoulli batch",
+        _check_request,
+        require_acyclic=True,
+        allow_closed_cases=True,
     )
     arity = len(owner.parameters)
     if len(shared) > arity or any(len(shared) + len(row) != arity for row in rows):

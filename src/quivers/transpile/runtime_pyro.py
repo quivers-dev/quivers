@@ -55,16 +55,77 @@ string inside the emit) so that:
 * the classes are reusable across multiple emitted models without
   duplicating their source.
 
-Each class body must resolve against `pyro` and `torch` alone: the
-graft copies the `class` subtree, not this module's imports, so a
-helper that reached for any other module-level name would fail in the
-emitted program.
+Each class body resolves against `pyro`, `torch`, and any additional
+helper definition declared for that family. The graft copies those
+definitions and omits this module's imports.
 """
 
 from __future__ import annotations
 
 import pyro
 import torch
+
+
+class Bernoulli(pyro.distributions.Bernoulli):
+    """Score source probabilities directly throughout the closed interval.
+
+    Parameters
+    ----------
+    probs, logits : torch.Tensor or float or None
+        Exactly one of the ordinary Pyro Bernoulli coordinates.
+    validate_args : bool or None
+        The underlying distribution's validation setting.
+    """
+
+    def __init__(self, probs=None, logits=None, validate_args=None):
+        super().__init__(probs=probs, logits=logits, validate_args=validate_args)
+        self._qvr_has_probs = probs is not None
+
+    def expand(self, batch_shape, _instance=None):
+        """Expand the original parameterization, even after lazy conversion.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size or tuple
+            The desired batch shape.
+        _instance : Bernoulli or None
+            An optional instance supplied by the distribution machinery.
+
+        Returns
+        -------
+        Bernoulli
+            A distribution sharing the original parameter tensor.
+        """
+        new = self._get_checked_instance(Bernoulli, _instance)
+        if self._qvr_has_probs:
+            Bernoulli.__init__(
+                new, probs=self.probs.expand(batch_shape), validate_args=False
+            )
+        else:
+            Bernoulli.__init__(
+                new, logits=self.logits.expand(batch_shape), validate_args=False
+            )
+        new._validate_args = self._validate_args
+        return new
+
+    def log_prob(self, value):
+        """Score an atom in the coordinates specified at construction.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The selected outcomes, broadcastable to the distribution.
+
+        Returns
+        -------
+        torch.Tensor
+            The atom log mass per batch position.
+        """
+        if not self._qvr_has_probs:
+            return super().log_prob(value)
+        if self._validate_args:
+            self._validate_sample(value)
+        return _qvr_bernoulli_log_score(self.probs, value)
 
 
 class TruncatedNormal(pyro.distributions.torch_distribution.TorchDistribution):
@@ -539,6 +600,7 @@ class LogitBeta(pyro.distributions.torch_distribution.TorchDistribution):
 
 
 __all__ = [
+    "Bernoulli",
     "OrderedProbit",
     "TruncatedNormal",
     "LogitNormal",
@@ -558,3 +620,7 @@ from quivers.transpile.runtime_probability_pyro import (  # noqa: E402
     _qvr_positive_parameter as _qvr_positive_parameter,
 )
 # qvr-shared-probability:pyro:end
+
+# qvr-shared-torch:bernoulli:start
+from quivers.continuous._bernoulli_score import _qvr_bernoulli_log_score  # noqa: E402
+# qvr-shared-torch:bernoulli:end

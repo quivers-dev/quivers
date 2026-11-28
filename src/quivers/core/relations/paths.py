@@ -213,7 +213,12 @@ def _conditional_log_ratio(
     if not algebra.contains(score).item():
         raise OverflowError("a conditional weight is outside the evaluation precision")
     if algebra is LOG_PROB:
-        return score - mass
+        ratio = score - mass
+        if bool(torch.isfinite(score) & ~torch.isfinite(ratio)):
+            raise OverflowError(
+                "the conditional log ratio is outside the evaluation precision"
+            )
+        return ratio
     positive = score > 0
     safe_score = torch.where(positive, score, torch.ones_like(score))
     return torch.where(positive, safe_score.log() - mass.log(), -torch.inf)

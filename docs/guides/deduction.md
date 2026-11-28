@@ -762,6 +762,30 @@ outside its construction counters. When trace recording and the observer
 are both disabled, the runtime skips constructing the event and counting
 the forest records for it.
 
+A successful `parse_outcomes` or `parse_normalized_outcomes` query with
+an unguarded deduction and the `"item"` key also emits
+`deduction.outcomes.plan`. Decode the `plan` field with
+`quivers.qiec.loads(event.detail["plan"])` to read its `PlanRecord`. The
+record identifies the checked presentation, the log weight algebra, the
+acyclic schedule, the selected rule joins, and the assumptions and cost
+bounds of the fold. The exactness claim concerns which finite proof sum
+the fold computes. Arithmetic uses the reported number type, with no
+certified rounding error bound or host compute or memory budget.
+
+The plan's `NoRetention` policy applies to returned proof provenance.
+The query still builds a temporary packed forest, and the returned
+weights can keep an autograd tape over finite log weights at fixed
+support. The reverse bound includes dense adjoints for indexed reads
+from the weight tensor. The ordinary `deduction.outcomes` event continues
+to report its measured construction counters. A normalized plan wraps
+the item weights in `NormalizedWeightRows` and requires division. The
+runtime checks that the common log normalizer is finite, which gives
+positive total mass, before emitting the plan. Computing and differentiating that normalizer
+scales linearly in the number of positive rows. When a custom key
+consumes raw item rows, its grouping is a separate operation. Guarded
+folds and built-in category and form projections emit their ordinary
+event.
+
 #### Ground rules and empty spans
 
 This deduction supplies one empty left boundary and uses it to complete
@@ -830,6 +854,23 @@ measure the checked query and its isolated reducer as item count, key
 count, and key depth vary. The benchmark checks the masses and gradients
 at each parameter point in the refit.
 
+When a query maps unguarded lexical item rows with a named key,
+`deduction.grouped_outcomes.plan` identifies the checked mapper, the key
+computation it calls, and the request that groups the results. Its
+`Outcome` uses that same computation identity. With normalization,
+`NormalizedWeightRows` wraps this outcome and records the division
+requirement and the common normalizer's cost. Chart construction has its
+own event and still computes raw item weights.
+
+The conversion makes one key call per row and forwards its log weight.
+The plan counts key evaluation separately from hash-table work. With
+expected table access, the grouping takes time linear in the number of
+rows and the total size of their keys. Collisions can require repeated
+comparisons. The reverse bound covers the grouping's scalar log sums at
+fixed keys and support, including one additional pass over the positive
+rows when normalizing. Proof keys and calls that supply already mapped
+rows emit the ordinary grouping event.
+
 #### Returning weighted proofs
 
 Use `parse_proofs(D, sentence, limit)` when a later computation needs to
@@ -876,6 +917,23 @@ counters. Reification work and backward storage are unmeasured. If the
 budget is exceeded, `deduction.proofs.refused` records the budget and the
 reason. With only a proof-count limit, the check saturates counts at the
 limit plus one. A refusal can report a lower bound on the total.
+
+A successful run also emits `deduction.proofs.plan`. As with the item
+query, decode its `plan` field with `quivers.qiec.loads`. Its
+`WeightedProofRows` observable records whether the actual result was
+normalized. Its controls give the structural proof cap and, when
+present, the unfolded-node cap. These limits bound which lists may be
+returned. They leave the chart size and the tape's peak memory open.
+
+The proof rows are the result values. The provider keeps no additional
+provenance after returning them, though it builds a temporary packed
+forest and shares intermediate derivations during enumeration. Each
+useful subderivation can be placed at a fixed position in a complete
+goal proof. Distinct subderivations then map to distinct pairs of a
+complete proof and a position in it. This bounds the size of the shared
+list by the unfolded structural output. The report also accounts for
+prefix copying when a rule enumerates all combinations of its premises,
+and for checking and reifying the typed proof values.
 
 With a node limit, the same packed traversal counts proofs and their
 total unfolded size. For a partial combination with proof count $p$ and

@@ -540,6 +540,14 @@ from quivers.qiec.pruned_string_graph_runtime import (
     PrunedStringGraphRuntimeProvider,
     pruned_string_graph_handler,
 )
+from quivers.qiec.alignment_map_runtime import (
+    JointAlignmentMapRequest,
+    JointAlignmentMapRuntimeProvider,
+)
+from quivers.qiec.paired_alignment_map_runtime import (
+    PairedAlignmentMapRequest,
+    PairedAlignmentMapRuntimeProvider,
+)
 from quivers.qiec.finite_ep_runtime import (
     FiniteStringEPRequest,
     FiniteStringEPRuntimeProvider,
@@ -567,6 +575,10 @@ from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
     RelationPathLaw,
+)
+from quivers.qiec.centered_string_runtime import (
+    CenteredStringLogProbRequest,
+    CenteredStringLogProbRuntimeProvider,
 )
 from quivers.qiec.relation_log_path_certificate import (
     FixedCyclicLogProbPathCertificateRequest,
@@ -959,6 +971,8 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "CenteredStringLogProbRequest",
+    "CenteredStringLogProbRuntimeProvider",
     "FixedCyclicLogProbPathCertificateRequest",
     "FixedCyclicLogProbPathCertificateRuntimeProvider",
     "FixedLogProbPathCertificateRequest",
@@ -977,6 +991,10 @@ __all__ = [
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
     "StringFactorGraphSpec",
+    "JointAlignmentMapRequest",
+    "PairedAlignmentMapRequest",
+    "PairedAlignmentMapRuntimeProvider",
+    "JointAlignmentMapRuntimeProvider",
     "JointAlignmentMapConfig",
     "JointAlignmentMapDecomposition",
     "JointAlignmentMapGapConfig",

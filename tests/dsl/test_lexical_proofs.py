@@ -7,6 +7,8 @@ import math
 import pytest
 import torch
 
+from quivers.core.algebras import LOG_PROB
+from quivers.core.laws import DIVISION
 from quivers.dsl import loads as load_source
 from quivers.dsl.parser import parse
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
@@ -14,6 +16,20 @@ from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.qiec_tooling import target_diagnostics
 from quivers.qiec import deduction_outcomes
 from quivers.qiec.checking import KernelError
+from quivers.qiec.contracts import (
+    Acyclic,
+    Control,
+    DerivativeSemantics,
+    Exact,
+    FailurePolicy,
+    InadmissibleContract,
+    NoRetention,
+    Rational,
+    ResourceBudget,
+    WeightedProofRows,
+    check_admissible,
+    check_complexity,
+)
 from quivers.qiec.evaluator import Evaluator, RuntimeConstructor
 from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.foreign import DeductionProofs
@@ -21,8 +37,9 @@ from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.module import QiecModule, validate_module
 from quivers.qiec.program_runtime import run_program
 from quivers.qiec.serialization import dumps, loads
-from quivers.qiec.types import IndexLiteral, TypeApplication
+from quivers.qiec.types import BOOL, INT, IndexLiteral, TypeApplication
 from quivers.stochastic import forest
+from quivers.stochastic.planning import PlanRecord, PlanRefusal, PlanRefused, plan
 from quivers.transpile import UnsupportedConstruct, transpile
 
 
@@ -126,6 +143,9 @@ def test_qvr_scores_distinct_proofs_of_the_same_goal_and_preserves_gradients() -
     )
     assert isinstance(raw.value, torch.Tensor)
     torch.testing.assert_close(raw.value, logs.exp().sum(), atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(
+        torch.autograd.grad(raw.value, logs)[0], logs.exp(), atol=1e-12, rtol=1e-12
+    )
     for run, normalized in ((scored, True), (raw, False)):
         (event,) = [
             event for event in run.result.trace if event.event == "deduction.proofs"
@@ -140,6 +160,86 @@ def test_qvr_scores_distinct_proofs_of_the_same_goal_and_preserves_gradients() -
         )
         assert dict(event.detail["construction_work"])["provenance_records"] == 13
         assert "reified_proof_nodes" in event.detail["unmeasured"]
+
+        (report,) = [
+            item for item in run.result.trace if item.event == "deduction.proofs.plan"
+        ]
+        assert event.sequence < report.sequence
+        (handler,) = (
+            item
+            for item in restored.handlers
+            if isinstance(item.foreign, DeductionProofs)
+        )
+        chart = handler.foreign.chart
+        interface = next(
+            effect for effect in restored.effects if effect.ref == handler.effect
+        )
+        (operation,) = interface.operations
+        assert report.detail["handler"] == str(handler.id)
+        assert report.detail["operation"] == str(operation.id)
+        assert report.detail["presentation"] == str(chart.presentation.id)
+        assert report.detail["proof_presentation"] == str(
+            handler.foreign.proof_presentation.id
+        )
+        assert loads(report.detail["output_type"]) == handler.output_type
+        assert (
+            report.detail["temporary_provenance"]
+            == "packed-forest-and-shared-derivations"
+        )
+        assert loads(report.detail["derivative"]) == DerivativeSemantics()
+        record = loads(report.detail["plan"])
+        assert isinstance(record, PlanRecord)
+        assert dumps(record) == report.to_data()["detail"]["plan"]
+        assert record.query.presentation == chart.presentation.id
+        assert record.query.observable == WeightedProofRows(normalized=normalized)
+        assert record.query.retention == record.retention == NoRetention()
+        assert record.accuracy.controls == (
+            Control(name="max_proofs", value=Rational(numerator=3)),
+        )
+        assert record.accuracy.budget == ResourceBudget()
+        assert record.accuracy.guarantee == Exact()
+        assert record.accuracy.on_failure == FailurePolicy.REFUSE
+        assert record.accuracy.numerics.dtype == "float64"
+        assert record.accuracy.numerics.domain == "log"
+        assert record.accuracy.numerics.rounding is None
+        assert record.query.input_types[-2:] == (INT, BOOL)
+        assert record.algorithm == event.detail["algorithm"]
+        assert record.claims == LOG_PROB.claims()
+        assert record.recursion == Acyclic() and record.backward == "autograd"
+        laws = {
+            requirement.law
+            for requirement in record.query.observable.requirements(record.algebra)
+        }
+        assert (DIVISION in laws) is normalized
+        check_admissible(
+            record.query,
+            record.recursion,
+            record.accuracy,
+            algebra=record.algebra,
+            claims=record.claims,
+        )
+        check_complexity(record.complexity)
+        if normalized:
+            with pytest.raises(InadmissibleContract, match="division"):
+                check_admissible(
+                    record.query,
+                    record.recursion,
+                    record.accuracy,
+                    algebra=record.algebra,
+                    claims=tuple(
+                        claim for claim in record.claims if claim.law != DIVISION
+                    ),
+                )
+        with pytest.raises(PlanRefused) as unsupported:
+            plan(
+                record.query,
+                chart.presentation,
+                LOG_PROB,
+                record.recursion,
+                record.accuracy,
+                record.retention,
+            )
+        assert unsupported.value.code == PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR
 
 
 @pytest.mark.parametrize("length", (3, 1024))
@@ -335,6 +435,19 @@ def test_authored_proof_node_cap_admits_exactly_bounded_rows_and_gradients() -> 
         assert (
             event.detail["proof_budget"] == event.detail["structural_goal_proofs"] == 2
         )
+        (plan_event,) = [
+            item
+            for item in result.result.trace
+            if item.event == "deduction.proofs.plan"
+        ]
+        record = loads(plan_event.detail["plan"])
+        assert record.accuracy.controls == (
+            Control(name="max_proofs", value=Rational(numerator=2)),
+            Control(name="proof_nodes", value=Rational(numerator=on_nodes + 2)),
+        )
+        assert record.accuracy.budget == ResourceBudget()
+        assert record.query.observable == WeightedProofRows(normalized=True)
+        assert dict(plan_event.detail["span_order"])["nullable"] is True
 
 
 @pytest.mark.parametrize("zero_weight", (False, True))
@@ -376,7 +489,10 @@ def test_authored_proof_node_refusal_creates_no_proof_or_weight_work(
             parameters={"Forks.lex.0": -torch.inf if zero_weight else -0.125},
             observer=observed.append,
         )
-    assert all(item.event != "deduction.proofs" for item in observed)
+    assert all(
+        item.event not in {"deduction.proofs", "deduction.proofs.plan"}
+        for item in observed
+    )
     (event,) = [item for item in observed if item.event == "deduction.proofs.refused"]
     assert event.detail["reason"] == "too-many-proof-nodes"
     assert event.detail["proof_node_budget"] == cap
@@ -433,7 +549,10 @@ def test_proof_report_distinguishes_structural_budget_from_positive_mass(
             parameters=parameters,
             observer=observed.append,
         )
-    assert all(event.event != "deduction.proofs" for event in observed)
+    assert all(
+        event.event not in {"deduction.proofs", "deduction.proofs.plan"}
+        for event in observed
+    )
     (refused,) = [
         event.detail for event in observed if event.event == "deduction.proofs.refused"
     ]
