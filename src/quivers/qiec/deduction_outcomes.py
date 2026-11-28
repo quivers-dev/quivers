@@ -971,10 +971,16 @@ def outcome_grouping_handler(
                     ((representatives[key], mass) for key, mass in masses.items()),
                 )
                 if not normalized and module is not None:
+                    checked_module = module
                     context.emit_trace(
                         "deduction.grouped_outcomes.plan",
                         lambda: raw_key_plan_trace(
-                            module, definition, grouping, request, context, grouped
+                            checked_module,
+                            definition,
+                            grouping,
+                            request,
+                            context,
+                            grouped,
                         ),
                     )
                 return TailResume(value=result)
