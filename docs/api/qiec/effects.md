@@ -236,6 +236,57 @@ assert decision.certified
 assert decision.result.checked == 2
 ```
 
+### Nominal scalar effect equations
+
+`check_scalar_effect_law` checks an `EffectEquation` whose inputs,
+handler state and observed answers are scalar reals. Choose the
+polynomial or rational interpretation when running the check. The
+rational method requires agreement of the two strict domains. A prior
+decision is bound to its selected method as well as the equation and
+handler.
+
+The example checks additivity for an operation whose handler divides
+its argument by the supplied scale. Both sides are defined when that
+scale is nonzero.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import EffectEquation, check_scalar_effect_law
+
+source = """
+effect Scale
+    transform : Real -> Real
+
+instance scaling : Scale
+
+handler divide for Scale : Real -> Real with (s : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    transform(v : Real) resumes 1 =>
+        resume(v / s)
+
+define combined(a : Real, b : Real) : Real !{scaling} =
+    perform scaling.transform(a + b)
+
+define separate(a : Real, b : Real) : Real !{scaling} =
+    let first <- perform scaling.transform(a)
+    let second <- perform scaling.transform(b)
+    return first + second
+"""
+module = Compiler(parse(source), module_name="scale-effect-law").qiec_module
+assert module is not None
+instance = next(item.entry for item in module.instances if item.name == "scaling")
+effect = next(item for item in module.effects if item.ref.id == instance.effect.id)
+roots = {item.name: item.id for item in module.computations}
+equation = EffectEquation(
+    effect.ref.id, "additivity", instance.instance, (effect.operations[0].id,),
+    roots["combined"], roots["separate"],
+)
+decision = check_scalar_effect_law(module, equation, module.handlers[0].id, method="rational")
+assert decision.certified
+assert decision.result.domain_polynomial == (((0, 0, 1), 1),)
+```
+
 ::: quivers.qiec.effect_laws
 
 ## Polynomial laws
