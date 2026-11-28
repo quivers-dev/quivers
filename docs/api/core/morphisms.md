@@ -129,6 +129,9 @@ zero-weight occurrences. These operations reuse the relation's weight source.
 source arcs by their selected label, it visits the reachable pairs of source
 state and consumed word length. The remaining relation assigns the joint
 weight at the fixed word, so it can be used to compute a normalizer.
+Building the label index takes time and space linear in the source arc count.
+`max_states` bounds the visited pairs and `max_work` bounds the matching arc
+occurrences. Each output arc copies the labels on the retained tapes.
 `intersect` multiplies two weighted languages on a common one-sided tape
 through the same epsilon-filtered product. Each pair of accepting paths with
 the same word contributes exactly once to this product.
