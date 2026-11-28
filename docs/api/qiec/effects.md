@@ -1086,6 +1086,66 @@ assert (comparison.intervened.value, comparison.intervened.tangent) == (
 
 ::: quivers.qiec.finite_intervention
 
+## Finite multinomial resampling
+
+`plan_multinomial_resampling` checks one stage with an ordered input
+table of particle values and positive weights. Each value and weight
+has a directional derivative. Each offspring slot independently
+chooses an original position according to its normalized weight.
+Equal particle values remain distinct positions.
+
+The native scalar objective receives the selected values in slot
+order, followed by its direct arguments. The derivative estimate
+adds the objective times the sum of the selected log probability
+derivatives to the objective's derivative at fixed ancestry. Repeated
+positions contribute a score for each selecting slot. The plan
+enumerates all ordered assignments up to its bound and reports
+the exact expectation and derivative for this finite-step objective.
+
+The expectation depends on the declared objective. For instance,
+an unnormalized estimate of 1 or 3 with equal probability has mean 2.
+Its expected logarithm is $\log\sqrt{3}$, which is below $\log 2$.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    Bind,
+    Perform,
+    ResamplingParticle,
+    SiteEstimator,
+    marginalize_bernoulli_unit,
+    plan_multinomial_resampling,
+)
+
+source = """
+instance random : Random
+
+define observed(p : Real) : Real !{random} =
+    let chosen <- perform random.sample[Bool](site("chosen"), Bernoulli(p))
+    if chosen then
+        return 3.0
+    else
+        return 1.0
+
+define objective(first : Real, second : Real) : Real !{} =
+    return first + 2.0 * second
+"""
+module = Compiler(parse(source), module_name="multinomial-resampling").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "observed")
+assert isinstance(entry.body, Bind) and isinstance(entry.body.first, Perform)
+policy = SiteEstimator(site=entry.body.first.request.origin.static_site, estimator="enumerate")
+fit = marginalize_bernoulli_unit(module, entry.id, (Fraction(1, 4),), (1,), (policy,))
+particles = tuple(ResamplingParticle(x.observation, x.joint) for x in fit.outcomes)
+plan = plan_multinomial_resampling(module, "objective", particles)
+assert len(plan.outcomes) == 4
+assert (plan.exact.value, plan.exact.tangent) == (6, 8)
+assert len(plan.sample(seed=13).positions) == 2
+```
+
+::: quivers.qiec.finite_resampling
+
 ## Finite-step Metropolis derivatives
 
 `finite_metropolis_jvp` takes an initial law, positive target weights,

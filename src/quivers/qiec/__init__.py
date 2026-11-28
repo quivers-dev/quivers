@@ -237,6 +237,13 @@ from quivers.qiec.finite_intervention import (
     CausalBernoulliHistory,
     compare_bernoulli_do_and_condition,
 )
+from quivers.qiec.finite_resampling import (
+    MultinomialResamplingPlan,
+    ResamplingAncestor,
+    ResamplingOutcome,
+    ResamplingParticle,
+    plan_multinomial_resampling,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1207,6 +1214,13 @@ __all__ += [
     "CausalBernoulliComparison",
     "CausalBernoulliHistory",
     "compare_bernoulli_do_and_condition",
+]
+__all__ += [
+    "MultinomialResamplingPlan",
+    "ResamplingAncestor",
+    "ResamplingOutcome",
+    "ResamplingParticle",
+    "plan_multinomial_resampling",
 ]
 __all__ += [
     "FiniteAlgebra",
