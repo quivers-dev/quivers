@@ -118,6 +118,10 @@ from quivers.qiec.contracts import (
     WorkReport,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.relation_composition import (
+    ComposedRelationSpec,
+    FixedComposedRelationRequest,
+)
 from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -345,6 +349,8 @@ _NODE_CLASSES = (
     DistributionFamily,
     FamilyParameter,
     FamilyShapeSignature,
+    ComposedRelationSpec,
+    FixedComposedRelationRequest,
     FixedRelationCostRequest,
     FixedRelationRequest,
     RationalRelationSpec,
