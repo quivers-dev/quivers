@@ -758,18 +758,18 @@ def _computation_reads(term: Computation) -> frozenset[str]:
     return frozenset(found)
 
 
-def _checks_strict_primal(term: Computation) -> bool:
-    """Recognize an atomized primitive whose primal domain check must run.
+def _checks_strict_scalar(term: Computation) -> bool:
+    """Recognize an atomized primitive whose scalar checks must run.
 
     Parameters
     ----------
     term : Computation
-        The rewritten statement, with checked primal operations bound by `atom`.
+        The rewritten statement, with checked scalar operations bound by `atom`.
 
     Returns
     -------
     bool
-        Whether the statement checks a partial nominal operation's domain.
+        Whether the statement checks a partial nominal scalar operation.
     """
     if not isinstance(term, Return) or not isinstance(term.value, PrimitiveApplication):
         return False
@@ -794,13 +794,13 @@ def _pure(term: Computation) -> bool:
     -------
     bool
         True when nothing in it requests, advances a trace ordinal, or
-        checks a strict primal domain.
+        checks a strict scalar operation.
     """
     return not any(
         isinstance(
             item, Perform | Call | CallAddress | InstanceAddress | HandlerReturnAddress
         )
-        or _checks_strict_primal(item)
+        or _checks_strict_scalar(item)
         for item in _subterms(term)
     )
 
@@ -824,8 +824,8 @@ def _size(term: Computation) -> int:
 def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
     """The statements a rewritten term keeps.
 
-    Unread values can be dropped. Calls, requests and strict primal
-    domain checks are kept even when their results are unused.
+    Unread values can be dropped. Calls, requests and strict scalar
+    checks are kept even when their results are unused.
 
     Parameters
     ----------
@@ -845,7 +845,7 @@ def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
         if (
             isinstance(first, Return)
             and binder.name not in needed
-            and not _checks_strict_primal(first)
+            and not _checks_strict_scalar(first)
         ):
             continue
         kept.append((binder, first))

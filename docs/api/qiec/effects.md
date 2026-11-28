@@ -889,12 +889,16 @@ assert run_named(lowered, "positive_square", (-3.0, 5.0)).value == 0.0
 
 An instance can declare `div : Number * Number -> Number` and
 `div resumes 1`. The generated clause solves the quotient in the
-parent coefficient algebra. It checks the divisor's ground primal
-once, then uses that same divisor for the remaining ground quotients.
-A reached zero or nonfinite divisor raises `qiec-forward-division-domain`,
-including when the program discards the quotient. Pyro implements the
-same check. The other targets report `strict-scalar-division` for this
-extension. Each quotient uses the current numeric representation.
+parent coefficient algebra. Each ground quotient uses the same
+divisor primal. A reached zero or nonfinite divisor raises
+`qiec-forward-division-domain`. A nonfinite coefficient computed at
+working precision raises `qiec-forward-division-range`, even if the
+program would discard that coefficient or project a different one.
+For instance, an intermediate coefficient can overflow even when the
+exact mixed derivative is zero. Finite coefficients still use rounded
+arithmetic in the invocation's numeric representation. Pyro implements
+the same checks. The other targets report `strict-scalar-division` for
+this extension.
 
 With that operation in the example declaration, this computation
 returns the directional derivative of $x/y$. At $(x,y)=(2,4)$ in

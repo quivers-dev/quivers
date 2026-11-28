@@ -132,7 +132,12 @@ def _qvr_qiec_strict_div_real(dividend, divisor):
         raise ValueError(
             "qiec-forward-division-domain: division requires a finite nonzero primal divisor"
         )
-    return dividend / divisor
+    quotient = dividend / divisor
+    if not _qvr_qiec_finite_primal(quotient):
+        raise ValueError(
+            "qiec-forward-division-range: a quotient coefficient is nonfinite at working precision"
+        )
+    return quotient
 
 
 _qvr_qiec_primitives["strict_div_real"] = _qvr_qiec_strict_div_real

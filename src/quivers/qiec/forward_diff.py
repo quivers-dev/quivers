@@ -580,7 +580,7 @@ class _ForwardOperation:
             Numerator and divisor in the same flattened carrier order.
         bindings : list[LetBinding]
             The ground quotients in dependency order, initially empty.
-            The first quotient checks the common ground divisor's domain.
+            Each quotient checks the common ground divisor and its result.
 
         Returns
         -------
@@ -588,10 +588,11 @@ class _ForwardOperation:
             The references to the quotient's shared coefficients.
         """
         if len(x) == 1:
-            name = "strict_div" if not bindings else "div"
             binder = Local(name=f"quotient_{len(bindings)}", type=REAL)
             bindings.append(
-                LetBinding(binder=binder, value=self.primitive(name, x[0], y[0]))
+                LetBinding(
+                    binder=binder, value=self.primitive("strict_div", x[0], y[0])
+                )
             )
             return (Var(local=binder),)
         half = len(x) // 2
@@ -686,8 +687,9 @@ def elaborate_forward_diff(
     and immediately guards a lazy branch. Equality and nonfinite primals
     refuse the comparison at runtime.
     An optional `div` solves the quotient in the parent coefficient
-    algebra. Its first ground quotient checks for a finite nonzero
-    divisor, and the remaining coefficients use that same divisor.
+    algebra. Each ground quotient checks the common divisor for a
+    finite nonzero primal and refuses a nonfinite coefficient in the
+    invocation's numeric representation.
     The two explicit stop operations project the primal or tangent into
     the coefficient algebra, retaining the parent perturbation when
     nested. Those original requests remain visible in ordinary traces.

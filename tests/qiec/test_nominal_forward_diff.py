@@ -32,7 +32,7 @@ from quivers.qiec import (
     validate_module,
 )
 from quivers.qiec import evaluator as machine
-from quivers.qiec.numbers import host_value
+from quivers.qiec.numbers import NumberDomain, host_value
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.serialization import dumps, loads
 from quivers.transpile import UnsupportedConstruct
@@ -797,6 +797,7 @@ _DIVISION = (
     .replace("inner.mul(ax, by)", "inner.div(ax, by)")
 )
 _DIVISION_DOMAIN = "qiec-forward-division-domain"
+_DIVISION_RANGE = "qiec-forward-division-range"
 
 
 def _nilpotent_product(left, right):
@@ -864,7 +865,7 @@ def test_nested_division_matches_all_exact_rational_projections(
         )
 
 
-def test_division_dominates_its_three_tangents_with_the_ground_primal_check():
+def test_division_checks_the_primal_followed_by_every_ground_coefficient():
     source = _module(_DIVISION, _DIVISION_DECLARATIONS)
     lowered = elaborate_forward_diff(source, _scopes(source))
     operation = next(
@@ -884,11 +885,11 @@ def test_division_dominates_its_three_tangents_with_the_ground_primal_check():
         body = part.body
     assert len(fields) == 6
     ground = Var(local=fields[4][0])
-    for expected in ("strict_div_real", "div_real", "div_real", "div_real"):
+    for _ in range(4):
         assert isinstance(body, Bind) and isinstance(body.first, Return)
         value = body.first.value
         assert isinstance(value, PrimitiveApplication)
-        assert value.name == expected and value.arguments[1] == ground
+        assert value.name == "strict_div_real" and value.arguments[1] == ground
         body = body.then
     assert isinstance(body, Resume)
     assert not PRIMITIVES["strict_div_real"].total
@@ -906,19 +907,51 @@ def test_divisor_ground_domain_ignores_nonzero_tangents(divisor):
         exported(*point)
 
 
-def test_unused_division_retains_the_domain_check_in_discharge():
+@pytest.mark.parametrize(
+    ("point", "dtype", "first_nonfinite"),
+    [
+        ((1e308, 1e-308, 0.0, 0.0, 0.0, 0.0), torch.float64, 0),
+        ((1.0, 0.5, 1e308, 0.0, 0.0, 0.0), torch.float64, 1),
+        ((1.0, 0.5, 2e38, 0.0, 0.0, 0.0), torch.float32, 1),
+    ],
+)
+def test_mixed_division_refuses_overflow_before_it_can_contaminate_exact_zero(
+    point, dtype, first_nonfinite
+):
+    operands = tuple(torch.tensor(coordinate, dtype=dtype) for coordinate in point)
+    numbers = NumberDomain.of(operands[0])
+    coefficients = _rational_quotient(*(Fraction(float(value)) for value in operands))
+    maximum = Fraction(float(torch.finfo(dtype).max))
+    assert coefficients[3] == 0
+    assert tuple(i for i, value in enumerate(coefficients) if abs(value) > maximum) == (
+        first_nonfinite,
+    )
+    native, discharged, exported = _comparison_forms(
+        _module(_DIVISION, _DIVISION_DECLARATIONS)
+    )
+    for module in (native, discharged):
+        with pytest.raises(ExecutionFailure, match=_DIVISION_RANGE):
+            run_named(module, "mixed", operands, numbers=numbers)
+    with pytest.raises(ValueError, match=_DIVISION_RANGE):
+        exported(*operands)
+
+
+def test_unused_division_retains_the_domain_and_range_checks_in_discharge():
     body = _SINGLE.replace("outer.mul(x, y)", "outer.div(x, y)").replace(
         "perform outer.stop_tangent(xy)", "return a"
     )
     source = _module(body, _DIVISION_DECLARATIONS)
     native, discharged, exported = _comparison_forms(source, ("outer",))
     assert _value(native) == _value(discharged) == exported(*_POINT) == 2.0
-    zero = (2.0, 0.0, 5.0, 7.0)
-    for module in (native, discharged):
-        with pytest.raises(ExecutionFailure, match=_DIVISION_DOMAIN):
-            _value(module, zero)
-    with pytest.raises(ValueError, match=_DIVISION_DOMAIN):
-        exported(*zero)
+    for point, refusal in (
+        ((2.0, 0.0, 5.0, 7.0), _DIVISION_DOMAIN),
+        ((1.0, 0.5, 1e308, 0.0), _DIVISION_RANGE),
+    ):
+        for module in (native, discharged):
+            with pytest.raises(ExecutionFailure, match=refusal):
+                _value(module, point)
+        with pytest.raises(ValueError, match=refusal):
+            exported(*point)
 
 
 def test_untaken_zero_divisor_remains_lazy_under_strict_comparison():
@@ -945,6 +978,35 @@ define mixed(a : Real, b : Real, u : Real, v : Real) : Real !{} =
             _value(module, refused)
     with pytest.raises(ValueError, match=_DIVISION_DOMAIN):
         exported(*refused)
+
+
+def test_untaken_quotient_overflow_remains_lazy_under_strict_comparison():
+    body = """
+define mixed(a : Real, b : Real, u : Real, v : Real) : Real !{} =
+    handle outer with forward_outer in
+        let x <- perform outer.seed(a, u)
+        let y <- perform outer.seed(b, v)
+        let first <- perform outer.less(x, y)
+        if first then
+            return a
+        else
+            let quotient <- perform outer.div(x, y)
+            perform outer.stop_tangent(quotient)
+"""
+    source = _module(body, _with_division(_COMPARISON_DECLARATIONS))
+    native, discharged, exported = _comparison_forms(source, ("outer",))
+    skipped, reached = (0.25, 0.5, 1e308, 0.0), (1.0, 0.5, 1e308, 0.0)
+    assert (
+        _value(native, skipped)
+        == _value(discharged, skipped)
+        == exported(*skipped)
+        == 0.25
+    )
+    for module in (native, discharged):
+        with pytest.raises(ExecutionFailure, match=_DIVISION_RANGE):
+            _value(module, reached)
+    with pytest.raises(ValueError, match=_DIVISION_RANGE):
+        exported(*reached)
 
 
 def test_direct_division_stays_defined_when_reciprocal_would_overflow():

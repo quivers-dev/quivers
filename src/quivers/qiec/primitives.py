@@ -514,14 +514,14 @@ def _quotient(
 def _strict_quotient(
     _domain: NumberDomain, dividend: torch.Tensor, divisor: torch.Tensor
 ) -> torch.Tensor:
-    """Compute the nominal forward primal quotient on its checked domain.
+    """Compute one finite ground coefficient of nominal forward division.
 
     Parameters
     ----------
     _domain : NumberDomain
         The machine's numeric representation, already used by the inputs.
     dividend, divisor : torch.Tensor
-        The two ground primal operands.
+        The ground numerator and common ground primal divisor.
 
     Returns
     -------
@@ -531,7 +531,7 @@ def _strict_quotient(
     Raises
     ------
     ValueError
-        If the ground divisor is zero or nonfinite.
+        If the ground divisor is zero or nonfinite, or the quotient is nonfinite.
     """
     demand(
         torch.isfinite(divisor) & (divisor != 0),
@@ -539,7 +539,14 @@ def _strict_quotient(
             "qiec-forward-division-domain: division requires a finite nonzero primal divisor"
         ),
     )
-    return dividend / divisor
+    quotient = dividend / divisor
+    demand(
+        torch.isfinite(quotient),
+        lambda: ValueError(
+            "qiec-forward-division-range: a quotient coefficient is nonfinite at working precision"
+        ),
+    )
+    return quotient
 
 
 def _reciprocal(_domain: NumberDomain, value: torch.Tensor) -> torch.Tensor:
