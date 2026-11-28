@@ -72,6 +72,25 @@ a foreign linear `Compute[Unit, Real]` or
 `Compute[Unit, LogWeight]` handler can bind the request. Native score
 targets report that handler as an unsupported capability.
 
+### Checked traversal counts
+
+A `FixedRelationArcCountsRequest` returns one real expected traversal
+count for each requested original arc ID, in the requested order. An
+ID may occur repeatedly in the request. Distinct parallel arcs keep
+distinct counts, including arcs with the same weight owner. Visits
+at multiple observed offsets or repeated visits within a productive
+cycle all contribute to the same original arc's expectation. A
+requested arc outside the observation has count zero.
+
+The result is a checked `Tensor[Real]` whose single extent equals the
+length of the request's ID tuple. The linear Compute provider reads
+the current weights on every invocation. Cyclic observations require
+the existing finite closure certificate and an explicit component
+bound. The conditional count requires a positive finite observed
+path sum.
+
+::: quivers.qiec.relations.FixedRelationArcCountsRequest
+
 ### Checked alignment-marginal output ranking
 
 `FixedRelationMarginalMapRequest` maximizes the total alignment

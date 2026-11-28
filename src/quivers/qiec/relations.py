@@ -25,10 +25,11 @@ from quivers.core.relations import (
 )
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
-from quivers.qiec.canonical import LOG_WEIGHT
+from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
+from quivers.qiec.kinds import NAT
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.foreign import KERNEL_ALGEBRAS
-from quivers.qiec.types import REAL, TypeExpr
+from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 
 
 class _RelationWeights(nn.Module):
@@ -490,6 +491,87 @@ class FixedRelationCostRequest(QiecModel):
         return REAL
 
 
+class FixedRelationArcCountsRequest(QiecModel):
+    """Return conditional traversal counts of selected original occurrences.
+
+    Each tensor position names one original arc occurrence. Repeated
+    request IDs repeat the corresponding expectation. Parallel arcs
+    that share a parameter remain separate occurrences. Traversals of
+    one original occurrence at several observed offsets, or repeatedly
+    along a walk, all contribute to that occurrence's expectation.
+
+    Parameters
+    ----------
+    relation : RationalRelationSpec
+        The typed original topology and stable scalar weight identities.
+    words : Words
+        One observed word per tape in topology order.
+    arc_ids : tuple of int
+        The ordered original arc IDs whose counts the result exposes.
+    max_states : int
+        The reached-state limit for the observation.
+    max_work : int
+        The examined-arc limit for the observation.
+    max_closure_size : int or None
+        The permitted productive closure component size.
+    """
+
+    relation: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    words: Words = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arc_ids: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_states: int
+    max_work: int
+    max_closure_size: int | None = None
+
+    @dx.model_validator()
+    def _validate_occurrences(self) -> None:
+        """Validate the request and each ordered original occurrence ID.
+
+        Raises
+        ------
+        ValueError
+            The observation, limits, or original arc identities are invalid.
+        """
+        _validate_fixed_observation(
+            self.relation,
+            self.words,
+            self.max_states,
+            self.max_work,
+            self.max_closure_size,
+        )
+        arc_count = len(self.relation.arcs)
+        if not isinstance(self.arc_ids, tuple) or any(
+            type(index) is not int or not 0 <= index < arc_count
+            for index in self.arc_ids
+        ):
+            raise ValueError(
+                "arc counts require an ordered tuple of valid original arc IDs"
+            )
+
+    @property
+    def operation(self) -> Literal["expected_arc_counts"]:
+        """Return the operation recognized by the reference machine.
+
+        Returns
+        -------
+        str
+            The checked traversal-count objective.
+        """
+        return "expected_arc_counts"
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Return the fixed-length real tensor type for the requested positions.
+
+        Returns
+        -------
+        TypeExpr
+            One Real count per requested occurrence ID.
+        """
+        extent = IndexLiteral(value=len(self.arc_ids), sort=NAT)
+        return tensor_type(REAL, (extent,))
+
+
 def _validate_fixed_observation(
     relation: RationalRelationSpec,
     words: Words,
@@ -523,4 +605,9 @@ def _validate_fixed_observation(
         raise ValueError("fixed relation requests require Markov or LogProb")
 
 
-__all__ = ["FixedRelationCostRequest", "FixedRelationRequest", "RationalRelationSpec"]
+__all__ = [
+    "FixedRelationArcCountsRequest",
+    "FixedRelationCostRequest",
+    "FixedRelationRequest",
+    "RationalRelationSpec",
+]
