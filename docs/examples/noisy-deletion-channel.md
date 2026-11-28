@@ -75,7 +75,7 @@ owner = ParameterId.derive(module.module, "relation_weights", "repeat_or_delete"
 weights = {
     owner: p,
     ParameterId.derive(module.module, "relation_weights", "stop_or_keep"):
-        RelationWeightComplement(owner),
+        RelationWeightComplement(owner=owner),
     ParameterId.derive(module.module, "relation_weights", "unit_weight"): p.new_ones(()),
 }
 providers = []

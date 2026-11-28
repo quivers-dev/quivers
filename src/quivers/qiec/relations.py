@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from functools import cached_property
 from math import isfinite
 from typing import Literal, cast
@@ -36,8 +35,7 @@ from quivers.qiec.foreign import KERNEL_ALGEBRAS
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 
 
-@dataclass(frozen=True, slots=True)
-class RelationWeightComplement:
+class RelationWeightComplement(QiecModel):
     """Use one minus an original probability in a Markov weight slot.
 
     Parameters
@@ -46,7 +44,7 @@ class RelationWeightComplement:
         The original scalar leaf in the same binding mapping.
     """
 
-    owner: ParameterId
+    owner: ParameterId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 type RelationWeightBindings = Mapping[

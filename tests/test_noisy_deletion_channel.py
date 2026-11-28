@@ -140,9 +140,13 @@ def test_checked_noisy_channel_reuses_the_same_leaf_over_optimizer_steps(
         for name in ("repeat_or_delete", "stop_or_keep", "unit_weight")
     }
     owner = ids["repeat_or_delete"]
+    complement = RelationWeightComplement(owner=owner)
+    wire_complement = loads(dumps(complement))
+    assert isinstance(wire_complement, RelationWeightComplement)
+    assert wire_complement.owner == owner
     values: RelationWeightBindings = {
         owner: p,
-        ids["stop_or_keep"]: RelationWeightComplement(owner),
+        ids["stop_or_keep"]: wire_complement,
         ids["unit_weight"]: p.new_ones(()),
     }
     m, n = observed_length, observed_length + 1
@@ -198,12 +202,12 @@ def test_complement_requires_one_original_markov_probability_owner(authored_chan
     )
     values = {
         owner: p,
-        dependent: RelationWeightComplement(owner),
+        dependent: RelationWeightComplement(owner=owner),
         unit: p.new_ones(()),
     }
     relation = spec.bind(values)
     assert tuple(relation.module().parameters()) == (p,)
-    invalid = values | {owner: RelationWeightComplement(dependent)}
+    invalid = values | {owner: RelationWeightComplement(owner=dependent)}
     with pytest.raises(ValueError, match="original relation owner"):
         spec.bind(invalid)
     with pytest.raises(ValueError, match="same parameter identity"):

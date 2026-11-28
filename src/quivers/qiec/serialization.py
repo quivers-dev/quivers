@@ -146,6 +146,7 @@ from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
     RationalRelationSpec,
+    RelationWeightComplement,
 )
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
 from quivers.qiec.string_solvers import (
@@ -399,6 +400,7 @@ _NODE_CLASSES = (
     FixedRelationPathSampleRequest,
     FixedRelationRequest,
     RationalRelationSpec,
+    RelationWeightComplement,
     StringFactorGraphSpec,
     JointAlignmentMapConfig,
     JointAlignmentMapGapConfig,

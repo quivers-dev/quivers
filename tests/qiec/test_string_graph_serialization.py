@@ -144,7 +144,11 @@ def test_round_trip_preserves_relation_reuse_parameter_sharing_and_observations(
 def test_graph_complement_reaches_an_owner_used_only_through_the_binding():
     spec = _graph(MARKOV)
     p = nn.Parameter(torch.tensor(0.2, dtype=torch.float64))
-    values = {_TIED: RelationWeightComplement(_OTHER), _OTHER: p, _UNIT: p.new_ones(())}
+    values = {
+        _TIED: RelationWeightComplement(owner=_OTHER),
+        _OTHER: p,
+        _UNIT: p.new_ones(()),
+    }
     graph = spec.bind(values)
     query = graph.tree_marginal("x", max_states=512, max_work=2048)
     actual = query.partition()

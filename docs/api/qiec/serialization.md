@@ -30,8 +30,9 @@ an original probability owner. The owner is a floating-point scalar
 leaf in the same binding mapping. A composed or derived relation
 computes the complement from that owner each time it evaluates its
 weights, so both uses contribute to the original gradient. Decoding
-the relation restores the weight identities. A new process supplies
-the bindings when attaching the checked request.
+the relation restores the weight identities. The complement record
+can also be serialized with its original owner identity. A new
+process supplies the leaf tensors when attaching the checked request.
 
 ::: quivers.qiec.relations.RelationWeightComplement
 
