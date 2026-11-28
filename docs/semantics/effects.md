@@ -381,3 +381,108 @@ certify the same domain. On that domain, the checker compares the polynomial obt
 cross-multiplying the two rational expressions and can exhibit a distinguishing assignment
 away from the guard zeros. The checker reports when it cannot establish that the domains agree.
 [Effects API](../api/qiec/effects.md)
+
+### 8.4 Superposition and trace completion
+
+Let a finite choice $z$ have weights $w_z$, and let the associated kernels
+on a common output space be $\mu_z$. Superposition is the measure
+$\mu=\sum_z w_z\mu_z$. If the kernels have densities $f_z$ relative to a
+common reference measure, scoring a single draw at $x$ uses
+$\log\sum_z w_z f_z(x)$ and records one `Random` address. An authored
+clause that resumes twice gives each reached request its own
+resumption ordinal. When those resumptions draw from independent
+normals with fixed supplied locations, replay scores the product of
+the two densities at their two addresses. This product is a density
+on pairs. The clause's return map, such as a weighted arithmetic mean,
+then determines the returned value.
+
+A product-space completion extends a selected branch with an auxiliary
+kernel at each inactive site. For one auxiliary value $y$, the extended
+mass is $q_z f_z(x)g_z(y\mid x)$. Integration over $y$ yields
+$q_z f_z(x)$ when $g_z(\cdot\mid x)$ has unit mass at every admitted $x$.
+This equality is about the projection onto the original branch and its
+active value. A completed replay records the auxiliary addresses as
+well. The native worked example uses an explicit, normalized auxiliary
+kernel and checks this marginalization and its derivative. [Superposition example](../api/qiec/effects.md#superposition-repeated-draws-and-completion)
+
+### 8.5 Scalar derivatives and estimator hypotheses
+
+For a checked scalar source execution, fix a point and a direction. If
+all reached comparisons are stable near that point and every reached
+primitive is differentiable there, the execution follows a finite
+sequence of primitive calls. The chain rule differentiates that
+sequence. A discarded continuation contributes no primitive calls.
+A clause that resumes several times supplies a result from each
+resumption to the enclosing computation, whose derivative combines
+those results by its own partial derivatives. The implemented exact
+scalar interpreters admit the listed rational primitives under their
+definedness conditions. They refuse an input-dependent comparison at
+equality when the chosen branch lacks a regularity certificate. A
+portable rational derivative declaration names its primal and actions.
+The checked interpreter verifies those actions throughout the primal
+rational domain before running them. [Scalar reference and checked rules](../api/qiec/effects.md#rational-derivative-rules)
+
+For a finite adaptive computation, let $h$ range over its complete
+addressed histories. Write $m_h(\theta)$ for the product of the reached
+conditional probabilities, and $L_h(\theta)$ for the returned scalar
+cost on that history. When the histories and the reached comparisons
+are locally stable, the directional derivative is
+
+$$
+D\sum_h m_h L_h = \sum_h (D m_h)L_h + \sum_h m_h(D L_h).
+$$
+
+Enumeration evaluates this sum. A strictly positive Bernoulli site
+may use its score because $D m_h=m_h D\log m_h$, and $D\log m_h$ is the
+sum of the local log-probability derivatives over the reached sites.
+Writing a Bernoulli kernel as $(1-p)\delta_0+p\delta_1$ gives its weak
+action $(Dp)(\delta_1-\delta_0)$. Applying either identity at one node
+and inducting on the remaining finite tree gives the mean of the
+mixed estimator. This argument counts each reached score once and
+applies to linear combinations of outcomes. [Finite site estimators](../api/qiec/effects.md#finite-bernoulli-estimators)
+
+The scalar Normal fragment writes each draw as $\mu+\sigma\epsilon$,
+with independent standard-normal seeds, positive noise-independent
+scales, and noise-independent comparisons. Along the admitted paths,
+the returned cost and its tangent are polynomials in the Gaussian seeds
+with locally regular rational coefficients. On a sufficiently small
+closed parameter neighborhood, the denominators on those paths are
+bounded away from zero. It follows that the absolute tangent is bounded
+by a polynomial in the absolute seed coordinates with finite Gaussian
+expectation. The dominated convergence argument permits differentiation
+under the Gaussian integral. Finite branching can condition this
+argument on each discrete history when its conditional probabilities
+are independent of the Gaussian noise. [Mixed site estimators](../api/qiec/effects.md#mixed-bernoulli-and-normal-estimators)
+
+### 8.6 Observed, intervened, and resampled finite laws
+
+For a positive observed mass $Z=\sum_h m_h L_h$, the derivative of
+$\log Z$ is the posterior expectation of the complete-history log
+score $D\log(m_h L_h)$. This follows by dividing the differentiated
+sum by $Z$. With an addressed proposal mass $q_h$, exact importance
+sampling returns an unbiased estimate of $Z$ when $q_h>0$ on every
+history with $m_h L_h>0$. With the proposal held fixed, its raw
+estimate has derivative with expectation $DZ$. A positive random
+estimate $\widehat Z$ has $\mathbb E[\log\widehat Z]\leq\log Z$ by
+Jensen's inequality, with equality only if it is constant almost
+surely. [Finite marginalization and importance](../api/qiec/effects.md#exact-finite-marginalization)
+
+Conditioning on an addressed draw restricts the original history sum
+and normalizes the restricted mass. Intervention fixes the draw and
+replaces that site's conditional probability by one in the history
+product. The conditional kernels and observation factors at its
+reachable descendants still contribute. The distinction changes both
+the value and its directional derivative in a confounded model.
+[Finite observation and intervention](../api/qiec/effects.md#finite-observation-and-intervention)
+
+For conditionally independent multinomial resampling at $k$ offspring
+slots, an ordered ancestry $a=(a_1,\ldots,a_k)$ has conditional
+probability $P(a)=\prod_i \pi_{a_i}$. Its score is $D\log P(a)=
+\sum_i D\log\pi_{a_i}$ on the positive support. Distinct ancestors
+may have the same particle value, so the ancestry is a tuple of
+positions. The finite derivative evaluates both the score term and
+the derivative of the downstream cost at each ancestry. The finite
+Metropolis entry propagates the supplied initial law through
+the requested number of transitions and differentiates each matrix
+update. Its stopping count specifies the derivative being computed.
+[Resampling](../api/qiec/effects.md#finite-multinomial-resampling) and [finite-step Metropolis derivatives](../api/qiec/effects.md#finite-step-metropolis-derivatives)
