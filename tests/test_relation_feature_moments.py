@@ -19,7 +19,15 @@ from quivers.core.relations import (
 
 _TAPE = StringSet(alphabet=FinSet(name="Symbols", cardinality=2))
 _WORD = (0, 0)
-_ARC_FEATURES = ((1, 0, 0), (0, 4, 0), (2, 1, 0), (1, 7, 0), (3, 0, 0), (128, 10, 0))
+_ARC_FEATURES = (
+    (1, 0, 0),
+    (0, 4, 0),
+    (2, 1, 0),
+    (1, 7, 0),
+    (3, 0, 0),
+    (128, 10, 0),
+    (0, 0, 0),
+)
 _START_FEATURES = ((1, 3, 0),)
 _STOP_FEATURES = ((6, 1, 0), (0, 5, 0))
 
@@ -28,7 +36,7 @@ def _fixture():
     return RelationTopology(
         (_TAPE,),
         1,
-        4,
+        5,
         (
             Arc(0, 1, (None,), 1),
             Arc(0, 1, (None,), 1),
@@ -36,10 +44,11 @@ def _fixture():
             Arc(0, 2, (0,), 2),
             Arc(2, 3, (0,), 3),
             Arc(0, 2, (0,), 4),
+            Arc(4, 0, (None,), 0),
         ),
-        (Boundary(0, 0),),
+        (Boundary(4, 3),),
         (Boundary(1, 3), Boundary(3, 3)),
-        ("start", "same", "alternate", "one", "zero"),
+        ("entrance", "same", "alternate", "one", "zero"),
     )
 
 
@@ -111,7 +120,12 @@ def test_packed_moments_match_occurrence_oracle_and_shared_live_gradients(algebr
     for weights in (weights, (*weights[:1], Fraction(1, 2), *weights[2:])):
         update(weights)
         rows = _enumeration(topology, weights)
-        assert [row[-1] for row in rows] == [(0, 2, 2), (1, 2, 2), (3, 4), (5, 4)]
+        assert [row[-1] for row in rows] == [
+            (6, 0, 2, 2),
+            (6, 1, 2, 2),
+            (6, 3, 4),
+            (6, 5, 4),
+        ]
         mass, moments = query.log_feature_moments(
             arc, initial_logs=initial, final_logs=final
         )
