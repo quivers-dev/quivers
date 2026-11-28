@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import math
+import random
 
 import didactic.api as dx
 import pytest
 import torch
 
+from quivers.continuous.tensor_backend import TensorBackend
 from quivers.dsl import loads as load_source
 from quivers.effects import replay
-from quivers.inference import LatentRegistry, trace
+from quivers.inference import LatentRegistry, prior_draws, trace
 from quivers.inference.registry import _trace_latent_values
 from quivers.qiec.builtins import RANDOM, RANDOM_SAMPLE, TraceRecorder, trace_handler
 from quivers.qiec.canonical import sampleable_type
-from quivers.qiec.distributions import DistributionError
+from quivers.qiec import distributions as distribution_runtime
+from quivers.qiec.distributions import (
+    DistributionError,
+    ReferenceBackend,
+    RuntimeDistribution,
+)
 from quivers.qiec.evaluator import (
     RuntimeAttachments,
     RuntimeConstructor,
@@ -405,9 +412,75 @@ def test_structured_draws_are_not_vectorized_into_one_shared_sample(
         trace(compiled.morphism, x, data)
 
     values = iter((law.values[0], nested))
-    monkeypatch.setattr(FiniteSampleable, "sample", lambda _law: next(values))
+    monkeypatch.setattr(FiniteSampleable, "sample", lambda _law, **_: next(values))
     actual = compiled.morphism.rsample(x, observations=data)
     torch.testing.assert_close(actual, weights.new_tensor([0.0, 2.0]))
     assert compiled.morphism.work.iterations == 2
     with pytest.raises(StopIteration):
         next(values)
+
+
+def test_seeded_public_program_draws_use_reference_rng_and_replay_does_not_draw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = random.Random()
+    monkeypatch.setattr(distribution_runtime, "_RNG", rng)
+    compiled = load_source(SOURCE.replace("export recorded\n", ""))
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    weights = torch.tensor([0.2, -0.3, 1.2, -torch.inf], dtype=torch.float64)
+    law, nested, _zero = _law(module, weights)
+    data = {"law": law, "response": 1.7}
+    assert compiled.run("inspect", data=data, seed=1).value == 0.0
+    assert compiled.run("inspect", data=data, seed=2).value == 2.0
+    state = rng.getstate()
+    assert compiled.run("inspect", data=data, sites={"meaning": nested}).value == 2.0
+    assert rng.getstate() == state
+
+    class SelectRight(ReferenceBackend):
+        def sample(self, law: RuntimeDistribution, rng: random.Random) -> object:
+            del rng
+            assert law.family == "Categorical"
+            return torch.tensor(1, dtype=torch.int64, device=law.numbers.device)
+
+    overridden = law.with_(backend=SelectRight())
+    assert (
+        compiled.run("inspect", data={**data, "law": overridden}, seed=1).value == 2.0
+    )
+
+
+def test_seeded_public_prior_uses_torch_and_refuses_structured_tensor_draws(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compiled = load_source(SOURCE.replace("export recorded\n", ""))
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    weights = torch.tensor([0.2, -0.3, 1.2, -torch.inf], dtype=torch.float64)
+    law, nested, _zero = _law(module, weights)
+    x = weights.new_zeros((1, 1))
+    data = {"law": law, "response": weights.new_tensor(1.7)}
+    real_sample = FiniteSampleable.sample
+    draws = []
+
+    def sample(law, *, backend=None):
+        assert isinstance(backend, TensorBackend)
+        result = real_sample(law, backend=backend)
+        draws.append(result)
+        return result
+
+    monkeypatch.setattr(FiniteSampleable, "sample", sample)
+    cpu_state = torch.random.get_rng_state().clone()
+    for _ in range(2):
+        with pytest.raises(
+            ValueError, match="tensor draws cannot retain structured site 'meaning'"
+        ):
+            prior_draws(compiled.morphism, x, observations=data, num_samples=1, seed=2)
+        assert torch.equal(torch.random.get_rng_state(), cpu_state)
+    assert len(draws) == 2 and draws[0] is draws[1]
+    assert draws[0] in (law.values[0], nested)
+    clamped = trace(compiled.morphism, x, {**data, "meaning": nested})
+    with replay(clamped):
+        replayed = trace(compiled.morphism, x, data)
+    assert replayed.sites["meaning"].value is nested
+    assert len(draws) == 2
+    assert torch.equal(torch.random.get_rng_state(), cpu_state)
