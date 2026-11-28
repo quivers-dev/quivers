@@ -332,6 +332,24 @@ that the request captures, so resuming that continuation with $y$ runs the same 
 $\mathcal{E}[\mathsf{return}\ y]$. An `if` whose condition is a variable is kept, so no step depends on an
 assumption about a value. $\square$
 
+**Address preservation.** A residual request has an address $(o,d,s)$ consisting of its static
+site identifier $o$, its ordered dynamic frames $d$, and its resumption path $s$. For the admitted
+discharge fragment, the corresponding residual requests of $c$ and $c'$ have equal addresses
+when the two runs receive the same checked answers to those requests. This statement concerns
+execution by the QIEC reference machine.
+
+The address invariant relates the allocation counters, live frame order, and resumption paths
+at the corresponding steps. Each entered call or local instance advances its original counter
+once, including an inlined scope that makes no observable request. Discharge retains an
+immutable address value for that scope. Capture removes the live frames of the captured
+continuation while the operation clause runs. Each resumption reinstates the corresponding
+frames in order, reusing their allocations, and appends the ordinal for an unrestricted shot.
+A retained call extends the live path for the duration of its body. If that call carries a
+discharged shot or clause path, the discharger requires a closed residual effect row and rules
+out an outer multi-shot clause that could interleave its own shot with the restored path.
+The scope exit restores the preceding paths. These steps preserve $(o,d,s)$ at each residual
+request and give the same address sequence by induction along the execution.
+
 Discharge terminates. A callee is entered only when it is not being entered already, so a body unrolls to a
 finite tree of returns, requests, and conditionals. A deep handler is the fold of §6 over that tree: it
 replaces each request by its clause, with the folded subtrees in place of the resumptions, and the fold of a
