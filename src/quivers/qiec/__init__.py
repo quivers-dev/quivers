@@ -277,6 +277,11 @@ from quivers.qiec.bernoulli_tensor_axis import (
     BernoulliTensorAxis,
     BernoulliTensorResult,
 )
+from quivers.qiec.scoped_elaboration import (
+    ScopedHandlerElaboration,
+    ScopedOperation,
+    elaborate_static_scope,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1283,6 +1288,9 @@ __all__ += [
     "plan_bernoulli_batch",
     "BernoulliTensorAxis",
     "BernoulliTensorResult",
+    "ScopedHandlerElaboration",
+    "ScopedOperation",
+    "elaborate_static_scope",
 ]
 __all__ += [
     "FiniteAlgebra",

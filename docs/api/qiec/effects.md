@@ -612,6 +612,67 @@ assert stage.rewrite is not None and stage.rewrite.companions == ()
 
 ::: quivers.qiec.effect_plan
 
+## Static scoped operations
+
+`elaborate_static_scope` checks one computation argument and installs an
+authored handler around it. The operation declares the computation
+argument's type, the result type, and the types of the value arguments.
+An elaborator chooses the original named instance and a handler. Changing
+the elaborator changes how the requests inside the scope are answered.
+An enclosing handler still answers requests before and after the scope.
+
+The body can read the immutable scalar bindings listed as captures.
+Its requests must use one named instance. Each clause of the selected
+handler must resume once in tail position, with an identity return and
+an empty introduced row. The resulting QIEC `Handle` contains the
+original body exactly once, preserving its source request addresses.
+The operation and elaborator are used only during elaboration.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    EMPTY_ROW, REAL, CheckContext, ComputationType, LiteralValue,
+    ScopedHandlerElaboration, ScopedOperation, elaborate_static_scope, run_named,
+)
+
+source = """
+effect Reader
+    read_value : Unit -> Real
+
+instance reader : Reader
+
+handler fixed for Reader : Real -> Real with (value : Real) [coverage=total, forwards=none, implementation=authored]
+    read_value resumes 1 =>
+        resume(value)
+
+define region(captured : Real) : Real !{reader} =
+    let got <- perform reader.read_value()
+    return got + captured
+"""
+module = Compiler(parse(source), module_name="scoped-reader-example").qiec_module
+assert module is not None
+region, = module.computations
+captured, = region.parameters
+handler, = module.handlers
+instance, = region.type.effects.entries
+result = ComputationType(effects=EMPTY_ROW, result=REAL)
+operation = ScopedOperation("local", region.type, result, (REAL,))
+local = elaborate_static_scope(
+    module,
+    operation,
+    ScopedHandlerElaboration(instance.instance, handler.id),
+    region.body,
+    (LiteralValue(type=REAL, value=5.0),),
+    captures=(captured,),
+    context=CheckContext().extend(captured),
+)
+entry = region.with_(body=local, type=result)
+closed = module.with_(computations=(entry,))
+assert run_named(closed, "region", (7.0,)).value == 12.0
+```
+
+::: quivers.qiec.scoped_elaboration
+
 ## Finite elimination
 
 `eliminate_finite` contracts explicit finite tables. Each factor gives its
