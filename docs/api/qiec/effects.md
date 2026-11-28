@@ -69,3 +69,20 @@ When the forms differ, the checker gives integer arguments and the two exact
 rational results.
 
 ::: quivers.qiec.polynomial_laws
+
+## Rational laws
+
+The rational checker runs the original, checked computation with exact
+symbolic scalar arithmetic. A divisor contributes a nonzero condition
+whenever it is evaluated, including in an unused binding. Both sides of an
+equation must have the same nonzero domain polynomial after multiplying
+their distinct monic guards. When the checker cannot establish this domain
+agreement, it reports an unsupported law.
+
+On a shared domain the checker compares exact numerators over a common
+denominator. If they differ, it returns integer arguments where both
+computations are defined and gives their exact rational values. The
+checker supports authored handlers whose branch choices can be resolved
+during the symbolic run, including branches selected by resumed Booleans.
+
+::: quivers.qiec.rational_laws

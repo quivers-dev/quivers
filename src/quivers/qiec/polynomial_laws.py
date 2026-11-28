@@ -184,136 +184,20 @@ def _rational(value: LiteralValue) -> Fraction | None:
     return None
 
 
-class _Normalizer:
-    """Normalize two computations in one polynomial ring.
+class _PolynomialRing:
+    """Sparse exact arithmetic for a fixed list of polynomial variables.
 
     Parameters
     ----------
-    discharged : DischargedModule
-        The module after supported authored handlers are discharged.
     width : int
         The number of scalar variables.
     max_work : int
         The normalization and witness work budget.
     """
 
-    def __init__(self, discharged: DischargedModule, width: int, max_work: int) -> None:
-        self.discharged = discharged
-        self.computations = {item.id: item for item in discharged.module.computations}
+    def __init__(self, width: int, max_work: int) -> None:
         self.zero = (0,) * width
         self.remaining = max_work
-
-    def check_source(
-        self,
-        module: QiecModule,
-        left: str,
-        right: str,
-    ) -> None:
-        """Check source values before relying on discharge to erase unused ones.
-
-        Parameters
-        ----------
-        module : QiecModule
-            The checked module before discharge.
-        left : str
-            The first law root's name.
-        right : str
-            The second law root's name.
-
-        Raises
-        ------
-        PolynomialLawUnsupported
-            If either root can reach source outside the exact scalar fragment.
-        """
-        computations = {item.id: item for item in module.computations}
-        handlers = {item.id: item for item in module.handlers}
-        pending: list[object] = [
-            item for item in module.computations if item.name in (left, right)
-        ]
-        seen: set[int] = set()
-        while pending:
-            term = pending.pop()
-            if id(term) in seen:
-                continue
-            seen.add(id(term))
-            self.spend()
-            if isinstance(term, NamedComputation):
-                if term.telescope:
-                    raise PolynomialLawUnsupported(
-                        f"`{term.name}` has static parameters"
-                    )
-                pending.append(term.body)
-            elif isinstance(term, HandlerDef):
-                if term.telescope or term.implementation != "authored":
-                    raise PolynomialLawUnsupported(
-                        f"`{term.name}` is outside the authored polynomial fragment"
-                    )
-                pending.extend(
-                    clause.body for clause in term.clauses if clause.body is not None
-                )
-                if term.return_clause is not None:
-                    pending.append(term.return_clause.body)
-            else:
-                self.check_source_term(term)
-                pending.extend(_children(term))
-                if isinstance(term, Call):
-                    pending.append(computations[term.callee])
-                elif isinstance(term, Handle):
-                    pending.append(handlers[term.handler])
-
-    def check_source_term(self, term: object) -> None:
-        """Verify that discharge can erase a value without changing its domain.
-
-        Parameters
-        ----------
-        term : object
-            The kernel node or value being visited.
-
-        Raises
-        ------
-        PolynomialLawUnsupported
-            If a term may be undefined or lies outside exact scalar arithmetic.
-        """
-        if isinstance(term, Case) or (
-            isinstance(term, _VALUES) and not isinstance(term, _SCALARS)
-        ):
-            raise PolynomialLawUnsupported(
-                f"{type(term).__name__} is outside polynomial laws"
-            )
-        if isinstance(term, Local) and term.type not in (BOOL, UNIT, REAL):
-            raise PolynomialLawUnsupported(
-                f"`{term.name}` is outside the scalar polynomial fragment"
-            )
-        if isinstance(term, LiteralValue) and not (
-            term.type in (BOOL, UNIT) or _rational(term) is not None
-        ):
-            raise PolynomialLawUnsupported("a polynomial literal must be finite")
-        if not isinstance(term, PrimitiveApplication):
-            return
-        if term.result_type == BOOL and term.primitive in _COMPARISONS:
-            return
-        name = _ARITHMETIC.get(term.primitive)
-        if term.result_type != REAL or name is None:
-            raise PolynomialLawUnsupported(
-                f"primitive `{term.name}` is outside polynomial laws"
-            )
-        if name not in ("div_real", "pow_real"):
-            return
-        # Discharge may remove an unread operand. Its domain must be checked
-        # with the original binding structure still present.
-        try:
-            constant = self.value(term.arguments[1], {}).get(self.zero, Fraction())
-        except KeyError:
-            constant = None
-        if name == "div_real":
-            if not constant:
-                raise PolynomialLawUnsupported(
-                    "division requires a nonzero constant divisor"
-                )
-        elif constant is None or constant < 0 or constant.denominator != 1:
-            raise PolynomialLawUnsupported(
-                "power requires a nonnegative integral constant exponent"
-            )
 
     def spend(self, amount: int = 1) -> None:
         """Charge a step or generated terms against the work budget.
@@ -461,6 +345,211 @@ class _Normalizer:
             if exponent:
                 base = self.multiply(base, base)
         return result
+
+    def substitute(
+        self, polynomial: _Polynomial, coordinate: int, value: int
+    ) -> _Polynomial:
+        """Substitute one integer at a chosen coordinate.
+
+        Parameters
+        ----------
+        polynomial : _Polynomial
+            The normal form.
+        coordinate : int
+            The variable's position.
+        value : int
+            Its assigned value.
+
+        Returns
+        -------
+        _Polynomial
+            A normal form with zero exponents at the chosen coordinate.
+        """
+        self.spend(len(polynomial))
+        result: _Polynomial = {}
+        for powers, coefficient in polynomial.items():
+            exponent = powers[coordinate]
+            reduced = (*powers[:coordinate], 0, *powers[coordinate + 1 :])
+            self.accumulate(result, reduced, coefficient * value**exponent)
+        return result
+
+    def counterexample(
+        self, left: _Polynomial, right: _Polynomial
+    ) -> PolynomialLawCounterexample | None:
+        """Separate unequal normal forms with an exact integer assignment.
+
+        Parameters
+        ----------
+        left : _Polynomial
+            The left normal form.
+        right : _Polynomial
+            The right normal form.
+
+        Returns
+        -------
+        PolynomialLawCounterexample or None
+            A separating assignment if their difference is nonzero.
+
+        Raises
+        ------
+        AssertionError
+            If a nonzero polynomial violates the root bound.
+        """
+        if left == right:
+            return None
+        difference = self.add(left, right, -1)
+        arguments: list[int] = []
+        for coordinate in range(len(self.zero)):
+            degree = max(powers[coordinate] for powers in difference)
+            for value in range(degree + 1):
+                reduced = self.substitute(difference, coordinate, value)
+                if reduced:
+                    arguments.append(value)
+                    difference = reduced
+                    break
+            else:  # pragma: no cover - root bound over the fraction field
+                raise AssertionError(
+                    "nonzero polynomial vanished on its separating grid"
+                )
+        for coordinate, value in enumerate(arguments):
+            left = self.substitute(left, coordinate, value)
+            right = self.substitute(right, coordinate, value)
+        return PolynomialLawCounterexample(
+            tuple(arguments),
+            left.get(self.zero, Fraction()),
+            right.get(self.zero, Fraction()),
+        )
+
+
+class _Normalizer(_PolynomialRing):
+    """Normalize two computations in one polynomial ring.
+
+    Parameters
+    ----------
+    discharged : DischargedModule
+        The module after supported authored handlers are discharged.
+    width : int
+        The number of scalar variables.
+    max_work : int
+        The normalization and witness work budget.
+    """
+
+    def __init__(self, discharged: DischargedModule, width: int, max_work: int) -> None:
+        super().__init__(width, max_work)
+        self.discharged = discharged
+        self.computations = {item.id: item for item in discharged.module.computations}
+
+    def check_source(
+        self,
+        module: QiecModule,
+        left: str,
+        right: str,
+    ) -> None:
+        """Check source values before relying on discharge to erase unused ones.
+
+        Parameters
+        ----------
+        module : QiecModule
+            The checked module before discharge.
+        left : str
+            The first law root's name.
+        right : str
+            The second law root's name.
+
+        Raises
+        ------
+        PolynomialLawUnsupported
+            If either root can reach source outside the exact scalar fragment.
+        """
+        computations = {item.id: item for item in module.computations}
+        handlers = {item.id: item for item in module.handlers}
+        pending: list[object] = [
+            item for item in module.computations if item.name in (left, right)
+        ]
+        seen: set[int] = set()
+        while pending:
+            term = pending.pop()
+            if id(term) in seen:
+                continue
+            seen.add(id(term))
+            self.spend()
+            if isinstance(term, NamedComputation):
+                if term.telescope:
+                    raise PolynomialLawUnsupported(
+                        f"`{term.name}` has static parameters"
+                    )
+                pending.append(term.body)
+            elif isinstance(term, HandlerDef):
+                if term.telescope or term.implementation != "authored":
+                    raise PolynomialLawUnsupported(
+                        f"`{term.name}` is outside the authored polynomial fragment"
+                    )
+                pending.extend(
+                    clause.body for clause in term.clauses if clause.body is not None
+                )
+                if term.return_clause is not None:
+                    pending.append(term.return_clause.body)
+            else:
+                self.check_source_term(term)
+                pending.extend(_children(term))
+                if isinstance(term, Call):
+                    pending.append(computations[term.callee])
+                elif isinstance(term, Handle):
+                    pending.append(handlers[term.handler])
+
+    def check_source_term(self, term: object) -> None:
+        """Verify that discharge can erase a value without changing its domain.
+
+        Parameters
+        ----------
+        term : object
+            The kernel node or value being visited.
+
+        Raises
+        ------
+        PolynomialLawUnsupported
+            If a term may be undefined or lies outside exact scalar arithmetic.
+        """
+        if isinstance(term, Case) or (
+            isinstance(term, _VALUES) and not isinstance(term, _SCALARS)
+        ):
+            raise PolynomialLawUnsupported(
+                f"{type(term).__name__} is outside polynomial laws"
+            )
+        if isinstance(term, Local) and term.type not in (BOOL, UNIT, REAL):
+            raise PolynomialLawUnsupported(
+                f"`{term.name}` is outside the scalar polynomial fragment"
+            )
+        if isinstance(term, LiteralValue) and not (
+            term.type in (BOOL, UNIT) or _rational(term) is not None
+        ):
+            raise PolynomialLawUnsupported("a polynomial literal must be finite")
+        if not isinstance(term, PrimitiveApplication):
+            return
+        if term.result_type == BOOL and term.primitive in _COMPARISONS:
+            return
+        name = _ARITHMETIC.get(term.primitive)
+        if term.result_type != REAL or name is None:
+            raise PolynomialLawUnsupported(
+                f"primitive `{term.name}` is outside polynomial laws"
+            )
+        if name not in ("div_real", "pow_real"):
+            return
+        # Discharge may remove an unread operand. Its domain must be checked
+        # with the original binding structure still present.
+        try:
+            constant = self.value(term.arguments[1], {}).get(self.zero, Fraction())
+        except KeyError:
+            constant = None
+        if name == "div_real":
+            if not constant:
+                raise PolynomialLawUnsupported(
+                    "division requires a nonzero constant divisor"
+                )
+        elif constant is None or constant < 0 or constant.denominator != 1:
+            raise PolynomialLawUnsupported(
+                "power requires a nonnegative integral constant exponent"
+            )
 
     def value(self, value: Value, environment: _Environment) -> _Polynomial:
         """Interpret a scalar value in the rational polynomial ring.
@@ -639,80 +728,6 @@ class _Normalizer:
             )
         environment = dict(zip(declaration.parameters, arguments, strict=True))
         return self.body(declaration.body, environment, active | {declaration.id})
-
-    def substitute(
-        self, polynomial: _Polynomial, coordinate: int, value: int
-    ) -> _Polynomial:
-        """Substitute one integer at a chosen coordinate.
-
-        Parameters
-        ----------
-        polynomial : _Polynomial
-            The normal form.
-        coordinate : int
-            The variable's position.
-        value : int
-            Its assigned value.
-
-        Returns
-        -------
-        _Polynomial
-            A normal form with zero exponents at the chosen coordinate.
-        """
-        self.spend(len(polynomial))
-        result: _Polynomial = {}
-        for powers, coefficient in polynomial.items():
-            exponent = powers[coordinate]
-            reduced = (*powers[:coordinate], 0, *powers[coordinate + 1 :])
-            self.accumulate(result, reduced, coefficient * value**exponent)
-        return result
-
-    def counterexample(
-        self, left: _Polynomial, right: _Polynomial
-    ) -> PolynomialLawCounterexample | None:
-        """Separate unequal normal forms with an exact integer assignment.
-
-        Parameters
-        ----------
-        left : _Polynomial
-            The left normal form.
-        right : _Polynomial
-            The right normal form.
-
-        Returns
-        -------
-        PolynomialLawCounterexample or None
-            A separating assignment if their difference is nonzero.
-
-        Raises
-        ------
-        AssertionError
-            If a nonzero polynomial violates the root bound.
-        """
-        if left == right:
-            return None
-        difference = self.add(left, right, -1)
-        arguments: list[int] = []
-        for coordinate in range(len(self.zero)):
-            degree = max(powers[coordinate] for powers in difference)
-            for value in range(degree + 1):
-                reduced = self.substitute(difference, coordinate, value)
-                if reduced:
-                    arguments.append(value)
-                    difference = reduced
-                    break
-            else:  # pragma: no cover - root bound over the fraction field
-                raise AssertionError(
-                    "nonzero polynomial vanished on its separating grid"
-                )
-        for coordinate, value in enumerate(arguments):
-            left = self.substitute(left, coordinate, value)
-            right = self.substitute(right, coordinate, value)
-        return PolynomialLawCounterexample(
-            tuple(arguments),
-            left.get(self.zero, Fraction()),
-            right.get(self.zero, Fraction()),
-        )
 
 
 def check_polynomial_law(
