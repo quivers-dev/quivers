@@ -57,6 +57,68 @@ class ArcCounts:
 
 
 @dataclass(frozen=True, slots=True)
+class PathStatistics:
+    """Statistics of the conditional distribution over accepting paths.
+
+    The entropy is in nats. The normalizer is represented in log
+    space for both input algebras. The expected cost sums the supplied
+    feature or loss tensors along each path, including boundary marks.
+    """
+
+    log_normalizer: torch.Tensor
+    entropy: torch.Tensor
+    expected_cost: torch.Tensor | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PathEvents:
+    original_ids: tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]
+    prefix: tuple[int, ...]
+    suffix: tuple[int, ...]
+    denominator: tuple[int, ...]
+    slots: tuple[int, ...]
+
+    def costs(
+        self,
+        probabilities: torch.Tensor,
+        feature_groups: tuple[torch.Tensor | None, ...],
+        size_groups: tuple[int, ...],
+    ) -> torch.Tensor | None:
+        expected = None
+        for masses, indices, features, size in zip(
+            probabilities.split(tuple(map(len, self.original_ids))),
+            self.original_ids,
+            feature_groups,
+            size_groups,
+            strict=True,
+        ):
+            if features is None:
+                continue
+            if (
+                not isinstance(features, torch.Tensor)
+                or features.ndim == 0
+                or features.shape[0] != size
+                or features.device != probabilities.device
+                or features.is_complex()
+                or not bool(torch.isfinite(features).all())
+            ):
+                raise ValueError(
+                    "each path cost tensor must have one finite real row per occurrence "
+                    "on the weight device"
+                )
+            if expected is not None and features.shape[1:] != expected.shape:
+                raise ValueError("path cost tensors must have the same trailing shape")
+            scale = masses.reshape((len(indices),) + (1,) * (features.ndim - 1))
+            term = (scale * _take(features, indices)).sum(0)
+            expected = term if expected is None else expected + term
+        if expected is not None and not bool(torch.isfinite(expected).all()):
+            raise OverflowError(
+                "the expected path cost is outside the evaluation precision"
+            )
+        return expected
+
+
+@dataclass(frozen=True, slots=True)
 class _Chart:
     packed: _PackedPaths
     positions: dict[int, int]
@@ -321,6 +383,94 @@ class _AcyclicWalks:
             state, arc_id = edges[choice]
             arcs.append(arc_id)
 
+    @cached_property
+    def _events(self) -> _PathEvents:
+        positions = len(self._order)
+        prefix = self._forward.positions
+        suffix = self._backward.positions
+        initial_ids = {
+            mark.state: index for index, mark in enumerate(self._topology.initial)
+        }
+        final_ids = {
+            mark.state: index for index, mark in enumerate(self._topology.final)
+        }
+        original_starts, original_arcs, original_stops = [], [], []
+        events: list[tuple[int, int, int, int]] = []
+        for state, slot in self._initial:
+            original_starts.append(initial_ids[self._original[state]])
+            events.append((positions, suffix[state], positions + 1, slot))
+        for state in self._order:
+            for target, arc_id in self._arcs[state]:
+                original_arcs.append(arc_id)
+                events.append(
+                    (
+                        prefix[state],
+                        suffix[target],
+                        suffix[state],
+                        self._topology.arcs[arc_id].weight,
+                    )
+                )
+        for state in self._order:
+            if (slot := self._final.get(state)) is not None:
+                original_stops.append(final_ids[self._original[state]])
+                events.append((prefix[state], positions, suffix[state], slot))
+        prefixes, suffixes, denominators, slots = map(tuple, zip(*events, strict=True))
+        return _PathEvents(
+            (tuple(original_starts), tuple(original_arcs), tuple(original_stops)),
+            prefixes,
+            suffixes,
+            denominators,
+            slots,
+        )
+
+    def statistics(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        initial_costs: torch.Tensor | None,
+        arc_costs: torch.Tensor | None,
+        final_costs: torch.Tensor | None,
+    ) -> PathStatistics:
+        algebra = _probability_algebra(weights, algebra)
+        if algebra is MARKOV:
+            # Differentiate on the current positive support. Masking before
+            # the logarithm avoids an undefined adjoint at zero.
+            positive = weights > 0
+            weights = (
+                torch.where(positive, weights, 1)
+                .log()
+                .masked_fill(~positive, -torch.inf)
+            )
+        normalizer, prefix = self._forward.evaluate(weights, LOG_PROB)
+        _require_normalizer(normalizer, LOG_PROB)
+        _, suffix = self._backward.evaluate(weights, LOG_PROB)
+        events = self._events
+        unit = weights.new_zeros(1)
+        prefix = torch.cat((prefix, unit))
+        suffix = torch.cat((suffix, unit, normalizer.reshape(1)))
+        local = _take(weights, events.slots) + _take(suffix, events.suffix)
+        log_mass = _take(prefix, events.prefix) + local - normalizer
+        if not bool(LOG_PROB.contains(log_mass).all()):
+            raise OverflowError("posterior paths are outside the evaluation precision")
+        supported = torch.isfinite(log_mass)
+        choices = local.masked_fill(~supported, 0) - _take(
+            suffix, events.denominator
+        ).masked_fill(~supported, 0)
+        masses = log_mass.exp()
+        entropy = -(masses * choices).sum()
+        if not bool(torch.isfinite(entropy)):
+            raise OverflowError("path entropy is outside the evaluation precision")
+        costs = events.costs(
+            masses,
+            (initial_costs, arc_costs, final_costs),
+            (
+                len(self._topology.initial),
+                len(self._topology.arcs),
+                len(self._topology.final),
+            ),
+        )
+        return PathStatistics(normalizer, entropy, costs)
+
     def counts(self, weights: torch.Tensor, algebra: Semiring) -> ArcCounts:
         algebra = _probability_algebra(weights, algebra)
         normalizer, prefix = self._forward.evaluate(weights, algebra)
@@ -343,4 +493,4 @@ class _AcyclicWalks:
         return ArcCounts(ids, counts, normalizer)
 
 
-__all__ = ["ArcCounts", "RelationPath"]
+__all__ = ["ArcCounts", "PathStatistics", "RelationPath"]

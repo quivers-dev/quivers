@@ -16,7 +16,12 @@ from torch import nn
 from quivers.core.algebras import REAL, Semiring
 from quivers.core.morphisms import FiniteMorphism, Morphism
 from quivers.core.objects import FreeMonoid, ProductSet, SetObject, Unit
-from quivers.core.relations.paths import ArcCounts, RelationPath, _AcyclicWalks
+from quivers.core.relations.paths import (
+    ArcCounts,
+    PathStatistics,
+    RelationPath,
+    _AcyclicWalks,
+)
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
     QueryWork,
@@ -53,6 +58,7 @@ __all__ = [
     "NgramFamily",
     "NgramProjection",
     "PenalizedNgramProjection",
+    "PathStatistics",
     "ProductiveEpsilonCycleError",
     "QueryWork",
     "RationalRelation",
@@ -475,6 +481,30 @@ class FixedStringQuery:
         must be positive and finite in its representation.
         """
         return self._walks.counts(self._relation._weights(), self._relation.algebra)
+
+    def path_statistics(
+        self,
+        *,
+        initial_costs: torch.Tensor | None = None,
+        arc_costs: torch.Tensor | None = None,
+        final_costs: torch.Tensor | None = None,
+    ) -> PathStatistics:
+        """Return path entropy and the expectation of optional additive costs.
+
+        The productive graph must be acyclic with a positive finite
+        log normalizer under Markov or LogProb. Costs have one row
+        per original mark or arc, in topology order. Boundary and
+        arc costs can be combined when their trailing shapes agree.
+        Derivatives on the current positive support flow through
+        the weights and costs. Probability-zero choices are masked.
+        """
+        return self._walks.statistics(
+            self._relation._weights(),
+            self._relation.algebra,
+            initial_costs,
+            arc_costs,
+            final_costs,
+        )
 
 
 class FiniteRelationRestriction(FiniteMorphism):

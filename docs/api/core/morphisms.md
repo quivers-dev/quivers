@@ -362,6 +362,32 @@ No table of all output words is constructed. The bound on
 consecutive insertions is part of the channel model, and the scorer
 can use the whole input as context for each edit.
 
+### Path entropy and additive risk
+
+`FixedStringQuery.path_statistics` uses two packed log-space passes
+on an acyclic productive observation graph. Let $\alpha(q)$ and
+$\beta(q)$ be its prefix and suffix log masses and $Z$ its total
+mass. The posterior log mass for a traversal of arc $q \to t$ is
+$\alpha(q) + \log w(q,t) + \beta(t) - \log Z$. Its conditional
+log probability given the visit to $q$ is
+$\log w(q,t) + \beta(t) - \beta(q)$. Initial and final choices
+have the corresponding one-sided prefix or suffix terms.
+
+Entropy is the sum of the initial-choice entropy and the expected
+entropy of each subsequent choice, including stop decisions. This
+follows by factoring any complete path's posterior probability into
+its successive choice probabilities. The same event probabilities
+weight the supplied arc and boundary cost tensors. Thus the method
+computes the expectation of any additive path cost, which can also
+serve as a differentiable risk objective. Original occurrence IDs
+select costs even when arcs share weight parameters or an original
+arc appears at several observed offsets.
+
+The log normalizer, entropy, and expected costs have derivatives
+on the current positive support. Zero-probability choices contribute
+zero. An entropy of paths can differ from an entropy of the output
+words when several paths emit the same word.
+
 ::: quivers.core.relations
     options:
       members:
@@ -385,6 +411,7 @@ can use the whole input as context for each edit.
         - FiniteStringScore
         - NgramFamily
         - NgramProjection
+        - PathStatistics
         - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
         - RelationLimitError
