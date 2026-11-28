@@ -122,6 +122,7 @@ from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
 )
+from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -352,6 +353,7 @@ _NODE_CLASSES = (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
     FixedRelationCostRequest,
+    FixedRelationMarginalMapRequest,
     FixedRelationRequest,
     RationalRelationSpec,
     StringFactorGraphSpec,
