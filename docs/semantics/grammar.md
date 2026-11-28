@@ -792,6 +792,23 @@ relies on. The handlers of a deduction $D$ are declared this way: `D__search` su
 The full grammar,
 worked examples, and limits are in the [QIEC developer note](../developer/qiec.md).
 
+### Authored sparse relations
+
+A `relation` introduces a finite control graph over ordered string
+tapes, each typed by a nominal finite alphabet. The input tapes
+come first. An arc carries one symbol or `eps` on each tape. The
+initial and final tables assign a weight to each marked state.
+The relation sums the weights of all accepting paths realizing a
+word tuple. Multiple identically labeled arcs contribute as separate
+occurrences even when their weight names resolve to one parameter.
+
+A closed `relation_score` may specify the authored relation it uses.
+Its identity then binds the ordered topology, scalar algebra, and
+weight identities. The host supplies the observation and a checked
+binding of those parameters. Path entropy and additive expected loss
+are taken under the normalized distribution over accepting paths
+when that distribution has positive finite mass.
+
 ### String graph scores
 
 A `string_graph_score` declares a closed scalar computation. Its attached

@@ -103,6 +103,7 @@ module.exports = grammar({
       $.handler_decl,
       $.computation_decl,
       $.interpretation_decl,
+      $.relation_decl,
       $.relation_score_decl,
       $.string_graph_score_decl,
       $.composition_decl,
@@ -394,6 +395,55 @@ module.exports = grammar({
 
     interpretation_clause_kind: _ => choice('rule', 'axiom'),
 
+
+    relation_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation',
+      field('name', $.identifier),
+      '[', 'algebra', '=', field('algebra', $.relation_algebra),
+      ',', 'states', '=', field('states', $.integer), ']',
+      $._newline,
+      $._indent,
+      repeat1(choice(field('entries', $._relation_entry), $._newline)),
+      $._dedent,
+    ),
+
+    relation_algebra: _ => choice('markov', 'logprob'),
+
+    _relation_entry: $ => choice(
+      $.relation_tape_decl,
+      $.relation_boundary_decl,
+      $.relation_arc_decl,
+    ),
+
+    relation_tape_decl: $ => seq(
+      field('direction', $.relation_tape_direction),
+      field('alphabet', $.identifier),
+      $._newline,
+    ),
+
+    relation_tape_direction: _ => choice('input', 'output'),
+
+    relation_boundary_decl: $ => seq(
+      field('boundary', $.relation_boundary_kind),
+      field('state', $.integer),
+      '[', 'weight', '=', field('weight', $.identifier), ']',
+      $._newline,
+    ),
+
+    relation_boundary_kind: _ => choice('initial', 'final'),
+
+    relation_arc_decl: $ => seq(
+      'arc', field('source', $.integer), '->', field('target', $.integer),
+      '[', 'labels', '=',
+      parenthesizedList($, field('labels', $.relation_label)),
+      ',', 'weight', '=', field('weight', $.identifier),
+      ']',
+      $._newline,
+    ),
+
+    relation_label: $ => choice($.integer, 'eps'),
+
     relation_score_decl: $ => seq(
       optional(field('docs', $.doc_comment_group)),
       'relation_score',
@@ -402,11 +452,14 @@ module.exports = grammar({
       field('result', $.qiec_type_name),
       '[', 'operation', '=',
       field('operation', $.relation_score_operation),
+      optional(seq(',', 'relation', '=', field('relation', $.identifier))),
       ']',
       $._newline,
     ),
 
-    relation_score_operation: _ => choice('pair_weight', 'conditional_log_prob'),
+    relation_score_operation: _ => choice(
+      'pair_weight', 'conditional_log_prob', 'path_entropy', 'expected_path_cost',
+    ),
 
     string_graph_score_decl: $ => seq(
       optional(field('docs', $.doc_comment_group)),

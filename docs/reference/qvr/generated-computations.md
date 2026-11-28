@@ -207,7 +207,8 @@ reports any restriction particular to the target's renderer.
 A `relation_score` declaration exposes a zero-argument computation for
 a fixed-word relation request. Pair weights have type `Real` for
 Markov or `LogWeight` for LogProb. A conditional log probability has
-type `LogWeight`.
+type `LogWeight`. Path entropy and expected additive costs return
+`Real`.
 
 <!-- compile: qiec -->
 ```qvr
@@ -222,12 +223,46 @@ serialized `FixedRelationRequest` and the original scalar parameters
 indexed by identity. The provider checks the operation and result type
 against the declaration. The request supplies the topology, observed
 words, and construction limits. The [wire and runtime contract][fixed-relation-wire]
-describes the two operations.
+describes the operations and their wire records.
 
 Stan, BUGS, and JAGS report the foreign handler as an obstacle. The
 ordinary QIEC provider boundary remains explicit for other hosts.
 
 [fixed-relation-wire]: ../../api/qiec/serialization.md#fixed-word-relation-requests
+
+## Authored relation topologies
+
+A `relation` declaration supplies the finite control states, typed
+tapes, and weighted occurrences of a sparse relation. Each tape
+names a finite alphabet declared by an `object` statement. Input
+tapes precede output tapes, and the label list follows that order.
+The label `eps` consumes no symbol. Arcs with the same record are
+distinct occurrences. Repeating a weight name shares one live
+scalar parameter across the module.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+relation deletion [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0, eps), weight=delete]
+    arc 0 -> 1 [labels=(0, 0), weight=keep]
+    final 1 [weight=one]
+
+relation_score uncertainty : Real [operation=path_entropy, relation=deletion]
+relation_score expected_loss : Real [operation=expected_path_cost, relation=deletion]
+```
+
+`Compiler.relation_specs["deletion"]` returns its ordinary
+`RationalRelationSpec` for constructing a serialized request.
+The request supplies the words and limits. An expected-cost request
+also supplies its signed costs in occurrence order. The checked
+handler's identity includes the authored specification, so attaching
+a request with different arcs, tapes, or weight identities fails
+even if the scalar result type agrees.
 
 ## String graph scores
 

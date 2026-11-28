@@ -94,6 +94,16 @@ NODE_PATTERNS = """\
 (qiec_handler_operation_clause parameters: (qiec_local_binding name: (identifier) @variable.parameter))
 (qiec_handler_return_clause binder: (qiec_local_binding name: (identifier) @variable.parameter))
 (computation_decl name: (identifier) @function)
+(relation_decl "relation" @keyword)
+(relation_decl name: (identifier) @type)
+(relation_algebra) @type.builtin
+(relation_tape_direction) @keyword
+(relation_tape_decl alphabet: (identifier) @type)
+(relation_boundary_kind) @keyword
+(relation_boundary_decl weight: (identifier) @variable.parameter)
+(relation_arc_decl weight: (identifier) @variable.parameter)
+(relation_label "eps" @constant.builtin)
+(relation_score_decl relation: (identifier) @type)
 (relation_score_decl name: (identifier) @function)
 (relation_score_operation) @keyword
 (string_graph_score_decl name: (identifier) @function)

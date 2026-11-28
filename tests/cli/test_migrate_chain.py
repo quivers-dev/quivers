@@ -109,6 +109,15 @@ def test_string_graph_score_keywords_are_contextual_for_old_source() -> None:
     assert compose_migration("v0.64.2", "HEAD")(source) == source
 
 
+def test_authored_relation_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object relation, algebra, states, input, output : FinSet 2\n"
+        b"object initial, final, arc, labels, weight, eps : FinSet 2\n"
+        b"object markov, logprob, path_entropy, expected_path_cost : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_zero_hop_rejects_missing_recovery_vertices() -> None:
     with pytest.raises(MigrationError, match="missing .* token"):
         compose_migration("HEAD", "HEAD")(b"object A :\n")

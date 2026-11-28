@@ -225,6 +225,7 @@ QIEC_STATEMENT_TYPES = (
     surface.QiecHandlerDecl,
     surface.QiecComputationDecl,
     surface.QiecInterpretationDecl,
+    surface.QiecRelationDecl,
     surface.QiecRelationScoreDecl,
     surface.QiecStringGraphScoreDecl,
 )
