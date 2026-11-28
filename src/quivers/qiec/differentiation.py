@@ -784,12 +784,15 @@ def _check_action(
     JvpLimit
         If the certification exhausts a work or step limit.
     """
+    from quivers.qiec.derivative_rules import check_rational_derivative_rule
     from quivers.qiec.rational_laws import RationalLawLimit, RationalLawUnsupported
 
     if rule.primal != owner.id:
         raise JvpUnsupported("the declared derivative belongs to another computation")
     try:
-        decision = rule.check(module, max_work=max_work, fuel=fuel)
+        decision = check_rational_derivative_rule(
+            module, rule, max_work=max_work, fuel=fuel
+        )
     except RationalLawUnsupported as error:
         raise JvpUnsupported(str(error)) from error
     except RationalLawLimit as error:

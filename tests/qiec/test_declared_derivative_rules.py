@@ -9,6 +9,7 @@ from quivers.qiec import (
     ExactGradient,
     ExactJvp,
     RationalDerivativeDeclaration,
+    check_rational_derivative_rule,
     exact_gradient,
     exact_jvp,
 )
@@ -52,7 +53,9 @@ def test_exact_modes_execute_the_named_actions_after_round_trip(monkeypatch):
     module = _module(_SOURCE)
     rule = loads(dumps(_declaration(module)))
     assert isinstance(rule, RationalDerivativeDeclaration)
-    assert rule.check(module).certified
+    assert check_rational_derivative_rule(module, rule).certified
+    with pytest.raises(ValueError, match="already specifies"):
+        check_rational_derivative_rule(module, rule, jvp="reciprocal_forward")
     recorded = []
     run = differentiation._scalar_value
 
@@ -81,7 +84,7 @@ def test_stale_source_does_not_inherit_a_certificate():
     rule = _declaration(original)
     changed = _module(_SOURCE.replace("return -step /", "return step /"))
     assert _declaration(changed) == rule
-    decision = rule.check(changed)
+    decision = check_rational_derivative_rule(changed, rule)
     assert not decision.certified and decision.jvp is not None
     assert decision.jvp.counterexample is not None
     with pytest.raises(JvpUnsupported, match="differs from the exact derivative"):

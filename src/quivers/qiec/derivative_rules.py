@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 from quivers.qiec.checking import KernelRegistry
+from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.evaluator import EvaluationError, FuelExhaustedError
 from quivers.qiec.laws import _validate_limit
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
@@ -420,7 +421,7 @@ def _rule(
 
 def check_rational_derivative_rule(
     module: QiecModule,
-    primal: str,
+    primal: str | RationalDerivativeDeclaration,
     *,
     jvp: str | None = None,
     vjp: tuple[str, ...] | None = None,
@@ -440,9 +441,10 @@ def check_rational_derivative_rule(
     ----------
     module : QiecModule
         The module declaring the primal and the supplied rules.
-    primal : str
+    primal : str or RationalDerivativeDeclaration
         A named computation with scalar real inputs and result and an
-        empty residual effect row.
+        empty residual effect row. A declaration supplies the primal
+        and actions by their nominal IDs in this module.
     jvp : str or None
         A named scalar computation implementing the forward rule.
     vjp : tuple[str, ...] or None
@@ -467,10 +469,27 @@ def check_rational_derivative_rule(
     RationalLawLimit
         If arithmetic or reference evaluation exhausts a limit.
     ValueError
-        If no rule was specified or a limit is invalid.
+        If no rule was specified, a declaration was combined with
+        separately named actions, or a limit is invalid.
     """
     _validate_limit("max_work", max_work)
     _validate_limit("fuel", fuel)
+    if isinstance(primal, RationalDerivativeDeclaration):
+        if jvp is not None or vjp is not None:
+            raise ValueError("a derivative declaration already specifies its actions")
+        names = {item.id: item.name for item in module.computations}
+        try:
+            jvp = None if primal.jvp is None else names[primal.jvp]
+            vjp = (
+                None
+                if primal.vjp is None
+                else tuple(names[rule] for rule in primal.vjp)
+            )
+            primal = names[primal.primal]
+        except KeyError as error:
+            raise RationalLawUnsupported(
+                "a rational derivative declaration names an unknown computation"
+            ) from error
     if jvp is None and vjp is None:
         raise ValueError("at least one derivative rule is required")
     declarations = {item.name: item for item in module.computations}

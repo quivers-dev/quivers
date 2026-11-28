@@ -1388,7 +1388,12 @@ ordinary domain and resource limits.
 from fractions import Fraction
 
 from quivers.dsl import loads
-from quivers.qiec import RationalDerivativeDeclaration, dumps, exact_jvp
+from quivers.qiec import (
+    RationalDerivativeDeclaration,
+    check_rational_derivative_rule,
+    dumps,
+    exact_jvp,
+)
 from quivers.qiec import loads as read_qiec
 
 module = loads("""
@@ -1403,6 +1408,7 @@ ids = {computation.name: computation.id for computation in module.computations}
 rule = RationalDerivativeDeclaration(primal=ids["mean_term"], jvp=ids["mean_direction"])
 decoded = read_qiec(dumps(rule))
 assert isinstance(decoded, RationalDerivativeDeclaration)
+assert check_rational_derivative_rule(module, decoded).certified
 result = exact_jvp(module, "mean_term", (2,), (3,), rule=decoded)
 assert (result.value, result.tangent) == (Fraction(1, 2), Fraction(-3, 4))
 ```
