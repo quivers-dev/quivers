@@ -17,6 +17,7 @@ from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
+from quivers.qiec.relation_cascades import RelationCascadeSpec
 from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.types import REAL, TypeExpr
 
@@ -29,6 +30,8 @@ class StringFactorGraphSpec(QiecModel):
     weight source. Distinct relations can also share stable parameter
     identities. The wire record contains these identities and topology.
     Runtime binding supplies the tensor values.
+    A derived factor retains a checked sparse cascade and builds its
+    intermediate relations under explicit construction limits.
 
     Parameters
     ----------
@@ -45,8 +48,8 @@ class StringFactorGraphSpec(QiecModel):
     variables: tuple[tuple[str, str, int, tuple[int, ...] | None], ...] = dx.field(
         opaque=True, extras=OPAQUE_BY_VALUE
     )
-    relations: tuple[tuple[str, RationalRelationSpec], ...] = dx.field(
-        opaque=True, extras=OPAQUE_BY_VALUE
+    relations: tuple[tuple[str, RationalRelationSpec | RelationCascadeSpec], ...] = (
+        dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     )
     factors: tuple[tuple[str, tuple[str, ...]], ...] = dx.field(
         opaque=True, extras=OPAQUE_BY_VALUE
@@ -107,7 +110,9 @@ class StringFactorGraphSpec(QiecModel):
         if len(variables) != len(self.variables):
             raise ValueError("string graph variable names must be distinct")
         for name, spec in self.relations:
-            if not isinstance(name, str) or not isinstance(spec, RationalRelationSpec):
+            if not isinstance(name, str) or not isinstance(
+                spec, RationalRelationSpec | RelationCascadeSpec
+            ):
                 raise TypeError(
                     "string graph relations require names and relation specs"
                 )
@@ -132,7 +137,11 @@ class StringFactorGraphSpec(QiecModel):
                 raise ValueError(
                     f"unknown relation {relation_name!r} at factor {index}"
                 )
-            tapes = spec.topology.tapes
+            tapes = (
+                spec.topology.tapes
+                if isinstance(spec, RationalRelationSpec)
+                else spec._layout.tapes
+            )
             if len(scope) != len(tapes) or len(scope) != len(set(scope)):
                 raise ValueError(
                     f"factor {index} requires one distinct variable per tape"
@@ -161,7 +170,13 @@ class StringFactorGraphSpec(QiecModel):
         """
         return dict(self.relations)[self.factors[0][0]].algebra
 
-    def bind(self, parameters: Mapping[ParameterId, torch.Tensor]) -> StringFactorGraph:
+    def bind(
+        self,
+        parameters: Mapping[ParameterId, torch.Tensor],
+        *,
+        max_states: int | None = None,
+        max_work: int | None = None,
+    ) -> StringFactorGraph:
         """Bind the graph's referenced relations to their live scalar leaves.
 
         Parameters
@@ -170,6 +185,9 @@ class StringFactorGraphSpec(QiecModel):
             The live scalar tensor for each used stable identity. All
             used tensors share one dtype and device, and distinct
             identities bind distinct tensor objects.
+        max_states, max_work : int or None
+            State and work limits for each intermediate of a derived
+            factor. Both are required when a used factor is derived.
 
         Returns
         -------
@@ -183,7 +201,8 @@ class StringFactorGraphSpec(QiecModel):
             If the parameter store or a required tensor is invalid.
         ValueError
             If a binding is missing, ambiguous, incompatible with the
-            algebra, or inconsistent in dtype or device.
+            algebra, or inconsistent in dtype or device, or a derived
+            construction has no explicit limits.
         """
         if not isinstance(parameters, Mapping):
             raise TypeError(
@@ -194,14 +213,27 @@ class StringFactorGraphSpec(QiecModel):
         identities = dict.fromkeys(
             parameter
             for name in used
-            for parameter in relations[name].weight_parameters
+            for parameter in _factor_parameters(relations[name])
         )
+        _validate_limits(max_states, max_work)
         values_by_id = {}
         for identity in identities:
             if identity not in parameters:
                 raise ValueError(f"missing string graph parameter {identity}")
             values_by_id[identity] = parameters[identity]
-        bound = {name: relations[name].bind(values_by_id) for name in used}
+        bound = {}
+        for name in used:
+            spec = relations[name]
+            if isinstance(spec, RationalRelationSpec):
+                bound[name] = spec.bind(values_by_id)
+            else:
+                if max_states is None or max_work is None:
+                    raise ValueError(
+                        "derived string graph factors require explicit construction limits"
+                    )
+                bound[name] = spec.bind(
+                    values_by_id, max_states=max_states, max_work=max_work
+                )
         values = values_by_id.values()
         if len({id(value) for value in values}) != len(values):
             raise ValueError(
@@ -215,6 +247,31 @@ class StringFactorGraphSpec(QiecModel):
             self._variables,
             tuple(StringFactor(scope, bound[name]) for name, scope in self.factors),
         )
+
+
+def _factor_parameters(
+    spec: RationalRelationSpec | RelationCascadeSpec,
+) -> tuple[ParameterId, ...]:
+    """Return stable owners across a primitive factor or derived recipe.
+
+    Parameters
+    ----------
+    spec : RationalRelationSpec or RelationCascadeSpec
+        The checked factor whose original weights are required.
+
+    Returns
+    -------
+    tuple of ParameterId
+        The original weight identities in primitive occurrence order.
+    """
+    if isinstance(spec, RationalRelationSpec):
+        return spec.weight_parameters
+    return tuple(
+        identity
+        for step in spec.steps
+        if step.primitive is not None
+        for identity in step.primitive.weight_parameters
+    )
 
 
 class TreeStringGraphRequest(QiecModel):
@@ -328,7 +385,10 @@ class TreeStringGraphRequest(QiecModel):
         ValueError
             If the graph is cyclic or the construction exceeds a limit.
         """
-        marginal = self.graph.bind(parameters).tree_marginal(
+        graph = self.graph.bind(
+            parameters, max_states=self.max_states, max_work=self.max_work
+        )
+        marginal = graph.tree_marginal(
             self.variable,
             max_states=self.max_states,
             max_work=self.max_work,

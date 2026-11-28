@@ -112,7 +112,7 @@ class JointAlignmentMapConfig(QiecModel):
             The feasible assignment, bound, and certificate when available.
         """
         return dual_alignment_map(
-            model.bind(parameters),
+            model.bind(parameters, max_states=self.max_states, max_work=self.max_work),
             max_iterations=self.max_iterations,
             max_ngram_order=self.max_ngram_order,
             max_features=self.max_features,
@@ -244,7 +244,9 @@ class RegularStringEPConfig(QiecModel):
         RegularStringEPResult
             The approximate marginals, site scales, and convergence diagnostics.
         """
-        graph = model.bind(parameters)
+        graph = model.bind(
+            parameters, max_states=self.max_states, max_work=self.max_work
+        )
         return regular_string_ep(
             graph,
             {name: spec.bind(parameters) for name, spec in self.bases},
@@ -404,7 +406,7 @@ class PrunedStringBPConfig(QiecModel):
             A reusable finite pruned schedule with the configured limits.
         """
         return FiniteStringBeliefPlan(
-            model.bind(parameters),
+            model.bind(parameters, max_states=self.max_states, max_work=self.max_work),
             dict(self.supports),
             max_entries=self.max_entries,
             max_states=self.max_states,

@@ -6,10 +6,22 @@ from collections.abc import Mapping
 
 import didactic.api as dx
 
-from quivers.dsl._relation_specs import AuthoredRelationSpec, _alphabet
-from quivers.dsl.ast_nodes import Module, QiecStringGraphDecl
+from quivers.dsl._relation_specs import (
+    AuthoredRelationSpec,
+    _alphabet,
+    _cascade,
+    _operands,
+)
+from quivers.dsl.ast_nodes import (
+    Module,
+    QiecRelationComposeDecl,
+    QiecRelationDecl,
+    QiecRelationTransformDecl,
+    QiecStringGraphDecl,
+)
 from quivers.dsl.ast_nodes.declarations import ObjectDecl
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.qiec.relation_cascades import RelationCascadeSpec
 from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.string_graphs import StringFactorGraphSpec
 
@@ -25,6 +37,20 @@ def authored_string_graph_specs(
         for statement in syntax.statements
         if isinstance(statement, ObjectDecl)
         for name in statement.names
+    }
+    declarations = {
+        statement.name: statement
+        for statement in syntax.statements
+        if isinstance(
+            statement,
+            QiecRelationDecl | QiecRelationComposeDecl | QiecRelationTransformDecl,
+        )
+    }
+    operands = {name: _operands(statement) for name, statement in declarations.items()}
+    primitive = {
+        name: relation
+        for name, relation in relations.items()
+        if isinstance(relation, RationalRelationSpec)
     }
     graphs: dict[str, StringFactorGraphSpec] = {}
     for declaration in syntax.statements:
@@ -46,16 +72,18 @@ def authored_string_graph_specs(
                         variable.observed,
                     )
                 )
-            used: dict[str, RationalRelationSpec] = {}
+            used: dict[str, RationalRelationSpec | RelationCascadeSpec] = {}
             for factor in declaration.factors:
+                if factor.relation in used:
+                    continue
                 relation = relations.get(factor.relation)
                 if relation is None:
                     raise ValueError(
                         f"unknown authored factor relation {factor.relation!r}"
                     )
-                if not isinstance(relation, RationalRelationSpec):
-                    raise ValueError(
-                        f"factor relation {factor.relation!r} must be primitive"
+                if not isinstance(relation, RationalRelationSpec | RelationCascadeSpec):
+                    relation = _cascade(
+                        factor.relation, declarations, primitive, operands
                     )
                 used[factor.relation] = relation
             graphs[declaration.name] = StringFactorGraphSpec(

@@ -819,8 +819,8 @@ other relation declarations. Forward references are allowed when
 their dependency graph is acyclic.
 
 A `string_graph` declares nominal variables and ordered occurrences
-of authored sparse factors. A variable can supply a fixed word,
-including the empty word. Each factor names its relation and lists
+of sparse factors. A variable can supply a fixed word, including the
+empty word. Each factor names a primitive or derived relation and lists
 one distinct variable per tape. A `string_graph_score` can bind the
 resulting graph identity.
 

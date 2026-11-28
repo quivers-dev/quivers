@@ -327,9 +327,8 @@ available when an operand is another checked relation operation.
 ## Authored string factor graphs
 
 A string graph declares variables, their observations, and ordered
-factor scopes. A factor names the primitive relation applied to its
-scope. The variable order within each scope follows that relation's
-tape order.
+factor scopes. A factor names a primitive or derived relation. The
+variable order within each scope follows that relation's tape order.
 
 <!-- compile: qiec -->
 ```qvr

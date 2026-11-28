@@ -267,6 +267,12 @@ ordered variable scope of each factor occurrence. A factor's scope must
 match the corresponding relation's tape order and types. Bind the record
 to a single parameter store to share a relation across repeated factor
 occurrences and to share stable weight identities across distinct relations.
+An entry can hold a primitive topology or a named `RelationCascadeSpec`.
+The graph checks each factor against the resulting cascade tape layout.
+It constructs each referenced derived relation once and shares that
+machine across all occurrences of its name. Tree, pruned, MAP, and EP
+requests use their state and work bounds for each cascade intermediate.
+Direct graph binding requires both limits when a used factor is derived.
 
 ::: quivers.qiec.string_graphs.StringFactorGraphSpec
 
