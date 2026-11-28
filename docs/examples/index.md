@@ -113,6 +113,7 @@ Execution by the reference evaluator and translation to a backend require differ
 - [Type-Logical Grammar (Lambek calculus)](type-logical.md): a chart parser whose every rule is a theorem of the associative Lambek calculus.
 - [Weighted Multiple Context-Free Grammar](wmcfg.md): rank-2 nonterminals deriving Swiss German cross-serial verb clusters.
 - [Schema-Bundled Chart Parser](schema-chart-parser.md): pattern-polymorphic rule schemas bundled into a differentiable CKY chart parser.
+- [A Noisy Deletion Channel](noisy-deletion-channel.md) infers an unbounded source length from the surviving symbols of a deletion channel.
 - [Term Autoencoder](term-autoencoder.md): a signature, encoder, decoder, and loss compressing typed lambda terms.
 - [Multimodal Type-Logical Grammar](multimodal-tlg.md): the Lambek calculus with residuated diamond and box modalities and one controlled structural postulate.
 - [Custom Sequent Rules](custom-rules.md): an AB grammar with harmonic composition declared as sequents in the DSL.
