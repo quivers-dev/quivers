@@ -223,6 +223,13 @@ from quivers.qiec.finite_marginalization import (
     FisherOutcome,
     marginalize_bernoulli_unit,
 )
+from quivers.qiec.finite_importance import (
+    FiniteImportancePlan,
+    ImportanceCoverage,
+    ImportanceCoverageError,
+    ImportanceOutcome,
+    plan_bernoulli_importance,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1180,6 +1187,13 @@ __all__ += [
     "plan_mixed_site_gradient",
 ]
 __all__ += ["FisherMarginalization", "FisherOutcome", "marginalize_bernoulli_unit"]
+__all__ += [
+    "FiniteImportancePlan",
+    "ImportanceCoverage",
+    "ImportanceCoverageError",
+    "ImportanceOutcome",
+    "plan_bernoulli_importance",
+]
 __all__ += [
     "FiniteAlgebra",
     "FiniteAlgebraLawError",

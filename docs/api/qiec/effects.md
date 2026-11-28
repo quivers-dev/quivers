@@ -960,6 +960,58 @@ assert [outcome.posterior.value for outcome in fit.outcomes] == [Fraction(1, 2)]
 
 ::: quivers.qiec.finite_marginalization
 
+## Finite importance sampling
+
+`plan_bernoulli_importance` checks a target and a proposal at two
+separately supplied points for the same scalar source. The target
+supplies the prior probability times the positive observation factor.
+The proposal uses only its prior probabilities. These probabilities
+are held fixed in the target direction. Both evaluations use explicit
+`enumerate` policies to check every complete history.
+
+The coverage check compares the ordered addresses and Boolean outcomes
+in each history. Distinct addresses can give distinct histories even
+when the Boolean outcomes are identical. A missing history raises
+`ImportanceCoverageError` with that original history and its positive
+target weight.
+
+If $w_h$ is the joint target weight and $q_h$ is the proposal
+probability, a proposal draw returns $w_h / q_h$ and $w_h' / q_h$.
+Their means are the raw evidence and its directional derivative.
+Use the separate finite marginalization result for normalized
+posterior weights and the marginal log score.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import Bind, Perform, SiteEstimator, plan_bernoulli_importance
+
+source = """
+instance random : Random
+
+define observed_unit(p : Real) : Real !{random} =
+    let group <- perform random.sample[Bool](site("group"), Bernoulli(p))
+    if group then
+        return 3.0
+    else
+        return 1.0
+"""
+module = Compiler(parse(source), module_name="finite-importance").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "observed_unit")
+assert isinstance(entry.body, Bind) and isinstance(entry.body.first, Perform)
+policy = SiteEstimator(site=entry.body.first.request.origin.static_site, estimator="enumerate")
+plan = plan_bernoulli_importance(
+    module, entry.id, (Fraction(1, 4),), (1,), (policy,),
+    proposal_arguments=(Fraction(1, 2),), proposal_policies=(policy,),
+)
+assert (plan.exact.value, plan.exact.tangent) == (Fraction(3, 2), 2)
+assert [outcome.estimate.tangent for outcome in plan.outcomes] == [-2, 6]
+assert plan.sample(seed=12).estimate.value == Fraction(3, 2)
+```
+
+::: quivers.qiec.finite_importance
+
 ## Finite-step Metropolis derivatives
 
 `finite_metropolis_jvp` takes an initial law, positive target weights,
