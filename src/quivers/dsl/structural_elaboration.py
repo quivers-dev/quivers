@@ -22,17 +22,37 @@ import didactic.api as dx
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.dsl import ast_nodes as surface
+from quivers.dsl.compiler._prelude import CompileError
+from quivers.dsl.compiler.structural import (
+    _decoder_support_limit,
+    _signature_from_declaration,
+)
 from quivers.qiec.builtins import COMPUTE_APPLY, COMPUTE_EFFECT
-from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
+from quivers.qiec.canonical import LOG_WEIGHT, sampleable_type, tensor_type
 from quivers.qiec.checking import ComputationSignature
 from quivers.qiec.declarations import FamilyDecl
 from quivers.qiec.effects import EffectRequest, EffectRow, HandlerDef, SiteProvenance
 from quivers.qiec.identifiers import ComputationId, FamilyId
 from quivers.qiec.kinds import NAT, IndexBinder, UserIndexSort
 from quivers.qiec.module import NamedComputation, NamedEffectInstance
-from quivers.qiec.structural_runtime import structural_handler_definition
-from quivers.qiec.terms import Bind, Call, Handle, Perform, Return, TupleValue, Var
+from quivers.qiec.structural_runtime import (
+    _decoder_presentation,
+    _finite_term_name,
+    structural_handler_definition,
+)
+from quivers.qiec.terms import (
+    Bind,
+    Call,
+    Handle,
+    LiteralValue,
+    Perform,
+    Return,
+    TupleValue,
+    Value,
+    Var,
+)
 from quivers.qiec.types import (
+    INT,
     REAL,
     IndexConstructor,
     IndexLiteral,
@@ -105,6 +125,7 @@ class _StructuralComponent(QiecModel):
     signature: ComputationSignature | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    support_limit: int | None = None
 
 
 def _option_number(options: tuple[surface.OptionEntry, ...], key: str) -> int | None:
@@ -283,6 +304,7 @@ class _StructuralElaboration:
                     product_type(structural.term(), code),
                     LOG_WEIGHT,
                 )
+                self._declare_decoder_law(components, declaration, structural, code)
 
         for declaration in self._items(surface.LossDecl):
             recognized = _reconstruction_loss(declaration)
@@ -304,6 +326,57 @@ class _StructuralElaboration:
             )
         self._structural_components = components
 
+    def _declare_decoder_law(
+        self: _Elaborator,
+        components: dict[str, _StructuralComponent],
+        declaration: surface.DecoderDecl,
+        structural: _StructuralSignature,
+        code: TypeExpr,
+    ) -> None:
+        """Declare the closed nominal families and a checked law-producing call."""
+        try:
+            limit = _decoder_support_limit(declaration)
+            if limit is None:
+                return
+            presentation = _decoder_presentation(
+                _signature_from_declaration(structural.declaration),
+                structural.root,
+                qualified=True,
+            )
+        except (CompileError, TypeError, ValueError, dx.ValidationError) as error:
+            self._fail(declaration, str(error), code="qiec-kind")
+        families, constructors = presentation.declarations()
+        for family in families:
+            previous = self.families.get(family.name)
+            if previous is not None and previous != family:
+                self._fail(
+                    declaration,
+                    f"duplicate decoder law family {family.name!r}",
+                    code="qiec-kind",
+                )
+            self.families[family.name] = family
+        for constructor in constructors:
+            previous = self.constructors.get(constructor.name)
+            if previous is not None and previous != constructor:
+                self._fail(
+                    declaration,
+                    f"duplicate decoder law constructor {constructor.name!r}",
+                    code="qiec-kind",
+                )
+            self.constructors[constructor.name] = constructor
+        root = self.families[
+            _finite_term_name(structural.declaration.name, structural.root)
+        ]
+        self._structural_component(
+            components,
+            declaration,
+            f"{declaration.name}__law",
+            "decoder-law",
+            code,
+            sampleable_type(TypeApplication(constructor=root.type_constructor)),
+            support_limit=limit,
+        )
+
     def _structural_component(
         self: _Elaborator,
         components: dict[str, _StructuralComponent],
@@ -312,10 +385,13 @@ class _StructuralElaboration:
         role: str,
         argument: TypeExpr,
         result: TypeExpr,
+        *,
+        support_limit: int | None = None,
     ) -> None:
         """Declare one component's specialized ``Compute`` instance."""
 
-        effect = COMPUTE_EFFECT.apply((argument, result))
+        domain = product_type(argument, INT) if support_limit is not None else argument
+        effect = COMPUTE_EFFECT.apply((domain, result))
         instance_name = f"{name}__compute"
         entry = instantiate_effect(
             effect,
@@ -347,6 +423,7 @@ class _StructuralElaboration:
             result=result,
             instance=instance,
             handler=handler,
+            support_limit=support_limit,
         )
 
     def _declare_structural_signatures(self: _Elaborator) -> None:
@@ -403,12 +480,21 @@ class _StructuralElaboration:
         for component in getattr(self, "_structural_components", {}).values():
             assert component.signature is not None
             argument = Local(name="argument", type=component.argument)
+            operand: Value = Var(local=argument)
+            if component.support_limit is not None:
+                operand = TupleValue(
+                    items=(
+                        operand,
+                        LiteralValue(type=INT, value=component.support_limit),
+                    ),
+                    result_type=product_type(component.argument, INT),
+                )
             request = EffectRequest(
                 instance=component.instance.entry.instance,
                 effect=component.instance.entry.effect,
                 operation=COMPUTE_APPLY,
                 static_arguments=(),
-                arguments=(Var(local=argument),),
+                arguments=(operand,),
                 result_type=component.result,
                 origin=SiteProvenance(
                     origin=self._origin(

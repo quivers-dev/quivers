@@ -9,6 +9,7 @@ import importlib
 import inspect
 from collections.abc import Callable
 
+import didactic.api as dx
 import torch
 import torch.nn as nn
 
@@ -117,12 +118,26 @@ def _decode_vocab_option(
 #   keyword argument validated against the factory's own Python
 #   signature in `_build_encoder_from_factory`), so strict
 #   key-checking applies only to non-factory encoders.
-# * Decoders read the search ``depth``.
+# * Decoders read the search ``depth`` and the optional complete support limit.
 # * Losses read the ``weight`` scalar, the ``on`` attachment call,
 #   and the bare ``global`` attachment flag.
 _ENCODER_OPTION_KEYS: frozenset[str] = frozenset({"factory"})
-_DECODER_OPTION_KEYS: frozenset[str] = frozenset({"depth"})
+_DECODER_OPTION_KEYS: frozenset[str] = frozenset({"depth", "max_candidates"})
 _LOSS_OPTION_KEYS: frozenset[str] = frozenset({"weight", "on", "global"})
+
+
+def _decoder_support_limit(decl: DecoderDecl) -> int | None:
+    """Read the optional, positive complete-support limit from the source."""
+    limit = get_option_int(
+        decl.options, "max_candidates", line=decl.line, col=decl.col, default=None
+    )
+    if limit is not None and limit < 1:
+        raise CompileError(
+            f"decoder {decl.name!r}: max_candidates must be positive",
+            decl.line,
+            decl.col,
+        )
+    return limit
 
 
 _ENCODER_FACTORY_REGISTRY: dict[str, str] = {
@@ -298,6 +313,241 @@ def _build_encoder_from_factory(decl: "EncoderDecl", sig) -> "Encoder":
     return factory(**kwargs)
 
 
+def _signature_from_declaration(decl: SignatureDecl) -> Signature:
+    """Build the shared structural signature from an authored declaration.
+
+    Parameters
+    ----------
+    decl
+        The source declaration with its sort and constructor options.
+
+    Returns
+    -------
+    Signature
+        The checked structural signature in declaration order.
+
+    Raises
+    ------
+    CompileError
+        If a declaration duplicates a name or references an unknown sort.
+    """
+    # Sort table.
+    sorts: dict[str, Sort] = {}
+    for s in decl.sorts:
+        if s.name in sorts:
+            raise CompileError(
+                f"signature {decl.name!r}: duplicate sort {s.name!r}",
+                s.line,
+                s.col,
+            )
+        s_dim = get_option_int(
+            s.options,
+            "dim",
+            line=s.line,
+            col=s.col,
+            default=None,
+        )
+        s_vocab_lits = _decode_vocab_option(
+            decl.name,
+            s.name,
+            s.options,
+            s.line,
+            s.col,
+        )
+        if s_vocab_lits and s.kind != "data":
+            raise CompileError(
+                f"signature {decl.name!r}: vocab clause is only valid "
+                f"on `data` sorts; sort {s.name!r} has kind {s.kind!r}",
+                s.line,
+                s.col,
+            )
+        vocab_entries: list[SortVocabEntry] = []
+        seen_vals: set = set()
+        for lit in s_vocab_lits:
+            value = _decode_vocab_literal(decl.name, s.name, lit)
+            if value in seen_vals:
+                raise CompileError(
+                    f"signature {decl.name!r}: sort {s.name!r} vocabulary "
+                    f"contains duplicate entry {value!r}",
+                    s.line,
+                    s.col,
+                )
+            seen_vals.add(value)
+            vocab_entries.append(SortVocabEntry(kind=lit.kind, value=value))
+        sorts[s.name] = Sort(
+            name=s.name,
+            kind=s.kind,
+            dim=s_dim,
+            vocab=tuple(vocab_entries),
+        )
+
+    # Vertex / edge kinds (graph-shaped signatures).
+    vertex_kinds: dict[str, VertexKind] = {}
+    for v in decl.vertex_kinds:
+        if v.name in vertex_kinds:
+            raise CompileError(
+                f"signature {decl.name!r}: duplicate vertex_kind {v.name!r}",
+                v.line,
+                v.col,
+            )
+        v_dim = get_option_int(
+            v.options,
+            "dim",
+            line=v.line,
+            col=v.col,
+            default=None,
+        )
+        vertex_kinds[v.name] = VertexKind(name=v.name, kind=v.kind, dim=v_dim)
+    edge_kinds: dict[str, EdgeKind] = {}
+    for e in decl.edge_kinds:
+        if e.name in edge_kinds:
+            raise CompileError(
+                f"signature {decl.name!r}: duplicate edge_kind {e.name!r}",
+                e.line,
+                e.col,
+            )
+        if e.src not in vertex_kinds:
+            raise CompileError(
+                f"signature {decl.name!r}: edge_kind {e.name!r} has "
+                f"unknown source vertex_kind {e.src!r}",
+                e.line,
+                e.col,
+            )
+        if e.tgt not in vertex_kinds:
+            raise CompileError(
+                f"signature {decl.name!r}: edge_kind {e.name!r} has "
+                f"unknown target vertex_kind {e.tgt!r}",
+                e.line,
+                e.col,
+            )
+        edge_kinds[e.name] = EdgeKind(
+            name=e.name,
+            src=e.src,
+            tgt=e.tgt,
+            directed=e.directed,
+        )
+
+    # Constructors. Every sort mentioned in a constructor must
+    # be declared in the signature's `sorts { … }` block —
+    # auto-registering an undeclared sort would mask a real
+    # declaration error and leave its dim unspecified.
+    _RESERVED_OP_NAMES = {"BoundVar", "Data"}
+    constructors: dict[str, Constructor] = {}
+    for c in decl.constructors:
+        if c.name in _RESERVED_OP_NAMES:
+            raise CompileError(
+                f"signature {decl.name!r}: constructor name {c.name!r} "
+                f"is reserved by the framework",
+                c.line,
+                c.col,
+            )
+        if c.name in constructors:
+            raise CompileError(
+                f"signature {decl.name!r}: duplicate constructor {c.name!r}",
+                c.line,
+                c.col,
+            )
+        for s in c.domain:
+            if s not in sorts:
+                raise CompileError(
+                    f"signature {decl.name!r}: constructor {c.name!r} "
+                    f"references undeclared sort {s!r}; declare it in "
+                    f"the signature's `sorts {{ … }}` block",
+                    c.line,
+                    c.col,
+                )
+        if c.codomain not in sorts:
+            raise CompileError(
+                f"signature {decl.name!r}: constructor {c.name!r} has "
+                f"unknown codomain sort {c.codomain!r}",
+                c.line,
+                c.col,
+            )
+        constructors[c.name] = Constructor(
+            name=c.name,
+            domain=c.domain,
+            codomain=c.codomain,
+        )
+
+    # Binders. Every sort a binder mentions (variable sort,
+    # annotation sort, scoped argument sort, codomain) must
+    # already be declared in the signature's `sorts { … }` block
+    # — binders introduce structural recursion, so silently
+    # auto-registering an object sort would mask a real
+    # declaration error and produce a sort whose dim the user
+    # never specified.
+    binders: dict[str, Binder] = {}
+    for b in decl.binders:
+        if b.name in _RESERVED_OP_NAMES:
+            raise CompileError(
+                f"signature {decl.name!r}: binder name {b.name!r} is "
+                f"reserved by the framework",
+                b.line,
+                b.col,
+            )
+        if b.name in binders or b.name in constructors:
+            raise CompileError(
+                f"signature {decl.name!r}: duplicate binder {b.name!r}",
+                b.line,
+                b.col,
+            )
+        for v in b.binds:
+            if v.sort not in sorts:
+                raise CompileError(
+                    f"signature {decl.name!r}: binder {b.name!r} introduces "
+                    f"variable of undeclared sort {v.sort!r}",
+                    b.line,
+                    b.col,
+                )
+            if v.annot_sort is not None and v.annot_sort not in sorts:
+                raise CompileError(
+                    f"signature {decl.name!r}: binder {b.name!r} variable "
+                    f"{v.var!r} annotated by undeclared sort "
+                    f"{v.annot_sort!r}",
+                    b.line,
+                    b.col,
+                )
+        for a in b.scoped:
+            if a.sort not in sorts:
+                raise CompileError(
+                    f"signature {decl.name!r}: binder {b.name!r} scoped arg "
+                    f"{a.arg!r} has undeclared sort {a.sort!r}",
+                    b.line,
+                    b.col,
+                )
+        if b.codomain not in sorts:
+            raise CompileError(
+                f"signature {decl.name!r}: binder {b.name!r} has "
+                f"unknown codomain sort {b.codomain!r}",
+                b.line,
+                b.col,
+            )
+        binders[b.name] = Binder(
+            name=b.name,
+            binds=tuple(
+                BinderVarSpec(
+                    var=v.var,
+                    sort=v.sort,
+                    annot_sort=v.annot_sort,
+                )
+                for v in b.binds
+            ),
+            scoped=tuple(BinderArgSpec(arg=a.arg, sort=a.sort) for a in b.scoped),
+            codomain=b.codomain,
+        )
+
+    sig = Signature(
+        name=decl.name,
+        params=decl.params,
+        sorts_t=tuple(sorts.values()),
+        constructors_t=tuple(constructors.values()),
+        binders_t=tuple(binders.values()),
+        vertex_kinds_t=tuple(vertex_kinds.values()),
+        edge_kinds_t=tuple(edge_kinds.values()),
+    )
+    return sig
+
+
 class _StructuralMixin:
     """Mixin: structural artifact compilation methods.
 
@@ -335,221 +585,7 @@ class _StructuralMixin:
                 decl.col,
             )
 
-        # Sort table.
-        sorts: dict[str, Sort] = {}
-        for s in decl.sorts:
-            if s.name in sorts:
-                raise CompileError(
-                    f"signature {decl.name!r}: duplicate sort {s.name!r}",
-                    s.line,
-                    s.col,
-                )
-            s_dim = get_option_int(
-                s.options,
-                "dim",
-                line=s.line,
-                col=s.col,
-                default=None,
-            )
-            s_vocab_lits = _decode_vocab_option(
-                decl.name,
-                s.name,
-                s.options,
-                s.line,
-                s.col,
-            )
-            if s_vocab_lits and s.kind != "data":
-                raise CompileError(
-                    f"signature {decl.name!r}: vocab clause is only valid "
-                    f"on `data` sorts; sort {s.name!r} has kind {s.kind!r}",
-                    s.line,
-                    s.col,
-                )
-            vocab_entries: list[SortVocabEntry] = []
-            seen_vals: set = set()
-            for lit in s_vocab_lits:
-                value = _decode_vocab_literal(decl.name, s.name, lit)
-                if value in seen_vals:
-                    raise CompileError(
-                        f"signature {decl.name!r}: sort {s.name!r} vocabulary "
-                        f"contains duplicate entry {value!r}",
-                        s.line,
-                        s.col,
-                    )
-                seen_vals.add(value)
-                vocab_entries.append(SortVocabEntry(kind=lit.kind, value=value))
-            sorts[s.name] = Sort(
-                name=s.name,
-                kind=s.kind,
-                dim=s_dim,
-                vocab=tuple(vocab_entries),
-            )
-
-        # Vertex / edge kinds (graph-shaped signatures).
-        vertex_kinds: dict[str, VertexKind] = {}
-        for v in decl.vertex_kinds:
-            if v.name in vertex_kinds:
-                raise CompileError(
-                    f"signature {decl.name!r}: duplicate vertex_kind {v.name!r}",
-                    v.line,
-                    v.col,
-                )
-            v_dim = get_option_int(
-                v.options,
-                "dim",
-                line=v.line,
-                col=v.col,
-                default=None,
-            )
-            vertex_kinds[v.name] = VertexKind(name=v.name, kind=v.kind, dim=v_dim)
-        edge_kinds: dict[str, EdgeKind] = {}
-        for e in decl.edge_kinds:
-            if e.name in edge_kinds:
-                raise CompileError(
-                    f"signature {decl.name!r}: duplicate edge_kind {e.name!r}",
-                    e.line,
-                    e.col,
-                )
-            if e.src not in vertex_kinds:
-                raise CompileError(
-                    f"signature {decl.name!r}: edge_kind {e.name!r} has "
-                    f"unknown source vertex_kind {e.src!r}",
-                    e.line,
-                    e.col,
-                )
-            if e.tgt not in vertex_kinds:
-                raise CompileError(
-                    f"signature {decl.name!r}: edge_kind {e.name!r} has "
-                    f"unknown target vertex_kind {e.tgt!r}",
-                    e.line,
-                    e.col,
-                )
-            edge_kinds[e.name] = EdgeKind(
-                name=e.name,
-                src=e.src,
-                tgt=e.tgt,
-                directed=e.directed,
-            )
-
-        # Constructors. Every sort mentioned in a constructor must
-        # be declared in the signature's `sorts { … }` block —
-        # auto-registering an undeclared sort would mask a real
-        # declaration error and leave its dim unspecified.
-        _RESERVED_OP_NAMES = {"BoundVar", "Data"}
-        constructors: dict[str, Constructor] = {}
-        for c in decl.constructors:
-            if c.name in _RESERVED_OP_NAMES:
-                raise CompileError(
-                    f"signature {decl.name!r}: constructor name {c.name!r} "
-                    f"is reserved by the framework",
-                    c.line,
-                    c.col,
-                )
-            if c.name in constructors:
-                raise CompileError(
-                    f"signature {decl.name!r}: duplicate constructor {c.name!r}",
-                    c.line,
-                    c.col,
-                )
-            for s in c.domain:
-                if s not in sorts:
-                    raise CompileError(
-                        f"signature {decl.name!r}: constructor {c.name!r} "
-                        f"references undeclared sort {s!r}; declare it in "
-                        f"the signature's `sorts {{ … }}` block",
-                        c.line,
-                        c.col,
-                    )
-            if c.codomain not in sorts:
-                raise CompileError(
-                    f"signature {decl.name!r}: constructor {c.name!r} has "
-                    f"unknown codomain sort {c.codomain!r}",
-                    c.line,
-                    c.col,
-                )
-            constructors[c.name] = Constructor(
-                name=c.name,
-                domain=c.domain,
-                codomain=c.codomain,
-            )
-
-        # Binders. Every sort a binder mentions (variable sort,
-        # annotation sort, scoped argument sort, codomain) must
-        # already be declared in the signature's `sorts { … }` block
-        # — binders introduce structural recursion, so silently
-        # auto-registering an object sort would mask a real
-        # declaration error and produce a sort whose dim the user
-        # never specified.
-        binders: dict[str, Binder] = {}
-        for b in decl.binders:
-            if b.name in _RESERVED_OP_NAMES:
-                raise CompileError(
-                    f"signature {decl.name!r}: binder name {b.name!r} is "
-                    f"reserved by the framework",
-                    b.line,
-                    b.col,
-                )
-            if b.name in binders or b.name in constructors:
-                raise CompileError(
-                    f"signature {decl.name!r}: duplicate binder {b.name!r}",
-                    b.line,
-                    b.col,
-                )
-            for v in b.binds:
-                if v.sort not in sorts:
-                    raise CompileError(
-                        f"signature {decl.name!r}: binder {b.name!r} introduces "
-                        f"variable of undeclared sort {v.sort!r}",
-                        b.line,
-                        b.col,
-                    )
-                if v.annot_sort is not None and v.annot_sort not in sorts:
-                    raise CompileError(
-                        f"signature {decl.name!r}: binder {b.name!r} variable "
-                        f"{v.var!r} annotated by undeclared sort "
-                        f"{v.annot_sort!r}",
-                        b.line,
-                        b.col,
-                    )
-            for a in b.scoped:
-                if a.sort not in sorts:
-                    raise CompileError(
-                        f"signature {decl.name!r}: binder {b.name!r} scoped arg "
-                        f"{a.arg!r} has undeclared sort {a.sort!r}",
-                        b.line,
-                        b.col,
-                    )
-            if b.codomain not in sorts:
-                raise CompileError(
-                    f"signature {decl.name!r}: binder {b.name!r} has "
-                    f"unknown codomain sort {b.codomain!r}",
-                    b.line,
-                    b.col,
-                )
-            binders[b.name] = Binder(
-                name=b.name,
-                binds=tuple(
-                    BinderVarSpec(
-                        var=v.var,
-                        sort=v.sort,
-                        annot_sort=v.annot_sort,
-                    )
-                    for v in b.binds
-                ),
-                scoped=tuple(BinderArgSpec(arg=a.arg, sort=a.sort) for a in b.scoped),
-                codomain=b.codomain,
-            )
-
-        sig = Signature(
-            name=decl.name,
-            params=decl.params,
-            sorts_t=tuple(sorts.values()),
-            constructors_t=tuple(constructors.values()),
-            binders_t=tuple(binders.values()),
-            vertex_kinds_t=tuple(vertex_kinds.values()),
-            edge_kinds_t=tuple(edge_kinds.values()),
-        )
-        self._signatures[decl.name] = sig
+        self._signatures[decl.name] = _signature_from_declaration(decl)
 
     def _resolve_dim(
         self,
@@ -914,6 +950,7 @@ class _StructuralMixin:
             line=decl.line,
             col=decl.col,
         )
+        support_limit = _decoder_support_limit(decl)
 
         overrides: dict[str, int] = {sd.sort: sd.dim for sd in decl.dims}
         sort_dims: dict[str, int] = {}
@@ -1120,6 +1157,23 @@ class _StructuralMixin:
             data_vocab=self._data_vocab_for(sig),
             modules_owned=modules_owned,
         )
+        if support_limit is not None:
+            from quivers.qiec.structural_runtime import FiniteDecoderSupport
+
+            try:
+                support = FiniteDecoderSupport.complete(
+                    dec,
+                    sort=dec._resolve_sort(None),
+                    max_candidates=support_limit,
+                    qualified=True,
+                )
+                dec._qiec_finite_support = support._prepared
+            except (TypeError, ValueError, RuntimeError, dx.ValidationError) as error:
+                raise CompileError(
+                    f"decoder {decl.name!r} cannot prepare complete support: {error}",
+                    decl.line,
+                    decl.col,
+                ) from error
         if decl.name in self._morphisms:
             raise CompileError(
                 f"decoder {decl.name!r} name conflicts with existing morphism",
