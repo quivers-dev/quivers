@@ -45,6 +45,7 @@ __all__ = [
     "ConditionalStringQuery",
     "FixedStringQuery",
     "FiniteRelationRestriction",
+    "FiniteStringBeliefPlan",
     "FiniteStringScore",
     "Label",
     "NgramFamily",
@@ -55,6 +56,7 @@ __all__ = [
     "RelationLimitError",
     "RelationPath",
     "RelationTopology",
+    "StringBeliefResult",
     "StringFactor",
     "StringFactorGraph",
     "StringMapCertificate",
@@ -589,3 +591,7 @@ from quivers.core.relations.dual import (  # noqa: E402
     dual_string_map,
 )
 from quivers.core.relations.projection import NgramFamily, NgramProjection  # noqa: E402
+from quivers.core.relations.beliefs import (  # noqa: E402
+    FiniteStringBeliefPlan,
+    StringBeliefResult,
+)
