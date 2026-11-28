@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from functools import cached_property
+from graphlib import TopologicalSorter
+from itertools import product
+from typing import cast
 import didactic.api as dx
 import torch
 
@@ -38,7 +41,66 @@ from quivers.qiec.rules import (
 from quivers.qiec.structured_sampleables import FiniteSampleable
 from quivers.qiec.terms import Return
 from quivers.qiec.types import REAL, TypeApplication, TypeExpr
-from quivers.structural import Decoder, Term
+from quivers.structural import (
+    EMPTY_CONTEXT,
+    Decoder,
+    Signature,
+    Term,
+    TermArg,
+    make_term,
+)
+
+
+type _DecoderLayout = tuple[
+    Signature, int, tuple[tuple[str, tuple[tuple[type, TermArg], ...]], ...]
+]
+
+
+def _decoder_layout(decoder: Decoder) -> _DecoderLayout:
+    """Snapshot the declarations that determine the decoder's support.
+
+    Parameters
+    ----------
+    decoder
+        The decoder, whose learnable tensors are deliberately omitted.
+
+    Returns
+    -------
+    tuple
+        The signature, depth and finite vocabularies in stable order.
+    """
+    vocabularies = tuple(
+        (sort, tuple((type(value), value) for value in vocabulary))
+        for sort, vocabulary in sorted(decoder.data_vocab.items())
+    )
+    return decoder.signature, decoder.depth, vocabularies
+
+
+def _decoder_presentation(decoder: Decoder, sort: str) -> RulePresentation:
+    """Require a first-order structural presentation at the chosen sort.
+
+    Parameters
+    ----------
+    decoder, sort
+        The decoder and root object sort.
+
+    Returns
+    -------
+    RulePresentation
+        The structural signature's shared checked declaration.
+
+    Raises
+    ------
+    ValueError
+        If the decoder uses a binding signature or names a non-object sort.
+    """
+    signature = decoder.signature
+    if signature.binders:
+        raise ValueError("finite decoder support requires a first-order signature")
+    root = signature.sorts.get(sort)
+    if root is None or root.kind != "object":
+        raise ValueError(f"decoder support sort {sort!r} is not an object sort")
+    return presentation_of(signature)
 
 
 class FiniteDecoderSupport(QiecModel):
@@ -90,6 +152,18 @@ class FiniteDecoderSupport(QiecModel):
                 f"decoder support must have from 1 to {self.max_candidates} candidate entries"
             )
         _ = self._checked_candidates
+        _ = self._layout
+
+    @cached_property
+    def _layout(self) -> _DecoderLayout:
+        """The support-defining declaration checked when this support was made.
+
+        Returns
+        -------
+        tuple
+            The immutable snapshot used to check later invocations.
+        """
+        return _decoder_layout(self.decoder)
 
     @cached_property
     def presentation(self) -> RulePresentation:
@@ -106,15 +180,52 @@ class FiniteDecoderSupport(QiecModel):
             If the decoder uses a binding signature or the sort is not an
             object sort in its signature.
         """
-        signature = self.decoder.signature
-        if signature.binders:
-            raise ValueError("finite decoder support requires a first-order signature")
-        sort = signature.sorts.get(self.sort)
-        if sort is None or sort.kind != "object":
+        return _decoder_presentation(self.decoder, self.sort)
+
+    @classmethod
+    def complete(
+        cls, decoder: Decoder, *, sort: str, max_candidates: int
+    ) -> FiniteDecoderSupport:
+        """Prepare the complete support of a productive depth-bounded decoder.
+
+        Every constructor the decoder can choose at a reachable sort and
+        depth must be productive. Data leaves range over their decoder
+        vocabulary, which must be finite, nonempty and free of duplicates.
+        The support is counted up to the declared limit before making terms.
+
+        Parameters
+        ----------
+        decoder
+            The first-order decoder and its depth bound.
+        sort
+            The root object sort to expand.
+        max_candidates
+            The most terms to materialize. It must be positive.
+
+        Returns
+        -------
+        FiniteDecoderSupport
+            Every term admitted by the given structural decoder at this root.
+            When its local distributions are valid, its normalized law
+            agrees with the original decoder.
+
+        Raises
+        ------
+        ValueError
+            If a reachable branch is unproductive, the domain is unsupported,
+            or the number of terms exceeds the bound.
+        """
+        _decoder_presentation(decoder, sort)
+        if type(max_candidates) is not int or max_candidates < 1:
             raise ValueError(
-                f"decoder support sort {self.sort!r} is not an object sort"
+                "a finite decoder support needs a positive candidate bound"
             )
-        return presentation_of(signature)
+        return cls(
+            decoder=decoder,
+            candidates=_complete_decoder_terms(decoder, sort, max_candidates),
+            sort=sort,
+            max_candidates=max_candidates,
+        )
 
     @cached_property
     def element(self) -> TypeApplication:
@@ -177,7 +288,8 @@ class FiniteDecoderSupport(QiecModel):
         Raises
         ------
         ValueError
-            If the code has the wrong shape or the signature was replaced.
+            If the code has the wrong shape or the decoder's signature,
+            depth or vocabularies have changed.
         RuntimeError
             If a supplied term violates the decoder's depth or vocabulary
             restriction, or the decoder lacks a required component.
@@ -197,8 +309,10 @@ class FiniteDecoderSupport(QiecModel):
             raise ValueError(
                 f"decoder support expects one code of shape ({width},) with floating dtype"
             )
-        if presentation_of(self.decoder.signature) is not self.presentation:
-            raise ValueError("the finite decoder support's signature changed")
+        if _decoder_layout(self.decoder) != self._layout:
+            raise ValueError(
+                "the finite decoder support's signature, depth or vocabulary changed"
+            )
         values, terms = zip(*self._checked_candidates, strict=True)
         masses = torch.stack(
             [self.decoder.log_prob(term, code, sort=self.sort) for term in terms]
@@ -209,6 +323,113 @@ class FiniteDecoderSupport(QiecModel):
             log_weights=masses,
             registry=self.presentation.registry,
         )
+
+
+type _DecoderState = tuple[str, int]
+
+
+def _complete_decoder_terms(
+    decoder: Decoder, sort: str, limit: int
+) -> tuple[Term, ...]:
+    """Count all reachable structural alternatives before materializing terms.
+
+    Parameters
+    ----------
+    decoder
+        The first-order decoder with closed vocabularies.
+    sort
+        The root sort.
+    limit
+        The most terms the caller is willing to materialize.
+
+    Returns
+    -------
+    tuple of Term
+        The full root support, in constructor and vocabulary order.
+
+    Raises
+    ------
+    ValueError
+        If a reachable branch can get stuck or the complete support is too large.
+    """
+    signature = decoder.signature
+    root = (sort, decoder.depth)
+    dependencies: TopologicalSorter[_DecoderState] = TopologicalSorter()
+    productions: dict[
+        _DecoderState, tuple[tuple[str, tuple[_DecoderState, ...]], ...]
+    ] = {}
+    leaves: dict[_DecoderState, tuple[TermArg, ...]] = {}
+    pending = [root]
+    while pending:
+        state = pending.pop()
+        if state in productions or state in leaves:
+            continue
+        current, depth = state
+        kind = signature.sorts[current].kind
+        if kind == "data":
+            words = tuple(decoder.data_vocab.get(current, ()))
+            if not words or len(set(words)) != len(words):
+                raise ValueError(
+                    f"reachable decoder data sort {current!r} needs a nonempty vocabulary "
+                    "without duplicates"
+                )
+            leaves[state] = words
+            dependencies.add(state)
+            continue
+        if kind != "object":
+            raise ValueError(
+                f"reachable decoder sort {current!r} needs a variable in an empty context"
+            )
+        try:
+            choices = decoder._object_candidates(EMPTY_CONTEXT, current, depth)
+        except RuntimeError as error:
+            raise ValueError(
+                f"decoder sort {current!r} at depth {depth}: {error}"
+            ) from error
+        rules = tuple(
+            (
+                name,
+                tuple(
+                    (child, -1 if signature.sorts[child].kind == "data" else depth - 1)
+                    for child in signature.constructors[name].domain
+                ),
+            )
+            for name in choices
+        )
+        children = tuple(child for _, child_states in rules for child in child_states)
+        productions[state] = rules
+        dependencies.add(state, *children)
+        pending.extend(children)
+
+    order = tuple(dependencies.static_order())
+    counts: dict[_DecoderState, int] = {}
+    overflow = limit + 1
+    for state in order:
+        if state in leaves:
+            counts[state] = min(overflow, len(leaves[state]))
+            continue
+        total = 0
+        for _, child_states in productions[state]:
+            ways = 1
+            for child in child_states:
+                ways = min(overflow, ways * counts[child])
+            total = min(overflow, total + ways)
+        counts[state] = total
+    if counts[root] > limit:
+        raise ValueError(
+            f"complete decoder support exceeds the {limit} candidate limit"
+        )
+
+    terms = dict(leaves)
+    for state in order:
+        if state in productions:
+            terms[state] = tuple(
+                make_term(name, *arguments)
+                for name, child_states in productions[state]
+                for arguments in product(*(terms[child] for child in child_states))
+            )
+    # Every production of the checked object sort above constructs a Term.
+    return cast(tuple[Term, ...], terms[root])
 
 
 def _tensor_value(type_: TypeExpr, value: object) -> bool:
