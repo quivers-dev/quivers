@@ -4,6 +4,7 @@ A source produces a string over a one-symbol alphabet. It repeats the
 symbol with probability $p$ and stops with probability $1-p$. The
 channel deletes each source symbol with probability $p$ and keeps it
 with probability $1-p$. Both relations read the same parameter.
+The source terminates almost surely for $0\leq p<1$.
 
 We observe a word of length $m$ and infer the source length $n$. For
 $n\geq m$, the weight of the paired words is
@@ -106,7 +107,7 @@ $$
 P(Y=m) = \frac{(1-p)\bigl(p(1-p)\bigr)^m}{(1-p^2)^{m+1}},
 $$
 
-and $N-m$ under the posterior has a negative binomial distribution
+When the evidence is positive, $N-m$ under the posterior has a negative binomial distribution
 with $m+1$ successes and success probability $1-p^2$. The code uses a
 three-state product topology and a query sized by the observed length.
 The source length is unbounded, and the source and channel
