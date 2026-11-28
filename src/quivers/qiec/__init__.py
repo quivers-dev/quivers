@@ -134,6 +134,7 @@ from quivers.qiec.discharge import (
     DISCHARGE_STATEMENTS,
     DISCHARGE_STEPS,
     DischargeObstacle,
+    DischargeRewrite,
     DischargedModule,
     discharge_computation,
     discharge_module,
@@ -199,6 +200,7 @@ from quivers.qiec.handler_interchange import (
     check_finite_handler_interchange,
 )
 from quivers.qiec.effect_plan import (
+    EffectExecutionStage,
     EffectInterchangeReport,
     EffectLawReport,
     EffectPlan,
@@ -752,6 +754,7 @@ __all__ = [
     "DISCHARGE_STEPS",
     "DeductionRun",
     "DischargeObstacle",
+    "DischargeRewrite",
     "DischargedModule",
     "DistributionBackend",
     "FiniteDecoderSupport",
@@ -1209,6 +1212,7 @@ __all__ += [
 ]
 __all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carrier"]
 __all__ += [
+    "EffectExecutionStage",
     "EffectInterchangeReport",
     "EffectLawReport",
     "EffectPlan",

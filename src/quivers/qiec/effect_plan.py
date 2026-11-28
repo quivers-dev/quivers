@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from quivers.qiec.discharge import DischargedModule, discharge_module
+from quivers.qiec.discharge import (
+    DischargeObstacle,
+    DischargedModule,
+    DischargeRewrite,
+    discharge_module,
+)
 from quivers.qiec.effect_law_schema import (
     EffectLawBundle,
     EffectLawEvidence,
@@ -25,7 +30,12 @@ from quivers.qiec.handler_interchange import (
     check_finite_handler_interchange,
 )
 from quivers.qiec.laws import FiniteLawDecision, FiniteLawLimit, FiniteLawUnsupported
-from quivers.qiec.module import QiecModule, reached_handlers, validate_module
+from quivers.qiec.module import (
+    QiecModule,
+    _execution_reachability,
+    reached_handlers,
+    validate_module,
+)
 from quivers.qiec.polynomial_laws import PolynomialLawLimit, PolynomialLawUnsupported
 from quivers.qiec.rational_laws import RationalLawLimit, RationalLawUnsupported
 
@@ -101,6 +111,30 @@ class EffectInterchangeReport:
 
 
 @dataclass(frozen=True, slots=True)
+class EffectExecutionStage:
+    """One source computation reached in the resulting execution graph.
+
+    Parameters
+    ----------
+    computation : ComputationId
+        The original checked identity, preserved by lowering.
+    stage : {"direct", "handler-discharge", "recursive-state", "reference"}
+        The stage selected by ordinary discharge. `direct` has no
+        local rewrite and `reference` retains a handler. A direct
+        caller can reach another computation at a different stage.
+    rewrite : DischargeRewrite or None
+        The checked transformation and its companions, if one ran.
+    obstacle : DischargeObstacle or None
+        The reason a handler remains for reference execution.
+    """
+
+    computation: ComputationId
+    stage: Literal["direct", "handler-discharge", "recursive-state", "reference"]
+    rewrite: DischargeRewrite | None = None
+    obstacle: DischargeObstacle | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EffectPlan:
     """A view of the source, carrier analysis, law results, and discharge.
 
@@ -120,6 +154,9 @@ class EffectPlan:
         Ordinary discharge applies its own checked rules.
     interchanges : tuple[EffectInterchangeReport, ...]
         Returned-value observations from independently checked finite interchanges.
+    stages : tuple[EffectExecutionStage, ...]
+        The stages of reachable source computations in the discharged
+        graph. Generated computations appear on their originating rewrite.
     """
 
     bundle: EffectLawBundle
@@ -128,6 +165,7 @@ class EffectPlan:
     laws: tuple[EffectLawReport, ...]
     discharge: DischargedModule
     interchanges: tuple[EffectInterchangeReport, ...] = ()
+    stages: tuple[EffectExecutionStage, ...] = ()
 
 
 def _law_report(
@@ -297,17 +335,34 @@ def checked_effect_plan(
             comparisons.append(EffectInterchangeReport(statement, None, str(error)))
         else:
             comparisons.append(EffectInterchangeReport(statement, decision, None))
+    discharge = discharge_module(module)
+    reached, _ = _execution_reachability(discharge.module, computation)
+    rewrites = {rewrite.computation: rewrite for rewrite in discharge.rewrites}
+    obstacles = {obstacle.computation: obstacle for obstacle in discharge.obstacles}
+    stages: list[EffectExecutionStage] = []
+    for source in module.computations:
+        if source.id not in reached:
+            continue
+        if (obstacle := obstacles.get(source.name)) is not None:
+            stage = EffectExecutionStage(source.id, "reference", obstacle=obstacle)
+        elif (rewrite := rewrites.get(source.id)) is not None:
+            stage = EffectExecutionStage(source.id, rewrite.method, rewrite=rewrite)
+        else:
+            stage = EffectExecutionStage(source.id, "direct")
+        stages.append(stage)
     return EffectPlan(
         bundle,
         computation,
         carriers,
         laws,
-        discharge_module(module),
+        discharge,
         tuple(comparisons),
+        tuple(stages),
     )
 
 
 __all__ = [
+    "EffectExecutionStage",
     "EffectInterchangeReport",
     "EffectLawReport",
     "EffectPlan",

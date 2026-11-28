@@ -4,6 +4,7 @@ import pytest
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
+    EMPTY_ROW,
     REAL,
     SCORE_ADD,
     AttachmentId,
@@ -410,6 +411,30 @@ def test_divergence_obeys_runtime_fuel(module):
         with pytest.raises(ExecutionFailure) as error:
             run_named(candidate, "diverges", (2, 3), fuel=256, record_trace=False)
         assert error.value.diagnostic.code == "qiec-run-fuel"
+
+
+def test_discharge_report_names_actual_state_companions(module):
+    original = {item.id for item in module.computations}
+    discharged = discharge_module(module)
+    rewrite = next(
+        item
+        for item in discharged.rewrites
+        if item.computation == _entry(module, "execute").id
+    )
+    assert rewrite.method == "recursive-state"
+    actual = _entry(discharged.module, "execute")
+    declarations = {item.id: item for item in discharged.module.computations}
+    pending = [actual.id]
+    reachable = set()
+    while pending:
+        identity = pending.pop()
+        if identity not in reachable:
+            reachable.add(identity)
+            pending.extend(called_computations(declarations[identity].body))
+    new = reachable - original
+    assert len(new) == 2
+    assert set(rewrite.companions) == new
+    assert all(declarations[identity].type.effects == EMPTY_ROW for identity in new)
 
 
 @pytest.mark.parametrize("n", [0, 1, 4])

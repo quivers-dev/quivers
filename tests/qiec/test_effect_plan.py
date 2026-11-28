@@ -88,6 +88,9 @@ define retained(v : Bool) : Bool !{} =
     handle gate with unattached in
         let observed <- perform gate.pass_value(v)
         at_reader(observed)
+
+define through_retained(v : Bool) : Bool !{} =
+    retained(v)
 """
 
 
@@ -220,6 +223,20 @@ def test_unresolved_guards_provide_no_rewrite_permission(compiler, bundle):
     assert guard.obligation.equation.instance == root.body.instance
     assert guard.reason is not None and "idempotence" in guard.reason
     assert dumps(bundle.module) == before
+
+
+def test_stage_reports_a_retained_transitive_callee(compiler, bundle):
+    report = compiler.effect_plan("through_retained")
+    names = {source.id: source.name for source in bundle.module.computations}
+    stages = {names[stage.computation]: stage for stage in report.stages}
+    assert stages["through_retained"].stage == "direct"
+    assert stages["through_retained"].rewrite is None
+    assert stages["retained"].stage == "reference"
+    assert stages["retained"].obstacle == report.discharge.obstacle("retained")
+    assert stages["retained"].obstacle.kind == "foreign"
+    assert stages["at_reader"].stage == "handler-discharge"
+    assert stages["at_reader"].rewrite.computation == _root(bundle, "at_reader").id
+    assert "through_clause" not in stages
 
 
 def test_assignment_exhaustion_does_not_hide_other_obligations(bundle):

@@ -536,8 +536,8 @@ class Compiler(
         Returns
         -------
         EffectPlan
-            The entry's carrier reports, the separately checked obligations,
-            and the ordinary discharge result.
+            The entry's carrier reports, separately checked obligations,
+            and the stages and obstacles of the ordinary discharge result.
 
         Raises
         ------

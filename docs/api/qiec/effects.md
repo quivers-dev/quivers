@@ -537,7 +537,11 @@ assert rechecked == decision
 
 `Compiler.effect_plan` reports the carrier shapes of handlers in a selected
 entry's checked call graph, including calls made from authored clauses.
-It also reports ordinary discharge and its obstacles. An
+Its stages describe the source computations reached in the resulting
+execution graph. Ordinary discharge and recursive state specialization
+report the rewrites actually applied. A remaining handler carries
+the reason it requires the reference machine. A direct caller can
+appear beside a retained callee in the same report. An
 `EffectLawBundle` can be inspected directly with `checked_effect_plan`.
 `EffectLawEvidence.for_module` attaches a `Tested` or `Assumed` claim
 to that exact module and obligation. Pass these records as `law_evidence`
@@ -553,6 +557,7 @@ limit, or unproved named condition leaves that obligation unresolved.
 Ordinary discharge applies its own checked rules independently of these
 reports.
 
+<!-- python: run -->
 ```python
 from quivers.dsl import Compiler, parse
 from quivers.qiec import EffectEquation, EffectLawObligation
@@ -593,6 +598,9 @@ obligation = EffectLawObligation(equation=equation, handler=handler.id, method="
 plan = compiler.effect_plan("example", obligations=(obligation,))
 assert plan.carriers[0].kind == "tail-state"
 assert plan.laws[0].status == "checked"
+stage = next(item for item in plan.stages if item.computation == roots["example"])
+assert stage.stage == "handler-discharge"
+assert stage.rewrite is not None and stage.rewrite.companions == ()
 ```
 
 ::: quivers.qiec.effect_plan
