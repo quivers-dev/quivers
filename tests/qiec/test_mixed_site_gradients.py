@@ -219,7 +219,7 @@ def _estimator_oracle(outer, inner, outcomes, conditional_noise):
 
 
 @pytest.mark.parametrize(
-    ("outer", "inner"), product(("enumerate", "score", "measure"), repeat=2)
+    ("outer", "inner"), tuple(product(("enumerate", "score", "measure"), repeat=2))
 )
 def test_every_finite_policy_combines_with_conditional_normal_pathwise(
     module, outer, inner

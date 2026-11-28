@@ -915,6 +915,62 @@ assert len(plan.sample(seed=42).draws) == 1
 
 ::: quivers.qiec.mixed_site_gradients
 
+## Finite-step Metropolis derivatives
+
+`finite_metropolis_jvp` takes an initial law, positive target weights,
+and a proposal kernel on the same finite state space. Its inputs are
+values and tangents of differentiable curves. The initial law and each
+proposal row are normalized, with zero total tangent. The Metropolis
+transition from $i$ to $j\ne i$ has mass
+$P_{ij}=\min(q_{ij},\,w_jq_{ji}/w_i)$. The diagonal collects the remaining
+mass, including rejected proposals. [Hastings (1970, §2.2)](https://doi.org/10.1093/biomet/57.1.97)
+
+At a strict minimum the active expression gives the tangent. At an
+equality, the two expressions must have the same directional slope for
+this comparison to be admitted. If the initial row is $u_0$, the
+recurrence propagates
+
+$$
+u_{k+1}=u_kP,
+\qquad
+\dot u_{k+1}=\dot u_k P+u_k\dot P.
+$$
+
+The result is the law after the requested number of steps, with
+separate contributions from the initial law and the transition law. For $n$ states
+and $k$ positive steps, the recurrence uses $O((1+k)n^2)$ rational
+arithmetic operations. Rational coefficient bit lengths contribute
+separately to runtime.
+
+<!-- python: run -->
+```python
+from fractions import Fraction
+
+from quivers.dsl import loads
+from quivers.qiec import ExactJvp, exact_jvp, finite_metropolis_jvp
+
+module = loads("""
+define target_weight(t : Real) : Real !{} =
+    return t
+""").qiec
+assert module is not None
+
+def constant(value):
+    return ExactJvp(Fraction(value), Fraction(0))
+
+second_weight = exact_jvp(module, "target_weight", (Fraction(1, 4),), (1,))
+proposal = (
+    (constant(Fraction(3, 4)), constant(Fraction(1, 4))),
+    (constant(Fraction(1, 2)), constant(Fraction(1, 2))),
+)
+law = finite_metropolis_jvp(
+    (constant(1), constant(0)), (constant(1), second_weight), proposal, steps=2
+)
+assert law[1] == ExactJvp(Fraction(11, 64), Fraction(5, 8))
+```
+
+::: quivers.qiec.finite_metropolis
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging
