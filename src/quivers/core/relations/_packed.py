@@ -83,7 +83,13 @@ class _PackedPaths:
     layers: tuple[_PathLayer, ...]
     slots: tuple[int, ...]
 
-    def evaluate(self, weights: torch.Tensor, algebra: Semiring) -> torch.Tensor:
+    def evaluate(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        *,
+        visits: list[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         if not self.layers:
             return algebra.join(weights[:0], dim=0)
         slots = _take(weights, self.slots)
@@ -96,6 +102,8 @@ class _PackedPaths:
                 incoming.append(chunk[:n_initial])
             values = incoming[0] if len(incoming) == 1 else torch.cat(incoming)
             prefixes = layer.incoming.join(values, algebra)
+            if visits is not None:
+                visits.append(prefixes)
             incoming.clear()
             if n_arcs:
                 arc_weights = (
@@ -128,6 +136,8 @@ def _pack_paths(
     arcs: list[tuple[tuple[int, int], ...]],
     initial: tuple[tuple[int, int], ...],
     final: list[tuple[int, int]],
+    *,
+    visit_order: list[int] | None = None,
 ) -> _PackedPaths:
     level_of = dict.fromkeys(order, 0)
     levels: list[list[int]] = []
@@ -138,6 +148,8 @@ def _pack_paths(
         levels[level].append(state)
         for target, _ in arcs[state]:
             level_of[target] = max(level_of[target], level + 1)
+    if visit_order is not None:
+        visit_order.extend(state for level in levels for state in level)
 
     # Row indices address the concatenation of the arc chunks from earlier
     # levels, in source-level order, followed by this level's initial marks.

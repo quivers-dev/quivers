@@ -13,6 +13,7 @@ from torch import nn
 from quivers.core.algebras import REAL, Semiring
 from quivers.core.morphisms import FiniteMorphism, Morphism
 from quivers.core.objects import FreeMonoid, ProductSet, SetObject, Unit
+from quivers.core.relations.paths import ArcCounts, RelationPath, _AcyclicWalks
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
     QueryWork,
@@ -34,6 +35,7 @@ from quivers.core.relations.topology import (
 __all__ = [
     "EPSILON",
     "Arc",
+    "ArcCounts",
     "Boundary",
     "ComposedRelation",
     "ComposedStringQuery",
@@ -44,6 +46,7 @@ __all__ = [
     "QueryWork",
     "RationalRelation",
     "RelationLimitError",
+    "RelationPath",
     "RelationTopology",
     "Words",
     "closure",
@@ -329,6 +332,15 @@ class FixedStringQuery:
             max_closure_size=max_closure_size,
         )
         self._relation = relation
+        self._words = tuple(tuple(word) for word in words)
+        self._max_states = max_states
+        self._max_work = max_work
+
+    @cached_property
+    def _walks(self) -> _AcyclicWalks:
+        return _AcyclicWalks(
+            self._relation.topology, self._words, self._max_states, self._max_work
+        )
 
     @property
     def work(self) -> QueryWork:
@@ -344,6 +356,51 @@ class FixedStringQuery:
         `UndecidedClosureError` for the current weights.
         """
         return self._plan.evaluate(self._relation._weights(), self._relation.algebra)
+
+    def best_path(self) -> RelationPath | None:
+        """Return the highest-weight positive path, if the query has one.
+
+        The productive graph must be acyclic, and weights must belong
+        to Markov or LogProb. The result identifies a single path.
+        """
+        paths = self.k_best_paths(1)
+        return paths[0] if paths else None
+
+    def k_best_paths(self, k: int) -> tuple[RelationPath, ...]:
+        """Return up to `k` positive paths in decreasing weight order.
+
+        Ties follow a deterministic order determined by the topology.
+        Ranking compares the exact rational values of the stored binary
+        weights. It costs O(k (Q + E) log(k + 1)) arithmetic operations,
+        with additional cost for the bits of the path scores and for
+        returning the arc IDs. Zero-weight paths are omitted.
+        """
+        if type(k) is not int or k < 0:
+            raise ValueError("k must be a nonnegative integer")
+        return self._walks.k_best(k, self._relation._weights(), self._relation.algebra)
+
+    def sample_path(self, *, generator: torch.Generator | None = None) -> RelationPath:
+        """Draw a path conditional on the observed words.
+
+        Sampling uses float64 log-space suffix weights and a CPU
+        generator. The productive graph must be acyclic, and Markov or
+        LogProb weights must give a positive finite normalizer in log
+        space. The sampled path retains its original arc occurrences.
+        """
+        return self._walks.sample(
+            self._relation._weights(), self._relation.algebra, generator
+        )
+
+    def expected_arc_counts(self) -> ArcCounts:
+        """Return differentiable conditional expected arc traversal counts.
+
+        Two packed passes sum the prefixes and suffixes at each
+        configuration. Occurrences of an original arc at different
+        configurations are added after normalizing. The productive
+        graph must be acyclic, and the Markov or LogProb normalizer
+        must be positive and finite in its representation.
+        """
+        return self._walks.counts(self._relation._weights(), self._relation.algebra)
 
 
 class FiniteRelationRestriction(FiniteMorphism):

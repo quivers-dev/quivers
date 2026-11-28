@@ -163,12 +163,32 @@ infinitely many paths. The local star checks decide whether the sum
 can be used. Construction of these three topologies uses linear space
 in the original records and introduces one arc per connecting boundary.
 
+
+A fixed-word query with an acyclic productive graph supports `best_path`
+and `k_best_paths` for Markov and LogProb weights. Ranking compares the exact
+values of the stored binary weights and reports path occurrence IDs in the
+original topology. Several paths can realize the same strings. To sample
+from these paths, `sample_path` chooses an initial state by its weighted
+suffix mass, then chooses an arc or a stop with probability proportional to
+the weight of an accepting continuation. The observations enter through the
+query, and a positive normalizer is required. Each sampled walk terminates.
+
+For expected counts, `expected_arc_counts` uses one packed pass in each
+direction and gathers the corresponding prefix and suffix at every active arc
+occurrence. An occurrence contributes its prefix times its arc weight times
+its suffix, divided by the normalizer. Summing these contributions gives the
+expected number of traversals of each original arc. This takes linear
+arithmetic work and storage in the active graph, in addition to the source
+weight evaluation and construction of the graph. Queries reuse the graph
+structure across evaluations.
+
 ::: quivers.core.relations
     options:
       members:
         - RationalRelation
         - RelationTopology
         - Arc
+        - ArcCounts
         - Boundary
         - EPSILON
         - Label
@@ -180,6 +200,7 @@ in the original records and introduces one arc per connecting boundary.
         - FiniteRelationRestriction
         - ProductiveEpsilonCycleError
         - RelationLimitError
+        - RelationPath
         - closure
         - concatenate
         - condition
