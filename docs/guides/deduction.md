@@ -825,6 +825,12 @@ this limit before constructing any proof values. The count includes
 zero-weight proofs. An exceeded limit raises an error, and a successful
 query returns each positive-weight proof with its log weight.
 
+Run `python -m tests.benchmarks.deduction_proof_list` to measure the
+checked listing as the number of alternatives and the proof length
+vary. The benchmark counts proof constructors and checks that a
+refused cap stops before any proof node is built. The chart and its
+saturating count still incur work before that decision.
+
 `parse_normalized_proofs` normalizes over these same proofs and requires
 positive total mass. A raw query returns an empty list when no proof has
 positive mass. Two proofs of the same goal keep separate entries. The
