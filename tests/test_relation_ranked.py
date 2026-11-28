@@ -25,6 +25,8 @@ def _brute_force(
     relation: RationalRelation,
     word: tuple[int, ...],
     violations: tuple[tuple[int, ...], ...],
+    *,
+    caps: tuple[int, ...] | None = None,
 ) -> dict[tuple[int, ...], Fraction]:
     """Enumerate complete source paths before comparing any ranking."""
     topology = relation.topology
@@ -38,7 +40,12 @@ def _brute_force(
     while pending:
         state, read, emitted, rank, weight = pending.pop()
         if state in final and read == word:
-            candidates.append((rank, emitted, weight * final[state]))
+            profile = (
+                rank
+                if caps is None
+                else tuple(min(cap, n) for cap, n in zip(caps, rank, strict=True))
+            )
+            candidates.append((profile, emitted, weight * final[state]))
         for index, arc in enumerate(topology.arcs):
             if arc.source == state:
                 incoming, outgoing = arc.labels
