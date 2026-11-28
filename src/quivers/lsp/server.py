@@ -65,6 +65,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecRelationComposeDecl,
     QiecRelationDecl,
     QiecRelationScoreDecl,
+    QiecRelationTransformDecl,
     QiecStringGraphDecl,
     QiecStringGraphScoreDecl,
     QiecEffectDecl,
@@ -1489,7 +1490,11 @@ def _symbol_kind(stmt: Statement) -> lsp.SymbolKind:
     if isinstance(stmt, QiecEffectInstanceDecl):
         return lsp.SymbolKind.Object
     if isinstance(
-        stmt, QiecRelationDecl | QiecRelationComposeDecl | QiecStringGraphDecl
+        stmt,
+        QiecRelationDecl
+        | QiecRelationComposeDecl
+        | QiecRelationTransformDecl
+        | QiecStringGraphDecl,
     ):
         return lsp.SymbolKind.Struct
     if isinstance(

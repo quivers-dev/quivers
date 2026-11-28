@@ -9943,6 +9943,47 @@
     }
   },
   {
+    "type": "relation_binary_operation",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_binary_recipe",
+    "named": true,
+    "fields": {
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_binary_operation",
+            "named": true
+          }
+        ]
+      },
+      "other": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "relation_boundary_decl",
     "named": true,
     "fields": {
@@ -10030,6 +10071,58 @@
     }
   },
   {
+    "type": "relation_conditioning_recipe",
+    "named": true,
+    "fields": {
+      "positions": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "word": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_conditioning_word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_conditioning_word",
+    "named": true,
+    "fields": {
+      "symbols": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "relation_decl",
     "named": true,
     "fields": {
@@ -10094,6 +10187,52 @@
     }
   },
   {
+    "type": "relation_join_recipe",
+    "named": true,
+    "fields": {
+      "keep_shared": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "let_bool",
+            "named": true
+          }
+        ]
+      },
+      "other": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "positions": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "relation_label",
     "named": true,
     "fields": {},
@@ -10106,6 +10245,32 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "relation_projection_recipe",
+    "named": true,
+    "fields": {
+      "positions": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -10199,6 +10364,89 @@
     "type": "relation_tape_direction",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "relation_transform_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "recipe": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_binary_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_conditioning_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_join_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_projection_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_unary_recipe",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_unary_operation",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_unary_recipe",
+    "named": true,
+    "fields": {
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_unary_operation",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
   },
   {
     "type": "repeat_expr",
@@ -11277,6 +11525,10 @@
           "named": true
         },
         {
+          "type": "relation_transform_decl",
+          "named": true
+        },
+        {
           "type": "rule_decl",
           "named": true
         },
@@ -12257,11 +12509,23 @@
     "named": false
   },
   {
+    "type": "closure",
+    "named": false
+  },
+  {
     "type": "compose",
     "named": false
   },
   {
     "type": "composition",
+    "named": false
+  },
+  {
+    "type": "concatenate",
+    "named": false
+  },
+  {
+    "type": "condition",
     "named": false
   },
   {
@@ -12473,11 +12737,27 @@
     "named": false
   },
   {
+    "type": "intersect",
+    "named": false
+  },
+  {
     "type": "introduces",
     "named": false
   },
   {
+    "type": "invert",
+    "named": false
+  },
+  {
     "type": "iterations",
+    "named": false
+  },
+  {
+    "type": "join",
+    "named": false
+  },
+  {
+    "type": "keep_shared",
     "named": false
   },
   {
@@ -12615,6 +12895,10 @@
   },
   {
     "type": "program",
+    "named": false
+  },
+  {
+    "type": "project",
     "named": false
   },
   {
@@ -12778,11 +13062,19 @@
     "named": false
   },
   {
+    "type": "trim",
+    "named": false
+  },
+  {
     "type": "true",
     "named": false
   },
   {
     "type": "unary",
+    "named": false
+  },
+  {
+    "type": "union",
     "named": false
   },
   {

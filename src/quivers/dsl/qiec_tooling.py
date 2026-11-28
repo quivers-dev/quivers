@@ -26,6 +26,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecRelationComposeDecl,
     QiecRelationDecl,
     QiecRelationScoreDecl,
+    QiecRelationTransformDecl,
     QiecStringGraphDecl,
     QiecStringGraphScoreDecl,
     QiecSequenceComputation,
@@ -549,7 +550,10 @@ def qiec_bindings(module: Module) -> tuple[QiecBinding, ...]:
                     owner=statement,
                 )
             )
-        elif isinstance(statement, QiecRelationDecl | QiecRelationComposeDecl):
+        elif isinstance(
+            statement,
+            QiecRelationDecl | QiecRelationComposeDecl | QiecRelationTransformDecl,
+        ):
             out.append(
                 QiecBinding(
                     name=statement.name,

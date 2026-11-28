@@ -228,6 +228,7 @@ QIEC_STATEMENT_TYPES = (
     surface.QiecInterpretationDecl,
     surface.QiecRelationDecl,
     surface.QiecRelationComposeDecl,
+    surface.QiecRelationTransformDecl,
     surface.QiecRelationScoreDecl,
     surface.QiecStringGraphDecl,
     surface.QiecStringGraphScoreDecl,

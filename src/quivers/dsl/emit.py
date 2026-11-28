@@ -161,6 +161,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecInterpretationDecl,
     QiecRelationComposeDecl,
+    QiecRelationTransformDecl,
     QiecRelationDecl,
     QiecRelationScoreDecl,
     QiecStringGraphDecl,
@@ -1056,6 +1057,20 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
         return "\n".join(lines)
     if isinstance(stmt, QiecRelationComposeDecl):
         text = f"relation {stmt.name} = compose({stmt.left}, {stmt.right})"
+        return _with_docs(stmt.docs, indent, text)
+    if isinstance(stmt, QiecRelationTransformDecl):
+        arguments = [stmt.source]
+        if stmt.other is not None:
+            arguments.append(stmt.other)
+        if stmt.operation == "project":
+            arguments.append(f"({', '.join(map(str, stmt.positions))})")
+        else:
+            arguments.extend(map(str, stmt.positions))
+        if stmt.word is not None:
+            arguments.append(f"({', '.join(map(str, stmt.word))})")
+        if stmt.keep_shared:
+            arguments.append("keep_shared=true")
+        text = f"relation {stmt.name} = {stmt.operation}({', '.join(arguments)})"
         return _with_docs(stmt.docs, indent, text)
     if isinstance(stmt, QiecStringGraphDecl):
         lines = _doc_lines(stmt.docs, indent)

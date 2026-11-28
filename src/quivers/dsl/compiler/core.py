@@ -70,6 +70,10 @@ from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
 from quivers.qiec.program_runtime import passed_data_notes
 from quivers.qiec.relation_composition import ComposedRelationSpec
+from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
+    UnaryRelationTransformSpec,
+)
 from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.string_graphs import StringFactorGraphSpec
 
@@ -365,6 +369,25 @@ class Compiler(
         }
 
     @property
+    def transformed_relation_specs(
+        self,
+    ) -> dict[str, UnaryRelationTransformSpec | BinaryRelationTransformSpec]:
+        """Return checked sparse transformations by their authored names.
+
+        Returns
+        -------
+        dict[str, UnaryRelationTransformSpec | BinaryRelationTransformSpec]
+            Ordered original operands and the selected sparse operations.
+        """
+        return {
+            name: relation
+            for name, relation in self._authored_relation_specs().items()
+            if isinstance(
+                relation, UnaryRelationTransformSpec | BinaryRelationTransformSpec
+            )
+        }
+
+    @property
     def string_graph_specs(self) -> dict[str, StringFactorGraphSpec]:
         """Return checked string graphs by their authored names.
 
@@ -383,7 +406,13 @@ class Compiler(
 
     def _authored_relation_specs(
         self,
-    ) -> dict[str, RationalRelationSpec | ComposedRelationSpec]:
+    ) -> dict[
+        str,
+        RationalRelationSpec
+        | ComposedRelationSpec
+        | UnaryRelationTransformSpec
+        | BinaryRelationTransformSpec,
+    ]:
         from quivers.dsl._relation_specs import authored_relation_specs
 
         if self._qiec_source is None:
