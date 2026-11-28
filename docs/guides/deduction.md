@@ -465,6 +465,48 @@ lists the families, effects,
 [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries
 a deduction or a parser built from rule schemata adds.
 
+### Cyclic inside weights and finite-height proofs
+
+For the one-token sentence `seed`, let $a$ be the lexical mass and $r$
+the rule mass. The unary rule in `Linear` gives $x=a+rx$. The rule in
+`Branching` uses the same item in two premise positions and gives
+$x=a+rx^2$. Each premise independently chooses a proof. The examples share
+the `LogProb` carrier and supply $\log a$ and $\log r$ as learned weights.
+[Checked cyclic deductions](../examples/qiec/checked-cyclic-deduction.qvr)
+
+The checked `run_deduction` entry iterates from zero. With
+$(a,r)=(0.3,0.4)$ and the declared absolute log tolerance $0.15$, it stops at
+$0.468$ for the unary rule and $0.336$ for the binary rule. The default
+failure policy refuses those stops. The explicit return policy exposes
+each finite iterate in an `Unestablished` wrapper with its residual.
+Differentiating that iterate in the host gives the derivative of the
+executed rounds. The settlement report makes no derivative claim.
+
+The Python `plan` interface accepts the same compiled rule presentations.
+`LinearCyclic` selects the span executor with unary closure. For $r<1$ it
+sums the geometric series to $a/(1-r)$, with log derivatives $1$ and
+$r/(1-r)$ with respect to $\log a$ and $\log r$. For $r=1$ and $a>0$ the
+closure refuses divergence even though the checked log residual can become
+small as the mass grows.
+
+`MonotonePolynomial` selects the certified Newton plan for the branching
+rule. For $a,r>0$ and $4ar<1$, the smaller quadratic root is
+$x=2a/(1+\sqrt{1-4ar})$. The iterates from zero stay below that root by
+monotonicity. Their limit is a fixed point by continuity, so this root is
+the least solution. The plan encloses it and reports an implicit derivative
+when it certifies $2rx<1$. In that domain,
+$(1-2rx)\,dx=da+x^2\,dr$. At $a=r=1/2$ the root is $1$ and its Jacobian
+is $1$. The plan refuses the requested bound and implicit derivative. The
+checked iteration stops at $89/128$, with a log residual below $0.15$ and
+a log error above $0.15$.
+
+A forest plan with `Bounded(measure="height", limit=2)` asks for a different
+sum. A lexical leaf has height one, so the unary example counts precisely
+the lexical proof and its one-step extension, with mass $a(1+r)$. On
+these same rules, a checked source `parse_proofs` query requires acyclic
+spans and refuses the cycle. Its row budget cannot change the recurrence
+into a finite-height model.
+
 ### Weighted outcomes of a lexical deduction
 
 In a `program`, write `let readings = parse_outcomes(D, sentence, "form")` to get

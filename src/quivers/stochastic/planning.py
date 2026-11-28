@@ -41,7 +41,13 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
-from quivers.core.algebras import OrderPreservingSemiring, RealEmbedding, Star
+from quivers.core.algebras import (
+    DivergentClosureError,
+    OrderPreservingSemiring,
+    RealEmbedding,
+    Star,
+    UndecidedClosureError,
+)
 from quivers.core.elimination import ELIMINATION_LAWS, fiber_join
 from quivers.core.laws import (
     PLUS_IDEMPOTENT,
@@ -3089,6 +3095,8 @@ def _run_span(
             )
         except SpanRefused as refused:
             raise PlanRefused(_SPAN_CODES[refused.code], refused.reason) from refused
+        except (DivergentClosureError, UndecidedClosureError) as refused:
+            raise PlanRefused(PlanRefusal.DIVERGENT, str(refused)) from refused
     values: dict[Item, torch.Tensor] = {}
     order: list[Item] = []
     for width in range(0 if 0 in support else 1, length + 1):
