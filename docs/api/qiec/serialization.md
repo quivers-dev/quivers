@@ -301,6 +301,48 @@ and serialized fields.
 
 ::: quivers.qiec.relation_path_law.RelationPathLaw
 
+## Checked deterministic path ranking
+
+`FixedRelationPathRankRequest` ranks up to $k$ positive complete paths
+at a fixed word tuple. Choose $k=1$ for the deterministic best path.
+The native result contains an `Int` valid-row count, a $k\times2$ matrix
+of original boundary states, a $k\times C$ matrix of ordered original
+arc occurrence IDs, and $k$ original-algebra path weights. LogProb
+uses `LogWeight`, and Markov uses `Real`. Absent rows have both states
+set to `-1` and semiring-zero weight. An empty accepting path has
+real boundary states and no arc IDs. All unused arc positions use `-1`.
+
+Ties follow original initial-mark order. From a fixed configuration,
+the stop precedes outgoing arcs. All-epsilon arcs precede the indexed
+first emitting tape order, and arcs within that index keep their
+original occurrence order. The same comparison applies recursively
+to the remaining path. Score derivatives hold the selected occurrence
+sequence fixed, including at a tie.
+
+The checked provider constructs the sparse observation once and reads
+the original weights for each invocation. `max_states` and `max_work`
+bound observation construction. With $Q$ active states, the retained
+suffix records and the selected path positions each have a bound of
+$k(Q+1)$, checked against `max_rank_entries`. Let $d$ range over all structural local
+merge degrees, including the initial merge. Each degree counts one
+stream per productive arc and one for a stop when available. The
+`max_rank_work` allowance sums $d+k(1+\lceil\log_2(d+1)\rceil)$ over
+positive degrees and adds the number of original weight slots. This
+accounts for weight-slot reads, stream visits, and the growth in heap
+work per retained entry. Rank arithmetic uses exact binary rationals,
+whose bit costs depend on the weights and lengths.
+
+The output requires $1+k(C+3)$ cells and checks `max_result_cells`
+before compilation. A selected path longer than $C$ raises a resource
+error. Productive cycles are outside the ranking capability. The
+reserved foreign Compute name binds the exact original nominal
+topology, word tuple, and result dimensions. No code generation
+fallback is supplied for a target without this native capability.
+
+::: quivers.qiec.relation_path_rank.FixedRelationPathRankRequest
+
+::: quivers.qiec.relation_path_rank.FixedRelationPathRankRuntimeProvider
+
 ## Checked sparse relation transformations
 
 A `UnaryRelationTransformSpec` stores the original typed topology,

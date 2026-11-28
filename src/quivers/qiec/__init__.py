@@ -559,6 +559,10 @@ from quivers.qiec.relation_path_law import (
     FixedRelationPathSampleRequest,
     RelationPathLaw,
 )
+from quivers.qiec.relation_path_rank import (
+    FixedRelationPathRankRequest,
+    FixedRelationPathRankRuntimeProvider,
+)
 from quivers.qiec.relation_feature_moments import (
     FixedComposedArcFeatureMomentRequest,
     FixedCyclicRelationFeatureMomentRequest,
@@ -936,6 +940,8 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "FixedRelationPathRankRequest",
+    "FixedRelationPathRankRuntimeProvider",
     "FixedCyclicRelationPathSampleRequest",
     "RelationPathLaw",
     "FixedRelationRequest",

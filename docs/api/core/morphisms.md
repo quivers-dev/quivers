@@ -212,7 +212,9 @@ the work is $O(d_q + K_q \log(d_q+1))$ arithmetic operations per
 state, and an analogous merge chooses the initial marks. Reading
 weight slots, the bit lengths of the exact rational scores, and
 materializing the selected arc sequences contribute additional
-costs.
+costs. A [checked native path rank request](../qiec/serialization.md#checked-deterministic-path-ranking)
+exposes the same ranked traces and separates the observation, rank,
+and result storage limits.
 
 To sample from these paths, `sample_path` chooses an initial state by its weighted
 suffix mass, then chooses an arc or a stop with probability proportional to

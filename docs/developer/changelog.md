@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked deterministic sparse path ranking.** A native fixed-word query returns complete best or k-best original traces with exact tie order, live selected scores, and an explicit result capacity.
 - **Checked source factors for finite elimination.** Contract bounded tables of named QIEC computations after checking nominal axis types and refusing draws even under a closed handler. Report source evaluation and contraction work separately.
 - **Nominal forward and reverse differentiation.** Checked forward handlers distinguish two live perturbations. A checked reverse handler resumes once, then adds predecessor cotangents to an immutable result.
 - **Checked base change for finite elimination.** A named QIEC map can move factor tables to another finite answer algebra after exhaustive checks of both binary operations and units.
