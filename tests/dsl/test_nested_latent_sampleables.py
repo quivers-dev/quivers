@@ -124,9 +124,18 @@ program model:Input->Output
 export model
 """
     compiled = Compiler(parse(source)).compile()
-    recorded = trace(compiled.morphism, torch.zeros(1, 2))
-    assert "net__raw_b_1" in recorded.sites
+    bias = torch.tensor([[0.25, -0.5]])
+    recorded = trace(
+        compiled.morphism,
+        torch.zeros(1, 2),
+        {
+            "net_param_weight": torch.zeros(1, 2, 2),
+            "net_param_bias": bias,
+            "b": torch.tensor([[0.1]]),
+        },
+    )
     torch.testing.assert_close(recorded.sites["net__raw_b"].value, torch.tensor([0.2]))
+    torch.testing.assert_close(recorded.sites["net__raw_b_1"].value, bias)
 
 
 @pytest.mark.parametrize("method", ["svi", "hmc", "nuts"])
