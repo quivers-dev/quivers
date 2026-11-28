@@ -50,3 +50,14 @@ declaration require an implementation in the target runtime.
 ::: quivers.qiec.relations.FixedRelationRequest
 
 ::: quivers.qiec.relation_runtime.FixedRelationRuntimeProvider
+
+## String factor graphs
+
+`StringFactorGraphSpec` records the nominal alphabet and optional
+observation of each variable, the sparse relations by name, and the
+ordered variable scope of each factor occurrence. A factor's scope must
+match the corresponding relation's tape order and types. Bind the record
+to a single parameter store to share a relation across repeated factor
+occurrences and to share stable weight identities across distinct relations.
+
+::: quivers.qiec.string_graphs.StringFactorGraphSpec
