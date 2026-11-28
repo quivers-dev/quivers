@@ -296,6 +296,7 @@ nav:
     - Weighted Multiple Context-Free Grammar: examples/wmcfg.md
     - Schema-Bundled Chart Parser: examples/schema-chart-parser.md
     - A Noisy Deletion Channel: examples/noisy-deletion-channel.md
+    - Name Phylogeny: examples/name-phylogeny.md
     - Term Autoencoder: examples/term-autoencoder.md
   - API:
     - Overview: api/index.md
