@@ -285,10 +285,10 @@ def test_live_weight_slots_preserve_shared_parameter_through_optimizer_updates()
             target="quivers.core.relations:RationalRelation._weights",
             rewrites=(
                 Rewrite(
-                    old="values = self._weight_source()",
+                    old="values = _read_weight_source(self._weight_source)",
                     new=(
                         'if not hasattr(self, "_cached_weights"):\n'
-                        "        self._cached_weights = self._weight_source()\n"
+                        "        self._cached_weights = _read_weight_source(self._weight_source)\n"
                         "    values = self._cached_weights"
                     ),
                 ),

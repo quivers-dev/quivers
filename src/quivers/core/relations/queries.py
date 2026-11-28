@@ -44,7 +44,13 @@ class _PathPlan:
     work: QueryWork
     closures: tuple[_ClosureBlock, ...] = ()
 
-    def evaluate(self, weights: torch.Tensor, algebra: Semiring) -> torch.Tensor:
+    def evaluate(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        *,
+        visits: list[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         if self.closures:
             if not isinstance(algebra, Star) or not algebra.establishes(
                 *SEMIRING_LAWS, STAR_LEAST_SOLUTION
@@ -58,7 +64,7 @@ class _PathPlan:
                 )
             closed = [block.evaluate(weights, algebra) for block in self.closures]
             weights = torch.cat((weights, *closed))
-        return self.packed.evaluate(weights, algebra)
+        return self.packed.evaluate(weights, algebra, visits=visits)
 
 
 def _advance(
@@ -90,14 +96,23 @@ def _validate_limits(
             raise ValueError(f"{name} must be a nonnegative integer or None")
 
 
-def _compile_paths(
+@dataclass(slots=True)
+class _Observation:
+    states: list[tuple[int, tuple[int, ...]]]
+    arcs: list[list[tuple[int, int]]]
+    initial: list[tuple[int, int]]
+    final: list[tuple[int, int]]
+    examined: int
+
+
+def _observe(
     topology: RelationTopology,
     words: Words,
     *,
     max_states: int | None,
     max_work: int | None,
-    max_closure_size: int | None = None,
-) -> _PathPlan:
+    arc_ids: bool = False,
+) -> _Observation:
     initial_offsets: tuple[int, ...] = (0,) * len(words)
     final_offsets = tuple(map(len, words))
     states: list[tuple[int, tuple[int, ...]]] = [
@@ -133,31 +148,49 @@ def _compile_paths(
                 state_ids[destination] = destination_id
                 states.append(destination)
                 arcs.append([])
-            arcs[cursor].append((destination_id, topology.arcs[arc_id].weight))
+            payload = arc_id if arc_ids else topology.arcs[arc_id].weight
+            arcs[cursor].append((destination_id, payload))
         cursor += 1
 
     initial = [(index, mark.weight) for index, mark in enumerate(topology.initial)]
+    return _Observation(states, arcs, initial, final, examined)
+
+
+def _compile_paths(
+    topology: RelationTopology,
+    words: Words,
+    *,
+    max_states: int | None,
+    max_work: int | None,
+    max_closure_size: int | None = None,
+) -> _PathPlan:
+    observed = _observe(topology, words, max_states=max_states, max_work=max_work)
     return _trim_paths(
-        arcs,
-        initial,
-        final,
-        examined,
+        observed.arcs,
+        observed.initial,
+        observed.final,
+        observed.examined,
         max_closure_size=max_closure_size,
         weight_slots=len(topology.weight_names),
     )
 
 
-def _trim_paths(
+@dataclass(slots=True)
+class _ProductiveGraph:
+    arcs: list[tuple[tuple[int, int], ...]]
+    initial: tuple[tuple[int, int], ...]
+    order: list[int]
+    states: set[int]
+    reverse: list[list[int]]
+    edge_count: int
+
+
+def _productive_graph(
     arcs: list[list[tuple[int, int]]],
     initial: list[tuple[int, int]],
     final: list[tuple[int, int]],
-    examined: int,
-    *,
-    max_closure_size: int | None = None,
-    weight_slots: int = 0,
-) -> _PathPlan:
-    # An edge is an occurrence of a (target, weight slot) record. Several
-    # occurrences can have the same target and slot.
+) -> _ProductiveGraph:
+    # Edge payloads preserve occurrence order and may share a weight slot.
     reverse: list[list[int]] = [[] for _ in arcs]
     for source, edges in enumerate(arcs):
         for target, _ in edges:
@@ -198,6 +231,26 @@ def _trim_paths(
             if incoming_count[target] == 0:
                 ready.append(target)
     active_initial = tuple(mark for mark in initial if mark[0] in productive)
+    return _ProductiveGraph(
+        active_arcs, active_initial, order, productive, reverse, active_count
+    )
+
+
+def _trim_paths(
+    arcs: list[list[tuple[int, int]]],
+    initial: list[tuple[int, int]],
+    final: list[tuple[int, int]],
+    examined: int,
+    *,
+    max_closure_size: int | None = None,
+    weight_slots: int = 0,
+    visit_order: list[int] | None = None,
+    closed_exits: dict[int, int] | None = None,
+) -> _PathPlan:
+    graph = _productive_graph(arcs, initial, final)
+    order = graph.order
+    active_arcs = graph.arcs
+    productive = graph.states
     closures: tuple[_ClosureBlock, ...] = ()
     if len(order) != len(productive):
         # Every emitting arc strictly increases a tape offset, so all
@@ -207,16 +260,22 @@ def _trim_paths(
                 "fixed-word path sum requires closure of a productive epsilon cycle"
             )
         order, final, closures = _expand_components(
-            active_arcs, reverse, productive, final, max_closure_size, weight_slots
+            active_arcs,
+            graph.reverse,
+            productive,
+            final,
+            max_closure_size,
+            weight_slots,
+            closed_exits if closed_exits is not None else {},
         )
 
     return _PathPlan(
-        _pack_paths(order, active_arcs, active_initial, final),
+        _pack_paths(order, active_arcs, graph.initial, final, visit_order=visit_order),
         QueryWork(
             len(arcs),
             examined,
             len(productive),
-            active_count,
+            graph.edge_count,
             tuple(block.order for block in closures),
         ),
         closures,
@@ -230,12 +289,12 @@ def _expand_components(
     final: list[tuple[int, int]],
     max_closure_size: int,
     weight_slots: int,
+    exits: dict[int, int],
 ) -> tuple[list[int], list[tuple[int, int]], tuple[_ClosureBlock, ...]]:
     # Within a component an accepting walk has one entry, then one
     # internal segment, then an exit. Replace all internal segments with
     # the corresponding entries of the local star.
     order: list[int] = []
-    exits: dict[int, int] = {}
     closures: list[_ClosureBlock] = []
     for members in tuple(_components(arcs, reverse, productive)):
         local = {state: index for index, state in enumerate(members)}

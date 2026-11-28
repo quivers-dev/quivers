@@ -149,6 +149,40 @@ so this is the sum over the weighted relation's entire support. If
 erasing the labels exposes a productive cycle, the caller supplies a
 closure limit and the algebra checks convergence in its domain.
 
+`auto_intersect` keeps paths whose words agree on two tapes of the same
+type. After trimming, it checks whether any accepting path can encounter
+both a positive and a negative cycle in the signed tape-length difference.
+A state-potential check recognizes zero-drift strongly connected
+components in linear time. For other components, signed relaxations
+detect positive and negative cycles. Their signs propagate along the
+component graph. Opposite signs on separate accepting branches are
+allowed.
+
+Consider a prefix of an accepting path whose tape lengths agree at
+the end. Remove cycles independently from that prefix and its suffix.
+Their simple remainders each have length at most the number of
+productive states minus one. Since all removed cycles have one
+common sign or zero delay, each remainder bounds the original
+delay from one side. The prefix and suffix delays sum to zero,
+so the prefix's absolute delay is bounded by that same state count
+minus one.
+
+The checked graph records the unmatched suffix on the tape ahead.
+Each transition appends the original labels, cancels their common
+prefix, and rejects a mismatch or delay beyond the certified bound.
+An accepting path has no unmatched suffix. Projection to the
+original arcs is bijective on paths with identical selected words,
+preserving shared weights and derivatives. The work limit includes
+signed relaxations and examined product arcs. The state-bound
+certificate is independent of the current weights.
+
+`RationalRelation.conditional` fixes all input tapes and compiles a
+normalizer over every output word tuple. `ConditionalStringQuery.log_prob`
+compares the score of a supplied output to that normalizer. The
+denominator includes every alignment and output permitted by the
+relation. A productive insertion cycle uses the usual closure check
+and size bound. Each call uses the same live weights in both sums.
+
 `union` adds relations with identical tape types by taking the disjoint
 union of their topologies. `concatenate` uses a connecting state, so
 each accepting path contains one path from each operand. Its two
@@ -163,12 +197,573 @@ infinitely many paths. The local star checks decide whether the sum
 can be used. Construction of these three topologies uses linear space
 in the original records and introduces one arc per connecting boundary.
 
+A fixed-word query with an acyclic productive graph supports `best_path`
+and `k_best_paths` for Markov and LogProb weights. Ranking compares the exact
+values of the stored binary weights and reports path occurrence IDs in the
+original topology. Several paths can realize the same strings. Each
+outgoing arc gives one ordered stream of suffixes, since multiplying
+by a positive weight preserves their order. The query merges the
+stream heads. With $d_q$ streams at state $q$ and $K_q$ retained suffixes,
+the work is $O(d_q + K_q \log(d_q+1))$ arithmetic operations per
+state, and an analogous merge chooses the initial marks. Reading
+weight slots, the bit lengths of the exact rational scores, and
+materializing the selected arc sequences contribute additional
+costs.
+
+To sample from these paths, `sample_path` chooses an initial state by its weighted
+suffix mass, then chooses an arc or a stop with probability proportional to
+the weight of an accepting continuation, evaluated in float64 log space. The
+observations enter through the query, and a positive normalizer is required.
+In an acyclic observation every path has finitely many steps.
+
+For expected counts, `expected_arc_counts` uses one packed pass in each
+direction and gathers the corresponding prefix and suffix at every active arc
+occurrence. An occurrence contributes its prefix times its arc weight times
+its suffix, divided by the normalizer. Summing these contributions gives the
+expected number of traversals of each original arc. In acyclic graphs
+this takes linear arithmetic work and storage in the active graph, in
+addition to the source
+weight evaluation and construction of the graph. Queries reuse the graph
+structure across evaluations.
+For a differentiable weight, `weight(recompute_backward=True)` lets PyTorch
+discard the intermediate tensors of the path pass and compute them again
+during backward. The source weight evaluation and its saved tensors are
+outside the path checkpoint.
+
+
+## Exact string factor trees
+
+A `StringVariable` names a string type and may specify an observed word.
+A `StringFactor` assigns a distinct variable to each tape of a weighted
+relation. A `StringFactorGraph` checks these assignments and supports
+exact tree inference with the Markov and LogProb algebras.
+
+To compile a marginal, the tree schedule sends one message toward the
+root of each connected component on every edge. A variable multiplies
+the incoming unary messages and its observation indicator, if present.
+A factor synchronizes each incoming unary message with its assigned
+tape and sums over the shared word. If that variable has no incoming
+weight, projection sums directly over its tape. Subtrees below a factor
+share only the variables on these separating tapes. Induction from the
+leaves gives the product of the factors summed over all variables other
+than the root. An independent component contributes its own total
+weight to the partition.
+
+Messages retain their unnormalized weight. `TreeStringMarginal.partition`
+returns the total weight across components. `log_prob` divides the
+weight at a word by the mass of its component and requires every
+component to have positive finite mass. It evaluates each original
+weight source once across the numerator and denominator within a call.
+A cyclic factor graph is refused by the tree schedule. Cycles within a
+single relation use the ordinary productive closure checks.
+
+
+## Certified finite string MAP
+
+A `FiniteStringScore` lists the feasible tuples of words for a factor and
+assigns each tuple a rational additive score. `dual_string_map` uses the
+same typed variables and observations as a string factor graph. Bindings
+are full words in the declared finite supports.
+
+Each variable occurrence gets a word-indexed potential. The potentials
+sum to zero across occurrences for each variable and word. Thus they
+cancel on a consistent assignment, and the sum of the adjusted local
+maxima is an upper bound for the original objective. Agreement on full
+words attains this bound. The certificate gives each local maximizer,
+its adjusted score, and the potentials needed to check the claim.
+When the iteration limit is reached before agreement, the result gives
+the best bound and any feasible score encountered. An empty local
+support certifies infeasibility.
+
+A sweep scans the explicitly supplied local supports. Centering the
+update takes one pass over variable occurrences and uses rational
+arithmetic. The costs of exact rational operations depend on the bit
+length of the adjusted scores and potentials.
+
+
+## Fixed n-gram projection
+
+An `NgramFamily` defines log-linear distributions over a finite support
+supplied by the caller. It counts contiguous n-grams up to the given
+order. Exact elimination on integer feature differences retains an
+affine basis that represents the same distributions. The base measure
+may be set to the cavity weight of a local EP update.
+
+`NgramFamily.project` minimizes inclusive KL from the supplied tilted
+distribution to this family. Its convex objective is the log
+normalizer minus the dot product of the coefficients with the tilted
+feature means. The gradient is the difference in feature means and
+the Hessian is their covariance under the fitted distribution. Both
+input measures require finite log weights throughout the declared
+support. This ensures that the projected moments lie in the relative
+interior of the family's moment set.
+
+The result reports the fitted probabilities, coefficients, divergence,
+moment residual, and solver status. The tolerance bounds the
+infinity norm of the feature residual at convergence. It does not
+bound a graph posterior error. For a support of size $m$ and basis
+of size $r$, each Newton direction takes $O(mr^2+r^3)$ arithmetic
+work. Each line-search trial takes $O(mr)$. Gradients follow the
+accepted sequence of operations. The line search evaluates the change in the objective
+from the current probabilities. For a coefficient displacement $d$ and
+current mean $\hat{\mu}$, that change is
+
+$$
+(\hat{\mu}-\mu)^\mathsf{T}d
++\log\!\left(1+\mathbb{E}\left[e^U-1-U\right]\right),
+\qquad U=(\phi(w)-\hat{\mu})^\mathsf{T}d.
+$$
+
+The centered change has zero expectation under the current probabilities.
+Evaluating the nonnegative exponential remainder preserves small changes
+near the optimum. Convergence still uses the requested moment tolerance.
+
+
+## Finite string belief propagation
+
+A `FiniteStringBeliefPlan` uses an explicit list of admissible words for
+each variable. It compiles the factor scores on their finite supports,
+then reads the live sources once each per run. Construction counts the
+factor entries and the states and candidate arcs of their queries.
+Observed variables retain just their supplied word.
+
+One synchronous sweep forms variable cavities from the previous
+messages, then sums the factor products over every other variable.
+The cavities and outgoing messages are normalized in log space.
+Prefix and suffix products allow the update to handle excluded words
+without subtracting an infinite log value. Damping mixes the old and
+proposed message probabilities.
+
+The result reports the maximum undamped total variation between the
+returned messages and their one-sweep updates. This measures a
+fixed-point residual. The sweep limit can give a result with larger
+residual, and the residual gives no bound on the posterior error of
+a loopy graph. A fixed sweep count is available for differentiating a
+declared schedule.
+
+
+## Fixed-family string expectation propagation
+
+`FiniteStringBeliefPlan.expectation_propagation` uses the same factor
+tables and cavities as finite string belief propagation. At each site
+it combines the cavity with the factor's outgoing log weights to form
+the tilted distribution and records its log normalizer. The fitted
+marginal is the inclusive-KL projection of that tilt onto the
+fixed-order n-gram family with the cavity as its base measure.
+Dividing the fitted marginal by the cavity gives the new site message.
+Damping interpolates log message weights to stay in the same family.
+
+The schedule reports the outer message residual and the separate fit
+for each evaluated site. A local fitting limit, numerical stall, or
+tilt without positive weight on the full support leaves the previous
+accepted sweep in place. A fixed sweep count differentiates the
+executed updates. These finite message estimates use only the
+supplied word supports.
+
+
+A positive `projection_penalty` adds the sum of Euclidean coefficient
+norms over the n-gram prefix groups, scaled by that penalty. Each
+group contains every feature with that prefix, including the feature
+equal to the prefix when present. The empty prefix covers all
+coefficients. This objective uses the full n-gram coordinates
+because an affine change of basis can change the penalty.
+
+`NgramFamily.project_penalized` takes a step bounded by the maximum
+squared centered feature norm, then shrinks each prefix group from its
+descendants to the root. Two groups are disjoint or nested. A parent
+shrink preserves the directions of its descendants' subgradients,
+so the sum of the shrink displacements is a subgradient of the
+complete penalty at the final point. This gives the proximal update.
+The reported local convergence criterion is the infinity norm of its
+gradient mapping. The finite group implementation scans the declared
+feature vocabulary. Each shrink copies the coefficient vector, so a
+proximal update takes $O(rg)$ work for $r$ coefficients and $g$ groups.
+
+## Batched contextual edits
+
+`ContextualEditChannel` sums the alignments of observed input-output
+pairs with a single packed semiring plan. At input position $i$ and
+consecutive insertion count $j$, the scorer supplies logits for all
+legal edits using the complete input word. It assigns local
+probabilities before any restriction to the observed output, so
+competitors that emit other symbols still enter the denominator.
+
+A consuming edit advances $i$ and resets $j$. An insertion advances $j$
+at fixed $i$, with a finite upper bound. A stop is available only at
+the end of the input. Thus the generation graph is acyclic and has
+total mass one by reverse induction on $(i,j)$. For input length $L$
+and insertion bound $I$, every emitted word has length at most
+$L+(L+1)I$. The plan for a pair adds the observed output position to
+this state and includes only matching arcs. It groups the accepted
+mass by example after a shared packed forward pass. The original
+scorer supplies new logits on every evaluation, with gradients
+through both compatible paths and local normalization.
+
+The scorer's rectangular action table scales with input positions,
+the insertion bound, and output alphabet size. Its cells and the
+compatible observation arcs count toward the explicit work budget.
+The bound on consecutive insertions is part of the channel model, and the scorer
+can use the whole input as context for each edit.
+
+### Path entropy and additive risk
+
+`FixedStringQuery.path_statistics` uses packed prefix and suffix
+passes on the productive observation graph. Let $\alpha(q)$ and
+$\beta(q)$ be its prefix and suffix log masses and $Z$ its total
+mass. The posterior log mass for a traversal of arc $q \to t$ is
+$\alpha(q) + \log w(q,t) + \beta(t) - \log Z$. Its conditional
+log probability given the visit to $q$ is
+$\log w(q,t) + \beta(t) - \beta(q)$. Initial and final choices
+have the corresponding one-sided prefix or suffix terms.
+
+Entropy is the sum of the initial-choice entropy and the expected
+entropy of each subsequent choice, including stop decisions. This
+follows by factoring any complete path's posterior probability into
+its successive choice probabilities. The same event probabilities
+weight the supplied arc and boundary cost tensors. Thus the method
+computes the expectation of any additive path cost, which can also
+serve as a differentiable risk objective. Original occurrence IDs
+select costs even when arcs share weight parameters or an original
+arc appears at several observed offsets.
+
+The log normalizer, entropy, and expected costs have derivatives
+on the current positive support. Zero-probability choices contribute
+zero. An entropy of paths can differ from an entropy of the output
+words when several paths emit the same word.
+
+### Alignment-marginal output ranking
+
+`best_marginal_output` compares the Markov path sum for each supplied
+output at a fixed input. Each observation graph must be productively
+acyclic. Summing over its aligned paths can favor a word whose best
+individual path is weaker than another word's. Whenever a fixed
+input has a positive finite conditional normalizer, that same
+normalizer applies to all candidates.
+
+Each candidate is scored by a sparse topological pass over the
+reachable product of states and tape positions. Input coefficients
+are interpreted as exact binary rationals for comparison. State and
+arc limits apply cumulatively across candidates. The selected result
+also provides a packed log-space score whose derivatives flow to the
+original weights on the current positive support. Local derivatives
+hold the selected word fixed. This computation requires the
+candidate set to be supplied explicitly.
+
+### Adaptive joint alignment MAP
+
+`dual_alignment_map` maximizes the sum of log weights of one path per
+factor subject to agreement on the complete shared strings. Each
+factor comes from the same typed graph used for sum-product messages.
+The score includes the initial and final weights. LogProb entries
+are interpreted as exact binary rationals for decoding. In a model
+where several paths emit the same strings, a different objective would
+sum their probabilities before comparing strings.
+
+Each factor must have acyclic productive positive support before
+observation restrictions. Its exact decoder tracks the original
+state, positions in observed strings, and one finite suffix state
+per tape. The suffix state counts occurrences of active n-grams,
+including beginning and end markers. Two partial paths at the same
+configuration have the same continuations and future adjustments.
+Thus only the better adjusted partial score and its original
+trace need be retained. The decoder counts state visits and
+examined arcs against its configured limits.
+
+For each shared variable and n-gram, the solver's multipliers sum
+to zero across copies. Thus the adjusted score sum of any feasible
+joint assignment equals its unadjusted score. Summing exact local
+maxima gives an upper bound. If the selected local paths agree on
+their full words, they are jointly feasible and attain that bound.
+If their words differ, the solver can activate a distinguishing
+n-gram within the order and feature limits and update centered
+multipliers. It can return an uncertified feasible assignment and an
+upper bound at the iteration limit. Feature-count agreement alone
+does not establish a certificate.
+
+The returned score and certificate concern the evaluated parameter
+snapshot. Local paths are discrete decisions. The solver reports
+the peak number of reached local configurations and total local
+arc examinations, including primal feasibility checks.
+
+### Compact regular n-gram messages
+
+`NgramMessagePlan` compiles the product of a one-tape LogProb
+relation and a deterministic suffix automaton over supplied n-grams.
+The automaton moves on emitted symbols and retains its state across
+epsilon arcs. It charges every matching feature at its ending symbol,
+including overlapping occurrences. An original path has exactly one
+product path and receives the same feature score as any other path
+with the same output word.
+
+The compiled message has log weight $\log M(w) + \theta^\mathsf{T}
+\phi(w)$, where $M$ is the original weighted language and
+$\phi$ counts feature occurrences. It reuses the original weight
+and coefficient sources. Each weight evaluation gathers the
+required coefficient rows and shares identical pairs of original
+slots and feature emissions.
+
+The automaton uses prefixes of the supplied feature set and failure
+links to proper suffixes. Only reached product configurations are
+created, and no iteration over the alphabet is required. The work
+budget includes trie construction, failure links, examined product
+arcs, and feature emissions. Ordinary relation limits and closure
+checks apply when summing the message. In particular, tilting a
+cyclic language can change whether its normalizer is finite.
+
+### Penalized projection on a regular language
+
+`penalized_regular_ngram_projection` fits a regular n-gram message
+relative to a finite acyclic base language $M$. The normalized
+target is the product of $M$ and a supplied likelihood, so the
+target's support is included in the base. The product uses sparse
+epsilon-filtered intersection. The fitted distribution is
+proportional to $M(w)\exp(\theta^\mathsf{T}\phi(w))$.
+
+Let $Z_\theta$ be its normalizer and let $\mu$ be the target
+feature mean. The change in inclusive KL relative to the base is
+$\log Z_\theta-\log Z_0-\theta^\mathsf{T}\mu$. The projection
+adds the sum of Euclidean norms of the coefficient groups for
+each feature prefix, scaled by the specified penalty. It obtains
+both sets of expected counts by differentiating sparse path sums.
+If the base's longest word has length $L$, a feature for a gram $g$
+counts at most $r_g=\max(0,L-|g|+1)$ occurrences. Its variance is at
+most $r_g^2/4$. The Hessian of $\log Z_\theta$ is the feature covariance,
+so its operator norm is at most the trace bound
+$B=\sum_g r_g^2/4$. The optimizer tries a larger proximal step up to
+one and checks the quadratic upper bound on the smooth objective.
+Halving stops by the globally valid step $1/\max(1,B)$. Thus the
+backtracking work per accepted update is logarithmic in the bound,
+and an accepted step gives descent in exact arithmetic. The
+implementation checks trial steps in float64 with a rounding allowance.
+
+The projection reports the proximal gradient residual separately
+from its iteration status. The fitted message compiles only
+nonzero features, so the penalty can change the number of reached
+states. The result also retains the target's log mass and the site
+scale that matches it. The fit uses a fixed weight snapshot and
+reports its numerical result without differentiating the optimizer.
+
+### Expectation propagation with regular messages
+
+`regular_string_ep` takes a typed string factor graph and a finite
+acyclic reference language for each variable. Its model weights
+multiply the graph factors and the supplied reference weights.
+A unit-weight reference restricts a variable to its declared
+regular support. An observed variable is further restricted
+to its observed word.
+
+A site has a log scale and a linear score over its active n-grams.
+A cavity reweights the reference language using the coefficients
+from all other incident sites. The factor multiplies its
+incoming cavities by joining on their shared tapes, and marginalizes
+the other variables. Local projection fits the resulting tilted
+distribution in the cavity-based n-gram family. The site then
+retains the fitted coefficients and a scale that matches the
+tilted mass under normalized cavities.
+
+Each sweep proposes all sites from the preceding state. Damping
+interpolates log scores and scales. The residual takes the largest
+undamped change in log scale plus the maximum accepted word length
+times the coefficient-change one-norm. This bounds the change in
+a site's log score uniformly over its reference support. A failed
+local optimizer and an exhausted outer sweep retain the last
+accepted messages with distinct statuses. Relation construction
+or closure limits raise their usual errors. The result describes
+an approximate inference run over a fixed weight snapshot.
+
+#### Two-variable comparison
+
+The benchmark gives each variable all four two-symbol words. One binary
+factor links them and each variable has a unary factor. Exact sparse tree
+marginals agree with enumeration over the 16 assignments. The beam keeps
+three words at each directed message and approximates the intermediate sum
+using the retained incoming support. The n-gram vocabulary includes both
+unigrams and all four bigrams.
+
+| Method | Status | Mean TV error | Site features | Site states | Marginal states | Median ms | Peak Python KiB |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Exact sparse tree | exact | 0.000000 | — | — | 452 | 10.1 | 229.3 |
+| Beam 3 | truncated | 0.399886 | — | 24 | 8 | 0.1 | 2.6 |
+| Regular EP (0) | converged | 0.000000 | 24 | 28 | 14 | 895.6 | 197.1 |
+| Regular EP (0.025) | converged | 0.048646 | 12 | 24 | 14 | 3185.6 | 205.1 |
+| Regular EP (0.1) | converged | 0.112319 | 7 | 19 | 13 | 114.5 | 196.0 |
+| Regular EP (0.3) | converged | 0.153415 | 0 | 12 | 6 | 38.1 | 175.0 |
+| Regular EP (1) | converged | 0.153415 | 0 | 12 | 6 | 33.5 | 174.6 |
+
+The site and marginal counts sum states across the returned representations.
+Regular site counts use the automaton compiled on each site's active features.
+Beam counts use tries of the surviving word prefixes. Times are medians of
+five runs on one arm64 CPU thread with PyTorch 2.15. Peak memory counts Python
+allocations traced during a separate run. To reproduce the comparisons, run
+`python tools/benchmark_string_messages.py --repeats 5` from the checkout.
+The penalty reduced site and marginal sizes in this graph. The smaller first
+penalty increased optimization time as compared with the unpenalized fit.
+
+### Posteriors on closed productive components
+
+For an explicitly permitted finite star, the prefix weight at a
+state is the weight of every walk ending there, including walks
+inside its component. Within a cyclic component the chart reads the
+prefix at the component exit introduced for that state. The suffix
+chart reverses the arcs and exchanges boundary roles, using the
+same component closure. This gives the prefix and suffix factors
+needed for expected traversal counts and path entropy. A primitive
+arc's traversal can recur along one path, and each occurrence enters
+its expected count.
+
+Sampling first selects an initial mark in proportion to its weight
+times its suffix mass. At each state it chooses a stop or primitive
+arc in proportion to the stop weight or the arc weight times the
+successor suffix mass. In exact arithmetic the suffix ratios
+telescope to the normalized weight of each complete path. Their
+weights sum to one under the finite closure contract, giving
+almost-sure termination. Runtime sampling uses float64 and a
+cyclic query requires an arc-step budget. A draw beyond that budget
+raises a resource error. The reported path weight uses the
+original algebra and must fit its input precision.
+
+## Sparse backoff queries
+
+A `FailureArc` applies when a one-tape deterministic state lacks a
+transition for the requested symbol. An explicit zero-weight
+transition still takes precedence. `backoff_query` carries the
+unconsumed symbol through the failure chain, then consumes it at its
+first explicit match. It multiplies the failure weights in traversal
+order before the explicit weight. Completion uses the state's own
+final weight. Every failure chain must be acyclic.
+
+After indexing the declared transitions and checking the failure
+links, query construction follows only the selected path. Its work is
+linear in the number of examined symbol probes, and its storage is
+linear in the selected path length. In particular, the number of
+symbols in the alphabet does not determine either cost. The ordinary
+fixed-string evaluator reads the original weights when it scores
+the resulting path.
+
+`backoff_total_weight` sums over every word when the reachable union of
+ordinary and failure edges is acyclic. In reverse topological order,
+the suffix total at a state is the sum of its own final weight and its
+first-symbol contributions. Each explicit symbol contributes its arc
+weight times the target's suffix total. A missing symbol can inherit its
+contribution from the failure target, left-multiplied by the failure
+weight. This recurrence follows from partitioning nonempty words by
+their first symbol. Its empty-word contribution uses the state's own
+final weight.
+
+A persistent sum tree stores the contributions across the distinct
+symbols present on reachable arcs. A failure edge scales a shared tree,
+and an explicit symbol overrides a single leaf, even at zero weight.
+This uses distributivity and requires only semiring operations.
+Following a linear scan of the declared topology and weight source,
+each reached fallback needs at most one tree update, and each reached
+ordinary edge needs logarithmically many in the number of distinct
+reached symbols. State and work limits apply to the reachable graph and
+tree updates. The calculation keeps derivatives through the original
+weights for differentiable semirings.
+
+### Static deterministic minimization
+
+`minimize_static_acceptor` snapshots a one-tape Markov acceptor, removes
+zero-weight arcs and marks, and trims states outside its positive
+support. The remaining graph must be acyclic. Each state must have at
+most one outgoing arc per symbol, with all arcs consuming one symbol.
+
+For a state $q$, let $R_q$ be its weighted suffix series and $g_q$ the
+rational greatest common divisor of its nonzero coefficients. Outgoing
+labels have disjoint suffix supports. Thus $g_q$ is the gcd of the final
+weight and the products $w(q,a,t)g_t$ over outgoing arcs. A pass from the
+leaves computes $g_q$ and hashes a signature containing the final weight
+divided by $g_q$, the scaled outgoing weights, and the successor classes.
+Equality of signatures is equivalent to equality of $R_q/g_q$ by induction
+on the maximum suffix length. Multiplying the original initial weight
+by $g_q$ preserves the weighted language. Any epsilon-free deterministic
+acceptor with one initial state must distinguish positive prefixes whose
+residual series are not proportional, so this construction uses the
+minimum number of states.
+
+The pass performs one rational gcd per retained arc and sorts each
+state's outgoing labels. Its work also includes validating the source
+weight slots and the input topology. Rational arithmetic costs depend
+on coefficient bit lengths. Coefficients in the result must be exactly
+representable in the input floating-point dtype. Trainable weights
+are refused because changing them can change the equivalence classes.
+
+### Ranked constraints for a fixed input
+
+`ranked_output_candidates` restricts a candidate generator to one
+input word. Each original arc occurrence carries a vector of nonnegative
+integer violations. Each path sums its vectors and the highest-ranked
+coordinate on which two candidates differ determines their order.
+The returned acceptor keeps every globally optimal path and retains
+the original sources of its semiring weights. Ranking considers
+structural paths even when their current semiring weight is zero.
+
+For each state $q$ in the fixed-input graph, a reverse Dijkstra pass
+computes its least lexicographic suffix rank $d_q$. Lexicographic order
+is translation-invariant and every arc rank is nonnegative in that
+order. An arc $q \to t$ with rank $v$ belongs to an optimal suffix
+exactly when $d_q = v + d_t$. The construction keeps these tight arcs
+and the least-ranked initial marks, then trims inaccessible arcs.
+Summing the equality along any retained accepting path gives the
+global optimum. Conversely, a globally optimal path has no positive
+rank slack at any step. A retained cycle can contain only zero
+violation vectors. Finite-state weight queries use their ordinary
+closure contract if such a cycle emits no output.
+
+For $Q$ reached configurations, $E$ examined compatible transitions,
+and $r$ coordinates, the ranking pass takes $O(Q + E + (Q + E)r
+\log(Q + E + 1))$ operations counting each integer operation as one.
+Building the fixed-input graph obeys its explicit state and work
+budgets and also scans the original topology and rank table. The
+acceptor describes candidates for this input alone. Compiling one
+transducer for arbitrary ranked inputs requires additional
+regularity hypotheses.
+
+### Uniform compilation for capped ranked constraints
+
+`compile_ranked_ot` compiles a single transducer for all inputs
+when each violation count has an explicit finite cap. A cap of
+one records whether a constraint has been violated. The count
+update adds the arc's violations, then clips each coordinate
+at its cap.
+
+Each weighted product state records the current candidate and
+its capped vector. It also records the set of all candidate
+configurations reachable by consuming the same input prefix.
+This set is closed under input-epsilon transitions. A consuming
+transition updates the set for its input symbol and takes the
+epsilon closure again. The construction retains all reachable
+vectors, since saturation can reverse the ordering of two prefix
+vectors after they receive the same further violations.
+
+An original path uniquely determines its weighted product path.
+That path accepts exactly when the original path ends in a final
+state and its rank equals the minimum among all final
+configurations in the competitor set. The competitor set filters
+the original paths without contributing any weight or alignment
+multiplicity. All tied original paths keep their weights, and
+sharing through the original parameters remains live.
+
+The compiler visits reachable weighted product states and caches
+competitor transitions by state set and observed label. It
+does not iterate over the entire alphabet or the entire cap
+product. Nevertheless the number of reachable sets can be
+exponential. State and work limits give explicit failure when
+exploration exceeds the supplied budgets. The caps define the
+model, and the limits bound construction.
+
 ::: quivers.core.relations
     options:
       members:
         - RationalRelation
+        - RegularNgramProjection
+        - RegularStringBelief
+        - RegularStringEPResult
+        - RegularStringSite
+        - RegularStringSiteUpdate
         - RelationTopology
         - Arc
+        - ArcCounts
         - Boundary
         - EPSILON
         - Label
@@ -176,16 +771,52 @@ in the original records and introduces one arc per connecting boundary.
         - FixedStringQuery
         - ComposedRelation
         - ComposedStringQuery
+        - ConditionalStringQuery
+        - ContextualEditChannel
+        - ContextualEditPlan
         - QueryWork
+        - FailureArc
         - FiniteRelationRestriction
+        - FiniteStringBeliefPlan
+        - FiniteStringScore
+        - MarginalOutputChoice
+        - NgramFamily
+        - NgramMessagePlan
+        - NgramProjection
+        - PathStatistics
+        - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
         - RelationLimitError
+        - RelationPath
+        - StringAlignment
+        - StringAlignmentCertificate
+        - StringAlignmentMapResult
+        - StringBeliefResult
+        - StringEPResult
+        - StringSiteProjection
+        - StringFactor
+        - StringFactorGraph
+        - StringMapCertificate
+        - StringMapResult
+        - StringVariable
+        - TreeStringMarginal
+        - auto_intersect
+        - backoff_query
+        - backoff_total_weight
+        - best_marginal_output
         - closure
+        - compile_ranked_ot
         - concatenate
         - condition
+        - dual_alignment_map
+        - dual_string_map
         - intersect
         - invert
         - join
+        - penalized_regular_ngram_projection
+        - minimize_static_acceptor
         - project
+        - regular_string_ep
+        - ranked_output_candidates
         - trim
         - union
