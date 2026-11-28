@@ -101,6 +101,7 @@ __all__ = [
     "minimize_static_acceptor",
     "project",
     "regular_string_ep",
+    "ranked_output_candidates",
     "trim",
     "union",
 ]
@@ -697,3 +698,4 @@ from quivers.core.relations.regular_ep import (  # noqa: E402
 from quivers.core.relations.equality import auto_intersect  # noqa: E402
 from quivers.core.relations.backoff import FailureArc, backoff_query  # noqa: E402
 from quivers.core.relations.minimization import minimize_static_acceptor  # noqa: E402
+from quivers.core.relations.ranked import ranked_output_candidates  # noqa: E402
