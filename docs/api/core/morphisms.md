@@ -191,6 +191,33 @@ discard the intermediate tensors of the path pass and compute them again
 during backward. The source weight evaluation and its saved tensors are
 outside the path checkpoint.
 
+
+## Exact string factor trees
+
+A `StringVariable` names a string type and may specify an observed word.
+A `StringFactor` assigns a distinct variable to each tape of a weighted
+relation. A `StringFactorGraph` checks these assignments and supports
+exact tree inference with the Markov and LogProb algebras.
+
+To compile a marginal, the tree schedule sends one message toward the
+root of each connected component on every edge. A variable multiplies
+the incoming unary messages and its observation indicator, if present.
+A factor synchronizes each incoming unary message with its assigned
+tape and sums over the shared word. If that variable has no incoming
+weight, projection sums directly over its tape. Subtrees below a factor
+share only the variables on these separating tapes. Induction from the
+leaves gives the product of the factors summed over all variables other
+than the root. An independent component contributes its own total
+weight to the partition.
+
+Messages retain their unnormalized weight. `TreeStringMarginal.partition`
+returns the total weight across components. `log_prob` divides the
+weight at a word by the mass of its component and requires every
+component to have positive finite mass. It evaluates each original
+weight source once across the numerator and denominator within a call.
+A cyclic factor graph is refused by the tree schedule. Cycles within a
+single relation use the ordinary productive closure checks.
+
 ::: quivers.core.relations
     options:
       members:
@@ -210,6 +237,10 @@ outside the path checkpoint.
         - ProductiveEpsilonCycleError
         - RelationLimitError
         - RelationPath
+        - StringFactor
+        - StringFactorGraph
+        - StringVariable
+        - TreeStringMarginal
         - closure
         - concatenate
         - condition

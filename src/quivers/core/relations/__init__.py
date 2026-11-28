@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from functools import cached_property
 from itertools import product
@@ -48,6 +51,10 @@ __all__ = [
     "RelationLimitError",
     "RelationPath",
     "RelationTopology",
+    "StringFactor",
+    "StringFactorGraph",
+    "StringVariable",
+    "TreeStringMarginal",
     "Words",
     "closure",
     "concatenate",
@@ -59,6 +66,30 @@ __all__ = [
     "trim",
     "union",
 ]
+
+
+_weight_cache: ContextVar[dict[int, torch.Tensor] | None] = ContextVar(
+    "_weight_cache", default=None
+)
+
+
+@contextmanager
+def _weight_snapshot() -> Iterator[None]:
+    token = _weight_cache.set({})
+    try:
+        yield
+    finally:
+        _weight_cache.reset(token)
+
+
+def _read_weight_source(source: nn.Module) -> torch.Tensor:
+    snapshot = _weight_cache.get()
+    if snapshot is None:
+        return source()
+    key = id(source)
+    if key not in snapshot:
+        snapshot[key] = source()
+    return snapshot[key]
 
 
 def _tape_object(tapes: tuple[SetObject, ...]) -> SetObject:
@@ -162,7 +193,7 @@ class RationalRelation(Morphism):
         self.algebra.validate(weights)
 
     def _weights(self) -> torch.Tensor:
-        values = self._weight_source()
+        values = _read_weight_source(self._weight_source)
         self._check_weights(values)
         return values
 
@@ -519,4 +550,10 @@ from quivers.core.relations.transforms import (  # noqa: E402
     invert,
     project,
     trim,
+)
+from quivers.core.relations.graph import (  # noqa: E402
+    StringFactor,
+    StringFactorGraph,
+    StringVariable,
+    TreeStringMarginal,
 )
