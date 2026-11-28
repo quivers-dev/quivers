@@ -135,7 +135,7 @@ from quivers.qiec.terms import (
     Handle,
     If,
     NewInstance,
-    WithCallAddresses,
+    WithTraceAddresses,
     Perform,
     PlateAxis,
 )
@@ -607,7 +607,7 @@ def _subcomputations(computation: Computation) -> Iterator[Computation]:
     elif isinstance(computation, If):
         yield from _subcomputations(computation.then)
         yield from _subcomputations(computation.otherwise)
-    elif isinstance(computation, NewInstance | WithCallAddresses):
+    elif isinstance(computation, NewInstance | WithTraceAddresses):
         yield from _subcomputations(computation.body)
 
 

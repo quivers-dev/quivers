@@ -74,6 +74,7 @@ from quivers.qiec.terms import (
     DistributionValue,
     Gather,
     Handle,
+    InstanceAddress,
     KernelMatrix,
     LetBinding,
     LiteralValue,
@@ -92,7 +93,7 @@ from quivers.qiec.terms import (
     TensorValue,
     TupleValue,
     Value,
-    WithCallAddresses,
+    WithTraceAddresses,
     Var,
     WeightSum,
 )
@@ -477,10 +478,10 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
-            if isinstance(first, CallAddress):
+            if isinstance(first, CallAddress | InstanceAddress):
                 node = node.then
                 continue
-            while isinstance(first, WithCallAddresses):
+            while isinstance(first, WithTraceAddresses):
                 first = first.body
             if isinstance(first, Bind):
                 # ``traverse`` and other finite sequencing forms elaborate to
@@ -1304,10 +1305,10 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
-            if isinstance(first, CallAddress):
+            if isinstance(first, CallAddress | InstanceAddress):
                 node = node.then
                 continue
-            while isinstance(first, WithCallAddresses):
+            while isinstance(first, WithTraceAddresses):
                 first = first.body
             if isinstance(first, Bind):
                 node = Bind(

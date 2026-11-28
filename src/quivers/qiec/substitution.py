@@ -19,6 +19,7 @@ from quivers.qiec.terms import (
     Bind,
     Call,
     CallAddress,
+    InstanceAddress,
     Case,
     CaseBranch,
     CaseMotive,
@@ -38,7 +39,7 @@ from quivers.qiec.terms import (
     PrimitiveApplication,
     Projection,
     Resume,
-    WithCallAddresses,
+    WithTraceAddresses,
     Return,
     SiteValue,
     TransportValue,
@@ -795,7 +796,8 @@ def substitute_computation(
             | Case
             | Call
             | CallAddress
-            | WithCallAddresses
+            | InstanceAddress
+            | WithTraceAddresses
             | Resume
             | NewInstance
             | If,
@@ -883,9 +885,9 @@ def substitute_computation(
             effects=substitute_row(computation.effects, substitution),
             origin=computation.origin,
         )
-    if isinstance(computation, CallAddress):
+    if isinstance(computation, CallAddress | InstanceAddress):
         return computation
-    if isinstance(computation, WithCallAddresses):
+    if isinstance(computation, WithTraceAddresses):
         return computation.with_(
             body=substitute_computation(computation.body, substitution)
         )

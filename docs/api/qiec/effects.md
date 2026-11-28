@@ -8,10 +8,10 @@ state ([instances](../../tutorials/qvr/10-effects-and-handlers.md#2-write-an-aut
 computation may request [@leijen2014koka]. The module gives typed effect interfaces, rows, and
 handler signatures.
 
-Discharge allocates an inlined call's address at its original entry.
-Residual requests observe that address while the call is live. A
-resumption can restore the same call address more than once, with each
-shot keeping its own resumption path. Effects in the intervening clause
-use the scope outside the captured call.
+Discharge allocates the addresses of inlined calls and local instances
+at their original entry points. A residual request observes the live
+addresses in their original order. Resumptions restore the same
+allocations for each shot, which has its own resumption path. Effects in
+an intervening clause use the scope outside the captured continuation.
 
 ::: quivers.qiec.effects

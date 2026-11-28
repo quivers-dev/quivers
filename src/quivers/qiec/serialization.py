@@ -207,7 +207,8 @@ from quivers.qiec.programs import ProgramEntry, ProgramParameter, ProgramSite
 from quivers.qiec.substitution import StaticSubstitution
 from quivers.qiec.terms import (
     CallAddress,
-    WithCallAddresses,
+    InstanceAddress,
+    WithTraceAddresses,
     NewInstance,
     Resume,
     AttachmentRef,
@@ -442,7 +443,8 @@ _NODE_CLASSES = (
     If,
     Call,
     CallAddress,
-    WithCallAddresses,
+    InstanceAddress,
+    WithTraceAddresses,
     Resume,
     NewInstance,
     # contract records

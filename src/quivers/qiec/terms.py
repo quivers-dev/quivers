@@ -1026,6 +1026,9 @@ class Resume(QiecModel):
 
 
 _CALL_ADDRESS = TypeApplication(constructor=TypeConstructorRef.builtin("CallAddress"))
+_INSTANCE_ADDRESS = TypeApplication(
+    constructor=TypeConstructorRef.builtin("InstanceAddress")
+)
 
 
 class CallAddress(QiecModel):
@@ -1052,13 +1055,28 @@ class CallAddress(QiecModel):
     tag: Literal["call_address"] = "call_address"
 
 
-class WithCallAddresses(QiecModel):
-    """Run a residual computation under previously allocated call addresses.
+class InstanceAddress(QiecModel):
+    """Allocate the address of a local instance removed during discharge.
 
     Parameters
     ----------
-    calls
-        The live inlined calls, in outer-to-inner order.
+    origin
+        The site of the original allocation.
+    tag
+        The serialization discriminator.
+    """
+
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["instance_address"] = "instance_address"
+
+
+class WithTraceAddresses(QiecModel):
+    """Run a residual computation under previously allocated trace addresses.
+
+    Parameters
+    ----------
+    addresses
+        The live inlined calls and local instances, in outer-to-inner order.
     body
         The computation that observes the restored addresses.
     previous
@@ -1068,10 +1086,10 @@ class WithCallAddresses(QiecModel):
         The serialization discriminator.
     """
 
-    calls: tuple[Var, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    addresses: tuple[Var, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     previous: Var | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
-    tag: Literal["with_call_addresses"] = "with_call_addresses"
+    tag: Literal["with_trace_addresses"] = "with_trace_addresses"
 
 
 class NewInstance(QiecModel):
@@ -1138,7 +1156,8 @@ type Computation = (
     | If
     | Call
     | CallAddress
-    | WithCallAddresses
+    | InstanceAddress
+    | WithTraceAddresses
     | Resume
     | NewInstance
 )
@@ -1163,6 +1182,7 @@ __all__ = [
     "Gather",
     "Handle",
     "If",
+    "InstanceAddress",
     "KernelMatrix",
     "LetBinding",
     "LetValue",
@@ -1192,5 +1212,5 @@ __all__ = [
     "Value",
     "Var",
     "WeightSum",
-    "WithCallAddresses",
+    "WithTraceAddresses",
 ]

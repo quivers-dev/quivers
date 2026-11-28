@@ -58,6 +58,7 @@ from quivers.qiec.terms import (
     Gather,
     Handle,
     If,
+    InstanceAddress,
     LetBinding,
     LetValue,
     LiteralValue,
@@ -79,7 +80,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
     WeightSum,
-    WithCallAddresses,
+    WithTraceAddresses,
 )
 from quivers.qiec.types import (
     INT,
@@ -1410,7 +1411,7 @@ def computation_value(
     node = term
     while isinstance(node, Bind):
         first = node.first
-        if isinstance(first, CallAddress):
+        if isinstance(first, CallAddress | InstanceAddress):
             node = node.then
             continue
         if isinstance(first, Bind):
@@ -1472,7 +1473,7 @@ def _step_value(
     CallNotLowered
         As `computation_value` does.
     """
-    if isinstance(term, WithCallAddresses):
+    if isinstance(term, WithTraceAddresses):
         return computation_value(
             term.body, replaced, result_type, owner, computations, active
         )

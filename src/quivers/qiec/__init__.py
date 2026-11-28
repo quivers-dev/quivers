@@ -399,6 +399,7 @@ from quivers.qiec.terms import (
     Gather,
     Handle,
     If,
+    InstanceAddress,
     KernelMatrix,
     LetBinding,
     LetValue,
@@ -430,7 +431,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
     WeightSum,
-    WithCallAddresses,
+    WithTraceAddresses,
 )
 from quivers.qiec.index_arithmetic import infer_index_extents, solve_index_equation
 from quivers.qiec.types import (
@@ -585,6 +586,7 @@ __all__ = [
     "IMPLEMENTATIONS",
     "INT",
     "If",
+    "InstanceAddress",
     "IndexBinder",
     "IndexConstructor",
     "IndexSum",
@@ -747,7 +749,7 @@ __all__ = [
     "WEIGHT_EFFECT",
     "WeightAccumulator",
     "WeightSum",
-    "WithCallAddresses",
+    "WithTraceAddresses",
     "abort_effect",
     "abort_handler",
     "add_weights",

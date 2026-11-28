@@ -62,6 +62,7 @@ from quivers.qiec.terms import (
     EvidenceValue,
     Handle,
     If,
+    InstanceAddress,
     LiteralValue,
     Local,
     LogDensity,
@@ -74,7 +75,7 @@ from quivers.qiec.terms import (
     Resume,
     Return,
     SiteValue,
-    WithCallAddresses,
+    WithTraceAddresses,
     TransportValue,
     TensorValue,
     TupleValue,
@@ -1155,18 +1156,20 @@ def _replaced_call_history(
     return (*prior, (callee, origin))
 
 
-class _RestoredCallAddresses(ContinuationFrame):
-    """The live call addresses around a residual computation.
+class _RestoredTraceAddresses(ContinuationFrame):
+    """The live addresses around a residual computation.
 
     Parameters
     ----------
-    calls
-        The saved calls in outer-to-inner order.
+    addresses
+        Saved calls and local instances in outer-to-inner order.
     previous
         The retired caller when the residual computation is a tail call.
     """
 
-    calls: tuple[_CallActivation, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    addresses: tuple[_CallActivation | DynamicAddressFrame, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     previous: _CallActivation | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
@@ -1303,7 +1306,7 @@ type _Frame = (
     | _ResponseHookFrame
     | _DelimiterFrame
     | _CallFrame
-    | _RestoredCallAddresses
+    | _RestoredTraceAddresses
     | _InstanceFrame
     | _ClauseFrame
     | _AnswerFrame
@@ -1316,7 +1319,7 @@ _FRAME_CLASSES = (
     _ResponseHookFrame,
     _DelimiterFrame,
     _CallFrame,
-    _RestoredCallAddresses,
+    _RestoredTraceAddresses,
     _InstanceFrame,
     _ClauseFrame,
     _AnswerFrame,
@@ -2907,8 +2910,11 @@ class Evaluator:
         for frame in stack:
             if isinstance(frame, _CallFrame):
                 path.append(frame.activation.address)
-            elif isinstance(frame, _RestoredCallAddresses):
-                path.extend(call.address for call in frame.calls)
+            elif isinstance(frame, _RestoredTraceAddresses):
+                path.extend(
+                    entry.address if isinstance(entry, _CallActivation) else entry
+                    for entry in frame.addresses
+                )
             elif isinstance(frame, _InstanceFrame):
                 path.append(frame.address)
         return (*path, *Evaluator._clause_path(stack))
@@ -3064,7 +3070,7 @@ class Evaluator:
                         )
                     env = Scope.of(frame.environment)
                     continue
-                if isinstance(frame, _RestoredCallAddresses):
+                if isinstance(frame, _RestoredTraceAddresses):
                     continue
                 if isinstance(frame, _InstanceFrame):
                     if self.trace_hook is not None:
@@ -3242,22 +3248,39 @@ class Evaluator:
                     )
                 )
                 continue
-            if isinstance(current, WithCallAddresses):
-                calls = tuple(self._value(call, env) for call in current.calls)
+            if isinstance(current, InstanceAddress):
+                self._instance_serial += 1
+                current = _Returned(
+                    value=DynamicAddressFrame(
+                        scope="instance", key=self._instance_serial
+                    )
+                )
+                continue
+            if isinstance(current, WithTraceAddresses):
+                addresses = tuple(
+                    self._value(address, env) for address in current.addresses
+                )
                 previous = (
                     None
                     if current.previous is None
                     else self._value(current.previous, env)
                 )
                 if (
-                    not all(isinstance(call, _CallActivation) for call in calls)
+                    not all(
+                        isinstance(address, _CallActivation)
+                        or isinstance(address, DynamicAddressFrame)
+                        and address.scope == "instance"
+                        for address in addresses
+                    )
                     or previous is not None
                     and not isinstance(previous, _CallActivation)
                 ):
-                    raise EvaluationError("invalid restored call addresses")
+                    raise EvaluationError("invalid restored trace addresses")
                 stack.append(
-                    _RestoredCallAddresses(
-                        calls=cast(tuple[_CallActivation, ...], calls),
+                    _RestoredTraceAddresses(
+                        addresses=cast(
+                            tuple[_CallActivation | DynamicAddressFrame, ...], addresses
+                        ),
                         previous=previous,
                     )
                 )
@@ -3315,7 +3338,7 @@ class Evaluator:
                     caller_environment = env
                     if (
                         stack
-                        and isinstance(restored := stack[-1], _RestoredCallAddresses)
+                        and isinstance(restored := stack[-1], _RestoredTraceAddresses)
                         and restored.previous is not None
                     ):
                         call_history = _replaced_call_history(
@@ -3690,8 +3713,12 @@ class Evaluator:
                     for captured in captured_stack:
                         if isinstance(captured, _CallFrame):
                             calls = (captured.activation,)
-                        elif isinstance(captured, _RestoredCallAddresses):
-                            calls = captured.calls
+                        elif isinstance(captured, _RestoredTraceAddresses):
+                            calls = tuple(
+                                address
+                                for address in captured.addresses
+                                if isinstance(address, _CallActivation)
+                            )
                         else:
                             continue
                         for call in calls:
@@ -3981,7 +4008,17 @@ class Evaluator:
             `copy.copy` succeeding says nothing about whether copying is sound.
         """
         if value is None or isinstance(
-            value, (bool, int, float, str, bytes, torch.Tensor, _CallActivation)
+            value,
+            (
+                bool,
+                int,
+                float,
+                str,
+                bytes,
+                torch.Tensor,
+                _CallActivation,
+                DynamicAddressFrame,
+            ),
         ):
             return True
         if isinstance(value, tuple):

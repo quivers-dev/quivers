@@ -29,15 +29,15 @@ from quivers.qiec import (
     DischargedModule,
     Handle,
     If,
+    InstanceAddress,
     NamedComputation,
     NewInstance,
     Perform,
     QiecModule,
     Resume,
-    Return,
     RuntimeConfiguration,
     RuntimeSelection,
-    WithCallAddresses,
+    WithTraceAddresses,
     discharge_computation,
     discharge_module,
     infer_computation,
@@ -78,7 +78,7 @@ def _terms(body: Computation) -> list[Computation]:
             pending += [branch.body for branch in term.branches]
         elif isinstance(term, Handle):
             pending.append(term.computation)
-        elif isinstance(term, NewInstance | WithCallAddresses):
+        elif isinstance(term, NewInstance | WithTraceAddresses):
             pending.append(term.body)
     return found
 
@@ -888,6 +888,48 @@ define scoped_tap_run(x : Real) : Real * LogWeight !{} =
     handle score with accumulate in
         handle tap with recording_tap in
             scoped_tap_parent(x)
+
+define local_subject(x : Real) : Real !{score} =
+    with instance local : Relay in
+        handle local with identity in
+            let y <- perform local.pass(x)
+            perform score.add(weight(y))
+            return y
+
+define local_pure(x : Real) : Real !{} =
+    with instance local : Relay in
+        handle local with identity in
+            let y <- perform local.pass(x)
+            return y
+
+define repeated_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let first <- local_subject(x)
+        let second <- local_subject(first)
+        perform score.add(weight(second))
+        return second
+
+define ordinal_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- local_pure(x)
+        local_subject(y)
+
+define mixed_local_parent(x : Real) : Real !{score} =
+    with instance local : Relay in
+        handle relay with recording_relay in
+            scoped_leaf(x)
+
+define mixed_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        mixed_local_parent(x)
+
+define retained_local_parent(x : Real) : Real !{score} =
+    with instance local : Relay in
+        ordinal_score(x)
+
+define retained_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        retained_local_parent(x)
 """
 
 
@@ -990,6 +1032,76 @@ def test_retained_tail_call_keeps_its_captured_lexical_history(
     expected = ((score, (("handler-clause", key),), ()),)
     for checked in (module, discharged.module, round_trip):
         assert _request_addresses(checked, "scoped_tap_run", 1.0) == expected
+
+
+def test_repeated_local_instances_keep_distinct_addresses_at_one_site(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("local_subject") is None
+    score = _address_site(module, "local_subject", str(SCORE_ADD))
+    after = _address_site(module, "repeated_local_run", str(SCORE_ADD))
+    expected = (
+        *(
+            (score, (("call", f"local_subject#{ordinal}"), ("instance", ordinal)), ())
+            for ordinal in (1, 2)
+        ),
+        (after, (), ()),
+    )
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "repeated_local_run", 1.0) == expected
+
+
+def test_pure_local_instance_allocation_advances_only_its_counter(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("local_pure") is None
+    score = _address_site(module, "local_subject", str(SCORE_ADD))
+    expected = ((score, (("call", "local_subject#2"), ("instance", 2)), ()),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "ordinal_local_run", 1.0) == expected
+
+
+def test_restored_call_and_instance_addresses_keep_their_order_across_capture(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    name = "mixed_local_parent"
+    assert discharged.obstacle(name) is None
+    parent = _computation(module, name).body
+    leaf = _computation(module, "scoped_leaf").body
+    (trigger,) = _effect_sites(leaf, "Relay")
+    (before, after) = _effect_sites(leaf, "Score")
+    (clause,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    site = next(
+        term.origin.site_id() for term in _terms(parent) if isinstance(term, Call)
+    )
+    outer = (("call", f"{name}#1"), ("instance", 1))
+    active = (*outer, ("call", "scoped_leaf#2"))
+    expected = (
+        (before, active, ()),
+        (clause, (*outer, ("handler-clause", f"{trigger}/{site}")), ()),
+        (after, active, ()),
+    )
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "mixed_local_run", 1.0) == expected
+
+
+def test_a_local_instance_blocks_tail_replacement_of_its_caller(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("retained_local_parent") is None
+    score = _address_site(module, "ordinal_score", str(SCORE_ADD))
+    path = (
+        ("call", "retained_local_parent#1"),
+        ("instance", 1),
+        ("call", "ordinal_score#2"),
+    )
+    expected = ((score, path, ()),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "retained_local_run", 1.0) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1526,7 +1638,7 @@ define inner(a : Real) : Real !{} =
     for parameter in pair.parameters:
         context = context.extend(parameter)
     assert infer_computation(pair.body, registry, context).result == pair.type.result
-    assert isinstance(pair.body, Return)
+    assert sum(isinstance(term, InstanceAddress) for term in _terms(pair.body)) == 1
     for checked in (module, result.module):
         assert run_named(checked, "inner", (0.5,)).value == pytest.approx(10.5)
 

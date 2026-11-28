@@ -81,6 +81,7 @@ from quivers.qiec.terms import (
     Gather,
     Handle,
     If,
+    InstanceAddress,
     LetBinding,
     LetValue,
     LiteralValue,
@@ -95,8 +96,9 @@ from quivers.qiec.terms import (
     TupleValue,
     Value,
     Var,
-    WithCallAddresses,
+    WithTraceAddresses,
     _CALL_ADDRESS,
+    _INSTANCE_ADDRESS,
 )
 from quivers.qiec.types import (
     UNIT,
@@ -407,6 +409,18 @@ class _CallFrame(_Frame):
     previous_address: Var | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
+class _InstanceAddressFrame(_Frame):
+    """A local instance's scope while its body runs.
+
+    Parameters
+    ----------
+    address
+        The binding holding the runtime instance address.
+    """
+
+    address: Var = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+
 class _JoinFrame(_Frame):
     """A point at which the branches of a conditional may meet.
 
@@ -589,7 +603,7 @@ def _subterms(term: Computation) -> tuple[Computation, ...]:
             pending.extend((item.otherwise, item.then))
         elif isinstance(item, Case):
             pending.extend(branch.body for branch in item.branches)
-        elif isinstance(item, NewInstance | WithCallAddresses):
+        elif isinstance(item, NewInstance | WithTraceAddresses):
             pending.append(item.body)
     return tuple(found)
 
@@ -682,15 +696,15 @@ def _computation_reads(term: Computation) -> frozenset[str]:
             found |= _read(item.scrutinee)
         elif isinstance(item, CallAddress) and item.previous is not None:
             found |= _read(item.previous)
-        elif isinstance(item, WithCallAddresses):
-            found |= frozenset(call.local.name for call in item.calls)
+        elif isinstance(item, WithTraceAddresses):
+            found |= frozenset(address.local.name for address in item.addresses)
             if item.previous is not None:
                 found |= _read(item.previous)
     return frozenset(found)
 
 
 def _pure(term: Computation) -> bool:
-    """Whether a rewritten computation has no requests or address allocations.
+    """Whether a rewritten computation has no requests or trace allocations.
 
     Parameters
     ----------
@@ -700,10 +714,11 @@ def _pure(term: Computation) -> bool:
     Returns
     -------
     bool
-        True when nothing in it requests or advances the call ordinal.
+        True when nothing in it requests or advances a trace ordinal.
     """
     return not any(
-        isinstance(item, Perform | Call | CallAddress) for item in _subterms(term)
+        isinstance(item, Perform | Call | CallAddress | InstanceAddress)
+        for item in _subterms(term)
     )
 
 
@@ -1241,6 +1256,12 @@ class _Discharger:
                 )
                 state = term.first
             elif isinstance(term, NewInstance):
+                address = Local(
+                    name=self.fresh("instance_address"), type=_INSTANCE_ADDRESS
+                )
+                made.append((address, InstanceAddress(origin=term.origin)))
+                self.count(1)
+                stack = (_InstanceAddressFrame(address=Var(local=address)), *stack)
                 state = term.body
             elif isinstance(term, Handle):
                 frame, bound = self.install(term, environment)
@@ -1276,11 +1297,11 @@ class _Discharger:
                     if caller is not None:
                         addresses = tuple(
                             address
-                            for address in _active_call_addresses(stack)
+                            for address in _active_addresses(stack)
                             if address != previous
                         )
-                        call = WithCallAddresses(
-                            calls=addresses, previous=previous, body=call
+                        call = WithTraceAddresses(
+                            addresses=addresses, previous=previous, body=call
                         )
                     made.append((binder, call))
                     self.count(1 + (caller is not None))
@@ -1361,9 +1382,11 @@ class _Discharger:
                         type=request.result_type,
                     )
                     residual: Computation = Perform(request=request)
-                    addresses = _active_call_addresses(stack)
+                    addresses = _active_addresses(stack)
                     if addresses:
-                        residual = WithCallAddresses(calls=addresses, body=residual)
+                        residual = WithTraceAddresses(
+                            addresses=addresses, body=residual
+                        )
                     made.append((binder, residual))
                     self.count(1 + bool(addresses))
                     state = Var(local=binder)
@@ -1454,7 +1477,7 @@ class _Discharger:
                 stack = path.stack
                 resumptions = path.resumptions
                 state = path.value
-            elif isinstance(term, CallAddress | WithCallAddresses):
+            elif isinstance(term, CallAddress | InstanceAddress | WithTraceAddresses):
                 raise _Undischarged(
                     "address",
                     "enters an already discharged region whose restored addresses "
@@ -2474,8 +2497,8 @@ def _awaiting(stack: tuple[_Frame, ...], default: str) -> str:
     return frame.binder.name if isinstance(frame, _BindFrame) else default
 
 
-def _active_call_addresses(stack: tuple[_Frame, ...]) -> tuple[Var, ...]:
-    """Read the inlined call frames that still contribute to the address.
+def _active_addresses(stack: tuple[_Frame, ...]) -> tuple[Var, ...]:
+    """Read the inlined calls and instances contributing to the address.
 
     Parameters
     ----------
@@ -2485,7 +2508,7 @@ def _active_call_addresses(stack: tuple[_Frame, ...]) -> tuple[Var, ...]:
     Returns
     -------
     tuple[Var, ...]
-        The surviving call allocations, outermost first.
+        The surviving allocations, outermost first.
     """
     retired = {
         frame.previous_address
@@ -2495,7 +2518,8 @@ def _active_call_addresses(stack: tuple[_Frame, ...]) -> tuple[Var, ...]:
     return tuple(
         frame.address
         for frame in reversed(stack)
-        if isinstance(frame, _CallFrame) and frame.address not in retired
+        if isinstance(frame, _CallFrame | _InstanceAddressFrame)
+        and frame.address not in retired
     )
 
 
