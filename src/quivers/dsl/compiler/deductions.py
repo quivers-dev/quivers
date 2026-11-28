@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Hashable
+from typing import Never
 
 import didactic.api as dx
 import torch
@@ -101,6 +102,7 @@ from quivers.qiec.rules import ComputedRuleWeight
 from quivers.dsl.compiler._deduction_presentation import (
     DeductionPresentationError,
     chart_category,
+    deduction_guard_names,
     deduction_presentation,
 )
 
@@ -156,7 +158,7 @@ _DEDUCTION_OPTION_KEYS: frozenset[str] = frozenset(
     }
 )
 _SEQUENT_RULE_OPTION_KEYS: frozenset[str] = frozenset(
-    {"learnable", "parent", "bounded", "weight"}
+    {"learnable", "parent", "bounded", "weight", "guard"}
 )
 _LEXICON_ENTRY_OPTION_KEYS: frozenset[str] = frozenset({"learnable"})
 
@@ -164,6 +166,11 @@ _LEXICON_ENTRY_OPTION_KEYS: frozenset[str] = frozenset({"learnable"})
 def _require_checked_rule_weight(*_arguments: object) -> torch.Tensor:
     """Refuse calls through an extracted legacy inference rule."""
     raise ValueError("computed rule weights require checked QVR execution")
+
+
+def _require_checked_rule_guards(*_arguments: object) -> Never:
+    """Refuse the legacy agenda when the presentation has checked guards."""
+    raise ValueError("rule guards require checked QVR execution")
 
 
 def _words_display(entry: _LexiconEntryAst) -> str:
@@ -788,8 +795,19 @@ class _DeductionsMixin:
         # (the Prolog and Datalog convention), and a span pattern gains
         # a logical form slot when any rule or the ``binders`` block
         # uses one.
+        guard_names = deduction_guard_names(decl)
+        module = self.qiec_module if guard_names else None
+        guards = (
+            {
+                item.name: item
+                for item in module.computations
+                if item.name in guard_names
+            }
+            if module is not None
+            else None
+        )
         try:
-            presented = deduction_presentation(decl)
+            presented = deduction_presentation(decl, guards)
         except DeductionPresentationError as refusal:
             raise CompileError(str(refusal), refusal.line, refusal.col) from refusal
         _uses_lf = presented.uses_forms
@@ -975,6 +993,11 @@ class _DeductionsMixin:
                     premises=premises,
                     conclusion=conclusion,
                     weight_fn=weight_fn,
+                    side_condition=(
+                        _require_checked_rule_guards
+                        if presented_rule.rule.side_condition is not None
+                        else None
+                    ),
                 )
             )
         # A rule binding no non-position variable has exactly one weight
@@ -1430,7 +1453,11 @@ class _DeductionsMixin:
             name=decl.name,
             rules=tuple(inference_rules),
             semiring=semiring,
-            axiom_injector=axiom_injector,
+            axiom_injector=(
+                _require_checked_rule_guards
+                if presented.presentation.conditions
+                else axiom_injector
+            ),
             goal=_goal,
             goal_extent=goal_extent,
             agenda_factory=agenda_factory,

@@ -1439,6 +1439,23 @@ class _DeductionElaboration:
         self._program_instance(PARAMS_INSTANCE, "Param")
         for declaration in declarations:
             system = self._read_deduction(declaration)
+            presented = system.presentation_cell[0]
+            assert presented is not None
+            if presented.presentation.conditions:
+                guarded_queries = (
+                    linear_calls.get(declaration.name),
+                    boolean_calls.get(declaration.name),
+                    proof_calls.get(declaration.name),
+                    interpretations.get(declaration.name),
+                )
+                for guarded in guarded_queries:
+                    if guarded is not None:
+                        self._fail(
+                            guarded,
+                            "this deduction query requires unconditional rules; "
+                            "use checked scalar parse or item outcomes with guards",
+                            code="qiec-deduction-rule-guard",
+                        )
             if any(item[0] is declaration for item in schema_parsers):
                 # A schema parser's ``depth`` bounds its category algebra,
                 # not its derivation. A root-to-leaf path of a tree over a
@@ -2011,7 +2028,9 @@ class _DeductionElaboration:
                 rule_node, misplaced.message(declaration.name), code="qiec-program"
             )
         try:
-            presented = deduction_presentation(declaration)
+            presented = deduction_presentation(
+                declaration, self._deduction_guard_bodies
+            )
         except DeductionPresentationError as refusal:
             self._fail(refusal, str(refusal), code="qiec-program")
         system.presentation_cell[0] = presented
@@ -5130,6 +5149,43 @@ class _Context:
             )
         return self.weighted_conclusion(index, rule, bindings, conclusion, then)
 
+    def guard_application(
+        self,
+        rule: _Rule,
+        bindings: dict[str, Local],
+        admitted: Computation,
+        rejected: Callable[[], Computation],
+    ) -> Computation:
+        """Decide the presentation's guard on the complete matching bindings."""
+        condition = rule.presented.rule.side_condition
+        if condition is None:
+            return admitted
+        presentation = self.system.presentation_cell[0]
+        assert presentation is not None
+        guard = presentation.presentation.conditions_by_id[condition.computation]
+        return self.bind(
+            "rule_guard",
+            BOOL,
+            Call(
+                callee=guard.id,
+                name=guard.name,
+                static_arguments=(),
+                arguments=tuple(
+                    Var(local=bindings[name]) for name in condition.arguments
+                ),
+                result_type=BOOL,
+                effects=EMPTY_ROW,
+                origin=self.elaborator._origin(
+                    rule.presented.source,
+                    (*self.path, "rules", rule.presented.index, "guard"),
+                    "deduction-rule-guard",
+                ),
+            ),
+            lambda decision: If(
+                condition=Var(local=decision), then=admitted, otherwise=rejected()
+            ),
+        )
+
     def weighted_conclusion(
         self,
         index: int,
@@ -5179,7 +5235,12 @@ class _Context:
                 then=then(conclusion),
             )
 
-        return self.application_weight(index, rule, bindings, weighted)
+        return self.guard_application(
+            rule,
+            bindings,
+            self.application_weight(index, rule, bindings, weighted),
+            lambda: self.fail(system.item, "derive", "rule", index, "guard"),
+        )
 
     def application_weight(
         self,

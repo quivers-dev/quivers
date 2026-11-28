@@ -715,7 +715,10 @@ def _fresh_name(base: str, occupied: set[str]) -> str:
     return candidate
 
 
-def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
+def _calls_a_computation(
+    steps: tuple[ProgramStep, ...],
+    deductions: Mapping[str, DeductionSystem] | None = None,
+) -> bool:
     """Whether a program body calls a checked computation anywhere.
 
     Parameters
@@ -723,11 +726,14 @@ def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
     steps : tuple[ProgramStep, ...]
         The body, whose marginalization scopes are searched too.
 
+    deductions : Mapping of str to DeductionSystem or None
+        The declared deductions whose checked guards select native execution.
+
     Returns
     -------
     bool
         ``True`` for a named computation, typed deduction query, or scalar
-        parse of a previously computed token binding.
+        parse with checked rule guards or a computed token binding.
     """
     local: set[str] = set()
 
@@ -745,13 +751,18 @@ def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
                     value = step.value
                     if value.func in NATIVE_DEDUCTION_CALLS:
                         return True
-                    if (
-                        value.func == "parse"
-                        and len(value.args) >= 2
-                        and isinstance(tokens := value.args[1], LetExprVar)
-                        and tokens.name in local
-                    ):
-                        return True
+                    if value.func == "parse" and len(value.args) >= 2:
+                        target, tokens = value.args[:2]
+                        if isinstance(tokens, LetExprVar) and tokens.name in local:
+                            return True
+                        if deductions is not None and isinstance(target, LetExprVar):
+                            system = deductions.get(target.name)
+                            if (
+                                system is not None
+                                and system.presentation is not None
+                                and system.presentation.conditions
+                            ):
+                                return True
                 if isinstance(step, MarginalizeStep):
                     if visit(step.scope, step.var):
                         return True
@@ -3037,7 +3048,9 @@ class _ProgramsMixin:
         tuple[ProgramStep, ...]
             The steps with every lowerable call lowered.
         """
-        if not _calls_a_computation(steps) and not has_structural_lets(steps):
+        if not _calls_a_computation(
+            steps, getattr(self, "_deductions", None)
+        ) and not has_structural_lets(steps):
             return steps
         module = self._available_qiec_module()
         if module is None or module.gap:
@@ -4307,7 +4320,9 @@ class _ProgramsMixin:
                 set(decl.params or ()) | {p.name for p in decl.value_parameters},
             )
         )
-        if not step_program and _calls_a_computation(decl.draws):
+        if not step_program and _calls_a_computation(
+            decl.draws, getattr(self, "_deductions", None)
+        ):
             # A program calling a checked computation runs as its core
             # computation: the callee's body is a term of the module,
             # which only the reference machine runs.

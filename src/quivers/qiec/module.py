@@ -704,6 +704,7 @@ def validate_module(module: QiecModule) -> KernelRegistry:
     for handler in module.handlers:
         registry.register_handler(handler)
     if not rechecked:
+        guard_bodies: dict[ComputationId, NamedComputation] | None = None
         for handler in module.handlers:
             if isinstance(handler.foreign, DeductionLinearGoal):
                 from quivers.qiec.linear_deduction import validate_linear_goal
@@ -716,6 +717,28 @@ def validate_module(module: QiecModule) -> KernelRegistry:
                 from quivers.qiec.deduction_outcomes import validate_outcome_adapter
 
                 validate_outcome_adapter(handler, handler.foreign, registry)
+                if isinstance(handler.foreign, DeductionOutcomes):
+                    from quivers.qiec.rules import RulePresentation
+
+                    presentation = handler.foreign.presentation
+                    assert isinstance(presentation, RulePresentation)
+                    if presentation.conditions:
+                        if guard_bodies is None:
+                            guard_bodies = {
+                                body.id: body for body in module.computations
+                            }
+                        from quivers.qiec._deduction_guards import _guard_in_scope
+
+                        for guard in presentation.conditions:
+                            outer = guard_bodies.get(guard.id)
+                            if (
+                                outer is None
+                                or _guard_in_scope(outer, presentation.name) != guard
+                            ):
+                                raise KernelError(
+                                    f"deduction rule guard {guard.name!r} must match "
+                                    "the outer module's checked computation"
+                                )
             elif isinstance(handler.foreign, DeductionOutcomeGrouping):
                 from quivers.qiec.deduction_outcomes import validate_outcome_grouping
 

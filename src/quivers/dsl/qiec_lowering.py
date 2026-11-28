@@ -32,6 +32,9 @@ from quivers._family_schemas import (
 from quivers._values import OPAQUE_BY_VALUE, HeldValue, ValueModel
 from quivers.qiec._models import QiecModel
 from quivers.dsl import ast_nodes as surface
+from quivers.dsl.compiler._deduction_presentation import deduction_guard_names
+from quivers.qiec._deduction_guards import _check_guard_body
+from quivers.qiec.rules import RuleError
 from quivers.qiec.canonical import (
     BUILTIN_TYPE_CONSTRUCTORS,
     LOG_WEIGHT,
@@ -1671,6 +1674,7 @@ class _Elaborator(
         self.instances: dict[str, NamedEffectInstance] = {}
         self.handlers: dict[str, HandlerDef] = {}
         self.computation_signatures: dict[str, ComputationSignature] = {}
+        self._deduction_guard_bodies: dict[str, NamedComputation] = {}
         self.entries: list[ProgramEntry] = []
         self.closed_interpretations: list[ClosedInterpretationBinding] = []
         self.packed_interpretations: list[PackedBooleanInterpretationBinding] = []
@@ -1736,6 +1740,7 @@ class _Elaborator(
         self._declare_instances()
         self._declare_program_instances()
         self._build_registry()
+        self._declare_deduction_guard_operations()
         self._declare_deduction_declarations()
         self._declare_structural_signatures()
         scoped_interpretations = declare_scoped_types(self)
@@ -2419,7 +2424,32 @@ class _Elaborator(
                     raise
                 self._fail_kernel(node, error, fallback="qiec-handler")
 
-    def _declare_computation_signatures(self) -> None:
+    def _declare_deduction_guard_operations(self) -> None:
+        """Prepare the closed guard bodies before declaring guarded rules."""
+        names = frozenset(
+            name
+            for declaration in self._items(surface.DeductionDecl)
+            if isinstance(declaration, surface.DeductionDecl)
+            for name in deduction_guard_names(declaration)
+        )
+        if not names:
+            return
+        self._declare_computation_signatures(only=names)
+        for body in self._declare_computations(only=names):
+            try:
+                _check_guard_body(body)
+            except RuleError as error:
+                declaration = next(
+                    item
+                    for item in self._items(surface.QiecComputationDecl)
+                    if item.name == body.name
+                )
+                self._fail(declaration, str(error), code="qiec-deduction-rule-guard")
+            self._deduction_guard_bodies[body.name] = body
+
+    def _declare_computation_signatures(
+        self, *, only: frozenset[str] | None = None
+    ) -> None:
         """Collect every computation signature before any body is lowered.
 
         This is what makes a forward call ordinary. A body may call a
@@ -2441,6 +2471,10 @@ class _Elaborator(
             if declaration.name in seen:
                 self._fail(declaration, f"duplicate computation {declaration.name!r}")
             seen.add(declaration.name)
+            if only is not None and declaration.name not in only:
+                continue
+            if declaration.name in self._deduction_guard_bodies:
+                continue
             telescope = self._lower_telescope(declaration.binders)
             parameters = tuple(
                 self._lower_type(parameter.type_expr, telescope)
@@ -2467,7 +2501,9 @@ class _Elaborator(
                 self._fail_kernel(declaration, error, fallback="qiec-route")
             self.computation_signatures[declaration.name] = signature
 
-    def _declare_computations(self) -> tuple[NamedComputation, ...]:
+    def _declare_computations(
+        self, *, only: frozenset[str] | None = None
+    ) -> tuple[NamedComputation, ...]:
         """Lower every computation body against its declared signature.
 
         Returns
@@ -2493,6 +2529,12 @@ class _Elaborator(
             if declaration.name in seen:
                 self._fail(declaration, f"duplicate computation {declaration.name!r}")
             seen.add(declaration.name)
+            if only is not None and declaration.name not in only:
+                continue
+            cached = self._deduction_guard_bodies.get(declaration.name)
+            if cached is not None:
+                computations.append(cached)
+                continue
             telescope = self._lower_telescope(declaration.binders)
             parameter_names: set[str] = set()
             static_names = {binder.name for binder in telescope}

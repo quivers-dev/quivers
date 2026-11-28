@@ -729,6 +729,11 @@ def _packed_trace(
         "algebra": "LogProb",
         "derivative": "autograd-on-finite-log-weights-at-fixed-support",
         "retention": "packed-forest-during-query",
+        **(
+            {"checked_rule_guards": forest.work.conditions}
+            if forest.presentation.conditions
+            else {}
+        ),
         "goal_items": goals,
         "positive_rows": rows,
         "construction_work": tuple(

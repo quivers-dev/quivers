@@ -62,11 +62,13 @@ from quivers.dsl.compiler._deduction_positions import (
 from quivers.dsl.compiler._deduction_terms import atom_term
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
 from quivers.dsl.compiler._options import find_option, get_option_flag
+from quivers.qiec._deduction_guards import _coordinate_arguments, _guard_in_scope
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import ParameterId, PresentationId
 from quivers.qiec.declarations import FieldDef
 from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.kinds import NAT, IndexBinder, IndexSort, UserIndexSort
+from quivers.qiec.module import NamedComputation
 from quivers.qiec.rules import (
     AxiomSlot,
     ComputedRuleWeight,
@@ -75,6 +77,7 @@ from quivers.qiec.rules import (
     Premise,
     Rule,
     RulePresentation,
+    SideCondition,
 )
 from quivers.qiec.types import (
     STRING,
@@ -735,13 +738,27 @@ def _instantiated(
     return form, tuple(fresh)
 
 
-def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
+def deduction_guard_names(decl: DeductionDecl) -> frozenset[str]:
+    """Read the names used by a deduction's authored rule guards."""
+    return frozenset(
+        option.value.value
+        for rule in decl.rules
+        for option in rule.options
+        if option.key == "guard" and isinstance(option.value, OptionName)
+    )
+
+
+def deduction_presentation(
+    decl: DeductionDecl, guards: Mapping[str, NamedComputation] | None = None
+) -> DeductionPresentation:
     """Read a deduction into its rule presentation.
 
     Parameters
     ----------
     decl : DeductionDecl
         The declaration.
+    guards : Mapping of str to NamedComputation or None
+        The module's checked scalar rule guards, if any.
 
     Returns
     -------
@@ -885,6 +902,7 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
         )
 
     rules: list[DeductionRule] = []
+    used_guards: dict[str, NamedComputation] = {}
     forms = list(reader.families)
     computed_names = {
         rule.name
@@ -936,6 +954,27 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
             )
         elif learnable or parent_name is not None:
             weight = ParameterId.derive(decl.name, "rule", rule.name)
+        guard_options = tuple(
+            option for option in rule.options if option.key == "guard"
+        )
+        guard = None
+        if guard_options:
+            option = guard_options[0]
+            if len(guard_options) != 1 or not isinstance(option.value, OptionName):
+                raise DeductionPresentationError(
+                    f"rule {rule.name!r} guard must name one checked Bool computation",
+                    rule.line,
+                    rule.col,
+                )
+            guard = (guards or {}).get(option.value.value)
+            if guard is None:
+                raise DeductionPresentationError(
+                    f"rule {rule.name!r} guard names no checked computation {option.value.value!r}",
+                    rule.line,
+                    rule.col,
+                )
+            if guard.name not in used_guards:
+                used_guards[guard.name] = _guard_in_scope(guard, decl.name)
         choices = _instances(reader, [*premises, conclusion], forms, variables)
         for choice in choices:
             telescope = dict(variables)
@@ -960,6 +999,20 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
                 conclusion=judgment(*items[-1]),
                 weight=weight,
             )
+            if guard is not None:
+                coordinates = _coordinate_arguments(presented)
+                if len(guard.parameters) != len(coordinates):
+                    raise DeductionPresentationError(
+                        f"rule {rule.name!r} guard {guard.name!r} expects its "
+                        f"matched Int coordinates in telescope order {coordinates!r}",
+                        rule.line,
+                        rule.col,
+                    )
+                presented = presented.with_(
+                    side_condition=SideCondition(
+                        computation=guard.id, arguments=coordinates
+                    )
+                )
             rules.append(
                 DeductionRule(
                     rule=presented,
@@ -1000,6 +1053,7 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
         judgments=judgments,
         rules=tuple(item.rule for item in rules),
         axioms=tuple(axioms),
+        conditions=tuple(used_guards.values()),
     )
     return DeductionPresentation(
         presentation=presentation,

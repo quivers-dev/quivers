@@ -2901,6 +2901,7 @@ type QiecFeature = Literal[
     "search",
     "deduction-outcomes",
     "deduction-linear-goal",
+    "deduction-rule-guard",
     "rule-log-weight",
     "reduction",
     "rowwise",
@@ -3705,14 +3706,14 @@ _OUTCOME_SEMANTICS = (
 
 def _outcome_dependents(
     module: QiecModule,
-    semantics: type | UnionType,
+    semantics: type | UnionType | None,
     computations: tuple[StableId, ...] = (),
 ) -> frozenset[StableId]:
     """Find computations and handlers depending on a native deduction path."""
     pending: list[StableId] = [
         handler.id
         for handler in module.handlers
-        if isinstance(handler.foreign, semantics)
+        if semantics is not None and isinstance(handler.foreign, semantics)
     ]
     pending.extend(computations)
     if not pending:
@@ -3757,6 +3758,26 @@ def _contains_rule_weight_guard(body: tm.Computation) -> bool:
     return False
 
 
+def _guarded_deduction_bodies(module: QiecModule) -> tuple[StableId, ...]:
+    """Find generated bodies using the deduction rule guard contract."""
+    guarded: list[StableId] = []
+    for computation in module.computations:
+        if not _is_deduction_origin(computation.origin):
+            continue
+        pending: list[object] = [computation.body]
+        visited: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if id(node) in visited:
+                continue
+            visited.add(id(node))
+            if isinstance(node, tm.Call) and node.origin.role == "deduction-rule-guard":
+                guarded.append(computation.id)
+                break
+            pending.extend(m._children(node))
+    return tuple(guarded)
+
+
 def outcome_target_scope(module: QiecModule, selected: str | None = None) -> QiecModule:
     """Omit native-only declarations when the selected program cannot use them."""
     computed_weights: tuple[StableId, ...] = (
@@ -3770,7 +3791,9 @@ def outcome_target_scope(module: QiecModule, selected: str | None = None) -> Qie
         else ()
     )
     affected = _outcome_dependents(
-        module, _OUTCOME_SEMANTICS | fo.DeductionLinearGoal, computed_weights
+        module,
+        _OUTCOME_SEMANTICS | fo.DeductionLinearGoal,
+        (*computed_weights, *_guarded_deduction_bodies(module)),
     )
     if not affected or any(
         entry.computation in affected
@@ -3815,21 +3838,25 @@ def outcome_capability_diagnostics(
         return computation.origin
 
     entries = {entry.computation for entry in module.entries}
-    queries: tuple[tuple[type | UnionType, QiecFeature, str], ...] = (
+    queries: tuple[tuple[frozenset[StableId], QiecFeature, str], ...] = (
         (
-            _OUTCOME_SEMANTICS,
+            _outcome_dependents(module, _OUTCOME_SEMANTICS),
             "deduction-outcomes",
             "has no checked runtime for packed deduction outcomes",
         ),
         (
-            fo.DeductionLinearGoal,
+            _outcome_dependents(module, fo.DeductionLinearGoal),
             "deduction-linear-goal",
             "has no checked runtime for certified linear deduction goals",
         ),
+        (
+            _outcome_dependents(module, None, _guarded_deduction_bodies(module)),
+            "deduction-rule-guard",
+            "has no checked runtime for deduction rule guards",
+        ),
     )
     diagnostics: list[QiecCapabilityDiagnostic] = []
-    for semantics, feature, detail in queries:
-        affected = _outcome_dependents(module, semantics)
+    for affected, feature, detail in queries:
         roots = entries & affected
         diagnostics.extend(
             QiecCapabilityDiagnostic(

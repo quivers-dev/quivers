@@ -523,6 +523,55 @@ them through `parse` or `run_deduction`. The classic agenda, packed
 outcome and proof queries, and the exact linear planner require weight
 policies they can evaluate independently and refuse these operations.
 
+### Guards on matched coordinates
+
+A rule can name a Boolean computation with `#[guard=operation]`. The
+computation receives the rule's matched position variables as `Int` values
+in their telescope order. The example tests one split of a sentence.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 4
+object Result : Real 1
+
+deduction Guarded : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, S, word
+    rule join : span(I, K, A), span(K, J, B) |- span(I, J, S) #[guard=first_split]
+    lexicon
+        "x" : A = word
+        "y" : B = word
+
+define first_split(i : Int, k : Int, j : Int) : Bool !{} =
+    return k == 1
+
+program response : Token -> Result
+    let chart = parse(Guarded, sentence)
+    score result = chart.goal_weight()
+    return result
+
+export response
+```
+
+The guard has an empty effect row and no static parameters. Its body uses
+scalar `Int` and `Bool` operations. A true decision admits the matched
+application. A false decision removes that application before weighting or
+recording its edge. Distinct admitted applications still contribute
+separately. A runtime error in the guard fails the query.
+
+Checked scalar `parse`, `run_deduction`, and lexical item outcome queries
+use the same checked guard body. The indexed query calls the guard once per
+completed candidate binding and reports this count in its trace. If there
+are $G$ candidate bindings and the guard body takes at most $g$ scalar
+steps per binding, guard evaluation takes $O(Gg)$ scalar steps. Space for
+retained edges depends on the accepted applications. Removing edges
+preserves the span order certified from the unfiltered rule patterns.
+The production probabilities of a locally normalized grammar still use
+their original groups.
+
+The legacy agenda and external targets refuse guarded executions. Proof
+values, packed Boolean proof interpretations, and the linear-cycle
+executor require unconditional rules.
+
 ### Cyclic inside weights and finite-height proofs
 
 For the one-token sentence `seed`, let $a$ be the lexical mass and $r$

@@ -715,10 +715,28 @@ class DeductionOutcomes(QiecModel):
         presentation = self.presentation
         if not isinstance(presentation, RulePresentation):
             raise ValueError("deduction outcomes require a checked rule presentation")
-        if presentation.conditions or presentation.equations:
-            raise ValueError(
-                "deduction outcomes require unconditional rules without proof equations"
+        if presentation.equations:
+            raise ValueError("deduction outcomes do not interpret proof equations")
+        if presentation.conditions:
+            from quivers.qiec._deduction_guards import (
+                _check_guard_body,
+                _coordinate_arguments,
             )
+
+            used = set()
+            for rule in presentation.rules:
+                condition = rule.side_condition
+                if condition is None:
+                    continue
+                if condition.arguments != _coordinate_arguments(rule):
+                    raise ValueError(
+                        "deduction outcome guards require the ordered matched Int fields"
+                    )
+                used.add(condition.computation)
+            if used != presentation.conditions_by_id.keys():
+                raise ValueError("deduction outcomes carry unused rule guard bodies")
+            for guard in presentation.conditions:
+                _check_guard_body(guard)
         if len(presentation.judgments) != 1 or len(presentation.axioms) != 1:
             raise ValueError("deduction outcomes require one lexical span judgment")
         (form,) = presentation.judgments
@@ -816,6 +834,22 @@ class DeductionProofs(QiecModel):
     chart: DeductionOutcomes = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["deduction-proofs"] = "deduction-proofs"
 
+    @dx.model_validator()
+    def _unconditional_lexical_proofs(self) -> None:
+        """Require proof constructors whose types entail their admissibility.
+
+        Raises
+        ------
+        ValueError
+            If a proof constructor needs an extra guard witness.
+        """
+        from quivers.qiec.rules import RulePresentation
+
+        presentation = self.chart.presentation
+        assert isinstance(presentation, RulePresentation)
+        if presentation.conditions:
+            raise ValueError("deduction proof outcomes require unconditional rules")
+
     @cached_property
     def proof_presentation(self) -> RulePresentation:
         """Rename the chart's proof declarations into the calling module.
@@ -869,6 +903,10 @@ class DeductionBooleanOutcomes(QiecModel):
             raise ValueError("Boolean proof outcomes require a checked lexical chart")
         presentation = chart.presentation
         assert isinstance(presentation, RulePresentation)
+        if presentation.conditions:
+            raise ValueError(
+                "packed Boolean proof outcomes require unconditional rules"
+            )
         if any(rule.arity > 2 or rule.values for rule in presentation.rules):
             raise ValueError(
                 "packed Boolean proof outcomes require rules of arity at most "
