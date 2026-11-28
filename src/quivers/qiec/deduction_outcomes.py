@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping, Sequence
+from fractions import Fraction
 
 import torch
 
@@ -414,11 +415,10 @@ def _chart_outcomes(
         raise InvalidHandlerError("deduction outcome lexical terms have the wrong size")
     if weights.shape != (len(semantics.words) + len(semantics.parameters),):
         raise InvalidHandlerError("deduction outcome weights have the wrong size")
-    # Without unary chains, n leaves admit at most n - 1 internal nodes.
-    # Each node can have at most unary_height unary rules directly above
-    # it. Leave room for their log weights and the final normalization.
-    width_bound = max(1, 4 * len(tokens) * (1 + semantics.unary_height))
-    limit = torch.finfo(weights.dtype).max / width_bound
+    # Nullable trees can have a large finite node bound. Dividing exact
+    # integers keeps the bound from overflowing a floating-point divisor.
+    divisor = semantics.span_order.weight_range_divisor(len(tokens))
+    limit = float(Fraction(torch.finfo(weights.dtype).max) / divisor)
     demand(
         ((weights.abs() <= limit) | torch.isneginf(weights)).all(),
         lambda: EvaluationError(

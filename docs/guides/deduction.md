@@ -504,14 +504,26 @@ The rules use unit weights or weights from `normalize=lhs` groups.
 Learned lexical log weights remain
 available. The normalized groups also accept the same labeled probability
 bindings as `parse`, with components in $[0,1]$ and positive total mass in
-each bound group. The fragment excludes category depth bounds, zero-premise
-rules, open hypotheses, and rule weights computed from bindings.
+each bound group. The fragment excludes category depth bounds, open
+hypotheses, and rule weights computed from bindings. The current QVR
+syntax requires at least one premise per rule. A checked QIEC presentation
+may also supply ground rules with ordered literal endpoints, including
+empty spans. The checker computes which category heads may derive empty
+spans. A premise can preserve the conclusion's width when the other
+premises are empty. The checker requires an acyclic graph of fixed
+category heads for all such transitions, including transitions from
+rules with several premises.
 Lexical categories and forms must inhabit the vocabulary of the deduction's
 closed rule presentation. The query supports derivatives on fixed positive
-support, with zero masses omitted from its output. A derivation for $n > 0$
-tokens has at most $(2n - 1)(h + 1)$ nodes when the longest unary path
-has length $h$. The runtime checks that the finite log weights leave room
-for their sum and normalization in the run's number type.
+support, with zero masses omitted from its output. When every span is
+positive, a derivation for $n > 0$ tokens has at most $(2n - 1)(h + 1)$
+nodes, where $h$ is the longest unary path. With nullable heads, $h$ instead
+bounds every chain of equal-width transitions. A zero-width subtree has
+at most $1+a+\cdots+a^h$ nodes for maximum rule arity $a$. A positive-width
+derivation retains the bound on its positive-width nodes, with at most
+$a$ zero-width subtrees attached to each. These bounds also account for
+an empty input. The runtime uses them to check whether finite log weights
+leave room for their sum and normalization in the run's number type.
 
 The runtime grounds a packed forest and computes one inside value per useful
 item, shared across all requested goals. For each incoming rule instance, a
