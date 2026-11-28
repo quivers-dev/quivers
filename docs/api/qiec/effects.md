@@ -610,6 +610,49 @@ assert stage.stage == "handler-discharge"
 assert stage.rewrite is not None and stage.rewrite.companions == ()
 ```
 
+`plan.check_target(target)` reports a standalone QIEC export. It uses the
+ordinary target projector, renderer and grammar emitter. A host target
+can select the original handlers, which appear as `source-handler`. A
+static target reads the discharged computation and its stages. An
+unsupported export carries the target's refusal names and diagnostic.
+Probabilistic programs use a separate target plan with their data,
+constraints and sites.
+
+With `arguments` and `direction`, the report compares exact native JVPs
+for the source and the graph selected by the target. A supplied
+`derivative_rule` is checked independently against its nominal source.
+These checks concern QIEC. The `external_derivative` field records that
+the backend derivative is unverified even when the source and projected
+JVPs agree and the target emits code.
+
+<!-- python: run -->
+```python
+from quivers.dsl import Compiler, parse
+
+source = """
+effect Echo
+    echo : Real -> Real
+
+instance echo : Echo
+
+handler identity for Echo : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    echo(value : Real) resumes 1 =>
+        resume(value)
+
+define square(x : Real) : Real !{} =
+    handle echo with identity in
+        let value <- perform echo.echo(x)
+        return value * value
+"""
+plan = Compiler(parse(source), module_name="echo-square").effect_plan("square")
+pyro = plan.check_target("pyro", arguments=(2,), direction=(1,))
+stan = plan.check_target("stan", arguments=(2,), direction=(1,))
+assert pyro.stages[0].stage == "source-handler"
+assert stan.stages[0].stage == "handler-discharge"
+assert stan.native_jvp.status == "checked" and stan.native_jvp.staged.tangent == 4
+assert stan.external_derivative.missing == ("external derivative unverified",)
+```
+
 ::: quivers.qiec.effect_plan
 
 ## Static scoped operations

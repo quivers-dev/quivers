@@ -18,6 +18,7 @@ from quivers.transpile._api import (
 from quivers.transpile._expand_composites import expand_composite_lets
 from quivers.transpile._pipeline import parser_registry
 from quivers.transpile._support import unsupported_for
+from quivers.transpile.ir import IRProgram
 from quivers.transpile.plan import Lower
 from quivers.transpile.renderers import (
     BUGSRenderer,
@@ -78,12 +79,30 @@ def transpile(module: Module, *, target: str) -> bytes:
             target,
             [f"target:unknown:{target}:{','.join(sorted(_RENDERERS))}"],
         )
-    renderer_cls, grammar, support_tier = _RENDERERS[target]
+    _, _, support_tier = _RENDERERS[target]
     unsupported_for(f"qvr-{target}", module, allow=support_tier)
     expanded = expand_composite_lets(module, target=target)
     ir = Lower().forward(expanded, target=target)
-    schema = renderer_cls().render(ir)
-    return bytes(parser_registry().emit_pretty(grammar, schema))
+    return _emit_target(ir, target)
+
+
+def _emit_target(ir: IRProgram, target: str) -> bytes:
+    """Render and emit an already prepared plan through its registered target.
+
+    Parameters
+    ----------
+    ir : IRProgram
+        The target's checked program or standalone computation plan.
+    target : str
+        The registered backend key.
+
+    Returns
+    -------
+    bytes
+        Source emitted by the target grammar.
+    """
+    renderer_cls, grammar, _ = _RENDERERS[target]
+    return bytes(parser_registry().emit_pretty(grammar, renderer_cls().render(ir)))
 
 
 def available_targets() -> list[str]:

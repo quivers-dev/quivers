@@ -205,6 +205,7 @@ from quivers.qiec.effect_plan import (
     EffectJvpCheck,
     EffectLawReport,
     EffectPlan,
+    EffectTargetReport,
     checked_effect_plan,
 )
 from quivers.qiec.bernoulli_estimators import (
@@ -1242,6 +1243,7 @@ __all__ += [
     "EffectJvpCheck",
     "EffectLawReport",
     "EffectPlan",
+    "EffectTargetReport",
     "checked_effect_plan",
 ]
 __all__ += [
