@@ -1180,6 +1180,13 @@ Each reached static site needs an explicit `enumerate`, `score`, or
 distinct request addresses. At an adaptive site, the report gives the
 conditional probability and its derivative for each preceding history.
 
+The scalar check admits runtime cases over closed monomorphic data
+with Real, Bool, or Unit fields. A successfully discharged graph can
+also have linear call-address scopes. The evaluator enters the selected
+branch and uses the request's original address. An inactive branch
+contributes no draw or probability factor. Each point needs policies
+for exactly the sites reached across its complete histories.
+
 The plan enumerates the finite source traces at the supplied point. Its
 exact result is the expected return and its directional derivative.
 Calling `sample` runs the chosen estimator over that tree. Enumeration
@@ -1871,6 +1878,13 @@ with direct Bernoulli draws. Each row gets the shared deterministic
 input prefix and its own local inputs. The source must have an
 acyclic call graph, and every complete history must have the
 same ordered sequence of draw addresses in every row.
+
+Rows may select different constructors in an admitted scalar case. If
+both branches call the same sampler under the same checked address, the
+branches can use different probabilities and return different values.
+Any change to the ordered address sequence, including an extra draw or
+a different call activation, prevents a fixed-shape batch. This check
+uses scalar replay. Tensor replay below still requires literal branches.
 
 The joint history law is the product of the row laws at the supplied
 shared values. Each observed address contains the axis label, row
