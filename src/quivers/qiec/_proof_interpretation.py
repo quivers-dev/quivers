@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from quivers.qiec.checking import ComputationSignature, KernelError, KernelRegistry
@@ -50,6 +50,28 @@ class _RuleOperation:
     premises: tuple[FamilyId, ...]
     conclusion: FamilyId
     computation: ComputationSignature
+
+
+def bind_operands(
+    operands: Sequence[tuple[Local, Computation]], body: Computation
+) -> Computation:
+    """Evaluate ordered operands once each before a typed operation.
+
+    Parameters
+    ----------
+    operands
+        Fresh result locals paired with their computations, in source order.
+    body
+        The operation using those results. Its locals are bound by the operands.
+
+    Returns
+    -------
+    Computation
+        The existing QIEC binds that sequence the operand effects.
+    """
+    for local, computation in reversed(operands):
+        body = Bind(binder=local, first=computation, then=body)
+    return body
 
 
 def lower_closed_interpretation(
@@ -452,12 +474,10 @@ def _fold_branch(
         effects=signature.effects,
         origin=origin.with_(structural_path=(*path, "operation"), role="call"),
     )
-    for local, call in reversed(children):
-        body = Bind(binder=local, first=call, then=body)
     return CaseBranch(
         constructor=constructor.id,
         static_arguments=skolems,
         fields=fields,
-        body=body,
+        body=bind_operands(children, body),
         scope=scope,
     )

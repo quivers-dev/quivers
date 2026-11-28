@@ -17,7 +17,7 @@ import didactic.api as dx
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
-from quivers.dsl.ast_nodes import Module, ProgramDecl, Statement
+from quivers.dsl.ast_nodes import LetExprLambda, Module, ProgramDecl, Statement
 from quivers.dsl.ast_nodes.program_steps import CallStep, MarginalizeStep
 from quivers.dsl.ast_nodes.qiec import (
     QiecCallComputation,
@@ -43,12 +43,14 @@ from quivers.dsl._data_inference import has_inferred_objects
 from quivers.dsl.emit import module_to_source, static_argument_to_source
 from quivers.dsl.qiec_lowering import (
     QIEC_STATEMENT_TYPES,
+    _call_operand,
     has_qiec_surface,
     non_qiec_projection,
 )
 from quivers.qiec import QiecModule
 from quivers.qiec.builtins import BUILTIN_EFFECTS
 from quivers.qiec.effects import EffectDef, OperationDef
+from quivers.qiec.families import FAMILIES
 from quivers.qiec.kinds import ArrowKind, EffectBinder, IndexBinder, TypeBinder
 from quivers.qiec.types import render_static
 
@@ -1054,7 +1056,13 @@ class CallSite(dx.Model):
     argument_count: int = 0
 
 
-def _collect_calls(node: object, owner: str, out: list[CallSite]) -> None:
+def _collect_calls(
+    node: object,
+    owner: str,
+    out: list[CallSite],
+    computations: frozenset[str],
+    macros: frozenset[str] = frozenset(),
+) -> None:
     """Collect the calls a computation or a program step tree makes.
 
     Parameters
@@ -1065,10 +1073,14 @@ def _collect_calls(node: object, owner: str, out: list[CallSite]) -> None:
         The declaration the calls belong to.
     out : list[CallSite]
         Accumulator, appended to in source order.
+    computations : frozenset[str]
+        Module computation names that direct operands may call.
+    macros : frozenset[str]
+        Lexically bound pure macros that shadow operand calls.
     """
     if isinstance(node, tuple):
         for item in node:
-            _collect_calls(item, owner, out)
+            _collect_calls(item, owner, out, computations, macros)
         return
     if isinstance(node, QiecCallComputation):
         out.append(
@@ -1084,32 +1096,49 @@ def _collect_calls(node: object, owner: str, out: list[CallSite]) -> None:
                 argument_count=len(node.arguments),
             )
         )
+        for value in node.arguments:
+            operand = _call_operand(value, computations, FAMILIES, macros)
+            if operand is not None:
+                _collect_calls(
+                    QiecCallComputation(
+                        callee=operand.func,
+                        arguments=operand.args,
+                        line=operand.line,
+                        col=operand.col,
+                    ),
+                    owner,
+                    out,
+                    computations,
+                    macros,
+                )
         return
     if isinstance(node, CallStep):
-        _collect_calls(node.call, owner, out)
+        _collect_calls(node.call, owner, out, computations, macros)
         return
     if isinstance(node, MarginalizeStep):
-        _collect_calls(node.scope, owner, out)
+        _collect_calls(node.scope, owner, out, computations, macros)
         return
     if isinstance(node, QiecPureBinding | QiecBindComputation):
         if isinstance(node, QiecBindComputation):
-            _collect_calls(node.first, owner, out)
-        _collect_calls(node.then, owner, out)
+            _collect_calls(node.first, owner, out, computations, macros)
+        elif isinstance(node.value, LetExprLambda):
+            macros = macros | {node.binder.name}
+        _collect_calls(node.then, owner, out, computations, macros)
         return
     if isinstance(node, QiecSequenceComputation):
-        _collect_calls(node.first, owner, out)
-        _collect_calls(node.then, owner, out)
+        _collect_calls(node.first, owner, out, computations, macros)
+        _collect_calls(node.then, owner, out, computations, macros)
         return
     if isinstance(node, QiecInstanceComputation | QiecHandleComputation):
-        _collect_calls(node.body, owner, out)
+        _collect_calls(node.body, owner, out, computations, macros)
         return
     if isinstance(node, QiecIfComputation):
-        _collect_calls(node.then, owner, out)
-        _collect_calls(node.otherwise, owner, out)
+        _collect_calls(node.then, owner, out, computations, macros)
+        _collect_calls(node.otherwise, owner, out, computations, macros)
         return
     if isinstance(node, QiecCaseComputation):
         for branch in node.branches:
-            _collect_calls(branch.body, owner, out)
+            _collect_calls(branch.body, owner, out, computations, macros)
 
 
 def call_sites(module: Module) -> tuple[CallSite, ...]:
@@ -1128,14 +1157,23 @@ def call_sites(module: Module) -> tuple[CallSite, ...]:
         callee is its owner.
     """
     out: list[CallSite] = []
+    computations = frozenset(
+        statement.name
+        for statement in module.statements
+        if isinstance(
+            statement, QiecComputationDecl | QiecInterpretationDecl | ProgramDecl
+        )
+    )
     for statement in module.statements:
         if isinstance(statement, QiecComputationDecl):
-            _collect_calls(statement.body, statement.name, out)
+            _collect_calls(statement.body, statement.name, out, computations)
         elif isinstance(statement, QiecHandlerDecl):
             for clause in statement.clauses:
-                _collect_calls(getattr(clause, "body", None), statement.name, out)
+                _collect_calls(
+                    getattr(clause, "body", None), statement.name, out, computations
+                )
         elif isinstance(statement, ProgramDecl):
-            _collect_calls(statement.draws, statement.name, out)
+            _collect_calls(statement.draws, statement.name, out, computations)
     return tuple(out)
 
 

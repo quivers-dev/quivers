@@ -101,6 +101,38 @@ The checker follows the reachable call graph, so a wrapper with an empty body ro
 effectful callee is effectful unless it handles the effect. The row bounds which requests a
 computation may make, and the body determines how many it makes and in what order.
 
+A named computation can take other calls as direct operands. Each operand is evaluated once,
+from left to right, and the results are passed to the outer computation in that order. The
+caller must account for the residual rows of the operand calls as well as the outer call.
+An operand call must have no static arguments. Bind an explicitly instantiated call with
+`<-` before passing its result to an operation. Calls inside a pure operator or collection
+expression still use the rules for [values](#built-in-values-and-distributions).
+
+<!-- compile: qiec -->
+```qvr
+instance random : Random
+
+define flip(probability : Real) : Bool !{random} =
+    perform random.sample[Bool](site("flip"), Bernoulli(probability))
+
+define agrees(left : Bool, right : Bool) : Bool !{} =
+    return left == right
+
+define two_draws() : Bool !{random} =
+    agrees(flip(0.5), flip(0.5))
+
+define one_draw() : Bool !{random} =
+    let bit <- flip(0.5)
+    agrees(bit, bit)
+```
+
+The operand positions give the two calls in `two_draws` distinct dynamic addresses, even
+though their callee and sampler label are the same. With independent Bernoulli draws their
+agreement probability is one half. The two reads in `one_draw` share a single result, so they
+always agree. Operand calls lower to the same checked bindings and calls as a sequence
+written with `<-`. The number of generated bindings is linear in the number of written
+operands, with the ordinary type-checking and execution costs of each operand.
+
 Recursion runs on the explicit stack of the
 [reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for
 its core language, not on the Python stack. A run may be
