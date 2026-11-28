@@ -88,6 +88,38 @@ side, operation by operation. A direct product of commutative semirings is a com
 since every law holds in each factor. The star of a product is the product of the stars, where each
 exists.
 
+## Signed logarithmic weight derivatives {#proof-signed-log-dual}
+
+`SignedLogDualSemiring` represents a real coefficient as a sign and the
+natural logarithm of its magnitude. The zero representation is
+$(0,-\infty)$. The primal and tangent have independent signs and magnitudes.
+A zero primal thus need not imply a zero tangent.
+
+**Carrier laws.** Decode the two parts as $p$ and $d$ and interpret the
+pair as $p+d\varepsilon$ in $\mathbb{R}[\varepsilon]/(\varepsilon^2)$.
+Componentwise addition and the product
+$(p,d)(q,e)=(pq,pe+qd)$ are exactly the quotient's operations. Thus they
+inherit the commutative semiring laws in exact arithmetic. Interpreting
+one input as $(p,p')$ and applying these operations gives one directional
+derivative of each finite sum of products by the ordinary chain rule.
+A product may be pruned as algebraic zero only when both parts are zero.
+
+For opposing magnitudes with logs $h>l$, subtraction computes
+$h+\log(-\operatorname{expm1}(l-h))$. A reduction first cancels equal
+represented magnitudes, so the three terms $e^{1000}$, $1$, and $-e^{1000}$
+can retain their unit remainder. The numerical implementation uses float64.
+A nonzero summand that rounds away raises `FloatingPointError`, as does a
+nonzero coefficient that cannot be decoded into linear float64. These
+checks do not certify a general error bound for floating-point reductions.
+
+Pass the primal and tangent explicitly, then use an acyclic indexed or
+elimination plan's `run` method. The derivative is the tangent of the
+computed element. For instance, at $x=0$ the factors $x$, $e^{1000}$,
+and $e^{-1000}$ give primal zero and tangent one in the direction
+$dx=1$. The individual large and small factors can stay in the log
+representation throughout that contraction. Direct autograd of the packed
+signs and log magnitudes is refused.
+
 ## References
 
 - Eisner, J. (2002). Parameter estimation for probabilistic finite-state transducers. *ACL*.
@@ -97,3 +129,5 @@ exists.
   [doi:10.3115/1699510.1699517](https://doi.org/10.3115/1699510.1699517)
 
 ::: quivers.core.carriers
+
+::: quivers.core.signed_log

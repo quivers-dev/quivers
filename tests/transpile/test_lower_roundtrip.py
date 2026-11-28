@@ -4,11 +4,9 @@ error, and the lowered IR's input list covers every free name in the
 source while the body step count matches the source's expanded step
 count (after `expand_composite_lets` plus marginalize unrolling).
 
-A site whose morphism carries a parameter map lowers to more than one
-node: the deterministic bindings that compute the family's arguments
-from the conditioning row precede the draw. Those bindings carry
-names the source never binds, so the step count excludes them and
-each one is instead required to be read by a node that follows it.
+Parameter maps and inlined computation calls can introduce intermediate
+deterministic bindings. These have names the source program never binds.
+The step count excludes them, and each is required to be read in the IR.
 
 Parameterised over `docs/examples/source/*.qvr`. Gallery files that
 do not declare a program (deduction-only files such as
@@ -25,6 +23,7 @@ import pathlib
 import pytest
 
 from quivers.dsl.ast_nodes import (
+    CallStep,
     DecoderDecl,
     DefineDecl,
     DrawArgName,
@@ -190,21 +189,17 @@ def test_lower_roundtrip(path: pathlib.Path) -> None:
     # Body step count: every source `ProgramStep` (after composite
     # expansion + marginalize unrolling) maps to one IR site node.
     #
-    # A site whose morphism carries a parameter map is preceded by
-    # the deterministic bindings that compute the family's arguments
-    # from the conditioning row. Those bindings bind names the source
-    # never mentions, so they are excluded from the count; in exchange
-    # every one of them has to be read by a node that follows it,
-    # which is a tighter claim than the count alone would make.
+    # Parameter maps and inlined computation calls can add intermediate
+    # deterministic bindings. Require each introduced binding to be read.
     source_bound = _source_bound_names(expanded_program)
-    head_bindings = _param_map_head_bindings(ir.body, source_bound)
-    dangling = _unread_bindings(ir.body, head_bindings)
+    introduced = _introduced_deterministic_bindings(ir.body, source_bound)
+    dangling = _unread_bindings(ir.body, introduced)
     assert not dangling, (
-        f"{path.name}: parameter-map head bindings bound but never "
-        f"read: {sorted(dangling)}"
+        f"{path.name}: introduced deterministic bindings were never read: "
+        f"{sorted(dangling)}"
     )
     expected_body_len = _expected_body_step_count(expanded_program)
-    body_step_count = _ir_body_step_count(ir.body) - len(head_bindings)
+    body_step_count = _ir_body_step_count(ir.body) - len(introduced)
     assert body_step_count == expected_body_len, (
         f"{path.name}: IR body step count {body_step_count} != "
         f"expected source step count {expected_body_len}"
@@ -315,6 +310,10 @@ def _collect_step_names(
         elif isinstance(step, LetStep):
             bound.add(step.name)
             out.extend(free_vars_in_let(step.value))
+        elif isinstance(step, CallStep):
+            bound.add(step.name)
+            for argument in step.call.arguments:
+                out.extend(free_vars_in_let(argument))
         elif isinstance(step, ScoreStep):
             bound.add(step.name)
             out.extend(free_vars_in_let(step.value))
@@ -349,21 +348,16 @@ def _source_bound_names(program: ProgramDecl) -> set[str]:
     return out
 
 
-def _param_map_head_bindings(
+def _introduced_deterministic_bindings(
     body: tuple[IRNode, ...], source_bound: set[str]
 ) -> set[str]:
-    """The deterministic bindings lowering introduced on its own.
-
-    A parameter map's heads are computed into fresh bindings named
-    after the site they feed, so their names are exactly the
-    `IRDeterministic` names the source never binds.
-    """
+    """The IR's intermediate deterministic names absent from the source program."""
     out: set[str] = set()
     for node in body:
         if isinstance(node, IRDeterministic) and node.name not in source_bound:
             out.add(node.name)
         elif isinstance(node, IRMarginalize):
-            out |= _param_map_head_bindings(node.scope, source_bound)
+            out |= _introduced_deterministic_bindings(node.scope, source_bound)
     return out
 
 

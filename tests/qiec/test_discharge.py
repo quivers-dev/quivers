@@ -1662,6 +1662,13 @@ define subject(a : Real) : Real !{st} =
     ),
     "recursion": (
         """
+handler post_reader for Read : Real -> Real with (r : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    ask resumes 1 =>
+        let answer <- resume(r)
+        return answer + r
+
 define loop(n : Int, x : Real) : Real !{rd} =
     if n <= 0 then
         return x
@@ -1670,12 +1677,12 @@ define loop(n : Int, x : Real) : Real !{rd} =
         loop(n - 1, x + r)
 
 define subject(a : Real) : Real !{} =
-    handle rd with reader(a) in
+    handle rd with post_reader(a) in
         let x <- loop(3, a)
         return x
 """,
         "reaches a recursive call of `loop` that requests from the handler "
-        "`reader`, so how often its clauses resume depends on the values the call",
+        "`post_reader`, so how often its clauses resume depends on the values the call",
     ),
     "case": (
         """

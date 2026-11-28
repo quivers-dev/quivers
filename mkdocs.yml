@@ -249,6 +249,7 @@ nav:
   - Examples:
     - Overview: examples/index.md
     - Bayesian Semantics Case Study: examples/bayesian-semantics-case-study.md
+    - Referent Choice and Pronoun Judgments: examples/referent-judgments.md
     - Bayesian Linear Regression: examples/bayesian-regression.md
     - Beta Regression: examples/beta-regression.md
     - Gamma Regression: examples/gamma-regression.md

@@ -61,6 +61,10 @@ from quivers.qiec.identifiers import (
     _clause_address,
 )
 from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
+from quivers.qiec.state_specialization import (
+    StateSpecializationUnsupported,
+    specialize_recursive_state,
+)
 from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_telescope,
@@ -168,6 +172,26 @@ class DischargeObstacle(QiecModel):
     )
 
 
+class DischargeRewrite(QiecModel):
+    """A rewrite actually selected for a checked source computation.
+
+    Parameters
+    ----------
+    computation : ComputationId
+        The computation whose body was replaced.
+    method : {"handler-discharge", "recursive-state"}
+        The checked transformation that replaced the body.
+    companions : tuple[ComputationId, ...]
+        First-order computations added by recursive state specialization.
+    """
+
+    computation: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    method: Literal["handler-discharge", "recursive-state"]
+    companions: tuple[ComputationId, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+
 class DischargedModule(QiecModel):
     """A module whose computations install no handler that can be discharged.
 
@@ -179,10 +203,15 @@ class DischargedModule(QiecModel):
         instance the rewritten body no longer requests.
     obstacles
         One obstacle per computation whose handlers remain.
+    rewrites
+        The checked rewrites actually applied, in source order.
     """
 
     module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     obstacles: tuple[DischargeObstacle, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    rewrites: tuple[DischargeRewrite, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -2826,6 +2855,10 @@ def _discharged(
 def discharge_module(module: QiecModule) -> DischargedModule:
     """Discharge the handlers of every computation of a module.
 
+    The ordinary reduction runs first. A recursive handled call may
+    require a separate pure companion graph, which is added only when
+    the closed linear state specialization succeeds.
+
     Parameters
     ----------
     module : QiecModule
@@ -2839,25 +2872,57 @@ def discharge_module(module: QiecModule) -> DischargedModule:
         obstacle per computation left as it is.
     """
     computations: list[NamedComputation] = []
+    companions: list[NamedComputation] = []
     obstacles: list[DischargeObstacle] = []
+    rewrites: list[DischargeRewrite] = []
     tables = _Tables(module)
-    for computation in module.computations:
+    source = module
+    for index, computation in enumerate(module.computations):
         if not installs_handler(computation):
             computations.append(computation)
             continue
         result = _discharged(computation, tables)
         if isinstance(result, DischargeObstacle):
+            if result.kind == "recursion":
+                try:
+                    specialized = specialize_recursive_state(
+                        source, computation.id, max_terms=DISCHARGE_STATEMENTS
+                    )
+                except StateSpecializationUnsupported:
+                    pass
+                else:
+                    generated = specialized.computations[len(source.computations) :]
+                    companions.extend(generated)
+                    rewrites.append(
+                        DischargeRewrite(
+                            computation=computation.id,
+                            method="recursive-state",
+                            companions=tuple(item.id for item in generated),
+                        )
+                    )
+                    computations.append(specialized.computations[index])
+                    # Later installations reserve names against these companions,
+                    # while checking their reachability against the source.
+                    source = module.with_(
+                        computations=(*module.computations, *companions)
+                    )
+                    continue
             obstacles.append(result)
             computations.append(computation)
         else:
             computations.append(result)
-    if all(
-        new is old for new, old in zip(computations, module.computations, strict=True)
+            rewrites.append(
+                DischargeRewrite(computation=computation.id, method="handler-discharge")
+            )
+    if any(
+        new is not old
+        for new, old in zip(computations, module.computations, strict=True)
     ):
-        return DischargedModule(module=module, obstacles=tuple(obstacles))
+        module = module.with_(computations=(*computations, *companions))
     return DischargedModule(
-        module=module.with_(computations=tuple(computations)),
+        module=module,
         obstacles=tuple(obstacles),
+        rewrites=tuple(rewrites),
     )
 
 
@@ -2865,6 +2930,7 @@ __all__ = [
     "DISCHARGE_STATEMENTS",
     "DISCHARGE_STEPS",
     "DischargeObstacle",
+    "DischargeRewrite",
     "DischargedModule",
     "discharge_computation",
     "discharge_module",

@@ -43,6 +43,9 @@ Execution by the reference evaluator and translation to a backend require differ
 
 ## Integrated QIEC case study
 
+- [Referent Choice and Pronoun Judgments](referent-judgments.md): two weighted
+  choices enclose a state handler in a judgment model, with exact posterior
+  derivatives for both logits.
 - [Bayesian Semantics Case Study](bayesian-semantics-case-study.md): four views
   of one reading experiment in a checked module: a schema-backed categorial
   parser summing over derivations, a structural logical-form autoencoder, an

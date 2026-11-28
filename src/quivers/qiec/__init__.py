@@ -85,6 +85,10 @@ from quivers.qiec.canonical import (
     tensor_shape,
     tensor_type,
 )
+from quivers.qiec.checkpointing import (
+    ExactCheckpointedGradient,
+    exact_checkpointed_gradient,
+)
 from quivers.qiec.checking import (
     CheckContext,
     ComputationSignature,
@@ -120,13 +124,34 @@ from quivers.qiec.declarations import (
     FamilyDecl,
     FieldDef,
 )
+from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
+from quivers.qiec.derivative_rules import (
+    RationalDerivativeComponent,
+    RationalDerivativeDecision,
+    check_rational_derivative_rule,
+)
 from quivers.qiec.discharge import (
     DISCHARGE_STATEMENTS,
     DISCHARGE_STEPS,
     DischargeObstacle,
+    DischargeRewrite,
     DischargedModule,
     discharge_computation,
     discharge_module,
+)
+from quivers.qiec.differentiation import (
+    ExactGradient,
+    ExactImplicitGradient,
+    ExactJvp,
+    ExactMixedDerivative,
+    ImplicitRootError,
+    JvpBoundaryError,
+    JvpLimit,
+    JvpUnsupported,
+    exact_gradient,
+    exact_implicit_gradient,
+    exact_jvp,
+    exact_mixed_derivative,
 )
 from quivers.qiec.distributions import (
     DistributionBackend,
@@ -151,6 +176,130 @@ from quivers.qiec.numbers import (
     machine_value,
     number_kind,
     static_shape,
+)
+from quivers.qiec.effect_law_schema import (
+    EffectEquation,
+    EffectLawBundle,
+    EffectLawEvidence,
+    EffectLawObligation,
+)
+from quivers.qiec.effect_laws import (
+    FiniteEffectLawDecision,
+    ScalarEffectLawDecision,
+    check_finite_effect_law,
+    check_scalar_effect_law,
+)
+from quivers.qiec.finite_metropolis import finite_metropolis_jvp
+from quivers.qiec.finite_selection import (
+    FiniteSelectionDecision,
+    FiniteSelectionResult,
+    finite_selection_jvp,
+)
+from quivers.qiec.handler_interchange import (
+    FiniteHandlerInterchange,
+    check_finite_handler_interchange,
+)
+from quivers.qiec.effect_plan import (
+    EffectExecutionStage,
+    EffectInterchangeReport,
+    EffectJvpCheck,
+    EffectLawReport,
+    EffectPlan,
+    checked_effect_plan,
+)
+from quivers.qiec.bernoulli_estimators import (
+    BernoulliBranch,
+    BernoulliGradientPlan,
+    BernoulliGradientSample,
+    BernoulliScoreDraw,
+    BernoulliVisit,
+    BernoulliWeakSelector,
+    plan_bernoulli_gradient,
+)
+from quivers.qiec.normal_pathwise import (
+    NormalPathwisePlan,
+    NormalVisit,
+    plan_normal_pathwise,
+)
+from quivers.qiec.mixed_site_gradients import (
+    MixedNormalPath,
+    MixedNormalVisit,
+    MixedSiteGradientPlan,
+    plan_mixed_site_gradient,
+)
+from quivers.qiec.finite_marginalization import (
+    FisherMarginalization,
+    FisherOutcome,
+    marginalize_bernoulli_unit,
+)
+from quivers.qiec.finite_importance import (
+    FiniteImportancePlan,
+    ImportanceCoverage,
+    ImportanceCoverageError,
+    ImportanceOutcome,
+    plan_bernoulli_importance,
+)
+from quivers.qiec.finite_intervention import (
+    AddressedBernoulliEvent,
+    CausalBernoulliComparison,
+    CausalBernoulliHistory,
+    compare_bernoulli_do_and_condition,
+)
+from quivers.qiec.finite_resampling import (
+    MultinomialResamplingPlan,
+    ResamplingAncestor,
+    ResamplingOutcome,
+    ResamplingParticle,
+    plan_multinomial_resampling,
+)
+from quivers.qiec.finite_subsampling import (
+    FiniteUnitSubsamplingPlan,
+    UnitSubsampleEstimate,
+    UnitSubset,
+    plan_unit_subsampling,
+)
+from quivers.qiec.finite_clipping import (
+    ClippedEstimatorDecision,
+    ClippedEstimatorOutcome,
+    FiniteClippedEstimatorAudit,
+    audit_clipped_bernoulli_gradient,
+)
+from quivers.qiec.finite_bernoulli_batch import (
+    BernoulliBatchCotangent,
+    BernoulliBatchLinearization,
+    BernoulliBatchPath,
+    BernoulliBatchPlan,
+    BernoulliBatchReplay,
+    BernoulliRowReplay,
+    plan_bernoulli_batch,
+)
+from quivers.qiec.bernoulli_tensor_axis import (
+    BernoulliTensorAxis,
+    BernoulliTensorResult,
+)
+from quivers.qiec.scoped_elaboration import (
+    ScopedHandlerElaboration,
+    ScopedOperation,
+    elaborate_static_scope,
+)
+from quivers.qiec.scoped_catch import elaborate_static_catch
+from quivers.qiec.forward_diff import ForwardDiffInstance, elaborate_forward_diff
+from quivers.qiec.reverse_diff import compile_reverse_diff, elaborate_reverse_diff
+from quivers.qiec.finite_elimination import (
+    FiniteAlgebra,
+    FiniteAlgebraLawError,
+    FiniteAlgebraProof,
+    FiniteBaseChange,
+    FiniteBaseChangeProof,
+    FiniteEliminationResult,
+    FiniteEliminationStep,
+    FiniteEliminationWork,
+    FiniteFactor,
+    FiniteSourceEliminationResult,
+    FiniteSourceFactor,
+    check_finite_algebra,
+    eliminate_finite,
+    eliminate_finite_source,
 )
 from quivers.qiec.effects import (
     ArgumentDef,
@@ -255,6 +404,11 @@ from quivers.qiec.family_shapes import (
     legacy_family_shape_signature,
     match_family_shapes,
     validate_family_shape_dimensions,
+)
+from quivers.qiec.handler_carriers import (
+    ClauseCarrierShape,
+    HandlerCarrierShape,
+    classify_handler_carrier,
 )
 from quivers.qiec.identifiers import (
     AddressRelation,
@@ -447,6 +601,11 @@ from quivers.qiec.serialization import (
     loads,
     to_data,
 )
+from quivers.qiec.state_specialization import (
+    StateSpecializationLimit,
+    StateSpecializationUnsupported,
+    specialize_recursive_state,
+)
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
 from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
 from quivers.qiec._packed_boolean_interpretation import (
@@ -614,6 +773,7 @@ __all__ = [
     "DISCHARGE_STEPS",
     "DeductionRun",
     "DischargeObstacle",
+    "DischargeRewrite",
     "DischargedModule",
     "DistributionBackend",
     "FiniteDecoderSupport",
@@ -648,6 +808,11 @@ __all__ = [
     "Evaluator",
     "EvidenceValue",
     "ExecutionDiagnostic",
+    "ExactCheckpointedGradient",
+    "ExactGradient",
+    "ExactImplicitGradient",
+    "ExactJvp",
+    "ExactMixedDerivative",
     "ExecutionFailure",
     "ExecutionResult",
     "ExecutionTraceEvent",
@@ -682,6 +847,7 @@ __all__ = [
     "IMPLEMENTATIONS",
     "INT",
     "If",
+    "ImplicitRootError",
     "InstanceAddress",
     "IndexBinder",
     "IndexConstructor",
@@ -696,6 +862,9 @@ __all__ = [
     "IndexVariable",
     "InvalidHandlerError",
     "JsonValue",
+    "JvpBoundaryError",
+    "JvpLimit",
+    "JvpUnsupported",
     "KernelError",
     "KernelMatrix",
     "CholeskyFactor",
@@ -914,6 +1083,11 @@ __all__ = [
     "entry_point",
     "entry_points",
     "enumerate_handler",
+    "exact_checkpointed_gradient",
+    "exact_gradient",
+    "exact_implicit_gradient",
+    "exact_jvp",
+    "exact_mixed_derivative",
     "family",
     "foreign_handler_configuration",
     "from_data",
@@ -1040,6 +1214,120 @@ __all__ += [
     "finite_continuation_type",
 ]
 __all__ += [
+    "EffectEquation",
+    "EffectLawBundle",
+    "EffectLawEvidence",
+    "FiniteHandlerInterchange",
+    "finite_metropolis_jvp",
+    "FiniteSelectionDecision",
+    "FiniteSelectionResult",
+    "finite_selection_jvp",
+    "check_finite_handler_interchange",
+    "EffectLawObligation",
+    "FiniteEffectLawDecision",
+    "ScalarEffectLawDecision",
+    "check_finite_effect_law",
+    "check_scalar_effect_law",
+]
+__all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carrier"]
+__all__ += [
+    "EffectExecutionStage",
+    "EffectInterchangeReport",
+    "EffectJvpCheck",
+    "EffectLawReport",
+    "EffectPlan",
+    "checked_effect_plan",
+]
+__all__ += [
+    "BernoulliBranch",
+    "BernoulliGradientPlan",
+    "BernoulliGradientSample",
+    "BernoulliScoreDraw",
+    "BernoulliVisit",
+    "BernoulliWeakSelector",
+    "plan_bernoulli_gradient",
+]
+__all__ += ["NormalPathwisePlan", "NormalVisit", "plan_normal_pathwise"]
+__all__ += [
+    "MixedNormalPath",
+    "MixedNormalVisit",
+    "MixedSiteGradientPlan",
+    "plan_mixed_site_gradient",
+]
+__all__ += ["FisherMarginalization", "FisherOutcome", "marginalize_bernoulli_unit"]
+__all__ += [
+    "FiniteImportancePlan",
+    "ImportanceCoverage",
+    "ImportanceCoverageError",
+    "ImportanceOutcome",
+    "plan_bernoulli_importance",
+]
+__all__ += [
+    "AddressedBernoulliEvent",
+    "CausalBernoulliComparison",
+    "CausalBernoulliHistory",
+    "compare_bernoulli_do_and_condition",
+]
+__all__ += [
+    "MultinomialResamplingPlan",
+    "ResamplingAncestor",
+    "ResamplingOutcome",
+    "ResamplingParticle",
+    "plan_multinomial_resampling",
+]
+__all__ += [
+    "FiniteUnitSubsamplingPlan",
+    "UnitSubsampleEstimate",
+    "UnitSubset",
+    "plan_unit_subsampling",
+]
+__all__ += [
+    "ClippedEstimatorDecision",
+    "ClippedEstimatorOutcome",
+    "FiniteClippedEstimatorAudit",
+    "audit_clipped_bernoulli_gradient",
+]
+__all__ += [
+    "BernoulliBatchCotangent",
+    "BernoulliBatchLinearization",
+    "BernoulliBatchPath",
+    "BernoulliBatchPlan",
+    "BernoulliBatchReplay",
+    "BernoulliRowReplay",
+    "plan_bernoulli_batch",
+    "BernoulliTensorAxis",
+    "BernoulliTensorResult",
+    "ScopedHandlerElaboration",
+    "ScopedOperation",
+    "elaborate_static_scope",
+    "elaborate_static_catch",
+    "ForwardDiffInstance",
+    "elaborate_forward_diff",
+    "compile_reverse_diff",
+    "elaborate_reverse_diff",
+]
+__all__ += [
+    "FiniteAlgebra",
+    "FiniteAlgebraLawError",
+    "FiniteAlgebraProof",
+    "FiniteBaseChange",
+    "FiniteBaseChangeProof",
+    "FiniteEliminationResult",
+    "FiniteEliminationStep",
+    "FiniteEliminationWork",
+    "FiniteFactor",
+    "FiniteSourceEliminationResult",
+    "FiniteSourceFactor",
+    "check_finite_algebra",
+    "eliminate_finite",
+    "eliminate_finite_source",
+]
+__all__ += [
+    "StateSpecializationLimit",
+    "StateSpecializationUnsupported",
+    "specialize_recursive_state",
+]
+__all__ += [
     "PolynomialLawCounterexample",
     "PolynomialLawDecision",
     "PolynomialLawLimit",
@@ -1051,5 +1339,11 @@ __all__ += [
     "RationalLawLimit",
     "RationalLawUnsupported",
     "check_rational_law",
+]
+__all__ += [
+    "RationalDerivativeComponent",
+    "RationalDerivativeDeclaration",
+    "RationalDerivativeDecision",
+    "check_rational_derivative_rule",
 ]
 __all__ += rules.__all__
