@@ -614,6 +614,7 @@ record(
     },
 )
 
+
 def _kan_gradient() -> Facts:
     """Whether a Kan extension of trainable values has a gradient path.
 

@@ -931,7 +931,12 @@ def _register() -> None:
                 "Q1g",
                 partial(check_contraction_gradient, network, rule),
             )
-    add("contraction/finite-morphism-boundary", row, "Q6", check_finite_morphism_boundary)
+    add(
+        "contraction/finite-morphism-boundary",
+        row,
+        "Q6",
+        check_finite_morphism_boundary,
+    )
     add("contraction/order", row, "Q6", check_order)
     add("contraction/chain-peak", row, "Q6", check_chain_peak)
     add("contraction/counts-measured", row, "Q6", check_counts_are_measured)
