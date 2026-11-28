@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from hashlib import sha256
 
 import didactic.api as dx
@@ -14,12 +13,13 @@ from quivers.core.relations import PrunedStringBeliefResult, RelationLimitError
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
-from quivers.qiec.contracts import ParameterId
 from quivers.qiec.effects import HandlerDef
 from quivers.qiec.evaluator import ClauseContext, RuntimeAttachments
 from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.kinds import NAT
 from quivers.qiec.module import QiecModule
+from quivers.qiec.relation_runtime import _fixed_compute_definition
+from quivers.qiec.relations import RelationWeightBindings
 from quivers.qiec.string_graph_runtime import _tree_string_graph_handler
 from quivers.qiec.string_graphs import StringFactorGraphSpec
 from quivers.qiec.string_solvers import PrunedStringBPConfig
@@ -205,8 +205,8 @@ class PrunedStringGraphRuntimeProvider:
     ----------
     request : PrunedStringGraphRequest
         The authored graph, ordered candidates, selected variable and limits.
-    parameters : Mapping of ParameterId to torch.Tensor
-        The caller's original live scalar leaves.
+    parameters : RelationWeightBindings
+        Original live scalar leaves and any permitted Markov complements.
     """
 
     name = "pruned-string-graphs"
@@ -214,7 +214,7 @@ class PrunedStringGraphRuntimeProvider:
     def __init__(
         self,
         request: PrunedStringGraphRequest,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
     ) -> None:
         self._request = request
         self._resource_failure: str | None = None
@@ -346,9 +346,14 @@ class PrunedStringGraphRuntimeProvider:
         """
         expected = pruned_string_graph_handler(module.module, self._request)
         if expected not in module.handlers:
-            raise TypeError(
-                "incompatible pruned string handler for the graph, supports, or result type"
-            )
+            try:
+                expected = _fixed_compute_definition(
+                    module, expected.name, expected.output_type
+                )
+            except (TypeError, ValueError) as error:
+                raise TypeError(
+                    "incompatible pruned string handler for the graph, supports, or result type"
+                ) from error
         validator = self.validator_for(self._request.result_type)
         assert validator is not None
         runtime = compute_handler(

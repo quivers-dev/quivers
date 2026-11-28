@@ -24,7 +24,7 @@ from quivers.core.relations.projection import _validate_projection_settings
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import RationalRelationSpec, RelationWeightBindings
 from quivers.qiec.string_graphs import StringFactorGraphSpec
 
 
@@ -475,7 +475,7 @@ class PrunedStringBPConfig(QiecModel):
     def infer(
         self,
         model: StringFactorGraphSpec,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
     ) -> PrunedStringBeliefResult:
         """Bind the checked graph and evaluate the declared beam schedule.
 
@@ -483,8 +483,8 @@ class PrunedStringBPConfig(QiecModel):
         ----------
         model : StringFactorGraphSpec
             The original typed graph, variable identities, and observations.
-        parameters : Mapping of ParameterId to torch.Tensor
-            The live original weight owners.
+        parameters : RelationWeightBindings
+            Original weight owners and permitted Markov complements.
 
         Returns
         -------
@@ -501,7 +501,7 @@ class PrunedStringBPConfig(QiecModel):
     def _plan(
         self,
         model: StringFactorGraphSpec,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
     ) -> FiniteStringBeliefPlan:
         """Compile the declared finite model and prepare live factor queries.
 
@@ -509,8 +509,8 @@ class PrunedStringBPConfig(QiecModel):
         ----------
         model : StringFactorGraphSpec
             The checked graph whose topology is retained.
-        parameters : Mapping of ParameterId to torch.Tensor
-            The caller's original parameter tensors.
+        parameters : RelationWeightBindings
+            Original tensors and permitted Markov complements.
 
         Returns
         -------

@@ -475,6 +475,13 @@ and the variable. The same handler can run with a different beam,
 damping schedule, or resource limits. The provider retains the compiled
 factor queries and reads the original weights on every invocation.
 
+An ordinary QVR computation can declare a foreign `Compute[Unit, A]`
+handler using `request.handler_name` and the closed report type `A`,
+with `apply resumes 1`. The provider checks the digest of the original
+graph, ordered supports, and selected variable, together with the full
+typed Compute declaration. Programmatically created checked handlers
+continue to use `pruned_string_graph_handler`.
+
 The foreign computation returns a checked product with these fields
 in order.
 

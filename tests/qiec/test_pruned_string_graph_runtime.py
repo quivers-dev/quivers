@@ -15,6 +15,7 @@ from quivers.qiec import (
     PrunedStringGraphRequest,
     PrunedStringGraphRuntimeProvider,
     QiecModule,
+    RelationWeightComplement,
     RuntimeConfiguration,
     TreeStringGraphRequest,
     discharge_module,
@@ -102,6 +103,88 @@ def _run(module, request, parameters, *, provider=None):
 
 def _owner(name):
     return ParameterId.derive(_MODULE, "relation_weights", name)
+
+
+def test_ordinary_qvr_pruned_handler_preserves_graph_owner_and_live_complements():
+    compiler, _ = _compile(_CYCLIC_SOURCE)
+    graph = compiler.string_graph_specs["cycle"]
+    config = PrunedStringBPConfig(
+        supports=tuple((name, _WORDS) for name in ("x", "y", "z")),
+        beam=2,
+        max_sweeps=2,
+        max_entries=70,
+        max_states=400,
+        max_work=500,
+        damping=1 / 3,
+        tolerance=None,
+    )
+    request = PrunedStringGraphRequest(graph=graph, config=config, variable="x")
+    report = "(String * String * Int * Real * Bool * Tensor[LogWeight]([3]) * Bool * Tensor[LogWeight]([6, 3]))"
+    name = request.handler_name
+    native = (
+        _CYCLIC_SOURCE
+        + f"""
+instance beliefs : Compute[Unit, {report}]
+handler {name} for Compute[Unit, {report}] : {report} -> {report} [coverage=total, forwards=none, implementation=foreign]
+    apply resumes 1
+
+define pruned_belief : {report} !{{}} =
+    handle beliefs with {name} in
+        let result <- perform beliefs.apply(unit)
+        return result
+"""
+    )
+    source, compiled = _compile(native)
+    module = loads(dumps(compiled))
+    assert isinstance(module, QiecModule)
+    assert source.string_graph_specs["cycle"] == request.graph
+    assert pruned_string_graph_handler(module.module, request) not in module.handlers
+
+    constants = tuple(map(Fraction, (0.25, 0.5, 0.75, 0.125, 0.25, 0.125, 0.0625)))
+    p = nn.Parameter(torch.tensor(0.25, dtype=torch.float64))
+    parameters = {
+        _owner(f"w{i}"): p.new_tensor(float(value))
+        for i, value in enumerate(constants, 2)
+    }
+    parameters.update(
+        {
+            _owner("w0"): p,
+            _owner("w1"): RelationWeightComplement(_owner("w0")),
+            _owner("one"): p.new_ones(()),
+        }
+    )
+    provider = PrunedStringGraphRuntimeProvider(request, parameters)
+    for value in (Fraction(1, 4), Fraction(3, 8)):
+        with torch.no_grad():
+            p.fill_(float(value))
+        status, reason, sweeps, _, _, belief, *_ = _run(
+            module, request, parameters, provider=provider
+        )
+        assert (status, reason, sweeps.item()) == ("limit", "", 2)
+        expected = _oracle((value, 1 - value, *constants), Fraction(1, 3), 2)[2][0]
+        assert belief.exp().tolist() == pytest.approx(list(map(float, expected)))
+        step = Fraction(1, 2**18)
+        plus = _oracle((value + step, 1 - value - step, *constants), Fraction(1, 3), 2)[
+            2
+        ][0][0]
+        minus = _oracle(
+            (value - step, 1 - value + step, *constants), Fraction(1, 3), 2
+        )[2][0][0]
+        (gradient,) = torch.autograd.grad(belief[0].exp(), p)
+        assert gradient.item() == pytest.approx(
+            float((plus - minus) / (2 * step)), abs=1e-8
+        )
+
+    other_variable = request.with_(variable="y")
+    assert other_variable.result_type == request.result_type
+    with pytest.raises(ExecutionFailure, match="incompatible pruned string handler"):
+        _run(module, other_variable, parameters)
+    discharged = discharge_module(module)
+    for target in ("stan", "bugs", "jags"):
+        assert any(
+            item.computation == "pruned_belief" and name in item.reason
+            for item in project_for_target(module, discharged, target).obstacles
+        )
 
 
 def test_checked_loopy_belief_and_ordered_proposal_scales_match_fraction_oracle():
