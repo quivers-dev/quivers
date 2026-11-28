@@ -169,8 +169,14 @@ place and the shots of an unrestricted clause never share one.
 The machine enforces resumption grades when it runs a handler clause. A grade `0` clause cannot
 resume, an affine clause resumes at most once, and a linear clause resumes exactly once. An
 unrestricted clause may resume several times only when the captured context is declared
-duplicable. Each additional resumption extends the dynamic address with a resumption path, which
-keeps the identity that traces and replay need.
+duplicable. Each unrestricted shot appends its ordinal to the request address. Linear and affine
+resumptions retain the surrounding shot path.
+
+A direct effect in a linear clause also records the site of the request that entered the clause.
+When distinct non-tail call paths reach one request site, the clause address includes those captured
+call sites in outer-to-inner order. Resuming restores the captured continuation's address scope.
+The discharger keeps reference execution when an erased tail frame or a residual unrestricted
+operation prevents it from preserving the addressed trace in this fragment.
 
 The built-in prelude declares the following interfaces, each with reference handlers:
 
