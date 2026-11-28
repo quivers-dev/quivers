@@ -160,8 +160,26 @@ program score_term : Code -> Out
 ```
 
 Here `x` is the program's input vector and `t` a term given with the observations.
-A decoder cannot appear on the right of `sample`, `observe`, or `marginalize` in a
-program, so a program cannot draw a latent term from it or sum over its terms.
+The right side of a checked `sample` or `observe` needs a typed law. For a
+first-order decoder with a discrete carrier,
+[`FiniteDecoderSupport`][quivers.qiec.structural_runtime.FiniteDecoderSupport]
+builds such a law over an explicit, bounded set of supplied terms. For distinct
+terms in the supplied set $S$, its probability is
+
+$$
+p_S(t\mid z) = \frac{p_D(t\mid z)}{\sum_{u\in S} p_D(u\mid z)},
+\qquad t\in S.
+$$
+
+The denominator conditions the decoder on the supplied set. Duplicate entries
+are a single term in this set. The prepared support checks the structural term
+types once, and each call to `distribution` scores them at the new code and
+parameters, retaining gradients through the normalizer. The consuming module
+uses the support's rule-presentation declarations, and its
+[`FiniteSampleable`][quivers.qiec.structured_sampleables.FiniteSampleable]
+accepts draws, scores, and exact enumeration on that finite set.
+The supplied candidates and their tensor weights enter as typed runtime
+values. A source decoder name on its own remains a structural computation.
 
 ## Stdlib decoders
 

@@ -468,6 +468,7 @@ from quivers.qiec.types import (
     validate_static_argument,
 )
 from quivers.qiec.structural_runtime import (
+    FiniteDecoderSupport,
     StructuralRuntimeProvider,
     run_structural,
     structural_handler_definition,
@@ -527,6 +528,7 @@ __all__ = [
     "DischargeObstacle",
     "DischargedModule",
     "DistributionBackend",
+    "FiniteDecoderSupport",
     "FiniteSampleable",
     "DistributionError",
     "DistributionFamily",
