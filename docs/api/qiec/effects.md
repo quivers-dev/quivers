@@ -924,11 +924,26 @@ assert run_named(ratio, "ratio", (2.0, 4.0, 3.0, 2.0)).value == 0.5
 
 ## Nominal reverse differentiation
 
-`elaborate_reverse_diff` checks one straight-line graph on a named
-reverse instance. The source seeds its Real inputs in parameter order,
+`elaborate_reverse_diff` checks a common straight-line graph on a
+named reverse instance. The source seeds its Real inputs in parameter order,
 seeds any constants after those inputs, and adds or multiplies earlier
 vertices. Each vertex has a consecutive integer slot starting at zero.
-The terminal `stop` names the output vertex.
+The terminal `stop` names the output vertex. An instance may also declare
+`less : Number * Number -> Bool` and `less resumes 1`. After allocating
+all vertices, the source can bind a comparison of two existing vertices
+and immediately branch on its result. Each arm can perform another such
+comparison or stop on an existing vertex.
+
+Only reached comparisons are evaluated. Equality or a nonfinite primal
+at a reached comparison raises `qiec-forward-comparison-boundary`.
+In exact real arithmetic, each strict difference of vertex primals has
+a constant sign in some neighborhood of the point. Intersect these
+neighborhoods for the reached comparisons. Throughout that intersection,
+execution selects the same polynomial output, whose derivative the reverse
+sweep computes. The checker admits up to 15 nested and
+256 total comparisons and reports `qiec-reverse-sink-limit` for larger
+selections. Backends without the partial comparison report
+`strict-scalar-comparison` when the computation requires it.
 
 The generated return clause puts a unit cotangent at that output's slot.
 Each arithmetic clause resumes once, then adds both operand
@@ -937,6 +952,7 @@ both contribute. The result contains the primal followed by all vertex
 cotangents, with the input cotangents first. The graph allows up to six
 vertices and rejects larger inputs with `qiec-reverse-limit`.
 
+<!-- python: run -->
 ```python
 from quivers.dsl import Compiler, parse
 from quivers.qiec import compile_reverse_diff, elaborate_reverse_diff, run_named
@@ -950,6 +966,7 @@ effect Reverse
     seed : Int * Real -> Number
     add : Int * Number * Number -> Number
     mul : Int * Number * Number -> Number
+    less : Number * Number -> Bool
     stop : Number -> Number
 
 instance d : Reverse
@@ -958,13 +975,18 @@ handler reverse for Reverse : Number -> (Real * Real * Real) [coverage=total, fo
     seed resumes 1
     add resumes 1
     mul resumes 1
+    less resumes 1
     stop resumes 1
 
 define squared(x : Real) : (Real * Real * Real) !{} =
     handle d with reverse in
         let input <- perform d.seed(0, x)
         let product <- perform d.mul(1, input, input)
-        perform d.stop(product)
+        let larger <- perform d.less(input, product)
+        if larger then
+            perform d.stop(product)
+        else
+            perform d.stop(input)
 """
 module = Compiler(parse(source), module_name="reverse-square").qiec_module
 assert module is not None
@@ -972,19 +994,21 @@ instance, = module.instances
 handler, = module.handlers
 constructor, = module.constructors
 lowered = elaborate_reverse_diff(module, instance.entry.instance, handler.id, constructor.id)
-assert host_value(run_named(lowered, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
 compiled = compile_reverse_diff(module, instance.entry.instance, handler.id, constructor.id)
-assert host_value(run_named(compiled, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
+for graph in (lowered, compiled):
+    assert host_value(run_named(graph, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
+    assert host_value(run_named(graph, "squared", (0.5,)).value) == (0.5, 1.0, 0.0)
 ```
 
 `compile_reverse_diff` produces a standalone pure QIEC module for the
 same checked graph and supports up to 256 vertices. It retains the entry's
 identity and result type. The source vertex at slot $i$ supplies primal
 binding $i$ and cotangent $i+1$ in the returned tuple. The selected stop
-supplies the first tuple element. Forward arithmetic retains the origin of
-its source request. A multiplication's edge contribution uses the origin
-of the consumer, and an adjoint sum uses the origin of its vertex. The
-pure module emits no named-operation events. The bounded elaboration
+supplies the first tuple element. Forward arithmetic and comparisons
+retain the origin of their source requests. A multiplication's edge
+contribution uses the origin of the consumer, and an adjoint sum uses
+the origin of its vertex. The pure module emits no named-operation events.
+The bounded elaboration
 retains those operations and their addresses.
 
 The compiler binds primals in allocation order and completes cotangents
@@ -992,8 +1016,11 @@ in reverse order. Each operand occurrence contributes once to its
 predecessor. If the graph has $B$ binary vertices, of which $M$ multiply,
 evaluation performs $B$ primal operations, $2M$ reverse multiplications
 and at most $2B$ adjoint additions. This gives a bound of $5B$ scalar
-operations. The cost counts evaluation of the checked graph. Source
-parsing, module validation and target rendering have their own costs.
+operations. A lazy selection adds $H$ reached comparisons and two
+scalar operations per vertex to seed the reverse pass at the selected
+slot. The compiler uses one sequence of primal bindings and one reverse
+sweep for all choices. The cost counts evaluation of the checked graph.
+Source parsing, module validation and target rendering have their own costs.
 In particular, the QVR text parser can reach its nesting limit for a
 long written result product before the compiler's graph limit. The
 derivative recurrence is exact over the reals. Machine arithmetic uses

@@ -31,8 +31,10 @@ from quivers.qiec.terms import (
     CaseBranch,
     CaseMotive,
     Computation,
+    ConditionalValue,
     ConstructorValue,
     Handle,
+    If,
     LetBinding,
     LetValue,
     LiteralValue,
@@ -46,12 +48,15 @@ from quivers.qiec.terms import (
     Value,
     Var,
 )
-from quivers.qiec.types import INT, REAL, TypeApplication, product_type
+from quivers.qiec.types import BOOL, INT, REAL, TypeApplication, TypeExpr, product_type
 
 _MAX_VERTICES = 6
 _MAX_COMPILED_VERTICES = 256
+_MAX_SINK_DEPTH = 15
+_MAX_SINK_COMPARISONS = 256
 _ZERO = LiteralValue(value=0.0, type=REAL)
 _ONE = LiteralValue(value=1.0, type=REAL)
+_SINK_CHOICE = product_type(INT, REAL)
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,83 @@ class _BinaryVertex:
 type _ReverseVertex = _SeedVertex | _BinaryVertex
 
 
+@dataclass(frozen=True)
+class _SinkGuard:
+    """A strict comparison and its two lazy choices of output slot."""
+
+    left: int
+    right: int
+    then: _ReverseSink
+    otherwise: _ReverseSink
+    origin: SourceOrigin
+
+
+type _ReverseSink = int | _SinkGuard
+
+
+def _source_sink(
+    term: Computation,
+    instance: EffectInstanceId,
+    operations: dict[str, OperationDef],
+    positions: dict[Local, int],
+) -> _ReverseSink:
+    """Check a lazy decision that only compares or selects existing vertices."""
+    less = operations.get("less")
+    comparisons = 0
+
+    def visit(current: Computation, depth: int) -> _ReverseSink:
+        nonlocal comparisons
+        if isinstance(current, Perform):
+            request = current.request
+            if (
+                request.instance == instance
+                and request.operation == operations["stop"].id
+                and isinstance(chosen := request.arguments[0], Var)
+                and chosen.local in positions
+            ):
+                return positions[chosen.local]
+            raise KernelError(
+                "reverse source must stop on a vertex of its own instance"
+            )
+        if (
+            less is None
+            or not isinstance(current, Bind)
+            or not isinstance(current.first, Perform)
+            or current.first.request.instance != instance
+            or current.first.request.operation != less.id
+            or not isinstance(branch := current.then, If)
+            or branch.condition != Var(local=current.binder)
+        ):
+            raise KernelError(
+                "reverse sink selection must branch immediately on a comparison "
+                "of its own instance or stop on one of its vertices"
+            )
+        if depth == _MAX_SINK_DEPTH or comparisons == _MAX_SINK_COMPARISONS:
+            raise KernelError(
+                f"reverse sink selection exceeds {_MAX_SINK_DEPTH} nested or "
+                f"{_MAX_SINK_COMPARISONS} total comparisons",
+                "qiec-reverse-sink-limit",
+            )
+        left, right = current.first.request.arguments
+        if (
+            not isinstance(left, Var)
+            or left.local not in positions
+            or not isinstance(right, Var)
+            or right.local not in positions
+        ):
+            raise KernelError("reverse comparison requires vertices of its instance")
+        comparisons += 1
+        return _SinkGuard(
+            positions[left.local],
+            positions[right.local],
+            visit(branch.then, depth + 1),
+            visit(branch.otherwise, depth + 1),
+            current.first.request.origin.origin,
+        )
+
+    return visit(term, 0)
+
+
 def _source_vertices(
     entry: NamedComputation,
     instance: EffectInstanceId,
@@ -101,7 +183,7 @@ def _source_vertices(
     *,
     maximum: int,
     limit_code: str,
-) -> tuple[tuple[_ReverseVertex, ...], int]:
+) -> tuple[tuple[_ReverseVertex, ...], _ReverseSink]:
     """Check sequential allocation and collect the ordered operand slots.
 
     Parameters
@@ -121,8 +203,8 @@ def _source_vertices(
 
     Returns
     -------
-    tuple[tuple[_ReverseVertex, ...], int]
-        The vertices in allocation order and the selected output slot.
+    tuple
+        The vertices in allocation order and the lazy output-slot selection.
 
     Raises
     ------
@@ -145,13 +227,15 @@ def _source_vertices(
     positions: dict[Local, int] = {}
     vertices: list[_ReverseVertex] = []
     while isinstance(term, Bind):
-        if len(vertices) == maximum:
-            raise KernelError(f"reverse source exceeds {maximum} vertices", limit_code)
         node = term.first
         if not isinstance(node, Perform) or node.request.instance != instance:
             raise KernelError("a reverse vertex must use the active named instance")
         request = node.request
         name = request.operation
+        if (less := operations.get("less")) is not None and name == less.id:
+            break
+        if len(vertices) == maximum:
+            raise KernelError(f"reverse source exceeds {maximum} vertices", limit_code)
         if name not in (
             operations["seed"].id,
             operations["add"].id,
@@ -210,16 +294,9 @@ def _source_vertices(
             )
         positions[term.binder] = position
         term = term.then
-    if (
-        len(vertices) < max(1, len(entry.parameters))
-        or not isinstance(term, Perform)
-        or term.request.instance != instance
-        or term.request.operation != operations["stop"].id
-        or not isinstance(chosen := term.request.arguments[0], Var)
-        or chosen.local not in positions
-    ):
+    if len(vertices) < max(1, len(entry.parameters)):
         raise KernelError("reverse source must stop on a vertex of its own instance")
-    return tuple(vertices), positions[chosen.local]
+    return tuple(vertices), _source_sink(term, instance, operations, positions)
 
 
 class _ReverseHandler:
@@ -284,14 +361,7 @@ class _ReverseHandler:
         PrimitiveApplication
             The checked pure term.
         """
-        primitive = PRIMITIVES[name]
-        return PrimitiveApplication(
-            primitive=primitive.id,
-            name=primitive.name,
-            arguments=arguments,
-            result_type=primitive.result,
-            origin=self.origin(name, "coefficient"),
-        )
+        return _scalar_operation(name, self.origin(name, "coefficient"), *arguments)
 
     def at(self, slot: Value, position: int, coefficient: Value) -> Value:
         """Select a coefficient at exactly one statically admitted slot.
@@ -487,7 +557,7 @@ class _ReverseHandler:
         )
 
     def clause(self, operation: OperationDef) -> HandlerClauseDef:
-        """Generate a linear clause for a seed, binary vertex or stop.
+        """Generate a linear clause for a vertex, comparison or stop.
 
         Parameters
         ----------
@@ -511,23 +581,28 @@ class _ReverseHandler:
         elif name == "stop":
             body = Resume(value=Var(local=parameters[0]), origin=resume)
         else:
-            slot = Var(local=parameters[0])
             left = (Local(name="x", type=REAL), Local(name="x_slot", type=INT))
             right = (Local(name="y", type=REAL), Local(name="y_slot", type=INT))
             x, x_slot = (Var(local=local) for local in left)
             y, y_slot = (Var(local=local) for local in right)
-            primal = self.primitive(f"{name}_real", x, y)
-            previous = Local(name="answer", type=self.handler.output_type)
-            continuation = Bind(
-                first=Resume(value=self.number(primal, slot), origin=resume),
-                binder=previous,
-                then=self.update(name, previous, slot, (x, x_slot), (y, y_slot)),
-            )
+            if name == "less":
+                continuation: Computation = Resume(
+                    value=self.primitive("strict_lt_real", x, y), origin=resume
+                )
+            else:
+                slot = Var(local=parameters[0])
+                primal = self.primitive(f"{name}_real", x, y)
+                previous = Local(name="answer", type=self.handler.output_type)
+                continuation = Bind(
+                    first=Resume(value=self.number(primal, slot), origin=resume),
+                    binder=previous,
+                    then=self.update(name, previous, slot, (x, x_slot), (y, y_slot)),
+                )
             body = self.split(
                 name,
-                parameters[1],
+                parameters[-2],
                 left,
-                self.split(name, parameters[2], right, continuation),
+                self.split(name, parameters[-1], right, continuation),
             )
         return HandlerClauseDef(
             operation=operation.id,
@@ -545,7 +620,9 @@ def _checked_reverse_graph(
     *,
     maximum: int,
     limit_code: str,
-) -> tuple[HandlerDef, tuple[OperationDef, ...], tuple[_ReverseVertex, ...], int]:
+) -> tuple[
+    HandlerDef, tuple[OperationDef, ...], tuple[_ReverseVertex, ...], _ReverseSink
+]:
     """Check the source and its nominal linear handler signature together.
 
     Parameters
@@ -566,7 +643,7 @@ def _checked_reverse_graph(
     Returns
     -------
     tuple
-        The handler, its operations, the vertices and the selected slot.
+        The handler, its operations, the vertices and the slot selection.
 
     Raises
     ------
@@ -603,6 +680,8 @@ def _checked_reverse_graph(
         "mul": ((INT, number, number), number),
         "stop": ((number,), number),
     }
+    if "less" in operations:
+        expected["less"] = ((number, number), BOOL)
     actual = {
         op.name: (tuple(arg.type for arg in op.arguments), op.result_type)
         for op in interface.operations
@@ -653,16 +732,18 @@ def elaborate_reverse_diff(
     """Fill a named reverse handler with a bounded immutable cotangent sweep.
 
     The source seeds its Real parameters in order, can seed Real constants
-    thereafter, and adds or multiplies earlier vertices. The explicit
-    final stop chooses the output vertex. Arithmetic clauses first resume
-    once and update both operand slots in the returned answer. The answer
-    consists of the primal followed by one cotangent per vertex in source
-    order. The parameter cotangents form the first part of that vector.
+    thereafter, and adds or multiplies earlier vertices. A terminal stop
+    chooses the output vertex. Optional named comparisons may choose
+    between stops on that same graph. Each reached comparison needs finite
+    distinct primals and resumes once with its Boolean result. Arithmetic
+    clauses first resume once and update both operand slots in the returned
+    answer. The answer consists of the primal followed by one cotangent
+    per vertex in source order. Parameter cotangents come first.
 
     Parameters
     ----------
     module : QiecModule
-        One checked source entry with a straight-line named reverse graph.
+        One checked named reverse graph with an optional lazy sink selection.
     instance : EffectInstanceId
         The actual declared lexical reverse instance.
     handler : HandlerId
@@ -679,8 +760,9 @@ def elaborate_reverse_diff(
     ------
     KernelError
         If the numeric carrier, signature or source violates the exact
-        forward graph shape. The code `qiec-reverse-limit` identifies a
-        graph with more than six vertices.
+        graph shape. The code `qiec-reverse-limit` identifies a graph
+        with more than six vertices. The code `qiec-reverse-sink-limit`
+        identifies more than 15 nested or 256 total comparisons.
     """
     declaration, operations, vertices, _ = _checked_reverse_graph(
         module,
@@ -705,37 +787,54 @@ def elaborate_reverse_diff(
     return lowered
 
 
-def _real_operation(
-    name: Literal["add", "mul"], left: Value, right: Value, origin: SourceOrigin
+def _scalar_operation(
+    name: str, origin: SourceOrigin, *arguments: Value
 ) -> PrimitiveApplication:
-    """Create a primitive for one source vertex or its reverse contribution.
+    """Create a scalar primitive at its associated source request.
 
     Parameters
     ----------
-    name : {"add", "mul"}
-        The scalar operation's name before its type suffix.
-    left, right : Value
-        Its Real operands in order.
+    name : str
+        The registered scalar operation.
     origin : SourceOrigin
         The source request associated with the primitive.
+    arguments : Value
+        The checked operands in order.
 
     Returns
     -------
     PrimitiveApplication
-        The pure Real arithmetic term.
+        The pure scalar term.
     """
-    primitive = PRIMITIVES[f"{name}_real"]
+    primitive = PRIMITIVES[name]
     return PrimitiveApplication(
         primitive=primitive.id,
         name=primitive.name,
-        arguments=(left, right),
-        result_type=REAL,
+        arguments=arguments,
+        result_type=primitive.result,
         origin=origin,
     )
 
 
+def _compiled_sink(sink: _ReverseSink, primals: list[Var]) -> Value:
+    """Select the output slot and primal using only reached comparisons."""
+    if isinstance(sink, int):
+        return TupleValue(
+            items=(LiteralValue(value=sink, type=INT), primals[sink]),
+            result_type=_SINK_CHOICE,
+        )
+    return ConditionalValue(
+        condition=_scalar_operation(
+            "strict_lt_real", sink.origin, primals[sink.left], primals[sink.right]
+        ),
+        then=_compiled_sink(sink.then, primals),
+        otherwise=_compiled_sink(sink.otherwise, primals),
+        result_type=_SINK_CHOICE,
+    )
+
+
 def _compiled_body(
-    entry: NamedComputation, vertices: tuple[_ReverseVertex, ...], chosen: int
+    entry: NamedComputation, vertices: tuple[_ReverseVertex, ...], chosen: _ReverseSink
 ) -> Return:
     """Bind every primal and adjoint in dependency order.
 
@@ -745,8 +844,8 @@ def _compiled_body(
         The source entry providing parameters and the result type.
     vertices : tuple[_ReverseVertex, ...]
         The checked vertices in allocation order.
-    chosen : int
-        The source slot selected by the terminal stop.
+    chosen : int or _SinkGuard
+        The terminal output slot or the finite lazy decision selecting it.
 
     Returns
     -------
@@ -757,25 +856,27 @@ def _compiled_body(
     bindings: list[LetBinding] = []
     supply = count()
 
-    def bind(value: Value) -> Var:
-        """Append one Real binding and return its reference.
+    def bind(value: Value, type_: TypeExpr = REAL) -> Var:
+        """Append one binding and return its reference.
 
         Parameters
         ----------
         value : Value
             The Real value to bind in the generated sequence.
+        type_ : TypeExpr
+            The result type of the bound value.
 
         Returns
         -------
         Var
-            The fresh Real reference.
+            The fresh reference.
         """
         # Target name sanitization cannot turn a different source name into
         # one of these ASCII alphanumeric names.
         name = next(
             f"reverseValue{i}" for i in supply if f"reverseValue{i}" not in used
         )
-        binder = Local(name=name, type=REAL)
+        binder = Local(name=name, type=type_)
         bindings.append(LetBinding(binder=binder, value=value))
         return Var(local=binder)
 
@@ -784,24 +885,38 @@ def _compiled_body(
         value = (
             vertex.value
             if isinstance(vertex, _SeedVertex)
-            else _real_operation(
-                vertex.operation,
+            else _scalar_operation(
+                f"{vertex.operation}_real",
+                vertex.origin,
                 primals[vertex.left],
                 primals[vertex.right],
-                vertex.origin,
             )
         )
         primals.append(bind(value))
 
     pending: list[list[Value]] = [[] for _ in vertices]
-    pending[chosen].append(_ONE)
+    primal: Value
+    if isinstance(chosen, int):
+        primal = primals[chosen]
+        pending[chosen].append(_ONE)
+    else:
+        selection = bind(_compiled_sink(chosen, primals), _SINK_CHOICE)
+        selected = Projection(value=selection, position=0, result_type=INT)
+        primal = Projection(value=selection, position=1, result_type=REAL)
+        for slot, vertex in enumerate(vertices):
+            at_slot = _scalar_operation(
+                "eq_int", vertex.origin, selected, LiteralValue(value=slot, type=INT)
+            )
+            pending[slot].append(
+                _scalar_operation("select_real", vertex.origin, at_slot, _ONE, _ZERO)
+            )
     adjoints: list[Var] = []
     for slot in reversed(range(len(vertices))):
         vertex = vertices[slot]
         terms = iter(pending[slot])
         total = next(terms, _ZERO)
         for term in terms:
-            total = bind(_real_operation("add", total, term, vertex.origin))
+            total = bind(_scalar_operation("add_real", vertex.origin, total, term))
         cotangent = bind(total)
         adjoints.append(cotangent)
         if isinstance(vertex, _BinaryVertex):
@@ -813,16 +928,14 @@ def _compiled_body(
                 contribution = (
                     cotangent
                     if vertex.operation == "add"
-                    else _real_operation(
-                        "mul", cotangent, primals[other], vertex.origin
+                    else _scalar_operation(
+                        "mul_real", vertex.origin, cotangent, primals[other]
                     )
                 )
                 pending[predecessor].append(contribution)
 
     result_type = entry.type.result
-    result = TupleValue(
-        items=(primals[chosen], *reversed(adjoints)), result_type=result_type
-    )
+    result = TupleValue(items=(primal, *reversed(adjoints)), result_type=result_type)
     return Return(
         value=LetValue(bindings=tuple(bindings), body=result, result_type=result_type)
     )
@@ -845,15 +958,17 @@ def compile_reverse_diff(
     along each ordered operand edge, including two uses of the same
     operand. All contributions to a vertex are added before its adjoint is
     passed down. With B binary vertices the computation executes at most
-    5B scalar arithmetic operations. The bound counts checked arithmetic
-    and excludes parsing and validation. The recurrence gives the exact
-    polynomial derivative over the reals. Runtime Real values can round
-    or overflow.
+    5B scalar arithmetic operations. Lazy sink selection adds one
+    comparison per reached test and two scalar operations per vertex to
+    seed the one shared backward sweep. The bound excludes parsing and
+    validation. The recurrence gives the exact selected polynomial
+    derivative where the reached comparisons are strict. Runtime Real
+    values can round or overflow.
 
     Parameters
     ----------
     module : QiecModule
-        One checked source entry with a straight-line named reverse graph.
+        One checked named reverse graph with an optional lazy sink selection.
     instance : EffectInstanceId
         The actual declared lexical reverse instance.
     handler : HandlerId
@@ -873,7 +988,8 @@ def compile_reverse_diff(
     KernelError
         If the carrier, handler or source violates the nominal graph
         contract. The code `qiec-reverse-compile-limit` identifies a graph
-        with more than 256 vertices.
+        with more than 256 vertices. The code `qiec-reverse-sink-limit`
+        identifies more than 15 nested or 256 total comparisons.
     """
     _, _, vertices, chosen = _checked_reverse_graph(
         module,
