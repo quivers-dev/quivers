@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from enum import Enum
 from typing import Literal
 
-from quivers.qiec.foreign import ForeignSemantics
+from quivers.qiec.foreign import Enumeration, ForeignSemantics
 from quivers.qiec.identifiers import (
     EffectInstanceId,
     HandlerId,
@@ -989,6 +989,15 @@ class HandlerDef(QiecModel):
                 f"authored handler {self.name!r} states foreign semantics; its "
                 f"bodies say what it computes"
             )
+        if isinstance(self.foreign, Enumeration) and (
+            self.foreign.reduction == "log_expectation"
+        ):
+            from quivers.qiec.canonical import LOG_WEIGHT
+
+            if self.input_type != LOG_WEIGHT or self.output_type != LOG_WEIGHT:
+                raise ValueError(
+                    "log expectation enumeration requires a LogWeight -> LogWeight handler"
+                )
         if not authored and self.return_clause is not None:
             raise ValueError(
                 f"foreign handler {self.name!r} carries a return clause; its "

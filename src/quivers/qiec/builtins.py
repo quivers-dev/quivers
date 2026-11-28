@@ -950,6 +950,46 @@ def _weighted_support(sampleable: object) -> Iterable[tuple[object, torch.Tensor
         yield value, distribution.log_prob(value, keep_batch=True)
 
 
+def _enumerate_log_expectation(sampleable: object, resume: Resumption) -> torch.Tensor:
+    """Sum the weighted scalar answers of the positive support values.
+
+    Parameters
+    ----------
+    sampleable
+        The scalar finite law at the current request.
+    resume
+        The continuation with a scalar LogWeight answer.
+
+    Returns
+    -------
+    torch.Tensor
+        The log of the weighted sum of the continuation's scores.
+
+    Raises
+    ------
+    InvalidHandlerError
+        If the support is batched, empty, or the continuation answers a
+        non-scalar weight.
+    """
+    weights = []
+    for value, prior in _weighted_support(sampleable):
+        if prior.ndim != 0:
+            raise InvalidHandlerError(
+                "log expectation requires an unbatched finite draw"
+            )
+        if bool(torch.isneginf(prior)):
+            continue
+        weight = add_weights(prior, resume(value))
+        if weight.ndim != 0:
+            raise InvalidHandlerError(
+                "log expectation requires each shot to answer a scalar"
+            )
+        weights.append(weight)
+    if not weights:
+        raise InvalidHandlerError("log expectation requires positive finite support")
+    return LOG_PROB.join(torch.stack(weights), dim=0)
+
+
 def enumerate_handler(
     result_validator: RuntimeValidator,
     *,
@@ -974,6 +1014,11 @@ def enumerate_handler(
     value in support order, which is the row of a marginalized chain's
     transition weights that the forward algorithm reduces.
 
+    For ``log_expectation``, the continuation answers a scalar log
+    score. Each nested request and its handler return the same
+    ``LogWeight`` type. The clause sums over each draw's positive
+    support with the live log probabilities as weights.
+
     Parameters
     ----------
     result_validator
@@ -989,7 +1034,7 @@ def enumerate_handler(
     reduction
         How the shots aggregate: ``"logsumexp"``, ``"sum"``, or
         ``"mean"``; or ``"table"``, which keeps them one per support
-        value.
+        value. ``"log_expectation"`` sums scalar log scores.
     key
         Distinguishes this handler from others of the same name.
 
@@ -1001,12 +1046,19 @@ def enumerate_handler(
     Raises
     ------
     ValueError
-        If the reduction is not one of the four.
+        If the reduction is unsupported or the log expectation handler
+        does not have a scalar answer on both sides.
     """
-    if reduction not in ("logsumexp", "sum", "mean", "table"):
+    if reduction not in ("logsumexp", "sum", "mean", "table", "log_expectation"):
         raise ValueError(
-            "enumeration reduces by logsumexp, sum, or mean, or keeps a table, "
-            f"not {reduction!r}"
+            "enumeration reduces by logsumexp, sum, mean, or log_expectation, "
+            f"or keeps a table, not {reduction!r}"
+        )
+    if reduction == "log_expectation" and (
+        answer_type != LOG_WEIGHT or weight_type is not None
+    ):
+        raise ValueError(
+            "log expectation enumeration requires a LogWeight -> LogWeight handler"
         )
     definition = _handler_def(
         "Random.enumerate",
@@ -1050,6 +1102,8 @@ def enumerate_handler(
             weights do not fill the weight type's positions.
         """
         _site, sampleable = _site_and_sampleable(request, definition.name)
+        if reduction == "log_expectation":
+            return _enumerate_log_expectation(sampleable, resume)
         weights: list[torch.Tensor] = []
         for value, prior in _weighted_support(sampleable):
             answer = resume(value)
