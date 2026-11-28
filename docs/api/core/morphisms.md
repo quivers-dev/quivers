@@ -297,6 +297,25 @@ residual, and the residual gives no bound on the posterior error of
 a loopy graph. A fixed sweep count is available for differentiating a
 declared schedule.
 
+
+## Fixed-family string expectation propagation
+
+`FiniteStringBeliefPlan.expectation_propagation` uses the same factor
+tables and cavities as finite string belief propagation. At each site
+it combines the cavity with the factor's outgoing log weights to form
+the tilted distribution and records its log normalizer. The fitted
+marginal is the inclusive-KL projection of that tilt onto the
+fixed-order n-gram family with the cavity as its base measure.
+Dividing the fitted marginal by the cavity gives the new site message.
+Damping interpolates log message weights to stay in the same family.
+
+The schedule reports the outer message residual and the separate fit
+for each evaluated site. A local fitting limit, numerical stall, or
+tilt without positive weight on the full support leaves the previous
+accepted sweep in place. A fixed sweep count differentiates the
+executed updates. These finite message estimates use only the
+supplied word supports.
+
 ::: quivers.core.relations
     options:
       members:
@@ -322,6 +341,8 @@ declared schedule.
         - RelationLimitError
         - RelationPath
         - StringBeliefResult
+        - StringEPResult
+        - StringSiteProjection
         - StringFactor
         - StringFactorGraph
         - StringMapCertificate
