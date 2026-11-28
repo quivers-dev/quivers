@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from hashlib import sha256
+import re
 from typing import Literal, cast
 
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_VALUE
+from quivers.core.laws import Assumed, Tested
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import Condition
 from quivers.qiec.identifiers import (
@@ -203,6 +206,87 @@ class EffectLawBundle(QiecModel):
         )
 
 
+class EffectLawEvidence(QiecModel):
+    """Record tested or assumed evidence for one exact authored law subject.
+
+    Parameters
+    ----------
+    obligation : EffectLawObligation
+        The nominal equation, handler, method, and hypotheses at issue.
+    module_digest : str
+        The SHA-256 digest of the exact canonical module supplying it.
+    evidence : Tested or Assumed
+        The empirical test or assumption declared with this obligation.
+    """
+
+    obligation: EffectLawObligation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    module_digest: str
+    evidence: Tested | Assumed = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Require a canonical lowercase SHA-256 digest.
+
+        Raises
+        ------
+        ValueError
+            If the digest is malformed.
+        """
+        self._validate_recursive_fields()
+        if re.fullmatch(r"[0-9a-f]{64}", self.module_digest) is None:
+            raise ValueError(
+                "an effect law evidence digest must be a lowercase SHA-256"
+            )
+
+    @classmethod
+    def for_module(
+        cls,
+        module: QiecModule,
+        obligation: EffectLawObligation,
+        evidence: Tested | Assumed,
+    ) -> EffectLawEvidence:
+        """Bind declared evidence to the exact module and law obligation.
+
+        Parameters
+        ----------
+        module : QiecModule
+            The executable QIEC module to which the evidence refers.
+        obligation : EffectLawObligation
+            The law and handler to which the evidence refers.
+        evidence : Tested or Assumed
+            The empirical result or assumption to record.
+
+        Returns
+        -------
+        EffectLawEvidence
+            Evidence with a checked nominal subject and source digest.
+        """
+        EffectLawBundle(module=module, obligations=(obligation,))
+        return cls(
+            obligation=obligation,
+            module_digest=_module_digest(module),
+            evidence=evidence,
+        )
+
+
+def _module_digest(module: QiecModule) -> str:
+    """Identify the exact canonical executable source of an obligation.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked executable module.
+
+    Returns
+    -------
+    str
+        The SHA-256 hexadecimal digest of the canonical QIEC encoding.
+    """
+    from quivers.qiec.serialization import dumps
+
+    return sha256(dumps(module).encode()).hexdigest()
+
+
 def _obligation_key(obligation: EffectLawObligation) -> tuple[str, str, str, str]:
     """Order the obligation set by nominal owner and requested check.
 
@@ -224,4 +308,9 @@ def _obligation_key(obligation: EffectLawObligation) -> tuple[str, str, str, str
     )
 
 
-__all__ = ["EffectEquation", "EffectLawBundle", "EffectLawObligation"]
+__all__ = [
+    "EffectEquation",
+    "EffectLawBundle",
+    "EffectLawEvidence",
+    "EffectLawObligation",
+]

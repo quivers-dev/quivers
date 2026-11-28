@@ -179,6 +179,7 @@ from quivers.qiec.numbers import (
 from quivers.qiec.effect_law_schema import (
     EffectEquation,
     EffectLawBundle,
+    EffectLawEvidence,
     EffectLawObligation,
 )
 from quivers.qiec.effect_laws import (
@@ -1154,6 +1155,7 @@ __all__ += [
 __all__ += [
     "EffectEquation",
     "EffectLawBundle",
+    "EffectLawEvidence",
     "FiniteHandlerInterchange",
     "finite_metropolis_jvp",
     "check_finite_handler_interchange",

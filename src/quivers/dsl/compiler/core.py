@@ -66,7 +66,11 @@ from quivers.qiec import (
     PackedBooleanInterpretationBinding,
     QiecModule,
 )
-from quivers.qiec.effect_law_schema import EffectLawBundle, EffectLawObligation
+from quivers.qiec.effect_law_schema import (
+    EffectLawBundle,
+    EffectLawEvidence,
+    EffectLawObligation,
+)
 from quivers.qiec.effect_plan import EffectPlan, checked_effect_plan
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.family_catalog import FamilyCatalog
@@ -505,6 +509,7 @@ class Compiler(
         *,
         obligations: tuple[EffectLawObligation, ...] = (),
         interchanges: tuple[FiniteHandlerInterchange, ...] = (),
+        law_evidence: tuple[EffectLawEvidence, ...] = (),
         max_assignments: int = 65_536,
         max_work: int = 65_536,
         fuel: int = 65_536,
@@ -519,6 +524,8 @@ class Compiler(
             The nominal equations to check against this compiler's module.
         interchanges : tuple[FiniteHandlerInterchange, ...]
             The finite handler interchanges to check against this module.
+        law_evidence : tuple[EffectLawEvidence, ...]
+            Claimed tests or assumptions bound to the requested obligations.
         max_assignments : int
             The domain size limit per finite obligation.
         max_work : int
@@ -552,6 +559,7 @@ class Compiler(
             EffectLawBundle(module=module, obligations=obligations),
             root,
             interchanges=interchanges,
+            law_evidence=law_evidence,
             max_assignments=max_assignments,
             max_work=max_work,
             fuel=fuel,

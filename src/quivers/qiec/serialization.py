@@ -122,6 +122,7 @@ from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.effect_law_schema import (
     EffectEquation,
     EffectLawBundle,
+    EffectLawEvidence,
     EffectLawObligation,
 )
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
@@ -492,6 +493,7 @@ _NODE_CLASSES = (
     EffectEquation,
     EffectLawObligation,
     EffectLawBundle,
+    EffectLawEvidence,
     FiniteHandlerInterchange,
     RationalDerivativeDeclaration,
     ProgramEntry,

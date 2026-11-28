@@ -2,12 +2,15 @@
 
 import pytest
 
+from quivers.core.laws import Assumed
+from quivers.core.laws import Tested as LawTest
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     ComputationId,
     Condition,
     EffectEquation,
     EffectLawBundle,
+    EffectLawEvidence,
     EffectLawObligation,
     ExecutionFailure,
     FiniteEffectLawDecision,
@@ -293,3 +296,61 @@ export sampled
     plan = compiler.effect_plan("sampled")
     assert plan.computation == program.computation
     assert plan.laws == ()
+
+
+def test_reports_keep_test_and_assumption_separate_from_exact_decisions(
+    compiler, bundle
+):
+    baseline = _answers(
+        compiler.effect_plan("through_clause", obligations=bundle.obligations)
+    )
+    unsupported = baseline["stable", "polynomial"].obligation
+    false = baseline["toggle", "finite"].obligation
+    reported = (
+        EffectLawEvidence.for_module(
+            bundle.module,
+            unsupported,
+            LawTest(check="recorded-cases", cases=2, domain="Boolean initial state"),
+        ),
+        EffectLawEvidence.for_module(
+            bundle.module,
+            false,
+            Assumed(declared_by="caller", reason="comparison"),
+        ),
+    )
+    decoded = tuple(loads(dumps(record)) for record in reported)
+    assert decoded == reported
+    plan = compiler.effect_plan(
+        "through_clause", obligations=bundle.obligations, law_evidence=decoded
+    )
+    answers = _answers(plan)
+    assert answers["stable", "polynomial"].status == "unresolved"
+    assert answers["stable", "polynomial"].declared_evidence == reported[0]
+    assert answers["toggle", "finite"].status == "refuted"
+    assert answers["toggle", "finite"].declared_evidence == reported[1]
+    decision = answers["toggle", "finite"].decision
+    assert isinstance(decision, FiniteEffectLawDecision)
+    assert decision.result.counterexample is not None
+    assert plan.discharge == discharge_module(bundle.module)
+
+    with pytest.raises(ValueError, match="duplicate declared evidence"):
+        compiler.effect_plan(
+            "through_clause",
+            obligations=bundle.obligations,
+            law_evidence=(reported[0],) * 2,
+        )
+    with pytest.raises(ValueError, match="different module or obligation"):
+        compiler.effect_plan(
+            "through_clause", obligations=(false,), law_evidence=reported
+        )
+
+    replacement = _SOURCE.replace(
+        "        return value\n    read_value",
+        "        return false\n    read_value",
+        1,
+    )
+    stale = Compiler(parse(replacement), module_name="effect-plan-test")
+    with pytest.raises(ValueError, match="different module or obligation"):
+        stale.effect_plan(
+            "through_clause", obligations=bundle.obligations, law_evidence=reported
+        )

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from quivers.qiec.discharge import DischargedModule, discharge_module
-from quivers.qiec.effect_law_schema import EffectLawBundle, EffectLawObligation
+from quivers.qiec.effect_law_schema import (
+    EffectLawBundle,
+    EffectLawEvidence,
+    EffectLawObligation,
+    _module_digest,
+)
 from quivers.qiec.effect_laws import (
     FiniteEffectLawDecision,
     ScalarEffectLawDecision,
@@ -40,11 +45,14 @@ class EffectLawReport:
         The freshly checked result, including a witness when the law fails.
     reason : str or None
         Why the checker could not decide the obligation, if it could not.
+    declared_evidence : EffectLawEvidence or None
+        The test or assumption attached to this exact source.
     """
 
     obligation: EffectLawObligation
     decision: _Decision | None
     reason: str | None
+    declared_evidence: EffectLawEvidence | None = None
 
     @property
     def status(self) -> _Status:
@@ -191,6 +199,7 @@ def checked_effect_plan(
     computation: ComputationId,
     *,
     interchanges: tuple[FiniteHandlerInterchange, ...] = (),
+    law_evidence: tuple[EffectLawEvidence, ...] = (),
     max_assignments: int = 65_536,
     max_work: int = 65_536,
     fuel: int = 65_536,
@@ -210,6 +219,8 @@ def checked_effect_plan(
         The source declaration whose reachable handlers to classify.
     interchanges : tuple[FiniteHandlerInterchange, ...]
         Named finite observations checked independently of discharge.
+    law_evidence : tuple[EffectLawEvidence, ...]
+        Bound empirical or assumed evidence for requested obligations.
     max_assignments : int
         The maximum number of assignments per finite obligation.
     max_work : int
@@ -227,7 +238,7 @@ def checked_effect_plan(
     Raises
     ------
     ValueError
-        If the computation is absent or any requested limit is invalid.
+        If the computation, a bound, or an evidence attachment is invalid.
     """
     for name, limit in (
         ("max_assignments", max_assignments),
@@ -246,13 +257,33 @@ def checked_effect_plan(
         for handler in module.handlers
         if handler.id in reach
     )
+    by_obligation: dict[EffectLawObligation, EffectLawEvidence] = {}
+    if law_evidence:
+        digest = _module_digest(module)
+        obligations = frozenset(bundle.obligations)
+        for assertion in law_evidence:
+            if (
+                assertion.module_digest != digest
+                or assertion.obligation not in obligations
+            ):
+                raise ValueError(
+                    "effect law evidence names a different module or obligation"
+                )
+            if assertion.obligation in by_obligation:
+                raise ValueError(
+                    "duplicate declared evidence for an effect law obligation"
+                )
+            by_obligation[assertion.obligation] = assertion
     laws = tuple(
-        _law_report(
-            module,
-            obligation,
-            max_assignments=max_assignments,
-            max_work=max_work,
-            fuel=fuel,
+        replace(
+            _law_report(
+                module,
+                obligation,
+                max_assignments=max_assignments,
+                max_work=max_work,
+                fuel=fuel,
+            ),
+            declared_evidence=by_obligation.get(obligation),
         )
         for obligation in bundle.obligations
     )

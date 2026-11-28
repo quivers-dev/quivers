@@ -539,6 +539,12 @@ assert rechecked == decision
 entry's checked call graph, including calls made from authored clauses.
 It also reports ordinary discharge and its obstacles. An
 `EffectLawBundle` can be inspected directly with `checked_effect_plan`.
+`EffectLawEvidence.for_module` attaches a `Tested` or `Assumed` claim
+to that exact module and obligation. Pass these records as `law_evidence`
+to `Compiler.effect_plan`. Each comparison reports its exact check
+status and the held declaration. A refuted equation retains its
+counterexample even if the attached record declares an assumption.
+The digest changes when the source or its checked operations change.
 
 The report gives every requested law its own result. A checked law carries
 the evidence for its actual named handler. A refuted law carries the
