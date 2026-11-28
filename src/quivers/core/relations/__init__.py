@@ -43,6 +43,8 @@ __all__ = [
     "ComposedRelation",
     "ComposedStringQuery",
     "ConditionalStringQuery",
+    "ContextualEditChannel",
+    "ContextualEditPlan",
     "FixedStringQuery",
     "FiniteRelationRestriction",
     "FiniteStringBeliefPlan",
@@ -603,4 +605,8 @@ from quivers.core.relations.beliefs import (  # noqa: E402
     StringBeliefResult,
     StringEPResult,
     StringSiteProjection,
+)
+from quivers.core.relations.contextual_edit import (  # noqa: E402
+    ContextualEditChannel,
+    ContextualEditPlan,
 )

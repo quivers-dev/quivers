@@ -335,6 +335,33 @@ gradient mapping. The finite group implementation scans the declared
 feature vocabulary. Each shrink copies the coefficient vector, so a
 proximal update takes $O(rg)$ work for $r$ coefficients and $g$ groups.
 
+### Batched contextual edits
+
+`ContextualEditChannel` sums the alignments of observed input-output
+pairs with a single packed semiring plan. At input position $i$ and
+consecutive insertion count $j$, the scorer supplies logits for all
+legal edits using the complete input word. It assigns local
+probabilities before any restriction to the observed output, so
+competitors that emit other symbols still enter the denominator.
+
+A consuming edit advances $i$ and resets $j$. An insertion advances $j$
+at fixed $i$, with a finite upper bound. A stop is available only at
+the end of the input. Thus the generation graph is acyclic and has
+total mass one by reverse induction on $(i,j)$. For input length $L$
+and insertion bound $I$, every emitted word has length at most
+$L+(L+1)I$. The plan for a pair adds the observed output position to
+this state and includes only matching arcs. It groups the accepted
+mass by example after a shared packed forward pass. The original
+scorer supplies new logits on every evaluation, with gradients
+through both compatible paths and local normalization.
+
+The scorer's rectangular action table scales with input positions,
+the insertion bound, and output alphabet size. Its cells and the
+compatible observation arcs count toward the explicit work budget.
+No table of all output words is constructed. The bound on
+consecutive insertions is part of the channel model, and the scorer
+can use the whole input as context for each edit.
+
 ::: quivers.core.relations
     options:
       members:
@@ -350,6 +377,8 @@ proximal update takes $O(rg)$ work for $r$ coefficients and $g$ groups.
         - ComposedRelation
         - ComposedStringQuery
         - ConditionalStringQuery
+        - ContextualEditChannel
+        - ContextualEditPlan
         - QueryWork
         - FiniteRelationRestriction
         - FiniteStringBeliefPlan
