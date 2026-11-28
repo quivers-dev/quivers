@@ -14,6 +14,7 @@ from quivers.core import laws
 from quivers.core.algebras import LOG_PROB
 from quivers.qiec import contracts as c
 from quivers.qiec.identifiers import ComputationId, FamilyId, SiteId
+from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.serialization import (
     _NODES,
     SerializationError,
@@ -323,6 +324,11 @@ def _examples() -> list[dx.Model]:
         c.Best(),
         c.KBest(k=3),
         c.Outcome(key=ComputationId.derive("key")),
+        c.ProjectedWeightRows(
+            judgment=FamilyId.derive("judgment"),
+            position=0,
+            field=IndexBinder(name="form", sort=NAT),
+        ),
         c.NormalizedWeightRows(source=c.Outcome(key=ComputationId.derive("key"))),
         c.WeightedProofRows(normalized=True),
         c.Statistic(statistic=ComputationId.derive("stat")),

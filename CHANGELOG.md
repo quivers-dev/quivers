@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked effect-stage receipts.** Serialize the selected target stage and verify its emitted artifact or named refusal against the original checked program.
+- **Checked lexical projection plans.** Category and form outcomes report their nominal source judgment, projected binder, and normalization contract.
+- **Guarded lexical outcome plans.** Packed item, category, and form reports retain ordered guard bindings and count every checked guard decision.
+- **Checked centered log-ratio certificates.** A bounded native conditional or tree likelihood can verify the delivered value against the original binary64 weights and return exact rational error bounds.
 - **Checked centered string likelihoods.** A named QVR computation can return a centered conditional or tree log probability with live gradients and measured dyadic work.
 - **Centered acyclic string likelihoods.** Opt-in binary64 LogProb queries keep fixed-word conditional and tree probabilities usable when rounded absolute log masses erase their difference.
 - **Certified acyclic LogProb path accuracy.** A fixed-word query can bound its float64 score's absolute log error using a sparse directed verifier, including for inputs near log weight −1000. The checked native provider returns the log score and exact rational evidence from one live snapshot.
@@ -110,6 +114,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Emitted handler addresses.** Python lowering preserves the native shot path for affine and linear resumptions. Pyro traces carry helper-local addresses on draws and authored scores.
 - **Pruned string proposal-scale gradients.** Full, retained, and omitted candidate sums restore the reported raw scale after evaluating the local reduction in centered log space.
 - **Pruned string message normalization.** Center candidate weights before damping so a large common log offset preserves the normalized message and its convergence residual.
 - **String log-ratio overflow.** Conditional and exact tree queries report a precision error when normalizing a finite log score would overflow. Impossible words retain log zero.

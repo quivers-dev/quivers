@@ -11,12 +11,14 @@ from quivers.continuous.tensor_backend import TensorBackend
 from quivers.dsl import loads as load_source
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec.checking import KernelError
+from quivers.qiec.contracts import NormalizedWeightRows, ProjectedWeightRows
 from quivers.qiec.execution import ExecutionFailure, run_named
-from quivers.qiec.foreign import DeductionOutcomeLaw
+from quivers.qiec.foreign import DeductionOutcomeLaw, DeductionOutcomes
 from quivers.qiec.module import QiecModule, validate_module
 from quivers.qiec.program_runtime import run_program, sample_program
 from quivers.qiec.serialization import dumps, loads
 from quivers.qiec.types import BOOL
+from quivers.stochastic.planning import PlanRecord
 
 GUIDE = Path(__file__).resolve().parents[2] / "docs/guides/deduction.md"
 
@@ -68,6 +70,23 @@ def test_example_scores_a_response_from_the_proved_readings() -> None:
         sites={},
         parameters=parameters,
     )
+    (chart,) = (
+        handler.foreign
+        for handler in restored.handlers
+        if isinstance(handler.foreign, DeductionOutcomes)
+    )
+    (span,) = chart.presentation.judgments
+    (reported,) = [
+        event for event in run.result.trace if event.event == "deduction.outcomes.plan"
+    ]
+    record = loads(reported.detail["plan"])
+    assert isinstance(record, PlanRecord)
+    assert record.query.observable == NormalizedWeightRows(
+        source=ProjectedWeightRows(judgment=span.id, position=3, field=span.indices[3])
+    )
+    assert reported.detail["selector"] == "form"
+    assert reported.detail["normalized"] is True
+    assert reported.detail["positive_total_mass"] is True
     # Enumerate the three proofs. The first two yield approved, whose
     # claim gives Licensed and Goal. The third gives only Pending.
     proof_responses = rates[[0, 0, 1]].log()

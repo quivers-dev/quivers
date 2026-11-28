@@ -8,7 +8,11 @@ import torch
 
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.relations import RationalRelation
-from quivers.core.relations._centered import CenteredStringLogScore, _CenteredLogRatio
+from quivers.core.relations._centered import (
+    CenteredStringLogScore,
+    _CenteredBinding,
+    _CenteredLogRatio,
+)
 from quivers.core.relations.paths import _conditional_log_ratio
 from quivers.core.relations.queries import _validate_limits
 from quivers.core.relations.topology import Words
@@ -90,6 +94,20 @@ class ConditionalStringQuery:
         log masses before packed summation. The limits bound occurrence
         storage and a worst-case count of exact pass visits.
         """
+        plan, weights = self._centered_binding(
+            output_words,
+            max_center_occurrences=max_center_occurrences,
+            max_dyadic_work=max_dyadic_work,
+        )
+
+        def evaluate() -> CenteredStringLogScore:
+            return plan.evaluate(weights())
+
+        return evaluate
+
+    def _centered_binding(
+        self, output_words: Words, *, max_center_occurrences: int, max_dyadic_work: int
+    ) -> _CenteredBinding:
         if self._relation.algebra is not LOG_PROB:
             raise TypeError("centered log ratios require LogProb relations")
         plan = _CenteredLogRatio.compile(
@@ -102,10 +120,7 @@ class ConditionalStringQuery:
             max_dyadic_work=max_dyadic_work,
         )
 
-        def evaluate() -> CenteredStringLogScore:
-            return plan.evaluate(self._relation._weights())
-
-        return evaluate
+        return plan, self._relation._weights
 
 
 __all__ = ["ConditionalStringQuery"]

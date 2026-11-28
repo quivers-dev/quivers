@@ -208,6 +208,7 @@ from quivers.qiec.effect_plan import (
     EffectTargetReport,
     checked_effect_plan,
 )
+from quivers.qiec.effect_stage_schema import EffectStageRecord, EffectTargetEvidence
 from quivers.qiec.bernoulli_estimators import (
     BernoulliBranch,
     BernoulliGradientPlan,
@@ -575,6 +576,10 @@ from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
     RelationPathLaw,
+)
+from quivers.qiec.centered_string_certificate import (
+    CenteredStringLogProbCertificateRequest,
+    CenteredStringLogProbCertificateRuntimeProvider,
 )
 from quivers.qiec.centered_string_runtime import (
     CenteredStringLogProbRequest,
@@ -971,6 +976,8 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "CenteredStringLogProbCertificateRequest",
+    "CenteredStringLogProbCertificateRuntimeProvider",
     "CenteredStringLogProbRequest",
     "CenteredStringLogProbRuntimeProvider",
     "FixedCyclicLogProbPathCertificateRequest",
@@ -1289,6 +1296,8 @@ __all__ += [
     "EffectJvpCheck",
     "EffectLawReport",
     "EffectPlan",
+    "EffectStageRecord",
+    "EffectTargetEvidence",
     "EffectTargetReport",
     "checked_effect_plan",
 ]

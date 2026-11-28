@@ -33,6 +33,7 @@ every rule, and $h$ factors through it. Each observable states what it needs:
 | [`Best`][quivers.qiec.contracts.Best] | semiring, selective sum | a tie rule for its derivative |
 | [`KBest`][quivers.qiec.contracts.KBest] | semiring, selective sum, superior rules | a tie rule for its derivative |
 | [`Outcome`][quivers.qiec.contracts.Outcome] | semiring | a key computation |
+| [`ProjectedWeightRows`][quivers.qiec.contracts.ProjectedWeightRows] | semiring | an ordered field of a checked judgment |
 | [`NormalizedWeightRows`][quivers.qiec.contracts.NormalizedWeightRows] | source weighting laws and division | finitely many rows with positive total mass |
 | [`WeightedProofRows`][quivers.qiec.contracts.WeightedProofRows] | ordered product with unit and absorbing zero, and associative commutative sum and division when normalized | finitely many derivations for a guaranteed result |
 | [`Statistic`][quivers.qiec.contracts.Statistic] | semiring, semimodule action | a statistic computation |

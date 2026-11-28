@@ -468,6 +468,40 @@ $O(2098+\log(V+1))$ bits. The packed charts and their backward tape have
 linear storage in the two active graphs, apart from the source weights
 and observation construction.
 
+
+#### Certifying the centered log ratio
+
+The checked centered certificate compares the delivered binary64 score
+with an interval for the original evaluated weight vector. Each finite
+reduced occurrence has an exact dyadic value $d$ and a binary64 value
+$\widehat d$ used by the packed evaluator. The verifier uses their exact
+difference as a log perturbation. In each chart a reverse DAG pass
+finds the minimum and maximum sum of these perturbations over positive
+paths, including initial and final marks. Multiplying the rounded
+path masses by the exponentials of the two extreme sums bounds the
+exact path masses. In log space, the verifier can thus add the two
+extremes to the existing rounded-factor residual interval.
+
+Let $[L_N,U_N]$ and $[L_D,U_D]$ enclose the resulting numerator and
+denominator log residuals. Let $\Delta$ be the exact difference of
+their path maxima. The exact original log ratio lies in
+$[\Delta+L_N-U_D,\Delta+U_N-L_D]$. The larger distance from the
+delivered value to either rational endpoint bounds its absolute
+log error. The certificate covers the value on the single evaluated
+snapshot. The log-zero convention applies when the numerator has
+no positive path and the denominator has a verified positive mass.
+
+The two charts share Decimal exponent, precision and operation limits,
+and exact-arithmetic bit and operation caps. Each used arc or initial
+mark requires two directed fused multiply-adds. The exact min/max
+pass visits each state and lifted occurrence a bounded number of
+times. It stores each occurrence perturbation and two additional
+rationals per productive state. The bound on each dyadic factor follows from the
+original gauge and chart length. Conversion of Decimal log endpoints
+and the final comparison have their own charged bit bounds. The
+centering work and occurrence caps continue to preflight the two
+sparse charts before their lifted factors are built.
+
 ## Certified finite string MAP
 
 A `FiniteStringScore` lists the feasible tuples of words for a factor and

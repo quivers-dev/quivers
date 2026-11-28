@@ -21,6 +21,7 @@ from quivers.qiec.contracts import (
     NormalizedWeightRows,
     Numerics,
     Phase,
+    ProjectedWeightRows,
     QuerySpec,
     Rational,
     Target,
@@ -28,7 +29,7 @@ from quivers.qiec.contracts import (
     Weight,
     WeightedProofRows,
 )
-from quivers.qiec.kinds import NAT
+from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.rules import RulePresentation
 from quivers.qiec.types import BOOL, INT, REAL, STRING, IndexLiteral, TypeApplication
 from quivers.stochastic.planning import Alternative, PlanRecord
@@ -137,6 +138,44 @@ _WORK = ComplexityClaim(
 )
 
 
+def _row_reduction_complexity(
+    work: ComplexityClaim,
+    quantity: str,
+    count: ComplexityParameter,
+    condition: str,
+) -> ComplexityClaim:
+    """Extend the running and storage costs by a linear row reduction.
+
+    Parameters
+    ----------
+    work
+        The cost bounds before the reduction.
+    quantity
+        The quantity the complete stage computes.
+    count
+        The operation's row count parameter.
+    condition
+        The reason the added work and saved values are linear in that count.
+
+    Returns
+    -------
+    ComplexityClaim
+        The same construction bounds and the extended execution, reverse,
+        and refit bounds.
+    """
+    return work.with_(
+        query=quantity,
+        parameters=(*work.parameters, count),
+        bounds=tuple(
+            bound
+            if bound.phase == Phase.CONSTRUCTION
+            else bound.with_(expression=f"{bound.expression} + {count.name}")
+            for bound in work.bounds
+        ),
+        conditions=(*work.conditions, condition),
+    )
+
+
 def normalized_row_complexity(work: ComplexityClaim, quantity: str) -> ComplexityClaim:
     """Add one finite log normalizer, its broadcast subtraction, and their reverse.
 
@@ -153,51 +192,141 @@ def normalized_row_complexity(work: ComplexityClaim, quantity: str) -> Complexit
         The same construction bound, with one linear pass in the positive
         row count added to work and live storage for the other phases.
     """
+    return _row_reduction_complexity(
+        work,
+        quantity,
+        ComplexityParameter(
+            name="H", meaning="positive rows sharing one log normalizer"
+        ),
+        "stacking, summing, checking, subtracting and differentiating the common "
+        "log normalizer each visit at most H positive rows",
+    )
+
+
+def _guarded_complexity(work: ComplexityClaim) -> ComplexityClaim:
+    """Charge all guard decisions and the largest temporary guard invocation.
+
+    Parameters
+    ----------
+    work
+        The same packed query's bounds before charging its checked guards.
+
+    Returns
+    -------
+    ComplexityClaim
+        The construction and refit bounds including checked guard work.
+    """
+    extra = {
+        "time": "D (1 + Q_g) + L_g + P_g X_g + S_g U_g",
+        "space": "Q_g + M_g",
+    }
     return work.with_(
-        query=quantity,
         parameters=(
             *work.parameters,
-            ComplexityParameter(
-                name="H", meaning="positive rows sharing one log normalizer"
+            *(
+                ComplexityParameter(name=name, meaning=meaning)
+                for name, meaning in (
+                    ("D", "actual checked guard decisions on completed matches"),
+                    ("Q_g", "maximum guard body size in syntax and operand words"),
+                    ("L_g", "all matched arguments across guard invocations"),
+                    ("X_g", "term-valued matched arguments across guard invocations"),
+                    ("P_g", "maximum words scanned in a matched rule's telescope"),
+                    ("U_g", "constructor occurrences reified across guard invocations"),
+                    ("S_g", "maximum vocabulary word visits per constructor check"),
+                    (
+                        "M_g",
+                        "largest invocation's combined argument and reified node count",
+                    ),
+                )
             ),
         ),
         bounds=tuple(
-            bound
-            if bound.phase == Phase.CONSTRUCTION
-            else bound.with_(expression=f"{bound.expression} + H")
+            bound.with_(expression=f"{bound.expression} + {extra[bound.resource]}")
+            if bound.phase in (Phase.CONSTRUCTION, Phase.REFIT)
+            else bound
             for bound in work.bounds
         ),
         conditions=(
             *work.conditions,
-            "stacking, summing, checking, subtracting and differentiating the common "
-            "log normalizer each visit at most H positive rows",
+            "each successful guard is a closed, call-free Int and Bool body, "
+            "optionally with case over the deduction's owned item family",
+            "guard evaluation visits each executed syntax occurrence once; "
+            "body size includes branch search and binding fields",
+            "term arguments use a telescope lookup and reify and check every "
+            "constructor occurrence, including children a guard does not inspect",
+            "a guard runs before recording an edge; guards are sequential and "
+            "their work saves no values for the weight derivative",
+            "D is measured; the other guard parameters describe work or space "
+            "that this trace does not measure",
         ),
     )
 
 
-def lexical_item_plan_trace(
+def _guard_trace(presentation: RulePresentation, decisions: int) -> dict[str, object]:
+    """Record the actual guard bindings and checked bodies of this presentation.
+
+    Parameters
+    ----------
+    presentation
+        The exact checked presentation used by the indexed forest.
+    decisions
+        All guard calls, including the calls that did not admit an edge.
+
+    Returns
+    -------
+    dict of str to object
+        The count and a portable pair of ordered rule bindings and shared bodies.
+    """
+    from quivers.qiec.serialization import dumps
+
+    bindings = tuple(
+        (
+            rule.id,
+            guard,
+            tuple(
+                binder for binder in rule.telescope if binder.name in guard.arguments
+            ),
+        )
+        for rule in presentation.rules
+        if (guard := rule.side_condition) is not None
+    )
+    return {
+        "checked_rule_guards": decisions,
+        "guard_bindings": dumps((bindings, presentation.conditions)),
+    }
+
+
+def lexical_outcome_plan_trace(
     descriptor: DeductionOutcomes,
     definition: HandlerDef,
     operation: OperationId,
     tokens: int,
     terms: int,
     weights: torch.Tensor,
+    selector: str,
+    projection: int | None,
     normalized: bool,
+    guard_decisions: int,
 ) -> dict[str, object]:
-    """Describe the checked item operation that just returned its outcome rows.
+    """Describe the checked lexical operation that just returned its outcome rows.
 
     Parameters
     ----------
     descriptor
-        The original checked unguarded lexical declaration.
+        The original checked lexical declaration.
     definition, operation
         The installed handler and its executed operation identity.
     tokens, terms
         The actual sentence and lexical payload extents.
     weights
         The actual unbatched log-weight input.
+    selector, projection
+        The requested built-in key and the actual judgment index used for
+        it. None denotes the entire item.
     normalized
         Whether the returned positive rows share a finite log normalizer.
+    guard_decisions
+        The indexed chart's actual number of checked guard calls.
 
     Returns
     -------
@@ -211,12 +340,41 @@ def lexical_item_plan_trace(
     assert isinstance(presentation, RulePresentation)
     numerics = NumberDomain.of(weights)
     retention = NoRetention()
-    source = Weight()
-    quantity = (
-        "normalized log mass per positive full-span item"
-        if normalized
-        else "raw log mass per positive full-span item"
+    source: Weight | ProjectedWeightRows = Weight()
+    work = _WORK
+    item = "full-span item"
+    key_assumption = (
+        "full item identity is the key; distinct lexical occurrence weights sum"
     )
+    if projection is not None:
+        (judgment,) = presentation.judgments
+        field = judgment.indices[projection]
+        assert isinstance(field, IndexBinder)
+        source = ProjectedWeightRows(
+            judgment=judgment.id,
+            position=projection,
+            field=field,
+        )
+        item = f"{selector} of a full-span item"
+        key_assumption = (
+            "one checked judgment index determines the key; every full-span "
+            "item contributes its own proof weight to the sum for that key"
+        )
+        work = _row_reduction_complexity(
+            work,
+            f"raw log mass per positive {item}",
+            ComplexityParameter(
+                name="G",
+                meaning="full-span item weights before grouping by the checked index",
+            ),
+            "G counts grouping inputs even when several items have the same projected key; "
+            "stacking, reducing, storing and differentiating their weights use O(G) work and space",
+        )
+    mass = "normalized" if normalized else "raw"
+    quantity = f"{mass} log mass per positive {item}"
+    guarded = bool(presentation.conditions)
+    if guarded:
+        work = _guarded_complexity(work)
     record = PlanRecord(
         query=QuerySpec(
             presentation=presentation.id,
@@ -240,22 +398,34 @@ def lexical_item_plan_trace(
         algorithm=OUTCOME_ALGORITHM,
         assumptions=(
             "finite contiguous span presentation with acyclic equal-width dependencies",
-            "full item identity is the key; distinct lexical occurrence weights sum",
+            key_assumption,
             "the declared span range check applies to each finite log weight; "
             "negative infinity denotes structural zero",
             "the result holds typed rows only; occurrence edges and ordered premise "
             "references are retained inside the provider until the fold returns",
             "the host fold has no compute or memory cap; QIEC step fuel does not "
             "charge each chart or reification operation",
+            *(
+                (
+                    "guards use the trace's checked rule bindings and bodies; a guarded "
+                    "match contributes edges and weight only when its guard returns true",
+                )
+                if guarded
+                else ()
+            ),
             *((NORMALIZATION_ASSUMPTION,) if normalized else ()),
         ),
         structure=presentation.analysis,
-        complexity=normalized_row_complexity(_WORK, quantity) if normalized else _WORK,
+        complexity=normalized_row_complexity(work, quantity) if normalized else work,
         alternatives=(
             Alternative(
                 algorithm="proof enumeration",
-                reason="it preserves the finite mass but requires work in the "
-                "unfolded proof sizes and an explicit proof budget",
+                reason=(
+                    "the checked proof-row provider requires unconditional rules"
+                    if guarded
+                    else "it preserves the finite mass but requires work in the "
+                    "unfolded proof sizes and an explicit proof budget"
+                ),
             ),
             Alternative(
                 algorithm="two-pass weight evaluation",
@@ -271,7 +441,7 @@ def lexical_item_plan_trace(
         "operation": str(operation),
         "presentation": str(presentation.id),
         "output_type": dumps(definition.output_type),
-        "selector": "item",
+        "selector": selector,
         "normalized": normalized,
         **({"positive_total_mass": True} if normalized else {}),
         "sentence_length": tokens,
@@ -285,6 +455,7 @@ def lexical_item_plan_trace(
         "temporary_provenance": "packed-forest",
         "derivative": dumps(DerivativeSemantics()),
         "derivative_inputs": "ordered finite log weights at fixed support",
+        **(_guard_trace(presentation, guard_decisions) if guarded else {}),
         "plan": dumps(record),
     }
 

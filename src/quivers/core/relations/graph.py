@@ -11,7 +11,12 @@ from torch import nn
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.objects import StringSet
 from quivers.core.relations import RationalRelation, _weight_snapshot
-from quivers.core.relations._centered import CenteredStringLogScore, _CenteredLogRatio
+from quivers.core.relations._centered import (
+    CenteredStringLogScore,
+    _CenteredBinding,
+    _CenteredLogRatio,
+    _UndefinedCenteredNormalizer,
+)
 from quivers.core.relations.joins import join
 from quivers.core.relations.paths import _conditional_log_ratio, _require_normalizer
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
@@ -232,6 +237,24 @@ class TreeStringMarginal:
         normalizer under their existing closure and precision contract.
         Work in the returned report concerns the centered component.
         """
+        plan, weights = self._centered_binding(
+            word,
+            max_center_occurrences=max_center_occurrences,
+            max_dyadic_work=max_dyadic_work,
+        )
+
+        def evaluate() -> CenteredStringLogScore:
+            return plan.evaluate(weights())
+
+        return evaluate
+
+    def _centered_binding(
+        self,
+        word: tuple[int, ...],
+        *,
+        max_center_occurrences: int,
+        max_dyadic_work: int,
+    ) -> _CenteredBinding:
         if self._relation.algebra is not LOG_PROB:
             raise TypeError("centered log ratios require LogProb relations")
         plan = _CenteredLogRatio.compile(
@@ -244,13 +267,17 @@ class TreeStringMarginal:
             max_dyadic_work=max_dyadic_work,
         )
 
-        def evaluate() -> CenteredStringLogScore:
+        def weights() -> torch.Tensor:
             with _weight_snapshot():
                 for query in self._normalizers[1:]:
-                    _require_normalizer(query.weight(), LOG_PROB)
-                return plan.evaluate(self._relation._weights())
+                    mass = query.weight()
+                    try:
+                        _require_normalizer(mass, LOG_PROB)
+                    except ValueError as error:
+                        raise _UndefinedCenteredNormalizer(str(error)) from error
+                return self._relation._weights()
 
-        return evaluate
+        return plan, weights
 
 
 type _Vertex = str | int

@@ -98,6 +98,7 @@ from quivers.qiec.contracts import (
     PresentationId,
     Probabilistic,
     ProvedOptimal,
+    ProjectedWeightRows,
     QuerySpec,
     Rational,
     Refusal,
@@ -128,6 +129,7 @@ from quivers.qiec.effect_law_schema import (
     EffectLawObligation,
 )
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
+from quivers.qiec.effect_stage_schema import EffectStageRecord, EffectTargetEvidence
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.alignment_map_runtime import JointAlignmentMapRequest
@@ -153,6 +155,9 @@ from quivers.qiec.relation_capped_path_law import (
 from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
+)
+from quivers.qiec.centered_string_certificate import (
+    CenteredStringLogProbCertificateRequest,
 )
 from quivers.qiec.centered_string_runtime import CenteredStringLogProbRequest
 from quivers.qiec.relation_log_path_certificate import (
@@ -445,6 +450,7 @@ _NODE_CLASSES = (
     FixedLogProbPathCertificateRequest,
     FixedMarkovPathCertificateRequest,
     CenteredStringLogProbRequest,
+    CenteredStringLogProbCertificateRequest,
     FixedRelationPathRankRequest,
     FixedCappedCyclicRelationPathSampleRequest,
     FixedCyclicRelationPathSampleRequest,
@@ -529,6 +535,8 @@ _NODE_CLASSES = (
     EffectLawObligation,
     EffectLawBundle,
     EffectLawEvidence,
+    EffectStageRecord,
+    EffectTargetEvidence,
     FiniteHandlerInterchange,
     RationalDerivativeDeclaration,
     ProgramEntry,
@@ -651,6 +659,7 @@ _NODE_CLASSES = (
     NonlinearFold,
     NormalizedWeightRows,
     Forest,
+    ProjectedWeightRows,
     QuerySpec,
     ComputationModel,
     ComplexityParameter,

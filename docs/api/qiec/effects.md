@@ -653,9 +653,40 @@ JVPs agree and the target emits code. A request to compare native JVPs
 on a probabilistic program reports an obstacle because the emitted
 statement plan has no corresponding scalar QIEC entry for that check.
 
+`plan.target_evidence(target)` records the selected stages and the SHA-256
+digest of the emitted artifact, or the target's named refusals. It binds
+these observations to the exact checked QIEC module and entry. The wire
+loader checks the record's structure. `verify_target_evidence` repeats
+ordinary discharge and target emission against an independently supplied
+plan before comparing the receipt. For a program, that plan needs the
+compiler's parsed source. Native JVP and law checks retain their own
+scopes. External derivatives remain unverified after successful emission.
+
+An emitted Pyro trace records `site["infer"]["qiec_address"]` for each
+draw and explicit score reached inside a QIEC helper. The address contains
+the original static site, the ordered frames inside that helper's entry,
+and the helper runtime's resumption path. An affine or linear resumption
+adds no ordinal. Pyro uses its usual site names to condition or replay
+draws. The reference program may have extra frames for the enclosing
+program and its call of the helper. Pyro puts the density contribution on
+the draw's trace node and records each explicit score as a separate factor.
+
+For instance, suppose a clause resumes a Bernoulli continuation twice, with
+probabilities $p$ and $1-p$, and returns the sum of the answers. A second
+handler resumes once with each supplied probability. At fixed outcomes
+$(b_0,b_1)$, let each continuation return its probability times $1+b_i$ and
+add its squared probability as a log factor. Let the caller add a final
+log factor of $3p$ after the handler exits. The two draws and the factors
+inside their continuations have paths $(0)$ and $(1)$, and the final factor
+has an empty resumption path. For $0 < p < 1$, the returned value has
+derivative $b_0-b_1$. The derivative of the fixed trace's log joint adds
+the two Bernoulli log-mass derivatives and $2p-2(1-p)+3$. It holds the
+outcomes fixed throughout.
+
 <!-- python: run -->
 ```python
 from quivers.dsl import Compiler, parse
+from quivers.qiec import EffectTargetEvidence, dumps, loads
 
 source = """
 effect Echo
@@ -679,6 +710,12 @@ assert pyro.stages[0].stage == "source-handler"
 assert stan.stages[0].stage == "handler-discharge"
 assert stan.native_jvp.status == "checked" and stan.native_jvp.staged.tangent == 4
 assert stan.external_derivative.missing == ("external derivative unverified",)
+receipt = loads(dumps(plan.target_evidence("stan")))
+assert isinstance(receipt, EffectTargetEvidence)
+owner = Compiler(parse(source), module_name="echo-square").effect_plan("square")
+assert owner.verify_target_evidence(receipt) == receipt
+assert receipt.artifact_digest is not None
+assert receipt.external_derivative.missing == ("external derivative unverified",)
 ```
 
 <!-- python: run -->
@@ -702,6 +739,8 @@ assert report.external_derivative.missing == ("external derivative unverified",)
 ```
 
 ::: quivers.qiec.effect_plan
+
+::: quivers.qiec.effect_stage_schema
 
 ## Static scoped operations
 

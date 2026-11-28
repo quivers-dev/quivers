@@ -3,6 +3,8 @@
 from collections.abc import Callable
 from dataclasses import replace
 from fractions import Fraction
+from hashlib import sha256
+import json
 from typing import cast
 
 import pytest
@@ -20,11 +22,13 @@ from quivers.qiec import (
     EffectLawBundle,
     EffectLawEvidence,
     EffectLawObligation,
+    EffectTargetEvidence,
     ExactJvp,
     ExecutionFailure,
     FiniteEffectLawDecision,
     Handle,
     RationalDerivativeDeclaration,
+    SerializationError,
     checked_effect_plan,
     discharge_module,
     dumps,
@@ -753,3 +757,195 @@ export weighted
     )
     assert report.detail == str(error.value)
     assert report.external_derivative.missing == ("target export refused",)
+
+
+@pytest.mark.parametrize(
+    ("target", "projection", "handler_stage"),
+    [
+        ("pyro", "source", "source-handler"),
+        ("stan", "discharged", "handler-discharge"),
+        ("jags", None, None),
+    ],
+)
+def test_target_evidence_roundtrip_matches_actual_public_standalone(
+    target, projection, handler_stage
+):
+    parsed = parse(_TARGET_SOURCE)
+    plan = Compiler(parsed).effect_plan("entry")
+    receipt = plan.target_evidence(target)
+    wire = dumps(receipt)
+    restored = loads(wire)
+    assert isinstance(restored, EffectTargetEvidence)
+    assert dumps(restored) == wire
+    independent = Compiler(parse(_TARGET_SOURCE)).effect_plan("entry")
+    assert independent.verify_target_evidence(restored) == receipt
+    assert restored.projection == projection
+    assert restored.helper_projection is None
+    if projection is None:
+        with pytest.raises(UnsupportedConstruct) as refusal:
+            transpile(parsed, target=target)
+        assert restored.refusals == tuple(refusal.value.kinds)
+        assert restored.artifact_digest is None and restored.stages == ()
+        assert restored.external_derivative.missing == ("target export refused",)
+    else:
+        code = transpile(parsed, target=target)
+        assert restored.artifact_digest == sha256(code).hexdigest()
+        owners = {owner.id: owner.name for owner in plan.bundle.module.computations}
+        assert {
+            owners[stage.computation]: stage.stage for stage in restored.stages
+        } == {"entry": "direct", "feedback_square": handler_stage}
+        assert restored.refusals == ()
+        assert restored.external_derivative.missing == (
+            "external derivative unverified",
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "helper"), (("pyro", "source"), ("stan", "discharged"))
+)
+def test_public_program_evidence_needs_the_independently_checked_parsed_owner(
+    target, helper
+):
+    parsed = parse(_PROGRAM_EXPORT_SOURCE)
+    compiler = Compiler(parsed, module_name="effect-program-evidence")
+    plan = compiler.effect_plan("primary")
+    receipt = loads(dumps(plan.target_evidence(target)))
+    assert isinstance(receipt, EffectTargetEvidence)
+    code = transpile(parsed, target=target)
+    assert receipt.projection == "program-plan" and receipt.helper_projection == helper
+    assert receipt.artifact_digest == sha256(code).hexdigest()
+    assert [(stage.computation, stage.stage) for stage in receipt.stages] == [
+        (plan.computation, "program-plan")
+    ]
+    other_owner = Compiler(
+        parse(_PROGRAM_EXPORT_SOURCE), module_name="effect-program-evidence"
+    ).effect_plan("primary")
+    assert other_owner.verify_target_evidence(receipt) == receipt
+    assert receipt.external_derivative.missing == ("external derivative unverified",)
+
+    restored_bundle = loads(dumps(plan.bundle))
+    assert isinstance(restored_bundle, EffectLawBundle)
+    detached = checked_effect_plan(restored_bundle, plan.computation)
+    refused = detached.target_evidence(target)
+    assert refused.refusals == ("qiec:target-stage:program-plan-required:primary",)
+    assert refused.artifact_digest is None
+    with pytest.raises(ValueError, match="program-plan-required:primary"):
+        detached.verify_target_evidence(receipt)
+
+    private_plan = compiler.effect_plan("alternative")
+    private = private_plan.target_evidence(target)
+    assert private.refusals == (
+        "qiec:target-stage:program-not-exported:alternative:primary",
+    )
+    restored = loads(dumps(private))
+    assert isinstance(restored, EffectTargetEvidence)
+    assert private_plan.verify_target_evidence(restored) == private
+
+
+def test_target_evidence_refuses_same_point_same_stage_from_a_stale_discharge(
+    monkeypatch,
+):
+    name = "effect-stale-discharge"
+    owner = Compiler(parse(_TARGET_SOURCE), module_name=name).effect_plan("entry")
+    changed = Compiler(
+        parse(
+            _TARGET_SOURCE.replace(
+                "return a * a", "return a * a + (a - 2.0) * (a - 2.0)"
+            )
+        ),
+        module_name=name,
+    ).effect_plan("entry")
+    assert owner.computation == changed.computation
+    stale = replace(owner, discharge=changed.discharge)
+
+    outputs = []
+    emit = target_entry._emit_target
+
+    def record(ir, target):
+        code = emit(ir, target)
+        outputs.append(code)
+        return code
+
+    monkeypatch.setattr(target_entry, "_emit_target", record)
+    good = owner.check_target("stan", arguments=(2,), direction=(3,))
+    mutant = stale.check_target("stan", arguments=(2,), direction=(3,))
+    assert good == mutant
+    assert good.native_jvp is not None
+    assert (
+        good.native_jvp.source
+        == good.native_jvp.staged
+        == ExactJvp(Fraction(4), Fraction(12))
+    )
+    assert len(outputs) == 2 and outputs[0] != outputs[1]
+    evidence = owner.target_evidence("stan")
+    assert evidence.artifact_digest == sha256(outputs[0]).hexdigest()
+    with pytest.raises(ValueError, match="discharge differs from checked source"):
+        stale.verify_target_evidence(evidence)
+    assert len(outputs) == 3
+
+
+def test_target_evidence_checks_source_and_entry_before_emitting(monkeypatch):
+    name = "target-evidence-identity"
+    source = Compiler(parse(_TARGET_SOURCE), module_name=name)
+    receipt = source.effect_plan("entry").target_evidence("stan")
+    changed = Compiler(
+        parse(_TARGET_SOURCE.replace("return a * a", "return a + a")),
+        module_name=name,
+    ).effect_plan("entry")
+    assert changed.computation == receipt.computation
+    other_entry = source.effect_plan("feedback_square")
+
+    def unexpected_emission(*_args, **_kwargs):
+        pytest.fail("an unrelated source or entry reached target emission")
+
+    monkeypatch.setattr(target_entry, "_emit_target", unexpected_emission)
+    for owner in (changed, other_entry):
+        with pytest.raises(ValueError, match="different checked source or entry"):
+            owner.verify_target_evidence(receipt)
+
+
+def test_target_evidence_decode_is_structural_and_reverification_rejects_forgery(
+    monkeypatch,
+):
+    owner = Compiler(parse(_TARGET_SOURCE)).effect_plan("entry")
+    receipt = owner.target_evidence("stan")
+    forged = receipt.with_(artifact_digest="0" * 64)
+
+    with monkeypatch.context() as guarded:
+
+        def unexpected_emission(*_args, **_kwargs):
+            pytest.fail("loading a receipt must not run target emission")
+
+        guarded.setattr(target_entry, "_emit_target", unexpected_emission)
+        restored = loads(dumps(forged))
+        assert isinstance(restored, EffectTargetEvidence) and restored == forged
+
+    with pytest.raises(ValueError, match="emitted stages or bytes differ"):
+        owner.verify_target_evidence(restored)
+
+
+def _wire_value(node, field_name):
+    return next(field for field in node["fields"] if field["name"] == field_name)
+
+
+def test_target_evidence_wire_refuses_unknown_stages_and_external_claims():
+    owner = Compiler(parse(_TARGET_SOURCE)).effect_plan("entry")
+    receipt = owner.target_evidence("stan")
+    wire = json.loads(dumps(receipt))
+    rows = _wire_value(wire["root"], "stages")["value"]["$tuple"]
+    _wire_value(rows[0], "stage")["value"] = "unverified-new-variant"
+    with pytest.raises(SerializationError, match="EffectStageRecord.stage"):
+        loads(json.dumps(wire))
+
+    wire = json.loads(dumps(receipt))
+    wire["root"]["fields"].append({"name": "external_derivative", "value": "exact"})
+    with pytest.raises(SerializationError, match="fields for"):
+        loads(json.dumps(wire))
+
+    wire = json.loads(dumps(receipt))
+    _wire_value(wire["root"], "refusals")["value"] = {"$tuple": ["fabricated"]}
+    with pytest.raises(
+        SerializationError,
+        match="an emitted target needs an artifact digest and no refusals",
+    ):
+        loads(json.dumps(wire))

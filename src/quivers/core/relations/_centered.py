@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from fractions import Fraction
 from math import isfinite
 
@@ -36,6 +37,21 @@ class CenteredStringLogScore:
     dyadic_work: int
 
 
+type _RoundedFactor = tuple[int, Fraction, float]
+type _CenteredBinding = tuple[_CenteredLogRatio, Callable[[], torch.Tensor]]
+
+
+@dataclass(slots=True)
+class _CenteredRounding:
+    numerator: list[_RoundedFactor] = field(default_factory=list)
+    denominator: list[_RoundedFactor] = field(default_factory=list)
+    maximum_difference: Fraction | None = None
+
+
+class _UndefinedCenteredNormalizer(ValueError):
+    pass
+
+
 def _as_float(value: Fraction, operation: str) -> float:
     try:
         rounded = float(value)
@@ -44,6 +60,20 @@ def _as_float(value: Fraction, operation: str) -> float:
     if not isfinite(rounded):
         raise OverflowError(f"{operation} is outside binary64 precision")
     return rounded
+
+
+def _reduce_factors(
+    candidates: list[tuple[int, Fraction]],
+    maximum: Fraction,
+    reduced: list[float],
+    rounding: list[_RoundedFactor] | None,
+) -> None:
+    for slot, value in candidates:
+        delta = value - maximum
+        rounded = _as_float(delta, "a reduced path factor")
+        reduced[slot] = rounded
+        if rounding is not None:
+            rounding.append((slot, delta, rounded))
 
 
 def _active_dag(
@@ -102,7 +132,11 @@ class _CenteredPaths:
         return cls(tuple(graph.order), arcs, starts, dict(stops), tuple(slots), reverse)
 
     def evaluate(
-        self, weights: torch.Tensor, exact: list[Fraction | None]
+        self,
+        weights: torch.Tensor,
+        exact: list[Fraction | None],
+        *,
+        rounding: list[_RoundedFactor] | None = None,
     ) -> tuple[tuple[Fraction, torch.Tensor] | None, int]:
         values = [exact[slot] for slot in self.source_slots]
         work = len(values) + len(self.initial)
@@ -138,10 +172,7 @@ class _CenteredPaths:
                 potentials[state] = potential
                 # The maximum is one of the candidates, so every
                 # positive suffix chart row has a zero reduced choice.
-                for slot, value in candidates:
-                    reduced[slot] = _as_float(
-                        value - potential, "a reduced path factor"
-                    )
+                _reduce_factors(candidates, potential, reduced, rounding)
 
         work += len(self.initial)
         starts = [
@@ -153,8 +184,7 @@ class _CenteredPaths:
             return None, work
         work += 2 * len(starts)
         maximum = max(value for _, value in starts)
-        for slot, value in starts:
-            reduced[slot] = _as_float(value - maximum, "a reduced path factor")
+        _reduce_factors(starts, maximum, reduced, rounding)
         offsets = weights.new_tensor(reduced)
         sources = _take(weights, self.source_slots)
         live = torch.where(torch.isfinite(offsets), sources, 0.0)
@@ -219,23 +249,33 @@ class _CenteredLogRatio:
             weight_slots,
         )
 
-    def evaluate(self, weights: torch.Tensor) -> CenteredStringLogScore:
+    def evaluate(
+        self, weights: torch.Tensor, *, rounding: _CenteredRounding | None = None
+    ) -> CenteredStringLogScore:
         if weights.dtype != torch.float64:
             raise TypeError("centered log ratios require binary64 LogProb weights")
         exact = [
             Fraction(value) if isfinite(value) else None
             for value in weights.detach().cpu().tolist()
         ]
-        whole, work = self.denominator.evaluate(weights, exact)
+        whole, work = self.denominator.evaluate(
+            weights, exact, rounding=None if rounding is None else rounding.denominator
+        )
         if whole is None:
-            raise ValueError("path operation requires a positive finite normalizer")
-        part, part_work = self.numerator.evaluate(weights, exact)
+            raise _UndefinedCenteredNormalizer(
+                "path operation requires a positive finite normalizer"
+            )
+        part, part_work = self.numerator.evaluate(
+            weights, exact, rounding=None if rounding is None else rounding.numerator
+        )
         if part is None:
             score = weights.new_full((), -torch.inf)
         else:
             part_max, part_residual = part
             whole_max, whole_residual = whole
             difference = part_max - whole_max
+            if rounding is not None:
+                rounding.maximum_difference = difference
             difference += Fraction(part_residual.detach().item())
             difference -= Fraction(whole_residual.detach().item())
             nominal = weights.new_tensor(

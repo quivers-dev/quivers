@@ -6,9 +6,11 @@ import pytest
 import torch
 
 from quivers.dsl import loads
-from quivers.qiec import QiecModule, run_program
+from quivers.qiec import QiecModule, loads as load_checked, run_program
 from quivers.qiec._deduction_guards import _TermGuard
+from quivers.qiec.contracts import Phase, check_complexity
 from quivers.qiec.deduction_outcomes import _ground
+from quivers.stochastic.planning import PlanRecord
 from tests.evidence.counters import CallCounter
 
 
@@ -110,6 +112,20 @@ def test_guard_term_conversion_depends_on_distinct_matches_and_term_size(
             if event.event == "deduction.outcomes"
         ]
         assert trace["checked_rule_guards"] == 4
+        (report,) = [
+            event.detail
+            for event in result.result.trace
+            if event.event == "deduction.outcomes.plan"
+        ]
+        assert report["checked_rule_guards"] == 4
+        record = load_checked(report["plan"])
+        assert isinstance(record, PlanRecord)
+        check_complexity(record.complexity)
+        assert {
+            bound.phase
+            for bound in record.complexity.bounds
+            if "P_g X_g + S_g U_g" in bound.expression
+        } == {Phase.CONSTRUCTION, Phase.REFIT}
         # Each lexical occurrence keeps its edge. The two accepted binary
         # applications keep an edge and two ordered premise references each.
         assert dict(trace["construction_work"])["provenance_records"] == entries + 7

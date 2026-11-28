@@ -217,21 +217,3 @@ def test_zero_mass_refusal_precedes_any_normalized_plan(checked):
         )
     event_name = _normalized_event(mode)
     assert all(event.event not in (event_name, f"{event_name}.plan") for event in seen)
-
-
-@pytest.mark.parametrize("selector", ("category", "form"))
-def test_normalized_builtin_projections_keep_their_ordinary_trace(selector):
-    source = ITEM_SOURCE.replace(
-        'parse_normalized_outcomes(Mix, sentence, "item")',
-        f'parse_normalized_outcomes(Mix, sentence, "{selector}")',
-    )
-    module = load_source(source).qiec
-    assert isinstance(module, QiecModule)
-    result = run_program(module, "normalized", data=DATA, sites={})
-    (ordinary,) = [
-        event for event in result.result.trace if event.event == "deduction.outcomes"
-    ]
-    assert ordinary.detail["key"] == selector and ordinary.detail["normalized"] is True
-    assert all(
-        event.event != "deduction.outcomes.plan" for event in result.result.trace
-    )

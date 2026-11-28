@@ -11,6 +11,7 @@ import torch
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import CenteredStringLogScore
+from quivers.core.relations._centered import _CenteredBinding
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
@@ -131,6 +132,33 @@ class CenteredStringLogProbRequest(QiecModel):
         Callable
             The reusable centered query over these original weight owners.
         """
+        plan, weights = self._binding(parameters)
+
+        def evaluate() -> CenteredStringLogScore:
+            """Evaluate the centered score over the current original weights.
+
+            Returns
+            -------
+            CenteredStringLogScore
+                The live score and its measured chart work.
+            """
+            return plan.evaluate(weights())
+
+        return evaluate
+
+    def _binding(self, parameters: RelationWeightBindings) -> _CenteredBinding:
+        """Bind the reusable plan and its original weight reader.
+
+        Parameters
+        ----------
+        parameters : RelationWeightBindings
+            The live scalar owners expected by the checked model.
+
+        Returns
+        -------
+        tuple
+            The centered query plan and its evaluated weight source.
+        """
         observation = self.observation
         limits = {
             "max_states": observation.max_states,
@@ -144,12 +172,12 @@ class CenteredStringLogProbRequest(QiecModel):
             relation = observation.relation.bind(parameters)
             split = relation.topology.input_tapes
             conditional = relation.conditional(observation.words[:split], **limits)
-            return conditional.centered_query(observation.words[split:], **centering)
+            return conditional._centered_binding(observation.words[split:], **centering)
         graph = observation.graph.bind(parameters, **limits)
         marginal = graph.tree_marginal(observation.variable, **limits)
         word = observation.word
         assert word is not None
-        return marginal.centered_query(word, **centering)
+        return marginal._centered_binding(word, **centering)
 
 
 class CenteredStringLogProbRuntimeProvider:
