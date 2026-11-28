@@ -552,6 +552,7 @@ from quivers.qiec.paired_alignment_map_runtime import (
 from quivers.qiec.finite_ep_runtime import (
     FiniteStringEPRequest,
     FiniteStringEPRuntimeProvider,
+    HigherOrderFiniteStringEPRequest,
 )
 from quivers.qiec.regular_ep_runtime import (
     RegularStringEPRequest,
@@ -578,6 +579,7 @@ from quivers.qiec.relation_path_law import (
     RelationPathLaw,
 )
 from quivers.qiec.centered_string_certificate import (
+    CenteredCyclicStringLogProbCertificateRequest,
     CenteredStringLogProbCertificateRequest,
     CenteredStringLogProbCertificateRuntimeProvider,
 )
@@ -976,6 +978,7 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "CenteredCyclicStringLogProbCertificateRequest",
     "CenteredStringLogProbCertificateRequest",
     "CenteredStringLogProbCertificateRuntimeProvider",
     "CenteredStringLogProbRequest",
@@ -1011,6 +1014,7 @@ __all__ = [
     "pruned_string_graph_handler",
     "FiniteStringEPRequest",
     "FiniteStringEPRuntimeProvider",
+    "HigherOrderFiniteStringEPRequest",
     "RegularStringEPConfig",
     "RegularStringEPPolicy",
     "RegularStringEPRequest",

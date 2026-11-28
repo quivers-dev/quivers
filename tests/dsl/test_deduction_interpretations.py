@@ -25,15 +25,27 @@ from quivers.qiec import (
     RuleError,
     validate_module,
 )
+from quivers.qiec.contracts import (
+    Control,
+    NoRetention,
+    NormalizedWeightRows,
+    Outcome,
+    Phase,
+    Rational,
+    check_admissible,
+    check_complexity,
+)
 from quivers.qiec.execution import ExecutionFailure, run_named
 from quivers.qiec.foreign import DeductionOutcomes, DeductionProofs
+from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.rules import RulePresentation
 from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import run_program
 from quivers.qiec.serialization import dumps, loads
-from quivers.qiec.terms import Case
+from quivers.qiec.terms import Bind, Call, Case
 from quivers.qiec.types import IndexLiteral, TypeApplication
+from quivers.stochastic.planning import PlanRecord
 
 
 GRAMMAR = """\
@@ -623,7 +635,12 @@ def test_proof_keys_group_equal_meanings_within_one_identical_chart_item() -> No
         sites={},
         parameters=parameters,
     )
-    torch.testing.assert_close(raw.value, (coefficients * derivations.exp()).sum())
+    raw_reference = 1.6 * weights[0].exp() + 0.3 * weights[1].exp()
+    torch.testing.assert_close(raw.value, raw_reference)
+    torch.testing.assert_close(
+        torch.autograd.grad(raw.value, weights)[0],
+        torch.autograd.grad(raw_reference, weights)[0],
+    )
     calls = tuple(
         event.detail["computation"]
         for event in actual.result.trace
@@ -640,6 +657,147 @@ def test_proof_keys_group_equal_meanings_within_one_identical_chart_item() -> No
     assert proofs["normalized"] is False and proofs["structural_goal_proofs"] == 3
     assert grouped["normalized"] is True and grouped["input_rows"] == 3
     assert grouped["key_type"] == "Bool" and grouped["positive_rows"] == 2
+
+    (owner,) = [
+        handler
+        for handler in restored.handlers
+        if isinstance(handler.foreign, DeductionProofs)
+    ]
+    wrapper = next(
+        item
+        for item in restored.computations
+        if item.name == "Mix__evidence__key_outcomes"
+    )
+    assert isinstance(wrapper.body, Bind) and isinstance(wrapper.body.first, Call)
+    mapper = next(
+        item for item in restored.computations if item.id == wrapper.body.first.callee
+    )
+    assert isinstance(mapper.body, Case)
+    (_, branch) = mapper.body.branches
+    assert isinstance(branch.body, Bind) and isinstance(branch.body.first, Call)
+    key_call = branch.body.first
+    assert (
+        len(branch.static_arguments) == 4
+        and key_call.static_arguments == branch.static_arguments
+    )
+    source = Outcome(key=key_call.callee)
+    for run, normalized in ((raw, False), (actual, True)):
+        proof_plan, group_event, plan_event = [
+            event
+            for event in run.result.trace
+            if event.event
+            in {
+                "deduction.proofs.plan",
+                "deduction.grouped_outcomes",
+                "deduction.grouped_outcomes.plan",
+            }
+        ]
+        assert (
+            proof_plan.event == "deduction.proofs.plan"
+            and plan_event.event == "deduction.grouped_outcomes.plan"
+        )
+        assert proof_plan.detail["normalized"] is False
+        upstream = loads(proof_plan.detail["plan"])
+        assert isinstance(upstream, PlanRecord)
+        assert upstream.accuracy.controls == (
+            Control(name="max_proofs", value=Rational(numerator=3)),
+        )
+        assert (
+            group_event.detail["input_rows"] == 3
+            and group_event.detail["positive_rows"] == 2
+        )
+        report = plan_event.detail
+        assert report["proof_row_owner"] == str(owner.id)
+        assert report["proof_row_entry"] == str(branch.constructor)
+        assert report["wrapper"] == str(wrapper.id) and report["mapper"] == str(
+            mapper.id
+        )
+        assert report["key"] == str(key_call.callee) and report["key_site"] == str(
+            key_call.origin.site_id()
+        )
+        root_calls = [
+            event
+            for event in run.result.trace
+            if event.event == "call.entered"
+            and event.detail.get("site") == report["key_site"]
+        ]
+        assert len(root_calls) == 3 and all(
+            event.detail["callee"] == report["key"] for event in root_calls
+        )
+        assert report["normalized"] is normalized
+        assert ("positive_total_mass" in report) is normalized
+        record = loads(report["plan"])
+        assert isinstance(record, PlanRecord) and dumps(record) == report["plan"]
+        assert record.query.presentation == owner.foreign.chart.presentation.id
+        assert record.query.observable == (
+            NormalizedWeightRows(source=source) if normalized else source
+        )
+        assert record.query.input_types == (owner.output_type, BOOL)
+        assert not record.accuracy.controls and record.retention == NoRetention()
+        assert not record.joins and record.algorithm == group_event.detail["algorithm"]
+        assert "factor through" in record.alternatives[0].reason
+        check_admissible(
+            record.query,
+            record.recursion,
+            record.accuracy,
+            algebra=record.algebra,
+            claims=record.claims,
+        )
+        check_complexity(record.complexity)
+        bounds = {
+            (bound.phase, bound.resource): bound.expression
+            for bound in record.complexity.bounds
+        }
+        assert bounds[Phase.CONSTRUCTION, "space"] == "P + N + S + M + C"
+        assert bounds[Phase.DIFFERENTIATION, "time"] == (
+            "N + D + H" if normalized else "N + D"
+        )
+
+    seen = []
+    with pytest.raises(ExecutionFailure, match="too-many-derivations"):
+        run_program(
+            restored,
+            "observed",
+            data={**data, "limit": 2},
+            sites={},
+            parameters=parameters,
+            observer=seen.append,
+        )
+    assert any(event.event == "deduction.proofs.refused" for event in seen)
+    assert all(
+        event.event != "deduction.grouped_outcomes.plan"
+        and event.detail.get("site") != str(key_call.origin.site_id())
+        for event in seen
+    )
+
+
+def test_proof_key_plan_requires_one_nominal_row_owner() -> None:
+    module = load_source(PROOF_OUTCOMES).qiec
+    assert isinstance(module, QiecModule)
+    (source,) = [
+        handler
+        for handler in module.handlers
+        if isinstance(handler.foreign, DeductionProofs)
+    ]
+    name = "another_checked_proof_owner"
+    alias = source.with_(id=HandlerId.derive(module.module, "handler", name), name=name)
+    ambiguous = module.with_(handlers=(*module.handlers, alias))
+    validate_module(ambiguous)
+    data = {"sentence": ("x", "y")}
+    original = run_program(module, "raw", data=data, sites={})
+    mutated = run_program(ambiguous, "raw", data=data, sites={})
+    torch.testing.assert_close(mutated.value, original.value)
+    assert any(
+        event.event == "deduction.grouped_outcomes.plan"
+        for event in original.result.trace
+    )
+    assert any(
+        event.event == "deduction.grouped_outcomes" for event in mutated.result.trace
+    )
+    assert all(
+        event.event != "deduction.grouped_outcomes.plan"
+        for event in mutated.result.trace
+    )
 
 
 def test_proof_keys_reject_swapped_proof_indices() -> None:

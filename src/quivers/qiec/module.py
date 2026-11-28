@@ -136,7 +136,7 @@ class NamedComputation(QiecModel):
     body
         The computation's body, with the parameters in scope.
     type
-        The checked effect row and result type of ``body``.
+        The result type and effect row at the named calling boundary.
     origin
         Where the computation was declared.
     """
@@ -174,6 +174,56 @@ class NamedComputation(QiecModel):
                 f"computation {self.name!r} reuses static names as parameters: "
                 f"{sorted(overlap)!r}"
             )
+
+
+class _WeakenedComputation(NamedComputation):
+    """A lowered body with a smaller closed row than its calling type.
+
+    Parameters
+    ----------
+    body_effects
+        The exact closed row inferred from the body. Each nominal instance
+        and its applied effect also occur in the calling type's closed row.
+    """
+
+    body_effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    @dx.model_validator()
+    def _validate_weakening(self) -> None:
+        """Require a strict nominal subrow of the closed calling type.
+
+        Raises
+        ------
+        ValueError
+            If either row is open or the body row is not a strict subrow.
+        """
+        if not _strict_closed_subrow(self.body_effects, self.type.effects):
+            raise ValueError(
+                "weakened body effects must be a strict nominal closed subrow"
+            )
+
+
+def _strict_closed_subrow(actual: EffectRow, declared: EffectRow) -> bool:
+    """Check strict inclusion of two closed nominal rows.
+
+    Parameters
+    ----------
+    actual
+        The body row being checked against its declaration.
+    declared
+        The calling row naming all allowed instances and their interfaces.
+
+    Returns
+    -------
+    bool
+        Whether the body row drops at least one declared entry and every
+        retained instance has the same applied effect.
+    """
+    return (
+        actual.tail is None
+        and declared.tail is None
+        and set(actual.entries) < set(declared.entries)
+    )
 
 
 class QiecModule(QiecModel):
@@ -827,17 +877,23 @@ def _recheck_bodies(module: QiecModule, registry: KernelRegistry) -> None:
             module=module.module,
             source_protocol=module.source_protocol,
         )
-        context = CheckContext()
         for parameter in computation.parameters:
             registry.validate_type(parameter.type)
-            context = context.extend(parameter)
-        actual = infer_computation(computation.body, registry, context)
-        if not computation_type_conforms(actual, computation.type):
+        actual = _infer_named_body(computation, registry)
+        expected = computation.type
+        description = "type"
+        if isinstance(computation, _WeakenedComputation):
+            expected = expected.with_(effects=computation.body_effects)
+            description = "body type"
+            conforms = actual == expected
+        else:
+            conforms = computation_type_conforms(actual, expected)
+        if not conforms:
             raise KernelError(
                 f"computation {computation.name!r} has type "
                 f"{render_computation_type(actual, registry.instance_names)}, "
-                f"not declared type "
-                f"{render_computation_type(computation.type, registry.instance_names)}"
+                f"not declared {description} "
+                f"{render_computation_type(expected, registry.instance_names)}"
             )
 
 
@@ -891,6 +947,26 @@ def inferred_computation_type(
     )
     if computation is None:
         raise KeyError(f"module {module.module!r} has no computation {name!r}")
+    return _infer_named_body(computation, registry)
+
+
+def _infer_named_body(
+    computation: NamedComputation, registry: KernelRegistry
+) -> ComputationType:
+    """Infer the body in the computation's value-parameter scope.
+
+    Parameters
+    ----------
+    computation
+        The body and the value parameters in scope.
+    registry
+        The checked module declarations, including nominal calling types.
+
+    Returns
+    -------
+    ComputationType
+        The inferred result and outstanding effect row.
+    """
     context = CheckContext()
     for parameter in computation.parameters:
         context = context.extend(parameter)

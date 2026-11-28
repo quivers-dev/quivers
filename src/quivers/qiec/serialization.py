@@ -49,6 +49,7 @@ from quivers.qiec.contracts import (
     BestKnown,
     BiasBound,
     BiasUnknown,
+    BooleanProofWeightRows,
     Bounded,
     BudgetExhausted,
     Certified,
@@ -134,7 +135,10 @@ from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.alignment_map_runtime import JointAlignmentMapRequest
 from quivers.qiec.paired_alignment_map_runtime import PairedAlignmentMapRequest
-from quivers.qiec.finite_ep_runtime import FiniteStringEPRequest
+from quivers.qiec.finite_ep_runtime import (
+    FiniteStringEPRequest,
+    HigherOrderFiniteStringEPRequest,
+)
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
@@ -157,6 +161,7 @@ from quivers.qiec.relation_path_law import (
     FixedRelationPathSampleRequest,
 )
 from quivers.qiec.centered_string_certificate import (
+    CenteredCyclicStringLogProbCertificateRequest,
     CenteredStringLogProbCertificateRequest,
 )
 from quivers.qiec.centered_string_runtime import CenteredStringLogProbRequest
@@ -284,7 +289,12 @@ from quivers.qiec.kinds import (
     TypeKind,
     UserIndexSort,
 )
-from quivers.qiec.module import NamedComputation, NamedEffectInstance, QiecModule
+from quivers.qiec.module import (
+    NamedComputation,
+    NamedEffectInstance,
+    QiecModule,
+    _WeakenedComputation,
+)
 from quivers.qiec.programs import ProgramEntry, ProgramParameter, ProgramSite
 from quivers.qiec.substitution import StaticSubstitution
 from quivers.qiec.terms import (
@@ -451,6 +461,7 @@ _NODE_CLASSES = (
     FixedMarkovPathCertificateRequest,
     CenteredStringLogProbRequest,
     CenteredStringLogProbCertificateRequest,
+    CenteredCyclicStringLogProbCertificateRequest,
     FixedRelationPathRankRequest,
     FixedCappedCyclicRelationPathSampleRequest,
     FixedCyclicRelationPathSampleRequest,
@@ -468,6 +479,7 @@ _NODE_CLASSES = (
     TreeStringGraphRequest,
     RegularStringEPRequest,
     FiniteStringEPRequest,
+    HigherOrderFiniteStringEPRequest,
     JointAlignmentMapRequest,
     PairedAlignmentMapRequest,
     # source identity and kinds
@@ -530,6 +542,7 @@ _NODE_CLASSES = (
     EffectRequest,
     NamedEffectInstance,
     NamedComputation,
+    _WeakenedComputation,
     QiecModule,
     EffectEquation,
     EffectLawObligation,
@@ -707,6 +720,7 @@ _NODE_CLASSES = (
     MeasureComponent,
     PlanRecord,
     RuleJoin,
+    BooleanProofWeightRows,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}

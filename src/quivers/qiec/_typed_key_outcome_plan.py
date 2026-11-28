@@ -1,4 +1,4 @@
-"""Trace the checked projection and grouping of typed item weights."""
+"""Trace the checked projection and grouping of typed lexical rows."""
 
 from __future__ import annotations
 
@@ -28,8 +28,9 @@ from quivers.qiec.contracts import (
     Target,
     Unresolved,
 )
+from quivers.qiec.coverage import constructor_skolems
 from quivers.qiec.effects import EMPTY_ROW
-from quivers.qiec.foreign import DeductionOutcomes
+from quivers.qiec.foreign import DeductionOutcomes, DeductionProofs
 from quivers.qiec.module import _first_handled_call
 from quivers.qiec.rules import RulePresentation
 from quivers.qiec.terms import (
@@ -51,10 +52,11 @@ if TYPE_CHECKING:
 
     import torch
 
+    from quivers.qiec.declarations import ConstructorDecl
     from quivers.qiec.effects import HandlerDef
     from quivers.qiec.evaluator import ClauseContext, RuntimeRequest
     from quivers.qiec.foreign import DeductionOutcomeGrouping
-    from quivers.qiec.identifiers import ComputationId, ConstructorId
+    from quivers.qiec.identifiers import ConstructorId
     from quivers.qiec.module import NamedComputation, QiecModule
     from quivers.qiec.types import TypeExpr
 
@@ -63,6 +65,15 @@ GROUPING_ALGORITHM = "hash-grouped-structural-keys"
 """The checked weighted list reducer's schedule."""
 
 _RESOURCES: tuple[Literal["time"], Literal["space"]] = ("time", "space")
+_GROUPING_CONDITIONS = (
+    "key calls return exact discrete data; their own work and workspace are T and M",
+    "expected constant hash-table overhead after charging word visits for key hashing "
+    "and equal-key comparisons; adversarial collision work can reach O(N (N + S))",
+    "fixed scalar number precision and constant work per scalar log-semiring operation",
+    "the reverse pass covers only the live input weights of the grouping stage at fixed "
+    "structural keys and support; it excludes the input chart and downstream program",
+    "the bounds exclude optional trace inspection and serialization",
+)
 _WORK = ComplexityClaim(
     query="raw log mass per exact named key of weighted lexical item rows",
     model=WORD_RAM_EXPECTED_HASHING,
@@ -95,13 +106,54 @@ _WORK = ComplexityClaim(
     ),
     conditions=(
         "the checked mapper calls the named key once on each item and forwards its live weight",
-        "key calls return exact discrete data; their own work and workspace are T and M",
-        "expected constant hash-table overhead after charging word visits for key hashing "
-        "and equal-key comparisons; adversarial collision work can reach O(N (N + S))",
-        "fixed scalar number precision and constant work per scalar log-semiring operation",
-        "the reverse pass covers only the live input weights of the grouping stage at fixed "
-        "structural keys and support; it excludes the input chart and downstream program",
-        "the bounds exclude optional trace inspection and serialization",
+        *_GROUPING_CONDITIONS,
+    ),
+)
+_PROOF_SPACE = {
+    Phase.CONSTRUCTION: "P + N + S + M + C",
+    Phase.EXECUTION: "P + N + S + D + C",
+    Phase.DIFFERENTIATION: "N + D + C",
+    Phase.REFIT: "P + N + S + M + D + C",
+}
+_PROOF_WORK = _WORK.with_(
+    query="raw log mass per exact named key of weighted lexical proof rows",
+    parameters=(
+        ComplexityParameter(
+            name="N", meaning="supplied proof rows processed by the mapper"
+        ),
+        *(parameter for parameter in _WORK.parameters if parameter.name in ("D", "S")),
+        ComplexityParameter(
+            name="T",
+            meaning="total work of branch and key specialization and the N key calls",
+        ),
+        ComplexityParameter(
+            name="M",
+            meaning="largest live workspace of one branch and key call apart from retained results",
+        ),
+        ComplexityParameter(
+            name="P",
+            meaning="words in the supplied input proof values and their static indices",
+        ),
+        ComplexityParameter(
+            name="C",
+            meaning="words retained in the bounded branch and computation specialization caches",
+        ),
+    ),
+    bounds=tuple(
+        bound.with_(expression=_PROOF_SPACE[bound.phase])
+        if bound.resource == "space"
+        else bound
+        for bound in _WORK.bounds
+    ),
+    conditions=(
+        "the mapper opens each proof row's exact indices and calls the key on the unmodified proof",
+        *_GROUPING_CONDITIONS,
+        "T includes lookup, hashing and specialization of the checked branch and call at actual indices",
+        "C includes retained static graphs and indices from this and earlier calls; "
+        "live tensors and proof weights do not enter those specialization caches",
+        "the forward space bound includes the proof inputs held during mapping; "
+        "upstream proof generation and its differentiation tape have a separate plan",
+        "the number of positive output rows is at most D, and D is at most N",
     ),
 )
 
@@ -137,23 +189,26 @@ def _key_from_mapper(
     chart: DeductionOutcomes,
     grouping: DeductionOutcomeGrouping,
     input_type: TypeExpr,
-) -> ComputationId | None:
+    proof_entry: ConstructorDecl | None,
+) -> Call | None:
     """Identify the checked key call by the exact row conversion it performs.
 
     Parameters
     ----------
     mapper
-        The computation called to convert a raw lexical item's weighted rows.
+        The computation called to convert lexical item or proof rows.
     chart, grouping
         The raw and keyed nominal row constructors.
     input_type
-        The raw item row type passed by the wrapper.
+        The raw row type passed by the wrapper.
+    proof_entry
+        The checked existential proof row declaration, or None for item rows.
 
     Returns
     -------
-    ComputationId or None
-        The key invoked once per row, if every tested constructor field,
-        recursive call, and weight forwarding has the required shape.
+    Call or None
+        The key call made once per row, when its checked scope, fields,
+        recursive call, and weight forwarding have the expected shape.
     """
     if (
         mapper.telescope
@@ -166,13 +221,16 @@ def _key_from_mapper(
     ):
         return None
     empty, entry = case.branches
+    indices = (
+        () if proof_entry is None else constructor_skolems(proof_entry, entry.scope)
+    )
     if (
         empty.constructor != chart.empty
         or empty.static_arguments
         or empty.fields
         or not _as_row(empty.body, grouping.empty, ())
         or entry.constructor != chart.entry
-        or entry.static_arguments
+        or entry.static_arguments != indices
         or len(entry.fields) != 3
         or not isinstance(convert := entry.body, Bind)
         or not isinstance(key_call := convert.first, Call)
@@ -182,7 +240,7 @@ def _key_from_mapper(
         return None
     item, weight, tail = entry.fields
     if (
-        key_call.static_arguments
+        key_call.static_arguments != indices
         or key_call.arguments != (Var(local=item),)
         or tail_call.callee != mapper.id
         or tail_call.static_arguments
@@ -194,7 +252,7 @@ def _key_from_mapper(
         )
     ):
         return None
-    return key_call.callee
+    return key_call
 
 
 def key_plan_trace(
@@ -260,30 +318,47 @@ def key_plan_trace(
     ):
         return None
     owners = tuple(
-        candidate.foreign
+        candidate
         for candidate in module.handlers
         if candidate.output_type == rows.type
-        and isinstance(candidate.foreign, DeductionOutcomes)
+        and isinstance(candidate.foreign, DeductionOutcomes | DeductionProofs)
     )
     mapper = by_id.get(project.callee)
     if mapper is None or len(owners) != 1:
         return None
-    (chart,) = owners
+    (owner,) = owners
+    descriptor = owner.foreign
+    assert isinstance(descriptor, DeductionOutcomes | DeductionProofs)
+    chart = descriptor.chart if isinstance(descriptor, DeductionProofs) else descriptor
     presentation = chart.presentation
     assert isinstance(presentation, RulePresentation)
     if presentation.conditions:
         return None
-    key_id = _key_from_mapper(mapper, chart, grouping, rows.type)
-    if key_id is None:
+    proof_entry = None
+    if isinstance(descriptor, DeductionProofs):
+        proof_entry = next(
+            (entry for entry in module.constructors if entry.id == chart.entry), None
+        )
+        if proof_entry is None:
+            return None
+    key_call = _key_from_mapper(mapper, chart, grouping, rows.type, proof_entry)
+    if key_call is None:
         return None
+    key_id = key_call.callee
     key = by_id.get(key_id)
     if (
         key is None
-        or key.telescope
         or key.type.effects != EMPTY_ROW
         or key.type.result != grouping.key_type
-        or tuple(parameter.type for parameter in key.parameters) != (chart.item_type,)
         or _first_handled_call(key_id, by_id, set()) is not None
+        or (
+            proof_entry is None
+            and (
+                key.telescope
+                or tuple(parameter.type for parameter in key.parameters)
+                != (chart.item_type,)
+            )
+        )
     ):
         return None
 
@@ -299,10 +374,32 @@ def key_plan_trace(
         numerics = NumberDomain.of(next(iter(inputs.values())))
     retention = NoRetention()
     source = Outcome(key=key_id)
-    quantity = (
-        "normalized log mass per exact named key"
-        if normalized
-        else "raw log mass per exact named key"
+    mass = "normalized" if normalized else "raw"
+    quantity = f"{mass} log mass per exact named key"
+    if proof_entry is not None:
+        quantity += " of supplied proof rows"
+    work = _WORK if proof_entry is None else _PROOF_WORK
+    key_assumptions = (
+        (
+            "the actual checked mapper applies this pure key to each supplied item row",
+            "the key depends only on the item; item-weight aggregation can precede the map",
+        )
+        if proof_entry is None
+        else (
+            "each proof is passed to the pure key at the exact indices bound by its row",
+            "the mapper forwards its live weight and can distinguish proofs of the same item",
+        )
+    )
+    pooling = (
+        Alternative(
+            algorithm="individual proof enumeration before key application",
+            reason="the key factors through the item, so finite semiring sums can be taken once per item",
+        )
+        if proof_entry is None
+        else Alternative(
+            algorithm="item-weight aggregation before key application",
+            reason="requires the proof key to factor through its conclusion; the checked call does not supply that law",
+        )
     )
     record = PlanRecord(
         query=QuerySpec(
@@ -322,20 +419,21 @@ def key_plan_trace(
         claims=LOG_PROB.claims(),
         algorithm=GROUPING_ALGORITHM,
         assumptions=(
-            "the actual checked mapper applies this pure key to each supplied item row",
-            "the key depends only on the item; item-weight aggregation can precede the map",
+            *key_assumptions,
             "checked structural equality compares the key's nominal constructors and ordered fields",
-            "the chart has its own plan and the grouping stage performs no rule joins",
+            (
+                "the chart has its own plan and the grouping stage performs no rule joins"
+                if proof_entry is None
+                else "the grouping stage receives proofs as inputs; the upstream provider "
+                "has its own structural row and optional node budget"
+            ),
             "a key call can consume evaluation fuel; no general host compute or memory cap applies",
             *((NORMALIZATION_ASSUMPTION,) if normalized else ()),
         ),
         structure=presentation.analysis,
-        complexity=normalized_row_complexity(_WORK, quantity) if normalized else _WORK,
+        complexity=normalized_row_complexity(work, quantity) if normalized else work,
         alternatives=(
-            Alternative(
-                algorithm="individual proof enumeration before key application",
-                reason="the key factors through the item, so finite semiring sums can be taken once per item",
-            ),
+            pooling,
             Alternative(
                 algorithm="dense reduction over the complete key carrier",
                 reason="requires an explicit finite enumeration of the key carrier, "
@@ -352,6 +450,15 @@ def key_plan_trace(
         "wrapper": str(wrapper.id),
         "mapper": str(mapper.id),
         "key": str(key.id),
+        **(
+            {
+                "proof_row_owner": str(owner.id),
+                "proof_row_entry": str(proof_entry.id),
+                "key_site": str(key_call.origin.site_id()),
+            }
+            if proof_entry is not None
+            else {}
+        ),
         "key_type": dumps(grouping.key_type),
         "output_type": dumps(definition.output_type),
         "normalized": normalized,

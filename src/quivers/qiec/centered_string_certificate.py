@@ -8,8 +8,10 @@ from functools import cached_property
 from hashlib import sha256
 
 import didactic.api as dx
+import torch
 
 from quivers._values import OPAQUE_BY_VALUE
+from quivers.core.algebras import LOG_PROB, DivergentClosureError, UndecidedClosureError
 from quivers.core.relations import (
     LogPathWeightCertificate,
     ProductiveEpsilonCycleError,
@@ -19,6 +21,8 @@ from quivers.core.relations import (
 from quivers.core.relations._centered import _UndefinedCenteredNormalizer
 from quivers.core.relations._centered_accuracy import _centered_accuracy_plan
 from quivers.core.relations.accuracy import _UnsupportedAccuracyPrecision
+from quivers.core.relations.centered_cyclic import _centered_cyclic_accuracy_plan
+from quivers.core.relations.log_accuracy import _UnverifiedUpperStar
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
 from quivers.qiec.centered_string_runtime import CenteredStringLogProbRequest
@@ -34,7 +38,7 @@ from quivers.qiec.relation_log_path_certificate import (
 )
 from quivers.qiec.relation_path_certificate import _encode
 from quivers.qiec.relation_runtime import _fixed_compute_definition
-from quivers.qiec.relations import RelationWeightBindings
+from quivers.qiec.relations import FixedRelationRequest, RelationWeightBindings
 from quivers.qiec.types import TypeExpr
 
 
@@ -113,12 +117,104 @@ class CenteredStringLogProbCertificateRequest(QiecModel):
         return _certificate_result_type()
 
 
+class CenteredCyclicStringLogProbCertificateRequest(QiecModel):
+    """Request a bounded checked fixed-input cyclic likelihood certificate.
+
+    Parameters
+    ----------
+    observation : FixedRelationRequest
+        The original LogProb conditional objective, words, and local star order limit.
+    max_center_occurrences, max_dyadic_work : int
+        Aggregate centered observation occurrence and graph visit caps.
+    max_closure_cells : int
+        Combined numeric closure cells, including auxiliary states.
+    absolute_log_tolerance : tuple of int
+        Nonnegative numerator and positive denominator in log units.
+    decimal_precision, max_decimal_exponent, max_decimal_work : int
+        Directed precision, exponent limit, and combined Decimal work.
+    max_exact_bits, max_exact_work : int
+        Integer bit and operation caps for gauges, endpoint stars, and the value test.
+    """
+
+    observation: FixedRelationRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_center_occurrences: int
+    max_dyadic_work: int
+    max_closure_cells: int
+    absolute_log_tolerance: tuple[int, int] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    decimal_precision: int
+    max_decimal_exponent: int
+    max_decimal_work: int
+    max_exact_bits: int
+    max_exact_work: int
+
+    @dx.model_validator()
+    def _validate_request(self) -> None:
+        """Check the original conditional objective and bounded verification policy.
+
+        Raises
+        ------
+        ValueError
+            The objective, closure, or arithmetic declaration is outside the supported domain.
+        """
+        observation = self.observation
+        if (
+            not isinstance(observation, FixedRelationRequest)
+            or observation.operation != "conditional_log_prob"
+            or observation.relation.algebra != LOG_PROB.subject
+            or observation.max_closure_size is None
+        ):
+            raise ValueError(
+                "a centered cyclic certificate requires a LogProb conditional request with a local star bound"
+            )
+        for name, limit in (
+            ("max_center_occurrences", self.max_center_occurrences),
+            ("max_dyadic_work", self.max_dyadic_work),
+            ("max_closure_cells", self.max_closure_cells),
+        ):
+            if type(limit) is not int or not 0 <= limit <= torch.iinfo(torch.int64).max:
+                raise ValueError(f"{name} must be a nonnegative Int")
+        _validate_numeric_policy(self)
+
+    @property
+    def handler_name(self) -> str:
+        """Identify the original conditional objective and rational tolerance.
+
+        Returns
+        -------
+        str
+            The distinct checked handler name for the cyclic value guarantee.
+        """
+        from quivers.qiec.serialization import dumps
+
+        identity = (
+            self.observation.relation,
+            self.observation.words,
+            _encode(Fraction(*self.absolute_log_tolerance)),
+        )
+        digest = sha256(dumps(identity).encode("utf-8")).hexdigest()
+        return f"__centered_cyclic_string_logprob_certificate_{digest}"
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Give the checked carrier of a score and its exact rational endpoints.
+
+        Returns
+        -------
+        TypeExpr
+            Status, diagnostic, score availability, log score, three rational rows,
+            endpoint availability, and three arithmetic work counters.
+        """
+        return _certificate_result_type()
+
+
 class CenteredStringLogProbCertificateRuntimeProvider:
     """Bind a centered value certificate to live original weight owners.
 
     Parameters
     ----------
-    request : CenteredStringLogProbCertificateRequest
+    request : CenteredStringLogProbCertificateRequest or CenteredCyclicStringLogProbCertificateRequest
         The checked ratio, tolerance and directed arithmetic policy.
     parameters : RelationWeightBindings
         The stable live scalar owner mapping for the relation or graph.
@@ -128,7 +224,8 @@ class CenteredStringLogProbCertificateRuntimeProvider:
 
     def __init__(
         self,
-        request: CenteredStringLogProbCertificateRequest,
+        request: CenteredStringLogProbCertificateRequest
+        | CenteredCyclicStringLogProbCertificateRequest,
         parameters: RelationWeightBindings,
     ) -> None:
         self._request = request
@@ -146,14 +243,37 @@ class CenteredStringLogProbCertificateRuntimeProvider:
             A centered verifier reading one fresh weight snapshot per call.
         """
         request = self._request
+        tolerance = Fraction(*request.absolute_log_tolerance)
+        numeric = {
+            "decimal_precision": request.decimal_precision,
+            "max_decimal_exponent": request.max_decimal_exponent,
+            "max_decimal_work": request.max_decimal_work,
+            "max_exact_bits": request.max_exact_bits,
+            "max_exact_work": request.max_exact_work,
+        }
+        if isinstance(request, CenteredCyclicStringLogProbCertificateRequest):
+            observation = request.observation
+            order = observation.max_closure_size
+            assert order is not None
+            relation = observation.relation.bind(self._parameters)
+            split = relation.topology.input_tapes
+            return _centered_cyclic_accuracy_plan(
+                relation,
+                observation.words[:split],
+                observation.words[split:],
+                absolute_log_tolerance=tolerance,
+                max_states=observation.max_states,
+                max_work=observation.max_work,
+                max_center_occurrences=request.max_center_occurrences,
+                max_dyadic_work=request.max_dyadic_work,
+                max_closure_size=order,
+                max_closure_cells=request.max_closure_cells,
+                **numeric,
+            )
         return _centered_accuracy_plan(
             request.observation._binding(self._parameters),
-            absolute_log_tolerance=Fraction(*request.absolute_log_tolerance),
-            decimal_precision=request.decimal_precision,
-            max_decimal_exponent=request.max_decimal_exponent,
-            max_decimal_work=request.max_decimal_work,
-            max_exact_bits=request.max_exact_bits,
-            max_exact_work=request.max_exact_work,
+            absolute_log_tolerance=tolerance,
+            **numeric,
         )
 
     def _evaluate(self, argument: object, _context: ClauseContext) -> _Report:
@@ -179,7 +299,8 @@ class CenteredStringLogProbCertificateRuntimeProvider:
         if argument is not None:
             raise TypeError("a centered string certificate takes a unit argument")
         try:
-            proof = self._plan()
+            with torch.no_grad():
+                proof = self._plan()
         except RelationLimitError as error:
             return _unavailable("resource_limit", error)
         except ProductiveEpsilonCycleError as error:
@@ -190,6 +311,12 @@ class CenteredStringLogProbCertificateRuntimeProvider:
             return _unavailable("undefined_normalizer", error)
         except OverflowError as error:
             return _unavailable("numerical_range", error)
+        except DivergentClosureError as error:
+            return _unavailable("divergent_closure", error)
+        except UndecidedClosureError as error:
+            return _unavailable("undecided_closure", error)
+        except _UnverifiedUpperStar as error:
+            return _unavailable("unverified_closure", error)
         except RelationAccuracyError as error:
             return _unavailable("unverified_accuracy", error)
         return _pack_log_certificate(proof)
@@ -244,6 +371,7 @@ class CenteredStringLogProbCertificateRuntimeProvider:
 
 
 __all__ = [
+    "CenteredCyclicStringLogProbCertificateRequest",
     "CenteredStringLogProbCertificateRequest",
     "CenteredStringLogProbCertificateRuntimeProvider",
 ]

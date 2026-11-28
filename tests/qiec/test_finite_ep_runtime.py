@@ -1,5 +1,6 @@
 """Independent finite-update EP scores and derivatives through checked QVR."""
 
+from hashlib import sha256
 from math import exp, log
 
 import didactic.api as dx
@@ -12,6 +13,7 @@ from quivers.qiec import (
     ExecutionFailure,
     FiniteStringEPRequest,
     FiniteStringEPRuntimeProvider,
+    HigherOrderFiniteStringEPRequest,
     ParameterId,
     QiecModule,
     RuntimeConfiguration,
@@ -253,6 +255,191 @@ def test_native_fixed_schedule_and_warm_site_match_exact_nominal_declarations():
         assert altered.handler_name != request.handler_name
         with pytest.raises(ExecutionFailure, match="unknown fixed relation handler"):
             _run(module, FiniteStringEPRuntimeProvider(altered, parameters))
+    target = project_for_target(module, discharge_module(module), "stan")
+    assert any(
+        item.computation == "belief" and request.handler_name in item.reason
+        for item in target.obstacles
+    )
+
+
+def _higher_order_fixture(words, feature, *, warm=True):
+    source = [
+        "object Segments : FinSet 2",
+        "",
+        f"relation lexicon [algebra=logprob, states={1 + sum(map(len, words))}]",
+        "    output Segments",
+        "    initial 0 [weight=unit]",
+    ]
+    state = 0
+    for index, word in enumerate(words):
+        current = 0
+        for token in word:
+            name = "shared" if index == 0 and current == 0 else "unit"
+            state += 1
+            arc = f"    arc {current} -> {state} [labels=({token}), weight={name}]"
+            source.extend([arc] * (2 if name == "shared" else 1))
+            current = state
+        source.append(f"    final {current} [weight=unit]")
+    source.extend(
+        (
+            "",
+            "string_graph latent",
+            "    variable word : Segments",
+            "    factor lexicon(word)",
+            "",
+        )
+    )
+    authored = "\n".join(source)
+    request, parameters, owner = _fixture(authored)
+    # Each word has exactly one route after the first arc. The first word
+    # has two separate first-arc occurrences owned by the same parameter.
+    windows = [
+        word[start:end]
+        for word in words
+        for start in range(len(word))
+        for end in range(start + 1, min(start + len(feature), len(word)) + 1)
+    ]
+    vocabulary = set(windows)
+    prefix_slots = sum(
+        len(ngram[:end]) for ngram in vocabulary for end in range(1, len(ngram) + 1)
+    )
+    schedule = request.with_(
+        supports=(("word", words),),
+        words=(words[1], (), words[0]),
+        initial_sites=((0, "word", (feature,), (0.2,)),) if warm else None,
+        max_states=100,
+        max_work=100,
+        max_feature_cells=len(words) * len(vocabulary),
+    )
+    checked = HigherOrderFiniteStringEPRequest(
+        schedule=schedule,
+        order=len(feature),
+        max_ngram_work=2 * sum(map(len, windows)) + prefix_slots,
+    )
+    return checked, parameters, owner, authored
+
+
+@pytest.mark.parametrize(
+    ("words", "feature"),
+    (
+        (((0, 1), (1, 0)), (0, 1)),
+        (((0, 0, 1, 0), (0, 1, 0, 0)), (0, 0, 1)),
+    ),
+)
+def test_native_higher_order_unrolled_ep_matches_live_scores_and_branch_gradients(
+    words, feature
+):
+    request, parameters, owner, source = _higher_order_fixture(words, feature)
+    wire = dumps(request)
+    decoded = loads(wire)
+    assert isinstance(decoded, HigherOrderFiniteStringEPRequest)
+    assert dumps(decoded) == wire and decoded.gradient_policy == "finite_unrolled"
+    assert decoded.schedule.handler_name != decoded.handler_name
+    module = _module(decoded, source)
+    provider = FiniteStringEPRuntimeProvider(decoded, parameters)
+    for mass in (0.75, 2 / 3):
+        with torch.no_grad():
+            owner.fill_(log(mass))
+        _check_report(_run(module, provider), decoded.schedule, owner)
+    assert owner.grad is None
+
+
+def test_higher_order_oracle_detects_dropping_the_distinguishing_bigram(monkeypatch):
+    request, parameters, owner, source = _higher_order_fixture(
+        ((0, 1), (1, 0)), (0, 1), warm=False
+    )
+    solve = FiniteStringBeliefPlan.expectation_propagation
+
+    def unigram_only(plan, **kwargs):
+        kwargs["order"] = 1
+        return solve(plan, **kwargs)
+
+    monkeypatch.setattr(FiniteStringBeliefPlan, "expectation_propagation", unigram_only)
+    run = _run(
+        _module(request, source), FiniteStringEPRuntimeProvider(request, parameters)
+    )
+    assert run.value[0] == "completed"
+    assert run.value[6].exp().tolist() == [0.5, 0.0, 0.5]
+    assert not run.value[6].requires_grad
+    oracle, *_ = _oracle(
+        owner.item(), 0, request.schedule.damping, request.schedule.sweeps
+    )
+    assert abs(run.value[6][-1].exp().item() - oracle) > 0.07
+
+
+def test_higher_order_resource_caps_precede_table_construction(monkeypatch):
+    request, parameters, _, source = _higher_order_fixture(((0, 1), (1, 0)), (0, 1))
+    assert request.max_ngram_work == 24
+    assert request.schedule.max_feature_cells == 8
+    module = _module(request, source)
+
+    def no_table(*_args, **_kwargs):
+        pytest.fail("feature preflight must precede factor table construction")
+
+    monkeypatch.setattr(FiniteStringBeliefPlan, "__init__", no_table)
+    for limited, diagnostic in (
+        (request.with_(max_ngram_work=15), "max_ngram_work"),
+        (request.with_(max_ngram_work=23), "max_ngram_work"),
+        (
+            request.with_(schedule=request.schedule.with_(max_feature_cells=7)),
+            "max_feature_cells",
+        ),
+    ):
+        assert request.handler_name == limited.handler_name
+        report = _run(module, FiniteStringEPRuntimeProvider(limited, parameters)).value
+        assert report[0] == "resource_limit" and diagnostic in report[1]
+        assert not report[5].item() and report[7].tolist() == [0, 0, 0]
+
+
+def test_higher_order_resource_caps_apply_after_nominal_observation():
+    request, parameters, _, source = _higher_order_fixture(((0, 1), (1, 0)), (0, 1))
+    source = source.replace(
+        "variable word : Segments", "variable word : Segments [observed=(0, 1)]"
+    )
+    graph = Compiler(parse(source), module_name=_MODULE).string_graph_specs["latent"]
+    request = request.with_(
+        schedule=request.schedule.with_(
+            graph=graph, initial_sites=None, max_entries=1, max_feature_cells=3
+        ),
+        # The observed singleton has two token-weighted window passes of
+        # length four, and its three features contribute five prefix slots.
+        max_ngram_work=13,
+    )
+    module = _module(request, source)
+    report = _run(module, FiniteStringEPRuntimeProvider(request, parameters)).value
+    assert report[0] == "completed" and report[5].item()
+    assert report[6].exp().tolist() == [0.0, 0.0, 1.0]
+    assert report[7].tolist() == [request.schedule.sweeps + 1, 0, 0]
+
+
+def test_higher_order_binds_exact_order_and_warm_basis_and_preserves_unigram_wire():
+    legacy, _, _ = _fixture()
+    assert sha256(dumps(legacy).encode()).hexdigest() == (
+        "54b480b80fbb90d778b7494677279c594dcf4a949c1d828fdedc46069df243ee"
+    )
+    assert legacy.handler_name == (
+        "__string_graph_finite_ep_"
+        "9ba340f9c771ac4a9924fd0c21c9dbb70d0b9fe3509869eef4aab4745d0aa765"
+    )
+    request, parameters, _, source = _higher_order_fixture(((0, 1), (1, 0)), (0, 1))
+    module = _module(request, source)
+    with pytest.raises(dx.ValidationError, match="at least two"):
+        request.with_(order=1)
+    with pytest.raises(dx.ValidationError, match="nonnegative Int"):
+        request.with_(max_ngram_work=-1)
+    altered = request.with_(order=3)
+    assert altered.result_type == request.result_type
+    assert altered.handler_name != request.handler_name
+    with pytest.raises(ExecutionFailure, match="unknown fixed relation handler"):
+        _run(module, FiniteStringEPRuntimeProvider(altered, parameters))
+    wrong_warm = request.with_(
+        schedule=request.schedule.with_(initial_sites=((0, "word", ((1, 0),), (0.2,)),))
+    )
+    with pytest.raises(ExecutionFailure, match="affine-basis order"):
+        _run(
+            _module(wrong_warm, source),
+            FiniteStringEPRuntimeProvider(wrong_warm, parameters),
+        )
     target = project_for_target(module, discharge_module(module), "stan")
     assert any(
         item.computation == "belief" and request.handler_name in item.reason

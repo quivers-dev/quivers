@@ -296,6 +296,10 @@ def _component_endpoint(
     return tuple(decimal.from_rational(value, lower=lower) for value in result)
 
 
+class _UnverifiedUpperStar(RelationAccuracyError):
+    pass
+
+
 def _component_bounds(
     edges: list[tuple[int, int, int]],
     rhs: list[_Bounds],
@@ -314,7 +318,7 @@ def _component_bounds(
             raise DivergentClosureError(
                 "a lower return mass is at least one in a productive epsilon component"
             )
-        raise RelationAccuracyError(
+        raise _UnverifiedUpperStar(
             "LogProb path certificate could not establish a finite upper star"
         )
     low = _component_endpoint(edges, rhs, mass, decimal, budget, lower=True)

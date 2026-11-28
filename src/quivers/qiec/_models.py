@@ -34,12 +34,21 @@ def field_types(class_: type[dx.Model]) -> dict[str, HeldValue]:
     Returns
     -------
     dict[str, HeldValue]
-        Resolved field annotations, including recursive type aliases.
+        Resolved field annotations, including inherited declarations and
+        recursive type aliases.
     """
     namespace = vars(sys.modules[class_.__module__])
     annotations = get_annotations(
         class_, globals=namespace, locals=namespace, eval_str=True
     )
+    missing = class_.__field_specs__.keys() - annotations.keys()
+    for base in class_.__mro__[1:]:
+        if not missing:
+            break
+        inherited = get_annotations(base, eval_str=True)
+        for name in missing & inherited.keys():
+            annotations[name] = inherited[name]
+        missing -= inherited.keys()
     return {name: annotations[name] for name in class_.__field_specs__}
 
 

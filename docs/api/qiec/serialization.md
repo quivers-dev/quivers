@@ -452,6 +452,21 @@ request and handler.
 
 ::: quivers.qiec.centered_string_certificate.CenteredStringLogProbCertificateRuntimeProvider
 
+#### Checked centered cyclic string log ratios
+
+`CenteredCyclicStringLogProbCertificateRequest` wraps a checked
+fixed-input LogProb conditional observation with a local closure order
+limit. It adds a shared closure-cell cap and the two centered proof
+budgets. The distinct handler keeps the original relation, words and
+absolute log tolerance. The centered certificate provider returns the
+same value-only rational endpoint report shape. Proven divergence,
+unverified upper-star finiteness, and an unavailable numerical star
+have distinct statuses. The cyclic centered contract is available for
+fixed-input conditionals. Tree-centered certificates use the acyclic
+request.
+
+::: quivers.qiec.centered_string_certificate.CenteredCyclicStringLogProbCertificateRequest
+
 ### A tail outcome for capped cyclic paths
 
 `FixedCappedCyclicRelationPathSampleRequest` specifies a different
@@ -1061,6 +1076,12 @@ working precision. Each observed-pair factor query requires an acyclic
 productive path graph. Observed variables restrict their support to
 the observed word.
 
+`HigherOrderFiniteStringEPRequest` pairs the same finite schedule with
+all contiguous n-gram orders through a declared maximum of at least two.
+It uses the same report type. Its handler name binds the maximum order
+as well as the underlying schedule identity. Warm sites use the exact
+affine basis for that order on the effective support.
+
 Each call evaluates the original live factor tables. The provider reuses
 the table topology and affine bases. The finite solver
 forms normalized cavities, fits an inclusive-KL unigram projection by
@@ -1094,6 +1115,19 @@ fixed-point, and certified global error guarantees are outside this
 report's domain. A target that lacks the native handler reports that
 capability boundary.
 
+Even an exact zero residual can leave the regular EP fixed point
+underdetermined. Consider two binary variables connected by two equality
+factors, with positive reference weights and a unigram feature that
+distinguishes the two values. Each unpenalized projection then represents
+its tilted marginal exactly. In log odds, each proposed factor message
+copies the cavity message across its factor. The simultaneous update
+permutes the four site log odds, and any common log odds is a fixed
+point with a different belief. Thus removing additive log scales still
+leaves an eigenvalue of one in the update Jacobian. An arbitrarily small
+log bias on one equality factor's `(0, 0)` entry adds a nonzero increment
+around a copy cycle, so that cycle has no finite fixed point. A site
+residual cannot certify a differentiable isolated root in this setting.
+
 ### Work and storage bounds
 
 Table construction charges cumulative entries, visited states, and
@@ -1105,6 +1139,21 @@ any observation restriction. Unigram counting scans the word tokens,
 the exact affine-basis selection uses $O(DN(1+r))$ rational operations
 on the count matrix, and the fit stores $O(Nr+r^2+N)$ tensor entries
 per step, apart from the existing factor table and cavity tensors.
+
+For higher orders, $D$ counts distinct n-grams through the declared
+order. A separate `max_ngram_work` cap charges twice the total token
+length of the contiguous windows, for preflight and family construction.
+For a word of length $L$ and effective order $K$, this charge is
+$2\sum_{n=1}^{K} n(L-n+1)$. The cap also charges the total token
+length of the nonempty prefixes of each distinct feature. Both charges
+are summed over effective variable supports. The window charge is
+checked before slicing the words for a variable. Feature cells and
+prefix charges are checked as distinct features are encountered,
+before building the factor tables or affine basis. Sorting the
+feature and prefix keys has a separate comparison cost of
+$O(K(D\log(D+1)+U\log(U+1)))$, where $U$ is the number of distinct
+prefixes. The report's three counters retain their local optimization
+meaning.
 
 A fit forms its dense local covariance in $O(Nr^2)$ work and solves
 the Newton system in $O(r^3)$ work. Each line-search trial costs
@@ -1119,5 +1168,7 @@ domain and these limits bound tensor sizes and operation counts
 separately from backend memory use and rational integer bit cost.
 
 ::: quivers.qiec.finite_ep_runtime.FiniteStringEPRequest
+
+::: quivers.qiec.finite_ep_runtime.HigherOrderFiniteStringEPRequest
 
 ::: quivers.qiec.finite_ep_runtime.FiniteStringEPRuntimeProvider

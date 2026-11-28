@@ -36,6 +36,7 @@ every rule, and $h$ factors through it. Each observable states what it needs:
 | [`ProjectedWeightRows`][quivers.qiec.contracts.ProjectedWeightRows] | semiring | an ordered field of a checked judgment |
 | [`NormalizedWeightRows`][quivers.qiec.contracts.NormalizedWeightRows] | source weighting laws and division | finitely many rows with positive total mass |
 | [`WeightedProofRows`][quivers.qiec.contracts.WeightedProofRows] | ordered product with unit and absorbing zero, and associative commutative sum and division when normalized | finitely many derivations for a guaranteed result |
+| [`BooleanProofWeightRows`][quivers.qiec.contracts.BooleanProofWeightRows] | semiring, and division when normalized | a truth table over the ordered premises of every rule |
 | [`Statistic`][quivers.qiec.contracts.Statistic] | semiring, semimodule action | a statistic computation |
 | [`Marginal`][quivers.qiec.contracts.Marginal] | semiring, and division when normalized | |
 | [`Sample`][quivers.qiec.contracts.Sample] | semiring, division | no derivative |

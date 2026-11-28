@@ -61,12 +61,16 @@ def _merge_shifted(
 def _path_error_extrema(
     graph: _ActiveObservation, errors: dict[int, Fraction], budget: _RationalBudget
 ) -> _Interval | None:
-    finals = dict(graph.final)
+    finals: dict[int, _Interval] = {}
+    for state, mark in graph.final:
+        if mark in errors:
+            error = errors[mark]
+            finals[state] = _merge_shifted(
+                finals.get(state), (error, error), Fraction(0), budget
+            )
     suffixes: dict[int, _Interval] = {}
     for (state,) in reversed(graph.components):
-        interval = None
-        if (mark := finals.get(state)) is not None and mark in errors:
-            interval = (errors[mark], errors[mark])
+        interval = finals.get(state)
         for target, slot in graph.arcs[state]:
             if slot in errors and target in suffixes:
                 interval = _merge_shifted(
@@ -81,13 +85,9 @@ def _path_error_extrema(
     return starts
 
 
-def _residual_bounds(
-    graph: _ActiveObservation,
-    occurrence_count: int,
-    factors: list[_RoundedFactor],
-    decimal: _DirectedDecimal,
-    budget: _RationalBudget,
-) -> _Interval | None:
+def _rounded_inputs(
+    occurrence_count: int, factors: list[_RoundedFactor], budget: _RationalBudget
+) -> tuple[list[float], dict[int, Fraction]]:
     rounded = [_LOG_ZERO] * occurrence_count
     errors: dict[int, Fraction] = {}
     for slot, original, candidate in factors:
@@ -95,6 +95,17 @@ def _residual_bounds(
         errors[slot] = budget.add(
             budget.value(original), budget.value(candidate), subtract=True
         )
+    return rounded, errors
+
+
+def _residual_bounds(
+    graph: _ActiveObservation,
+    occurrence_count: int,
+    factors: list[_RoundedFactor],
+    decimal: _DirectedDecimal,
+    budget: _RationalBudget,
+) -> _Interval | None:
+    rounded, errors = _rounded_inputs(occurrence_count, factors, budget)
     low, high = _mass_bounds(graph, rounded, decimal)
     extrema = _path_error_extrema(graph, errors, budget)
     if low.is_zero() and high.is_zero() and extrema is None:
@@ -110,6 +121,46 @@ def _residual_bounds(
     lower = _rational(decimal.ln(low, lower=True), budget)
     upper = _rational(decimal.ln(high, lower=False), budget)
     return budget.add(lower, extrema[0]), budget.add(upper, extrema[1])
+
+
+def _ratio_certificate(
+    score: torch.Tensor,
+    part: _Interval | None,
+    whole: _Interval | None,
+    difference: Fraction | None,
+    tolerance: Fraction,
+    decimal: _DirectedDecimal,
+    budget: _RationalBudget,
+) -> LogPathWeightCertificate:
+    observed = score.item()
+    if whole is None:
+        raise RelationAccuracyError(
+            "centered ratio requires a positive denominator enclosure"
+        )
+    if part is None and difference is None and observed == _LOG_ZERO:
+        return LogPathWeightCertificate(
+            score, None, None, Fraction(0), decimal.work, budget.work, budget.bits
+        )
+    if part is None or difference is None or not isfinite(observed):
+        raise RelationAccuracyError(
+            "centered ratio candidate disagrees with its positive numerator support"
+        )
+
+    shift = budget.value(difference)
+    lower = budget.add(shift, budget.add(part[0], whole[1], subtract=True))
+    upper = budget.add(shift, budget.add(part[1], whole[0], subtract=True))
+    estimate = budget.value(observed)
+    error = budget.maximum(
+        abs(budget.add(estimate, lower, subtract=True)),
+        abs(budget.add(estimate, upper, subtract=True)),
+    )
+    if budget.less(tolerance, error):
+        raise RelationAccuracyError(
+            "could not establish the requested absolute centered log ratio error"
+        )
+    return LogPathWeightCertificate(
+        score, lower, upper, error, decimal.work, budget.work, budget.bits
+    )
 
 
 def _centered_accuracy_plan(
@@ -147,7 +198,6 @@ def _centered_accuracy_plan(
                     "directed centered ratio accuracy requires float64 weights"
                 )
             score = plan.evaluate(weights, rounding=rounding).log_prob
-        observed = score.item()
         decimal = _DirectedDecimal(
             decimal_precision, max_decimal_exponent, max_decimal_work
         )
@@ -165,34 +215,8 @@ def _centered_accuracy_plan(
             decimal,
             budget,
         )
-        if whole is None:
-            raise RelationAccuracyError(
-                "centered ratio requires a positive denominator enclosure"
-            )
-        difference = rounding.maximum_difference
-        if part is None and difference is None and observed == _LOG_ZERO:
-            return LogPathWeightCertificate(
-                score, None, None, Fraction(0), decimal.work, budget.work, budget.bits
-            )
-        if part is None or difference is None or not isfinite(observed):
-            raise RelationAccuracyError(
-                "centered ratio candidate disagrees with its positive numerator support"
-            )
-
-        shift = budget.value(difference)
-        lower = budget.add(shift, budget.add(part[0], whole[1], subtract=True))
-        upper = budget.add(shift, budget.add(part[1], whole[0], subtract=True))
-        estimate = budget.value(observed)
-        error = budget.maximum(
-            abs(budget.add(estimate, lower, subtract=True)),
-            abs(budget.add(estimate, upper, subtract=True)),
-        )
-        if budget.less(tolerance, error):
-            raise RelationAccuracyError(
-                "could not establish the requested absolute centered log ratio error"
-            )
-        return LogPathWeightCertificate(
-            score, lower, upper, error, decimal.work, budget.work, budget.bits
+        return _ratio_certificate(
+            score, part, whole, rounding.maximum_difference, tolerance, decimal, budget
         )
 
     return certify
