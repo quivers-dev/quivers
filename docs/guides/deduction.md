@@ -678,8 +678,16 @@ and form indices inhabit `D__Term`. The proof's constructors include
 `D__rule_<name>` for each rule and `D__axiom_span` for a lexical occurrence.
 A QVR `case` can bind these indices and pass the proof to another checked
 computation. Enumeration makes no requests on behalf of that computation.
-The proof limit counts returned alternatives before zero-weight filtering.
-Reifying them also takes work proportional to their explicit proof sizes.
+Reifying positive-weight proofs takes work proportional to their explicit
+proof sizes.
+
+The native trace emits `deduction.proofs` after a successful enumeration.
+It records the budget, the number of structural proofs before filtering,
+the number of typed result rows, and the packed-forest construction
+counters. Reification work and backward storage are unmeasured. If the
+budget is exceeded, `deduction.proofs.refused` records the budget and the
+reason. The check saturates proof counts at the budget plus one, so the
+event supplies no exact total after refusal.
 
 For instance, two rules can prove the same full span. This program uses
 the packed chart to return their total weight by summing the two proof rows.

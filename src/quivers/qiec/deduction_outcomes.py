@@ -678,13 +678,43 @@ def _outcome_trace(
     Mapping of str to object
         An execution record with construction measurements only.
     """
+    return {
+        **_packed_trace(forest, normalized, goals, rows),
+        "observer": "weighted-outcome-rows",
+        "key": key,
+        "algorithm": "indexed-packed-forest-topological-fold",
+        "unmeasured": (
+            "fold_arithmetic",
+            "backward_arithmetic",
+            "elements_saved_for_backward",
+            "peak_bytes",
+        ),
+    }
+
+
+def _packed_trace(
+    forest: DerivationForest, normalized: bool, goals: int, rows: int
+) -> Mapping[str, object]:
+    """Report the measurements common to completed lexical forest queries.
+
+    Parameters
+    ----------
+    forest
+        The indexed forest built by the invocation.
+    normalized
+        Whether the query subtracts the common normalizer.
+    goals, rows
+        The number of full-span goal items and positive-weight result rows.
+
+    Returns
+    -------
+    Mapping of str to object
+        The finite weight contract and measured construction work.
+    """
     construction = forest.report()
     return {
         "presentation": str(forest.presentation.id),
-        "observer": "weighted-outcome-rows",
-        "key": key,
         "normalized": normalized,
-        "algorithm": "indexed-packed-forest-topological-fold",
         "recursion": "finite-acyclic",
         "algebra": "LogProb",
         "derivative": "autograd-on-finite-log-weights-at-fixed-support",
@@ -694,12 +724,6 @@ def _outcome_trace(
         "construction_work": tuple(
             (measure.value, getattr(construction, measure.value))
             for measure in construction.measured
-        ),
-        "unmeasured": (
-            "fold_arithmetic",
-            "backward_arithmetic",
-            "elements_saved_for_backward",
-            "peak_bytes",
         ),
     }
 
@@ -1198,13 +1222,25 @@ def deduction_proofs_handler(
                 like=weights,
             )
         except ForestRefused as error:
+            reason = error.code.value
+            context.emit_trace(
+                "deduction.proofs.refused",
+                lambda: {
+                    "presentation": str(forest.presentation.id),
+                    "observer": "weighted-proof-rows",
+                    "proof_budget": limit,
+                    "goal_items": len(goals),
+                    "reason": reason,
+                },
+            )
             raise EvaluationError(str(error)) from error
         listed = tuple(
             (proof, weight) for rows in by_goal.values() for proof, weight, _ in rows
         )
+        normalized = decide(normalize, "proof normalization")
         masses = _outcome_masses(
             {index: [mass] for index, (_, mass) in enumerate(listed)},
-            decide(normalize, "proof normalization"),
+            normalized,
         )
         result = RuntimeConstructor(
             constructor=semantics.chart.empty,
@@ -1225,6 +1261,23 @@ def deduction_proofs_handler(
                 fields=(value, weight, result),
                 result_type=definition.output_type,
             )
+        context.emit_trace(
+            "deduction.proofs",
+            lambda: {
+                **_packed_trace(forest, normalized, len(goals), len(masses)),
+                "observer": "weighted-proof-rows",
+                "algorithm": "indexed-packed-forest-budgeted-enumeration",
+                "proof_budget": limit,
+                "structural_goal_proofs": len(listed),
+                "unmeasured": (
+                    "enumeration_arithmetic",
+                    "reified_proof_nodes",
+                    "backward_arithmetic",
+                    "elements_saved_for_backward",
+                    "peak_bytes",
+                ),
+            },
+        )
         return TailResume(value=result)
 
     return RuntimeHandler(
