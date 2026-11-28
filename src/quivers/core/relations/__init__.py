@@ -65,6 +65,10 @@ __all__ = [
     "QueryWork",
     "RationalRelation",
     "RegularNgramProjection",
+    "RegularStringBelief",
+    "RegularStringEPResult",
+    "RegularStringSite",
+    "RegularStringSiteUpdate",
     "RelationLimitError",
     "RelationPath",
     "RelationTopology",
@@ -92,6 +96,7 @@ __all__ = [
     "join",
     "penalized_regular_ngram_projection",
     "project",
+    "regular_string_ep",
     "trim",
     "union",
 ]
@@ -666,4 +671,12 @@ from quivers.core.relations.ngram_message import NgramMessagePlan  # noqa: E402
 from quivers.core.relations.regular_projection import (  # noqa: E402
     RegularNgramProjection,
     penalized_regular_ngram_projection,
+)
+
+from quivers.core.relations.regular_ep import (  # noqa: E402
+    RegularStringBelief,
+    RegularStringEPResult,
+    RegularStringSite,
+    RegularStringSiteUpdate,
+    regular_string_ep,
 )

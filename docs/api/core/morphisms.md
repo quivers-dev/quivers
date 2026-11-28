@@ -496,11 +496,67 @@ states. The result also retains the target's log mass and the site
 scale that matches it. The fit uses a fixed weight snapshot and
 reports its numerical result without differentiating the optimizer.
 
+### Expectation propagation with regular messages
+
+`regular_string_ep` takes a typed string factor graph and a finite
+acyclic reference language for each variable. Its model weights
+multiply the graph factors and the supplied reference weights.
+A unit-weight reference restricts a variable to its declared
+regular support. An observed variable is further restricted
+to its observed word.
+
+A site has a log scale and a linear score over its active n-grams.
+A cavity reweights the reference language using the coefficients
+from all other incident sites. The factor multiplies its
+incoming cavities by joining on their shared tapes, and marginalizes
+the other variables. Local projection fits the resulting tilted
+distribution in the cavity-based n-gram family. The site then
+retains the fitted coefficients and a scale that matches the
+tilted mass under normalized cavities.
+
+Each sweep proposes all sites from the preceding state. Damping
+interpolates log scores and scales. The residual takes the largest
+undamped change in log scale plus the maximum accepted word length
+times the coefficient-change one-norm. This bounds the change in
+a site's log score uniformly over its reference support. A failed
+local optimizer and an exhausted outer sweep retain the last
+accepted messages with distinct statuses. Relation construction
+or closure limits raise their usual errors. The result describes
+an approximate inference run over a fixed weight snapshot.
+
+#### Two-variable comparison
+
+The test graph has one binary factor, two unary factors, and two
+one-symbol words per variable. Exact tree messages agree with
+enumeration. The width-one beam retains the first word under the
+tied reference scores and solves the explicitly restricted graph.
+
+| Method | Mean marginal TV error | Active site features | Marginal states | Time (ms) | Allocated tensor elements |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Exact tree messages | 0 | — | 20 | 2.10 | 1,892 |
+| Regular EP, no penalty | < 0.000001 | 8 | 6 | 284.82 | 197,586 |
+| Regular EP, penalty 0.025 | 0.042678 | 8 | 6 | 720.77 | 492,088 |
+| Regular EP, penalty 0.075 | 0.121875 | 0 | 4 | 16.64 | 10,564 |
+| Regular EP, penalty 3 | 0.121875 | 0 | 4 | 16.39 | 10,564 |
+| Width-one reference beam | 0.378125 | — | — | 0.77 | 345 |
+
+Timings are the medians of three warmed runs on one arm64 CPU thread
+with PyTorch 2.15. They include construction, inference, and
+reading both marginals. The allocation column counts elements in
+fresh tensors throughout a run. The largest individual allocations
+were 14, 17, 17, 15, 15, and 5 elements, respectively. The penalty
+can reduce the returned message size while increasing the work
+needed to fit it.
+
 ::: quivers.core.relations
     options:
       members:
         - RationalRelation
         - RegularNgramProjection
+        - RegularStringBelief
+        - RegularStringEPResult
+        - RegularStringSite
+        - RegularStringSiteUpdate
         - RelationTopology
         - Arc
         - ArcCounts
@@ -550,5 +606,6 @@ reports its numerical result without differentiating the optimizer.
         - join
         - penalized_regular_ngram_projection
         - project
+        - regular_string_ep
         - trim
         - union
