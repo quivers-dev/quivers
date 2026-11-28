@@ -378,6 +378,7 @@ from quivers.qiec.programs import (
 from quivers.qiec.reference_support import (
     DistributionError,
 )
+from quivers.qiec.relation_ranked import FixedRankedOTRelationRequest
 from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
 from quivers.qiec.pruned_string_graph_runtime import (
     PrunedStringGraphRequest,
@@ -743,6 +744,7 @@ __all__ = [
     "FixedRelationFeatureObservation",
     "FixedComposedRelationRequest",
     "FixedBackoffRelationRequest",
+    "FixedRankedOTRelationRequest",
     "FixedMinimizedRelationRequest",
     "FixedRelationArcCountsRequest",
     "FixedRelationCostRequest",

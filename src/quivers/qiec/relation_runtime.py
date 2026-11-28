@@ -32,6 +32,10 @@ from quivers.qiec.relation_feature_moments import (
     FixedRelationFeatureMomentRequest,
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_ranked import (
+    FixedRankedOTRelationRequest,
+    _RANKED_OT_HANDLER_PREFIX,
+)
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
     FixedTransformedRelationRequest,
@@ -174,7 +178,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest or FixedMinimizedRelationRequest or FixedBackoffRelationRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest or FixedMinimizedRelationRequest or FixedBackoffRelationRequest or FixedRankedOTRelationRequest
         The checked fixed observation, objective, and resource limits.
     parameters : RelationWeightBindings
         The original scalar tensors supplying the request's weight
@@ -197,6 +201,7 @@ class FixedRelationRuntimeProvider:
         | FixedCyclicRelationFeatureMomentRequest
         | FixedComposedArcFeatureMomentRequest
         | FixedBackoffRelationRequest
+        | FixedRankedOTRelationRequest
         | FixedMinimizedRelationRequest,
         parameters: RelationWeightBindings,
         *,
@@ -208,6 +213,10 @@ class FixedRelationRuntimeProvider:
             request, FixedBackoffRelationRequest
         ):
             raise ValueError("a checked backoff handler requires its backoff request")
+        if handler_name.startswith(_RANKED_OT_HANDLER_PREFIX) and not isinstance(
+            request, FixedRankedOTRelationRequest
+        ):
+            raise ValueError("a checked ranked handler requires its ranked request")
         self._handler_name = handler_name
         self._result_type = request.result_type
         self._result_shape = (
@@ -225,9 +234,13 @@ class FixedRelationRuntimeProvider:
             self._relation_spec = request.observation.relation
             self._score = request.plan(parameters)[0].weight
             return
-        if isinstance(request, FixedBackoffRelationRequest):
+        if isinstance(
+            request, FixedBackoffRelationRequest | FixedRankedOTRelationRequest
+        ):
             if handler_name != request.handler_name:
-                raise ValueError("fixed backoff requires its exact observation handler")
+                raise ValueError(
+                    f"{type(request).__name__} requires its exact observation handler"
+                )
             self._operation = "pair_weight"
             self._relation_spec = request.relation
             self._score = request.plan(parameters).weight

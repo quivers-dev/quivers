@@ -171,6 +171,34 @@ expansion is only an equivalence description.
 
 ::: quivers.qiec.relation_backoff.FixedBackoffRelationRequest
 
+## Capped ranked relation requests
+
+A `FixedRankedOTRelationRequest` supplies one ordered violation profile
+per original generator arc and one finite cap per rank. For each input,
+the compiler retains all original accepting paths whose capped profiles
+are lexicographically minimal. The pair score then sums the weights of
+the retained paths at the observed output. Tied parallel paths remain
+distinct, and the weights may change without altering their ranked
+preferences. The result is an unnormalized pair mass. A conditional
+output distribution would additionally require its own output
+normalizer and positive finite mass.
+
+A nonnegative cap is a part of the model. For instance, a cap of one
+makes a rank binary, and a cap of zero ignores it. The competitor
+tracker charges its work separately from the subsequent fixed-word
+query. Its intermediate subset count can grow exponentially. Exhausted
+limits raise without returning a truncated ranked result. This request
+uses the finite capped ranking of the sparse calculus. [Eisner (2002)](https://www.cs.jhu.edu/~jason/papers/eisner.acl02-ot.pdf).
+
+A named QVR computation installs the request's `foreign`
+`Compute[Unit, A]` handler as with compact backoff. Its checked handler
+identity includes the original typed generator, original occurrence
+profiles, caps, and the observed pair. The reference provider validates
+that identity and binds the original weight tensors. The Stan, BUGS and
+JAGS projections name the foreign handler when refusing this provider.
+
+::: quivers.qiec.relation_ranked.FixedRankedOTRelationRequest
+
 ## Sparse relation composition requests
 
 A `ComposedRelationSpec` records the two original operands of a
