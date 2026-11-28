@@ -278,6 +278,25 @@ def test_guard_rejects_unavailable_names_or_carriers(old, new, message):
         load_source(SOURCE.replace(old, new, 1) + "\nexport scalar\n")
 
 
+@pytest.mark.parametrize(
+    "call",
+    (
+        "parse_proofs(Guarded, sentence, 8)",
+        "parse_linear(Guarded, sentence, 8)",
+        "parse_packed_boolean_outcomes(Guarded, sentence, meaning)",
+    ),
+)
+def test_guards_refuse_query_plans_that_require_unconditional_rules(call):
+    unsupported = SOURCE.replace(
+        'parse_outcomes(Guarded, sentence, "item", ("A", p_a), ("S", p_s))', call
+    )
+    with pytest.raises(
+        QiecDiagnosticError, match="requires unconditional rules"
+    ) as error:
+        load_source(unsupported + "\nexport packed\n")
+    assert error.value.code == "qiec-deduction-rule-guard"
+
+
 def test_native_target_refusal_remains_specific_to_reached_guard(compiled):
     (diagnostic,) = (
         item

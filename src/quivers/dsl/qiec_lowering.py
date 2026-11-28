@@ -2435,16 +2435,20 @@ class _Elaborator(
         if not names:
             return
         self._declare_computation_signatures(only=names)
+        declarations = {
+            item.name: item
+            for item in self._items(surface.QiecComputationDecl)
+            if isinstance(item, surface.QiecComputationDecl) and item.name in names
+        }
         for body in self._declare_computations(only=names):
             try:
                 _check_guard_body(body)
             except RuleError as error:
-                declaration = next(
-                    item
-                    for item in self._items(surface.QiecComputationDecl)
-                    if item.name == body.name
+                self._fail(
+                    declarations[body.name],
+                    str(error),
+                    code="qiec-deduction-rule-guard",
                 )
-                self._fail(declaration, str(error), code="qiec-deduction-rule-guard")
             self._deduction_guard_bodies[body.name] = body
 
     def _declare_computation_signatures(

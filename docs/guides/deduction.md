@@ -556,14 +556,17 @@ The guard has an empty effect row and no static parameters. Its body uses
 scalar `Int` and `Bool` operations. A true decision admits the matched
 application. A false decision removes that application before weighting or
 recording its edge. Distinct admitted applications still contribute
-separately. A runtime error in the guard fails the query.
+separately. A runtime error in a guard fails any query that reaches it.
+The indexed query can check matches outside the goal. The equality
+of the inside sums assumes that the guard evaluations succeed.
 
 Checked scalar `parse`, `run_deduction`, and lexical item outcome queries
 use the same checked guard body. The indexed query calls the guard once per
 completed candidate binding and reports this count in its trace. If there
-are $G$ candidate bindings and the guard body takes at most $g$ scalar
-steps per binding, guard evaluation takes $O(Gg)$ scalar steps. Space for
-retained edges depends on the accepted applications. Removing edges
+are $G$ candidate bindings, at most $m$ matched coordinates per binding,
+and at most $g$ scalar body steps per guard, guard execution and argument
+conversion take $O(G(m+g))$ work. Space for retained edges depends on the
+accepted applications. Removing edges
 preserves the span order certified from the unfiltered rule patterns.
 The production probabilities of a locally normalized grammar still use
 their original groups.

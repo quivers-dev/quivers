@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Hashable
-from typing import Never
+from typing import TYPE_CHECKING, Never
 
 import didactic.api as dx
 import torch
@@ -105,6 +105,10 @@ from quivers.dsl.compiler._deduction_presentation import (
     deduction_guard_names,
     deduction_presentation,
 )
+
+if TYPE_CHECKING:
+    from quivers.dsl.compiler.core import Compiler
+
 
 # Category-side pattern carried by a lexicon entry: either a
 # wildcard variable (any identifier not declared as an atom) or a
@@ -700,7 +704,7 @@ class _DeductionsMixin:
         """Provided by `_StructuralMixin`."""
         raise NotImplementedError
 
-    def _compile_deduction(self, decl: DeductionDecl) -> None:
+    def _compile_deduction(self: Compiler, decl: DeductionDecl) -> None:
         """Compile a ``deduction { … }`` block into an agenda-engine
         `DeductionSystem` and register it under ``decl.name``.
 
