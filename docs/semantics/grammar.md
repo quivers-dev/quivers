@@ -486,6 +486,33 @@ when the other premises are empty. The category rank must increase on every such
 including transitions of rules with several premises. The finite grounding and this strict
 order justify computing $\alpha$ from the packed chart before grouping the goal items.
 
+### 9.5 Checked proof interpretations {#95-checked-proof-interpretations}
+
+For each goal $g \in G_x$, let $P(g)$ be its set of ordered proof trees, with a
+separate occurrence for each rule or axiom occurrence in the grounded chart. The same
+strict order makes every $P(g)$ finite. The structural count of a chart item
+is the sum over its incoming occurrences of the product of the premise counts.
+An axiom contributes one, by the empty-product convention. A proof query checks
+the sum of the goal counts against its budget before constructing any proof
+values. This check includes occurrences with zero weight.
+
+A checked interpretation assigns to each rule or axiom occurrence an operation
+on the interpreted premises in their stated order and the constructor's ordinary
+fields. For an occurrence with operation $F_r$, fields $\mathbf{v}$ and subproofs
+$p_1,\ldots,p_k$, the pure interpretation is defined by
+
+$$
+I\bigl(r(\mathbf{v};p_1,\ldots,p_k)\bigr)
+= F_r\bigl(I(p_1),\ldots,I(p_k),\mathbf{v}\bigr).
+$$
+
+A proof-dependent outcome query with pure discrete key $h$ returns log mass
+$\operatorname{logsumexp}_{g \in G_x,\,p \in P(g):\,h(p)=u} \log w(p)$
+for each supported key $u$, where $w(p)$ is the product of the occurrence
+weights in $p$. Grouping partitions the positive-weight proof occurrences.
+Summing over the keys thus recovers the total mass of the same goals in §9.4.
+A normalized query divides by that mass when it is positive.
+
 ## 10. Grammar of the program and composition forms {#10-program-fragment-integration}
 
 The forms below are written in EBNF after the tree-sitter grammar `grammars/qvr/grammar.js`, which is
