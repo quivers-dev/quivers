@@ -540,4 +540,5 @@ nav:
     - Quivers Indexed Effect Core: developer/qiec.md
     - Changelog: developer/changelog.md
     - Inference benchmark results: developer/inference-benchmarks.md
+    - Joint alignment MAP benchmark: developer/string-alignment-map-benchmark.md
   - References: references.md

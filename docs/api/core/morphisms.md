@@ -529,7 +529,10 @@ does not establish a certificate.
 The returned score and certificate concern the evaluated parameter
 snapshot. Local paths are discrete decisions. The solver reports
 the peak number of reached local configurations and total local
-arc examinations, including primal feasibility checks.
+arc examinations, including primal feasibility checks. The [joint alignment
+MAP benchmark](../../developer/string-alignment-map-benchmark.md)
+compares these counts with a materialized intersection and verifies
+both against independent path enumeration.
 
 ### Compact regular n-gram messages
 

@@ -25,6 +25,7 @@ from quivers.core.relations import (
     intersect,
 )
 from quivers.core.relations.alignment_dual import _NgramScorer
+from tests.benchmarks import string_alignment_map as scaling
 
 _TAPE = StringSet(alphabet=FinSet(name="Two", cardinality=2))
 _SETTINGS = dict(
@@ -282,3 +283,27 @@ def test_overlapping_suffix_features_score_signed_counts_and_boundary_markers():
                 state, emission = scorer.step(state, symbol)
                 observed += emission
             assert observed == expected
+
+
+def test_scaling_protocol_compares_both_alignment_families_and_reports_work():
+    for mode, score, calls, features in (
+        ("agree", "3/2", 2, 0),
+        ("adaptive", "1", 6, 1),
+    ):
+        for width in (2, 5):
+            row = scaling.compare(scaling.fixture(mode, width))
+            assert row["status"] == "optimal" and row["certificate"] is True
+            assert row["primal"] == row["upper_bound"] == score
+            assert row["enumerated_compatible_pairs"] == 2 * width**2
+            assert row["implicit_largest_decode_configurations"] == 6 * width + 1
+            assert row["implicit_local_decode_calls"] == calls
+            assert row["implicit_peak_active_features"] == features
+            assert row["explicit_peak_product_states"] == 10 * width**2 + 2 * width + 1
+
+
+def test_scaling_protocol_checks_live_updates_and_uncertified_controls():
+    checks = scaling.controls()
+    assert checks["after_update"]["status"] == "optimal"
+    assert checks["after_update"]["primal"] == "2"
+    assert checks["unigram_only"]["certificate"] is False
+    assert checks["zero_weight_right_support"]["status"] == "infeasible"
