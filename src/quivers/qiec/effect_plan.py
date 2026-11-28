@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from quivers.qiec.contracts import DerivativeSemantics
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
@@ -48,6 +48,9 @@ from quivers.qiec.module import (
 )
 from quivers.qiec.polynomial_laws import PolynomialLawLimit, PolynomialLawUnsupported
 from quivers.qiec.rational_laws import RationalLawLimit, RationalLawUnsupported
+
+if TYPE_CHECKING:
+    from quivers.dsl.ast_nodes import Module
 
 type _Decision = FiniteEffectLawDecision | ScalarEffectLawDecision
 type _Status = Literal["checked", "refuted", "unresolved"]
@@ -128,11 +131,12 @@ class EffectExecutionStage:
     ----------
     computation : ComputationId
         The original checked identity, preserved by lowering.
-    stage : {"direct", "handler-discharge", "recursive-state", "reference", "source-handler"}
+    stage : {"direct", "handler-discharge", "recursive-state", "reference", "source-handler", "program-plan"}
         `direct` has no local rewrite. Ordinary discharge uses `reference`
         for a retained handler and names its obstacle. A target selecting
         the unchanged source uses `source-handler` at original installations.
         A direct caller can reach a computation at another stage.
+        `program-plan` is the target's probabilistic statement plan.
     rewrite : DischargeRewrite or None
         The checked transformation and its companions, if one ran.
     obstacle : DischargeObstacle or None
@@ -141,7 +145,12 @@ class EffectExecutionStage:
 
     computation: ComputationId
     stage: Literal[
-        "direct", "handler-discharge", "recursive-state", "reference", "source-handler"
+        "direct",
+        "handler-discharge",
+        "recursive-state",
+        "reference",
+        "source-handler",
+        "program-plan",
     ]
     rewrite: DischargeRewrite | None = None
     obstacle: DischargeObstacle | None = None
@@ -193,7 +202,7 @@ class EffectJvpCheck:
 
 @dataclass(frozen=True, slots=True)
 class EffectTargetReport:
-    """An actual standalone export outcome with scoped derivative evidence.
+    """An actual export outcome with scoped derivative evidence.
 
     Parameters
     ----------
@@ -201,10 +210,11 @@ class EffectTargetReport:
         The requested public target key.
     computation : ComputationId
         The source entry whose execution stages are reported.
-    projection : {"source", "discharged"} or None
-        The QIEC graph selected by the renderer after successful emission.
+    projection : {"source", "discharged", "program-plan"} or None
+        The selected standalone QIEC graph or probabilistic program plan.
     stages : tuple[EffectExecutionStage, ...]
-        Source entries reached by this export's selected QIEC graph.
+        Source entries reached by a standalone graph, or the selected
+        program entry carrying the probabilistic statement stage.
     refusals : tuple[str, ...]
         The target's named refusal kinds, if the export failed.
     detail : str or None
@@ -222,11 +232,16 @@ class EffectTargetReport:
     external_derivative : DerivativeSemantics
         The report for the emitted backend's derivative. Emission and
         QIEC checks provide no evidence about that derivative.
+    helper_projection : {"source", "discharged"} or None
+        The QIEC helper graph selected alongside a probabilistic program plan.
+    native_obstacle : str or None
+        The named hypothesis blocking a requested comparison when its
+        target stage does not emit a comparable scalar QIEC graph.
     """
 
     target: str
     computation: ComputationId
-    projection: Literal["source", "discharged"] | None
+    projection: Literal["source", "discharged", "program-plan"] | None
     stages: tuple[EffectExecutionStage, ...]
     refusals: tuple[str, ...]
     detail: str | None
@@ -236,6 +251,24 @@ class EffectTargetReport:
     rule_decision: RationalDerivativeDecision | None
     rule_obstacle: str | None
     external_derivative: DerivativeSemantics
+    helper_projection: Literal["source", "discharged"] | None = None
+    native_obstacle: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgramTargetSource:
+    """A compiler-owned source snapshot bound to its checked program graph.
+
+    Parameters
+    ----------
+    parsed : Module
+        The parsed program that the compiler checked.
+    checked_digest : str
+        The canonical digest of the checked program module.
+    """
+
+    parsed: Module
+    checked_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +294,9 @@ class EffectPlan:
     stages : tuple[EffectExecutionStage, ...]
         The stages of reachable source computations in the discharged
         graph. Generated computations appear on their originating rewrite.
+    _program_source : object or None
+        The compiler's parsed program source and the digest of the checked
+        QIEC module compiled from it. Direct QIEC plans have neither.
     """
 
     bundle: EffectLawBundle
@@ -270,6 +306,27 @@ class EffectPlan:
     discharge: DischargedModule
     interchanges: tuple[EffectInterchangeReport, ...] = ()
     stages: tuple[EffectExecutionStage, ...] = ()
+    _program_source: object | None = field(default=None, compare=False, repr=False)
+
+    def _with_program_source(self, source: Module) -> EffectPlan:
+        """Retain the compiler's source bound to this exact checked graph.
+
+        Parameters
+        ----------
+        source : Module
+            The compiler's own parsed source for the checked module.
+
+        Returns
+        -------
+        EffectPlan
+            The same checked report with a bound public program input.
+        """
+        return replace(
+            self,
+            _program_source=_ProgramTargetSource(
+                source, _module_digest(self.bundle.module)
+            ),
+        )
 
     def check_jvp(
         self,
@@ -322,13 +379,14 @@ class EffectPlan:
         fuel: int = 65_536,
         max_rule_work: int = 65_536,
     ) -> EffectTargetReport:
-        """Report the actual export stage of a standalone QIEC computation.
+        """Report the actual target export stage of the selected entry.
 
-        The registered projector selects the QIEC graph, and the regular
-        renderer and emitter must accept the full standalone module.
-        The optional pointwise comparison runs on QIEC. A supplied rule
-        is checked separately on the original source. The backend code
-        is emitted without executing its derivative.
+        Standalone computations use the registered QIEC projector. A
+        compiler-created probabilistic plan uses its bound parsed source
+        and the same program preparation as public transpilation. The
+        regular renderer and emitter must accept the result. A supplied
+        rule is checked on the original QIEC source. Emission does not
+        execute the backend derivative.
 
         Parameters
         ----------
@@ -336,7 +394,8 @@ class EffectPlan:
             The public backend key accepted by the transpiler.
         arguments, direction : tuple[int or Fraction, ...] or None
             Optional input coordinates and tangent in source order.
-            Supply both for a native pointwise comparison.
+            Supply both for a native pointwise comparison of standalone
+            QIEC graphs. Probabilistic statement plans lack such an entry.
         derivative_rule : RationalDerivativeDeclaration or None
             A nominal source formula to certify or refute.
         fuel : int
@@ -348,8 +407,7 @@ class EffectPlan:
         -------
         EffectTargetReport
             The selected stage or refusal, with each observation scoped
-            to the graph on which it was checked. Probabilistic programs
-            require the separate source-level program target plan.
+            to the graph on which it was checked.
 
         Raises
         ------
@@ -358,9 +416,15 @@ class EffectPlan:
         """
         from panproto import PanprotoError
 
+        from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
         from quivers.transpile._api import UnsupportedConstruct
-        from quivers.transpile._entry import _emit_target, available_targets
+        from quivers.transpile._entry import (
+            _emit_target,
+            _prepare_target,
+            available_targets,
+        )
         from quivers.transpile.ir import IRProgram
+        from quivers.transpile.lower import pick_program
         from quivers.transpile.qiec_ir import (
             capabilities_for_target,
             project_for_target,
@@ -372,6 +436,10 @@ class EffectPlan:
         )
         if owner is None:
             raise ValueError("the effect plan does not name a source computation")
+        program = next(
+            (item for item in source.entries if item.computation == self.computation),
+            None,
+        )
         if (arguments is None) != (direction is None):
             raise ValueError(
                 "supply both arguments and direction for a native comparison"
@@ -381,7 +449,10 @@ class EffectPlan:
         )
         stages: tuple[EffectExecutionStage, ...] = ()
         native_jvp = None
-        projection: Literal["source", "discharged"] | None = None
+        selected: QiecModule | None = None
+        projection: Literal["source", "discharged", "program-plan"] | None = None
+        helper_projection: Literal["source", "discharged"] | None = None
+        native_obstacle = None
         detail = None
         refusals: tuple[str, ...] = ()
         try:
@@ -390,46 +461,79 @@ class EffectPlan:
                 raise UnsupportedConstruct(
                     target, [f"target:unknown:{target}:{','.join(targets)}"]
                 )
-            if source.gap:
-                raise UnsupportedConstruct(
-                    f"qvr-{target}", [source.gap.partition("; ")[0]]
-                )
-            if source.entries or self.computation in program_computations(source):
-                public_name = next(
-                    (
-                        entry.name
-                        for entry in source.entries
-                        if entry.computation == self.computation
-                    ),
-                    owner.name,
-                )
-                raise UnsupportedConstruct(
-                    f"qvr-{target}",
-                    [f"qiec:target-stage:program-plan-required:{public_name}"],
-                )
             capabilities = capabilities_for_target(target)
-            ir = project_for_target(
-                source, self.discharge, target, capabilities=capabilities
-            )
-            if not any(
-                item.id.text == str(self.computation) and item.name == owner.name
-                for item in ir.computations
-            ):
-                raise UnsupportedConstruct(
-                    f"qvr-{target}",
-                    [f"qiec:target-stage:entry-not-projected:{owner.name}"],
+            if program is not None:
+                if self._program_source is None:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:program-plan-required:{program.name}"],
+                    )
+                binding = self._program_source
+                if not isinstance(
+                    binding, _ProgramTargetSource
+                ) or binding.checked_digest != _module_digest(source):
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:program-source-mismatch:{program.name}"],
+                    )
+                exported = pick_program(binding.parsed).name
+                if exported != program.name:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [
+                            f"qiec:target-stage:program-not-exported:{program.name}:{exported}"
+                        ],
+                    )
+                target_plan = _prepare_target(binding.parsed, target)
+                if target_plan.name != program.name:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [
+                            f"qiec:target-stage:program-not-exported:{program.name}:{target_plan.name}"
+                        ],
+                    )
+            else:
+                if source.gap:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}", [source.gap.partition("; ")[0]]
+                    )
+                if source.entries or self.computation in program_computations(source):
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:program-plan-required:{owner.name}"],
+                    )
+                ir = project_for_target(
+                    source, self.discharge, target, capabilities=capabilities
                 )
-            _emit_target(
-                IRProgram(name=ir.module, inputs=(), body=(), module=ir), target
-            )
+                if not any(
+                    item.id.text == str(self.computation) and item.name == owner.name
+                    for item in ir.computations
+                ):
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:entry-not-projected:{owner.name}"],
+                    )
+                target_plan = IRProgram(name=ir.module, inputs=(), body=(), module=ir)
+            _emit_target(target_plan, target)
         except UnsupportedConstruct as error:
             refusals = tuple(error.kinds)
+            detail = str(error)
+        except QiecDiagnosticError as error:
+            refusals = (f"qiec:target-lowering:{error.code}",)
             detail = str(error)
         except PanprotoError as error:
             refusals = (f"qiec:target-emission:{type(error).__name__}",)
             detail = str(error)
         else:
-            if capabilities.supports("handle"):
+            if program is not None:
+                projection = "program-plan"
+                helper_projection = (
+                    "source" if capabilities.supports("handle") else "discharged"
+                )
+                stages = (EffectExecutionStage(self.computation, "program-plan"),)
+                if arguments is not None:
+                    native_obstacle = "qiec:target-stage:program-jvp-unverified"
+            elif capabilities.supports("handle"):
                 projection, selected = "source", source
                 reached, _ = _execution_reachability(source, self.computation)
                 stages = tuple(
@@ -443,7 +547,7 @@ class EffectPlan:
             else:
                 projection, selected = "discharged", self.discharge.module
                 stages = _ordinary_stages(source, self.discharge, self.computation)
-            if arguments is not None and direction is not None:
+            if selected is not None and arguments is not None and direction is not None:
                 native_jvp = _compare_jvp(
                     source, selected, self.computation, arguments, direction, fuel
                 )
@@ -464,6 +568,8 @@ class EffectPlan:
             rule,
             rule_obstacle,
             external,
+            helper_projection,
+            native_obstacle,
         )
 
 

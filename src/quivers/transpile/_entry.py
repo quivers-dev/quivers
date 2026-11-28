@@ -74,6 +74,29 @@ def transpile(module: Module, *, target: str) -> bytes:
         constructs the chosen renderer cannot lower (e.g. a
         non-finite-support marginalize on Stan).
     """
+    return _emit_target(_prepare_target(module, target), target)
+
+
+def _prepare_target(module: Module, target: str) -> IRProgram:
+    """Check and lower the parsed source through the public target route.
+
+    Parameters
+    ----------
+    module : Module
+        The parsed module, including its export and program declarations.
+    target : str
+        The public backend key.
+
+    Returns
+    -------
+    IRProgram
+        The standalone or probabilistic plan consumed by the emitter.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the target or a required construct cannot be lowered.
+    """
     if target not in _RENDERERS:
         raise UnsupportedConstruct(
             target,
@@ -82,8 +105,7 @@ def transpile(module: Module, *, target: str) -> bytes:
     _, _, support_tier = _RENDERERS[target]
     unsupported_for(f"qvr-{target}", module, allow=support_tier)
     expanded = expand_composite_lets(module, target=target)
-    ir = Lower().forward(expanded, target=target)
-    return _emit_target(ir, target)
+    return Lower().forward(expanded, target=target)
 
 
 def _emit_target(ir: IRProgram, target: str) -> bytes:

@@ -610,20 +610,26 @@ assert stage.stage == "handler-discharge"
 assert stage.rewrite is not None and stage.rewrite.companions == ()
 ```
 
-`plan.check_target(target)` reports a standalone QIEC export. It uses the
+`plan.check_target(target)` reports the outcome of a QIEC export. It uses the
 ordinary target projector, renderer and grammar emitter. A host target
 can select the original handlers, which appear as `source-handler`. A
 static target reads the discharged computation and its stages. An
 unsupported export carries the target's refusal names and diagnostic.
-Probabilistic programs use a separate target plan with their data,
-constraints and sites.
+For a probabilistic program, `Compiler.effect_plan` retains the parsed
+source with its checked module. The report follows the public export
+selection and uses the program planner for data, constraints and sites.
+It labels the result `program-plan` and gives its QIEC helper projection
+in `helper_projection`. A plan made from QIEC alone needs parsed source
+to report that target stage.
 
 With `arguments` and `direction`, the report compares exact native JVPs
 for the source and the graph selected by the target. A supplied
 `derivative_rule` is checked independently against its nominal source.
 These checks concern QIEC. The `external_derivative` field records that
 the backend derivative is unverified even when the source and projected
-JVPs agree and the target emits code.
+JVPs agree and the target emits code. A request to compare native JVPs
+on a probabilistic program reports an obstacle because the emitted
+statement plan has no corresponding scalar QIEC entry for that check.
 
 <!-- python: run -->
 ```python
@@ -651,6 +657,26 @@ assert pyro.stages[0].stage == "source-handler"
 assert stan.stages[0].stage == "handler-discharge"
 assert stan.native_jvp.status == "checked" and stan.native_jvp.staged.tangent == 4
 assert stan.external_derivative.missing == ("external derivative unverified",)
+```
+
+<!-- python: run -->
+```python
+from quivers.dsl import Compiler, parse
+
+source = """
+object Row : FinSet 4
+
+program draws : Row -> Row
+    sample x <- Normal(loc=0.0, scale=1.0)
+    return x
+
+export draws
+"""
+plan = Compiler(parse(source), module_name="simple-draw").effect_plan("draws")
+report = plan.check_target("stan")
+assert report.projection == "program-plan"
+assert report.helper_projection == "discharged"
+assert report.external_derivative.missing == ("external derivative unverified",)
 ```
 
 ::: quivers.qiec.effect_plan

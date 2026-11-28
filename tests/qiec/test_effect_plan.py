@@ -1,9 +1,12 @@
 """Reported effect plans preserve independent law evidence and ordinary dispatch."""
 
+from collections.abc import Callable
 from dataclasses import replace
 from fractions import Fraction
+from typing import cast
 
 import pytest
+import pyro
 import torch
 from panproto import PanprotoError
 
@@ -28,6 +31,9 @@ from quivers.qiec import (
     loads,
 )
 from quivers.transpile import UnsupportedConstruct, transpile
+from quivers.transpile import _entry as target_entry
+from quivers.transpile.ir import IRSample
+from quivers.transpile.qiec_ir import IRQiecHandle
 
 _SOURCE = """
 effect Reader
@@ -383,8 +389,16 @@ export sampled
     assert plan.computation == program.computation
     assert plan.laws == ()
     target = plan.check_target("pyro")
-    assert target.projection is None
-    assert target.refusals == (
+    assert target.projection == "program-plan"
+    assert tuple(stage.computation for stage in target.stages) == (program.computation,)
+    assert tuple(stage.stage for stage in target.stages) == ("program-plan",)
+    assert target.refusals == ()
+
+    wire = loads(dumps(plan.bundle))
+    assert isinstance(wire, EffectLawBundle)
+    wire_plan = checked_effect_plan(wire, plan.computation)
+    assert wire_plan == plan
+    assert wire_plan.check_target("pyro").refusals == (
         f"qiec:target-stage:program-plan-required:{program.name}",
     )
 
@@ -605,3 +619,137 @@ define undercounts(x : Real, direction : Real) : Real !{} =
     assert unknown.refusals[0].startswith("target:unknown:unknown:")
     with pytest.raises(ValueError, match="both arguments and direction"):
         plan.check_target("stan", arguments=(2,))
+
+
+_PROGRAM_EXPORT_SOURCE = (
+    _TARGET_SOURCE
+    + """
+object Obs : FinSet 4
+
+program primary : Obs -> Obs
+    sample x <- Normal(loc=0.0, scale=1.0)
+    return x
+
+program alternative : Obs -> Obs
+    sample y <- Normal(loc=5.0, scale=1.0)
+    return y
+
+export primary
+"""
+)
+
+
+@pytest.mark.parametrize(
+    ("target", "helpers"), [("pyro", "source"), ("stan", "discharged")]
+)
+def test_program_target_reports_the_actual_public_plan_and_output(
+    target, helpers, monkeypatch
+):
+    parsed = parse(_PROGRAM_EXPORT_SOURCE)
+    compiler = Compiler(parsed, module_name="target-program-source")
+    plan = compiler.effect_plan("primary")
+    emitted = []
+    emit = target_entry._emit_target
+
+    def record(plan, target):
+        code = emit(plan, target)
+        emitted.append((plan, code))
+        return code
+
+    monkeypatch.setattr(target_entry, "_emit_target", record)
+    public = transpile(parsed, target=target)
+    report = plan.check_target(target, arguments=(), direction=())
+    assert report.refusals == () and report.projection == "program-plan"
+    assert report.helper_projection == helpers
+    assert report.native_jvp is None
+    assert report.native_obstacle == "qiec:target-stage:program-jvp-unverified"
+    assert report.external_derivative.missing == ("external derivative unverified",)
+    assert tuple((entry.computation, entry.stage) for entry in report.stages) == (
+        (plan.computation, "program-plan"),
+    )
+    assert len(emitted) == 2
+    (public_plan, public_code), (reported_plan, reported_code) = emitted
+    assert reported_plan == public_plan and reported_code == public_code == public
+    assert reported_plan.name == "primary"
+    assert len([node for node in reported_plan.body if isinstance(node, IRSample)]) == 1
+    helper = next(
+        item
+        for item in reported_plan.module.computations
+        if item.name == "feedback_square"
+    )
+    assert isinstance(helper.body, IRQiecHandle) == (helpers == "source")
+    if target == "pyro":
+        namespace = {"pyro": pyro}
+        exec(reported_code, namespace)
+        generated = cast(Callable[[], torch.Tensor], namespace["model"])
+        model = pyro.poutine.condition(generated, data={"x": torch.tensor(2.0)})
+        trace = pyro.poutine.trace(model).get_trace()
+        draw = trace.nodes["x"].get("value")
+        answer = trace.nodes["_RETURN"].get("value")
+        assert isinstance(draw, torch.Tensor) and isinstance(answer, torch.Tensor)
+        assert draw.item() == answer.item() == 2.0
+        assert "y" not in trace.nodes
+    else:
+        assert b"normal_lpdf(x" in public and b"normal_lpdf(y" not in public
+
+    nonexported = compiler.effect_plan("alternative").check_target(target)
+    assert nonexported.projection is None
+    assert nonexported.refusals == (
+        "qiec:target-stage:program-not-exported:alternative:primary",
+    )
+    assert len(emitted) == 2
+
+
+def test_program_target_rejects_a_changed_module_with_the_same_nominal_entry(
+    monkeypatch,
+):
+    name = "program-provenance"
+    original = Compiler(parse(_PROGRAM_EXPORT_SOURCE), module_name=name).effect_plan(
+        "primary"
+    )
+    changed = Compiler(
+        parse(_PROGRAM_EXPORT_SOURCE.replace("loc=0.0", "loc=3.0")),
+        module_name=name,
+    ).effect_plan("primary")
+    assert (
+        changed.computation == original.computation
+        and changed.bundle != original.bundle
+    )
+
+    def unexpected_preparation(*_args, **_kwargs):
+        pytest.fail("an unrelated program source reached public preparation")
+
+    monkeypatch.setattr(target_entry, "_prepare_target", unexpected_preparation)
+    for mismatched in (
+        replace(original, bundle=changed.bundle),
+        replace(original, _program_source=changed._program_source),
+        replace(original, _program_source=parse(_PROGRAM_EXPORT_SOURCE)),
+    ):
+        report = mismatched.check_target("pyro")
+        assert report.projection is None
+        assert report.refusals == ("qiec:target-stage:program-source-mismatch:primary",)
+
+
+def test_program_target_reports_actual_public_planner_refusal():
+    parsed = parse("""
+object Row : FinSet 3
+object Out : Real 1
+
+program weighted : Row -> Out
+    observe y : Row <- Normal(loc=0.0, scale=1.0) [weights=w]
+    return y
+
+export weighted
+""")
+    compiler = Compiler(parsed, module_name="target-program-weighted")
+    with pytest.raises(UnsupportedConstruct) as error:
+        transpile(parsed, target="pyro")
+    report = compiler.effect_plan("weighted").check_target("pyro")
+    assert report.projection is None and report.stages == ()
+    assert (
+        report.refusals
+        == tuple(error.value.kinds)
+        == ("qiec:weighted-observe:weighted",)
+    )
+    assert report.detail == str(error.value)
+    assert report.external_derivative.missing == ("target export refused",)

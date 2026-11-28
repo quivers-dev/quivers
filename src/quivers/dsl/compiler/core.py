@@ -538,6 +538,8 @@ class Compiler(
         EffectPlan
             The entry's carrier reports, separately checked obligations,
             and the stages and obstacles of the ordinary discharge result.
+            For a program, retains the matching parsed source for target
+            reports on the public export.
 
         Raises
         ------
@@ -555,7 +557,7 @@ class Compiler(
             )
         else:
             root = next(item.id for item in module.computations if item.name == name)
-        return checked_effect_plan(
+        plan = checked_effect_plan(
             EffectLawBundle(module=module, obligations=obligations),
             root,
             interchanges=interchanges,
@@ -564,6 +566,9 @@ class Compiler(
             max_work=max_work,
             fuel=fuel,
         )
+        if entry.kind == "program" and self._qiec_source is not None:
+            return plan._with_program_source(self._qiec_source)
+        return plan
 
     def _lower_qiec(self, module: Module) -> QiecModule:
         """Lower the source's QIEC surface to a checked module.
