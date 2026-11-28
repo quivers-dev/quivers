@@ -461,8 +461,8 @@ def _clause_address(
         The static site of the answered request. The surrounding dynamic
         frames and shot path identify its activation.
     captured_calls : tuple[SiteId, ...]
-        The source sites of non-tail calls removed from the active path
-        when the handler captures the continuation, outermost first.
+        The source sites of calls removed from the active path when the
+        handler captures the continuation, outermost first.
 
     Returns
     -------
