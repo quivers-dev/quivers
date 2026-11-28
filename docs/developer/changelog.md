@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked proof-key grouping plans.** Raw and normalized weighted proof rows report the nominal proof owner, direct checked key call, and measured grouping work.
 - **Checked centered cyclic likelihoods.** Bounded conditional queries preserve internal cycle weights and use directed finite stars to certify a centered native log ratio.
 - **Checked effect-stage receipts.** Serialize the selected target stage and verify its emitted artifact or named refusal against the original checked program.
 - **Checked lexical projection plans.** Category and form outcomes report their nominal source judgment, projected binder, and normalization contract.
@@ -115,6 +116,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Closed effect rows after discharge.** A checked implementation can drop dead effects while retaining the original calling row and nominal computation identity.
 - **Emitted handler addresses.** Python lowering preserves the native shot path for affine and linear resumptions. Pyro traces carry helper-local addresses on draws and authored scores.
 - **Pruned string proposal-scale gradients.** Full, retained, and omitted candidate sums restore the reported raw scale after evaluating the local reduction in centered log space.
 - **Pruned string message normalization.** Center candidate weights before damping so a large common log offset preserves the normalized message and its convergence residual.
