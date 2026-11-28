@@ -61,6 +61,7 @@ from quivers.dsl.ast_nodes.program_steps import CallStep
 from quivers.dsl.ast_nodes.qiec import (
     QiecBinder,
     QiecComputationDecl,
+    QiecInterpretationDecl,
     QiecEffectDecl,
     QiecEffectInstanceDecl,
     QiecFamilyDecl,
@@ -824,7 +825,9 @@ def _render_hover(
             parts.append("**Call**")
             parts.append(f"```qvr\n{instantiated}\n```")
     inferred = (
-        _inferred_row(doc, name) if isinstance(decl, QiecComputationDecl) else None
+        _inferred_row(doc, name)
+        if isinstance(decl, QiecComputationDecl | QiecInterpretationDecl)
+        else None
     )
     if inferred is not None:
         parts.append(f"**Inferred row**\n\n```qvr\n{inferred}\n```")
@@ -1474,7 +1477,7 @@ def _symbol_kind(stmt: Statement) -> lsp.SymbolKind:
         return lsp.SymbolKind.Interface
     if isinstance(stmt, QiecEffectInstanceDecl):
         return lsp.SymbolKind.Object
-    if isinstance(stmt, (QiecHandlerDecl, QiecComputationDecl)):
+    if isinstance(stmt, QiecHandlerDecl | QiecComputationDecl | QiecInterpretationDecl):
         return lsp.SymbolKind.Function
     return lsp.SymbolKind.Variable
 

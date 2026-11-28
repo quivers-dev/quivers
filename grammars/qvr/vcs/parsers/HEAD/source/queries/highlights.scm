@@ -22,6 +22,7 @@
   "atoms"
   "attention"
   "authored"
+  "axiom"
   "binary"
   "binder_select"
   "binders"
@@ -68,6 +69,7 @@
   "in"
   "init"
   "instance"
+  "interpret"
   "introduces"
   "iterations"
   "lacks"
@@ -422,6 +424,10 @@
 (qiec_handler_operation_clause parameters: (qiec_local_binding name: (identifier) @variable.parameter))
 (qiec_handler_return_clause binder: (qiec_local_binding name: (identifier) @variable.parameter))
 (computation_decl name: (identifier) @function)
+(interpretation_decl name: (identifier) @function)
+(interpretation_decl deduction: (identifier) @function)
+(interpretation_clause constructor: (identifier) @constructor)
+(interpretation_clause operation: (identifier) @function.call)
 (qiec_call_computation callee: (identifier) @function.call)
 (qiec_instance_computation name: (identifier) @variable)
 

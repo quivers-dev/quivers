@@ -14,6 +14,7 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     QiecComputationDecl,
 )
+from quivers.qiec._lexical_proof_types import export_lexical_proofs
 from quivers.qiec.canonical import tensor_type
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import ParameterId
@@ -53,6 +54,7 @@ from quivers.qiec.module import (
     called_computations,
     installed_handlers,
 )
+from quivers.qiec.rules import RulePresentation
 from quivers.qiec.terms import (
     Bind,
     Call,
@@ -405,6 +407,52 @@ class _KeyProjection:
         )
 
 
+def declare_lexical_proofs(
+    elaborator: _Elaborator, system: _System, node: object
+) -> RulePresentation:
+    """Expose indexed constructors without making a claim about chart finiteness."""
+    presented = system.presentation_cell[0]
+    assert presented is not None
+    if not system.entries or tuple(
+        judgment.name for judgment in presented.presentation.judgments
+    ) != (_SPAN,):
+        elaborator._fail(
+            node, "proof types require a lexical span deduction", code=OUTCOME_CODE
+        )
+    try:
+        named = export_lexical_proofs(presented.presentation, system.decl.name)
+        families, constructors = named.declarations()
+        for sort in named.index_sorts:
+            if sort.name in elaborator.index_sorts:
+                elaborator._fail(
+                    node,
+                    f"generated proof sort {sort.name!r} already exists",
+                    code=OUTCOME_CODE,
+                )
+            elaborator.index_sorts[sort.name] = sort
+        for family in families:
+            if family.name in elaborator.families:
+                elaborator._fail(
+                    node,
+                    f"generated proof family {family.name!r} already exists",
+                    code=OUTCOME_CODE,
+                )
+            elaborator.registry.register_family(family)
+            elaborator.families[family.name] = family
+        for constructor in constructors:
+            if constructor.name in elaborator.constructors:
+                elaborator._fail(
+                    node,
+                    f"generated proof constructor {constructor.name!r} already exists",
+                    code=OUTCOME_CODE,
+                )
+            elaborator.registry.register_constructor(constructor)
+            elaborator.constructors[constructor.name] = constructor
+    except (KernelError, ValueError, dx.ValidationError) as error:
+        elaborator._fail_kernel(node, error, fallback=OUTCOME_CODE)
+    return named
+
+
 def declare_outcomes(
     elaborator: _Elaborator, system: _System, node: object, *, proofs: bool = False
 ) -> OutcomeQuery:
@@ -461,7 +509,6 @@ def declare_outcomes(
         constructors=(empty_id, entry_id),
     )
     result = TypeApplication(constructor=family.type_constructor, arguments=())
-    named_proofs = None
     try:
         chart = DeductionOutcomes(
             presentation=presentation,
@@ -480,26 +527,12 @@ def declare_outcomes(
         semantics: DeductionOutcomes | DeductionProofs = chart
         if proofs:
             semantics = DeductionProofs(chart=chart)
-            named_proofs = semantics.proof_presentation
     except (ValueError, dx.ValidationError) as error:
         elaborator._fail_kernel(node, error, fallback=OUTCOME_CODE)
     key_binders: tuple[IndexBinder, ...] = ()
     key_type = system.item
-    if named_proofs is not None:
-        for sort in named_proofs.index_sorts:
-            if sort.name in elaborator.index_sorts:
-                elaborator._fail(
-                    node,
-                    f"generated proof sort {sort.name!r} already exists",
-                    code=OUTCOME_CODE,
-                )
-            elaborator.index_sorts[sort.name] = sort
-        (proof_family,), constructors = named_proofs.declarations()
-        elaborator.families[proof_family.name] = proof_family
-        elaborator.registry.register_family(proof_family)
-        for constructor in constructors:
-            elaborator.constructors[constructor.name] = constructor
-            elaborator.registry.register_constructor(constructor)
+    if proofs:
+        (proof_family,), _ = elaborator._lexical_proofs[system.decl.name].declarations()
         key_binders, key_type = proof_entry_type(proof_family)
     _register_rows(
         elaborator,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from quivers.qiec.checking import ComputationSignature, KernelError
+from quivers.qiec.checking import ComputationSignature, KernelError, KernelRegistry
 from quivers.qiec.coverage import constructor_skolems
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.effects import ComputationType, EffectRow
@@ -94,6 +94,64 @@ def lower_closed_interpretation(
         fold's contract, or the proof declarations and checked module disagree.
     """
     registry = validate_module(module)
+    generated = prepare_closed_interpretation(
+        registry,
+        presentation,
+        interpretation,
+        names={
+            judgment.id: f"{name}__{judgment.name}"
+            for judgment in presentation.judgments
+        },
+        carriers=carriers,
+        origin=SourceOrigin(
+            module=module.module,
+            structural_path=("proof_interpretations",),
+            role="computation",
+            source_protocol=module.source_protocol,
+        ),
+    )
+    lowered = module.with_(computations=(*module.computations, *generated))
+    validate_module(lowered)
+    return lowered
+
+
+def prepare_closed_interpretation(
+    registry: KernelRegistry,
+    presentation: RulePresentation,
+    interpretation: InterpretationDecl,
+    *,
+    names: Mapping[FamilyId, str],
+    carriers: Mapping[FamilyId, TypeExpr],
+    origin: SourceOrigin,
+) -> tuple[NamedComputation, ...]:
+    """Lower a checked fold against signatures before surrounding bodies exist.
+
+    Parameters
+    ----------
+    registry
+        The kernel registry containing the proof constructors and operations.
+    presentation
+        The unconditional rule presentation of the input proofs.
+    interpretation
+        One checked computation identity per rule or axiom slot.
+    names
+        The computation name for each judgment family.
+    carriers
+        The closed result type for each judgment family.
+    origin
+        The source declaration to which the generated computations belong.
+
+    Returns
+    -------
+    tuple of NamedComputation
+        The generated cases and ordered calls, awaiting module validation.
+
+    Raises
+    ------
+    KernelError
+        If the interpretation, declaration signatures, or effects do not
+        support the closed fold.
+    """
     families, constructors = presentation.declarations()
     sources = presentation.constructors_by_id
     if interpretation.presentation != presentation.id:
@@ -115,7 +173,12 @@ def lower_closed_interpretation(
         raise KernelError(
             "a proof fold needs the presentation's checked proof declarations"
         )
-    if set(carriers) != {family.id for family in families}:
+    declared = {family.id for family in families}
+    if set(names) != declared or len(set(names.values())) != len(declared):
+        raise KernelError(
+            "a proof fold needs a distinct name for every judgment family"
+        )
+    if set(carriers) != declared:
         raise KernelError(
             "a proof fold needs one closed result type per judgment family"
         )
@@ -136,17 +199,18 @@ def lower_closed_interpretation(
     rows = _fold_rows(carriers, operations)
     signatures = {
         family.id: _fold_signature(
-            module.module, name, family, carriers[family.id], rows[family.id]
+            origin.module,
+            names[family.id],
+            family,
+            carriers[family.id],
+            rows[family.id],
         )
         for family in families
     }
-    generated = tuple(
-        _fold(module, family, signatures, operations, registry.constructors)
+    return tuple(
+        _fold(origin, family, signatures, operations, registry.constructors)
         for family in families
     )
-    lowered = module.with_(computations=(*module.computations, *generated))
-    validate_module(lowered)
-    return lowered
 
 
 def _check_operation(
@@ -238,14 +302,14 @@ def _fold_rows(
 
 
 def _fold_signature(
-    module: str, prefix: str, family: FamilyDecl, output: TypeExpr, effects: EffectRow
+    module: str, name: str, family: FamilyDecl, output: TypeExpr, effects: EffectRow
 ) -> ComputationSignature:
     """Give the fold an ordinary function signature over all proof indices.
 
     Parameters
     ----------
-    module, prefix
-        The module and the generated fold's name prefix.
+    module, name
+        The module and the generated fold's name.
     family
         The indexed family of proofs.
     output, effects
@@ -256,7 +320,6 @@ def _fold_signature(
     ComputationSignature
         The signature of a fold over a single proof.
     """
-    name = f"{prefix}__{family.name}"
     assert all(isinstance(index, IndexBinder) for index in family.indices)
     telescope = tuple(
         index.with_(name=f"i{position}", refinable=False)
@@ -279,7 +342,7 @@ def _fold_signature(
 
 
 def _fold(
-    module: QiecModule,
+    declaration: SourceOrigin,
     family: FamilyDecl,
     signatures: Mapping[FamilyId, ComputationSignature],
     operations: Mapping[ConstructorId, _RuleOperation],
@@ -289,8 +352,8 @@ def _fold(
 
     Parameters
     ----------
-    module, family
-        The containing module and the proof family consumed.
+    declaration, family
+        The declaration of the interpretation and the proof family consumed.
     signatures, operations, constructors
         The folds, checked interpretations, and proof constructors in scope.
 
@@ -301,11 +364,8 @@ def _fold(
     """
     signature = signatures[family.id]
     proof = Local(name="proof", type=signature.parameters[0])
-    origin = SourceOrigin(
-        module=module.module,
-        structural_path=("proof_interpretations", signature.name),
-        role="computation",
-        source_protocol=module.source_protocol,
+    origin = declaration.with_(
+        structural_path=(*declaration.structural_path, signature.name)
     )
     return NamedComputation(
         id=signature.id,

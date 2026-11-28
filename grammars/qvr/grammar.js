@@ -102,6 +102,7 @@ module.exports = grammar({
       $.effect_instance_decl,
       $.handler_decl,
       $.computation_decl,
+      $.interpretation_decl,
       $.composition_decl,
       $.category_decl,
       $.rule_decl,
@@ -364,6 +365,32 @@ module.exports = grammar({
       field('body', $._qiec_computation),
       $._dedent,
     ),
+
+    // A closed interpretation names existing computations for the
+    // deduction's rule constructors and lexical axiom slots.
+    interpretation_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'interpret',
+      field('name', $.identifier),
+      ':',
+      field('deduction', $.identifier),
+      '->',
+      field('carrier', $._qiec_type_expr),
+      $._newline,
+      $._indent,
+      repeat1(choice(field('clauses', $.interpretation_clause), $._newline)),
+      $._dedent,
+    ),
+
+    interpretation_clause: $ => seq(
+      field('constructor_kind', $.interpretation_clause_kind),
+      field('constructor', $.identifier),
+      '=',
+      field('operation', $.identifier),
+      $._newline,
+    ),
+
+    interpretation_clause_kind: _ => choice('rule', 'axiom'),
 
     _qiec_value_parameters: $ => parenthesizedList($, field('parameters', $.qiec_value_parameter)),
 
