@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Certified Markov path accuracy.** A bounded fixed-word query can establish an exact absolute or relative forward-error bound for its float64 score, using rational sparse verification and the existing local closure.
 - **Checked target stage reports.** Named computations and probabilistic programs report their actual selected target stages and named refusals. Native derivative checks and checked rules retain their evidence scope.
 - **Checked signed-delay tape equality.** QVR can author unary and cascade recipes that enforce equal words on two nominally identical tapes with live original weights and explicit construction limits.
 - **Checked deterministic sparse path ranking.** A native fixed-word query returns complete best or k-best original traces with exact tie order, live selected scores, and an explicit result capacity.

@@ -40,10 +40,36 @@ class QueryWork:
 
 
 @dataclass(frozen=True, slots=True)
+class _ActiveObservation:
+    arcs: tuple[tuple[tuple[int, int], ...], ...]
+    initial: tuple[tuple[int, int], ...]
+    final: tuple[tuple[int, int], ...]
+    components: tuple[tuple[int, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _PathPlan:
     packed: _PackedPaths
     work: QueryWork
     closures: tuple[_ClosureBlock, ...] = ()
+    observation: _ActiveObservation | None = None
+
+    def _closed_weights(
+        self, weights: torch.Tensor, algebra: Semiring
+    ) -> tuple[torch.Tensor, ...]:
+        if not self.closures:
+            return ()
+        if not isinstance(algebra, Star) or not algebra.establishes(
+            *SEMIRING_LAWS, STAR_LEAST_SOLUTION
+        ):
+            raise ProductiveEpsilonCycleError(
+                "a productive epsilon cycle requires an established semiring star"
+            )
+        if not weights.is_floating_point():
+            raise TypeError(
+                "productive epsilon closure requires floating-point weights"
+            )
+        return tuple(_close_block(block, weights, algebra) for block in self.closures)
 
     def evaluate(
         self,
@@ -52,18 +78,7 @@ class _PathPlan:
         *,
         visits: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
-        if self.closures:
-            if not isinstance(algebra, Star) or not algebra.establishes(
-                *SEMIRING_LAWS, STAR_LEAST_SOLUTION
-            ):
-                raise ProductiveEpsilonCycleError(
-                    "a productive epsilon cycle requires an established semiring star"
-                )
-            if not weights.is_floating_point():
-                raise TypeError(
-                    "productive epsilon closure requires floating-point weights"
-                )
-            closed = [_close_block(block, weights, algebra) for block in self.closures]
+        if closed := self._closed_weights(weights, algebra):
             weights = torch.cat((weights, *closed))
         return self.packed.evaluate(weights, algebra, visits=visits)
 
@@ -164,6 +179,8 @@ def _compile_paths(
     max_states: int | None,
     max_work: int | None,
     max_closure_size: int | None = None,
+    max_closure_cells: int | None = None,
+    retain_observation: bool = False,
 ) -> _PathPlan:
     observed = _observe(topology, words, max_states=max_states, max_work=max_work)
     return _trim_paths(
@@ -172,6 +189,8 @@ def _compile_paths(
         observed.final,
         observed.examined,
         max_closure_size=max_closure_size,
+        max_closure_cells=max_closure_cells,
+        retain_observation=retain_observation,
         weight_slots=len(topology.weight_names),
     )
 
@@ -244,6 +263,8 @@ def _trim_paths(
     examined: int,
     *,
     max_closure_size: int | None = None,
+    max_closure_cells: int | None = None,
+    retain_observation: bool = False,
     weight_slots: int = 0,
     visit_order: list[int] | None = None,
     closed_exits: dict[int, int] | None = None,
@@ -253,6 +274,12 @@ def _trim_paths(
     active_arcs = graph.arcs
     productive = graph.states
     closures: tuple[_ClosureBlock, ...] = ()
+    original = (
+        (tuple(active_arcs), graph.initial, tuple(final))
+        if retain_observation
+        else None
+    )
+    components: tuple[tuple[int, ...], ...] = ()
     if len(order) != len(productive):
         # Every emitting arc strictly increases a tape offset, so all
         # arcs inside a cyclic component have epsilon on every tape.
@@ -260,15 +287,19 @@ def _trim_paths(
             raise ProductiveEpsilonCycleError(
                 "fixed-word path sum requires closure of a productive epsilon cycle"
             )
-        order, final, closures = _expand_components(
+        order, final, closures, components = _expand_components(
             active_arcs,
             graph.reverse,
             productive,
             final,
             max_closure_size,
+            max_closure_cells,
             weight_slots,
             closed_exits if closed_exits is not None else {},
         )
+
+    elif retain_observation:
+        components = tuple((state,) for state in order)
 
     return _PathPlan(
         _pack_paths(order, active_arcs, graph.initial, final, visit_order=visit_order),
@@ -280,6 +311,7 @@ def _trim_paths(
             tuple(block.order for block in closures),
         ),
         closures,
+        _ActiveObservation(*original, components) if original is not None else None,
     )
 
 
@@ -289,15 +321,23 @@ def _expand_components(
     productive: set[int],
     final: list[tuple[int, int]],
     max_closure_size: int,
+    max_closure_cells: int | None,
     weight_slots: int,
     exits: dict[int, int],
-) -> tuple[list[int], list[tuple[int, int]], tuple[_ClosureBlock, ...]]:
+) -> tuple[
+    list[int],
+    list[tuple[int, int]],
+    tuple[_ClosureBlock, ...],
+    tuple[tuple[int, ...], ...],
+]:
     # Within a component an accepting walk has one entry, then one
     # internal segment, then an exit. Replace all internal segments with
     # the corresponding entries of the local star.
     order: list[int] = []
     closures: list[_ClosureBlock] = []
-    for members in tuple(_components(arcs, reverse, productive)):
+    cells = 0
+    components = tuple(_components(arcs, reverse, productive))
+    for members in components:
         local = {state: index for index, state in enumerate(members)}
         edges = [
             (local[source], local[target], slot)
@@ -311,6 +351,9 @@ def _expand_components(
         block = _make_block(len(members), edges)
         if block.order > max_closure_size:
             raise RelationLimitError("fixed-word closure exceeds max_closure_size")
+        cells += block.order**2
+        if max_closure_cells is not None and cells > max_closure_cells:
+            raise RelationLimitError("fixed-word closure exceeds max_closure_cells")
         closures.append(block)
         first_exit = len(arcs)
         for source in members:
@@ -333,6 +376,7 @@ def _expand_components(
         order,
         [(exits.get(state, state), slot) for state, slot in final],
         tuple(closures),
+        components,
     )
 
 

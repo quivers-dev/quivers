@@ -237,6 +237,59 @@ during backward. The source weight evaluation and its saved tensors are
 outside the path checkpoint.
 
 
+### Certifying numerical accuracy of Markov path weights
+
+`certify_markov_path_weight` checks an absolute or relative forward-error
+tolerance for the ordinary packed score. Its mathematical input is the
+evaluated binary64 Markov weight vector from the same call. The verifier
+reads that vector as exact binary rationals. This scopes the guarantee to
+the path evaluation, including for a vector produced by a rounded source
+weight expression. The returned tensor keeps its ordinary derivative.
+The certificate concerns only its scalar value.
+
+The verifier computes rational suffix intervals on the productive graph.
+At an acyclic state it sums the final weight and weighted successor
+intervals. Within a cyclic component, let $A$ be the matrix of internal
+arc weights, with a contribution from every original occurrence. The
+right-hand side $b$ includes final and outgoing weights and has a known
+interval $[b_-,b_+]$. The ordinary local star proposes a suffix vector
+$y$ and a positive direction $v$. The verifier checks
+$d=(I-A)v>0$ over the original sparse rows. The resulting inequality
+$Av<v$ gives $\rho(A)<1$, and $(I-A)^{-1}$ is entrywise nonnegative.
+
+For either endpoint of the right-hand side, the residual is
+$r_\pm=b_\pm-(I-A)y$. Set $c=\max_i\max(|r_{-,i}|,|r_{+,i}|)/d_i$.
+Every admitted residual lies between $-cd$ and $cd$. Applying the
+nonnegative inverse bounds the suffix by $y-cv$ and $y+cv$. The lower
+endpoint may be clipped at zero. Thus a small residual with very small
+$d$ can still give a wide interval. The verifier propagates the suffix
+intervals to the initial marks and tests the returned scalar against
+both endpoints. The relative check requires a positive lower endpoint
+or a zero-width interval and a score both equal to zero.
+
+Observation construction has the same state and arc budgets as a fixed
+query. Each declared local star order $m_i$ includes auxiliary states
+for parallel transitions. The compiler checks the aggregate
+$\sum_i m_i^2$ before allocating the associated packed expansions or
+dense star matrices. Ordinary closure uses $O(\sum_i m_i^3)$ scalar work.
+The matrix-vector proposals add $O(\sum_i m_i^2)$ floating-point work,
+and the verifier adds $O(V+E+W)$ exact operations for active states $V$,
+arc occurrences $E$, and original weight slots $W$. Its bit budget is
+checked conservatively before producing exact integer intermediates.
+The arithmetic cost per rational operation includes bounded integer
+products and gcds. Saved tensors for differentiating the packed score
+follow the usual evaluation contract and can retain quadratic arrays
+at each of the $m_i$ elimination pivots. The certificate verifier keeps
+one pair of rational endpoints per active state and one exact value per
+weight slot, in addition to the sparse observation and closed matrices.
+
+When the reachable graph, star order, closure cells, or exact arithmetic
+exceeds a limit, the call raises the corresponding resource error.
+Unsupported algebra or precision, divergence, an unverified contraction,
+and an interval that misses the requested tolerance have distinct
+diagnostics. LogProb requires a separate directed transcendental
+enclosure before this value guarantee can apply to log weights.
+
 ## Exact string factor trees
 
 A `StringVariable` names a string type and may specify an observed word.
@@ -1040,10 +1093,12 @@ choices held fixed.
         - NgramMessagePlan
         - NgramProjection
         - PathStatistics
+        - PathWeightCertificate
         - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
         - PrunedStringBeliefResult
         - RelationLimitError
+        - RelationAccuracyError
         - RelationPath
         - StringAlignment
         - StringAlignmentCertificate
@@ -1065,6 +1120,7 @@ choices held fixed.
         - backoff_query
         - backoff_total_weight
         - best_marginal_output
+        - certify_markov_path_weight
         - closure
         - compile_ranked_ot
         - concatenate
