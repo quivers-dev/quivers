@@ -610,6 +610,14 @@ def test_proof_keys_group_equal_meanings_within_one_identical_chart_item() -> No
         in {"Mix__proofs", "Mix__evidence__key_outcomes"}
     )
     assert calls == ("Mix__proofs", "Mix__evidence__key_outcomes")
+    (proofs, grouped) = [
+        event.detail
+        for event in actual.result.trace
+        if event.event in {"deduction.proofs", "deduction.grouped_outcomes"}
+    ]
+    assert proofs["normalized"] is False and proofs["structural_goal_proofs"] == 3
+    assert grouped["normalized"] is True and grouped["input_rows"] == 3
+    assert grouped["key_type"] == "Bool" and grouped["positive_rows"] == 2
 
 
 def test_proof_keys_reject_swapped_proof_indices() -> None:

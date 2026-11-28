@@ -654,6 +654,12 @@ The query runs the projection once per supported goal, then groups keys
 in a hash table. Its extra work depends on the number of goal items and
 the cost of computing and comparing their keys, even when the proof count
 is much larger. The masses and their normalizer retain their gradients.
+The native trace emits a separate `deduction.grouped_outcomes` event after
+this stage. It records the key type, number of input rows, distinct keys,
+positive output rows, and whether this stage normalizes the result. The
+underlying packed query reports its own raw item or proof masses.
+Computing the key, comparing structured values, and summing the masses
+have separate costs and are listed as unmeasured here.
 
 #### Returning weighted proofs
 

@@ -142,6 +142,7 @@ def test_packed_goals_map_once_then_group_and_normalize_exact_typed_keys() -> No
         and event.detail["computation"] in ("Mix__outcomes", "classify")
     ]
     assert calls == ["Mix__outcomes", "classify", "classify", "classify"]
+    _assert_grouping_trace(result, normalized=True)
     for yes, no, oracle in (
         (1.0, 0.0, weights[:3].exp().sum()),
         (0.0, 1.0, weights[3].exp()),
@@ -156,12 +157,44 @@ def test_packed_goals_map_once_then_group_and_normalize_exact_typed_keys() -> No
         )
         assert isinstance(raw.value, torch.Tensor)
         torch.testing.assert_close(raw.value, oracle, atol=1e-12, rtol=1e-12)
+        _assert_grouping_trace(raw, normalized=False)
+
+
+def _assert_grouping_trace(run, *, normalized: bool) -> None:
+    (packed, grouped) = [
+        event
+        for event in run.result.trace
+        if event.event in {"deduction.outcomes", "deduction.grouped_outcomes"}
+    ]
+    assert packed.event == "deduction.outcomes"
+    assert (packed.detail["key"], packed.detail["normalized"]) == ("item", False)
+    assert (packed.detail["goal_items"], packed.detail["positive_rows"]) == (4, 3)
+    assert grouped.event == "deduction.grouped_outcomes"
+    assert grouped.detail["observer"] == "weighted-typed-key-rows"
+    assert grouped.detail["algorithm"] == "hash-grouped-structural-keys"
+    assert grouped.detail["key_type"] == "Key"
+    assert grouped.detail["normalized"] is normalized
+    assert grouped.detail["input_rows"] == packed.detail["positive_rows"]
+    assert grouped.detail["distinct_keys"] == grouped.detail["positive_rows"] == 2
+    assert "key_hash_and_equality" in grouped.detail["unmeasured"]
 
 
 def test_keyed_query_checks_empty_support_after_mapping() -> None:
     compiled = load_source(GRAMMAR + "\nexport normalized\nexport raw\n")
     data = {"sentence": ("missing",), "yes": 0.8, "no": 0.3}
-    assert compiled.run("raw", data=data).value == 0.0
+    raw = compiled.run("raw", data=data)
+    assert raw.value == 0.0
+    (grouped,) = [
+        event.detail
+        for event in raw.result.trace
+        if event.event == "deduction.grouped_outcomes"
+    ]
+    assert (
+        grouped["input_rows"]
+        == grouped["distinct_keys"]
+        == grouped["positive_rows"]
+        == 0
+    )
     with pytest.raises(ExecutionFailure, match="without positive goal mass"):
         compiled.run("normalized", data=data)
 

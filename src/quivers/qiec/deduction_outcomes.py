@@ -877,7 +877,7 @@ def outcome_grouping_handler(
     """
 
     def group(
-        request: RuntimeRequest, _resume: Resumption, _context: ClauseContext
+        request: RuntimeRequest, _resume: Resumption, context: ClauseContext
     ) -> TailResume:
         """Fold the typed input rows and resume with their grouped masses.
 
@@ -887,8 +887,8 @@ def outcome_grouping_handler(
             The evaluated rows and the normalization flag.
         _resume : Resumption
             The resumption supplied by the machine.
-        _context : ClauseContext
-            The clause context supplied by the machine.
+        context : ClauseContext
+            The optional execution trace supplied by the machine.
 
         Returns
         -------
@@ -908,8 +908,28 @@ def outcome_grouping_handler(
             and row.result_type == definition.output_type
         ):
             if row.constructor == grouping.empty and not row.fields:
-                masses = _outcome_masses(
-                    grouped, decide(normalize, "outcome normalization")
+                normalized = decide(normalize, "outcome normalization")
+                masses = _outcome_masses(grouped, normalized)
+                context.emit_trace(
+                    "deduction.grouped_outcomes",
+                    lambda: {
+                        "observer": "weighted-typed-key-rows",
+                        "algorithm": "hash-grouped-structural-keys",
+                        "key_type": render_static(grouping.key_type),
+                        "normalized": normalized,
+                        "derivative": "autograd-on-finite-log-weights-at-fixed-support",
+                        "input_rows": sum(len(weights) for weights in grouped.values()),
+                        "distinct_keys": len(grouped),
+                        "positive_rows": len(masses),
+                        "unmeasured": (
+                            "key_computation",
+                            "key_hash_and_equality",
+                            "group_arithmetic",
+                            "backward_arithmetic",
+                            "elements_saved_for_backward",
+                            "peak_bytes",
+                        ),
+                    },
                 )
                 return TailResume(
                     value=_materialize_rows(
