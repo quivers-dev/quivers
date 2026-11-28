@@ -6,6 +6,7 @@ from collections.abc import Callable
 from fractions import Fraction
 from functools import cached_property
 from hashlib import sha256
+from typing import TYPE_CHECKING
 
 import didactic.api as dx
 import torch
@@ -41,6 +42,12 @@ from quivers.qiec.types import (
     TypeExpr,
     product_type,
 )
+
+if TYPE_CHECKING:
+    from quivers.qiec.centered_string_certificate import (
+        CenteredStringLogProbCertificateRequest,
+    )
+
 
 type _Witness = tuple[_EncodedRatio, _EncodedRatio, _EncodedRatio]
 type _Report = tuple[
@@ -203,13 +210,15 @@ type _CertificateRequest = (
 )
 
 
-def _validate_numeric_policy(request: _CertificateRequest) -> None:
+def _validate_numeric_policy(
+    request: _CertificateRequest | CenteredStringLogProbCertificateRequest,
+) -> None:
     """Check the shared arithmetic policy.
 
     Parameters
     ----------
-    request : FixedLogProbPathCertificateRequest or FixedCyclicLogProbPathCertificateRequest
-        A fixed LogProb request with declared tolerance and arithmetic limits.
+    request : FixedLogProbPathCertificateRequest or FixedCyclicLogProbPathCertificateRequest or CenteredStringLogProbCertificateRequest
+        A LogProb request with declared tolerance and arithmetic limits.
 
     Raises
     ------
@@ -371,23 +380,7 @@ class _LogProbCertificateRuntime:
             return _unavailable("unsupported_precision", error)
         except RelationAccuracyError as error:
             return _unavailable("unverified_accuracy", error)
-        score = proof.weight.detach()
-        return (
-            "certified",
-            "",
-            score.new_tensor(True, dtype=torch.bool),
-            score,
-            (
-                _encode(proof.lower),
-                _encode(proof.upper),
-                _encode(proof.absolute_log_error),
-            ),
-            score.new_tensor(proof.lower is not None, dtype=torch.bool),
-            score.new_tensor(
-                (proof.decimal_work, proof.exact_work, proof.exact_bits),
-                dtype=torch.int64,
-            ),
-        )
+        return _pack_log_certificate(proof)
 
     def attach(self, module: QiecModule, attachments: RuntimeAttachments) -> None:
         """Attach to the exact ordinary checked foreign Compute handler.
@@ -491,6 +484,38 @@ class FixedCyclicLogProbPathCertificateRuntimeProvider(_LogProbCertificateRuntim
         if not isinstance(request, FixedCyclicLogProbPathCertificateRequest):
             raise TypeError("the cyclic provider requires a bounded cyclic request")
         super().__init__(request, parameters)
+
+
+def _pack_log_certificate(proof: LogPathWeightCertificate) -> _Report:
+    """Pack the finite witness and score, with a distinct log-zero result.
+
+    Parameters
+    ----------
+    proof : LogPathWeightCertificate
+        The delivered value and its exact rational bounds.
+
+    Returns
+    -------
+    tuple
+        The typed, value-only LogProb certificate report.
+    """
+    score = proof.weight.detach()
+    return (
+        "certified",
+        "",
+        score.new_tensor(True, dtype=torch.bool),
+        score,
+        (
+            _encode(proof.lower),
+            _encode(proof.upper),
+            _encode(proof.absolute_log_error),
+        ),
+        score.new_tensor(proof.lower is not None, dtype=torch.bool),
+        score.new_tensor(
+            (proof.decimal_work, proof.exact_work, proof.exact_bits),
+            dtype=torch.int64,
+        ),
+    )
 
 
 def _unavailable(status: str, error: Exception) -> _Report:

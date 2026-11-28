@@ -52,7 +52,7 @@ _TRAPS = [*_RANGE_SIGNALS, DivisionByZero, FloatOperation, InvalidOperation]
 
 @dataclass(frozen=True, slots=True)
 class LogPathWeightCertificate:
-    """A packed LogProb score and exact forward-error bounds in log units.
+    """A packed LogProb value and exact forward-error bounds in log units.
 
     A verified zero mass has two absent log endpoints, a score of negative
     infinity, and zero error by convention. For positive mass, the two

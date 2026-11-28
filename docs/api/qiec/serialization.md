@@ -427,6 +427,31 @@ and JAGS report the named native capability as unavailable.
 
 ::: quivers.qiec.centered_string_runtime.CenteredStringLogProbRuntimeProvider
 
+#### Checked centered log-ratio certificates
+
+`CenteredStringLogProbCertificateRequest` wraps the ordinary centered
+conditional or tree request with a rational absolute log tolerance
+and bounded verification settings. Its separate foreign handler
+identity includes the exact original centered objective and the
+tolerance. The provider reads one original weight snapshot for both
+the nominal packed score and the directed proof.
+
+The existing value-certificate report shape returns a detached score,
+two rational log endpoints, a rational absolute error bound, and
+Decimal and exact-arithmetic work. A certified log-zero numerator has
+an available log-zero score, absent endpoints, and zero error by
+convention. The provider distinguishes insufficient accuracy, an
+undefined denominator, numerical range failure, unsupported closure
+or precision, and resource exhaustion. The certificate concerns the
+original dyadic inputs, including the effects of rounding the reduced
+factors. A refusal supplies no score or witness. The ordinary centered
+score and its live derivative remain available through their own
+request and handler.
+
+::: quivers.qiec.centered_string_certificate.CenteredStringLogProbCertificateRequest
+
+::: quivers.qiec.centered_string_certificate.CenteredStringLogProbCertificateRuntimeProvider
+
 ### A tail outcome for capped cyclic paths
 
 `FixedCappedCyclicRelationPathSampleRequest` specifies a different
