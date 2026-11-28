@@ -11,6 +11,7 @@ from quivers.core.algebras import LOG_PROB
 from quivers.dsl.ast_nodes import (
     LetExprCall,
     LetExprVar,
+    OptionNumber,
     ProgramDecl,
     QiecComputationDecl,
     QiecInterpretationDecl,
@@ -41,6 +42,7 @@ from quivers.qiec.foreign import (
     DeductionOutcomeLaw,
     DeductionOutcomes,
     DeductionProofs,
+    _NodeBoundedDeductionProofs,
 )
 from quivers.qiec.identifiers import (
     ComputationId,
@@ -556,6 +558,25 @@ def declare_outcomes(
             "outcome queries do not yet support a category depth bound",
             code=OUTCOME_CODE,
         )
+    node_limit = None
+    if proofs:
+        options = tuple(
+            entry for entry in system.decl.options if entry.key == "proof_nodes"
+        )
+        if options:
+            option = options[0].value
+            if (
+                len(options) != 1
+                or not isinstance(option, OptionNumber)
+                or not option.value.is_integer()
+                or not 1 <= option.value < 2**53
+            ):
+                elaborator._fail(
+                    system.decl,
+                    "proof_nodes must be one positive integer below 2**53",
+                    code=OUTCOME_CODE,
+                )
+            node_limit = int(option.value)
     presented = system.presentation_cell[0]
     assert presented is not None
     presentation = presented.presentation
@@ -630,7 +651,11 @@ def declare_outcomes(
                 BOOL, (IndexLiteral(value=semantics.table_size, sort=NAT),)
             )
         elif proofs:
-            semantics = DeductionProofs(chart=chart)
+            semantics = (
+                DeductionProofs(chart=chart)
+                if node_limit is None
+                else _NodeBoundedDeductionProofs(chart=chart, node_limit=node_limit)
+            )
     except (ValueError, dx.ValidationError) as error:
         elaborator._fail_kernel(node, error, fallback=OUTCOME_CODE)
     key_binders: tuple[IndexBinder, ...] = ()

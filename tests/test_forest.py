@@ -225,6 +225,88 @@ def test_exponential_budget_refuses_before_building_any_proof(
     assert calls == [21]
 
 
+def test_proof_node_budget_counts_cartesian_choices_and_shared_goals() -> None:
+    forest, _, (base, smaller, larger) = _squared_forest(2)
+    absent = Item(family=base.family, arguments=(9,))
+    # The packed chart normally never records an unsupported grounding.
+    # Include one here to exercise reaching a zero factor after a nonzero
+    # node sum. It contributes no proof and no nodes.
+    edge = forest.edges[larger][0]
+    forest = forest.with_(
+        edges={
+            **forest.edges,
+            larger: (*forest.edges[larger], edge.with_(premises=(smaller, absent))),
+        }
+    )
+    observed = []
+
+    def observe(node, _children):
+        observed.append(node.item)
+
+    interpretation = HostInterpretation(
+        presentation=forest.presentation,
+        operations={
+            identity: observe for identity in forest.presentation.constructors_by_id
+        },
+    )
+    goals = (larger, smaller, larger, absent)
+    # There are 4 proofs of size 3 and 16 proofs of size 7. Count the
+    # repeated goal once and each premise occurrence within a proof.
+    with pytest.raises(ForestRefused, match="124 unfolded proof nodes") as failed:
+        fold_derivations_many(
+            forest,
+            goals,
+            LOG_PROB,
+            {},
+            interpretation,
+            limit=20,
+            like=LIKE,
+            node_limit=123,
+        )
+    assert failed.value.code is ForestRefusal.TOO_MANY_NODES
+    assert not observed
+    rows = fold_derivations_many(
+        forest, goals, LOG_PROB, {}, interpretation, limit=20, like=LIKE, node_limit=124
+    )
+    assert rows[absent] == []
+    assert [proof.size() for proof, _, _ in rows[smaller]] == [3] * 4
+    assert [proof.size() for proof, _, _ in rows[larger]] == [7] * 16
+    assert Counter(observed) == {base: 2, smaller: 4, larger: 16}
+
+
+def test_proof_node_budget_annihilates_a_saturated_count_at_an_impossible_premise() -> (
+    None
+):
+    forest, _, (base, smaller, larger) = _squared_forest(2)
+    absent = Item(family=base.family, arguments=(9,))
+    edge = forest.edges[larger][0]
+    forest = forest.with_(
+        edges={**forest.edges, larger: (edge.with_(premises=(smaller, absent)),)}
+    )
+
+    def forbidden(*_):
+        pytest.fail("an impossible proof reached the interpretation")
+
+    interpretation = HostInterpretation(
+        presentation=forest.presentation,
+        operations={
+            identity: forbidden for identity in forest.presentation.constructors_by_id
+        },
+    )
+    # With both caps zero, the smaller item's actual count and size are
+    # each truncated to one. The absent second occurrence still annihilates.
+    assert fold_derivations_many(
+        forest,
+        (larger,),
+        LOG_PROB,
+        {},
+        interpretation,
+        limit=0,
+        like=LIKE,
+        node_limit=0,
+    ) == {larger: []}
+
+
 def test_zero_mass_proofs_still_count_as_structural_work() -> None:
     forest, occurrences, (goal,) = _squared_forest(0)
     interpretation = HostInterpretation(

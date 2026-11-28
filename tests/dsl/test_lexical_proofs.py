@@ -14,7 +14,7 @@ from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.qiec_tooling import target_diagnostics
 from quivers.qiec import deduction_outcomes
 from quivers.qiec.checking import KernelError
-from quivers.qiec.evaluator import RuntimeConstructor
+from quivers.qiec.evaluator import Evaluator, RuntimeConstructor
 from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.foreign import DeductionProofs
 from quivers.qiec.kinds import NAT, IndexBinder
@@ -22,6 +22,7 @@ from quivers.qiec.module import QiecModule, validate_module
 from quivers.qiec.program_runtime import run_program
 from quivers.qiec.serialization import dumps, loads
 from quivers.qiec.types import IndexLiteral, TypeApplication
+from quivers.stochastic import forest
 from quivers.transpile import UnsupportedConstruct, transpile
 
 
@@ -239,6 +240,159 @@ export listed
     )
 
 
+def _branching_proofs(depth: int, cap_option: str) -> str:
+    """Shared empty proofs, two full-span goals, and an impossible alternative."""
+    categories = ", ".join(f"C{index}" for index in range(depth + 1))
+    forks = "\n".join(
+        f"    rule fork{index} : span(0, 0, C{index - 1}, lex), "
+        f"span(0, 0, C{index - 1}, lex) |- span(0, 0, C{index}, lex)"
+        for index in range(1, depth + 1)
+    )
+    return f"""\
+object Token : FinSet 1
+object Result : Real 1
+
+deduction Forks : Token -> Token [semiring=LogProb, start=S{cap_option}]
+    atoms span, {categories}, A, B, M, S, lex, on, off
+    rule base : |- span(0, 0, C0, lex)
+{forks}
+    rule left : span(0, 0, C{depth}, lex), span(0, 1, A, lex) |- span(0, 1, S, on)
+    rule right : span(0, 1, B, lex) |- span(0, 1, S, off)
+    rule dead : span(0, 0, C{depth}, lex), span(0, 1, M, lex) |- span(0, 1, S, on)
+    lexicon
+        "x" : A = lex #[learnable]
+        "x" : B = lex #[learnable]
+
+program listed : Token -> Result
+    let proofs = parse_normalized_proofs(Forks, sentence, 2)
+    return proofs
+
+export listed
+"""
+
+
+def test_authored_proof_node_cap_admits_exactly_bounded_rows_and_gradients() -> None:
+    depth = 8
+    # The on proof extends a branching empty proof by a rule and a word.
+    # The off proof contains one rule and one word.
+    on_nodes = (1 << (depth + 1)) + 1
+    node_budget = on_nodes + 2
+    checked = load_source(_branching_proofs(depth, f", proof_nodes={node_budget}"))
+    module = loads(dumps(checked.qiec))
+    assert isinstance(module, QiecModule) and module == checked.qiec
+    parameters = torch.tensor([-0.125, -0.25], dtype=torch.float64, requires_grad=True)
+    for _ in range(2):
+        result = run_program(
+            module,
+            "listed",
+            data={"sentence": ("x",)},
+            sites={},
+            parameters={
+                f"Forks.lex.{index}": value
+                for index, value in enumerate(parameters.unbind())
+            },
+        )
+        rows = result.value
+        measured = {}
+        for _ in range(2):
+            assert isinstance(rows, RuntimeConstructor)
+            form = rows.static_arguments[-1]
+            assert isinstance(form, IndexLiteral)
+            proof, weight, rows = rows.fields
+            assert isinstance(weight, torch.Tensor)
+            todo = [proof]
+            seen = set()
+            while todo:
+                node = todo.pop()
+                assert isinstance(node, RuntimeConstructor) and id(node) not in seen
+                seen.add(id(node))
+                assert len(seen) <= node_budget
+                todo.extend(
+                    field
+                    for field in node.fields
+                    if isinstance(field, RuntimeConstructor)
+                )
+            assert form.value not in measured
+            measured[form.value] = len(seen), weight
+        assert isinstance(rows, RuntimeConstructor) and rows.fields == ()
+        assert {form: count for form, (count, _) in measured.items()} == {
+            "on": on_nodes,
+            "off": 2,
+        }
+        actual = (0.8 * measured["on"][1].exp() + 0.2 * measured["off"][1].exp()).log()
+        expected = (parameters.softmax(0) @ parameters.new_tensor([0.8, 0.2])).log()
+        torch.testing.assert_close(actual, expected)
+        (gradient,) = torch.autograd.grad(actual, parameters)
+        torch.testing.assert_close(
+            gradient, torch.autograd.grad(expected, parameters)[0]
+        )
+        with torch.no_grad():
+            parameters.add_(0.25 * gradient)
+        (event,) = [
+            item for item in result.result.trace if item.event == "deduction.proofs"
+        ]
+        assert event.detail["proof_node_budget"] == node_budget
+        assert (
+            event.detail["proof_budget"] == event.detail["structural_goal_proofs"] == 2
+        )
+
+
+@pytest.mark.parametrize("zero_weight", (False, True))
+def test_authored_proof_node_refusal_creates_no_proof_or_weight_work(
+    monkeypatch: pytest.MonkeyPatch, zero_weight: bool
+) -> None:
+    cap = 514
+    module = load_source(_branching_proofs(8, f", proof_nodes={cap}")).qiec
+    assert isinstance(module, QiecModule)
+    descriptor = next(
+        handler.foreign
+        for handler in module.handlers
+        if isinstance(handler.foreign, DeductionProofs)
+    )
+    proof_ids = descriptor.proof_presentation.constructors_by_id.keys()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("proof construction or weight evaluation preceded the node check")
+
+    materialize = Evaluator._constructor_value
+
+    def check_materialization(self, value, environment):
+        assert value.constructor not in proof_ids
+        return materialize(self, value, environment)
+
+    monkeypatch.setattr(forest, "Derivation", forbidden)
+    monkeypatch.setattr(forest, "edge_weight", forbidden)
+    monkeypatch.setattr(deduction_outcomes, "closed_derivation_value", forbidden)
+    monkeypatch.setattr(Evaluator, "_constructor_value", check_materialization)
+    observed = []
+    with pytest.raises(
+        ExecutionFailure, match="too-many-proof-nodes.*515.*node limit of 514"
+    ):
+        run_program(
+            module,
+            "listed",
+            data={"sentence": ("x",)},
+            sites={},
+            parameters={"Forks.lex.0": -torch.inf if zero_weight else -0.125},
+            observer=observed.append,
+        )
+    assert all(item.event != "deduction.proofs" for item in observed)
+    (event,) = [item for item in observed if item.event == "deduction.proofs.refused"]
+    assert event.detail["reason"] == "too-many-proof-nodes"
+    assert event.detail["proof_node_budget"] == cap
+    assert event.detail["minimum_structural_proof_nodes"] == 515
+
+
+@pytest.mark.parametrize(
+    "option", ("0", "1.5", "inf", "9007199254740992", "2, proof_nodes=3")
+)
+def test_proof_node_cap_refuses_invalid_options(option: str) -> None:
+    with pytest.raises(
+        QiecDiagnosticError, match="proof_nodes must be one positive integer"
+    ):
+        lower_qvr_to_qiec(parse(_branching_proofs(1, f", proof_nodes={option}")))
+
+
 def test_proof_report_distinguishes_structural_budget_from_positive_mass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -408,9 +562,10 @@ export two
     assert "another" in sorts["Other__Term"].constructors
 
 
-def test_proof_target_refusal_is_reached_only_by_its_own_entry() -> None:
+@pytest.mark.parametrize("cap_option", ("", ", proof_nodes=10"))
+def test_proof_target_refusal_is_reached_only_by_its_own_entry(cap_option: str) -> None:
     source = (
-        GRAMMAR
+        GRAMMAR.replace("start=S]", f"start=S{cap_option}]")
         + QUERY[: QUERY.index("export assess")]
         + """
 program independent : Token -> Result

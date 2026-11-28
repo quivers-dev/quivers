@@ -140,7 +140,8 @@ type LexiconEntry = tuple[str, LexiconPattern, LexiconLF, bool]
 #   the ``start`` goal symbol, the ``depth`` bound, the Kleene-star
 #   ``tolerance``, the agenda ``max_iterations``, and the attached
 #   item ``signature`` / ``encoder``, and whether the weights are
-#   normalized per left-hand side (``normalize``).
+#   normalized per left-hand side (``normalize``). Native proof
+#   queries read the optional unfolded limit ``proof_nodes``.
 # * Sequent-rule pragmas read the ``learnable`` / ``bounded`` flags
 #   and the ``parent`` composition reference.
 # * Lexicon-entry pragmas (inline and ``from "file"``) read only the
@@ -155,6 +156,7 @@ _DEDUCTION_OPTION_KEYS: frozenset[str] = frozenset(
         "max_iterations",
         "signature",
         "encoder",
+        "proof_nodes",
         NORMALIZE_OPTION,
     }
 )

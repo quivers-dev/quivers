@@ -868,6 +868,37 @@ class DeductionProofs(QiecModel):
         return export_lexical_proofs(presentation, presentation.name)
 
 
+class _NodeBoundedDeductionProofs(DeductionProofs):
+    """A proof query with a separate unfolded structural output limit.
+
+    Parameters
+    ----------
+    chart
+        The same lexical chart descriptor used by the row-only query.
+    tag
+        The proof query's operation kind. The wire record has its own type tag.
+    node_limit
+        A positive cap on the total constructor occurrences of all
+        structural goal proofs, including zero-weight proofs.
+    """
+
+    chart: DeductionOutcomes = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["deduction-proofs"] = "deduction-proofs"
+    node_limit: int
+
+    @dx.model_validator()
+    def _check_node_limit(self) -> None:
+        """Require a positive proof size budget.
+
+        Raises
+        ------
+        ValueError
+            If the cap would not allow a single node.
+        """
+        if self.node_limit < 1:
+            raise ValueError("deduction proof node budgets must be positive")
+
+
 class DeductionBooleanOutcomes(QiecModel):
     """Push finite lexical proof mass to a Boolean interpretation.
 

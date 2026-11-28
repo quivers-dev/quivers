@@ -825,6 +825,13 @@ this limit before constructing any proof values. The count includes
 zero-weight proofs. An exceeded limit raises an error, and a successful
 query returns each positive-weight proof with its log weight.
 
+A deduction can also declare `proof_nodes=512` in its option block.
+This positive integer below $2^{53}$ limits the total rule and axiom occurrences in all
+selected structural proofs. A shared subtree contributes once per premise
+position that uses it. The node limit applies before filtering zero-weight
+proofs, and it excludes result list entries and the packed chart itself.
+Omitting the option leaves the proof-count limit alone.
+
 Run `python -m tests.benchmarks.deduction_proof_list` to measure the
 checked listing as the number of alternatives and the proof length
 vary. The benchmark counts proof constructors and checks that a
@@ -853,8 +860,31 @@ It records the budget, the number of structural proofs before filtering,
 the number of typed result rows, and the packed-forest construction
 counters. Reification work and backward storage are unmeasured. If the
 budget is exceeded, `deduction.proofs.refused` records the budget and the
-reason. The check saturates proof counts at the budget plus one, so the
-event supplies no exact total after refusal.
+reason. With only a proof-count limit, the check saturates counts at the
+limit plus one. A refusal can report a lower bound on the total.
+
+With a node limit, the same packed traversal counts proofs and their
+total unfolded size. For a partial combination with proof count $p$ and
+node sum $q$, adding a premise occurrence with count $c$ and node sum $s$
+gives $(pc, ps+qc)$. Each choice of that premise repeats the earlier nodes,
+and each earlier combination repeats the chosen premise's nodes. An edge adds
+$pc$ root nodes after the last premise. Summing alternatives and distinct
+goals gives the structural output size. A missing premise contributes
+$(0,0)$, so an impossible edge adds no nodes even when an earlier premise
+already exceeded a limit.
+
+The traversal saturates both counts at one above the larger limit. Every
+formula uses nonnegative integer sums and products, which preserve this
+truncation. After selecting the goal ancestors, the check makes one pass
+over them. This uses $O(V+E+R)$ arithmetic operations for $V$ items,
+$E$ edges and $R$ premise references in that part of the forest. Selecting
+the ancestors also scans the original chart's item lists. The count
+tables use $O(V)$ integers whose bit length is logarithmic in the larger
+limit. This work follows chart construction and precedes proof
+enumeration, proof weights and constructor allocation.
+The trace includes `proof_node_budget` when configured. A
+`too-many-proof-nodes` refusal also reports
+`minimum_structural_proof_nodes`.
 
 For instance, two rules can prove the same full span. This program uses
 the packed chart to return their total weight by summing the two proof rows.
@@ -864,7 +894,7 @@ the packed chart to return their total weight by summing the two proof rows.
 object Token : FinSet 2
 object Mass : Real 1
 
-deduction Reading : Token -> Token [semiring=LogProb, start=S]
+deduction Reading : Token -> Token [semiring=LogProb, start=S, proof_nodes=6]
     atoms span, A, B, C, S, meaning, word
     rule first : span(I, K, A, word), span(K, J, C, word) |- span(I, J, S, meaning)
     rule second : span(I, K, B, word), span(K, J, C, word) |- span(I, J, S, meaning)
