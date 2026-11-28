@@ -10,6 +10,7 @@ from operator import eq, ge, gt, le, lt, ne
 from typing import cast
 
 from quivers.qiec.checking import KernelRegistry
+from quivers.qiec.contracts import Condition, DerivativeSemantics
 from quivers.qiec.evaluator import EvaluationError, Evaluator, FuelExhaustedError
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
 from quivers.qiec.primitives import PRIMITIVES
@@ -44,6 +45,20 @@ _COMPARISONS = {
 _BOOLEANS = {PRIMITIVES[name].id for name in ("and", "or", "not", "eq_bool", "ne_bool")}
 _MAX_POWER = 1_024
 _MAX_COEFFICIENT_BITS = 16_384
+_IMPLICIT_ROOT = DerivativeSemantics.implicit(
+    Condition(
+        name="regular-residual",
+        statement="The residual is continuously differentiable near the supplied root.",
+    ),
+    Condition(
+        name="zero-residual",
+        statement="The residual at the supplied root is exactly zero.",
+    ),
+    Condition(
+        name="nonzero-state-derivative",
+        statement="The residual derivative with respect to its first parameter is nonzero.",
+    ),
+)
 
 
 class JvpUnsupported(ValueError):
@@ -56,6 +71,10 @@ class JvpBoundaryError(JvpUnsupported):
 
 class JvpLimit(ValueError):
     """Exact derivative evaluation exhausted a resource bound."""
+
+
+class ImplicitRootError(ValueError):
+    """The supplied point cannot establish a regular implicit root."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +91,36 @@ class ExactGradient:
 
     value: Fraction
     gradient: tuple[Fraction, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExactImplicitGradient:
+    """The exact gradient of a local scalar solution branch.
+
+    Parameters
+    ----------
+    value : Fraction
+        The supplied root verified by the residual computation.
+    gradient : tuple[Fraction, ...]
+        The local solution's partial derivatives in parameter order.
+    state_derivative : Fraction
+        The residual derivative with respect to the root coordinate.
+    """
+
+    value: Fraction
+    gradient: tuple[Fraction, ...]
+    state_derivative: Fraction
+
+    @property
+    def semantics(self) -> DerivativeSemantics:
+        """The derivative report and its checked implicit hypotheses.
+
+        Returns
+        -------
+        DerivativeSemantics
+            An implicit derivative over the regular zero of the residual.
+        """
+        return _IMPLICIT_ROOT
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,6 +767,66 @@ def exact_gradient(
     return ExactGradient(result.value, evaluator.gradient(result, len(parameters)))
 
 
+def exact_implicit_gradient(
+    module: QiecModule,
+    residual: str,
+    root: int | Fraction,
+    arguments: tuple[int | Fraction, ...],
+    *,
+    fuel: int = 65_536,
+) -> ExactImplicitGradient:
+    """Differentiate the local solution of a scalar residual equation.
+
+    The residual runs in the regular scalar fragment of
+    :func:`exact_gradient`. Its first parameter is the unknown. At the
+    supplied point, the residual must vanish exactly and its derivative
+    in that first coordinate must be nonzero. The result differentiates
+    the local branch through this root with respect to the remaining
+    parameters.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked module declaring the residual.
+    residual : str
+        The named real computation defining the scalar equation.
+    root : int or Fraction
+        The exact value to verify in its first parameter.
+    arguments : tuple[int or Fraction, ...]
+        Values of its other parameters in order.
+    fuel : int
+        The maximum number of reference machine steps.
+
+    Returns
+    -------
+    ExactImplicitGradient
+        The verified root, local derivatives and residual state derivative.
+
+    Raises
+    ------
+    ImplicitRootError
+        If the residual is nonzero or its first partial derivative vanishes.
+    JvpUnsupported
+        If the residual or a reached operation is unsupported.
+    JvpBoundaryError
+        If an input-dependent comparison is at equality.
+    JvpLimit
+        If the evaluation or exact gradient exhausts a bound.
+    ValueError
+        If the point or limit is malformed.
+    """
+    value = _fraction(root)
+    evaluated = exact_gradient(module, residual, (value, *arguments), fuel=fuel)
+    if evaluated.value != 0:
+        raise ImplicitRootError("the supplied root does not make the residual zero")
+    state_derivative, *other_partials = evaluated.gradient
+    if state_derivative == 0:
+        raise ImplicitRootError("the residual's state derivative is zero at the root")
+    gradient = tuple(-partial / state_derivative for partial in other_partials)
+    _bound(*gradient)
+    return ExactImplicitGradient(value, gradient, state_derivative)
+
+
 def exact_jvp(
     module: QiecModule,
     computation: str,
@@ -972,12 +1081,15 @@ def _run_derivative(
 
 __all__ = [
     "ExactGradient",
+    "ExactImplicitGradient",
     "ExactJvp",
     "ExactMixedDerivative",
+    "ImplicitRootError",
     "JvpBoundaryError",
     "JvpLimit",
     "JvpUnsupported",
     "exact_gradient",
+    "exact_implicit_gradient",
     "exact_jvp",
     "exact_mixed_derivative",
 ]

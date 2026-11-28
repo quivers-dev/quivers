@@ -96,6 +96,32 @@ result = exact_gradient(module, "squared", (3,))
 assert (result.value, result.gradient) == (36, (24,))
 ```
 
+### Implicit roots
+
+`exact_implicit_gradient` takes a scalar residual $F(z,\theta)$ and an
+exact root $z$ at the supplied parameter values. It requires
+$F(z,\theta)=0$, a regular scalar execution, and a nonzero state derivative
+$F_z(z,\theta)$. These conditions give a local solution branch through
+$z$, with gradient $-F_\theta/F_z$. The result records the implicit
+derivative conditions and the exact state derivative.
+
+```python
+from fractions import Fraction
+
+from quivers.dsl import Compiler, parse
+from quivers.qiec import exact_implicit_gradient
+
+source = """
+define residual(z : Real, x : Real) : Real !{} =
+    return z * z - x
+"""
+module = Compiler(parse(source), module_name="exact-root-example").qiec_module
+assert module is not None
+result = exact_implicit_gradient(module, "residual", 3, (9,))
+assert (result.value, result.gradient) == (3, (Fraction(1, 6),))
+assert result.semantics.kind == "implicit"
+```
+
 ::: quivers.qiec.differentiation
 
 ::: quivers.qiec.effects
