@@ -160,6 +160,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputation,
     QiecComputationDecl,
     QiecInterpretationDecl,
+    QiecRelationComposeDecl,
     QiecRelationDecl,
     QiecRelationScoreDecl,
     QiecStringGraphScoreDecl,
@@ -1052,6 +1053,9 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
             f"{pad}final {mark.state} [weight={mark.weight}]" for mark in stmt.final
         )
         return "\n".join(lines)
+    if isinstance(stmt, QiecRelationComposeDecl):
+        text = f"relation {stmt.name} = compose({stmt.left}, {stmt.right})"
+        return _with_docs(stmt.docs, indent, text)
     if isinstance(stmt, QiecRelationScoreDecl | QiecStringGraphScoreDecl):
         result = _emit_qiec_type(stmt.result_type)
         keyword = (

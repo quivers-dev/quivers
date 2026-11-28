@@ -1337,6 +1337,32 @@ class QiecRelationDecl(Statement):
     kind: Literal["relation_decl"] = "relation_decl"
 
 
+class QiecRelationComposeDecl(Statement):
+    """A binary composition of two named authored sparse relations.
+
+    Parameters
+    ----------
+    name
+        The resulting relation name.
+    left, right
+        The ordered primitive relation operands.
+    docs
+        The attached source doc comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    left: str
+    right: str
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_compose_decl"] = "relation_compose_decl"
+
+
 class QiecRelationScoreDecl(Statement):
     """A named score whose fixed relation request is supplied at runtime.
 
@@ -1446,6 +1472,7 @@ __all__ = [
     "QiecInterpretationClause",
     "QiecInterpretationDecl",
     "QiecRelationArc",
+    "QiecRelationComposeDecl",
     "QiecRelationDecl",
     "QiecRelationMark",
     "QiecRelationTape",

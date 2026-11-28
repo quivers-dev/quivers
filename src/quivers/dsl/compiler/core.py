@@ -58,6 +58,7 @@ from quivers.dsl.qiec_lowering import (
     has_qiec_surface,
     lower_qvr_to_qiec,
     non_qiec_projection,
+    _module_name,
 )
 from quivers.qiec import QiecModule
 from quivers.family_catalog import FamilyCatalog
@@ -68,6 +69,7 @@ from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
 from quivers.qiec.program_runtime import passed_data_notes
+from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relations import RationalRelationSpec
 
 
@@ -340,12 +342,39 @@ class Compiler(
         dict[str, RationalRelationSpec]
             Topologies and live weight identities keyed by source name.
         """
+        return {
+            name: relation
+            for name, relation in self._authored_relation_specs().items()
+            if isinstance(relation, RationalRelationSpec)
+        }
+
+    @property
+    def composed_relation_specs(self) -> dict[str, ComposedRelationSpec]:
+        """Return checked binary compositions keyed by their authored names.
+
+        Returns
+        -------
+        dict[str, ComposedRelationSpec]
+            Ordered operand specifications and original weight identities.
+        """
+        return {
+            name: relation
+            for name, relation in self._authored_relation_specs().items()
+            if isinstance(relation, ComposedRelationSpec)
+        }
+
+    def _authored_relation_specs(
+        self,
+    ) -> dict[str, RationalRelationSpec | ComposedRelationSpec]:
         from quivers.dsl._relation_specs import authored_relation_specs
 
         if self._qiec_source is None:
             return {}
+        module_name = self._qiec_module_name
+        if module_name is None:
+            module_name = _module_name(self._qiec_file_path)
         return authored_relation_specs(
-            self._qiec_source, self._qiec_module_name, self._qiec_file_path
+            self._qiec_source, module_name, self._qiec_file_path
         )
 
     def entry_points(self) -> tuple[EntryPoint, ...]:

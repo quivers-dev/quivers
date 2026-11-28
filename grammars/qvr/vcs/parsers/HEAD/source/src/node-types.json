@@ -9974,6 +9974,52 @@
     "fields": {}
   },
   {
+    "type": "relation_compose_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "left": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "right": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "relation_decl",
     "named": true,
     "fields": {
@@ -11209,6 +11255,10 @@
           "named": true
         },
         {
+          "type": "relation_compose_decl",
+          "named": true
+        },
+        {
           "type": "relation_decl",
           "named": true
         },
@@ -12056,6 +12106,10 @@
   },
   {
     "type": "chart_fold",
+    "named": false
+  },
+  {
+    "type": "compose",
     "named": false
   },
   {

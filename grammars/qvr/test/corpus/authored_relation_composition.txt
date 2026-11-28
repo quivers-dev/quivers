@@ -1,0 +1,22 @@
+=======================
+Binary relation composition
+=======================
+
+#! Preserves operand order.
+relation channel = compose(source, target)
+relation_score score : LogWeight [operation=pair_weight, relation=channel]
+
+---
+
+(source_file
+  (relation_compose_decl
+    (doc_comment_group
+      (doc_comment))
+    (identifier)
+    (identifier)
+    (identifier))
+  (relation_score_decl
+    (identifier)
+    (qiec_type_name (identifier))
+    (relation_score_operation)
+    (identifier)))
