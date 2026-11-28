@@ -83,6 +83,8 @@ __all__ = [
     "StringFactorGraph",
     "StringMapCertificate",
     "StringMapResult",
+    "StringCandidateMessage",
+    "StringCandidatePlan",
     "StringVariable",
     "TreeStringMarginal",
     "Words",
@@ -707,4 +709,8 @@ from quivers.core.relations.minimization import minimize_static_acceptor  # noqa
 from quivers.core.relations.ranked import (  # noqa: E402
     compile_ranked_ot,
     ranked_output_candidates,
+)
+from quivers.core.relations.messages import (  # noqa: E402
+    StringCandidateMessage,
+    StringCandidatePlan,
 )
