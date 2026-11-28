@@ -1,4 +1,4 @@
-"""Sparse composition under a fixed observation of the outer tapes."""
+"""Sparse composition of bivariate rational relations."""
 
 from __future__ import annotations
 
@@ -24,7 +24,14 @@ from quivers.core.relations.queries import (
     _trim_paths,
     _validate_limits,
 )
-from quivers.core.relations.topology import EPSILON, Label, RelationTopology, Words
+from quivers.core.relations.topology import (
+    EPSILON,
+    Arc,
+    Boundary,
+    Label,
+    RelationTopology,
+    Words,
+)
 
 
 class _Filter(Enum):
@@ -33,18 +40,20 @@ class _Filter(Enum):
     RIGHT = auto()
 
 
+type _ProductState = tuple[int, int, _Filter]
 type _Configuration = tuple[int, int, _Filter, int, int]
 type _ArcGroup = dict[Label, list[int]]
 type _ArcIndex = dict[tuple[int, Label], _ArcGroup]
 type _WeightPair = tuple[int | None, int | None]
 
 
-def _arc_index(topology: RelationTopology, outer: int) -> _ArcIndex:
+def _arc_index(
+    topology: RelationTopology, outer: int, *, observe_outer: bool = True
+) -> _ArcIndex:
     index: _ArcIndex = defaultdict(dict)
     for arc_id, arc in enumerate(topology.arcs):
-        index[arc.source, arc.labels[outer]].setdefault(
-            arc.labels[1 - outer], []
-        ).append(arc_id)
+        visible = arc.labels[outer] if observe_outer else EPSILON
+        index[arc.source, visible].setdefault(arc.labels[1 - outer], []).append(arc_id)
     return index
 
 
@@ -63,7 +72,7 @@ class _CompositionWork:
 
     def demand(self) -> None:
         if self.limit is not None and self.probes + self.arcs == self.limit:
-            raise RelationLimitError("fixed-word composition exceeds max_work")
+            raise RelationLimitError("composition exceeds max_work")
 
 
 def _moves(
@@ -105,19 +114,43 @@ class _CompositionPlan:
     def evaluate(
         self, left: torch.Tensor, right: torch.Tensor, algebra: Semiring
     ) -> torch.Tensor:
-        if left.device != right.device or left.dtype != right.dtype:
-            raise ValueError("composed weights require a common dtype and device")
-        if not self.weights:
-            return self.paths.evaluate(torch.cat((left[:0], right[:0])), algebra)
-        left_slots = tuple(len(left) if i is None else i for i, _ in self.weights)
-        right_slots = tuple(len(right) if j is None else j for _, j in self.weights)
-        # A missing side takes a multiplicative unit. The gathers keep a
-        # live derivative path to every used original source slot.
-        l_values = _take(torch.cat((left, algebra.unit_like((1,), left))), left_slots)
-        r_values = _take(
-            torch.cat((right, algebra.unit_like((1,), right))), right_slots
+        return self.paths.evaluate(
+            _pair_weights(left, right, self.weights, algebra), algebra
         )
-        return self.paths.evaluate(algebra.tensor_op(l_values, r_values), algebra)
+
+
+def _pair_weights(
+    left: torch.Tensor,
+    right: torch.Tensor,
+    pairs: tuple[_WeightPair, ...],
+    algebra: Semiring,
+) -> torch.Tensor:
+    if left.device != right.device or left.dtype != right.dtype:
+        raise ValueError("composed weights require a common dtype and device")
+    if not pairs:
+        return torch.cat((left[:0], right[:0]))
+    left_slots = tuple(len(left) if i is None else i for i, _ in pairs)
+    right_slots = tuple(len(right) if j is None else j for _, j in pairs)
+    # A missing side takes a multiplicative unit. The gathers keep a
+    # live derivative path to every used original source slot.
+    l_values = _take(torch.cat((left, algebra.unit_like((1,), left))), left_slots)
+    r_values = _take(torch.cat((right, algebra.unit_like((1,), right))), right_slots)
+    return algebra.tensor_op(l_values, r_values)
+
+
+class _MaterializedWeights(nn.Module):
+    def __init__(
+        self, relation: ComposedRelation, pairs: tuple[_WeightPair, ...]
+    ) -> None:
+        super().__init__()
+        self.sources = relation.module()
+        self._relation = relation
+        self._pairs = pairs
+
+    def forward(self) -> torch.Tensor:
+        left, right = self._relation._operand_weights()
+        boundaries = _pair_weights(left, right, self._pairs, self._relation.algebra)
+        return torch.cat((left, right, boundaries))
 
 
 def _compile_composition(
@@ -199,8 +232,112 @@ def _compile_composition(
     )
 
 
+def _materialize_product(
+    left: RelationTopology,
+    right: RelationTopology,
+    max_states: int,
+    max_work: int,
+) -> tuple[RelationTopology, tuple[_WeightPair, ...]]:
+    if len(left.initial) * len(right.initial) > max_states:
+        raise RelationLimitError("composition exceeds max_states")
+    left_index = _arc_index(left, 0, observe_outer=False)
+    right_index = _arc_index(right, 1, observe_outer=False)
+    left_count = len(left.weight_names)
+    source_slots = left_count + len(right.weight_names)
+    boundary_slots: dict[_WeightPair, int] = {}
+    states: list[tuple[int, _ProductState]] = []
+    state_ids: dict[_ProductState, int] = {}
+    initial: list[Boundary] = []
+    final: list[Boundary] = []
+    arcs: list[Arc] = []
+    work = _CompositionWork(max_work)
+    n_states = 0
+
+    def allocate() -> int:
+        nonlocal n_states
+        if n_states == max_states:
+            raise RelationLimitError("composition exceeds max_states")
+        state = n_states
+        n_states += 1
+        return state
+
+    def state_id(state: _ProductState) -> int:
+        index = state_ids.get(state)
+        if index is None:
+            index = allocate()
+            state_ids[state] = index
+            states.append((index, state))
+        return index
+
+    def add_arc(source: int, target: int, labels: tuple[Label, ...], slot: int) -> None:
+        work.demand()
+        work.arcs += 1
+        arcs.append(Arc(source, target, labels, slot))
+
+    def boundary_slot(left_slot: int, right_slot: int) -> int:
+        pair = left_slot, right_slot
+        return source_slots + boundary_slots.setdefault(pair, len(boundary_slots))
+
+    for l_mark, r_mark in product(left.initial, right.initial):
+        state = state_id((l_mark.state, r_mark.state, _Filter.MATCH))
+        initial.append(Boundary(state, boundary_slot(l_mark.weight, r_mark.weight)))
+    for source, (l_state, r_state, phase) in states:
+        l_final = left._final_slots.get(l_state)
+        r_final = right._final_slots.get(r_state)
+        if l_final is not None and r_final is not None:
+            final.append(Boundary(source, boundary_slot(l_final, r_final)))
+        l_group = left_index.get((l_state, EPSILON))
+        r_group = right_index.get((r_state, EPSILON))
+        for l_id, r_id, next_phase in _moves(
+            (l_group,) if l_group else (), (r_group,) if r_group else (), phase, work
+        ):
+            work.demand()
+            l_arc = None if l_id is None else left.arcs[l_id]
+            r_arc = None if r_id is None else right.arcs[r_id]
+            target = state_id(
+                (
+                    l_state if l_arc is None else l_arc.target,
+                    r_state if r_arc is None else r_arc.target,
+                    next_phase,
+                )
+            )
+            if l_arc is None:
+                assert r_arc is not None
+                add_arc(
+                    source,
+                    target,
+                    (EPSILON, r_arc.labels[1]),
+                    left_count + r_arc.weight,
+                )
+            elif r_arc is None:
+                add_arc(source, target, (l_arc.labels[0], EPSILON), l_arc.weight)
+            else:
+                # Preserve both primitive factors for a future star of a
+                # cyclic product. This intermediate has one continuation.
+                between = allocate()
+                add_arc(
+                    source, between, (l_arc.labels[0], r_arc.labels[1]), l_arc.weight
+                )
+                add_arc(between, target, (EPSILON, EPSILON), left_count + r_arc.weight)
+    names = (
+        *(f"left:{name}" for name in left.weight_names),
+        *(f"right:{name}" for name in right.weight_names),
+        *(f"boundary:{index}" for index in range(len(boundary_slots))),
+    )
+    topology = RelationTopology(
+        (left.tapes[0], right.tapes[1]),
+        1,
+        n_states,
+        tuple(arcs),
+        tuple(initial),
+        tuple(final),
+        names,
+    )
+    return topology, tuple(boundary_slots)
+
+
 class ComposedRelation(Morphism):
-    """Binary composition queried at fixed words on its two outer tapes.
+    """Binary sparse composition on a checked shared tape.
 
     Each operand has one input tape and one output tape. The shared
     tape types must agree. The operands use the same scalar semiring,
@@ -250,6 +387,33 @@ class ComposedRelation(Morphism):
     def module(self) -> nn.Module:
         """The two operands' original weight sources and their parameters."""
         return self._module
+
+    def _operand_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
+        left_weights = self._left._weights()
+        if self._left.module() is self._right.module():
+            self._right._check_weights(left_weights)
+            return left_weights, left_weights
+        return left_weights, self._right._weights()
+
+    def materialize(self, *, max_states: int, max_work: int) -> RationalRelation:
+        """Build a reusable sparse product topology for composition or projection.
+
+        The limits bound the states and the sum of shared-label probes
+        and arcs. They include intermediate states and arcs that retain
+        the primitive factors of a matched pair. The result reads both
+        original weight sources on each evaluation.
+        """
+        if max_states is None or max_work is None:
+            raise ValueError(
+                "materialized composition requires explicit state and work limits"
+            )
+        _validate_limits(max_states, max_work)
+        topology, pairs = _materialize_product(
+            self._left.topology, self._right.topology, max_states, max_work
+        )
+        return RationalRelation(
+            topology, _MaterializedWeights(self, pairs), algebra=self.algebra
+        )
 
     def query(
         self,
@@ -315,14 +479,8 @@ class ComposedStringQuery:
 
     def weight(self) -> torch.Tensor:
         """Read fresh operand weights and evaluate the packed plan."""
-        left, right = self._relation._left, self._relation._right
-        left_weights = left._weights()
-        if left.module() is right.module():
-            right._check_weights(left_weights)
-            right_weights = left_weights
-        else:
-            right_weights = right._weights()
-        return self._plan.evaluate(left_weights, right_weights, self._relation.algebra)
+        left, right = self._relation._operand_weights()
+        return self._plan.evaluate(left, right, self._relation.algebra)
 
 
 __all__ = ["ComposedRelation", "ComposedStringQuery"]

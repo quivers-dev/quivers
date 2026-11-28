@@ -258,8 +258,15 @@ def test_parallel_paths_and_original_parameter_derivatives_survive_composition(a
             assert not hasattr(relation, "tensor")
             with pytest.raises(TypeError, match="explicit finite restriction"):
                 Program(relation)
+            materialized = relation.materialize(max_states=128, max_work=256)
+            assert {id(p) for p in materialized.module().parameters()} == {
+                id(p) for p in parameters.values()
+            }
             queries = {
-                words: relation.query(_words(words))
+                words: (
+                    relation.query(_words(words)),
+                    materialized.query(_words(words)),
+                )
                 for words in (*pairs, (("q",), ("z",)))
             }
 
@@ -268,7 +275,7 @@ def test_parallel_paths_and_original_parameter_derivatives_survive_composition(a
             paths.relation(right, values, tapes=2),
         )
         accuracy = Accuracy(domain="linear", operations=144)
-        for words, query in queries.items():
+        for words, alternatives in queries.items():
             expected = table.get(words, Fraction(0))
             gradients = dict.fromkeys(names, Fraction(0))
             for factors in pairs.get(words, ()):
@@ -282,20 +289,21 @@ def test_parallel_paths_and_original_parameter_derivatives_survive_composition(a
                             gradients[name] += prod(
                                 values[k] for j, k in enumerate(factors) if i != j
                             )
-            score = query.weight()
-            compare_number(
-                (score.exp() if is_log else score).item(),
-                expected,
-                accuracy,
-                "composed mass",
-            )
-            gradient = torch.autograd.grad(score, tuple(parameters.values()))
-            compare_gradients(
-                dict(zip(names, gradient)),
-                gradients,
-                accuracy,
-                "composition derivative",
-            )
+            for query in alternatives:
+                score = query.weight()
+                compare_number(
+                    (score.exp() if is_log else score).item(),
+                    expected,
+                    accuracy,
+                    "composed mass",
+                )
+                gradient = torch.autograd.grad(score, tuple(parameters.values()))
+                compare_gradients(
+                    dict(zip(names, gradient)),
+                    gradients,
+                    accuracy,
+                    "composition derivative",
+                )
 
 
 def test_composition_work_counts_indexed_matches_and_honors_budgets():
@@ -331,6 +339,14 @@ def test_composition_work_counts_indexed_matches_and_honors_budgets():
         relation.query(((0,), (0,)), max_work=1)
     with pytest.raises(RelationLimitError, match="max_states"):
         relation.query(((0,), (0,)), max_states=1)
+    materialized = relation.materialize(max_states=3, max_work=3)
+    assert materialized.topology.n_states == 3
+    assert len(materialized.topology.arcs) == 2
+    assert materialized.weight(((0,), (0,))).item() == 1.0
+    with pytest.raises(RelationLimitError, match="max_states"):
+        relation.materialize(max_states=2, max_work=3)
+    with pytest.raises(RelationLimitError, match="max_work"):
+        relation.materialize(max_states=3, max_work=2)
 
 
 def test_composition_refuses_mismatched_types_laws_and_productive_hidden_cycles():
