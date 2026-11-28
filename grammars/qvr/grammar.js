@@ -104,6 +104,7 @@ module.exports = grammar({
       $.computation_decl,
       $.interpretation_decl,
       $.relation_score_decl,
+      $.string_graph_score_decl,
       $.composition_decl,
       $.category_decl,
       $.rule_decl,
@@ -406,6 +407,20 @@ module.exports = grammar({
     ),
 
     relation_score_operation: _ => choice('pair_weight', 'conditional_log_prob'),
+
+    string_graph_score_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'string_graph_score',
+      field('name', $.identifier),
+      ':',
+      field('result', $.qiec_type_name),
+      '[', 'operation', '=',
+      field('operation', $.string_graph_score_operation),
+      ']',
+      $._newline,
+    ),
+
+    string_graph_score_operation: _ => choice('tree_partition', 'tree_log_prob'),
 
     _qiec_value_parameters: $ => parenthesizedList($, field('parameters', $.qiec_value_parameter)),
 

@@ -228,3 +228,22 @@ Stan, BUGS, and JAGS report the foreign handler as an obstacle. The
 ordinary QIEC provider boundary remains explicit for other hosts.
 
 [fixed-relation-wire]: ../../api/qiec/serialization.md#fixed-word-relation-requests
+
+## String graph scores
+
+A `string_graph_score` declaration exposes a zero-argument
+computation for a checked tree query. Both declarations below receive
+their graph, observations, and resource limits from a serialized
+`TreeStringGraphRequest`.
+
+<!-- compile: qiec -->
+```qvr
+string_graph_score full_mass : Real [operation=tree_partition]
+string_graph_score word_probability : LogWeight [operation=tree_log_prob]
+```
+
+A partition may also use `LogWeight` when its graph uses LogProb.
+`tree_log_prob` always uses `LogWeight`. Attach each request using
+`TreeStringGraphRuntimeProvider.for_score` and the original graph's
+parameter store. The reference machine checks both the operation and its
+result type before it runs the request. [String graph serialization](../../api/qiec/serialization.md#string-factor-graphs)

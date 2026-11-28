@@ -161,6 +161,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecInterpretationDecl,
     QiecRelationScoreDecl,
+    QiecStringGraphScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
     QiecEffectBinder,
@@ -1029,9 +1030,14 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
             for clause in stmt.clauses
         )
         return "\n".join(lines)
-    if isinstance(stmt, QiecRelationScoreDecl):
+    if isinstance(stmt, QiecRelationScoreDecl | QiecStringGraphScoreDecl):
         result = _emit_qiec_type(stmt.result_type)
-        text = f"relation_score {stmt.name} : {result} [operation={stmt.operation}]"
+        keyword = (
+            "string_graph_score"
+            if isinstance(stmt, QiecStringGraphScoreDecl)
+            else "relation_score"
+        )
+        text = f"{keyword} {stmt.name} : {result} [operation={stmt.operation}]"
         return _with_docs(stmt.docs, indent, text)
     if isinstance(stmt, QiecComputationDecl):
         return _emit_qiec_computation_decl(stmt, indent)

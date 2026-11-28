@@ -20,14 +20,68 @@ from quivers.qiec.terms import Local
 from quivers.qiec.types import UNIT, TypeExpr
 
 
+def _string_graph_score_handler_name(name: str) -> str:
+    """Return the generated handler name of a source graph score.
+
+    Parameters
+    ----------
+    name
+        The score name in QVR source.
+
+    Returns
+    -------
+    str
+        The checked handler name.
+    """
+    return f"__string_graph_score_{name}"
+
+
+def _tree_string_graph_handler(
+    module: str, name: str, operation: str, result: TypeExpr
+) -> HandlerDef:
+    """Build the shared checked handler declaration.
+
+    Parameters
+    ----------
+    module : str
+        The checked module name.
+    name : str
+        The handler name in the module.
+    operation : str
+        The exact graph objective that the handler serves.
+    result : TypeExpr
+        The validated closed scalar result type.
+
+    Returns
+    -------
+    HandlerDef
+        The linear foreign Compute handler.
+    """
+    effect = COMPUTE.with_(arguments=(UNIT, result))
+    return HandlerDef(
+        name=name,
+        id=HandlerId.derive(module, "string_graph", name, operation),
+        effect=effect,
+        clauses=(
+            HandlerClauseDef(
+                operation=COMPUTE_APPLY,
+                grade=ResumptionGrade.LINEAR,
+                parameters=(Local(name="argument", type=UNIT),),
+            ),
+        ),
+        input_type=result,
+        output_type=result,
+    )
+
+
 def tree_string_graph_handler(
     module: str, name: str, request: TreeStringGraphRequest
 ) -> HandlerDef:
     """Declare a linear unit-argument handler for a checked graph query.
 
-    The stable handler identity includes the graph query's objective. A
-    log partition and normalized log probability therefore have distinct
-    handler identities even though both inhabit LogWeight.
+    The stable identity includes the graph query's objective. A log
+    partition and normalized log probability have distinct handler
+    identities while inhabiting the same LogWeight result type.
 
     Parameters
     ----------
@@ -52,21 +106,8 @@ def tree_string_graph_handler(
         raise ValueError(
             "a tree string graph handler requires module and handler names"
         )
-    result = request.result_type
-    effect = COMPUTE.with_(arguments=(UNIT, result))
-    return HandlerDef(
-        name=name,
-        id=HandlerId.derive(module, "string_graph", name, request.operation),
-        effect=effect,
-        clauses=(
-            HandlerClauseDef(
-                operation=COMPUTE_APPLY,
-                grade=ResumptionGrade.LINEAR,
-                parameters=(Local(name="argument", type=UNIT),),
-            ),
-        ),
-        input_type=result,
-        output_type=result,
+    return _tree_string_graph_handler(
+        module, name, request.operation, request.result_type
     )
 
 
@@ -97,6 +138,40 @@ class TreeStringGraphRuntimeProvider:
         self._request = request
         self._handler_name = handler_name
         self._score = request.bind(parameters)
+
+    @classmethod
+    def for_score(
+        cls,
+        name: str,
+        request: TreeStringGraphRequest,
+        parameters: Mapping[ParameterId, torch.Tensor],
+    ) -> TreeStringGraphRuntimeProvider:
+        """Bind the request to a named QVR string graph score.
+
+        Parameters
+        ----------
+        name
+            The name declared in QVR source.
+        request
+            The checked graph objective.
+        parameters
+            The original scalar tensors indexed by parameter identity.
+
+        Returns
+        -------
+        TreeStringGraphRuntimeProvider
+            The provider for the source-generated handler.
+
+        Raises
+        ------
+        ValueError
+            If the score name is empty or the request cannot be bound.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("a source graph score requires a name")
+        return cls(
+            request, parameters, handler_name=_string_graph_score_handler_name(name)
+        )
 
     def _evaluate(self, argument: object, _context: ClauseContext) -> torch.Tensor:
         """Evaluate the bound graph with live weights.

@@ -16,6 +16,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecInterpretationClause,
     QiecInterpretationDecl,
     QiecRelationScoreDecl,
+    QiecStringGraphScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
     QiecEffectBinder,
@@ -81,6 +82,7 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "computation_decl",
         "interpretation_decl",
         "relation_score_decl",
+        "string_graph_score_decl",
     }
 )
 
@@ -196,6 +198,18 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             result_type=_walk_type(t, _required_field(t, vid, "result")),
             operation=cast(
                 Literal["pair_weight", "conditional_log_prob"],
+                _field_text(t, vid, "operation"),
+            ),
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "string_graph_score_decl":
+        return QiecStringGraphScoreDecl(
+            name=_field_text(t, vid, "name"),
+            result_type=_walk_type(t, _required_field(t, vid, "result")),
+            operation=cast(
+                Literal["tree_partition", "tree_log_prob"],
                 _field_text(t, vid, "operation"),
             ),
             docs=docs,

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Authored string graph scores.** QVR can name a checked graph partition or normalized word objective and call it from an ordinary computation.
 - **Candidate string messages.** A bounded candidate view retains the original unary LogProb message scale, sums omitted mass directly, and reports truncation and beam ties separately.
 - **Exact finite log expectations.** A single checked Random handler can sum scalar log scores across several dependent or structured finite draws with live gradients.
 - **Cyclic fixed-word path posteriors.** Certified component closure supplies arc counts, entropy, additive risks, and bounded draws from a finite path distribution while preserving original occurrences.

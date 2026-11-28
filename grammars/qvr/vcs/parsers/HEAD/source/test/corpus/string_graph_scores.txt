@@ -1,0 +1,23 @@
+===================
+Checked string graph scores
+===================
+
+#! A query over a runtime string graph.
+string_graph_score evidence : LogWeight [operation=tree_partition]
+string_graph_score reading : LogWeight [operation=tree_log_prob]
+
+---
+
+(source_file
+  (string_graph_score_decl
+    (doc_comment_group
+      (doc_comment))
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (string_graph_score_operation))
+  (string_graph_score_decl
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (string_graph_score_operation)))

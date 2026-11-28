@@ -791,3 +791,21 @@ relies on. The handlers of a deduction $D$ are declared this way: `D__search` su
 `D__collect` multiplies the weights of one derivation, and `D__settle` settles an iteration (§5).
 The full grammar,
 worked examples, and limits are in the [QIEC developer note](../developer/qiec.md).
+
+### String graph scores
+
+A `string_graph_score` declares a closed scalar computation. Its attached
+graph has a weight $F_f(\mathbf{w}_f)$ for each factor $f$ and a partial
+assignment $e$ of observed words. The exact tree request computes
+
+$$
+Z(e) = \sum_{\mathbf{w}\supseteq e}\prod_f F_f(\mathbf{w}_f).
+$$
+
+The operation `tree_partition` returns this sum in the graph's algebra.
+The operation `tree_log_prob` at variable $v$ and word $w$ returns
+$\log Z(e, v=w) - \log Z(e)$ when the normalizer is positive and finite.
+Sparse evaluation admits a forest when each local operation and any
+productive closure meet the request's limits. The generated foreign
+handler carries the objective in its identity, and the provider
+checks that identity alongside the declared scalar type. [String graph requests](../api/qiec/serialization.md#string-factor-graphs)

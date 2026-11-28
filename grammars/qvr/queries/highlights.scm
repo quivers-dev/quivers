@@ -113,11 +113,14 @@
   "signature"
   "sorts"
   "start"
+  "string_graph_score"
   "structure"
   "terminal"
   "then"
   "total"
   "trace"
+  "tree_log_prob"
+  "tree_partition"
   "true"
   "unary"
   "unknown"
@@ -430,6 +433,8 @@
 (computation_decl name: (identifier) @function)
 (relation_score_decl name: (identifier) @function)
 (relation_score_operation) @keyword
+(string_graph_score_decl name: (identifier) @function)
+(string_graph_score_operation) @keyword
 (interpretation_decl name: (identifier) @function)
 (interpretation_decl deduction: (identifier) @function)
 (interpretation_clause constructor: (identifier) @constructor)

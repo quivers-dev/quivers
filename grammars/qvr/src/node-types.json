@@ -11011,6 +11011,10 @@
         {
           "type": "signature_decl",
           "named": true
+        },
+        {
+          "type": "string_graph_score_decl",
+          "named": true
         }
       ]
     }
@@ -11104,6 +11108,57 @@
         ]
       }
     }
+  },
+  {
+    "type": "string_graph_score_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string_graph_score_operation",
+            "named": true
+          }
+        ]
+      },
+      "result": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qiec_type_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_score_operation",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "tensor_expr",
@@ -12205,6 +12260,10 @@
     "named": true
   },
   {
+    "type": "string_graph_score",
+    "named": false
+  },
+  {
     "type": "structure",
     "named": false
   },
@@ -12222,6 +12281,14 @@
   },
   {
     "type": "trace",
+    "named": false
+  },
+  {
+    "type": "tree_log_prob",
+    "named": false
+  },
+  {
+    "type": "tree_partition",
     "named": false
   },
   {
