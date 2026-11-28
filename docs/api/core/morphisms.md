@@ -559,6 +559,30 @@ multipliers. It can return an uncertified feasible assignment and an
 upper bound at the iteration limit. Feature-count agreement alone
 does not establish a certificate.
 
+Before returning a bound, the solver checks the saved local witnesses
+under the multipliers that produced it. First it reconstructs each
+original walk, verifies its observed words, and recomputes its two
+scores from the boundaries, arc weights, and direct n-gram counts.
+Then it derives the exact suffix optimum in each reachable local
+configuration. In reverse topological order, each scalar suffix value
+is the maximum over its available final score and every arc score
+plus its successor's suffix value. This pass does not use the decoder's
+prefix maxima or backpointers. The claimed adjusted scores must attain
+these independently calculated maxima, and the multipliers must still
+sum to zero. Feasible lower witnesses are checked against their
+complete word assignment. An infeasibility claim requires a local
+subproblem with no accepting path under its observations.
+
+Reachability and suffix verification each examine the same reachable
+configurations and candidate arcs as a local forward decode. They
+reuse its state and per-pass arc limits. The verifier stores one exact
+score per reachable configuration and no materialized transition table.
+Trace checking additionally visits the selected primitive arcs and
+computes n-gram counts for the selected words. Exact rational arithmetic
+and feature work depend on coefficient bit lengths, tape widths, word
+lengths and active feature orders. `max_verification_states` and
+`verification_arc_examinations` record the additional graph work.
+
 The solver may also stop at a requested absolute or relative objective
 gap. With an exact feasible score $L$ and dual upper bound $U$, the
 unknown optimum $z$ satisfies $L\leq z\leq U$. Thus $U-L$ bounds the
@@ -574,8 +598,8 @@ Supply `absolute_gap` or `relative_gap` as a nonnegative exact rational.
 All supplied targets must be established. An early stop based only on
 these bounds has status `gap`, with `gap_target_met=True`. The separate
 status `optimal` and its agreement certificate require exact local
-alignment agreement. When there is no feasible result, neither gap can
-be established.
+maximizers to agree on their complete words. When there is no feasible
+result, neither gap can be established.
 
 The returned score and certificate concern the evaluated parameter
 snapshot. Local paths are discrete decisions. The solver reports

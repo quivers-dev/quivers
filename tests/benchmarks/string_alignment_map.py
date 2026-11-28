@@ -3,7 +3,7 @@
 Run `python -m tests.benchmarks.string_alignment_map` from the repository root.
 The timed calls use CPU float64 weights and fresh search on the same
 unchanged fixture. Enumeration, certificate checks, and parameter updates
-are separate from timing.
+performed by the independent benchmark oracle are separate from timing.
 """
 
 from __future__ import annotations
@@ -369,6 +369,8 @@ def compare(case: Fixture, *, unigram_only: bool = False) -> dict[str, object]:
         "enumerated_compatible_pairs": sum(feasible.values()),
         "implicit_largest_decode_configurations": implicit.max_local_states,
         "implicit_total_examined_arcs": implicit.local_arc_examinations,
+        "implicit_largest_verification_configurations": implicit.max_verification_states,
+        "implicit_verification_arc_examinations": implicit.verification_arc_examinations,
         "implicit_iterations": implicit.iterations,
         "implicit_local_decode_calls": local_calls,
         "implicit_peak_active_features": sum(

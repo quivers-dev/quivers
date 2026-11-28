@@ -516,7 +516,9 @@ step is stored as two integers. Local maximization adds the original path
 scores, including boundary marks. The dual bound applies to the best
 joint alignment and words, and a certificate requires agreement on the
 complete words. An iteration limit may return a feasible assignment and
-bound without a certificate. General joint string MAP can be undecidable
+bound without a certificate. The solver verifies original trace scores,
+local optima, and cancellation of the saved feature multipliers before
+returning a certified interval. General joint string MAP can be undecidable
 for cyclic multi-tape factors, as the reduction from Post's correspondence
 problem shows. See §2.5 of [Peng, Cotterell, and Eisner (2015)](https://aclanthology.org/D15-1108/).
 

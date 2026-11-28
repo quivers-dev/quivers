@@ -190,6 +190,8 @@ def test_separate_local_decodes_avoid_materializing_full_implicit_intersection()
     explicit = intersect(left, right, max_states=1000, max_work=1000)
     assert result.max_local_states * 10 < explicit.topology.n_states
     assert result.local_arc_examinations == 48
+    assert result.verification_arc_examinations == 100
+    assert result.max_verification_states == result.max_local_states
     assert result.score == max(path[-1] for path in _all_paths(explicit))
     _oracle_certificate(result, factors)
 
@@ -296,6 +298,8 @@ def test_scaling_protocol_compares_both_alignment_families_and_reports_work():
             assert row["primal"] == row["upper_bound"] == score
             assert row["enumerated_compatible_pairs"] == 2 * width**2
             assert row["implicit_largest_decode_configurations"] == 6 * width + 1
+            assert row["implicit_largest_verification_configurations"] == 6 * width + 1
+            assert row["implicit_verification_arc_examinations"] == 24 * width + 6
             assert row["implicit_local_decode_calls"] == calls
             assert row["implicit_peak_active_features"] == features
             assert row["explicit_peak_product_states"] == 10 * width**2 + 2 * width + 1

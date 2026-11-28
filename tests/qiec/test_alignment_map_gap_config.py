@@ -182,6 +182,48 @@ def test_inconsistent_local_bound_refuses_even_under_a_generous_gap(monkeypatch)
         config.solve(model, parameters)
 
 
+def test_suboptimal_agreement_refuses_a_self_consistent_false_certificate(monkeypatch):
+    model, parameters = _fixture((-1, -4), (-1, -4))
+    correct = _solver().solve(model, parameters)
+    optimum, _ = _independent_bounds((-1, -4), (-1, -4))
+    assert correct.score == optimum == -2 and correct.certificate is not None
+    original = _DualAlignmentRun.decode
+
+    def agree_on_wrong_word(self, words, shifts):
+        forced = {"x": (1,)} if words["x"] is None else words
+        return original(self, forced, shifts)
+
+    monkeypatch.setattr(_DualAlignmentRun, "decode", agree_on_wrong_word)
+    # Both paths really score -4, so the proposed primal and dual agree
+    # at -8. The scalar subproblem verifier must refuse independently.
+    with pytest.raises(
+        ArithmeticError, match="does not attain the independent local optimum"
+    ):
+        _solver().solve(model, parameters)
+
+
+def test_wrong_dual_witness_cannot_claim_a_gap_with_a_valid_lower_path(monkeypatch):
+    model, parameters = _fixture((-4, -1), (-4, -1))
+    original = _DualAlignmentRun.decode
+
+    def return_one_suboptimal_path(self, words, shifts):
+        if words["x"] is not None:
+            return original(self, words, shifts)
+        zero = original(self, {"x": (0,)}, shifts)
+        one = original(self, {"x": (1,)}, shifts)
+        assert zero is not None and one is not None
+        return zero[0], one[1]
+
+    monkeypatch.setattr(_DualAlignmentRun, "decode", return_one_suboptimal_path)
+    policy = JointAlignmentMapGapConfig(solver=_solver(), absolute_gap_ratio=(3, 1))
+    # The feasible score -8 and claimed upper -5 give a nonnegative gap
+    # of three, though the actual optimum is -2.
+    with pytest.raises(
+        ArithmeticError, match="does not attain the independent local optimum"
+    ):
+        policy.solve(model, parameters)
+
+
 def test_gap_settings_cannot_claim_an_achieved_bound_or_change_the_old_wire():
     solver = _solver()
     old_digest = sha256(dumps(solver).encode()).hexdigest()

@@ -39,18 +39,23 @@ reaches $6n+1$ configurations because each original branch has a
 unique prefix. Its arc counts include the additional fixed-word
 decodes used to check primal feasibility. They count examinations
 rather than elapsed time or memory. The JSON report also records
-the explicit decoder's peak pending score entries and arc visits.
+the explicit decoder's peak pending score entries and arc visits. The
+native solver then verifies the selected local maxima with an independent
+scalar suffix pass and validates the original walks. Each certified row
+therefore examines another $24n+6$ arcs, including the two walks' three
+original arcs each. Its largest verification graph also has $6n+1$
+states. These counts exclude the benchmark's separate enumeration oracle.
 
-| Family | Paths per word and factor | Peak product states | Largest local decode | Local calls | Local arc examinations | Product label probes | Product arcs |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Agreement | 2 | 45 | 13 | 2 | 24 | 13 | 44 |
-| Agreement | 8 | 657 | 49 | 2 | 96 | 145 | 656 |
-| Agreement | 24 | 5,809 | 145 | 2 | 288 | 1,201 | 5,808 |
-| Agreement | 48 | 23,137 | 289 | 2 | 576 | 4,705 | 23,136 |
-| Adaptive | 2 | 45 | 13 | 6 | 66 | 13 | 44 |
-| Adaptive | 8 | 657 | 49 | 6 | 264 | 145 | 656 |
-| Adaptive | 24 | 5,809 | 145 | 6 | 792 | 1,201 | 5,808 |
-| Adaptive | 48 | 23,137 | 289 | 6 | 1,584 | 4,705 | 23,136 |
+| Family | Paths per word and factor | Peak product states | Largest local decode | Local calls | Local arc examinations | Verification arc examinations | Product label probes | Product arcs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Agreement | 2 | 45 | 13 | 2 | 24 | 54 | 13 | 44 |
+| Agreement | 8 | 657 | 49 | 2 | 96 | 198 | 145 | 656 |
+| Agreement | 24 | 5,809 | 145 | 2 | 288 | 582 | 1,201 | 5,808 |
+| Agreement | 48 | 23,137 | 289 | 2 | 576 | 1,158 | 4,705 | 23,136 |
+| Adaptive | 2 | 45 | 13 | 6 | 66 | 54 | 13 | 44 |
+| Adaptive | 8 | 657 | 49 | 6 | 264 | 198 | 145 | 656 |
+| Adaptive | 24 | 5,809 | 145 | 6 | 792 | 582 | 1,201 | 5,808 |
+| Adaptive | 48 | 23,137 | 289 | 6 | 1,584 | 1,158 | 4,705 | 23,136 |
 
 All timed rows use eight dual iterations at most, n-gram order two, a
 four-feature limit and starting step $3/2$ divided by the iteration.
@@ -75,20 +80,21 @@ These are CPU float64 medians over five calls on macOS 15.7.4 arm64
 with PyTorch 2.15.0 and one Torch thread. After one warmup per method,
 the benchmark alternates method order and leaves the fixture weights
 unchanged. Each dual invocation starts at zero multipliers. Each
-explicit invocation rebuilds the product and then decodes it.
-Timings include those operations and exclude the separate enumeration,
-counter and certificate checks, and live-update controls.
+explicit invocation rebuilds the product and then decodes it. Timings
+include the native solver's independent witness verification. They
+exclude enumeration and certificate checks performed by the benchmark's
+external oracle, manual counter instrumentation, and live-update controls.
 
 | Family | Paths per word and factor | Implicit (ms) | Explicit build and decode (ms) | Explicit build (ms) |
 | --- | ---: | ---: | ---: | ---: |
-| Agreement | 2 | 0.225 | 0.330 | 0.165 |
-| Agreement | 8 | 0.588 | 3.616 | 1.899 |
-| Agreement | 24 | 1.630 | 25.409 | 13.733 |
-| Agreement | 48 | 3.096 | 121.864 | 56.177 |
-| Adaptive | 2 | 0.391 | 0.322 | 0.163 |
-| Adaptive | 8 | 1.127 | 3.081 | 1.665 |
-| Adaptive | 24 | 2.932 | 24.951 | 13.876 |
-| Adaptive | 48 | 5.768 | 122.998 | 54.763 |
+| Agreement | 2 | 0.438 | 0.658 | 0.220 |
+| Agreement | 8 | 0.999 | 3.267 | 1.797 |
+| Agreement | 24 | 2.568 | 77.300 | 24.080 |
+| Agreement | 48 | 4.912 | 234.442 | 111.588 |
+| Adaptive | 2 | 0.527 | 0.332 | 0.167 |
+| Adaptive | 8 | 1.454 | 2.941 | 1.620 |
+| Adaptive | 24 | 4.088 | 39.853 | 24.734 |
+| Adaptive | 48 | 13.187 | 275.552 | 100.488 |
 
 The smallest adaptive case incurs more local calls than the materialized
 decoder. Increasing parallel alignments grows the materialized product
