@@ -47,6 +47,8 @@ __all__ = [
     "FiniteRelationRestriction",
     "FiniteStringScore",
     "Label",
+    "NgramFamily",
+    "NgramProjection",
     "ProductiveEpsilonCycleError",
     "QueryWork",
     "RationalRelation",
@@ -586,3 +588,4 @@ from quivers.core.relations.dual import (  # noqa: E402
     StringMapResult,
     dual_string_map,
 )
+from quivers.core.relations.projection import NgramFamily, NgramProjection  # noqa: E402
