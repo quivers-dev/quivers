@@ -43,6 +43,36 @@ def _validate_projection_settings(
         raise ValueError("tolerance must be positive and finite")
 
 
+def _projection_inputs(
+    words: tuple[_Word, ...],
+    tilted_log_weights: torch.Tensor,
+    base_log_weights: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    tilted = tilted_log_weights
+    base = torch.zeros_like(tilted) if base_log_weights is None else base_log_weights
+    if base.shape != (len(words),) or tilted.shape != base.shape:
+        raise ValueError("n-gram weights must have one value per support word")
+    if (
+        tilted.dtype != torch.float64
+        or base.dtype != tilted.dtype
+        or base.device != tilted.device
+    ):
+        raise TypeError("n-gram projection requires float64 weights on a common device")
+    if not bool(torch.isfinite(tilted).all() & torch.isfinite(base).all()):
+        raise ValueError(
+            "n-gram projection requires finite log weights on the full support"
+        )
+
+    target_log_prob = tilted.log_softmax(dim=0)
+    target = target_log_prob.exp()
+    if not bool((target > 0).all()):
+        raise ValueError(
+            "tilted probabilities must be positive in the evaluation precision"
+        )
+    base = base - base.max()
+    return base, target_log_prob, target
+
+
 @dataclass(frozen=True, slots=True)
 class NgramProjection:
     """An inclusive KL projection and its local optimizer diagnostics."""
@@ -55,6 +85,42 @@ class NgramProjection:
     fitted_moments: torch.Tensor
     moment_residual: float
     divergence: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class PenalizedNgramProjection:
+    """Finite tree-group projection with its composite optimality residual."""
+
+    status: Literal["converged", "limit", "stalled"]
+    iterations: int
+    features: tuple[_Word, ...]
+    log_probabilities: torch.Tensor
+    coefficients: torch.Tensor
+    optimality_residual: float
+    divergence: torch.Tensor
+    regularization: torch.Tensor
+
+
+def _prefix_indices(features: tuple[_Word, ...]) -> tuple[tuple[int, ...], ...]:
+    groups: dict[_Word, list[int]] = {}
+    for i, feature in enumerate(features):
+        for n in range(len(feature) + 1):
+            groups.setdefault(feature[:n], []).append(i)
+    ordered = sorted(groups, key=lambda prefix: (-len(prefix), prefix))
+    return tuple(tuple(groups[prefix]) for prefix in ordered)
+
+
+def _prefix_prox(
+    coefficients: torch.Tensor, groups: tuple[torch.Tensor, ...], threshold: float
+) -> torch.Tensor:
+    for group in groups:
+        values = coefficients.index_select(0, group)
+        norm = torch.linalg.vector_norm(values)
+        active = norm > threshold
+        safe = torch.where(active, norm, torch.ones_like(norm))
+        scale = torch.where(active, 1.0 - threshold / safe, 0.0)
+        coefficients = coefficients.index_copy(0, group, values * scale)
+    return coefficients
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +137,9 @@ class NgramFamily:
     order: int
     features: tuple[_Word, ...] = field(init=False)
     _matrix: tuple[tuple[int, ...], ...] = field(init=False, repr=False)
+    _vocabulary: tuple[_Word, ...] = field(init=False, repr=False)
+    _full_matrix: tuple[tuple[int, ...], ...] = field(init=False, repr=False)
+    _penalty_groups: tuple[tuple[int, ...], ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.order) is not int or self.order < 1:
@@ -94,6 +163,9 @@ class NgramFamily:
         rows = tuple(tuple(row[feature] for feature in vocabulary) for row in counts)
         columns = _affine_basis(rows)
         object.__setattr__(self, "words", words)
+        object.__setattr__(self, "_vocabulary", vocabulary)
+        object.__setattr__(self, "_full_matrix", rows)
+        object.__setattr__(self, "_penalty_groups", _prefix_indices(vocabulary))
         object.__setattr__(self, "features", tuple(vocabulary[i] for i in columns))
         object.__setattr__(
             self, "_matrix", tuple(tuple(row[i] for i in columns) for row in rows)
@@ -117,35 +189,12 @@ class NgramFamily:
         Autograd differentiates the accepted sequence of operations.
         """
         _validate_projection_settings(tolerance, max_iterations, max_backtracks)
-        tilted = tilted_log_weights
-        base = (
-            torch.zeros_like(tilted) if base_log_weights is None else base_log_weights
+        base, target_log_prob, target = _projection_inputs(
+            self.words, tilted_log_weights, base_log_weights
         )
-        if base.shape != (len(self.words),) or tilted.shape != base.shape:
-            raise ValueError("n-gram weights must have one value per support word")
-        if (
-            tilted.dtype != torch.float64
-            or base.dtype != tilted.dtype
-            or base.device != tilted.device
-        ):
-            raise TypeError(
-                "n-gram projection requires float64 weights on a common device"
-            )
-        if not bool(torch.isfinite(tilted).all() & torch.isfinite(base).all()):
-            raise ValueError(
-                "n-gram projection requires finite log weights on the full support"
-            )
-
-        target_log_prob = tilted.log_softmax(dim=0)
-        target = target_log_prob.exp()
-        if not bool((target > 0).all()):
-            raise ValueError(
-                "tilted probabilities must be positive in the evaluation precision"
-            )
-        base = base - base.max()
-        features = tilted.new_tensor(self._matrix)
+        features = base.new_tensor(self._matrix)
         mean = target @ features
-        coefficients = tilted.new_zeros(len(self.features))
+        coefficients = base.new_zeros(len(self.features))
         logits = base
         status: Literal["converged", "limit", "stalled"] = "limit"
         iteration = 0
@@ -197,5 +246,84 @@ class NgramFamily:
             target @ (target_log_prob - log_prob),
         )
 
+    def project_penalized(
+        self,
+        tilted_log_weights: torch.Tensor,
+        *,
+        penalty: float,
+        base_log_weights: torch.Tensor | None = None,
+        tolerance: float = 1e-9,
+        max_iterations: int = 512,
+    ) -> PenalizedNgramProjection:
+        """Project with a positive tree-group penalty on all n-gram coefficients.
 
-__all__ = ["NgramFamily", "NgramProjection"]
+        Each group contains the features sharing a given prefix, including
+        that prefix when it is a feature. The empty prefix is a group.
+        The objective adds `penalty` times the sum of group norms to
+        inclusive KL. The residual measures the proximal gradient
+        mapping in the infinity norm.
+        """
+        _validate_projection_settings(tolerance, max_iterations, 0)
+        if not 0 < penalty < float("inf"):
+            raise ValueError("tree-group penalty must be positive and finite")
+        base, target_log_prob, target = _projection_inputs(
+            self.words, tilted_log_weights, base_log_weights
+        )
+        features = base.new_tensor(self._full_matrix)
+        # A common shift of every row leaves all fitted probabilities
+        # fixed and gives a global covariance operator-norm bound.
+        features = features - features[0]
+        radius = features.square().sum(dim=1).max().item()
+        step = 1.0 / radius if 0 < radius < float("inf") else 1.0
+        if not radius < float("inf") or not 0 < step * penalty < float("inf"):
+            raise OverflowError("tree-group objective exceeds the evaluation precision")
+        groups = tuple(
+            torch.tensor(group, dtype=torch.long, device=base.device)
+            for group in self._penalty_groups
+        )
+        coefficients = base.new_zeros(len(self._vocabulary))
+        mean = target @ features
+        iteration = 0
+        status: Literal["converged", "limit", "stalled"] = "limit"
+        while True:
+            fitted = (base + features @ coefficients).log_softmax(dim=0)
+            probs = fitted.exp()
+            gradient = probs @ features - mean
+            proposed = _prefix_prox(
+                coefficients - step * gradient, groups, step * penalty
+            )
+            mapping = (coefficients - proposed) / step
+            error = mapping.abs().max().item() if mapping.numel() else 0.0
+            if not (
+                bool(torch.isfinite(fitted).all() & (probs > 0).all())
+                and error < float("inf")
+            ):
+                status = "stalled"
+                break
+            if error <= tolerance:
+                status = "converged"
+                break
+            if iteration == max_iterations:
+                break
+            coefficients = proposed
+            iteration += 1
+        norm_sum = sum(
+            (
+                torch.linalg.vector_norm(coefficients.index_select(0, group))
+                for group in groups
+            ),
+            base.new_zeros(()),
+        )
+        return PenalizedNgramProjection(
+            status,
+            iteration,
+            self._vocabulary,
+            fitted,
+            coefficients,
+            error,
+            target @ (target_log_prob - fitted),
+            penalty * norm_sum,
+        )
+
+
+__all__ = ["NgramFamily", "NgramProjection", "PenalizedNgramProjection"]

@@ -17,6 +17,7 @@ from quivers.core.relations.graph import StringFactorGraph
 from quivers.core.relations.projection import (
     NgramFamily,
     NgramProjection,
+    PenalizedNgramProjection,
     _validate_projection_settings,
 )
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
@@ -44,7 +45,7 @@ class StringSiteProjection:
     factor: int
     variable: str
     log_tilt_mass: torch.Tensor
-    fit: NgramProjection | None
+    fit: NgramProjection | PenalizedNgramProjection | None
     diagnostic: str | None = None
 
 
@@ -318,6 +319,7 @@ class FiniteStringBeliefPlan:
         tolerance: float | None = 1e-9,
         damping: float = 0.0,
         projection_tolerance: float = 1e-9,
+        projection_penalty: float = 0.0,
         projection_max_iterations: int = 64,
         projection_max_backtracks: int = 16,
     ) -> StringEPResult:
@@ -328,12 +330,17 @@ class FiniteStringBeliefPlan:
         log weights and preserves the family. The outer residual
         measures the undamped message update at the returned state.
         A failed local projection returns the preceding accepted state
-        and the separate site diagnostic.
+        and the separate site diagnostic. A positive projection penalty
+        uses the tree-group objective, with a proximal optimality
+        residual and the same projection iteration limit. The
+        backtracking limit applies to the unpenalized fit.
         """
         _validate_sweeps(max_sweeps, tolerance, damping)
         _validate_projection_settings(
             projection_tolerance, projection_max_iterations, projection_max_backtracks
         )
+        if not 0 <= projection_penalty < float("inf"):
+            raise ValueError("projection_penalty must be nonnegative and finite")
         tables, messages = self._start()
         like = tables[0]
         if like.dtype != torch.float64:
@@ -354,17 +361,27 @@ class FiniteStringBeliefPlan:
                 ):
                     tilted = incoming + outgoing
                     log_mass = LOG_PROB.join(tilted, dim=0)
-                    fit = None
+                    fit: NgramProjection | PenalizedNgramProjection | None = None
                     if bool(
                         torch.isfinite(log_mass) & ((tilted - log_mass).exp() > 0).all()
                     ):
-                        fit = families[name].project(
-                            tilted,
-                            base_log_weights=incoming,
-                            tolerance=projection_tolerance,
-                            max_iterations=projection_max_iterations,
-                            max_backtracks=projection_max_backtracks,
-                        )
+                        family = families[name]
+                        if projection_penalty:
+                            fit = family.project_penalized(
+                                tilted,
+                                penalty=projection_penalty,
+                                base_log_weights=incoming,
+                                tolerance=projection_tolerance,
+                                max_iterations=projection_max_iterations,
+                            )
+                        else:
+                            fit = family.project(
+                                tilted,
+                                base_log_weights=incoming,
+                                tolerance=projection_tolerance,
+                                max_iterations=projection_max_iterations,
+                                max_backtracks=projection_max_backtracks,
+                            )
                     if fit is None or fit.status != "converged":
                         problem = (
                             "tilted weights must be positive on the full support"

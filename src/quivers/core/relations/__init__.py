@@ -50,6 +50,7 @@ __all__ = [
     "Label",
     "NgramFamily",
     "NgramProjection",
+    "PenalizedNgramProjection",
     "ProductiveEpsilonCycleError",
     "QueryWork",
     "RationalRelation",
@@ -592,7 +593,11 @@ from quivers.core.relations.dual import (  # noqa: E402
     StringMapResult,
     dual_string_map,
 )
-from quivers.core.relations.projection import NgramFamily, NgramProjection  # noqa: E402
+from quivers.core.relations.projection import (  # noqa: E402
+    NgramFamily,
+    NgramProjection,
+    PenalizedNgramProjection,
+)
 from quivers.core.relations.beliefs import (  # noqa: E402
     FiniteStringBeliefPlan,
     StringBeliefResult,

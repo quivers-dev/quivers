@@ -316,6 +316,25 @@ accepted sweep in place. A fixed sweep count differentiates the
 executed updates. These finite message estimates use only the
 supplied word supports.
 
+
+A positive `projection_penalty` adds the sum of Euclidean coefficient
+norms over the n-gram prefix groups, scaled by that penalty. Each
+group contains every feature with that prefix, including the feature
+equal to the prefix when present. The empty prefix covers all
+coefficients. This objective uses the full n-gram coordinates
+because an affine change of basis can change the penalty.
+
+`NgramFamily.project_penalized` takes a step bounded by the maximum
+squared centered feature norm, then shrinks each prefix group from its
+descendants to the root. Two groups are disjoint or nested. A parent
+shrink preserves the directions of its descendants' subgradients,
+so the sum of the shrink displacements is a subgradient of the
+complete penalty at the final point. This gives the proximal update.
+The reported local convergence criterion is the infinity norm of its
+gradient mapping. The finite group implementation scans the declared
+feature vocabulary. Each shrink copies the coefficient vector, so a
+proximal update takes $O(rg)$ work for $r$ coefficients and $g$ groups.
+
 ::: quivers.core.relations
     options:
       members:
@@ -337,6 +356,7 @@ supplied word supports.
         - FiniteStringScore
         - NgramFamily
         - NgramProjection
+        - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
         - RelationLimitError
         - RelationPath

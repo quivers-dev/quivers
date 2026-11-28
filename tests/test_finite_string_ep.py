@@ -11,6 +11,8 @@ from quivers.core.relations import (
     Arc,
     Boundary,
     FiniteStringBeliefPlan,
+    NgramProjection,
+    PenalizedNgramProjection,
     RationalRelation,
     RelationTopology,
     StringFactor,
@@ -22,7 +24,7 @@ from tests.test_relation_composition import _INPUT
 _WORDS = ((), (0,), (1,), (0, 1))
 
 
-def _unary_plan(*weights):
+def _unary_plan(*weights, support=_WORDS):
     # Each word has one path whose boundary is the supplied weight.
     # The fourth path uses a unit epsilon-free intermediate arc.
     topology = RelationTopology(
@@ -45,7 +47,7 @@ def _unary_plan(*weights):
     )
     graph = StringFactorGraph((StringVariable("x", _INPUT),), factors)
     return FiniteStringBeliefPlan(
-        graph, {"x": _WORDS}, max_entries=4 * len(factors), max_states=64, max_work=96
+        graph, {"x": support}, max_entries=4 * len(factors), max_states=64, max_work=96
     )
 
 
@@ -66,7 +68,7 @@ def test_projected_graph_messages_fit_moments_and_preserve_tilt_mass():
     (site,) = result.site_projections
     assert (site.factor, site.variable, site.diagnostic) == (0, "x", None)
     assert site.log_tilt_mass.item() == pytest.approx(log(1 / 4))
-    assert site.fit is not None and site.fit.moment_residual <= 1e-12
+    assert isinstance(site.fit, NgramProjection) and site.fit.moment_residual <= 1e-12
     assert site.fit.divergence.item() > 0
 
     joint = result.log_marginals["x"][-1].exp()
@@ -143,3 +145,23 @@ def test_nonuniform_cavity_is_divided_out_of_the_projected_site():
     assert result.site_projections[0].log_tilt_mass.item() == pytest.approx(
         tilted.sum().log().item()
     )
+
+
+def test_penalized_ep_reports_composite_residual_and_matches_the_binary_kkt_fit():
+    weights = torch.tensor([0.25, 0.75, 1.0, 1.0, 1.0], dtype=torch.float64)
+    plan = _unary_plan(weights, support=((), (0,)))
+    result = plan.expectation_propagation(
+        order=1,
+        max_sweeps=3,
+        projection_penalty=0.05,
+        projection_max_iterations=256,
+        projection_tolerance=1e-12,
+    )
+    assert result.status == "converged"
+    assert result.log_marginals["x"].exp().tolist() == pytest.approx(
+        [0.35, 0.65], abs=2e-12
+    )
+    (site,) = result.site_projections
+    assert isinstance(site.fit, PenalizedNgramProjection)
+    assert site.fit.optimality_residual <= 1e-12
+    assert site.fit.regularization.item() > 0
