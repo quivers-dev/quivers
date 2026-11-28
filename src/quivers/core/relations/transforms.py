@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
 from quivers.core.relations import RationalRelation
-from quivers.core.relations.calculus import ComposedRelation
+from quivers.core.relations.joins import join
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
 from quivers.core.relations.topology import (
     EPSILON,
@@ -187,18 +187,6 @@ def condition(
     return RationalRelation(conditioned, relation.module(), algebra=relation.algebra)
 
 
-def _diagonal(relation: RationalRelation) -> RationalRelation:
-    topology = relation.topology
-    tape = topology.tapes[0]
-    diagonal = replace(
-        topology,
-        tapes=(tape, tape),
-        input_tapes=1,
-        arcs=tuple(replace(arc, labels=arc.labels * 2) for arc in topology.arcs),
-    )
-    return RationalRelation(diagonal, relation.module(), algebra=relation.algebra)
-
-
 def intersect(
     left: RationalRelation,
     right: RationalRelation,
@@ -219,9 +207,15 @@ def intersect(
         raise TypeError(
             "weighted-language intersection requires the same tape orientation"
         )
-    composition = ComposedRelation(_diagonal(left), _diagonal(right))
-    topology = composition.materialize(max_states=max_states, max_work=max_work)
-    return project(topology, (1 - left.topology.input_tapes,))
+    return join(
+        left,
+        right,
+        left_tape=0,
+        right_tape=0,
+        keep_shared=True,
+        max_states=max_states,
+        max_work=max_work,
+    )
 
 
 __all__ = ["condition", "intersect", "invert", "project", "trim"]

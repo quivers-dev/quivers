@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from functools import cached_property
 from itertools import product
 from typing import cast
@@ -50,6 +51,7 @@ __all__ = [
     "condition",
     "intersect",
     "invert",
+    "join",
     "project",
     "trim",
     "union",
@@ -219,6 +221,41 @@ class RationalRelation(Morphism):
             The scalar in the relation's algebra.
         """
         return self.query(words).weight()
+
+    def total_weight(
+        self,
+        *,
+        max_states: int | None = None,
+        max_work: int | None = None,
+        max_closure_size: int | None = None,
+    ) -> torch.Tensor:
+        """Sum the weights of all accepting walks over every word tuple.
+
+        One additional linear pass erases the tape labels. The usual
+        state, arc examination and closure limits then apply. A
+        productive cycle requires the established star to decide a
+        usable weight for its component.
+        """
+        return self._total_query(max_states, max_work, max_closure_size).weight()
+
+    def _total_query(
+        self,
+        max_states: int | None,
+        max_work: int | None,
+        max_closure_size: int | None,
+    ) -> FixedStringQuery:
+        topology = self.topology
+        labels = (EPSILON,) * len(topology.tapes)
+        erased = replace(
+            topology, arcs=tuple(replace(arc, labels=labels) for arc in topology.arcs)
+        )
+        relation = RationalRelation(erased, self.module(), algebra=self.algebra)
+        return relation.query(
+            ((),) * len(topology.tapes),
+            max_states=max_states,
+            max_work=max_work,
+            max_closure_size=max_closure_size,
+        )
 
     def restrict(
         self,
@@ -406,6 +443,7 @@ from quivers.core.relations.calculus import (  # noqa: E402
     ComposedStringQuery,
 )
 from quivers.core.relations.expressions import closure, concatenate, union  # noqa: E402
+from quivers.core.relations.joins import join  # noqa: E402
 from quivers.core.relations.transforms import (  # noqa: E402
     condition,
     intersect,

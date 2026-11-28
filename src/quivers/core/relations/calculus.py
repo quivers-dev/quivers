@@ -47,13 +47,11 @@ type _ArcIndex = dict[tuple[int, Label], _ArcGroup]
 type _WeightPair = tuple[int | None, int | None]
 
 
-def _arc_index(
-    topology: RelationTopology, outer: int, *, observe_outer: bool = True
-) -> _ArcIndex:
+def _arc_index(topology: RelationTopology, outer: int | None, shared: int) -> _ArcIndex:
     index: _ArcIndex = defaultdict(dict)
     for arc_id, arc in enumerate(topology.arcs):
-        visible = arc.labels[outer] if observe_outer else EPSILON
-        index[arc.source, visible].setdefault(arc.labels[1 - outer], []).append(arc_id)
+        visible = EPSILON if outer is None else arc.labels[outer]
+        index[arc.source, visible].setdefault(arc.labels[shared], []).append(arc_id)
     return index
 
 
@@ -150,16 +148,23 @@ def _pair_weights(
 
 class _MaterializedWeights(nn.Module):
     def __init__(
-        self, relation: ComposedRelation, pairs: tuple[_WeightPair, ...]
+        self,
+        left: RationalRelation,
+        right: RationalRelation,
+        pairs: tuple[_WeightPair, ...],
     ) -> None:
         super().__init__()
-        self.sources = relation.module()
-        self._relation = relation
+        self._left = left
+        self._right = right
+        l_module, r_module = left.module(), right.module()
+        self.sources = nn.ModuleList(
+            (l_module,) if l_module is r_module else (l_module, r_module)
+        )
         self._pairs = pairs
 
     def forward(self) -> torch.Tensor:
-        left, right = self._relation._operand_weights()
-        boundaries = _pair_weights(left, right, self._pairs, self._relation.algebra)
+        left, right = _read_weight_pair(self._left, self._right)
+        boundaries = _pair_weights(left, right, self._pairs, self._left.algebra)
         return torch.cat((left, right, boundaries))
 
 
@@ -242,16 +247,56 @@ def _compile_composition(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _JoinLayout:
+    left_tape: int
+    right_tape: int
+    visible: tuple[tuple[int, int], ...]
+    input_tapes: int
+
+    @classmethod
+    def build(
+        cls,
+        left: RelationTopology,
+        right: RelationTopology,
+        left_tape: int,
+        right_tape: int,
+        *,
+        keep_shared: bool,
+    ) -> _JoinLayout:
+        inputs, outputs = [], []
+        for side, topology in enumerate((left, right)):
+            for tape in range(len(topology.tapes)):
+                if (side == 0 and tape == left_tape and not keep_shared) or (
+                    side == 1 and tape == right_tape
+                ):
+                    continue
+                (inputs if tape < topology.input_tapes else outputs).append(
+                    (side, tape)
+                )
+        if not inputs and not outputs:
+            raise ValueError("a single-tape join must retain at least one tape")
+        return cls(left_tape, right_tape, (*inputs, *outputs), len(inputs))
+
+    def labels(self, left: Arc | None, right: Arc | None) -> tuple[Label, ...]:
+        arcs = left, right
+        return tuple(
+            EPSILON if (arc := arcs[side]) is None else arc.labels[tape]
+            for side, tape in self.visible
+        )
+
+
 def _materialize_product(
     left: RelationTopology,
     right: RelationTopology,
+    layout: _JoinLayout,
     max_states: int,
     max_work: int,
 ) -> tuple[RelationTopology, tuple[_WeightPair, ...]]:
     if len(left.initial) * len(right.initial) > max_states:
         raise RelationLimitError("composition exceeds max_states")
-    left_index = _arc_index(left, 0, observe_outer=False)
-    right_index = _arc_index(right, 1, observe_outer=False)
+    left_index = _arc_index(left, None, layout.left_tape)
+    right_index = _arc_index(right, None, layout.right_tape)
     left_count = len(left.weight_names)
     source_slots = left_count + len(right.weight_names)
     boundary_slots: dict[_WeightPair, int] = {}
@@ -260,6 +305,7 @@ def _materialize_product(
     initial: list[Boundary] = []
     final: list[Boundary] = []
     arcs: list[Arc] = []
+    silent = (EPSILON,) * len(layout.visible)
     work = _CompositionWork(max_work)
     n_states = 0
 
@@ -311,32 +357,32 @@ def _materialize_product(
                     next_phase,
                 )
             )
+            emitted = layout.labels(l_arc, r_arc)
             if l_arc is None:
                 assert r_arc is not None
                 add_arc(
                     source,
                     target,
-                    (EPSILON, r_arc.labels[1]),
+                    emitted,
                     left_count + r_arc.weight,
                 )
             elif r_arc is None:
-                add_arc(source, target, (l_arc.labels[0], EPSILON), l_arc.weight)
+                add_arc(source, target, emitted, l_arc.weight)
             else:
                 # Preserve both primitive factors for a future star of a
                 # cyclic product. This intermediate has one continuation.
                 between = allocate()
-                add_arc(
-                    source, between, (l_arc.labels[0], r_arc.labels[1]), l_arc.weight
-                )
-                add_arc(between, target, (EPSILON, EPSILON), left_count + r_arc.weight)
+                add_arc(source, between, emitted, l_arc.weight)
+                add_arc(between, target, silent, left_count + r_arc.weight)
     names = (
         *(f"left:{name}" for name in left.weight_names),
         *(f"right:{name}" for name in right.weight_names),
         *(f"boundary:{index}" for index in range(len(boundary_slots))),
     )
+    tapes = left.tapes, right.tapes
     topology = RelationTopology(
-        (left.tapes[0], right.tapes[1]),
-        1,
+        tuple(tapes[side][tape] for side, tape in layout.visible),
+        layout.input_tapes,
         n_states,
         tuple(arcs),
         tuple(initial),
@@ -380,8 +426,8 @@ class ComposedRelation(Morphism):
         super().__init__(left.domain, right.codomain, algebra)
         self._left = left
         self._right = right
-        self._left_index = _arc_index(left.topology, 0)
-        self._right_index = _arc_index(right.topology, 1)
+        self._left_index = _arc_index(left.topology, 0, 1)
+        self._right_index = _arc_index(right.topology, 1, 0)
         left_module, right_module = left.module(), right.module()
         self._module = nn.ModuleList(
             (left_module,)
@@ -414,11 +460,15 @@ class ComposedRelation(Morphism):
                 "materialized composition requires explicit state and work limits"
             )
         _validate_limits(max_states, max_work)
+        left, right = self._left, self._right
+        layout = _JoinLayout.build(
+            left.topology, right.topology, 1, 0, keep_shared=False
+        )
         topology, pairs = _materialize_product(
-            self._left.topology, self._right.topology, max_states, max_work
+            left.topology, right.topology, layout, max_states, max_work
         )
         return RationalRelation(
-            topology, _MaterializedWeights(self, pairs), algebra=self.algebra
+            topology, _MaterializedWeights(left, right, pairs), algebra=self.algebra
         )
 
     def query(

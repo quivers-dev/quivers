@@ -132,9 +132,22 @@ weight at the fixed word, so it can be used to compute a normalizer.
 Building the label index takes time and space linear in the source arc count.
 `max_states` bounds the visited pairs and `max_work` bounds the matching arc
 occurrences. Each output arc copies the labels on the retained tapes.
-`intersect` multiplies two weighted languages on a common one-sided tape
-through the same epsilon-filtered product. Each pair of accepting paths with
-the same word contributes exactly once to this product.
+
+`join` synchronizes a single pair of tapes of the same type, one from
+each operand. The remaining input tapes precede the remaining output
+tapes. Each path pair with the same word on the two selected tapes
+contributes once by the epsilon filter. The joined tape can be kept
+once. For one-tape operands with the same tape orientation this gives
+`intersect`, the product of their weighted languages.
+A joined transition writes at most one label per retained tape. The
+construction limits apply to reached states, shared-label probes and
+constructed arcs after indexing the source arcs.
+
+`total_weight` sums all accepting walks by erasing their labels before
+running the same fixed-word query. Each path realizes one word tuple,
+so this is the sum over the weighted relation's entire support. If
+erasing the labels exposes a productive cycle, the caller supplies a
+closure limit and the algebra checks convergence in its domain.
 
 `union` adds relations with identical tape types by taking the disjoint
 union of their topologies. `concatenate` uses a connecting state, so
@@ -172,6 +185,7 @@ in the original records and introduces one arc per connecting boundary.
         - condition
         - intersect
         - invert
+        - join
         - project
         - trim
         - union
