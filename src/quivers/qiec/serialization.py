@@ -125,6 +125,7 @@ from quivers.qiec.relation_composition import (
     FixedComposedRelationRequest,
 )
 from quivers.qiec.relation_feature_moments import (
+    FixedComposedArcFeatureMomentRequest,
     FixedCyclicRelationFeatureMomentRequest,
     FixedRelationFeatureMomentRequest,
     FixedRelationFeatureObservation,
@@ -374,6 +375,7 @@ _NODE_CLASSES = (
     ComposedRelationSpec,
     UnaryRelationTransformSpec,
     BinaryRelationTransformSpec,
+    FixedComposedArcFeatureMomentRequest,
     FixedCyclicRelationFeatureMomentRequest,
     FixedRelationFeatureMomentRequest,
     FixedRelationFeatureObservation,

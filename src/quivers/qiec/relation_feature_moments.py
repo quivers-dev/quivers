@@ -19,9 +19,40 @@ from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.kinds import NAT
+from quivers.qiec.relation_composition import FixedComposedRelationRequest
 from quivers.qiec.types import IndexLiteral, TypeExpr
 
 type _LogTable = tuple[tuple[float | None, ...], ...]
+
+
+def _validate_log_table(
+    name: str, table: _LogTable | None, size: int, width: int
+) -> None:
+    """Check one table of log features in original occurrence order.
+
+    Parameters
+    ----------
+    name : str
+        The row group's name in validation diagnostics.
+    table : tuple or None
+        One ordered log feature vector per occurrence, or no features.
+    size, width : int
+        The number of occurrences and features respectively.
+
+    Raises
+    ------
+    ValueError
+        The shape or a log increment is invalid.
+    """
+    if table is not None and (
+        len(table) != size
+        or any(
+            len(row) != width
+            or any(value is not None and not isfinite(value) for value in row)
+            for row in table
+        )
+    ):
+        raise ValueError(f"invalid {name} log feature table for this observation")
 
 
 class FixedRelationFeatureObservation(QiecModel):
@@ -74,16 +105,7 @@ class FixedRelationFeatureObservation(QiecModel):
             ("arc", self.arc_logs, len(self.relation.arcs)),
             ("final", self.final_logs, len(self.relation.final)),
         ):
-            if table is None:
-                continue
-            if len(table) != size or any(
-                len(row) != self.feature_extent
-                or any(value is not None and not isfinite(value) for value in row)
-                for row in table
-            ):
-                raise ValueError(
-                    f"invalid {name} log feature table for this observation"
-                )
+            _validate_log_table(name, table, size, self.feature_extent)
 
     @property
     def handler_name(self) -> str:
@@ -418,7 +440,180 @@ class FixedCyclicRelationFeatureMomentRequest(QiecModel):
         return self.request._plan(parameters, max_closure_size=self.max_closure_size)
 
 
+class FixedComposedArcFeatureMomentRequest(QiecModel):
+    """Collect original-arc features of compatible path pairs in composition.
+
+    A materialized epsilon-filtered product marks each edge by its
+    supplying operand and original arc occurrence. Distinct arcs can
+    share scalar weights. Even when the shared word is hidden, every
+    compatible pair contributes its two paths' additive feature totals.
+
+    Parameters
+    ----------
+    request : FixedComposedRelationRequest
+        The original ordered operands, outer words and product, query,
+        and optional scalar closure limits. Execution is materialized.
+    feature_extent : int
+        The positive number of features for both operands.
+    left_arc_logs, right_arc_logs : tuple
+        Log increments in original operand arc order. None is log zero.
+    max_feature_cells : int
+        The feature-cell budget for operand rows, the materialized
+        topology records, and the active observation chart.
+    """
+
+    request: FixedComposedRelationRequest = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    feature_extent: int
+    left_arc_logs: _LogTable = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    right_arc_logs: _LogTable = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_feature_cells: int
+
+    @dx.model_validator()
+    def _validate_features(self) -> None:
+        """Check the execution mode, work limit and operand feature tables.
+
+        Raises
+        ------
+        ValueError
+            The mode is lazy, an extent is invalid, or an operand table
+            fails its occurrence or log-increment contract.
+        """
+        if self.request.execution != "materialized":
+            raise ValueError("composed features require materialized execution")
+        if type(self.feature_extent) is not int or self.feature_extent <= 0:
+            raise ValueError("relation features require a positive feature extent")
+        if type(self.max_feature_cells) is not int or self.max_feature_cells < 0:
+            raise ValueError("max_feature_cells must be a nonnegative integer")
+        relation = self.request.relation
+        _validate_log_table(
+            "left operand",
+            self.left_arc_logs,
+            len(relation.left.arcs),
+            self.feature_extent,
+        )
+        _validate_log_table(
+            "right operand",
+            self.right_arc_logs,
+            len(relation.right.arcs),
+            self.feature_extent,
+        )
+
+    @property
+    def handler_name(self) -> str:
+        """Return the foreign name for the exact ordered composed observation.
+
+        Returns
+        -------
+        str
+            The name binding the operands, outer words and original features.
+        """
+        from quivers.qiec.serialization import dumps
+
+        owner = (
+            self.request.relation,
+            self.request.words,
+            self.feature_extent,
+            self.left_arc_logs,
+            self.right_arc_logs,
+        )
+        digest = sha256(dumps(owner).encode("utf-8")).hexdigest()
+        return f"__composed_relation_feature_moments_{digest}"
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Return the fixed shape of the composed log feature result.
+
+        Returns
+        -------
+        TypeExpr
+            The log total followed by its unnormalized log feature moments.
+        """
+        return tensor_type(
+            LOG_WEIGHT, (IndexLiteral(value=self.feature_extent + 1, sort=NAT),)
+        )
+
+    def plan(
+        self, parameters: Mapping[ParameterId, torch.Tensor]
+    ) -> Callable[[], torch.Tensor]:
+        """Build an occurrence-tagged product and bind its original weights.
+
+        Parameters
+        ----------
+        parameters : Mapping of ParameterId to torch.Tensor
+            The caller's original scalar tensor owners across both operands.
+
+        Returns
+        -------
+        callable
+            The reusable vector of unnormalized log statistics.
+
+        Raises
+        ------
+        RelationLimitError
+            Operand, output topology, or active chart cells exceed the limit.
+        """
+        request = self.request
+        columns = self.feature_extent + 1
+        left_size = len(self.left_arc_logs)
+        operand_rows = left_size + len(self.right_arc_logs)
+        if columns * operand_rows > self.max_feature_cells:
+            raise RelationLimitError("operand feature cells exceed max_feature_cells")
+        relation, origins = request.relation.bind(parameters)._materialize(
+            max_states=request.max_states,
+            max_work=request.max_work,
+            capture_origins=True,
+        )
+        assert origins is not None
+        topology = relation.topology
+        rows = (
+            operand_rows
+            + topology.n_states
+            + len(topology.arcs)
+            + len(topology.initial)
+            + len(topology.final)
+        )
+        if columns * rows > self.max_feature_cells:
+            raise RelationLimitError(
+                "materialized feature cells exceed max_feature_cells"
+            )
+        query = relation.query(
+            request.words,
+            max_states=request.max_states,
+            max_work=request.max_work,
+            max_closure_size=request.max_closure_size,
+        )
+        work = query.work
+        if (
+            columns * (rows + work.active_states + work.active_arcs)
+            > self.max_feature_cells
+        ):
+            raise RelationLimitError(
+                "composed observation feature cells exceed max_feature_cells"
+            )
+        anchor = relation._weights()
+        left = _feature_tensor(self.left_arc_logs, self.feature_extent, anchor)
+        right = _feature_tensor(self.right_arc_logs, self.feature_extent, anchor)
+        assert left is not None and right is not None
+        indices = torch.tensor(
+            [index + side * left_size for side, index in origins],
+            dtype=torch.long,
+            device=anchor.device,
+        )
+        arcs = torch.cat((left, right)).index_select(0, indices)
+        return partial(
+            _moment_vector,
+            query,
+            arcs,
+            None,
+            None,
+            allow_cyclic=request.max_closure_size is not None,
+        )
+
+
 __all__ = [
+    "FixedComposedArcFeatureMomentRequest",
     "FixedCyclicRelationFeatureMomentRequest",
     "FixedRelationFeatureMomentRequest",
     "FixedRelationFeatureObservation",

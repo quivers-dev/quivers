@@ -270,6 +270,24 @@ by the scalar evaluator.
 
 ::: quivers.qiec.relation_feature_moments.FixedCyclicRelationFeatureMomentRequest
 
+`FixedComposedArcFeatureMomentRequest` uses a materialized composition
+and one log feature row per original arc of each operand. A product arc
+keeps the supplying operand and occurrence ID, including when two
+arcs share a weight. The epsilon filter contributes one accepting product
+path per compatible original path pair. A matched step has one edge for
+each primitive factor, so their two feature rows both enter the moment
+even when the shared word is erased. Boundary marks still contribute
+their weights. The request assigns increments only to operand arcs.
+
+The feature-cell count is the feature extent plus one, times the sum of
+operand arc rows, materialized state, arc and boundary records, and
+active observation states and arcs. Limits on the product and any
+productive scalar closure also apply. The handler binds the ordered
+operands, outer observation, and original feature rows. Its result is
+the log total followed by unnormalized log feature moments.
+
+::: quivers.qiec.relation_feature_moments.FixedComposedArcFeatureMomentRequest
+
 ## String factor graphs
 
 `StringFactorGraphSpec` records the nominal alphabet and optional

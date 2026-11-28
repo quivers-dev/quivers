@@ -295,12 +295,17 @@ class _JoinLayout:
         )
 
 
+type _ArcOrigin = tuple[int, int]
+
+
 def _materialize_product(
     left: RelationTopology,
     right: RelationTopology,
     layout: _JoinLayout,
     max_states: int,
     max_work: int,
+    *,
+    arc_origins: list[_ArcOrigin] | None = None,
 ) -> tuple[RelationTopology, tuple[_WeightPair, ...]]:
     if len(left.initial) * len(right.initial) > max_states:
         raise RelationLimitError("composition exceeds max_states")
@@ -334,10 +339,19 @@ def _materialize_product(
             states.append((index, state))
         return index
 
-    def add_arc(source: int, target: int, labels: tuple[Label, ...], slot: int) -> None:
+    def add_arc(
+        source: int,
+        target: int,
+        labels: tuple[Label, ...],
+        slot: int,
+        side: int,
+        arc: int,
+    ) -> None:
         work.demand()
         work.arcs += 1
         arcs.append(Arc(source, target, labels, slot))
+        if arc_origins is not None:
+            arc_origins.append((side, arc))
 
     def boundary_slot(left_slot: int, right_slot: int) -> int:
         pair = left_slot, right_slot
@@ -368,21 +382,25 @@ def _materialize_product(
             )
             emitted = layout.labels(l_arc, r_arc)
             if l_arc is None:
-                assert r_arc is not None
+                assert r_arc is not None and r_id is not None
                 add_arc(
                     source,
                     target,
                     emitted,
                     left_count + r_arc.weight,
+                    1,
+                    r_id,
                 )
             elif r_arc is None:
-                add_arc(source, target, emitted, l_arc.weight)
+                assert l_id is not None
+                add_arc(source, target, emitted, l_arc.weight, 0, l_id)
             else:
                 # Preserve both primitive factors for a future star of a
                 # cyclic product. This intermediate has one continuation.
                 between = allocate()
-                add_arc(source, between, emitted, l_arc.weight)
-                add_arc(between, target, silent, left_count + r_arc.weight)
+                assert l_id is not None and r_id is not None
+                add_arc(source, between, emitted, l_arc.weight, 0, l_id)
+                add_arc(between, target, silent, left_count + r_arc.weight, 1, r_id)
     names = (
         *(f"left:{name}" for name in left.weight_names),
         *(f"right:{name}" for name in right.weight_names),
@@ -438,7 +456,13 @@ class ComposedRelation(Morphism):
         self._left_index = _arc_index(left.topology, 0, 1)
         self._right_index = _arc_index(right.topology, 1, 0)
         self._materialized: (
-            tuple[tuple[int, int], RelationTopology, tuple[_WeightPair, ...]] | None
+            tuple[
+                tuple[int, int],
+                RelationTopology,
+                tuple[_WeightPair, ...],
+                tuple[_ArcOrigin, ...] | None,
+            ]
+            | None
         ) = None
         left_module, right_module = left.module(), right.module()
         self._module = nn.ModuleList(
@@ -468,6 +492,11 @@ class ComposedRelation(Morphism):
         weight-slot mapping can be reused for identical budgets.
         Each result reads both original weight sources on evaluation.
         """
+        return self._materialize(max_states=max_states, max_work=max_work)[0]
+
+    def _materialize(
+        self, *, max_states: int, max_work: int, capture_origins: bool = False
+    ) -> tuple[RationalRelation, tuple[_ArcOrigin, ...] | None]:
         if max_states is None or max_work is None:
             raise ValueError(
                 "materialized composition requires explicit state and work limits"
@@ -476,19 +505,31 @@ class ComposedRelation(Morphism):
         left, right = self._left, self._right
         budgets = max_states, max_work
         materialized = self._materialized
-        if materialized is None or materialized[0] != budgets:
+        if (
+            materialized is None
+            or materialized[0] != budgets
+            or (capture_origins and materialized[3] is None)
+        ):
             layout = _JoinLayout.build(
                 left.topology, right.topology, 1, 0, keep_shared=False
             )
+            arc_origins: list[_ArcOrigin] | None = [] if capture_origins else None
             topology, pairs = _materialize_product(
-                left.topology, right.topology, layout, max_states, max_work
+                left.topology,
+                right.topology,
+                layout,
+                max_states,
+                max_work,
+                arc_origins=arc_origins,
             )
-            materialized = budgets, topology, pairs
+            origins = None if arc_origins is None else tuple(arc_origins)
+            materialized = budgets, topology, pairs, origins
             self._materialized = materialized
-        _, topology, pairs = materialized
-        return RationalRelation(
+        _, topology, pairs, origins = materialized
+        relation = RationalRelation(
             topology, _MaterializedWeights(left, right, pairs), algebra=self.algebra
         )
+        return relation, origins
 
     def query(
         self,

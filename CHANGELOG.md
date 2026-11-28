@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Original-arc moments through composition.** Checked materialized compositions can report unnormalized nonnegative moments of each operand's original arc features, including compatible pairs with a hidden middle word and certified epsilon cycles.
 - **Certified cyclic feature moments.** Checked fixed-word requests can combine scalar component closures to sum nonnegative features over all visits, with an explicit closure order bound.
 - **Derived relations in authored string graphs.** A named sparse relation cascade can serve as a factor with checked output tape types, explicit construction limits, and the original live weights.
 - **Checked pruned string beliefs.** The authored factor graph shares its parameter owners with a typed approximate query that reports support conflicts, resource limits, and pre-renormalization proposal masses.
