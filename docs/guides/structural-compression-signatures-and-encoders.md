@@ -88,6 +88,47 @@ Every sort that a constructor or binder mentions must be declared under `sorts`,
 every sort without a `dim` option must receive one from each encoder and decoder over
 the signature. The compiler raises an error otherwise.
 
+### Checked interpretations of a binding signature
+
+An `interpret` declaration can fold a binding signature through named QVR
+computations. The `[structure=cartesian]` option explicitly grants exchange,
+weakening, and contraction. A scoped rule operation receives a pair of the body
+proof and captured environment. Its generated application takes one value for
+each bound variable in the order the binder introduces them. The rule operation
+can omit the application or call it several times with different values.
+
+```qvr
+signature Scope
+    sorts
+        Expr : object
+    binders
+        Bind : binds (x : Expr) in (body : Expr) -> Expr
+
+interpret evaluate [structure=cartesian] : Scope -> Real
+    rule Bind = choose
+
+define choose[Env : Type](body : Scope__ScopedProof_Expr[Real, Scope__ScopedFrame_Expr[Env, Real]] * Env) : Real !{} =
+    let first <- evaluate__apply_Bind_0[Env](body, 2.0)
+    let second <- evaluate__apply_Bind_0[Env](body, 5.0)
+    return first + second
+
+define binding_example() : Real !{} =
+    let x = construct Scope__ScopedHere_Expr[Real, Scope__ScopedEmpty]() as Scope__ScopedMember_Expr[Real, Scope__ScopedFrame_Expr[Scope__ScopedEmpty, Real]]
+    let body = construct Scope__ScopedHypothesis_Expr[Real, Scope__ScopedFrame_Expr[Scope__ScopedEmpty, Real]](x) as Scope__ScopedProof_Expr[Real, Scope__ScopedFrame_Expr[Scope__ScopedEmpty, Real]]
+    let proof = construct Scope__ScopedRule_Bind[Real, Scope__ScopedEmpty](body) as Scope__ScopedProof_Expr[Real, Scope__ScopedEmpty]
+    evaluate(proof)
+```
+
+Here the proof body refers to the most recent hypothesis. The two
+applications interpret it at 2 and at 5, so `binding_example()` returns 7.
+A frame type records the previous environment and the carrier of its
+newest hypothesis. The proof's bracketed arguments record the semantic
+carrier and the precise environment type. With several object sorts, the
+authored interpretation uses the declared carrier for each sort. Rule
+operations in this source form have a pure effect row. The
+[checked Python adapter](../api/qiec/rules.md#checked-right-scoped-folds)
+also accepts distinct carriers and closed effect rows by judgment.
+
 ## Encoder blocks
 
 An `encoder` gives the vector length of each sort and a body for each constructor and
