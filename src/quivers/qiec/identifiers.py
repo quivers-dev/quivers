@@ -451,7 +451,7 @@ _CLAUSE_SCOPE = "handler-clause"
 
 
 def _clause_address(
-    site: SiteId, captured_calls: tuple[SiteId, ...] = ()
+    site: SiteId, captured_calls: tuple[SiteId | int, ...] = ()
 ) -> DynamicAddressFrame:
     """Address an operation clause relative to the request that entered it.
 
@@ -460,20 +460,23 @@ def _clause_address(
     site : SiteId
         The static site of the answered request. The surrounding dynamic
         frames and shot path identify its activation.
-    captured_calls : tuple[SiteId, ...]
-        The source sites of calls removed from the active path when the
-        handler captures the continuation, outermost first.
+    captured_calls : tuple[SiteId or int, ...]
+        The calls removed from the active path when the handler captures
+        the continuation, outermost first. Acyclic calls contribute source
+        sites. A recurrent tail frame contributes its run ordinal.
 
     Returns
     -------
     DynamicAddressFrame
         A relative clause frame, ordered after its enclosing context.
     """
-    # A site identifier cannot contain the separator, so the ordered
-    # components can be recovered without treating another digest as identity.
-    return DynamicAddressFrame(
-        scope=_CLAUSE_SCOPE, key="/".join(str(item) for item in (site, *captured_calls))
+    # A site identifier starts with qiec: and cannot contain the separator.
+    # The runtime tag keeps the two kinds of path component disjoint.
+    path = (
+        f"runtime-call:{item}" if isinstance(item, int) else str(item)
+        for item in captured_calls
     )
+    return DynamicAddressFrame(scope=_CLAUSE_SCOPE, key="/".join((str(site), *path)))
 
 
 class SiteProvenance(QiecModel):

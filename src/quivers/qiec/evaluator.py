@@ -3574,20 +3574,22 @@ class Evaluator:
                     if address.scope == _CLAUSE_SCOPE
                 )
                 if structural_clause.grade is ResumptionGrade.LINEAR:
-                    call_sites: list[SiteId] = []
+                    call_path: list[SiteId | int] = []
                     for captured in captured_stack:
                         if not isinstance(captured, _CallFrame):
                             continue
                         if captured.call_history is None:
-                            call_sites.clear()
-                            break
-                        call_sites.extend(
-                            origin.site_id() for _, origin in captured.call_history
-                        )
+                            # The recurrent tail chain keeps only its active
+                            # frame. The run ordinal names that activation.
+                            call_path.append(captured.serial)
+                        else:
+                            call_path.extend(
+                                origin.site_id() for _, origin in captured.call_history
+                            )
                     clause_path = (
                         *clause_path,
                         _clause_address(
-                            request.core.origin.static_site, tuple(call_sites)
+                            request.core.origin.static_site, tuple(call_path)
                         ),
                     )
                 del stack[index:]

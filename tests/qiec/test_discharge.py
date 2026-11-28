@@ -581,12 +581,21 @@ define relay_tail(x : Real) : Real !{relay} =
     else
         relay_leaf(0.0 - x)
 
-define relay_cycle(n : Int, x : Real) : Real !{relay} =
+define relay_cycle(n : Int, x : Real) : Real !{relay, score} =
     if n > 0 then
         relay_cycle(n - 1, x)
     else
         let result <- perform relay.pass(x)
+        perform score.add(weight(result))
         return result
+
+define relay_lexical_cycle(n : Int, x : Real) : Real !{relay} =
+    if n > 0 then
+        relay_lexical_cycle(n - 1, x)
+    else
+        let first <- relay_leaf(x)
+        let second <- relay_leaf(first)
+        return second
 
 define report_captured(x : Real) : Real !{score} =
     handle relay with recording_relay in
@@ -610,7 +619,14 @@ define report_pure_tail(x : Real) : Real !{score} =
 
 define report_cycle(x : Real) : Real !{score} =
     handle relay with recording_relay in
-        relay_cycle(64, x)
+        let first <- relay_cycle(64, x)
+        let second <- relay_cycle(64, first)
+        perform score.add(weight(second))
+        return second
+
+define report_lexical_cycle(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        relay_lexical_cycle(3, x)
 
 define report_captured_run(x : Real) : Real * LogWeight !{} =
     handle score with accumulate in
@@ -626,7 +642,13 @@ define report_pure_tail_run(x : Real) : Real * LogWeight !{} =
 
 define report_cycle_run(x : Real) : Real * LogWeight !{} =
     handle score with accumulate in
-        report_cycle(x)
+        let result <- report_cycle(x)
+        perform score.add(weight(result))
+        return result
+
+define report_lexical_cycle_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_lexical_cycle(x)
 """
 
 
@@ -711,16 +733,64 @@ def test_a_pure_clause_does_not_need_an_elided_callers_address(
         assert _request_addresses(checked, name + "_run", 1.0) == expected
 
 
-def test_recurrent_tail_calls_discard_lexical_history(
+def test_recurrent_tail_calls_keep_their_own_clause_activation(
     captured_call_module: tuple[QiecModule, DischargedModule],
 ) -> None:
     module, discharged = captured_call_module
     name = "report_cycle"
     obstacle = discharged.obstacle(name)
     assert obstacle is not None and obstacle.kind == "recursion"
-    (trigger,) = _effect_sites(_computation(module, "relay_cycle").body, "Relay")
+    recursive = _computation(module, "relay_cycle").body
+    (trigger,) = _effect_sites(recursive, "Relay")
     (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
-    expected = ((score, (("call", f"{name}#1"), ("handler-clause", trigger)), ()),)
+    (resumed,) = _effect_sites(recursive, "Score")
+    (outside,) = _effect_sites(_computation(module, name).body, "Score")
+    (after_call,) = _effect_sites(_computation(module, name + "_run").body, "Score")
+    parent = (("call", f"{name}#1"),)
+    expected = []
+    # Each loop enters once at 64 and once at each smaller value down to 0.
+    for active in (1 + 65, 1 + 2 * 65):
+        clause = ("handler-clause", f"{trigger}/runtime-call:{active}")
+        expected.append((score, (*parent, clause), ()))
+        expected.append((resumed, (*parent, ("call", f"relay_cycle#{active}")), ()))
+    expected.extend(((outside, parent, ()), (after_call, (), ())))
+    assert len(set(expected)) == len(expected)
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
+
+
+def test_acyclic_call_sites_stay_ordered_after_a_recurrent_frame(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_lexical_cycle"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "recursion"
+    (trigger,) = _effect_sites(_computation(module, "relay_leaf").body, "Relay")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    calls = sorted(
+        (
+            term
+            for term in _terms(_computation(module, "relay_lexical_cycle").body)
+            if isinstance(term, Call) and term.name == "relay_leaf"
+        ),
+        key=lambda term: term.origin.line or 0,
+    )
+    assert len(calls) == 2
+    # The wrapper has ordinal 1, then four recursive entries reach zero.
+    expected = tuple(
+        (
+            score,
+            (
+                ("call", f"{name}#1"),
+                ("handler-clause", f"{trigger}/runtime-call:5/{call.origin.site_id()}"),
+            ),
+            (),
+        )
+        for call in calls
+    )
     for checked in (module, discharged.module):
         assert _request_addresses(checked, name + "_run", 1.0) == expected
 
