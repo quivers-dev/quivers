@@ -200,3 +200,31 @@ requires search, and a loss over a decoder requires neural attachments. The diag
 reachable computation and keeps its source range. `qvr check --target TARGET`, or a target set in the
 language server, reports these requirements while the source is edited, and `qvr transpile` then
 reports any restriction particular to the target's renderer.
+
+
+## Fixed-word relation scores
+
+A `relation_score` declaration exposes a zero-argument computation for
+a fixed-word relation request. Pair weights have type `Real` for
+Markov or `LogWeight` for LogProb. A conditional log probability has
+type `LogWeight`.
+
+<!-- compile: qiec -->
+```qvr
+relation_score paired_words : Real [operation=pair_weight]
+relation_score output_likelihood : LogWeight [operation=conditional_log_prob]
+```
+
+Each declaration elaborates to a checked computation that installs a
+foreign `Compute` handler. In the reference machine,
+`FixedRelationRuntimeProvider.for_score` serves that handler with a
+serialized `FixedRelationRequest` and the original scalar parameters
+indexed by identity. The provider checks the operation and result type
+against the declaration. The request supplies the topology, observed
+words, and construction limits. The [wire and runtime contract][fixed-relation-wire]
+describes the two operations.
+
+Stan, BUGS, and JAGS report the foreign handler as an obstacle. The
+ordinary QIEC provider boundary remains explicit for other hosts.
+
+[fixed-relation-wire]: ../../api/qiec/serialization.md#fixed-word-relation-requests

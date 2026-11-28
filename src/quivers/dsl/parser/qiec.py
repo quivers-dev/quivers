@@ -15,6 +15,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecInterpretationClause,
     QiecInterpretationDecl,
+    QiecRelationScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
     QiecEffectBinder,
@@ -79,6 +80,7 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "handler_decl",
         "computation_decl",
         "interpretation_decl",
+        "relation_score_decl",
     }
 )
 
@@ -184,6 +186,18 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             deduction=_field_text(t, vid, "deduction"),
             carrier=_walk_type(t, _required_field(t, vid, "carrier")),
             clauses=tuple(clauses),
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "relation_score_decl":
+        return QiecRelationScoreDecl(
+            name=_field_text(t, vid, "name"),
+            result_type=_walk_type(t, _required_field(t, vid, "result")),
+            operation=cast(
+                Literal["pair_weight", "conditional_log_prob"],
+                _field_text(t, vid, "operation"),
+            ),
             docs=docs,
             line=line,
             col=col,

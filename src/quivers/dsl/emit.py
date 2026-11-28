@@ -160,6 +160,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputation,
     QiecComputationDecl,
     QiecInterpretationDecl,
+    QiecRelationScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
     QiecEffectBinder,
@@ -1028,6 +1029,10 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
             for clause in stmt.clauses
         )
         return "\n".join(lines)
+    if isinstance(stmt, QiecRelationScoreDecl):
+        result = _emit_qiec_type(stmt.result_type)
+        text = f"relation_score {stmt.name} : {result} [operation={stmt.operation}]"
+        return _with_docs(stmt.docs, indent, text)
     if isinstance(stmt, QiecComputationDecl):
         return _emit_qiec_computation_decl(stmt, indent)
     if isinstance(stmt, CompositionDecl):

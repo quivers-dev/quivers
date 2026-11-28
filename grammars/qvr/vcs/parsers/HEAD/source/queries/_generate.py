@@ -94,6 +94,8 @@ NODE_PATTERNS = """\
 (qiec_handler_operation_clause parameters: (qiec_local_binding name: (identifier) @variable.parameter))
 (qiec_handler_return_clause binder: (qiec_local_binding name: (identifier) @variable.parameter))
 (computation_decl name: (identifier) @function)
+(relation_score_decl name: (identifier) @function)
+(relation_score_operation) @keyword
 (interpretation_decl name: (identifier) @function)
 (interpretation_decl deduction: (identifier) @function)
 (interpretation_clause constructor: (identifier) @constructor)

@@ -109,10 +109,10 @@ GRAMMAR_ASSETS: dict[str, GrammarAsset] = {
         compiled_inputs_sha256="8f3a10111b43a4740361b664edccbcbd0fee30915e48d7c13586d7513f07300e",
     ),
     "HEAD": GrammarAsset(
-        grammar_json_sha256="54cda0f9c9dbd87c71d0586941c3b5a03ba5c8f761f54977daadd97e6e789cb0",
-        node_types_sha256="8469bdb52bda2c51fd8c735171d12d86f6d2bd587d4b6e6cbbf7ec9b31779f04",
-        parser_c_sha256="7849b67c692e2dd78307848bd6a5100f68d41ee07d0780b3cc31027616cda160",
-        compiled_inputs_sha256="a61d0f69d1258bacc0c69341a6d8a0b7e796a4df2c9a28ee60d33dc59567657f",
+        grammar_json_sha256="45b9ce9459f97969d4cad2c25277a06cc71329199639921ff092803f6b839291",
+        node_types_sha256="02f11677089a1cd3df5dfa2597aeffd5f09f5981955b775f0b356095edd33c5f",
+        parser_c_sha256="a525f35a73959a52bdb730cfd13857457babac8efa68cd5385e8770b2f72b69d",
+        compiled_inputs_sha256="a86eaea50eec9f72dd6b71ef9ac00a03cdb5f99100f20675188f136717113f83",
     ),
 }
 
@@ -157,7 +157,7 @@ SCHEMA_COMMITS: dict[str, str] = {
     "v0.19.0": "b4b20dd709fb0466384f12e5c9fbfaf959013a426bbb82ba0806a8d75ac2877e",
     "v0.62.0": "2378d1a97cf516892cb9b4484300fb9cb91e40fc5a91b9131821c9dac43c65f4",
     "v0.64.2": "2378d1a97cf516892cb9b4484300fb9cb91e40fc5a91b9131821c9dac43c65f4",
-    "HEAD": "af4c06231f3281ffd1a53ebfdb6d06f8fdab789fb3d0a6a6da7eb0eae45e19c2",
+    "HEAD": "a8a1b1e89115b2e6c7efc1909c26712d4f6bf825afb0fb0fed221d5f0401e06d",
 }
 
 
