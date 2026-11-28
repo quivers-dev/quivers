@@ -23,7 +23,7 @@ from __future__ import annotations
 from functools import cached_property, lru_cache
 from types import MappingProxyType
 import weakref
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import cast
 
 import didactic.api as dx
@@ -45,6 +45,9 @@ from quivers.qiec.identifiers import (
     EffectInstanceId,
     HandlerId,
     OperationId,
+    SourceOrigin,
+    _CLAUSE_SCOPE,
+    _clause_address,
 )
 from quivers.qiec.terms import (
     AttachmentRef,
@@ -724,9 +727,8 @@ class RuntimeRequest(QiecModel):
     resumption_path
         The ordinal of each resumption taken to reach this request.
     dynamic_path
-        The call and local-instance frames live when the request was
-        performed, outermost first, so one site reached through two
-        recursive iterations yields two addresses.
+        The call, local-instance, and operation-clause frames live when
+        the request was performed, outermost first within each path.
     """
 
     core: EffectRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -772,16 +774,21 @@ class RuntimeRequest(QiecModel):
         -------
         tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
             The source site, the dynamic address frames, and the
-            resumption path. One request site reached twice, under a loop
-            or under a resumed continuation, yields two addresses, which
-            is what lets a trace name each occurrence separately.
+            resumption path. Active caller shots precede the shots already
+            recorded in the request's rewritten provenance.
         """
         static, dynamic, declared_path = self.core.origin.dynamic_key()
         runtime = tuple((frame.scope, frame.key) for frame in self.dynamic_path)
+        if self.core.origin.parents:
+            # Generated requests can carry an already attributed dynamic path.
+            prefix, clauses = dynamic, ()
+        else:
+            prefix = tuple(frame for frame in dynamic if frame[0] != _CLAUSE_SCOPE)
+            clauses = tuple(frame for frame in dynamic if frame[0] == _CLAUSE_SCOPE)
         return (
             static,
-            (*dynamic, *runtime),
-            (*declared_path, *self.resumption_path),
+            (*prefix, *runtime, *clauses),
+            (*self.resumption_path, *declared_path),
         )
 
 
@@ -1079,6 +1086,10 @@ class _CallFrame(ContinuationFrame):
     serial
         The call's ordinal within the run, so two iterations of a
         recursive computation address their requests differently.
+    origin
+        The static site of the call.
+    replaced_caller
+        Whether a tail call removed its caller's frame.
     environment
         The caller's bindings, restored when the call returns.
     """
@@ -1086,6 +1097,8 @@ class _CallFrame(ContinuationFrame):
     callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
     serial: int
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    replaced_caller: bool
     environment: Mapping[Local, HeldValue] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -1149,6 +1162,9 @@ class _ClauseFrame(ContinuationFrame):
     resumption_path
         The address the handler's continuation runs under, restored after
         the answer.
+    clause_path
+        The clause ancestry of the triggering request, extended for this
+        invocation when it is linear.
     """
 
     resumption: Resumption = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1158,6 +1174,9 @@ class _ClauseFrame(ContinuationFrame):
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     resumption_path: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    clause_path: tuple[DynamicAddressFrame, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class _AnswerFrame(ContinuationFrame):
@@ -1179,9 +1198,16 @@ class _PathFrame(ContinuationFrame):
     ----------
     resumption_path
         The address in force before the shot began.
+    clause_path
+        The clause ancestry outside the captured continuation, when this
+        shot suspends an authored clause. Reinstated frames can restore
+        their own ancestry within that capture.
     """
 
     resumption_path: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    clause_path: tuple[DynamicAddressFrame, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class _Returned(QiecModel):
@@ -1672,7 +1698,10 @@ class Resumption:
             assert isinstance(handler, _HandlerFrame)
             self._evaluator._validate_parameters(handler.definition, arguments)
             captured[0] = handler.carrying(arguments)
-        return captured, (*self._path, next_call - 1)
+        shot_path = self._path
+        if self._grade is ResumptionGrade.UNRESTRICTED:
+            shot_path = (*shot_path, next_call - 1)
+        return captured, shot_path
 
     def _check_completed(self) -> None:
         """Confirm a linear resumption was actually used.
@@ -2782,8 +2811,29 @@ class Evaluator:
         return _accept if validator is None else validator
 
     @staticmethod
+    def _clause_path(stack: Sequence[_Frame]) -> tuple[DynamicAddressFrame, ...]:
+        """Find the active clause ancestry of a continuation.
+
+        Parameters
+        ----------
+        stack : Sequence[_Frame]
+            The machine stack, outermost frame first.
+
+        Returns
+        -------
+        tuple[DynamicAddressFrame, ...]
+            The ancestry set by the nearest clause or shot boundary.
+        """
+        for frame in reversed(stack):
+            if isinstance(frame, _ClauseFrame):
+                return frame.clause_path
+            if isinstance(frame, _PathFrame) and frame.clause_path is not None:
+                return frame.clause_path
+        return ()
+
+    @staticmethod
     def _dynamic_path(stack: list[_Frame]) -> tuple[DynamicAddressFrame, ...]:
-        """The call and local-instance frames live on a stack.
+        """The call, local-instance, and operation-clause address frames.
 
         Parameters
         ----------
@@ -2793,7 +2843,8 @@ class Evaluator:
         Returns
         -------
         tuple[DynamicAddressFrame, ...]
-            One address frame per call or allocation, outermost first.
+            One frame per call or allocation, followed by the active clause
+            ancestry.
         """
         path: list[DynamicAddressFrame] = []
         for frame in stack:
@@ -2801,7 +2852,7 @@ class Evaluator:
                 path.append(frame.address)
             elif isinstance(frame, _InstanceFrame):
                 path.append(frame.address)
-        return tuple(path)
+        return (*path, *Evaluator._clause_path(stack))
 
     def _drive_computation(
         self,
@@ -3135,8 +3186,10 @@ class Evaluator:
                 # the caller's frame has no further use, so it is left rather
                 # than kept beneath the callee, and a tail-recursive loop
                 # runs in constant stack.
+                replaced_caller = False
                 if stack and isinstance(finished := stack[-1], _CallFrame):
                     stack.pop()
+                    replaced_caller = True
                     if self.trace_hook is not None:
                         self._emit_trace(
                             "call.returned",
@@ -3164,6 +3217,8 @@ class Evaluator:
                         callee=callee.id,
                         name=callee.name,
                         serial=serial,
+                        origin=current.origin,
+                        replaced_caller=replaced_caller,
                         environment=caller_environment,
                     )
                 )
@@ -3204,7 +3259,12 @@ class Evaluator:
                     value,
                     tuple(self._value(argument, env) for argument in current.arguments),
                 )
-                stack.append(_PathFrame(resumption_path=resumption_path))
+                stack.append(
+                    _PathFrame(
+                        resumption_path=resumption_path,
+                        clause_path=self._clause_path(clause.resumption._outer_stack),
+                    )
+                )
                 stack.extend(shot_frames)
                 env = Scope.of(clause.resumption._captured_environment)
                 resumption_path = shot_path
@@ -3497,6 +3557,29 @@ class Evaluator:
                     self._validator_at(request.core.result_type),
                     request.resumption_path,
                 )
+                clause_path = tuple(
+                    address
+                    for address in (
+                        *request.dynamic_path,
+                        *request.core.origin.dynamic_path,
+                    )
+                    if address.scope == _CLAUSE_SCOPE
+                )
+                if structural_clause.grade is ResumptionGrade.LINEAR:
+                    calls = tuple(
+                        frame
+                        for frame in captured_stack
+                        if isinstance(frame, _CallFrame)
+                    )
+                    call_sites = (
+                        ()
+                        if any(call.replaced_caller for call in calls)
+                        else tuple(call.origin.site_id() for call in calls)
+                    )
+                    clause_path = (
+                        *clause_path,
+                        _clause_address(request.core.origin.static_site, call_sites),
+                    )
                 del stack[index:]
                 stack.append(
                     _ClauseFrame(
@@ -3505,6 +3588,7 @@ class Evaluator:
                         handler=handler,
                         environment=frame.environment,
                         resumption_path=request.resumption_path,
+                        clause_path=clause_path,
                     )
                 )
                 if self.trace_hook is not None:

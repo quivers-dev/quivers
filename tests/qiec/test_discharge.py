@@ -9,11 +9,15 @@ requests under conditionals and inside callees.
 
 from __future__ import annotations
 
+from itertools import product
+
 import pytest
 import torch
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
+    RANDOM_SAMPLE,
+    SCORE_ADD,
     CheckContext,
     DISCHARGE_STATEMENTS,
     Bind,
@@ -21,6 +25,7 @@ from quivers.qiec import (
     Case,
     Computation,
     DischargeObstacle,
+    DischargedModule,
     Handle,
     If,
     NamedComputation,
@@ -29,12 +34,15 @@ from quivers.qiec import (
     QiecModule,
     Resume,
     Return,
+    RuntimeConfiguration,
+    RuntimeSelection,
     discharge_computation,
     discharge_module,
     infer_computation,
     run_named,
     validate_module,
 )
+from quivers.qiec.serialization import dumps, loads
 from tests._handler_programs import HANDLERS, random_body
 
 _POINTS = ((0.3137, -0.7171), (1.2113, 0.4092), (-0.9049, 0.8117))
@@ -106,6 +114,591 @@ def _agree(module: QiecModule, name: str, arguments: tuple[object, ...]) -> obje
     assert not any(event.event.startswith("handler") for event in rewritten.trace)
     assert any(event.event == "handler.entered" for event in original.trace)
     return original.value
+
+
+_ADDRESS_SOURCE = """
+effect Fork
+    split : Real -> Real
+effect Relay
+    pass : Real -> Real
+
+instance branch : Fork
+instance outside_branch : Fork
+instance relay : Relay
+instance random : Random
+instance score : Score
+
+handler twice for Fork : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    split(v : Real) resumes omega =>
+        let first <- resume(v)
+        let second <- resume(v)
+        return first + second
+
+handler guarded_shots for Fork : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    split(v : Real) resumes omega =>
+        if v > 0.0 then
+            let first <- resume(v)
+            resume(v)
+        else
+            resume(v)
+
+handler logged_shots for Fork : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    split(v : Real) resumes omega =>
+        let first <- resume(v)
+        perform score.add(weight(first))
+        resume(v)
+
+handler identity for Relay : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    pass(v : Real) resumes 1 =>
+        resume(v)
+
+handler draw for Random : Real -> Real [coverage=total, implementation=foreign]
+    sample[A : Type] resumes 1
+
+handler accumulate for Score : Real -> (Real * LogWeight) [coverage=total, implementation=foreign]
+    add resumes 1
+
+define flat(x : Real) : Real !{random} =
+    handle branch with twice in
+        let first <- perform branch.split(x)
+        let second <- perform branch.split(first)
+        let z <- perform random.sample[Real](site("z"), Normal(second, 1.0))
+        return z
+
+define branch_shots(x : Real) : Real !{random} =
+    handle branch with guarded_shots in
+        let v <- perform branch.split(x)
+        let z <- perform random.sample[Real](site("z"), Normal(v, 1.0))
+        return z
+
+define logged(x : Real) : Real !{random, score} =
+    handle branch with logged_shots in
+        let v <- perform branch.split(x)
+        let z <- perform random.sample[Real](site("z"), Normal(v, 1.0))
+        return z
+
+define relay_score(x : Real) : Real !{random, score} =
+    handle relay with identity in
+        let z <- perform relay.pass(x)
+        let w <- perform random.sample[Real](site("w"), Normal(z, 1.0))
+        perform score.add(weight(w))
+        return w
+
+define mixed_omega(x : Real) : Real !{outside_branch, random} =
+    handle branch with guarded_shots in
+        let first <- perform branch.split(x)
+        let second <- perform outside_branch.split(first)
+        let z <- perform random.sample[Real](site("mixed"), Normal(second, 1.0))
+        return z
+
+define mixed_linear(x : Real) : Real !{relay, random} =
+    handle branch with guarded_shots in
+        let first <- perform branch.split(x)
+        let second <- perform relay.pass(first)
+        let z <- perform random.sample[Real](site("mixed"), Normal(second, 1.0))
+        return z
+
+define flat_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle random with draw in
+            let y <- flat(x)
+            perform score.add(weight(y))
+            return y
+
+define branch_run(x : Real) : Real !{} =
+    handle random with draw in
+        branch_shots(x)
+
+define logged_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle random with draw in
+            logged(x)
+
+define linear_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle random with draw in
+            relay_score(x)
+
+define nested_run(x : Real) : Real !{} =
+    handle random with draw in
+        handle branch with twice in
+            let v <- perform branch.split(x)
+            flat(v)
+
+define mixed_omega_run(x : Real) : Real !{} =
+    handle random with draw in
+        handle outside_branch with twice in
+            mixed_omega(x)
+
+define mixed_linear_run(x : Real) : Real !{} =
+    handle random with draw in
+        handle relay with identity in
+            mixed_linear(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def address_module() -> tuple[QiecModule, DischargedModule]:
+    """The checked module and its discharged copy.
+
+    The foreign handlers in the entry points keep their callers' scopes live
+    while the authored handlers in the callees are discharged.
+    """
+    module = _module(_ADDRESS_SOURCE)
+    discharged = discharge_module(module)
+    for name in ("flat", "branch_shots", "logged", "relay_score", "mixed_linear"):
+        assert discharged.obstacle(name) is None
+    return module, discharged
+
+
+def _address_site(module: QiecModule, name: str, operation: str) -> str:
+    return next(
+        str(term.request.origin.static_site)
+        for term in _terms(_computation(module, name).body)
+        if isinstance(term, Perform) and str(term.request.operation) == operation
+    )
+
+
+def _request_addresses(
+    module: QiecModule, name: str, value: float
+) -> tuple[object, ...]:
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={
+                    "handlers": {
+                        "draw": {"kind": "draw"},
+                        "accumulate": {"kind": "score"},
+                    }
+                },
+            ),
+        )
+    )
+    result = run_named(module, name, (value,), runtime=runtime)
+    return tuple(
+        event.detail["address"]
+        for event in result.trace
+        if event.event == "operation.requested"
+        and event.detail["operation"] in (str(RANDOM_SAMPLE), str(SCORE_ADD))
+    )
+
+
+def test_discharge_keeps_equal_valued_shots_and_restores_the_outer_path(
+    address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = address_module
+    draw = _address_site(module, "flat", str(RANDOM_SAMPLE))
+    score = _address_site(module, "flat_run", str(SCORE_ADD))
+    expected = (
+        *((draw, (("call", "flat#1"),), path) for path in product(range(2), repeat=2)),
+        (score, (), ()),
+    )
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, "flat_run", 0.0) == expected
+
+
+@pytest.mark.parametrize(("value", "count"), ((-1.0, 1), (1.0, 2)))
+def test_a_symbolic_branch_keeps_each_clause_invocation_shot_count(
+    address_module: tuple[QiecModule, DischargedModule], value: float, count: int
+) -> None:
+    module, discharged = address_module
+    draw = _address_site(module, "branch_shots", str(RANDOM_SAMPLE))
+    expected = tuple(
+        (draw, (("call", "branch_shots#1"),), (index,)) for index in range(count)
+    )
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, "branch_run", value) == expected
+
+
+def test_a_request_between_shots_uses_the_surrounding_path(
+    address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = address_module
+    draw = _address_site(module, "logged", str(RANDOM_SAMPLE))
+    handler = next(
+        handler for handler in module.handlers if handler.name == "logged_shots"
+    )
+    body = handler.clauses[0].body
+    assert body is not None
+    score = next(
+        str(term.request.origin.static_site)
+        for term in _terms(body)
+        if isinstance(term, Perform) and term.request.operation == SCORE_ADD
+    )
+    expected = (
+        (draw, (("call", "logged#1"),), (0,)),
+        (score, (("call", "logged#1"),), ()),
+        (draw, (("call", "logged#1"),), (1,)),
+    )
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, "logged_run", 0.0) == expected
+
+
+def test_linear_handlers_leave_no_shot_labels(
+    address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = address_module
+    draw = _address_site(module, "relay_score", str(RANDOM_SAMPLE))
+    score = _address_site(module, "relay_score", str(SCORE_ADD))
+    expected = (
+        (draw, (("call", "relay_score#1"),), ()),
+        (score, (("call", "relay_score#1"),), ()),
+    )
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, "linear_run", 0.0) == expected
+
+
+def test_a_callers_live_shot_precedes_discharged_shots_in_its_callee(
+    address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = address_module
+    draw = _address_site(module, "flat", str(RANDOM_SAMPLE))
+    expected = tuple(
+        (draw, (("call", f"flat#{outer + 1}"),), (outer, *inner))
+        for outer in range(2)
+        for inner in product(range(2), repeat=2)
+    )
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, "nested_run", 0.0) == expected
+
+
+def test_an_interleaved_runtime_shot_keeps_the_reference_computation(
+    address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = address_module
+    obstacle = discharged.obstacle("mixed_omega")
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "Fork.split" in obstacle.reason
+    assert _computation(discharged.module, "mixed_omega") is _computation(
+        module, "mixed_omega"
+    )
+    draw = _address_site(module, "mixed_omega", str(RANDOM_SAMPLE))
+    expected = tuple(
+        (draw, (("call", "mixed_omega#1"),), (0, index)) for index in range(2)
+    )
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, "mixed_omega_run", -1.0) == expected
+
+
+def test_an_interleaved_linear_runtime_handler_allows_discharge(
+    address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = address_module
+    assert not any(
+        isinstance(term, Handle)
+        for term in _terms(_computation(discharged.module, "mixed_linear").body)
+    )
+    draw = _address_site(module, "mixed_linear", str(RANDOM_SAMPLE))
+    expected = ((draw, (("call", "mixed_linear#1"),), (0,)),)
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, "mixed_linear_run", -1.0) == expected
+
+
+_CLAUSE_SOURCE = """
+effect Tap
+    echo : Real -> Real
+
+instance tap : Tap
+
+handler recording_relay for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    pass(v : Real) resumes 1 =>
+        perform score.add(weight(v))
+        resume(v)
+
+handler nesting_relay for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score, tap}, implementation=authored]
+    return x =>
+        return x
+    pass(v : Real) resumes 1 =>
+        let forwarded <- perform tap.echo(v)
+        perform score.add(weight(forwarded))
+        resume(forwarded)
+
+handler recording_tap for Tap : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    echo(v : Real) resumes 1 =>
+        perform score.add(weight(v))
+        resume(v)
+
+handler delegating_relay for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    pass(v : Real) resumes 1 =>
+        let result <- report_twice(v)
+        resume(result)
+
+define report_twice(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let first <- perform relay.pass(x)
+        let second <- perform relay.pass(first)
+        perform score.add(weight(second))
+        return second
+
+define report_nested(x : Real) : Real !{score} =
+    handle tap with recording_tap in
+        handle relay with nesting_relay in
+            let first <- perform relay.pass(x)
+            let second <- perform relay.pass(first)
+            perform score.add(weight(second))
+            return second
+
+define report_through_call(x : Real) : Real !{score} =
+    handle relay with delegating_relay in
+        let first <- perform relay.pass(x)
+        let second <- perform relay.pass(first)
+        return second
+
+define report_twice_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- report_twice(x)
+        perform score.add(weight(y))
+        return y
+
+define report_nested_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- report_nested(x)
+        perform score.add(weight(y))
+        return y
+
+define report_through_call_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_through_call(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def clause_address_module() -> tuple[QiecModule, DischargedModule]:
+    module = _module(_ADDRESS_SOURCE + _CLAUSE_SOURCE)
+    return module, discharge_module(module)
+
+
+def _effect_sites(body: Computation, effect: str) -> tuple[str, ...]:
+    requests = [
+        term.request
+        for term in _terms(body)
+        if isinstance(term, Perform) and term.request.effect.name == effect
+    ]
+    requests.sort(key=lambda request: request.origin.origin.line or 0)
+    return tuple(str(request.origin.static_site) for request in requests)
+
+
+def _effect_clause_body(module: QiecModule, handler: str) -> Computation:
+    body = (
+        next(item for item in module.handlers if item.name == handler).clauses[0].body
+    )
+    assert body is not None
+    return body
+
+
+@pytest.mark.parametrize("nested", (False, True))
+def test_linear_clauses_address_repeated_effects_by_trigger_site(
+    clause_address_module: tuple[QiecModule, DischargedModule], nested: bool
+) -> None:
+    module, discharged = clause_address_module
+    name = "report_nested" if nested else "report_twice"
+    assert discharged.obstacle(name) is None
+    original = _computation(module, name)
+    rewritten = _computation(discharged.module, name)
+    assert not any(isinstance(item, Handle) for item in _terms(rewritten.body))
+    triggers = _effect_sites(original.body, "Relay")
+    assert len(triggers) == 2
+    handler = "nesting_relay" if nested else "recording_relay"
+    clause = _effect_clause_body(module, handler)
+    (clause_score,) = _effect_sites(clause, "Score")
+    (after_resume,) = _effect_sites(original.body, "Score")
+    (outside,) = _effect_sites(_computation(module, name + "_run").body, "Score")
+    call = (("call", f"{name}#1"),)
+    expected = []
+    for trigger in triggers:
+        path = (*call, ("handler-clause", trigger))
+        if nested:
+            (relay,) = _effect_sites(clause, "Tap")
+            (relay_score,) = _effect_sites(
+                _effect_clause_body(module, "recording_tap"), "Score"
+            )
+            expected.append((relay_score, (*path, ("handler-clause", relay)), ()))
+        expected.append((clause_score, path, ()))
+    expected.extend(((after_resume, call, ()), (outside, (), ())))
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
+
+
+def test_an_effectful_call_inside_a_linear_clause_keeps_the_reference_path(
+    clause_address_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = clause_address_module
+    name = "report_through_call"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "`report_twice`" in obstacle.reason
+    original = _computation(module, name)
+    assert _computation(discharged.module, name) is original
+    assert discharged.obstacle("report_twice") is None
+    callee = _computation(module, "report_twice").body
+    nested = _effect_sites(callee, "Relay")
+    (after_resume,) = _effect_sites(callee, "Score")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    expected = []
+    for index, trigger in enumerate(_effect_sites(original.body, "Relay"), start=2):
+        path = (
+            ("call", f"{name}#1"),
+            ("call", f"report_twice#{index}"),
+            ("handler-clause", trigger),
+        )
+        expected.extend(
+            (score, (*path, ("handler-clause", site)), ()) for site in nested
+        )
+        expected.append((after_resume, path, ()))
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
+
+
+_CAPTURED_CALL_SOURCE = """
+define relay_leaf(x : Real) : Real !{relay} =
+    let result <- perform relay.pass(x)
+    return result
+
+define relay_chain(x : Real) : Real !{relay} =
+    let result <- relay_leaf(x)
+    return result
+
+define relay_tail(x : Real) : Real !{relay} =
+    if x > 0.0 then
+        relay_leaf(x)
+    else
+        relay_leaf(0.0 - x)
+
+define report_captured(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let first <- relay_chain(x)
+        let second <- relay_chain(first)
+        perform score.add(weight(second))
+        return second
+
+define report_tail(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let first <- relay_tail(x)
+        let second <- relay_tail(first)
+        return second
+
+define report_pure_tail(x : Real) : Real !{score} =
+    handle relay with identity in
+        let result <- relay_tail(x)
+        perform score.add(weight(result))
+        return result
+
+define report_captured_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_captured(x)
+
+define report_tail_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_tail(x)
+
+define report_pure_tail_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_pure_tail(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def captured_call_module() -> tuple[QiecModule, DischargedModule]:
+    module = _module(_ADDRESS_SOURCE + _CLAUSE_SOURCE + _CAPTURED_CALL_SOURCE)
+    return module, discharge_module(module)
+
+
+def test_non_tail_captured_calls_distinguish_one_lexical_operation(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_captured"
+    assert discharged.obstacle(name) is None
+    original = _computation(module, name).body
+    rewritten = _computation(discharged.module, name).body
+    assert not any(isinstance(item, Handle | Call) for item in _terms(rewritten))
+    entries = sorted(
+        (term for term in _terms(original) if isinstance(term, Call)),
+        key=lambda term: term.origin.line or 0,
+    )
+    assert len(entries) == 2
+    (leaf_call,) = (
+        term
+        for term in _terms(_computation(module, "relay_chain").body)
+        if isinstance(term, Call)
+    )
+    (trigger,) = _effect_sites(_computation(module, "relay_leaf").body, "Relay")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    (outside,) = _effect_sites(original, "Score")
+    call = (("call", f"{name}#1"),)
+    expected = (
+        *(
+            (
+                score,
+                (
+                    *call,
+                    (
+                        "handler-clause",
+                        "/".join(
+                            (
+                                trigger,
+                                str(entry.origin.site_id()),
+                                str(leaf_call.origin.site_id()),
+                            )
+                        ),
+                    ),
+                ),
+                (),
+            )
+            for entry in entries
+        ),
+        (outside, call, ()),
+    )
+    assert len(set(expected)) == 3
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name + "_run", 1.0) == expected
+
+
+def test_an_effectful_clause_with_an_elided_caller_keeps_reference_execution(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_tail"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "tail call" in obstacle.reason
+    assert _computation(discharged.module, name) is _computation(module, name)
+    observed = _request_addresses(module, name + "_run", 1.0)
+    assert len(observed) == 2
+    assert _request_addresses(discharged.module, name + "_run", 1.0) == observed
+
+
+def test_a_pure_clause_does_not_need_an_elided_callers_address(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_pure_tail"
+    assert discharged.obstacle(name) is None
+    rewritten = _computation(discharged.module, name).body
+    assert not any(isinstance(item, Handle | Call) for item in _terms(rewritten))
+    (score,) = _effect_sites(_computation(module, name).body, "Score")
+    expected = ((score, (("call", f"{name}#1"),), ()),)
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, name + "_run", 1.0) == expected
 
 
 # ---------------------------------------------------------------------------
