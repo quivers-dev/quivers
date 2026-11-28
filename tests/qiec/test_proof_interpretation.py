@@ -32,7 +32,9 @@ from quivers.qiec.rules import (
     Item,
     Premise,
     Rule,
+    RuleError,
     RulePresentation,
+    closed_derivation_value,
 )
 from quivers.qiec.serialization import dumps, loads
 from quivers.qiec.terms import Call, ConstructorValue, Handle, Local, Var
@@ -62,7 +64,7 @@ define leaf(x : Real) : Real !{audit} =
     return shifted
 
 define pair(left : Real, right : Real) : Real !{} =
-    return 2.0 * left - right
+    return left * left - right
 
 define truth(x : Real) : Bool !{} =
     return x > 5.0
@@ -142,24 +144,11 @@ def _driver(
     presentation: RulePresentation,
     *,
     repeated: bool = False,
-    name: str = "driver",
-    fold_name: str = "interpret__Proof",
 ) -> NamedComputation:
     """Build a checked proof from two real inputs and handle its interpretation."""
-    fold = next(
-        computation
-        for computation in module.computations
-        if computation.name == fold_name
-    )
     (family, atom), _ = presentation.declarations()
     (slot,) = presentation.axioms
     (rule,) = presentation.rules
-    origin = SourceOrigin(
-        module=module.module,
-        source_protocol=module.source_protocol,
-        structural_path=("proof_fold_test", name),
-        role="computation",
-    )
     left, right = (Local(name=name, type=REAL) for name in ("left", "right"))
     i = IndexLiteral(value=3, sort=NAT)
     j = i if repeated else IndexVariable(name="j", sort=NAT)
@@ -190,14 +179,45 @@ def _driver(
             constructor=family.type_constructor, arguments=(i,)
         ),
     )
+    return _call_proof(
+        module,
+        proof,
+        "driver",
+        "interpret__Proof",
+        (left, right),
+        () if repeated else (IndexBinder(name="j", sort=NAT),),
+    )
+
+
+def _call_proof(
+    module: QiecModule,
+    proof: ConstructorValue,
+    name: str,
+    fold_name: str,
+    parameters: tuple[Local, ...] = (),
+    telescope: tuple[IndexBinder, ...] = (),
+) -> NamedComputation:
+    """Call one interpretation with the proof's actual family indices."""
+    fold = next(
+        computation
+        for computation in module.computations
+        if computation.name == fold_name
+    )
+    origin = SourceOrigin(
+        module=module.module,
+        source_protocol=module.source_protocol,
+        structural_path=("proof_fold_test", name),
+        role="computation",
+    )
     instance = next(
         instance for instance in module.instances if instance.name == "audit"
     )
     handler = next(handler for handler in module.handlers if handler.name == "shift")
+    assert isinstance(proof.result_type, TypeApplication)
     call = Call(
         callee=fold.id,
         name=fold.name,
-        static_arguments=(i,),
+        static_arguments=proof.result_type.arguments,
         arguments=(proof,),
         effects=fold.type.effects,
         result_type=fold.type.result,
@@ -218,8 +238,8 @@ def _driver(
     return NamedComputation(
         id=ComputationId.derive(module.module, "computation", name),
         name=name,
-        telescope=() if repeated else (IndexBinder(name="j", sort=NAT),),
-        parameters=(left, right),
+        telescope=telescope,
+        parameters=parameters,
         type=ComputationType(effects=EffectRow(), result=fold.type.result),
         body=body,
         origin=origin,
@@ -252,7 +272,7 @@ def test_indexed_proof_fold_preserves_premise_occurrences_and_grads(
         static_arguments=() if repeated else (IndexLiteral(value=5, sort=NAT),),
     )
     assert isinstance(found.value, torch.Tensor)
-    expected = 2 * (arguments[0] + 1) - (arguments[0 if repeated else 1] + 1)
+    expected = (arguments[0] + 1).square() - (arguments[0 if repeated else 1] + 1)
     torch.testing.assert_close(found.value, expected)
     torch.testing.assert_close(
         torch.autograd.grad(found.value, arguments)[0],
@@ -338,12 +358,6 @@ def test_one_presentation_drives_weights_meanings_and_proof_encodings() -> None:
         name="truth",
         carriers={judgment.id: BOOL for judgment in presentation.judgments},
     )
-    drivers = (
-        _driver(module, presentation),
-        _driver(module, presentation, name="truth_driver", fold_name="truth__Proof"),
-    )
-    module = module.with_(computations=(*module.computations, *drivers))
-
     (slot,) = presentation.axioms
     positions, values = (3, 3, 5), (3.0, 8.0, 11.0)
     occurrences = tuple(
@@ -384,20 +398,38 @@ def test_one_presentation_drives_weights_meanings_and_proof_encodings() -> None:
         limit=6,
     )
     assert len(trees) == 6
+    first_tree = trees[0][0]
+    with pytest.raises(RuleError, match="QIEC checker refuses the derivation"):
+        closed_derivation_value(
+            presentation, first_tree.with_(item=goal.with_(arguments=(4,)))
+        )
+    (rule,) = presentation.rules
+    first, second = rule.premises
+    scoped = rule.with_(premises=(first.with_(before=(first.judgment,)), second))
+    with pytest.raises(RuleError, match="premise under hypotheses"):
+        closed_derivation_value(presentation.with_(rules=(scoped,)), first_tree)
+
+    left, right = first_tree.premises
+    assert isinstance(left, Derivation)
+    with pytest.raises(RuleError, match="QIEC checker refuses the derivation"):
+        closed_derivation_value(
+            presentation,
+            first_tree.with_(premises=(left.with_(values=("text",)), right)),
+        )
+    proofs = [closed_derivation_value(presentation, tree) for tree, _, _ in trees]
+    drivers = tuple(
+        _call_proof(module, proof, f"{name}_{index}", f"{name}__Proof")
+        for index, proof in enumerate(proofs)
+        for name in ("interpret", "truth")
+    )
+    restored = loads(dumps(module.with_(computations=(*module.computations, *drivers))))
+    assert isinstance(restored, QiecModule)
     masses = []
     encodings = []
     meanings = []
-    for tree, weight, _ in trees:
-        left, right = tree.premises
-        assert isinstance(left, Derivation) and isinstance(right, Derivation)
-        index = right.item.arguments[0]
-        assert isinstance(index, int)
-        static = (IndexLiteral(value=index, sort=NAT),)
-        inputs = (*left.values, *right.values)
-        encoded = run_named(module, "driver", inputs, static_arguments=static).value
-        meaning = run_named(
-            module, "truth_driver", inputs, static_arguments=static
-        ).value
+    for index, (_, weight, _) in enumerate(trees):
+        encoded = run_named(restored, f"interpret_{index}").value
+        meaning = run_named(restored, f"truth_{index}").value
         assert isinstance(encoded, torch.Tensor) and isinstance(meaning, torch.Tensor)
         masses.append((weight - inside).exp())
         encodings.append(encoded)
@@ -411,14 +443,22 @@ def test_one_presentation_drives_weights_meanings_and_proof_encodings() -> None:
     left_rows, right_rows = [0, 0, 0, 1, 1, 1], [0, 1, 2, 0, 1, 2]
     proof_logs = logs[left_rows] + logs[right_rows]
     data = torch.tensor(values, dtype=logs.dtype)
-    wanted = torch.stack(
-        (
-            2 * data[left_rows] - data[right_rows] + 1,
-            ((data[left_rows] > 5) & (data[right_rows] > 5)).to(dtype=logs.dtype),
+    independent_posterior = proof_logs.softmax(0)
+    wanted = (
+        torch.stack(
+            (
+                (data[left_rows] + 1).square() - (data[right_rows] + 1),
+                ((data[left_rows] > 5) & (data[right_rows] > 5)).to(dtype=logs.dtype),
+            )
         )
-    ) @ proof_logs.softmax(0)
+        @ independent_posterior
+    )
     torch.testing.assert_close(inside, proof_logs.logsumexp(0))
     torch.testing.assert_close(observed, wanted)
+    folded_means = (
+        independent_posterior @ (data[left_rows] + 1)
+    ).square() - independent_posterior @ (data[right_rows] + 1)
+    assert observed[0] > folded_means
     actual_grad = torch.stack(
         [
             torch.autograd.grad(value, logs, retain_graph=True)[0]
