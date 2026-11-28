@@ -24,6 +24,15 @@ class FixedRelationRuntimeProvider:
     The checked handler must have type `Compute[Unit, A]`, where `A`
     is the result type of the request, and resume once. Weight
     identities resolve to the caller's original tensors.
+
+    Parameters
+    ----------
+    request : FixedRelationRequest
+        The checked fixed observation, objective, and resource limits.
+    parameters : Mapping[ParameterId, torch.Tensor]
+        The live scalar tensors supplying the request's weight identities.
+    handler_name : str
+        The name of the foreign handler to bind in the checked module.
     """
 
     name = "sparse-relations"
@@ -59,6 +68,27 @@ class FixedRelationRuntimeProvider:
             self._score = lambda: conditional.log_prob(request.words[split:])
 
     def _evaluate(self, argument: object, _context: ClauseContext) -> torch.Tensor:
+        """Evaluate the objective using its current parameter values.
+
+        Parameters
+        ----------
+        argument : object
+            The evaluated unit argument to `Compute`.
+        _context : ClauseContext
+            The clause context supplied by the reference machine.
+
+        Returns
+        -------
+        torch.Tensor
+            The scalar score in its declared carrier with its gradient path.
+
+        Raises
+        ------
+        TypeError
+            The argument is outside the unit carrier.
+        ValueError
+            The score is outside the declared scalar carrier.
+        """
         if argument is not None:
             raise TypeError("a fixed relation request takes a unit argument")
         score = self._score()
@@ -72,7 +102,22 @@ class FixedRelationRuntimeProvider:
         return score
 
     def attach(self, module: QiecModule, attachments: RuntimeAttachments) -> None:
-        """Attach the provider to its exact checked foreign handler."""
+        """Attach the provider to its exact checked foreign handler.
+
+        Parameters
+        ----------
+        module : QiecModule
+            The checked module declaring the handler.
+        attachments : RuntimeAttachments
+            The runtime bindings for the invocation.
+
+        Raises
+        ------
+        ValueError
+            The module has no unique handler with the requested name.
+        TypeError
+            The declaration does not have the required linear compute contract.
+        """
         declarations = [
             handler for handler in module.handlers if handler.name == self._handler_name
         ]
@@ -113,13 +158,36 @@ class FixedRelationRuntimeProvider:
         attachments.bind_handler(runtime.with_(definition=definition))
 
     def validator_for(self, type_: TypeExpr) -> RuntimeValidator | None:
-        """Validate the request's differentiable scalar result."""
+        """Validate the request's differentiable scalar result.
+
+        Parameters
+        ----------
+        type_ : TypeExpr
+            The requested checked result type.
+
+        Returns
+        -------
+        RuntimeValidator or None
+            The predicate for this request's result type, or `None` for other types.
+        """
         if type_ != self._result_type:
             return None
         core = CoreRuntimeProvider().validator_for(type_)
         algebra = LOG_PROB if type_ == LOG_WEIGHT else None
 
         def validate(value: object) -> bool:
+            """Check a value against the declared scalar carrier.
+
+            Parameters
+            ----------
+            value : object
+                The runtime value to check.
+
+            Returns
+            -------
+            bool
+                Whether the value inhabits the requested type.
+            """
             if core is not None and core(value):
                 return True
             if not (
