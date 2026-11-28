@@ -28,6 +28,7 @@ from types import MappingProxyType
 
 from quivers.qiec._scoped_proof_interpretation import scoped_lookup_computations
 from quivers.qiec._scoped_proof_types import ScopedProofTypes, _at
+from quivers.qiec.checking import ComputationSignature
 from quivers.qiec.coverage import constructor_skolems, refine_branch
 from quivers.qiec.effects import ComputationType, EffectRow
 from quivers.qiec.identifiers import (
@@ -157,30 +158,61 @@ class ScopedProofFold:
         KernelError
             If an operation, fold result, declared row, or call fails checking.
         """
-        if operations.keys() != self.syntax.rules.keys():
-            raise RuleError(
-                "scoped operations must cover exactly the source constructors"
+        signatures = {
+            source: ComputationSignature(
+                id=operation.id,
+                name=operation.name,
+                telescope=operation.telescope,
+                parameters=tuple(local.type for local in operation.parameters),
+                result=operation.type.result,
+                effects=operation.type.effects,
             )
+            for source, operation in operations.items()
+        }
+        generated, folds = _scoped_definitions(self, signatures)
         base = self.syntax.module if module is None else module
-        lookups = scoped_lookup_computations(self.syntax, self.carriers, name=self.name)
-        source_ids = {
-            declared.id: source for source, declared in self.syntax.rules.items()
-        }
-        folds = {
-            family: _fold(self, family, lookups[family], operations, source_ids)
-            for family in self.syntax.proofs
-        }
         checked = base.with_(
             computations=(
                 *base.computations,
                 *operations.values(),
-                *lookups.values(),
-                *self.applications().values(),
-                *folds.values(),
+                *generated,
             )
         )
         validate_module(checked)
         return checked, folds
+
+
+def _scoped_definitions(
+    fold: ScopedProofFold, operations: Mapping[ConstructorId, ComputationSignature]
+) -> tuple[tuple[NamedComputation, ...], dict[FamilyId, NamedComputation]]:
+    """Generate scoped definitions once action signatures are available.
+
+    Parameters
+    ----------
+    fold, operations
+        The closed interpretation contract and a signature per source constructor.
+
+    Returns
+    -------
+    tuple
+        The generated computations and the selected fold by judgment. Ordinary
+        module checking validates these definitions together with the actions.
+
+    Raises
+    ------
+    RuleError
+        If the operations do not cover exactly the source constructors.
+    """
+    syntax = fold.syntax
+    if operations.keys() != syntax.rules.keys():
+        raise RuleError("scoped operations must cover exactly the source constructors")
+    lookups = scoped_lookup_computations(syntax, fold.carriers, name=fold.name)
+    source_ids = {declared.id: source for source, declared in syntax.rules.items()}
+    folds = {
+        family: _fold(fold, family, lookups[family], operations, source_ids)
+        for family in syntax.proofs
+    }
+    return (*lookups.values(), *fold.applications().values(), *folds.values()), folds
 
 
 def scoped_proof_fold(
@@ -372,7 +404,7 @@ def _fold(
     fold: ScopedProofFold,
     family: FamilyId,
     lookup: NamedComputation,
-    operations: Mapping[ConstructorId, NamedComputation],
+    operations: Mapping[ConstructorId, ComputationSignature],
     source_ids: Mapping[ConstructorId, ConstructorId],
 ) -> NamedComputation:
     """Compile case analysis over every constructor of a proof family.
@@ -393,7 +425,8 @@ def _fold(
     semantic = syntax.carrier_types(fold.carriers)
     ambient = TypeVariable(name="fold_context")
     proof_family = syntax.proofs[family]
-    proof = Local(name="proof", type=_at(proof_family, *semantic, ambient))
+    proof_type = _at(proof_family, *semantic, ambient)
+    proof = Local(name="proof", type=proof_type)
     environment = Local(name="environment", type=ambient)
     origin = _origin(fold, "judgment", proof_family.name)
     nominal = _fold_call(
@@ -414,7 +447,7 @@ def _fold(
             Local(name=field.name, type=substitute_type(field.type, substitution))
             for field in constructor.fields
         )
-        (given,) = refine_branch(proof_family, constructor, proof.type, skolems).givens
+        (given,) = refine_branch(proof_family, constructor, proof_type, skolems).givens
         captured = TransportValue(
             evidence=given, value=Var(local=environment), target_type=branch_context
         )
@@ -472,7 +505,7 @@ def _fold(
 def _action(
     fold: ScopedProofFold,
     identity: ConstructorId,
-    operation: NamedComputation,
+    operation: ComputationSignature,
     ambient: TypeExpr,
     captured: Value,
     fields: tuple[Local, ...],
@@ -522,8 +555,8 @@ def _action(
         name=operation.name,
         static_arguments=(ambient,),
         arguments=tuple(values),
-        result_type=operation.type.result,
-        effects=operation.type.effects,
+        result_type=operation.result,
+        effects=operation.effects,
         origin=origin,
     )
     for local, call in reversed(bindings):

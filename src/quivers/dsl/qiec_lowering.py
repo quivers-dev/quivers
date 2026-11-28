@@ -69,6 +69,7 @@ from quivers.dsl.pure_builtins import (
 )
 from quivers.dsl.deduction_elaboration import _DeductionElaboration
 from quivers.dsl._deduction_interpretations import declare_interpretations
+from quivers.dsl._scoped_interpretations import declare_scoped_types
 from quivers.dsl._relation_scores import declare_relation_scores, lower_relation_scores
 from quivers.dsl._deduction_outcomes import (
     check_outcome_key_bodies,
@@ -1644,8 +1645,9 @@ class _Elaborator(
         self._build_registry()
         self._declare_deduction_declarations()
         self._declare_structural_signatures()
+        scoped_interpretations = declare_scoped_types(self)
         self._declare_computation_signatures()
-        interpretations = declare_interpretations(self)
+        interpretations = declare_interpretations(self, scoped_interpretations)
         relation_routes = declare_relation_scores(self)
         self._declare_handlers()
         self._register_handlers()
@@ -2633,38 +2635,51 @@ class _Elaborator(
             family = self.families.get(authored.constructor)
             if family is None:
                 self._fail(authored, f"unknown indexed family {authored.constructor!r}")
-            if len(authored.static_arguments) != len(family.parameters):
+            static_indices = tuple(
+                binder for binder in family.indices if isinstance(binder, TypeBinder)
+            )
+            index_binders = tuple(
+                binder for binder in family.indices if isinstance(binder, IndexBinder)
+            )
+            if len(static_indices) + len(index_binders) != len(family.indices):
                 self._fail(
                     authored,
-                    f"family {family.name!r} expects {len(family.parameters)} "
-                    "static parameters",
+                    "family indices must use type or index binders",
+                    code="qiec-index",
+                )
+            static_binders = (*family.parameters, *static_indices)
+            if len(authored.static_arguments) != len(static_binders):
+                description = (
+                    "static arguments" if static_indices else "static parameters"
+                )
+                self._fail(
+                    authored,
+                    f"family {family.name!r} expects {len(static_binders)} {description}",
                     code="qiec-kind",
                 )
-            if len(authored.indices) != len(family.indices):
+            if len(authored.indices) != len(index_binders):
                 self._fail(
                     authored,
-                    f"family {family.name!r} expects {len(family.indices)} indices",
+                    f"family {family.name!r} expects {len(index_binders)} indices",
                     code="qiec-index",
                 )
-            parameters = tuple(
+            statics = tuple(
                 self._lower_static_argument(argument, binder, scope, static_bindings)
                 for argument, binder in zip(
-                    authored.static_arguments, family.parameters, strict=True
+                    authored.static_arguments, static_binders, strict=True
                 )
             )
+            parameters = statics[: len(family.parameters)]
+            type_arguments = iter(statics[len(family.parameters) :])
+            index_arguments = iter(authored.indices)
             indices = tuple(
-                self._lower_index(argument, binder.sort, scope, static_bindings)
-                for argument, binder in zip(
-                    authored.indices, family.indices, strict=True
+                self._lower_index(
+                    next(index_arguments), binder.sort, scope, static_bindings
                 )
                 if isinstance(binder, IndexBinder)
+                else next(type_arguments)
+                for binder in family.indices
             )
-            if len(indices) != len(family.indices):
-                self._fail(
-                    authored,
-                    "family indices must use index binders",
-                    code="qiec-index",
-                )
             return TypeApplication(
                 constructor=family.type_constructor, arguments=(*parameters, *indices)
             )
