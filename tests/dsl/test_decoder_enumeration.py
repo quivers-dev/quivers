@@ -85,7 +85,8 @@ class _CustomLaw:
         return self.law.weighted_support()
 
 
-def test_native_decoder_enumeration_matches_replay_and_exact_joint_oracles() -> None:
+@pytest.fixture
+def native_decoder():
     compiled = load_source(SOURCE)
     module = compiled.qiec
     assert isinstance(module, QiecModule)
@@ -107,7 +108,6 @@ def test_native_decoder_enumeration_matches_replay_and_exact_joint_oracles() -> 
             ),
         )
     )
-    backend = TensorBackend()
     decoder = compiled.decoders["D"].double()
     encoder = compiled.encoders["E"].double()
     head = decoder._dec_0
@@ -121,6 +121,14 @@ def test_native_decoder_enumeration_matches_replay_and_exact_joint_oracles() -> 
         head.bias.zero_()
         red.copy_(red.new_tensor([-0.5, 1.0]))
         blue.copy_(blue.new_tensor([2.75, -2.0]))
+    return restored, runtime, head, red, blue
+
+
+def test_native_decoder_enumeration_matches_replay_and_exact_joint_oracles(
+    native_decoder,
+) -> None:
+    restored, runtime, head, red, blue = native_decoder
+    backend = TensorBackend()
     code = head.weight.new_tensor([0.4, -0.6], requires_grad=True)
     y = code.new_tensor(1.2, requires_grad=True)
 
@@ -192,3 +200,54 @@ def test_native_decoder_enumeration_matches_replay_and_exact_joint_oracles() -> 
                 distributions=backend,
             )
     assert custom.requests == 0
+
+
+def test_repeated_native_decoder_fitting_uses_current_decoder_and_encoder_weights(
+    native_decoder,
+) -> None:
+    module, runtime, head, red, blue = native_decoder
+    backend = TensorBackend()
+    code = head.weight.new_tensor([0.4, -0.6])
+    observation = code.new_tensor(1.2)
+    parameters = (head.weight, head.bias, red, blue)
+    reference = tuple(p.detach().clone().requires_grad_() for p in parameters)
+    initial = reference
+    step_size = 0.15
+    optimizer = torch.optim.SGD(parameters, lr=step_size)
+
+    def reference_loss(values: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        weight, bias, red_code, blue_code = values
+        logits = weight[:2] @ code + bias[:2]
+        means = torch.stack((red_code[0], blue_code[0]))
+        scores = -0.5 * ((observation - means).square() + math.log(2 * math.pi))
+        return logits.logsumexp(0) - (logits + scores).logsumexp(0)
+
+    losses = []
+    for _ in range(4):
+        optimizer.zero_grad(set_to_none=True)
+        result = run_named(
+            module,
+            "integrate_one",
+            (code, observation),
+            runtime=runtime,
+            distributions=backend,
+        )
+        expected = reference_loss(reference)
+        loss = -result.value
+        torch.testing.assert_close(loss, expected, atol=1e-12, rtol=1e-12)
+        loss.backward()
+        wanted = torch.autograd.grad(expected, reference)
+        for parameter, gradient in zip(parameters, wanted, strict=True):
+            torch.testing.assert_close(parameter.grad, gradient, atol=1e-12, rtol=1e-12)
+        optimizer.step()
+        reference = tuple(
+            (value - step_size * gradient).detach().requires_grad_()
+            for value, gradient in zip(reference, wanted, strict=True)
+        )
+        for parameter, value in zip(parameters, reference, strict=True):
+            torch.testing.assert_close(parameter, value, atol=1e-12, rtol=1e-12)
+        losses.append(loss.detach())
+    assert float(losses[-1]) < float(losses[0])
+    fitted = reference_loss(reference)
+    assert not torch.isclose(fitted, reference_loss((*initial[:2], *reference[2:])))
+    assert not torch.isclose(fitted, reference_loss((*reference[:2], *initial[2:])))
