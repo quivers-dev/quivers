@@ -19,7 +19,7 @@ run in. A surviving request inside a discharged shot keeps the computation
 on the reference machine if its operation has a checked unrestricted
 clause. A residual effectful call in a discharged clause keeps its
 reference continuation. A linear clause with effects can record the
-source sites of captured non-tail calls.
+source sites of captured acyclic calls.
 
 The result depends on no target and no runtime. The compiled runtime, the
 transpile planner, the static targets' projection, and the capability analysis
@@ -143,8 +143,7 @@ class DischargeObstacle(QiecModel):
         whose branches do not meet in one continuation, ``"growth"`` for a
         rewriting past the size bounds, and ``"address"`` when a surviving
         operation can open a runtime shot inside one being discharged or a
-        residual effectful call needs its original clause scope or a
-        captured tail call removed a frame needed to address a clause.
+        residual effectful call needs its original clause scope.
     reason
         The obstacle as a clause naming the handler and the clause, to
         follow "the computation".
@@ -392,15 +391,11 @@ class _CallFrame(_Frame):
         The call's result type.
     origin
         The static site of the call.
-    replaced_caller
-        Whether the reference evaluator replaces the caller's frame at
-        this call.
     """
 
     callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    replaced_caller: bool
 
 
 class _JoinFrame(_Frame):
@@ -1278,16 +1273,11 @@ class _Discharger:
                     )
                     made.extend(bound)
                     scope[parameter.name] = read
-                caller = next(
-                    (frame for frame in stack if not isinstance(frame, _JoinFrame)),
-                    None,
-                )
                 stack = (
                     _CallFrame(
                         callee=term.callee,
                         result=term.result_type,
                         origin=term.origin,
-                        replaced_caller=isinstance(caller, _CallFrame),
                     ),
                     *stack,
                 )
@@ -1352,9 +1342,14 @@ class _Discharger:
                         ),
                     )
                     if clause.grade is ResumptionGrade.LINEAR:
+                        call_sites = tuple(
+                            frame.origin.site_id()
+                            for frame in reversed(stack[:position])
+                            if isinstance(frame, _CallFrame)
+                        )
                         clause_path = (
                             *clause_path,
-                            self.clause_address(request, answering, stack[:position]),
+                            _clause_address(request.origin.static_site, call_sites),
                         )
                 bound, environment, state = self.clause(request, answering, clause)
                 made.extend(bound)
@@ -1579,54 +1574,6 @@ class _Discharger:
             made.extend(bound)
             environment[parameter.name] = read
         return tuple(made), environment, substitute_computation(clause.body, statics)
-
-    def clause_address(
-        self,
-        request: EffectRequest,
-        handler: _HandlerFrame,
-        capture: tuple[_Frame, ...],
-    ) -> DynamicAddressFrame:
-        """Build the relative address of a linear operation clause.
-
-        Parameters
-        ----------
-        request : EffectRequest
-            The answered operation.
-        handler : _HandlerFrame
-            The handler that answers it.
-        capture : tuple[_Frame, ...]
-            The captured frames above the handler, innermost first.
-
-        Returns
-        -------
-        DynamicAddressFrame
-            The request site and the ordered source call sites removed
-            from the active stack by this clause.
-
-        Raises
-        ------
-        _Undischarged
-            If a captured tail call replaced a frame and the clause may
-            emit effects that need an activation address.
-        """
-        calls = tuple(
-            frame for frame in reversed(capture) if isinstance(frame, _CallFrame)
-        )
-        tail_call = next((call for call in calls if call.replaced_caller), None)
-        if tail_call is None:
-            return _clause_address(
-                request.origin.static_site,
-                tuple(call.origin.site_id() for call in calls),
-            )
-        introduced = handler.handler.introduced
-        if introduced.entries or introduced.tail is not None:
-            raise _Undischarged(
-                "address",
-                f"captures a tail call while addressing a linear clause of "
-                f"`{handler.handler.name}`",
-                tail_call.origin,
-            )
-        return _clause_address(request.origin.static_site)
 
     def resume(
         self,

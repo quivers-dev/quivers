@@ -45,6 +45,7 @@ from quivers.qiec.identifiers import (
     EffectInstanceId,
     HandlerId,
     OperationId,
+    SiteId,
     SourceOrigin,
     _CLAUSE_SCOPE,
     _clause_address,
@@ -1086,10 +1087,9 @@ class _CallFrame(ContinuationFrame):
     serial
         The call's ordinal within the run, so two iterations of a
         recursive computation address their requests differently.
-    origin
-        The static site of the call.
-    replaced_caller
-        Whether a tail call removed its caller's frame.
+    call_history
+        Source sites in this frame's tail-call chain. A repeated callee
+        discards the history, so tail recursion uses bounded storage.
     environment
         The caller's bindings, restored when the call returns.
     """
@@ -1097,8 +1097,9 @@ class _CallFrame(ContinuationFrame):
     callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
     serial: int
-    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    replaced_caller: bool
+    call_history: tuple[tuple[ComputationId, SourceOrigin], ...] | None = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     environment: Mapping[Local, HeldValue] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -3186,10 +3187,18 @@ class Evaluator:
                 # the caller's frame has no further use, so it is left rather
                 # than kept beneath the callee, and a tail-recursive loop
                 # runs in constant stack.
-                replaced_caller = False
+                call_history: tuple[tuple[ComputationId, SourceOrigin], ...] | None = (
+                    (callee.id, current.origin),
+                )
                 if stack and isinstance(finished := stack[-1], _CallFrame):
                     stack.pop()
-                    replaced_caller = True
+                    prior = finished.call_history
+                    if prior is None or any(
+                        entered == callee.id for entered, _ in prior
+                    ):
+                        call_history = None
+                    else:
+                        call_history = (*prior, (callee.id, current.origin))
                     if self.trace_hook is not None:
                         self._emit_trace(
                             "call.returned",
@@ -3217,8 +3226,7 @@ class Evaluator:
                         callee=callee.id,
                         name=callee.name,
                         serial=serial,
-                        origin=current.origin,
-                        replaced_caller=replaced_caller,
+                        call_history=call_history,
                         environment=caller_environment,
                     )
                 )
@@ -3566,19 +3574,21 @@ class Evaluator:
                     if address.scope == _CLAUSE_SCOPE
                 )
                 if structural_clause.grade is ResumptionGrade.LINEAR:
-                    calls = tuple(
-                        frame
-                        for frame in captured_stack
-                        if isinstance(frame, _CallFrame)
-                    )
-                    call_sites = (
-                        ()
-                        if any(call.replaced_caller for call in calls)
-                        else tuple(call.origin.site_id() for call in calls)
-                    )
+                    call_sites: list[SiteId] = []
+                    for captured in captured_stack:
+                        if not isinstance(captured, _CallFrame):
+                            continue
+                        if captured.call_history is None:
+                            call_sites.clear()
+                            break
+                        call_sites.extend(
+                            origin.site_id() for _, origin in captured.call_history
+                        )
                     clause_path = (
                         *clause_path,
-                        _clause_address(request.core.origin.static_site, call_sites),
+                        _clause_address(
+                            request.core.origin.static_site, tuple(call_sites)
+                        ),
                     )
                 del stack[index:]
                 stack.append(
