@@ -358,6 +358,21 @@ gradient mapping. The finite group implementation scans the declared
 feature vocabulary. Each shrink copies the coefficient vector, so a
 proximal update takes $O(rg)$ work for $r$ coefficients and $g$ groups.
 
+## Candidate string messages
+
+`StringCandidatePlan` scores a finite list of words in a unary LogProb
+relation. Its complement is a deterministic acceptor that recognizes
+every other word. Its unique accepting path for each omitted word gives
+exactly one matching path for every original occurrence of that word.
+The candidate queries and the complement thus partition the original
+path sum. In particular, the omitted mass can remain visible when it is
+too small to recover by subtracting the retained mass from the total.
+
+An optional beam retains the highest-scoring candidates, breaking ties
+lexicographically and reporting a tie across the boundary. The full
+message scale and the weights of the selected words stay differentiable
+on the selected support. Construction limits raise a distinct error.
+
 ## Batched contextual edits
 
 `ContextualEditChannel` sums the alignments of observed input-output
@@ -745,6 +760,8 @@ model, and the limits bound construction.
         - StringFactorGraph
         - StringMapCertificate
         - StringMapResult
+        - StringCandidateMessage
+        - StringCandidatePlan
         - StringVariable
         - TreeStringMarginal
         - auto_intersect
