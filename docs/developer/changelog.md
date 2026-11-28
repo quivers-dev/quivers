@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Nominal forward and reverse differentiation.** Checked forward handlers distinguish two live perturbations. A checked reverse handler resumes once, then adds predecessor cotangents to an immutable result.
 - **Checked base change for finite elimination.** A named QIEC map can move factor tables to another finite answer algebra after exhaustive checks of both binary operations and units.
 - **Signed logarithmic weight derivatives.** A packed dual carrier preserves an explicit tangent at zero primal weight and evaluates finite sums and products without decoding extreme magnitudes into linear floats.
 - **Explicit regular EP policies.** Choose a proved fixed-Lipschitz or adaptive-backtracking proximal step, provide checked initial sites, and inspect actual sparse moment work. Unsupported derivative or global error guarantees refuse.
