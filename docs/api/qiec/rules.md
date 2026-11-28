@@ -190,6 +190,16 @@ Eager premises and scoped applications invoke the fold of the premise's
 nominal judgment. Two names for instances of one interface remain
 distinct in those folds and in the schema's effect requirements.
 
+`carriers=by_judgment` assigns a closed type to each judgment from its
+named rule operations. The interpretation's codomain gives the root
+carrier. Every other judgment needs a rule whose operation returns its
+carrier, and every operation concluding that judgment must agree on
+the same type. These result types are closed independently of the ambient
+context binder. A frame for a bound judgment stores that judgment's carrier, so
+a scoped premise can read a nominal data value even when its own fold
+returns `Real`. An interpretation without this option supplies its
+codomain as the common carrier.
+
 A `ModelSchema` exposes the selected program’s checked
 [`ScopedInterpretationBinding`][quivers.qiec.ScopedInterpretationBinding] records through
 `scoped_interpretations`. Reachability follows ordinary calls and calls made in installed

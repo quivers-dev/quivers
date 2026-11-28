@@ -362,6 +362,26 @@ def _origin(fold: ScopedProofFold, *path: str) -> SourceOrigin:
     )
 
 
+def _fold_id(module: str, name: str, family: FamilyId) -> ComputationId:
+    """Name the checked fold of a judgment within an interpretation.
+
+    Parameters
+    ----------
+    module
+        The lexical module containing the interpretation.
+    name
+        The source name of the interpretation.
+    family
+        The nominal judgment interpreted by the fold.
+
+    Returns
+    -------
+    ComputationId
+        The identity of the generated fold.
+    """
+    return ComputationId.derive(module, name, family, "scoped-fold")
+
+
 def _fold_call(
     fold: ScopedProofFold,
     family: FamilyId,
@@ -386,9 +406,7 @@ def _fold_call(
     """
     judgment = fold.syntax.presentation.judgments_by_id[family]
     return Call(
-        callee=ComputationId.derive(
-            fold.syntax.module.module, fold.name, family, "scoped-fold"
-        ),
+        callee=_fold_id(fold.syntax.module.module, fold.name, family),
         name=f"{fold.name}__fold_{judgment.name}",
         static_arguments=(ambient,),
         arguments=(proof, environment),

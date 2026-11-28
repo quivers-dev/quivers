@@ -12,22 +12,28 @@ from quivers.dsl.compiler.structural import _signature_from_declaration
 from quivers.dsl.structural_elaboration import _root_sort
 from quivers.qiec import scoped_proof_fold, scoped_proof_types
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
-from quivers.qiec._scoped_proof_fold import _scoped_definitions, _scoped_entry
+from quivers.qiec._scoped_proof_fold import _fold_id, _scoped_definitions, _scoped_entry
 from quivers.qiec._scoped_proof_types import ScopedProofTypes
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import InterpretationId
 from quivers.qiec.effects import EffectRow, RowEntry
 from quivers.qiec.identifiers import ComputationId, ConstructorId, FamilyId
 from quivers.qiec.kinds import TYPE, TypeBinder
-from quivers.qiec.module import NamedComputation, QiecModule, _execution_reachability
+from quivers.qiec.module import (
+    NamedComputation,
+    QiecModule,
+    _execution_reachability,
+    _validate_named_static_scope,
+)
 from quivers.qiec.rules import (
     CARTESIAN,
     InterpretationDecl,
+    RuleError,
     RulePresentation,
     presentation_of,
 )
 from quivers.qiec.substitution import instantiate_telescope, substitute_type
-from quivers.qiec.types import TypeVariable
+from quivers.qiec.types import TypeExpr, TypeVariable
 
 if TYPE_CHECKING:
     from quivers.dsl.qiec_lowering import _Elaborator
@@ -39,6 +45,16 @@ class ScopedSource:
 
     syntax: ScopedProofTypes
     root: FamilyId
+
+
+@dataclass(frozen=True)
+class _ScopedAction:
+    """A named operation and its type instantiated at the ambient context."""
+
+    clause: surface.QiecInterpretationClause
+    operation: ComputationSignature
+    parameters: tuple[TypeExpr, ...]
+    result: TypeExpr
 
 
 def _scoped_presentation(source: surface.SignatureDecl) -> RulePresentation:
@@ -78,7 +94,7 @@ def declare_scoped_types(elaborator: _Elaborator) -> dict[str, ScopedSource]:
                 code="qiec-interpretation",
             )
         for option in declaration.options:
-            if option.key not in {"structure", "effects"}:
+            if option.key not in {"structure", "effects", "carriers"}:
                 elaborator._fail(
                     option,
                     f"unknown scoped interpretation option {option.key!r}",
@@ -173,21 +189,80 @@ def _scoped_effect_row(
     return EffectRow(entries=tuple(entries.values()))
 
 
+def _scoped_carriers(
+    elaborator: _Elaborator,
+    declaration: surface.QiecInterpretationDecl,
+    source: ScopedSource,
+    actions: dict[ConstructorId, _ScopedAction],
+) -> dict[FamilyId, TypeExpr]:
+    """Choose common carriers or infer a closed codomain for each judgment."""
+    semantic = elaborator._lower_type(declaration.carrier, ())
+    options = [option for option in declaration.options if option.key == "carriers"]
+    if not options:
+        return dict.fromkeys(source.syntax.proofs, semantic)
+    if (
+        len(options) != 1
+        or not isinstance(options[0].value, surface.OptionName)
+        or options[0].value.value != "by_judgment"
+    ):
+        elaborator._fail(
+            options[0],
+            "scoped carriers require one carriers=by_judgment option",
+            code="qiec-interpretation",
+        )
+    presentation = source.syntax.presentation
+    carriers: dict[FamilyId, TypeExpr] = {source.root: semantic}
+    for rule in presentation.rules:
+        action = actions[rule.id]
+        family = rule.conclusion.family
+        name = presentation.judgments_by_id[family].name
+        try:
+            _validate_named_static_scope(action.result, ())
+        except KernelError:
+            elaborator._fail(
+                action.clause,
+                f"scoped carrier for judgment {name!r} must be closed independently "
+                "of the ambient Type binder",
+                code="qiec-interpretation",
+            )
+        expected = carriers.setdefault(family, action.result)
+        if action.result != expected:
+            if family == source.root:
+                message = f"scoped operation {action.operation.name!r} disagrees with the declared root carrier"
+            else:
+                message = (
+                    f"scoped producers for judgment {name!r} disagree on their carriers"
+                )
+            elaborator._fail(
+                action.clause,
+                f"{message}: expected {elaborator._render(expected)}, "
+                f"got {elaborator._render(action.result)}",
+                code="qiec-interpretation",
+            )
+    missing = [
+        judgment.name
+        for judgment in presentation.judgments
+        if judgment.id not in carriers
+    ]
+    if missing:
+        elaborator._fail(
+            declaration,
+            f"no declared rule operation produces a closed carrier for {', '.join(missing)}",
+            code="qiec-interpretation",
+        )
+    return carriers
+
+
 def lower_scoped_interpretation(
     elaborator: _Elaborator,
     declaration: surface.QiecInterpretationDecl,
     source: ScopedSource,
 ) -> tuple[NamedComputation, ...]:
-    """Make ordinary named computations at the declared carrier and row."""
+    """Make ordinary named computations at each judgment's checked carrier."""
     syntax = source.syntax
     row = _scoped_effect_row(elaborator, declaration)
-    semantic = elaborator._lower_type(declaration.carrier, ())
-    carriers = {family: semantic for family in syntax.proofs}
-    plan = scoped_proof_fold(
-        syntax, carriers, dict.fromkeys(carriers, row), name=declaration.name
-    )
     rules = {rule.name: rule.id for rule in syntax.presentation.rules}
-    selected: dict[ConstructorId, ComputationSignature] = {}
+    actions: dict[ConstructorId, _ScopedAction] = {}
     ambient = TypeVariable(name="scoped_rule_context")
     for clause in declaration.clauses:
         identity = (
@@ -199,7 +274,7 @@ def lower_scoped_interpretation(
                 f"unknown scoped structural rule {clause.constructor!r}",
                 code="qiec-interpretation",
             )
-        if identity in selected:
+        if identity in actions:
             elaborator._fail(
                 clause,
                 f"duplicate interpretation for rule {clause.constructor!r}",
@@ -227,16 +302,6 @@ def lower_scoped_interpretation(
             substitute_type(type_, substitution) for type_ in operation.parameters
         )
         result = substitute_type(operation.result, substitution)
-        if (
-            parameters != plan.operation_parameters(identity, ambient)
-            or result != semantic
-        ):
-            elaborator._fail(
-                clause,
-                f"scoped operation {operation.name!r} needs the rule's typed arguments "
-                "and the declared carrier",
-                code="qiec-interpretation",
-            )
         if operation.effects.tail is not None or any(
             row.lookup(entry.instance) != entry.effect
             for entry in operation.effects.entries
@@ -247,15 +312,33 @@ def lower_scoped_interpretation(
                 "the interpretation's closed effects row",
                 code="qiec-interpretation",
             )
-        selected[identity] = operation
-    missing = [name for name, identity in rules.items() if identity not in selected]
+        actions[identity] = _ScopedAction(clause, operation, parameters, result)
+    missing = [name for name, identity in rules.items() if identity not in actions]
     if missing:
         elaborator._fail(
             declaration,
             f"missing scoped interpretation for {', '.join(missing)}",
             code="qiec-interpretation",
         )
-    generated, _ = _scoped_definitions(plan, selected)
+    carriers = _scoped_carriers(elaborator, declaration, source, actions)
+    plan = scoped_proof_fold(
+        syntax, carriers, dict.fromkeys(carriers, row), name=declaration.name
+    )
+    for rule in syntax.presentation.rules:
+        action = actions[rule.id]
+        if (
+            action.parameters != plan.operation_parameters(rule.id, ambient)
+            or action.result != carriers[rule.conclusion.family]
+        ):
+            elaborator._fail(
+                action.clause,
+                f"scoped operation {action.operation.name!r} needs the rule's typed arguments "
+                "and the declared carrier",
+                code="qiec-interpretation",
+            )
+    generated, _ = _scoped_definitions(
+        plan, {identity: action.operation for identity, action in actions.items()}
+    )
     origin = elaborator._origin(
         declaration, ("scoped_interpretations", "entry"), "computation"
     )
@@ -286,6 +369,7 @@ def selected_scoped_interpretations(
     if reached is None:
         reached, _ = _execution_reachability(module, selected)
     compiled = {computation.name: computation for computation in module.computations}
+    by_id = {computation.id: computation for computation in compiled.values()}
     prepared: dict[str, RulePresentation] = {}
     bindings = []
     for declaration in declarations:
@@ -307,6 +391,12 @@ def selected_scoped_interpretations(
             for clause in declaration.clauses
         )
         identities = {entry.instance for entry in root.type.effects.entries}
+        carriers = []
+        for item in presentation.judgments:
+            fold = by_id.get(_fold_id(module.module, root.name, item.id))
+            if fold is None:
+                raise RuleError(f"no checked scoped fold for judgment {item.name!r}")
+            carriers.append((item.id, fold.type.result))
         binding = ScopedInterpretationBinding(
             presentation=presentation,
             interpretation=InterpretationDecl(
@@ -318,9 +408,7 @@ def selected_scoped_interpretations(
             ),
             computation=root.id,
             judgment=judgment,
-            carriers=tuple(
-                (item.id, root.type.result) for item in presentation.judgments
-            ),
+            carriers=tuple(carriers),
             rows=tuple((item.id, root.type.effects) for item in presentation.judgments),
             instances=tuple(
                 item for item in module.instances if item.entry.instance in identities
