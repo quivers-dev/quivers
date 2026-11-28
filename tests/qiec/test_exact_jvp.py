@@ -1,4 +1,4 @@
-"""Exact forward derivatives against independent scalar laws."""
+"""Exact forward and reverse derivatives against independent scalar laws."""
 
 from collections.abc import Callable
 from fractions import Fraction
@@ -8,12 +8,14 @@ import torch
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
+    ExactGradient,
     ExactJvp,
     ExactMixedDerivative,
     JvpBoundaryError,
     JvpLimit,
     JvpUnsupported,
     discharge_module,
+    exact_gradient,
     exact_jvp,
     exact_mixed_derivative,
     run_named,
@@ -119,6 +121,13 @@ define linear_power(x : Real) : Real !{} =
 define unit_power(x : Real) : Real !{} =
     return pow(x, 0.0)
 
+define constant() : Real !{} =
+    return 3.0
+
+define shared(x : Real, y : Real, unused : Real) : Real !{} =
+    let square = x * x
+    return square * square + y * square + x
+
 define unsupported(x : Real) : Real !{} =
     return exp(x)
 
@@ -214,7 +223,7 @@ def _fixed_polynomial_mixed_derivative(
         ),
     ),
 )
-def test_exact_jvp_agrees_with_independent_finite_differences(
+def test_exact_jvp_and_gradient_agree_with_independent_finite_differences(
     module: QiecModule,
     name: str,
     point: tuple[Fraction, ...],
@@ -225,6 +234,18 @@ def test_exact_jvp_agrees_with_independent_finite_differences(
         formula(*point), _fixed_polynomial_derivative(formula, point, direction)
     )
     assert exact_jvp(module, name, point, direction) == expected
+    basis = tuple(
+        tuple(Fraction(int(index == coordinate)) for index in range(len(point)))
+        for coordinate in range(len(point))
+    )
+    gradient = exact_gradient(module, name, point)
+    assert gradient == ExactGradient(
+        expected.value,
+        tuple(_fixed_polynomial_derivative(formula, point, vector) for vector in basis),
+    )
+    assert sum(g * d for g, d in zip(gradient.gradient, direction, strict=True)) == (
+        expected.tangent
+    )
 
 
 def test_exact_quotient_and_negative_power(module: QiecModule) -> None:
@@ -431,3 +452,78 @@ def test_mixed_derivative_inherits_the_regular_point_requirement(
 ) -> None:
     with pytest.raises(JvpBoundaryError, match="input-dependent equality boundary"):
         exact_mixed_derivative(module, "affined", (0,), (0,), (0,))
+
+
+def test_reverse_gradient_accumulates_shared_and_repeated_edges(
+    module: QiecModule,
+) -> None:
+    x, y = Fraction(3, 2), Fraction(-2, 3)
+    expected = ExactGradient(
+        x**4 + y * x**2 + x, (4 * x**3 + 2 * y * x + 1, x**2, Fraction())
+    )
+    assert exact_gradient(module, "shared", (x, y, x)) == expected
+
+
+def test_reverse_gradient_keeps_edges_of_zero_primal_occurrences(
+    module: QiecModule,
+) -> None:
+    x = Fraction(3, 2)
+    expected = ExactGradient(x**2 - x**3, (2 * x - 3 * x**2, 2 * x**3))
+    discharged = discharge_module(module)
+    assert discharged.obstacle("combined") is None
+    for owner in (module, discharged.module):
+        assert exact_gradient(owner, "combined", (x, 0)) == expected
+    assert exact_gradient(module, "shared", (0, 7, 0)) == ExactGradient(
+        Fraction(), (Fraction(1), Fraction(), Fraction())
+    )
+
+
+def test_reverse_gradient_handles_exact_division_and_integral_powers(
+    module: QiecModule,
+) -> None:
+    a, b = Fraction(3, 2), Fraction(2, 3)
+    assert exact_gradient(module, "quotient", (a, b)) == ExactGradient(
+        a / b + a**-2, (1 / b - 2 * a**-3, -a / b**2)
+    )
+    assert exact_gradient(module, "unit_power", (0,)) == ExactGradient(
+        Fraction(1), (Fraction(),)
+    )
+    assert exact_gradient(module, "linear_power", (0,)) == ExactGradient(
+        Fraction(), (Fraction(1),)
+    )
+    assert exact_gradient(module, "constant", ()) == ExactGradient(Fraction(3), ())
+
+
+def test_reverse_gradient_agrees_with_autograd_and_discharge(
+    module: QiecModule,
+) -> None:
+    point = (Fraction(3, 2), Fraction(2, 3))
+    exact = exact_gradient(module, "combined", point)
+    discharged = discharge_module(module)
+    assert discharged.obstacle("combined") is None
+    assert exact_gradient(discharged.module, "combined", point) == exact
+    inputs = tuple(
+        torch.tensor(float(value), dtype=torch.float64, requires_grad=True)
+        for value in point
+    )
+    for owner in (module, discharged.module):
+        runtime = run_named(owner, "combined", inputs, record_trace=False).value
+        assert isinstance(runtime, torch.Tensor)
+        reference = tuple(
+            float(tangent) for tangent in torch.autograd.grad(runtime, inputs)
+        )
+        assert reference == pytest.approx(tuple(map(float, exact.gradient)), rel=1e-13)
+        assert float(runtime.detach()) == pytest.approx(float(exact.value), rel=1e-13)
+
+
+def test_reverse_gradient_does_not_run_outside_the_admitted_domain(
+    module: QiecModule,
+) -> None:
+    with pytest.raises(JvpBoundaryError, match="input-dependent equality boundary"):
+        exact_gradient(module, "recurse", (3,))
+    with pytest.raises(JvpUnsupported, match="division by zero"):
+        exact_gradient(module, "strict", (2,))
+    with pytest.raises(JvpUnsupported, match="fixed integral exponent"):
+        exact_gradient(module, "variable_exponent", (2, 3))
+    with pytest.raises(JvpLimit, match="steps"):
+        exact_gradient(module, "forever", (1,), fuel=10)

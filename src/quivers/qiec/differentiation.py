@@ -1,4 +1,4 @@
-"""Exact forward derivatives on regular scalar executions of checked QIEC."""
+"""Exact derivatives on regular scalar executions of checked QIEC."""
 
 from __future__ import annotations
 
@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from fractions import Fraction
 from math import isfinite
 from operator import eq, ge, gt, le, lt, ne
+from typing import cast
 
+from quivers.qiec.checking import KernelRegistry
 from quivers.qiec.evaluator import EvaluationError, Evaluator, FuelExhaustedError
-from quivers.qiec.module import QiecModule, validate_module
+from quivers.qiec.module import NamedComputation, QiecModule, validate_module
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.terms import (
     ConditionalValue,
@@ -53,7 +55,23 @@ class JvpBoundaryError(JvpUnsupported):
 
 
 class JvpLimit(ValueError):
-    """Exact forward evaluation exhausted a resource bound."""
+    """Exact derivative evaluation exhausted a resource bound."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExactGradient:
+    """A scalar and the exact gradient returned by its reverse pass.
+
+    Parameters
+    ----------
+    value : Fraction
+        The result at the supplied point.
+    gradient : tuple[Fraction, ...]
+        Its partial derivatives, in parameter order.
+    """
+
+    value: Fraction
+    gradient: tuple[Fraction, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +138,58 @@ class _Dual:
     mixed: Fraction
 
 
+@dataclass(frozen=True, slots=True)
+class _ReverseNumber:
+    """An exact scalar paired with its occurrence in the reverse graph.
+
+    Parameters
+    ----------
+    value : Fraction
+        The exact primal at this occurrence.
+    index : int or None
+        Its graph node, or no node for an input-independent expression.
+    """
+
+    value: Fraction
+    index: int | None
+
+    @property
+    def dependent(self) -> bool:
+        """Whether the value may depend on the input parameters.
+
+        Returns
+        -------
+        bool
+            Whether the graph carries a node for this occurrence.
+        """
+        return self.index is not None
+
+
+type _Scalar = _Dual | _ReverseNumber
+type _ReverseEdge = tuple[int, Fraction]
+
+
+def _bound(*coefficients: Fraction) -> None:
+    """Check the size of exact arithmetic coefficients.
+
+    Parameters
+    ----------
+    coefficients : Fraction
+        The rational values whose numerator and denominator are checked.
+
+    Raises
+    ------
+    JvpLimit
+        If a numerator or denominator exceeds the coefficient bound.
+    """
+    if any(
+        max(coefficient.numerator.bit_length(), coefficient.denominator.bit_length())
+        > _MAX_COEFFICIENT_BITS
+        for coefficient in coefficients
+    ):
+        raise JvpLimit("exact derivative coefficient limit exceeded")
+
+
 def _dual(
     value: Fraction,
     tangent: Fraction,
@@ -153,17 +223,27 @@ def _dual(
     JvpLimit
         If any coefficient exceeds the size limit.
     """
-    if any(
-        max(coefficient.numerator.bit_length(), coefficient.denominator.bit_length())
-        > _MAX_COEFFICIENT_BITS
-        for coefficient in (value, tangent, second_tangent, mixed)
-    ):
-        raise JvpLimit("exact JVP coefficient limit exceeded")
+    _bound(value, tangent, second_tangent, mixed)
     return _Dual(value, tangent, dependent, second_tangent, mixed)
 
 
-class _ForwardEvaluator(Evaluator):
-    """Interpret scalar values in the checked reference machine as exact duals."""
+class _ScalarDerivativeEvaluator(Evaluator):
+    """Use exact rational control and arithmetic in the checked reference machine."""
+
+    def _constant(self, value: Fraction) -> _Scalar:
+        """Embed a literal in the current scalar arithmetic.
+
+        Parameters
+        ----------
+        value : Fraction
+            The input-independent primal.
+
+        Returns
+        -------
+        _Scalar
+            The scalar with no derivative contribution.
+        """
+        return _dual(value, Fraction(), False)
 
     def _duplicable_value(self, value: object) -> bool:
         """Allow immutable tangent values to be shared by separate shots.
@@ -178,7 +258,9 @@ class _ForwardEvaluator(Evaluator):
         bool
             Whether it can be carried into another shot.
         """
-        return isinstance(value, _Dual) or super()._duplicable_value(value)
+        return isinstance(value, _Dual | _ReverseNumber) or super()._duplicable_value(
+            value
+        )
 
     def _value(self, value: Value, environment: Mapping[Local, object]) -> object:
         """Read a supported value with its scalar derivative.
@@ -210,7 +292,7 @@ class _ForwardEvaluator(Evaluator):
                 and not isinstance(data, bool)
                 and (isinstance(data, int) or isfinite(data))
             ):
-                return _dual(Fraction(data), Fraction(), False)
+                return self._constant(Fraction(data))
             if value.type in (BOOL, UNIT):
                 return super()._value(value, environment)
         if isinstance(
@@ -261,8 +343,57 @@ class _ForwardEvaluator(Evaluator):
         arguments = tuple(
             self._value(argument, environment) for argument in term.arguments
         )
-        first = arguments[0]
-        assert isinstance(first, _Dual)
+        assert all(isinstance(item, _Dual | _ReverseNumber) for item in arguments)
+        scalars = cast(tuple[_Scalar, ...], arguments)
+        if compare is not None:
+            first, second = scalars
+            dependent = first.dependent or second.dependent
+            if dependent and first.value == second.value:
+                raise JvpBoundaryError(
+                    f"comparison `{term.name}` is at an input-dependent equality boundary"
+                )
+            return self.numbers.number("truth", compare(first.value, second.value))
+        assert name is not None
+        return self._calculate(name, scalars)
+
+    def _calculate(self, name: str, operands: tuple[_Scalar, ...]) -> _Scalar:
+        """Evaluate arithmetic with the active derivative representation.
+
+        Parameters
+        ----------
+        name : str
+            The resolved arithmetic primitive.
+        operands : tuple[_Scalar, ...]
+            Its checked operands.
+
+        Returns
+        -------
+        _Scalar
+            The exact scalar result and its derivative data.
+        """
+        return self._arithmetic(name, cast(tuple[_Dual, ...], operands))
+
+    def _arithmetic(self, name: str, operands: tuple[_Dual, ...]) -> _Dual:
+        """Compute the Taylor coefficients of one arithmetic operation.
+
+        Parameters
+        ----------
+        name : str
+            The resolved arithmetic primitive.
+        operands : tuple[_Dual, ...]
+            The primal and perturbation coefficients of the operands.
+
+        Returns
+        -------
+        _Dual
+            The Taylor coefficients of the result.
+
+        Raises
+        ------
+        JvpUnsupported
+            If the primitive is undefined on the given operands.
+        """
+        first = operands[0]
         if name == "neg_real":
             return _dual(
                 -first.value,
@@ -271,15 +402,8 @@ class _ForwardEvaluator(Evaluator):
                 second_tangent=-first.second_tangent,
                 mixed=-first.mixed,
             )
-        _, second = arguments
-        assert isinstance(second, _Dual)
+        _, second = operands
         dependent = first.dependent or second.dependent
-        if compare is not None:
-            if dependent and first.value == second.value:
-                raise JvpBoundaryError(
-                    f"comparison `{term.name}` is at an input-dependent equality boundary"
-                )
-            return self.numbers.number("truth", compare(first.value, second.value))
         if name == "add_real":
             return _dual(
                 first.value + second.value,
@@ -378,6 +502,143 @@ class _ForwardEvaluator(Evaluator):
         )
 
 
+class _ReverseEvaluator(_ScalarDerivativeEvaluator):
+    """Record immutable scalar occurrences during one reference execution.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked module of this run.
+    fuel : int
+        The maximum reference machine step count.
+    """
+
+    def __init__(self, module: QiecModule, fuel: int) -> None:
+        super().__init__(module=module, fuel=fuel)
+        self.parents: list[tuple[_ReverseEdge, ...]] = []
+
+    def _constant(self, value: Fraction) -> _ReverseNumber:
+        """Embed an input-independent literal without a graph node.
+
+        Parameters
+        ----------
+        value : Fraction
+            The exact primal value.
+
+        Returns
+        -------
+        _ReverseNumber
+            The primal and an absent node index.
+        """
+        _bound(value)
+        return _ReverseNumber(value, None)
+
+    def input(self, value: Fraction) -> _ReverseNumber:
+        """Allocate a distinct graph leaf for one input parameter.
+
+        Parameters
+        ----------
+        value : Fraction
+            The parameter's value at the evaluation point.
+
+        Returns
+        -------
+        _ReverseNumber
+            The primal at the new leaf.
+        """
+        _bound(value)
+        index = len(self.parents)
+        self.parents.append(())
+        return _ReverseNumber(value, index)
+
+    def _local(
+        self, name: str, operands: tuple[_ReverseNumber, ...], position: int | None
+    ) -> _Dual:
+        """Use the forward rule on one operand basis vector of a primitive.
+
+        Parameters
+        ----------
+        name : str
+            The resolved arithmetic primitive.
+        operands : tuple[_ReverseNumber, ...]
+            The operand primals and their input dependence.
+        position : int or None
+            The operand to seed, or no seed for a constant result.
+
+        Returns
+        -------
+        _Dual
+            The primal and its derivative with respect to that operand.
+        """
+        return self._arithmetic(
+            name,
+            tuple(
+                _dual(
+                    operand.value, Fraction(int(index == position)), operand.dependent
+                )
+                for index, operand in enumerate(operands)
+            ),
+        )
+
+    def _calculate(self, name: str, operands: tuple[_Scalar, ...]) -> _ReverseNumber:
+        """Record one edge per dependent operand occurrence.
+
+        Parameters
+        ----------
+        name : str
+            The resolved arithmetic primitive.
+        operands : tuple[_Scalar, ...]
+            The scalars from this execution.
+
+        Returns
+        -------
+        _ReverseNumber
+            The computed primal and its node if it depends on the inputs.
+        """
+        scalars = cast(tuple[_ReverseNumber, ...], operands)
+        active = tuple(
+            (position, operand.index)
+            for position, operand in enumerate(scalars)
+            if operand.index is not None
+        )
+        local = self._local(name, scalars, active[0][0] if active else None)
+        if not local.dependent:
+            return _ReverseNumber(local.value, None)
+        edges = [(active[0][1], local.tangent)]
+        edges.extend(
+            (parent, self._local(name, scalars, position).tangent)
+            for position, parent in active[1:]
+        )
+        index = len(self.parents)
+        self.parents.append(tuple(edges))
+        return _ReverseNumber(local.value, index)
+
+    def gradient(self, output: _ReverseNumber, arity: int) -> tuple[Fraction, ...]:
+        """Accumulate every parent edge in reverse topological order.
+
+        Parameters
+        ----------
+        output : _ReverseNumber
+            The returned scalar of the evaluation.
+        arity : int
+            The number of input leaves, allocated in parameter order.
+
+        Returns
+        -------
+        tuple[Fraction, ...]
+            The exact output cotangent at every input leaf.
+        """
+        if output.index is None:
+            return (Fraction(),) * arity
+        cotangents = [Fraction()] * len(self.parents)
+        cotangents[output.index] = Fraction(1)
+        for index in range(len(self.parents) - 1, -1, -1):
+            for parent, slope in self.parents[index]:
+                cotangents[parent] += slope * cotangents[index]
+                _bound(cotangents[parent])
+        return tuple(cotangents[:arity])
+
+
 def _fraction(value: int | Fraction) -> Fraction:
     """Read an explicitly exact input scalar.
 
@@ -397,8 +658,64 @@ def _fraction(value: int | Fraction) -> Fraction:
         If the supplied object is outside the exact input carrier.
     """
     if type(value) is not int and not isinstance(value, Fraction):
-        raise ValueError("exact JVP inputs must be integers or Fractions")
+        raise ValueError("exact derivative inputs must be integers or Fractions")
     return Fraction(value)
+
+
+def exact_gradient(
+    module: QiecModule,
+    computation: str,
+    arguments: tuple[int | Fraction, ...],
+    *,
+    fuel: int = 65_536,
+) -> ExactGradient:
+    """Evaluate a checked scalar computation and its exact reverse gradient.
+
+    The reference execution records scalar primitive occurrences. The
+    reverse pass sums every use of a recorded value, including uses in
+    several resumptions of one captured continuation. The admitted
+    operations and comparisons are those of :func:`exact_jvp`, subject
+    to the bounds on local slopes and accumulated cotangents.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked QIEC module.
+    computation : str
+        A named, closed scalar real computation.
+    arguments : tuple[int or Fraction, ...]
+        The evaluation point in parameter order.
+    fuel : int
+        The maximum number of reference machine steps.
+
+    Returns
+    -------
+    ExactGradient
+        The scalar and its partial derivatives in parameter order.
+
+    Raises
+    ------
+    JvpUnsupported
+        If the computation or a reached operation has no rule.
+    JvpBoundaryError
+        If an input-dependent comparison is at equality.
+    JvpLimit
+        If the evaluation exhausts a bound.
+    ValueError
+        If the point or limit is malformed.
+    """
+    registry, declaration = _prepare_scalar(module, computation, fuel)
+    parameters = declaration.parameters
+    if len(arguments) != len(parameters):
+        raise ValueError("arguments must match the computation's arity")
+    evaluator = _ReverseEvaluator(module, fuel)
+    environment = {
+        parameter: evaluator.input(_fraction(value))
+        for parameter, value in zip(parameters, arguments, strict=True)
+    }
+    result = _run_derivative(evaluator, declaration, registry, environment)
+    assert isinstance(result, _ReverseNumber)
+    return ExactGradient(result.value, evaluator.gradient(result, len(parameters)))
 
 
 def exact_jvp(
@@ -543,24 +860,8 @@ def _evaluate_dual(
     ValueError
         If an input or limit is malformed.
     """
-    if type(fuel) is not int or fuel < 1:
-        raise ValueError("fuel must be a positive integer")
-    registry = validate_module(module)
-    declaration = next(
-        (item for item in module.computations if item.name == computation), None
-    )
-    if declaration is None:
-        raise JvpUnsupported(f"unknown derivative computation `{computation}`")
-    row = declaration.type.effects
+    registry, declaration = _prepare_scalar(module, computation, fuel)
     parameters = declaration.parameters
-    if (
-        declaration.telescope
-        or row.entries
-        or row.tail is not None
-        or declaration.type.result != REAL
-        or any(parameter.type != REAL for parameter in parameters)
-    ):
-        raise JvpUnsupported("an exact JVP needs a closed scalar real computation")
     second = (0,) * len(parameters) if second_direction is None else second_direction
     if any(len(vector) != len(parameters) for vector in (arguments, direction, second)):
         raise ValueError(
@@ -574,25 +875,109 @@ def _evaluate_dual(
             parameters, arguments, direction, second, strict=True
         )
     }
-    evaluator = _ForwardEvaluator(module=module, fuel=fuel)
-    try:
-        result = evaluator.evaluate_validated(declaration.body, registry, environment)
-    except FuelExhaustedError as error:
-        raise JvpLimit(str(error)) from error
-    except RecursionError as error:
-        raise JvpLimit("exact JVP expression nesting limit exhausted") from error
-    except EvaluationError as error:
-        raise JvpUnsupported(str(error)) from error
+    evaluator = _ScalarDerivativeEvaluator(module=module, fuel=fuel)
+    result = _run_derivative(evaluator, declaration, registry, environment)
     assert isinstance(result, _Dual)
     return result
 
 
+def _prepare_scalar(
+    module: QiecModule, computation: str, fuel: int
+) -> tuple[KernelRegistry, NamedComputation]:
+    """Resolve a checked declaration in the shared derivative fragment.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module declaring the computation.
+    computation : str
+        The computation's name.
+    fuel : int
+        The reference machine step bound.
+
+    Returns
+    -------
+    tuple[KernelRegistry, NamedComputation]
+        The checked constraints and resolved declaration.
+
+    Raises
+    ------
+    JvpUnsupported
+        If the declaration is absent or outside the scalar fragment.
+    ValueError
+        If the step bound is malformed.
+    """
+    if type(fuel) is not int or fuel < 1:
+        raise ValueError("fuel must be a positive integer")
+    registry = validate_module(module)
+    declaration = next(
+        (item for item in module.computations if item.name == computation), None
+    )
+    if declaration is None:
+        raise JvpUnsupported(f"unknown derivative computation `{computation}`")
+    row = declaration.type.effects
+    if (
+        declaration.telescope
+        or row.entries
+        or row.tail is not None
+        or declaration.type.result != REAL
+        or any(parameter.type != REAL for parameter in declaration.parameters)
+    ):
+        raise JvpUnsupported(
+            "exact derivatives require a closed scalar real computation"
+        )
+    return registry, declaration
+
+
+def _run_derivative(
+    evaluator: _ScalarDerivativeEvaluator,
+    declaration: NamedComputation,
+    registry: KernelRegistry,
+    environment: Mapping[Local, object],
+) -> object:
+    """Run the selected scalar interpretation of a checked computation.
+
+    Parameters
+    ----------
+    evaluator : _ScalarDerivativeEvaluator
+        The active scalar algebra.
+    declaration : NamedComputation
+        The selected computation.
+    registry : KernelRegistry
+        Its validated module registry.
+    environment : Mapping[Local, object]
+        The seeded parameters of this run.
+
+    Returns
+    -------
+    object
+        The returned scalar represented in the active algebra.
+
+    Raises
+    ------
+    JvpUnsupported
+        If evaluation encounters an unsupported operation.
+    JvpLimit
+        If the reference machine exhausts a bound.
+    """
+    try:
+        return evaluator.evaluate_validated(declaration.body, registry, environment)
+    except FuelExhaustedError as error:
+        raise JvpLimit(str(error)) from error
+    except RecursionError as error:
+        raise JvpLimit("exact derivative expression nesting limit exhausted") from error
+    except EvaluationError as error:
+        raise JvpUnsupported(str(error)) from error
+
+
 __all__ = [
+    "ExactGradient",
     "ExactJvp",
     "ExactMixedDerivative",
     "JvpBoundaryError",
     "JvpLimit",
     "JvpUnsupported",
+    "exact_gradient",
     "exact_jvp",
     "exact_mixed_derivative",
 ]

@@ -129,11 +129,13 @@ from quivers.qiec.discharge import (
     discharge_module,
 )
 from quivers.qiec.differentiation import (
+    ExactGradient,
     ExactJvp,
     ExactMixedDerivative,
     JvpBoundaryError,
     JvpLimit,
     JvpUnsupported,
+    exact_gradient,
     exact_jvp,
     exact_mixed_derivative,
 )
@@ -657,6 +659,7 @@ __all__ = [
     "Evaluator",
     "EvidenceValue",
     "ExecutionDiagnostic",
+    "ExactGradient",
     "ExactJvp",
     "ExactMixedDerivative",
     "ExecutionFailure",
@@ -928,6 +931,7 @@ __all__ = [
     "entry_point",
     "entry_points",
     "enumerate_handler",
+    "exact_gradient",
     "exact_jvp",
     "exact_mixed_derivative",
     "family",

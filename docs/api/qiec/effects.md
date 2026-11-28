@@ -84,6 +84,18 @@ result = exact_mixed_derivative(module, "squared", (3,), (Fraction(1, 2),), (2,)
 assert (result.value, result.first, result.second, result.mixed) == (36, 12, 48, 8)
 ```
 
+`exact_gradient` records the scalar operations executed by the reference
+machine and then accumulates their cotangents in reverse order. Every use
+of a value contributes, including uses of a captured value in different
+resumptions. The result lists partial derivatives in parameter order.
+
+```python
+from quivers.qiec import exact_gradient
+
+result = exact_gradient(module, "squared", (3,))
+assert (result.value, result.gradient) == (36, (24,))
+```
+
 ::: quivers.qiec.differentiation
 
 ::: quivers.qiec.effects
