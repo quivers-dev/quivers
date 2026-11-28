@@ -41,11 +41,20 @@ it is $2$, while the square of the aggregate is $0$. So every derivation is buil
 [`fold_derivations`][quivers.stochastic.forest.fold_derivations], within a limit the caller
 declares.
 
-The goal's derivations are first counted exactly, in integers, by the same dynamic programming;
-if there are more than the limit, the forest is refused with
-[`ForestRefusal.TOO_MANY`][quivers.stochastic.forest.ForestRefusal] and no derivation is
-returned, since a part of them is not the fold. Otherwise derivations are built bottom up, a
-derivation of a premise once for all the derivations above it.
+[`fold_derivations_many`][quivers.stochastic.forest.fold_derivations_many]
+lists the derivations of several goals under one limit. A repeated goal is
+counted once. Derivations are counted on the common subforest and the
+count includes zero-weight proofs. Each count saturates at one more than
+the limit. The saturated sum and product give the same budget decision as
+exact integers because the counts are nonnegative and multiplication by
+zero returns zero. The preflight uses one count update per edge and
+premise, with integers whose size is bounded by the declared limit.
+
+If the count exceeds the limit, the forest raises
+[`ForestRefusal.TOO_MANY`][quivers.stochastic.forest.ForestRefusal] before
+building a derivation or calling a host interpretation. Otherwise it
+builds each premise derivation once for use by all the requested proofs
+above it. The single-goal call uses the same traversal.
 
 **Lemma (the limit bounds every list).** Call a pair of an item and a height bound useful when it
 is the goal's, or a premise of an edge of a useful pair whose premises all have derivations within
@@ -57,8 +66,10 @@ induction, an extension of the derivations of $x$ to derivations of the goal. Su
 derivation of $y$ into that context gives a derivation of the goal, and distinct derivations of
 $y$ give distinct ones. QED
 
-Only useful pairs are listed, so each list holds at most the limit and the work is at most the
-limit times the number of useful pairs, which is the cost in
+The same argument applies with several roots by choosing any requested goal
+that uses the pair. The number of constructed rows is thus at most the
+limit times the number of useful pairs. The work also includes the rule
+arities and the cost of the chosen interpretation. See
 [`FOREST_WORK`][quivers.stochastic.planning.FOREST_WORK].
 
 ## Heights and cycles

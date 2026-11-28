@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from itertools import product
 
 import pytest
@@ -19,16 +20,36 @@ from quivers.qiec.contracts import (
     OccurrenceId,
     PackedForest,
     ParameterId,
+    PresentationId,
     Recursion,
 )
-from quivers.qiec.identifiers import ComputationId
-from quivers.qiec.rules import Item
+from quivers.qiec.identifiers import ComputationId, ConstructorId, FamilyId
+from quivers.qiec.kinds import NAT, IndexBinder
+from quivers.qiec.rules import (
+    AxiomOccurrence,
+    AxiomSlot,
+    Derivation,
+    HostInterpretation,
+    Item,
+    Judgment,
+    JudgmentDecl,
+    Premise,
+    PremiseValue,
+    Rule,
+    RulePresentation,
+    closed_values,
+)
+from quivers.qiec.types import IndexLiteral
+from quivers.stochastic import forest as forest_module
 from quivers.stochastic.forest import (
+    DerivationForest,
     ForestEdge,
     ForestRefusal,
     ForestRefused,
     build_forest,
     edge_weight,
+    fold_derivations,
+    fold_derivations_many,
     forest_fold,
     forest_folds,
 )
@@ -44,6 +65,183 @@ from tests.evidence import graphs
 
 LIKE = torch.zeros((), dtype=torch.float64)
 SQUARE = ComputationId.derive(graphs.NAME, "square")
+
+
+def _squared_forest(
+    depth: int,
+) -> tuple[DerivationForest, tuple[AxiomOccurrence, ...], tuple[Item, ...]]:
+    """Each level chooses two proofs of the previous level independently."""
+    identity = PresentationId.derive("global-proof-budget")
+    family = FamilyId.derive(identity, "node")
+    items = tuple(Item(family=family, arguments=(level,)) for level in range(depth + 1))
+    judgments = tuple(
+        Judgment(family=family, arguments=(IndexLiteral(value=level, sort=NAT),))
+        for level in range(depth + 1)
+    )
+    slot = AxiomSlot(
+        id=ConstructorId.derive(identity, "base"), name="base", judgment=judgments[0]
+    )
+    presentation = RulePresentation(
+        id=identity,
+        name="global_proof_budget",
+        judgments=(
+            JudgmentDecl(
+                id=family,
+                name="node",
+                indices=(IndexBinder(name="level", sort=NAT, refinable=True),),
+            ),
+        ),
+        rules=tuple(
+            Rule(
+                id=ConstructorId.derive(identity, level),
+                name=f"square{level}",
+                conclusion=judgment,
+                premises=(Premise(judgment=prior), Premise(judgment=prior)),
+            )
+            for level, (prior, judgment) in enumerate(
+                zip(judgments[:-1], judgments[1:], strict=True)
+            )
+        ),
+        axioms=(slot,),
+    )
+    occurrences = tuple(
+        AxiomOccurrence(
+            slot=slot.id, occurrence=OccurrenceId.derive(slot.id, row), binding=()
+        )
+        for row in (0, 1)
+    )
+    return build_forest(presentation, occurrences), occurrences, items
+
+
+def test_combined_proof_budget_counts_distinct_goals_and_shares_their_subproofs() -> (
+    None
+):
+    forest, occurrences, (base, smaller, larger) = _squared_forest(2)
+    absent = Item(family=base.family, arguments=(9,))
+    labels = {row.occurrence: index for index, row in enumerate(occurrences)}
+    calls: Counter[Item] = Counter()
+
+    def observe(
+        node: Derivation, children: tuple[PremiseValue[tuple[int, ...]], ...]
+    ) -> tuple[int, ...]:
+        calls[node.item] += 1
+        if node.occurrence is not None:
+            return (labels[node.occurrence],)
+        return tuple(label for subtree in closed_values(children) for label in subtree)
+
+    interpretation = HostInterpretation(
+        presentation=forest.presentation,
+        operations={
+            identity: observe for identity in forest.presentation.constructors_by_id
+        },
+    )
+    logs = torch.tensor([-0.4, -1.1], dtype=LIKE.dtype, requires_grad=True)
+    weights = {
+        row.occurrence: log for row, log in zip(occurrences, logs.unbind(), strict=True)
+    }
+    goals = (larger, smaller, larger, absent)
+    with pytest.raises(
+        ForestRefused, match="20 derivations exceed the declared limit of 19"
+    ) as failed:
+        fold_derivations_many(
+            forest, goals, LOG_PROB, weights, interpretation, limit=19, like=LIKE
+        )
+    assert failed.value.code == ForestRefusal.TOO_MANY
+    assert not calls
+
+    accepted = fold_derivations_many(
+        forest, goals, LOG_PROB, weights, interpretation, limit=20, like=LIKE
+    )
+    assert tuple(accepted) == (larger, smaller, absent)
+    assert accepted[absent] == []
+    assert calls == {base: 2, smaller: 4, larger: 16}
+    assert forest.count(smaller) == 4
+    assert [label for _, _, label in accepted[smaller]] == list(
+        product(range(2), repeat=2)
+    )
+    assert [label for _, _, label in accepted[larger]] == list(
+        product(range(2), repeat=4)
+    )
+    actual = torch.stack(
+        [weight for goal in (smaller, larger) for _, weight, _ in accepted[goal]]
+    )
+    oracle = torch.stack(
+        [
+            logs[list(choice)].sum()
+            for width in (2, 4)
+            for choice in product(range(2), repeat=width)
+        ]
+    )
+    torch.testing.assert_close(actual, oracle)
+    torch.testing.assert_close(
+        torch.autograd.grad(actual.logsumexp(0), logs)[0],
+        torch.autograd.grad(oracle.logsumexp(0), logs)[0],
+    )
+
+    calls.clear()
+    single = fold_derivations(
+        forest, smaller, LOG_PROB, weights, interpretation, limit=4, like=LIKE
+    )
+    assert calls == {base: 2, smaller: 4}
+    assert [proof for proof, _, _ in single] == [
+        proof for proof, _, _ in accepted[smaller]
+    ]
+    torch.testing.assert_close(
+        torch.stack([weight for _, weight, _ in single]), oracle[:4]
+    )
+
+
+def test_exponential_budget_refuses_before_building_any_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The last item has 2 ** (2 ** 20) proofs over a 21-item forest.
+    forest, _, items = _squared_forest(20)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("a proof or callback was reached before the budget refusal")
+
+    interpretation = HostInterpretation(
+        presentation=forest.presentation,
+        operations={
+            identity: forbidden for identity in forest.presentation.constructors_by_id
+        },
+    )
+    count = forest_module._counts
+
+    def count_once(part, height, *, cap=None):
+        calls.append(cap)
+        result = count(part, height, cap=cap)
+        assert set(result.values()) <= {2, 4, 16, 21}
+        return result
+
+    monkeypatch.setattr(forest_module, "Derivation", forbidden)
+    monkeypatch.setattr(forest_module, "_counts", count_once)
+    with pytest.raises(ForestRefused, match="at least 21 derivations") as failed:
+        fold_derivations_many(
+            forest, (items[-1],), LOG_PROB, {}, interpretation, limit=20, like=LIKE
+        )
+    assert failed.value.code == ForestRefusal.TOO_MANY
+    assert calls == [21]
+
+
+def test_zero_mass_proofs_still_count_as_structural_work() -> None:
+    forest, occurrences, (goal,) = _squared_forest(0)
+    interpretation = HostInterpretation(
+        presentation=forest.presentation,
+        operations={occurrences[0].slot: lambda node, children: None},
+    )
+    weights = {occurrences[0].occurrence: LIKE.new_tensor(-float("inf"))}
+    with pytest.raises(
+        ForestRefused, match="2 derivations exceed the declared limit of 1"
+    ):
+        fold_derivations_many(
+            forest, (goal,), LOG_PROB, weights, interpretation, limit=1, like=LIKE
+        )
+    rows = fold_derivations_many(
+        forest, (goal,), LOG_PROB, weights, interpretation, limit=2, like=LIKE
+    )[goal]
+    assert [float(weight) for _, weight, _ in rows] == [-float("inf"), 0.0]
 
 
 def _forest_plan(observable: Observable, recursion: Recursion | None = None) -> Plan:
