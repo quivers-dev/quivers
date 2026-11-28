@@ -1075,14 +1075,7 @@ class _Chart:
                     ),
                 )
 
-            if self.s.normalized_cell[0]:
-                result = c.production_weight(("rule", rule.presented.index), weighted)
-            elif self.s.semiring.log_weights and (
-                rule.learnable or rule.parent is not None
-            ):
-                result = c.rule_weight(rule, index, bindings, weighted)
-            else:
-                result = weighted(c.weight_of(None))
+            result = c.application_weight(index, rule, bindings, weighted)
             bound = self.s.depth_cell[0]
             if bound is None:
                 return result

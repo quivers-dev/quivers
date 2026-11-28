@@ -48,6 +48,7 @@ from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
+    ComputedRuleWeight,
     Derivation,
     Ground,
     HostInterpretation,
@@ -655,11 +656,21 @@ def edge_weight(
     -------
     torch.Tensor
         The weight.
+
+    Raises
+    ------
+    ForestRefused
+        If the rule's weight needs an executable attachment.
     """
-    if edge.occurrence is not None and edge.occurrence in inputs:
-        return inputs[edge.occurrence]
     constructor = forest.presentation.constructors_by_id[edge.constructor]
     assert isinstance(constructor, (Rule, AxiomSlot))
+    if isinstance(constructor.weight, ComputedRuleWeight):
+        raise ForestRefused(
+            ForestRefusal.MISSING,
+            "the forest has no executable attachment for this computed rule weight",
+        )
+    if edge.occurrence is not None and edge.occurrence in inputs:
+        return inputs[edge.occurrence]
     if constructor.weight is not None and constructor.weight in inputs:
         return inputs[constructor.weight]
     return algebra.unit_like((), like)

@@ -596,9 +596,15 @@ class DeductionLinearGoal(QiecModel):
             raise ValueError(
                 "a linear deduction goal needs its nominal rule presentation"
             )
+        if presentation.computed_weight_rules:
+            raise ValueError(
+                "linear deduction goals cannot execute computed rule weights"
+            )
         expected = tuple(
             dict.fromkeys(
-                rule.weight for rule in presentation.rules if rule.weight is not None
+                rule.weight
+                for rule in presentation.rules
+                if isinstance(rule.weight, ParameterId)
             )
         )
         if expected != self.parameters:
@@ -748,8 +754,12 @@ class DeductionOutcomes(QiecModel):
             or self.entry == self.empty
         ):
             raise ValueError("deduction outcomes require distinct typed constructors")
+        if presentation.computed_weight_rules:
+            raise ValueError("deduction outcomes cannot execute computed rule weights")
         parameters = {
-            rule.weight for rule in presentation.rules if rule.weight is not None
+            rule.weight
+            for rule in presentation.rules
+            if isinstance(rule.weight, ParameterId)
         }
         if (
             len(set(self.parameters)) != len(self.parameters)

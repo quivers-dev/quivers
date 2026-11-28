@@ -1742,6 +1742,7 @@ class _Elaborator(
             *computations,
         )
         check_outcome_key_bodies(self, bodies)
+        self._check_computed_rule_weight_bodies(bodies)
         return QiecModule(
             module=self.source.module_name,
             source_protocol=QVR_SOURCE_VERSION,

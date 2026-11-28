@@ -97,6 +97,7 @@ from quivers.stochastic.semiring import (
 )
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
 from quivers.qiec.kinds import NAT, IndexBinder
+from quivers.qiec.rules import ComputedRuleWeight
 from quivers.dsl.compiler._deduction_presentation import (
     DeductionPresentationError,
     chart_category,
@@ -155,9 +156,14 @@ _DEDUCTION_OPTION_KEYS: frozenset[str] = frozenset(
     }
 )
 _SEQUENT_RULE_OPTION_KEYS: frozenset[str] = frozenset(
-    {"learnable", "parent", "bounded"}
+    {"learnable", "parent", "bounded", "weight"}
 )
 _LEXICON_ENTRY_OPTION_KEYS: frozenset[str] = frozenset({"learnable"})
+
+
+def _require_checked_rule_weight(*_arguments: object) -> torch.Tensor:
+    """Refuse calls through an extracted legacy inference rule."""
+    raise ValueError("computed rule weights require checked QVR execution")
 
 
 def _words_display(entry: _LexiconEntryAst) -> str:
@@ -940,7 +946,9 @@ class _DeductionsMixin:
             rule_positions[sr.name] = (
                 rule_positions.get(sr.name, frozenset()) | positions
             )
-            if is_learnable or parent_name is not None:
+            if isinstance(presented_rule.rule.weight, ComputedRuleWeight):
+                weight_fn = _require_checked_rule_weight
+            elif is_learnable or parent_name is not None:
                 if sr.name not in rule_param_dicts:
                     param_dict = nn.ParameterDict()
                     rule_param_dicts[sr.name] = param_dict

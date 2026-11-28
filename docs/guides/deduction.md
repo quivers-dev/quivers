@@ -465,6 +465,62 @@ lists the families, effects,
 [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries
 a deduction or a parser built from rule schemata adds.
 
+### Rule weights computed from matching fields
+
+On a checked `LogProb` deduction, `#[weight=operation]` supplies the log
+weight of one rule application. The named `define` takes the variables of
+the rule's instantiated telescope in presentation order, which starts with
+their first occurrence in the written premises. Position fields have type
+`Int`. Term fields have the deduction's own nominal item type. The operation
+returns `LogWeight`, has an empty effect row, and takes no static arguments.
+Its reachable calls cannot install a handler, since an empty row can hide
+effects handled inside the operation.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 2
+object Result : Real 1
+
+deduction Agreement : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, D, S, lex
+    rule join : span(I, K, Left, lex), span(K, J, D, lex) |- span(I, J, S, lex) #[weight=mass]
+    lexicon
+        "x" : A = lex #[learnable]
+        "x" : B = lex #[learnable]
+        "y" : D = lex
+
+define mass(i : Int, k : Int, left : Agreement__Item, j : Int) : LogWeight !{} =
+    let matches <- Agreement__eq(left, construct Agreement__A() as Agreement__Item)
+    if matches then
+        return weight(log(0.2))
+    else
+        return weight(log(0.6))
+
+program response : Token -> Result
+    let chart = parse(Agreement, sentence)
+    score result = weight_value(chart)
+    return result
+
+export response
+```
+
+For the sentence `["x", "y"]`, the two derivations use the same split
+and differ in the category assigned to `"x"`. If those lexical choices
+have log weights $a$ and $b$, the inside mass is
+$0.2\exp(a) + 0.6\exp(b)$. Each successful application adds the computed
+log weight to the log weights of its premises. In the checked chart, all
+proof tuples with the same matching fields use the same factor, so
+distributivity gives the same sum when those premises are already
+aggregated. Negative infinity denotes zero mass. NaN and positive infinity
+are rejected at the application.
+
+Computed weights contribute to raw inside mass. They cannot be combined
+with `normalize=lhs`, inherited through `parent`, or attached to a
+`learnable` or `bounded` rule. The checked reference machine can execute
+them through `parse` or `run_deduction`. The classic agenda, packed
+outcome and proof queries, and the exact linear planner require weight
+policies they can evaluate independently and refuse these operations.
+
 ### Cyclic inside weights and finite-height proofs
 
 For the one-token sentence `seed`, let $a$ be the lexical mass and $r$

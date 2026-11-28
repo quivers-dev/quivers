@@ -2900,6 +2900,7 @@ type QiecFeature = Literal[
     "search",
     "deduction-outcomes",
     "deduction-linear-goal",
+    "rule-log-weight",
     "reduction",
     "rowwise",
     "cholesky-factor",
@@ -3696,14 +3697,17 @@ _OUTCOME_SEMANTICS = (
 
 
 def _outcome_dependents(
-    module: QiecModule, semantics: type | UnionType
+    module: QiecModule,
+    semantics: type | UnionType,
+    computations: tuple[StableId, ...] = (),
 ) -> frozenset[StableId]:
-    """Find every computation or handler that needs one of the native queries."""
+    """Find computations and handlers depending on a native deduction path."""
     pending: list[StableId] = [
         handler.id
         for handler in module.handlers
         if isinstance(handler.foreign, semantics)
     ]
+    pending.extend(computations)
     if not pending:
         return frozenset()
     dependents: dict[StableId, set[StableId]] = defaultdict(set)
@@ -3729,9 +3733,38 @@ def _outcome_dependents(
     return frozenset(found)
 
 
+def _contains_rule_weight_guard(body: tm.Computation) -> bool:
+    """Whether a generated deduction path checks a computed application weight."""
+    visited: set[int] = set()
+    pending: list[object] = [body]
+    while pending:
+        node = pending.pop()
+        if id(node) in visited:
+            continue
+        visited.add(id(node))
+        if isinstance(node, tm.PrimitiveApplication) and (
+            node.name == "require_rule_log_weight"
+        ):
+            return True
+        pending.extend(m._children(node))
+    return False
+
+
 def outcome_target_scope(module: QiecModule, selected: str | None = None) -> QiecModule:
     """Omit native-only declarations when the selected program cannot use them."""
-    affected = _outcome_dependents(module, _OUTCOME_SEMANTICS | fo.DeductionLinearGoal)
+    computed_weights: tuple[StableId, ...] = (
+        tuple(
+            computation.id
+            for computation in module.computations
+            if _is_deduction_origin(computation.origin)
+            and _contains_rule_weight_guard(computation.body)
+        )
+        if selected is not None
+        else ()
+    )
+    affected = _outcome_dependents(
+        module, _OUTCOME_SEMANTICS | fo.DeductionLinearGoal, computed_weights
+    )
     if not affected or any(
         entry.computation in affected
         for entry in module.entries

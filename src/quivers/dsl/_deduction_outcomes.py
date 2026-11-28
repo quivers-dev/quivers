@@ -284,6 +284,25 @@ def declare_outcome_key_computations(
     )
 
 
+def _first_handled_call(
+    root: ComputationId,
+    by_id: dict[ComputationId, NamedComputation],
+    visited: set[ComputationId],
+) -> NamedComputation | None:
+    """Find a reachable installed handler hidden from an empty result row."""
+    pending = [root]
+    while pending:
+        identity = pending.pop()
+        if identity in visited:
+            continue
+        visited.add(identity)
+        computation = by_id[identity]
+        if installed_handlers(computation.body):
+            return computation
+        pending.extend(called_computations(computation.body))
+    return None
+
+
 def check_outcome_key_bodies(
     elaborator: _Elaborator, computations: tuple[NamedComputation, ...]
 ) -> None:
@@ -293,23 +312,16 @@ def check_outcome_key_bodies(
     by_id = {computation.id: computation for computation in computations}
     visited: set[ComputationId] = set()
     for key in elaborator._outcome_keys.values():
-        pending = [elaborator.computation_signatures[key.node.name].id]
-        while pending:
-            identity = pending.pop()
-            if identity in visited:
-                continue
-            visited.add(identity)
-            computation = by_id[identity]
-            # An empty row can hide effects from a locally installed
-            # handler. Those have no general determinism/sharing law.
-            if installed_handlers(computation.body):
-                elaborator._fail(
-                    key.node,
-                    f"deduction outcome key {key.node.name!r} must be deterministic; "
-                    f"{computation.name!r} installs an effect handler",
-                    code=OUTCOME_CODE,
-                )
-            pending.extend(called_computations(computation.body))
+        handler = _first_handled_call(
+            elaborator.computation_signatures[key.node.name].id, by_id, visited
+        )
+        if handler is not None:
+            elaborator._fail(
+                key.node,
+                f"deduction outcome key {key.node.name!r} must be deterministic; "
+                f"{handler.name!r} installs an effect handler",
+                code=OUTCOME_CODE,
+            )
 
 
 class _KeyProjection:
@@ -554,6 +566,15 @@ def declare_outcomes(
             "outcome queries do not yet support a category depth bound",
             code=OUTCOME_CODE,
         )
+    presented = system.presentation_cell[0]
+    assert presented is not None
+    presentation = presented.presentation
+    if presentation.computed_weight_rules:
+        elaborator._fail(
+            node,
+            "outcome and proof queries cannot execute computed rule weights",
+            code=OUTCOME_CODE,
+        )
     if not system.normalized_cell[0] and any(
         rule.presented.weighted for rule in system.rules
     ):
@@ -562,9 +583,6 @@ def declare_outcomes(
             "outcome queries require fixed or normalize=lhs rule weights. Free weights keyed by a rule's bindings are outside this fragment",
             code=OUTCOME_CODE,
         )
-    presented = system.presentation_cell[0]
-    assert presented is not None
-    presentation = presented.presentation
     module = elaborator.source.module_name
     production_indices: tuple[int, ...] = ()
     parameters: dict[int, ParameterId] = {}

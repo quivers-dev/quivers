@@ -163,6 +163,7 @@ from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBind
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
+    ComputedRuleWeight,
     ContextStructure,
     Derivation,
     Equation,
@@ -609,6 +610,7 @@ _NODE_CLASSES = (
     AccuracyReport,
     Refusal,
     # rule presentations
+    ComputedRuleWeight,
     JudgmentDecl,
     Judgment,
     Premise,
