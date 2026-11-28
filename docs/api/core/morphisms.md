@@ -470,10 +470,37 @@ arcs, and feature emissions. Ordinary relation limits and closure
 checks apply when summing the message. In particular, tilting a
 cyclic language can change whether its normalizer is finite.
 
+### Penalized projection on a regular language
+
+`penalized_regular_ngram_projection` fits a regular n-gram message
+relative to a finite acyclic base language $M$. The normalized
+target is the product of $M$ and a supplied likelihood, so the
+target's support is included in the base. The product uses sparse
+epsilon-filtered intersection. The fitted distribution is
+proportional to $M(w)\exp(\theta^\mathsf{T}\phi(w))$.
+
+Let $Z_\theta$ be its normalizer and let $\mu$ be the target
+feature mean. The change in inclusive KL relative to the base is
+$\log Z_\theta-\log Z_0-\theta^\mathsf{T}\mu$. The projection
+adds the sum of Euclidean norms of the coefficient groups for
+each feature prefix, scaled by the specified penalty. It obtains
+both sets of expected counts by differentiating sparse path sums.
+If the base's longest word has length $L$ and there are $d$
+features, the covariance operator is bounded by $d L^2$. This
+gives a fixed step for the descendant-first group proximal update.
+
+The projection reports the proximal gradient residual separately
+from its iteration status. The fitted message compiles only
+nonzero features, so the penalty can change the number of reached
+states. The result also retains the target's log mass and the site
+scale that matches it. The fit uses a fixed weight snapshot and
+reports its numerical result without differentiating the optimizer.
+
 ::: quivers.core.relations
     options:
       members:
         - RationalRelation
+        - RegularNgramProjection
         - RelationTopology
         - Arc
         - ArcCounts
@@ -521,6 +548,7 @@ cyclic language can change whether its normalizer is finite.
         - intersect
         - invert
         - join
+        - penalized_regular_ngram_projection
         - project
         - trim
         - union
