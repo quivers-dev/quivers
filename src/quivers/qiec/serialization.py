@@ -128,6 +128,7 @@ from quivers.qiec.effect_law_schema import (
     EffectLawObligation,
 )
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
+from quivers.qiec.effect_stage_schema import EffectStageRecord, EffectTargetEvidence
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.alignment_map_runtime import JointAlignmentMapRequest
@@ -529,6 +530,8 @@ _NODE_CLASSES = (
     EffectLawObligation,
     EffectLawBundle,
     EffectLawEvidence,
+    EffectStageRecord,
+    EffectTargetEvidence,
     FiniteHandlerInterchange,
     RationalDerivativeDeclaration,
     ProgramEntry,

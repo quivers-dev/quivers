@@ -208,6 +208,7 @@ from quivers.qiec.effect_plan import (
     EffectTargetReport,
     checked_effect_plan,
 )
+from quivers.qiec.effect_stage_schema import EffectStageRecord, EffectTargetEvidence
 from quivers.qiec.bernoulli_estimators import (
     BernoulliBranch,
     BernoulliGradientPlan,
@@ -1289,6 +1290,8 @@ __all__ += [
     "EffectJvpCheck",
     "EffectLawReport",
     "EffectPlan",
+    "EffectStageRecord",
+    "EffectTargetEvidence",
     "EffectTargetReport",
     "checked_effect_plan",
 ]

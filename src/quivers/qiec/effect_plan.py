@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from hashlib import sha256
 from typing import TYPE_CHECKING, Literal
 
 from quivers.qiec.contracts import DerivativeSemantics
@@ -30,6 +31,13 @@ from quivers.qiec.effect_laws import (
     ScalarEffectLawDecision,
     check_finite_effect_law,
     check_scalar_effect_law,
+)
+from quivers.qiec.effect_stage_schema import (
+    EffectStageRecord,
+    EffectTargetEvidence,
+    _HelperProjection,
+    _Stage,
+    _TargetProjection,
 )
 from quivers.qiec.handler_carriers import HandlerCarrierShape, classify_handler_carrier
 from quivers.qiec.identifiers import ComputationId
@@ -144,14 +152,7 @@ class EffectExecutionStage:
     """
 
     computation: ComputationId
-    stage: Literal[
-        "direct",
-        "handler-discharge",
-        "recursive-state",
-        "reference",
-        "source-handler",
-        "program-plan",
-    ]
+    stage: _Stage
     rewrite: DischargeRewrite | None = None
     obstacle: DischargeObstacle | None = None
 
@@ -237,11 +238,13 @@ class EffectTargetReport:
     native_obstacle : str or None
         The named hypothesis blocking a requested comparison when its
         target stage does not emit a comparable scalar QIEC graph.
+    _artifact_digest : str or None
+        SHA-256 of successfully emitted bytes for a target receipt.
     """
 
     target: str
     computation: ComputationId
-    projection: Literal["source", "discharged", "program-plan"] | None
+    projection: _TargetProjection | None
     stages: tuple[EffectExecutionStage, ...]
     refusals: tuple[str, ...]
     detail: str | None
@@ -251,8 +254,9 @@ class EffectTargetReport:
     rule_decision: RationalDerivativeDecision | None
     rule_obstacle: str | None
     external_derivative: DerivativeSemantics
-    helper_projection: Literal["source", "discharged"] | None = None
+    helper_projection: _HelperProjection | None = None
     native_obstacle: str | None = None
+    _artifact_digest: str | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,10 +454,11 @@ class EffectPlan:
         stages: tuple[EffectExecutionStage, ...] = ()
         native_jvp = None
         selected: QiecModule | None = None
-        projection: Literal["source", "discharged", "program-plan"] | None = None
-        helper_projection: Literal["source", "discharged"] | None = None
+        projection: _TargetProjection | None = None
+        helper_projection: _HelperProjection | None = None
         native_obstacle = None
         detail = None
+        artifact_digest = None
         refusals: tuple[str, ...] = ()
         try:
             targets = available_targets()
@@ -514,7 +519,7 @@ class EffectPlan:
                         [f"qiec:target-stage:entry-not-projected:{owner.name}"],
                     )
                 target_plan = IRProgram(name=ir.module, inputs=(), body=(), module=ir)
-            _emit_target(target_plan, target)
+            artifact = _emit_target(target_plan, target)
         except UnsupportedConstruct as error:
             refusals = tuple(error.kinds)
             detail = str(error)
@@ -525,6 +530,7 @@ class EffectPlan:
             refusals = (f"qiec:target-emission:{type(error).__name__}",)
             detail = str(error)
         else:
+            artifact_digest = sha256(artifact).hexdigest()
             if program is not None:
                 projection = "program-plan"
                 helper_projection = (
@@ -570,7 +576,91 @@ class EffectPlan:
             external,
             helper_projection,
             native_obstacle,
+            artifact_digest,
         )
+
+    def target_evidence(self, target: str) -> EffectTargetEvidence:
+        """Record the normal target emission from the checked source.
+
+        Parameters
+        ----------
+        target : str
+            The requested backend key.
+
+        Returns
+        -------
+        EffectTargetEvidence
+            The selected stages and emitted byte digest, or named refusals.
+            A probabilistic plan needs the compiler's parsed source.
+
+        Raises
+        ------
+        ValueError
+            If the plan's discharge differs from the independently checked source.
+        """
+        source = self.bundle.module
+        validate_module(source)
+        discharge = discharge_module(source)
+        if discharge != self.discharge or _module_digest(
+            discharge.module
+        ) != _module_digest(self.discharge.module):
+            raise ValueError("the effect plan's discharge differs from checked source")
+        report = replace(self, discharge=discharge).check_target(target)
+        return EffectTargetEvidence(
+            source_digest=_module_digest(source),
+            computation=self.computation,
+            target=target,
+            projection=report.projection,
+            helper_projection=report.helper_projection,
+            stages=tuple(
+                EffectStageRecord(
+                    computation=stage.computation,
+                    stage=stage.stage,
+                    companions=stage.rewrite.companions if stage.rewrite else (),
+                    obstacle=stage.obstacle.kind if stage.obstacle else None,
+                )
+                for stage in report.stages
+            ),
+            artifact_digest=report._artifact_digest,
+            refusals=report.refusals,
+        )
+
+    def verify_target_evidence(
+        self, evidence: EffectTargetEvidence
+    ) -> EffectTargetEvidence:
+        """Verify a receipt against an independently supplied checked owner.
+
+        Parameters
+        ----------
+        evidence : EffectTargetEvidence
+            A receipt to check, for instance after loading it from the wire.
+
+        Returns
+        -------
+        EffectTargetEvidence
+            The freshly observed matching receipt.
+
+        Raises
+        ------
+        ValueError
+            If the source, selected entry, discharge or target outcome differs.
+        """
+        if (
+            evidence.source_digest != _module_digest(self.bundle.module)
+            or evidence.computation != self.computation
+        ):
+            raise ValueError(
+                "effect target evidence names a different checked source or entry"
+            )
+        observed = self.target_evidence(evidence.target)
+        if observed != evidence:
+            difference = (
+                ", ".join(observed.refusals) or "emitted stages or bytes differ"
+            )
+            raise ValueError(
+                f"effect target evidence disagrees with checked emission ({difference})"
+            )
+        return observed
 
 
 def _declared_rule(
