@@ -24,6 +24,55 @@ from quivers.qiec.numbers import NumberDomain, decide, host_index
 from quivers.qiec.types import TypeApplication, TypeExpr
 
 
+def _check_finite_point(
+    value: object, element: TypeExpr, registry: KernelRegistry
+) -> None:
+    """Check a closed discrete point against its nominal field declarations.
+
+    Parameters
+    ----------
+    value, element, registry
+        The runtime value, its closed discrete type, and checked declarations.
+        The caller checks that the element belongs to the finite-point type
+        fragment when preparing its static contract.
+
+    Raises
+    ------
+    DistributionError
+        If a primitive or nested constructor does not inhabit the
+        corresponding field type.
+    """
+    pending = [(value, element)]
+    while pending:
+        item, type_ = pending.pop()
+        if not isinstance(item, RuntimeConstructor):
+            try:
+                _typed_key(item, type_)
+            except InvalidHandlerError as error:
+                raise DistributionError("invalid finite sampleable point") from error
+            continue
+        constructor = registry.constructors.get(item.constructor)
+        family = (
+            registry.families.get(constructor.family)
+            if constructor is not None
+            else None
+        )
+        if (
+            constructor is None
+            or family is None
+            or not isinstance(type_, TypeApplication)
+            or family.type_constructor != type_.constructor
+            or item.result_type != type_
+            or item.static_arguments
+            or len(constructor.fields) != len(item.fields)
+        ):
+            raise DistributionError("invalid finite sampleable constructor point")
+        pending.extend(
+            (child, field.type)
+            for field, child in zip(constructor.fields, item.fields, strict=True)
+        )
+
+
 class FiniteSampleable(ValueModel):
     """A normalized distribution on explicit closed discrete QIEC values.
 
@@ -167,37 +216,7 @@ class FiniteSampleable(ValueModel):
         DistributionError
             If a point violates the declarations of its checked type.
         """
-        pending = [(value, self.element)]
-        while pending:
-            item, type_ = pending.pop()
-            if not isinstance(item, RuntimeConstructor):
-                try:
-                    _typed_key(item, type_)
-                except InvalidHandlerError as error:
-                    raise DistributionError(
-                        "invalid finite sampleable point"
-                    ) from error
-                continue
-            constructor = self.registry.constructors.get(item.constructor)
-            family = (
-                self.registry.families.get(constructor.family)
-                if constructor is not None
-                else None
-            )
-            if (
-                constructor is None
-                or family is None
-                or not isinstance(type_, TypeApplication)
-                or family.type_constructor != type_.constructor
-                or item.result_type != type_
-                or item.static_arguments
-                or len(constructor.fields) != len(item.fields)
-            ):
-                raise DistributionError("invalid finite sampleable constructor point")
-            pending.extend(
-                (child, field.type)
-                for field, child in zip(constructor.fields, item.fields, strict=True)
-            )
+        _check_finite_point(value, self.element, self.registry)
         return _typed_key(value, self.element)
 
     @property

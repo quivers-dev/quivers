@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from graphlib import TopologicalSorter
 from itertools import product
+from types import MappingProxyType
 from typing import cast
 import didactic.api as dx
 import torch
@@ -30,7 +31,7 @@ from quivers.qiec.execution import (
     RuntimeValidator,
     run_named,
 )
-from quivers.qiec.identifiers import TypeId
+from quivers.qiec.identifiers import ConstructorId, TypeId
 from quivers.qiec.module import NamedEffectInstance, QiecModule
 from quivers.qiec.numbers import host_index
 from quivers.qiec.rules import (
@@ -40,12 +41,13 @@ from quivers.qiec.rules import (
     presentation_of,
     term_derivation,
 )
-from quivers.qiec.structured_sampleables import FiniteSampleable
+from quivers.qiec.structured_sampleables import FiniteSampleable, _check_finite_point
 from quivers.qiec.terms import Return
 from quivers.qiec.types import REAL, TypeApplication, TypeExpr
 from quivers.structural import (
     EMPTY_CONTEXT,
     Decoder,
+    Encoder,
     Signature,
     Term,
     TermArg,
@@ -553,6 +555,136 @@ def _complete_decoder_terms(
     return cast(tuple[Term, ...], terms[root])
 
 
+@dataclass(frozen=True)
+class _StructuralTermLayout:
+    """The inverse of the shared presentation's first-order value encoding.
+
+    Parameters
+    ----------
+    element, presentation
+        The exact root carrier and the checked structural declarations.
+    constructors
+        The original constructor names and positional sorts, keyed by the
+        same nominal identities used by the qualified presentation.
+    """
+
+    element: TypeApplication
+    presentation: RulePresentation
+    constructors: Mapping[ConstructorId, tuple[str, tuple[str, ...]]]
+
+    def term(self, value: object) -> Term:
+        """Restore the source order of the two checked field partitions.
+
+        QIEC places the object premises before the scalar payload fields.
+        The signature fixes which source positions each partition occupies.
+        Both orders within a partition are preserved, so interleaving by
+        that signature is the inverse of value encoding. The argument for a
+        whole term follows by induction on its finite tree.
+
+        Parameters
+        ----------
+        value
+            A closed nominal QIEC value from this signature's root carrier.
+
+        Returns
+        -------
+        Term
+            The structural term consumed by the existing encoder.
+
+        Raises
+        ------
+        DistributionError
+            If a root or child constructor, static argument, or scalar
+            payload violates the checked declaration.
+        ValueError
+            If an index payload is negative.
+        """
+        _check_finite_point(value, self.element, self.presentation.registry)
+        assert isinstance(value, RuntimeConstructor)
+        pending = [(value, False)]
+        results: list[Term] = []
+        while pending:
+            current, entered = pending.pop()
+            name, layout = self.constructors[current.constructor]
+            premise_count = layout.count("object")
+            if not entered:
+                pending.append((current, True))
+                for child in reversed(current.fields[:premise_count]):
+                    assert isinstance(child, RuntimeConstructor)
+                    pending.append((child, False))
+                continue
+            children = iter(results[-premise_count:] if premise_count else ())
+            if premise_count:
+                del results[-premise_count:]
+            payload = iter(current.fields[premise_count:])
+            arguments: list[TermArg] = []
+            for kind in layout:
+                if kind == "object":
+                    arguments.append(next(children))
+                    continue
+                leaf = next(payload)
+                if isinstance(leaf, str):
+                    arguments.append(leaf)
+                else:
+                    literal = host_index(leaf, "a structural encoder's integer payload")
+                    if kind == "index" and literal < 0:
+                        raise ValueError(
+                            "a structural encoder's index payload cannot be negative"
+                        )
+                    arguments.append(literal)
+            results.append(Term(op=name, args=tuple(arguments)))
+        (result,) = results
+        return result
+
+
+@lru_cache(maxsize=128)
+def _structural_term_layout(
+    signature: Signature, element: TypeApplication
+) -> _StructuralTermLayout:
+    """Resolve a structural encoder's nominal term carrier once per signature.
+
+    Parameters
+    ----------
+    signature, element
+        The compiled source signature and the checked encoder argument type.
+
+    Returns
+    -------
+    _StructuralTermLayout
+        The checked inverse, independent of the live encoder weights.
+
+    Raises
+    ------
+    ValueError
+        If this carrier does not belong to the signature's first-order terms.
+    KernelError
+        If a reachable payload lacks the supported discrete representation.
+    """
+    if signature.binders:
+        raise ValueError("a typed structural encoder requires a first-order signature")
+    presentation = _qualified_structural_presentation(signature)
+    families, _ = presentation.declarations()
+    if not any(
+        element == TypeApplication(constructor=family.type_constructor)
+        for family in families
+    ):
+        raise ValueError(
+            "structural encoder term carrier differs from its checked signature"
+        )
+    validate_outcome_key(element, presentation.registry)
+    declarations = presentation_of(signature).rules
+    constructors = {
+        rule.id: (
+            rule.name,
+            tuple(
+                signature.sorts[sort].kind for sort in signature.domain_of(rule.name)
+            ),
+        )
+        for rule in declarations
+    }
+    return _StructuralTermLayout(element, presentation, MappingProxyType(constructors))
+
+
 def _tensor_value(type_: TypeExpr, value: object) -> bool:
     """Return whether a torch tensor has the checked tensor shape.
 
@@ -844,9 +976,25 @@ def _component_function(
         raise ValueError(f"instance {instance.name!r} is not structural")
     role = str(path[1])
     name = str(path[2])
-    if role == "encoder":
-        encoder = program.encoders[name]
-        return lambda argument, _context: encoder(argument)
+    if role in {"encoder", "encoder-value"}:
+        encoder_name = (
+            name if role == "encoder" else name.removesuffix("__encode_value")
+        )
+        encoders = cast(Mapping[str, Callable[[object], object]], program.encoders)
+        encoder = encoders[encoder_name]
+        if role == "encoder":
+            return lambda argument, _context: encoder(argument)
+        signatures = getattr(program, "signatures", {})
+        carrier = instance.entry.effect.arguments[0]
+        signature = signatures.get(path[4]) if len(path) == 5 else None
+        if not isinstance(signature, Signature) or not isinstance(
+            carrier, TypeApplication
+        ):
+            raise TypeError("a typed structural encoder needs its checked signature")
+        if isinstance(encoder, Encoder) and encoder.signature != signature:
+            raise TypeError("the live structural encoder has a different signature")
+        layout = _structural_term_layout(signature, carrier)
+        return lambda argument, _context: encoder(layout.term(argument))
     if role == "decoder":
         decoder = program.decoders[name]
         return lambda argument, _context: decoder(argument)
