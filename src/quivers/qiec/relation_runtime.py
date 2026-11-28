@@ -13,9 +13,49 @@ from quivers.qiec.effects import EMPTY_ROW, ResumptionGrade
 from quivers.qiec.evaluator import ClauseContext, RuntimeAttachments
 from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.contracts import ParameterId
+from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
 from quivers.qiec.relations import FixedRelationRequest
 from quivers.qiec.types import UNIT, TypeExpr
+
+
+_RELATION_SCORE_HANDLER_PREFIX = "__relation_score_"
+
+
+def _relation_score_handler_id(module: str, name: str, operation: str) -> HandlerId:
+    """Derive the checked handler identity of a source score.
+
+    Parameters
+    ----------
+    module
+        The QIEC module name.
+    name
+        The score's source name.
+    operation
+        The explicitly declared relation objective.
+
+    Returns
+    -------
+    HandlerId
+        The stable identity that includes the declared operation.
+    """
+    return HandlerId.derive(module, "relation_scores", name, operation, "handler")
+
+
+def _relation_score_handler_name(name: str) -> str:
+    """Derive the handler name for a source-declared score.
+
+    Parameters
+    ----------
+    name
+        The score's source name.
+
+    Returns
+    -------
+    str
+        The generated handler's name.
+    """
+    return f"{_RELATION_SCORE_HANDLER_PREFIX}{name}"
 
 
 class FixedRelationRuntimeProvider:
@@ -47,6 +87,7 @@ class FixedRelationRuntimeProvider:
         if not isinstance(handler_name, str) or not handler_name:
             raise ValueError("a fixed relation provider requires a handler name")
         self._handler_name = handler_name
+        self._operation = request.operation
         self._result_type = request.result_type
         relation = request.relation.bind(parameters)
         limits = dict(
@@ -66,6 +107,38 @@ class FixedRelationRuntimeProvider:
                 max_closure_size=request.max_closure_size,
             )
             self._score = lambda: conditional.log_prob(request.words[split:])
+
+    @classmethod
+    def for_score(
+        cls,
+        name: str,
+        request: FixedRelationRequest,
+        parameters: Mapping[ParameterId, torch.Tensor],
+    ) -> FixedRelationRuntimeProvider:
+        """Bind a fixed request to a source-declared relation score.
+
+        Parameters
+        ----------
+        name
+            The name used in the source declaration.
+        request
+            The serialized and validated fixed relation request.
+        parameters
+            The original scalar parameter objects indexed by identity.
+
+        Returns
+        -------
+        FixedRelationRuntimeProvider
+            A provider for the generated checked handler.
+
+        Raises
+        ------
+        ValueError
+            If the source name is empty or the binding is invalid.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("a source-declared relation score requires a name")
+        return cls(request, parameters, handler_name=_relation_score_handler_name(name))
 
     def _evaluate(self, argument: object, _context: ClauseContext) -> torch.Tensor:
         """Evaluate the objective using its current parameter values.
@@ -146,6 +219,16 @@ class FixedRelationRuntimeProvider:
             raise TypeError(
                 f"incompatible fixed relation handler {self._handler_name!r}"
             )
+        score_name = definition.name.removeprefix(_RELATION_SCORE_HANDLER_PREFIX)
+        if score_name != definition.name:
+            expected_id = _relation_score_handler_id(
+                module.module, score_name, self._operation
+            )
+            if definition.id != expected_id:
+                raise TypeError(
+                    f"relation score {score_name!r} has a different declared operation "
+                    f"from the supplied {self._operation!r} request"
+                )
         validation = self.validator_for(result)
         assert validation is not None
         runtime = compute_handler(

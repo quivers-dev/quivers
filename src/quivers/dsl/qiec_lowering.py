@@ -69,6 +69,7 @@ from quivers.dsl.pure_builtins import (
 )
 from quivers.dsl.deduction_elaboration import _DeductionElaboration
 from quivers.dsl._deduction_interpretations import declare_interpretations
+from quivers.dsl._relation_scores import declare_relation_scores, lower_relation_scores
 from quivers.dsl._deduction_outcomes import (
     check_outcome_key_bodies,
     declare_outcome_key_computations,
@@ -224,6 +225,7 @@ QIEC_STATEMENT_TYPES = (
     surface.QiecHandlerDecl,
     surface.QiecComputationDecl,
     surface.QiecInterpretationDecl,
+    surface.QiecRelationScoreDecl,
 )
 """The declaration classes that make up the QIEC surface of a module.
 
@@ -1641,17 +1643,20 @@ class _Elaborator(
         self._declare_structural_signatures()
         self._declare_computation_signatures()
         interpretations = declare_interpretations(self)
+        relation_routes = declare_relation_scores(self)
         self._declare_handlers()
         self._register_handlers()
         deductions = self._declare_deductions()
         outcome_keys = declare_outcome_key_computations(self)
         structural = self._declare_structural_computations()
+        relation_scores = lower_relation_scores(self, relation_routes)
         programs = self._declare_programs()
         computations = self._declare_computations()
         bodies = (
             *deductions,
             *outcome_keys,
             *structural,
+            *relation_scores,
             *interpretations,
             *programs,
             *computations,

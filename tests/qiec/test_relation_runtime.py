@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from quivers.core.algebras import LOG_PROB, MARKOV
+from quivers.core.algebras import LOG_PROB, MARKOV, Semiring
 from quivers.core.relations import Arc, Boundary, RelationTopology
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
@@ -55,7 +55,7 @@ define signed() : Real !{{}} =
     return compiler.qiec_module
 
 
-def _request(operation, algebra=MARKOV):
+def _request(operation, algebra: Semiring = MARKOV):
     names = ("duplicate_a", "tied_a", "other_b", "unit")
     ids = tuple(
         ParameterId.derive("relation-runtime", name) for name in ("a", "b", "unit")

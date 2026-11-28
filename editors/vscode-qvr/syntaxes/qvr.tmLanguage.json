@@ -124,7 +124,7 @@
     },
     "keyword-declaration": {
       "name": "keyword.declaration.qvr",
-      "match": "\\b(composition|contraction|category|object|morphism|schema|rule|bundle|program|deduction|signature|encoder|decoder|loss|define|index|family|constructor|effect|instance|handler|interpret|axiom)\\b"
+      "match": "\\b(composition|contraction|category|object|morphism|schema|rule|bundle|program|deduction|signature|encoder|decoder|loss|define|index|family|constructor|effect|instance|handler|interpret|relation_score|operation|pair_weight|conditional_log_prob|axiom)\\b"
     },
     "keyword-qiec-modifier": {
       "comment": "QIEC kinds, handler coverage, forwarding, and resumption grades.",

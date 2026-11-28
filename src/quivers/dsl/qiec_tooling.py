@@ -23,6 +23,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecCallComputation,
     QiecComputationDecl,
     QiecInterpretationDecl,
+    QiecRelationScoreDecl,
     QiecSequenceComputation,
     QiecPureBinding,
     QiecInstanceComputation,
@@ -94,6 +95,7 @@ QIEC_DIAGNOSTIC_CODES = frozenset(
         "qiec-program-gap",
         "qiec-deduction-outcomes",
         "qiec-interpretation",
+        "qiec-relation-score",
     }
 )
 
@@ -538,7 +540,10 @@ def qiec_bindings(module: Module) -> tuple[QiecBinding, ...]:
                     owner=statement,
                 )
             )
-        elif isinstance(statement, QiecComputationDecl | QiecInterpretationDecl):
+        elif isinstance(
+            statement,
+            QiecComputationDecl | QiecInterpretationDecl | QiecRelationScoreDecl,
+        ):
             out.append(
                 QiecBinding(
                     name=statement.name,

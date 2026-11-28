@@ -1272,6 +1272,34 @@ class QiecInterpretationDecl(Statement):
     kind: Literal["interpretation_decl"] = "interpretation_decl"
 
 
+class QiecRelationScoreDecl(Statement):
+    """A named score whose fixed relation request is supplied at runtime.
+
+    Parameters
+    ----------
+    name
+        The generated computation name.
+    result_type
+        The closed scalar type of the score.
+    operation
+        The relation objective the runtime attachment must implement.
+    docs
+        The attached source doc comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    result_type: QiecTypeExpr
+    operation: Literal["pair_weight", "conditional_log_prob"]
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_score_decl"] = "relation_score_decl"
+
+
 __all__ = [
     "QiecKindExpr",
     "QiecTypeKind",
@@ -1335,4 +1363,5 @@ __all__ = [
     "QiecComputationDecl",
     "QiecInterpretationClause",
     "QiecInterpretationDecl",
+    "QiecRelationScoreDecl",
 ]

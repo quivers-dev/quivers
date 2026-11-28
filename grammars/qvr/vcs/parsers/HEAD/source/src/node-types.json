@@ -9882,6 +9882,57 @@
     }
   },
   {
+    "type": "relation_score_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_score_operation",
+            "named": true
+          }
+        ]
+      },
+      "result": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qiec_type_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_score_operation",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "repeat_expr",
     "named": true,
     "fields": {
@@ -10946,6 +10997,10 @@
           "named": true
         },
         {
+          "type": "relation_score_decl",
+          "named": true
+        },
+        {
           "type": "rule_decl",
           "named": true
         },
@@ -11729,6 +11784,10 @@
     "named": false
   },
   {
+    "type": "conditional_log_prob",
+    "named": false
+  },
+  {
     "type": "construct",
     "named": false
   },
@@ -11994,11 +12053,19 @@
     "named": false
   },
   {
+    "type": "operation",
+    "named": false
+  },
+  {
     "type": "ops",
     "named": false
   },
   {
     "type": "outputs",
+    "named": false
+  },
+  {
+    "type": "pair_weight",
     "named": false
   },
   {
@@ -12067,6 +12134,10 @@
   },
   {
     "type": "recursive",
+    "named": false
+  },
+  {
+    "type": "relation_score",
     "named": false
   },
   {

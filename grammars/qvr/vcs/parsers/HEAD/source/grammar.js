@@ -103,6 +103,7 @@ module.exports = grammar({
       $.handler_decl,
       $.computation_decl,
       $.interpretation_decl,
+      $.relation_score_decl,
       $.composition_decl,
       $.category_decl,
       $.rule_decl,
@@ -391,6 +392,20 @@ module.exports = grammar({
     ),
 
     interpretation_clause_kind: _ => choice('rule', 'axiom'),
+
+    relation_score_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation_score',
+      field('name', $.identifier),
+      ':',
+      field('result', $.qiec_type_name),
+      '[', 'operation', '=',
+      field('operation', $.relation_score_operation),
+      ']',
+      $._newline,
+    ),
+
+    relation_score_operation: _ => choice('pair_weight', 'conditional_log_prob'),
 
     _qiec_value_parameters: $ => parenthesizedList($, field('parameters', $.qiec_value_parameter)),
 

@@ -1,0 +1,23 @@
+===================
+Fixed relation scores
+===================
+
+#! A score with a live runtime relation.
+relation_score pair : Real [operation=pair_weight]
+relation_score conditional : LogWeight [operation=conditional_log_prob]
+
+---
+
+(source_file
+  (relation_score_decl
+    (doc_comment_group
+      (doc_comment))
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (relation_score_operation))
+  (relation_score_decl
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (relation_score_operation)))
