@@ -673,6 +673,73 @@ assert run_named(closed, "region", (7.0,)).value == 12.0
 
 ::: quivers.qiec.scoped_elaboration
 
+### Static catch
+
+`elaborate_static_catch` takes a protected body and a recovery body.
+The selected authored handler wraps a successful result or a thrown
+value in a distinct ordinary data constructor. Its exception clause has
+grade zero. A case after the handler returns the success value or runs
+recovery once with the thrown value bound. A throw during recovery
+reaches the next enclosing handler for that instance.
+
+Operations on other instances still use their surrounding handlers.
+Recovery sees state updates that the protected body made before throwing.
+The elaboration keeps both bodies' source addresses and uses the usual
+QIEC handler, bind, and case forms.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    CheckContext, ScopedHandlerElaboration, SourceOrigin,
+    elaborate_static_catch, infer_computation, run_named, validate_module,
+)
+
+source = """
+family Outcome : Type
+    constructor Succeeded : Real -> Outcome
+    constructor Failed : Real -> Outcome
+
+effect Throw
+    raise_error : Real -> Real
+
+instance errors : Throw
+
+handler tag for Throw : Real -> Outcome [coverage=total, forwards=none, implementation=authored]
+    return value =>
+        return construct Succeeded(value) as Outcome
+    raise_error(problem : Real) resumes 0 =>
+        return construct Failed(problem) as Outcome
+
+define protected(problem : Real) : Real !{errors} =
+    perform errors.raise_error(problem)
+
+define recover(error : Real) : Real !{} =
+    return error + 10.0
+"""
+module = Compiler(parse(source), module_name="static-catch-example").qiec_module
+assert module is not None
+entries = {entry.name: entry for entry in module.computations}
+attempt, recovery = entries["protected"], entries["recover"]
+handler, = module.handlers
+instance, = attempt.type.effects.entries
+problem, = attempt.parameters
+error, = recovery.parameters
+context = CheckContext().extend(problem)
+body = elaborate_static_catch(
+    module, ScopedHandlerElaboration(instance.instance, handler.id),
+    attempt.body, recovery.body, error=error, captures=(problem,), context=context,
+    origin=SourceOrigin(
+        module="static-catch-example", structural_path=("protected", "catch"),
+        role="catch", source_protocol="qvr",
+    ),
+)
+type_ = infer_computation(body, validate_module(module), context)
+closed = module.with_(computations=(attempt.with_(body=body, type=type_),))
+assert run_named(closed, "protected", (4.0,)).value == 14.0
+```
+
+::: quivers.qiec.scoped_catch
+
 ## Finite elimination
 
 `eliminate_finite` contracts explicit finite tables. Each factor gives its

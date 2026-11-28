@@ -282,6 +282,7 @@ from quivers.qiec.scoped_elaboration import (
     ScopedOperation,
     elaborate_static_scope,
 )
+from quivers.qiec.scoped_catch import elaborate_static_catch
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1291,6 +1292,7 @@ __all__ += [
     "ScopedHandlerElaboration",
     "ScopedOperation",
     "elaborate_static_scope",
+    "elaborate_static_catch",
 ]
 __all__ += [
     "FiniteAlgebra",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from quivers.qiec.checking import (
@@ -94,17 +95,22 @@ class ScopedHandlerElaboration:
 
 
 def _check_term(
-    source: Value | Computation, *, instance: EffectInstanceId | None = None
-) -> None:
+    source: Value | Computation, *, instances: Collection[EffectInstanceId] = ()
+) -> set[str]:
     """Check the first-order terms that can run inside a single-entry scope.
 
     Parameters
     ----------
     source : Value or Computation
         The term whose structural control and value constructors are inspected.
-    instance : EffectInstanceId or None
-        The only allowed nominal operation instance. Handler argument
-        and response values permit no computations or requests.
+    instances : Collection[EffectInstanceId]
+        The nominal instances allowed in the source. Handler argument
+        and response values carry no requests.
+
+    Returns
+    -------
+    set[str]
+        The names bound in the source.
 
     Raises
     ------
@@ -112,9 +118,11 @@ def _check_term(
         If a term leaves the single-entry portable fragment.
     """
     pending = [source]
+    names: set[str] = set()
     while pending:
         term = pending.pop()
         if isinstance(term, Bind):
+            names.add(term.binder.name)
             pending.extend((term.first, term.then))
         elif isinstance(term, Return):
             pending.append(term.value)
@@ -122,7 +130,7 @@ def _check_term(
             pending.extend((term.condition, term.then, term.otherwise))
         elif isinstance(term, Perform):
             request = term.request
-            if request.instance != instance or request.static_arguments:
+            if request.instance not in instances or request.static_arguments:
                 raise KernelError(
                     "scope body requests must use the declared named instance"
                 )
@@ -130,6 +138,7 @@ def _check_term(
                 raise KernelError("scope body requests must return a scalar")
             pending.extend(request.arguments)
         elif isinstance(term, LetValue):
+            names.update(item.binder.name for item in term.bindings)
             pending.extend(item.value for item in term.bindings)
             pending.append(term.body)
         elif isinstance(term, PrimitiveApplication) and term.primitive in _PURE:
@@ -143,6 +152,7 @@ def _check_term(
             raise KernelError(
                 f"{type(term).__name__} is outside the portable static scope"
             )
+    return names
 
 
 def _check_handler(handler: HandlerDef) -> None:
@@ -280,7 +290,7 @@ def elaborate_static_scope(
             f"scoped operation {operation.name!r} needs scalar types and a closed result row"
         )
     capture_context = _capture_context(captures, context)
-    _check_term(body, instance=elaboration.instance)
+    _check_term(body, instances=(elaboration.instance,))
     if infer_computation(body, registry, capture_context) != operation.body_type:
         raise KernelError("the static scope body does not match its declared type")
     for argument in arguments:
