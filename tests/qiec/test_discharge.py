@@ -27,6 +27,7 @@ from quivers.qiec import (
     Computation,
     DischargeObstacle,
     DischargedModule,
+    ExecutionFailure,
     Handle,
     If,
     InstanceAddress,
@@ -1180,6 +1181,216 @@ def test_a_retained_call_with_an_interleaved_omega_request_uses_the_reference(
     expected = tuple((sample, path, (0, shot)) for shot in range(2))
     for checked in (module, discharged.module, round_trip):
         assert _request_addresses(checked, "residual_omega_call_run", -1.0) == expected
+
+
+_RETURN_ADDRESS_SOURCE = """
+instance second_relay : Relay
+
+handler return_score for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        perform score.add(weight(x))
+        return x
+    pass(v : Real) resumes 1 =>
+        resume(v)
+
+handler return_twice for Fork : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        perform score.add(weight(x))
+        return x
+    split(v : Real) resumes omega =>
+        let first <- resume(v)
+        let second <- resume(v)
+        return first + second
+
+handler return_tap for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{tap}, implementation=authored]
+    return x =>
+        let y <- perform tap.echo(x)
+        return y
+    pass(v : Real) resumes 1 =>
+        resume(v)
+
+handler tap_forks for Tap : Real -> Real [coverage=total, forwards=none, introduces=!{outside_branch, score}, implementation=authored]
+    return x =>
+        return x
+    echo(v : Real) resumes 1 =>
+        let y <- perform outside_branch.split(v)
+        perform score.add(weight(y))
+        resume(y)
+
+define return_subject(x : Real) : Real !{score} =
+    handle second_relay with return_score in
+        handle relay with return_score in
+            let y <- perform second_relay.pass(x)
+            let z <- perform relay.pass(y)
+            perform score.add(weight(z))
+            return z
+
+define return_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- return_subject(x)
+        perform score.add(weight(y))
+        return y
+
+define return_shots_subject(x : Real) : Real !{score} =
+    handle branch with return_twice in
+        let y <- perform branch.split(x)
+        return y
+
+define return_shots_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- return_shots_subject(x)
+        perform score.add(weight(y))
+        return y
+
+define return_capture_subject(x : Real) : Real !{tap} =
+    with instance local : Relay in
+        handle second_relay with return_tap in
+            handle relay with return_tap in
+                let y <- perform second_relay.pass(x)
+                let z <- perform relay.pass(y)
+                return z
+
+define direct_capture_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle tap with recording_tap in
+            return_capture_subject(x)
+
+define capture_within(x : Real) : Real !{score} =
+    handle tap with recording_tap in
+        return_capture_subject(x)
+
+define capture_within_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        capture_within(x)
+
+define one_return_tap(x : Real) : Real !{tap} =
+    handle relay with return_tap in
+        let y <- perform relay.pass(x)
+        return y
+
+define deferred_omega_subject(x : Real) : Real !{outside_branch, score} =
+    handle tap with tap_forks in
+        one_return_tap(x)
+
+define deferred_omega_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle outside_branch with guarded_shots in
+            deferred_omega_subject(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def return_address_module() -> tuple[QiecModule, DischargedModule, QiecModule]:
+    module = _module(_ADDRESS_SOURCE + _CLAUSE_SOURCE + _RETURN_ADDRESS_SOURCE)
+    discharged = discharge_module(module)
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    return module, discharged, round_trip
+
+
+@pytest.mark.parametrize("repeated_shots", (False, True))
+def test_return_clauses_use_the_installation_address_until_their_answer(
+    return_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+    repeated_shots: bool,
+) -> None:
+    module, discharged, round_trip = return_address_module
+    suffix = "_shots" if repeated_shots else ""
+    subject = "return" + suffix + "_subject"
+    root = "return" + suffix + "_run"
+    handler_name = "return_twice" if repeated_shots else "return_score"
+    handler = next(item for item in module.handlers if item.name == handler_name)
+    assert handler.return_clause is not None and discharged.obstacle(subject) is None
+    (score,) = _effect_sites(handler.return_clause.body, "Score")
+    after = _address_site(module, root, str(SCORE_ADD))
+    call = (("call", f"{subject}#1"),)
+    visits = ((1, (0,)), (1, (1,))) if repeated_shots else ((2, ()), (1, ()))
+    before = (
+        ()
+        if repeated_shots
+        else ((_address_site(module, subject, str(SCORE_ADD)), call, ()),)
+    )
+    expected = (
+        *before,
+        *(
+            (score, (*call, ("handler-return", f"{handler.id}#{ordinal}")), shots)
+            for ordinal, shots in visits
+        ),
+        (after, (), ()),
+    )
+    assert len(set(expected)) == len(expected)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, root, 1.0) == expected
+
+
+@pytest.mark.parametrize("outer_static", (False, True))
+def test_a_captured_return_activation_identifies_the_outer_operation_clause(
+    return_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+    outer_static: bool,
+) -> None:
+    module, discharged, round_trip = return_address_module
+    assert discharged.obstacle("return_capture_subject") is None
+    assert discharged.obstacle("capture_within") is None
+    assert not any(
+        isinstance(term, Handle)
+        for term in _terms(_computation(discharged.module, "capture_within").body)
+    )
+    handler = next(item for item in module.handlers if item.name == "return_tap")
+    assert handler.return_clause is not None
+    (trigger,) = _effect_sites(handler.return_clause.body, "Tap")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_tap"), "Score")
+    caller = "capture_within" if outer_static else "direct_capture_run"
+    call = next(
+        term.origin.site_id()
+        for term in _terms(_computation(module, caller).body)
+        if isinstance(term, Call)
+    )
+    parent = (("call", "capture_within#1"),) if outer_static else ()
+    expected = tuple(
+        (
+            score,
+            (
+                *parent,
+                (
+                    "handler-clause",
+                    f"{trigger}/{call}/instance:1/handler-return:{handler.id}#{ordinal}",
+                ),
+            ),
+            (),
+        )
+        for ordinal in (2, 1)
+    )
+    root = "capture_within_run" if outer_static else caller
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, root, 1.0) == expected
+
+
+def test_an_interleaved_omega_keeps_the_reference_for_a_deferred_clause_scope(
+    return_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = return_address_module
+    name = "deferred_omega_subject"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "Fork.split" in obstacle.reason
+    assert _computation(discharged.module, name) is _computation(module, name)
+    handler = next(item for item in module.handlers if item.name == "return_tap")
+    assert handler.return_clause is not None
+    (trigger,) = _effect_sites(handler.return_clause.body, "Tap")
+    (score,) = _effect_sites(_effect_clause_body(module, "tap_forks"), "Score")
+    call = next(
+        term.origin.site_id()
+        for term in _terms(_computation(module, name).body)
+        if isinstance(term, Call)
+    )
+    key = f"{trigger}/{call}/handler-return:{handler.id}#1"
+    path = (("call", f"{name}#1"), ("handler-clause", key))
+    expected = ((score, path, (0,)),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "deferred_omega_run", -1.0) == expected
+        with pytest.raises(
+            ExecutionFailure, match="a '1' resumption was invoked more than once"
+        ):
+            _request_addresses(checked, "deferred_omega_run", 1.0)
 
 
 # ---------------------------------------------------------------------------

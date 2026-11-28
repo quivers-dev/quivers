@@ -2630,7 +2630,10 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
         steps: list[IRQiecBindStep] = []
         current: tm.Computation = value
         while isinstance(current, tm.Bind):
-            if isinstance(current.first, tm.CallAddress | tm.InstanceAddress):
+            if isinstance(
+                current.first,
+                tm.CallAddress | tm.InstanceAddress | tm.HandlerReturnAddress,
+            ):
                 current = current.then
                 continue
             steps.append(

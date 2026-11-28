@@ -23,6 +23,7 @@ from quivers.qiec.identifiers import (
     EffectInstanceId,
     HandlerId,
     PrimitiveId,
+    SiteId,
     SourceOrigin,
     StaticScopeId,
 )
@@ -1030,6 +1031,9 @@ _CALL_ADDRESS = TypeApplication(constructor=TypeConstructorRef.builtin("CallAddr
 _INSTANCE_ADDRESS = TypeApplication(
     constructor=TypeConstructorRef.builtin("InstanceAddress")
 )
+_RETURN_ADDRESS = TypeApplication(
+    constructor=TypeConstructorRef.builtin("HandlerReturnAddress")
+)
 
 
 class CallAddress(QiecModel):
@@ -1071,13 +1075,43 @@ class InstanceAddress(QiecModel):
     tag: Literal["instance_address"] = "instance_address"
 
 
+class HandlerReturnAddress(QiecModel):
+    """Allocate the return address of a discharged handler installation.
+
+    Parameters
+    ----------
+    handler
+        The installed declaration whose return clause can make requests.
+    tag
+        The serialization discriminator.
+    """
+
+    handler: HandlerId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["handler_return_address"] = "handler_return_address"
+
+
+class HandlerClauseAddress(QiecModel):
+    """A relative operation-clause address that reads captured scopes.
+
+    Parameters
+    ----------
+    site
+        The static site of the request that entered the clause.
+    captured
+        The ordered call sites and bindings for captured instance or return addresses.
+    """
+
+    site: SiteId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    captured: tuple[SiteId | Var, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+
 class WithTraceAddresses(QiecModel):
     """Run a residual computation under previously allocated trace addresses.
 
     Parameters
     ----------
     addresses
-        The live inlined calls and local instances, in outer-to-inner order.
+        The live calls, local instances and handler returns, in outer-to-inner order.
     body
         The computation that observes the restored addresses.
     previous
@@ -1097,7 +1131,7 @@ class WithTraceAddresses(QiecModel):
     resumptions: tuple[int, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
-    clauses: tuple[DynamicAddressFrame, ...] = dx.field(
+    clauses: tuple[DynamicAddressFrame | HandlerClauseAddress, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     tag: Literal["with_trace_addresses"] = "with_trace_addresses"
@@ -1167,6 +1201,7 @@ type Computation = (
     | If
     | Call
     | CallAddress
+    | HandlerReturnAddress
     | InstanceAddress
     | WithTraceAddresses
     | Resume
@@ -1192,6 +1227,8 @@ __all__ = [
     "EvidenceValue",
     "Gather",
     "Handle",
+    "HandlerClauseAddress",
+    "HandlerReturnAddress",
     "If",
     "InstanceAddress",
     "KernelMatrix",

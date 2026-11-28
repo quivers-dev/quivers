@@ -19,4 +19,11 @@ clause activations. Discharge keeps the reference handler when the call's
 residual row is open or could invoke an outer multi-shot clause inside
 that path.
 
+An effectful return clause uses the address of its handler installation.
+Different installations of the same declaration have different return
+addresses. Multiple shots through one installation share its return
+address, with their own shot paths. If an outer handler captures the
+return, its operation-clause address includes the captured activation
+alongside any captured local instance addresses.
+
 ::: quivers.qiec.effects

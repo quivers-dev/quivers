@@ -68,6 +68,7 @@ from quivers.qiec.terms import (
     DistributionValue,
     Gather,
     Handle,
+    HandlerReturnAddress,
     If,
     InstanceAddress,
     LiteralValue,
@@ -406,7 +407,7 @@ class _Lowering:
         node: Computation = callee.body
         while isinstance(node, Bind):
             first = node.first
-            if isinstance(first, CallAddress | InstanceAddress):
+            if isinstance(first, CallAddress | InstanceAddress | HandlerReturnAddress):
                 node = node.then
                 continue
             if isinstance(first, Bind):

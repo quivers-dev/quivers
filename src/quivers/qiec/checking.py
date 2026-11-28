@@ -77,10 +77,13 @@ from quivers.qiec.kinds import (
 )
 from quivers.qiec.terms import (
     CallAddress,
+    HandlerClauseAddress,
+    HandlerReturnAddress,
     InstanceAddress,
     WithTraceAddresses,
     _CALL_ADDRESS,
     _INSTANCE_ADDRESS,
+    _RETURN_ADDRESS,
     Resume,
     NewInstance,
     Call,
@@ -1760,7 +1763,14 @@ def _computation_static_scopes(computation: Computation) -> tuple[StaticScopeId,
     while pending:
         term = pending.pop()
         if isinstance(
-            term, Return | Perform | Call | CallAddress | InstanceAddress | Resume
+            term,
+            Return
+            | Perform
+            | Call
+            | CallAddress
+            | InstanceAddress
+            | HandlerReturnAddress
+            | Resume,
         ):
             continue
         if isinstance(term, NewInstance | WithTraceAddresses):
@@ -3144,28 +3154,47 @@ def _infer_computation(
         return _checked_computation_type(
             EMPTY_ROW, _INSTANCE_ADDRESS, registry, context
         )
+    if isinstance(computation, HandlerReturnAddress):
+        handler = registry.handlers.get(computation.handler)
+        if (
+            handler is None
+            or handler.implementation != "authored"
+            or handler.return_clause is None
+        ):
+            raise KernelError("a handler return address requires an authored return")
+        return _checked_computation_type(EMPTY_ROW, _RETURN_ADDRESS, registry, context)
     if isinstance(computation, WithTraceAddresses):
         for address in computation.addresses:
             if infer_value(address, registry, context) not in (
                 _CALL_ADDRESS,
                 _INSTANCE_ADDRESS,
+                _RETURN_ADDRESS,
             ):
-                raise KernelError(
-                    "a restored address must be a call or instance address"
-                )
+                raise KernelError("a restored address must be a trace address")
         if computation.previous is not None and (
             not isinstance(computation.body, Call)
             or infer_value(computation.previous, registry, context) != _CALL_ADDRESS
         ):
             raise KernelError("a replaced call address requires a residual tail call")
-        if (computation.resumptions or computation.clauses) and not isinstance(
-            computation.body, Call
-        ):
-            raise KernelError("restored handler paths require a residual call")
-        if any(shot < 0 for shot in computation.resumptions) or any(
-            address.scope != _CLAUSE_SCOPE for address in computation.clauses
-        ):
-            raise KernelError("invalid restored handler address paths")
+        if computation.resumptions and not isinstance(computation.body, Call):
+            raise KernelError("restored shot paths require a residual call")
+        if computation.clauses and not isinstance(computation.body, Call | Perform):
+            raise KernelError(
+                "restored clause paths require a residual call or request"
+            )
+        if any(shot < 0 for shot in computation.resumptions):
+            raise KernelError("a restored shot ordinal cannot be negative")
+        for address in computation.clauses:
+            if isinstance(address, HandlerClauseAddress):
+                for frame in address.captured:
+                    if isinstance(frame, Var) and infer_value(
+                        frame, registry, context
+                    ) not in (_INSTANCE_ADDRESS, _RETURN_ADDRESS):
+                        raise KernelError(
+                            "a captured scope must be an instance or handler return address"
+                        )
+            elif address.scope != _CLAUSE_SCOPE:
+                raise KernelError("invalid restored clause address")
         return _infer_computation(computation.body, registry, context)
     if isinstance(computation, Perform):
         effect, result = check_request(computation.request, registry, context)
@@ -3824,7 +3853,10 @@ def resumption_use(computation: Computation) -> ResumptionUse:
     """
     if isinstance(computation, Resume):
         return ONCE
-    if isinstance(computation, Return | Perform | Call | CallAddress | InstanceAddress):
+    if isinstance(
+        computation,
+        Return | Perform | Call | CallAddress | InstanceAddress | HandlerReturnAddress,
+    ):
         return NEVER
     if isinstance(computation, Bind):
         return resumption_use(computation.first).then(resumption_use(computation.then))

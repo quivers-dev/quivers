@@ -12,6 +12,7 @@ from quivers.qiec._models import QiecModel
 import didactic.api as dx
 
 from collections.abc import Mapping
+from functools import lru_cache
 
 from quivers.qiec.checking import (
     ComputationSignature,
@@ -61,6 +62,7 @@ from quivers.qiec.terms import (
     InstanceAddress,
     Local,
     NewInstance,
+    Perform,
     WithTraceAddresses,
 )
 from quivers.qiec.types import (
@@ -340,6 +342,32 @@ def _children(node: object) -> tuple[object, ...]:
     if isinstance(node, QiecModel):
         return tuple(getattr(node, name) for name in type(node).__field_specs__)
     return ()
+
+
+@lru_cache(maxsize=512)
+def _return_observes_address(handler: HandlerDef) -> bool:
+    """Whether the authored return can execute another computation with a trace.
+
+    Parameters
+    ----------
+    handler : HandlerDef
+        The checked declaration.
+
+    Returns
+    -------
+    bool
+        Whether to allocate a distinct address for its return activations.
+    """
+    clause = handler.return_clause
+    if handler.implementation != "authored" or clause is None:
+        return False
+    pending: list[object] = [clause.body]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Perform | Call | Handle):
+            return True
+        pending.extend(_children(item))
+    return False
 
 
 def called_computations(body: Computation) -> frozenset[ComputationId]:

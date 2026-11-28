@@ -448,10 +448,12 @@ class DynamicAddressFrame(QiecModel):
 
 
 _CLAUSE_SCOPE = "handler-clause"
+_RETURN_SCOPE = "handler-return"
 
 
 def _clause_address(
-    site: SiteId, captured_calls: tuple[SiteId | int, ...] = ()
+    site: SiteId,
+    captured_frames: tuple[SiteId | int | DynamicAddressFrame, ...] = (),
 ) -> DynamicAddressFrame:
     """Address an operation clause relative to the request that entered it.
 
@@ -460,10 +462,10 @@ def _clause_address(
     site : SiteId
         The static site of the answered request. The surrounding dynamic
         frames and shot path identify its activation.
-    captured_calls : tuple[SiteId or int, ...]
-        The calls removed from the active path when the handler captures
-        the continuation, outermost first. Acyclic calls contribute source
-        sites. A recurrent tail frame contributes its run ordinal.
+    captured_frames : tuple[SiteId or int or DynamicAddressFrame, ...]
+        The captured address components, outermost first. Acyclic calls
+        contribute source sites and recurrent tail calls contribute run
+        ordinals. A captured instance or return clause contributes its activation.
 
     Returns
     -------
@@ -471,11 +473,15 @@ def _clause_address(
         A relative clause frame, ordered after its enclosing context.
     """
     # A site identifier starts with qiec: and cannot contain the separator.
-    # The runtime tag keeps the two kinds of path component disjoint.
-    path = (
-        f"runtime-call:{item}" if isinstance(item, int) else str(item)
-        for item in captured_calls
-    )
+    # The tags distinguish runtime call, instance, and return components.
+    path = []
+    for item in captured_frames:
+        if isinstance(item, int):
+            path.append(f"runtime-call:{item}")
+        elif isinstance(item, DynamicAddressFrame):
+            path.append(f"{item.scope}:{item.key}")
+        else:
+            path.append(str(item))
     return DynamicAddressFrame(scope=_CLAUSE_SCOPE, key="/".join((str(site), *path)))
 
 

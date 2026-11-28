@@ -74,6 +74,7 @@ from quivers.qiec.terms import (
     DistributionValue,
     Gather,
     Handle,
+    HandlerReturnAddress,
     InstanceAddress,
     KernelMatrix,
     LetBinding,
@@ -478,7 +479,7 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
-            if isinstance(first, CallAddress | InstanceAddress):
+            if isinstance(first, CallAddress | InstanceAddress | HandlerReturnAddress):
                 node = node.then
                 continue
             while isinstance(first, WithTraceAddresses):
@@ -1305,7 +1306,7 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
-            if isinstance(first, CallAddress | InstanceAddress):
+            if isinstance(first, CallAddress | InstanceAddress | HandlerReturnAddress):
                 node = node.then
                 continue
             while isinstance(first, WithTraceAddresses):

@@ -48,6 +48,7 @@ from quivers.qiec.identifiers import (
     SiteId,
     SourceOrigin,
     _CLAUSE_SCOPE,
+    _RETURN_SCOPE,
     _clause_address,
 )
 from quivers.qiec.terms import (
@@ -61,6 +62,8 @@ from quivers.qiec.terms import (
     DistributionValue,
     EvidenceValue,
     Handle,
+    HandlerClauseAddress,
+    HandlerReturnAddress,
     If,
     InstanceAddress,
     LiteralValue,
@@ -123,7 +126,7 @@ from quivers.qiec.substitution import (
     substitute_type,
 )
 from quivers.qiec.checking import CheckContext, KernelRegistry, infer_computation
-from quivers.qiec.module import NamedComputation, QiecModule
+from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
 from quivers.qiec.types import IndexLiteral, StaticArgument, TypeExpr
 
 
@@ -962,6 +965,8 @@ class _HandlerFrame(ContinuationFrame):
         The current values of the handler's parameters. A resumption that
         names new ones installs a frame carrying them, so a frame's own
         values never change.
+    return_address
+        The installation's address while its authored return clause runs.
     """
 
     instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -972,6 +977,9 @@ class _HandlerFrame(ContinuationFrame):
     )
     arguments: tuple[HeldValue, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    return_address: DynamicAddressFrame | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     def bindings(self) -> Scope[Local, HeldValue]:
@@ -1006,6 +1014,7 @@ class _HandlerFrame(ContinuationFrame):
             definition=self.definition,
             environment=self.environment,
             arguments=arguments,
+            return_address=self.return_address,
         )
 
     @property
@@ -2356,6 +2365,7 @@ class Evaluator:
         self._steps = 0
         self._call_serial = 0
         self._instance_serial = 0
+        self._return_serials: dict[HandlerId, int] = {}
 
     def _emit_trace(self, event: str, detail: Mapping[str, object]) -> None:
         """Report one execution event, when a hook is installed.
@@ -2835,6 +2845,64 @@ class Evaluator:
         self._steps = 0
         self._call_serial = 0
         self._instance_serial = 0
+        self._return_serials.clear()
+
+    def _next_return_address(self, handler: HandlerId) -> DynamicAddressFrame:
+        """Allocate the next return activation of one authored declaration.
+
+        Parameters
+        ----------
+        handler : HandlerId
+            The declaration being installed.
+
+        Returns
+        -------
+        DynamicAddressFrame
+            The declaration identity and its per-run ordinal.
+        """
+        ordinal = self._return_serials.get(handler, 0) + 1
+        self._return_serials[handler] = ordinal
+        return DynamicAddressFrame(scope=_RETURN_SCOPE, key=f"{handler}#{ordinal}")
+
+    def _resolve_clause_address(
+        self,
+        address: DynamicAddressFrame | HandlerClauseAddress,
+        environment: Mapping[Local, HeldValue],
+    ) -> DynamicAddressFrame:
+        """Resolve captured instance or return bindings in an address.
+
+        Parameters
+        ----------
+        address : DynamicAddressFrame or HandlerClauseAddress
+            A fixed clause address or its captured components.
+        environment : Mapping[Local, HeldValue]
+            The bindings shared by the restored paths.
+
+        Returns
+        -------
+        DynamicAddressFrame
+            The exact relative clause address.
+
+        Raises
+        ------
+        EvaluationError
+            If a captured activation is not an instance or handler return address.
+        """
+        if isinstance(address, DynamicAddressFrame):
+            return address
+        captured: list[SiteId | DynamicAddressFrame] = []
+        for component in address.captured:
+            if isinstance(component, SiteId):
+                captured.append(component)
+            else:
+                frame = self._value(component, environment)
+                if not isinstance(frame, DynamicAddressFrame) or frame.scope not in (
+                    "instance",
+                    _RETURN_SCOPE,
+                ):
+                    raise EvaluationError("invalid captured scope address")
+                captured.append(frame)
+        return _clause_address(address.site, tuple(captured))
 
     def _tick(self) -> None:
         """Spend one step of the run's budget.
@@ -2917,6 +2985,11 @@ class Evaluator:
                 )
             elif isinstance(frame, _InstanceFrame):
                 path.append(frame.address)
+            elif (
+                isinstance(frame, _AnswerFrame)
+                and frame.handler.return_address is not None
+            ):
+                path.append(frame.handler.return_address)
         return (*path, *Evaluator._clause_path(stack))
 
     def _drive_computation(
@@ -3186,6 +3259,11 @@ class Evaluator:
                         definition=definition,
                         environment=env,
                         arguments=arguments,
+                        return_address=(
+                            self._next_return_address(definition.id)
+                            if _return_observes_address(definition)
+                            else None
+                        ),
                     )
                 )
                 current = current.computation
@@ -3256,6 +3334,9 @@ class Evaluator:
                     )
                 )
                 continue
+            if isinstance(current, HandlerReturnAddress):
+                current = _Returned(value=self._next_return_address(current.handler))
+                continue
             if isinstance(current, WithTraceAddresses):
                 addresses = tuple(
                     self._value(address, env) for address in current.addresses
@@ -3269,7 +3350,7 @@ class Evaluator:
                     not all(
                         isinstance(address, _CallActivation)
                         or isinstance(address, DynamicAddressFrame)
-                        and address.scope == "instance"
+                        and address.scope in ("instance", _RETURN_SCOPE)
                         for address in addresses
                     )
                     or previous is not None
@@ -3278,7 +3359,13 @@ class Evaluator:
                     raise EvaluationError("invalid restored trace addresses")
                 if current.resumptions or current.clauses:
                     clauses = (
-                        (*self._clause_path(stack), *current.clauses)
+                        (
+                            *self._clause_path(stack),
+                            *(
+                                self._resolve_clause_address(clause, env)
+                                for clause in current.clauses
+                            ),
+                        )
                         if current.clauses
                         else None
                     )
@@ -3719,29 +3806,36 @@ class Evaluator:
                     if address.scope == _CLAUSE_SCOPE
                 )
                 if structural_clause.grade is ResumptionGrade.LINEAR:
-                    call_path: list[SiteId | int] = []
+                    captured_path: list[SiteId | int | DynamicAddressFrame] = []
                     for captured in captured_stack:
                         if isinstance(captured, _CallFrame):
-                            calls = (captured.activation,)
+                            addresses = (captured.activation,)
+                        elif isinstance(captured, _InstanceFrame):
+                            addresses = (captured.address,)
                         elif isinstance(captured, _RestoredTraceAddresses):
-                            calls = tuple(
-                                address
-                                for address in captured.addresses
-                                if isinstance(address, _CallActivation)
-                            )
+                            addresses = captured.addresses
+                        elif (
+                            isinstance(captured, _AnswerFrame)
+                            and captured.handler.return_address is not None
+                        ):
+                            captured_path.append(captured.handler.return_address)
+                            continue
                         else:
                             continue
-                        for call in calls:
-                            if call.call_history is None:
-                                call_path.append(call.serial)
+                        for address in addresses:
+                            if isinstance(address, DynamicAddressFrame):
+                                captured_path.append(address)
+                            elif address.call_history is None:
+                                captured_path.append(address.serial)
                             else:
-                                call_path.extend(
-                                    origin.site_id() for _, origin in call.call_history
+                                captured_path.extend(
+                                    origin.site_id()
+                                    for _, origin in address.call_history
                                 )
                     clause_path = (
                         *clause_path,
                         _clause_address(
-                            request.core.origin.static_site, tuple(call_path)
+                            request.core.origin.static_site, tuple(captured_path)
                         ),
                     )
                 del stack[index:]
@@ -4103,6 +4197,7 @@ class Evaluator:
                         definition=frame.definition,
                         environment=frame.environment,
                         arguments=frame.arguments,
+                        return_address=frame.return_address,
                     )
                 )
         except BaseException:

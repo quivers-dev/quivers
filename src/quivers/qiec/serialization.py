@@ -207,6 +207,8 @@ from quivers.qiec.programs import ProgramEntry, ProgramParameter, ProgramSite
 from quivers.qiec.substitution import StaticSubstitution
 from quivers.qiec.terms import (
     CallAddress,
+    HandlerClauseAddress,
+    HandlerReturnAddress,
     InstanceAddress,
     WithTraceAddresses,
     NewInstance,
@@ -443,6 +445,8 @@ _NODE_CLASSES = (
     If,
     Call,
     CallAddress,
+    HandlerClauseAddress,
+    HandlerReturnAddress,
     InstanceAddress,
     WithTraceAddresses,
     Resume,

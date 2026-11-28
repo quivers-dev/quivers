@@ -57,6 +57,7 @@ from quivers.qiec.terms import (
     DistributionValue,
     Gather,
     Handle,
+    HandlerReturnAddress,
     If,
     InstanceAddress,
     LetBinding,
@@ -1411,7 +1412,7 @@ def computation_value(
     node = term
     while isinstance(node, Bind):
         first = node.first
-        if isinstance(first, CallAddress | InstanceAddress):
+        if isinstance(first, CallAddress | InstanceAddress | HandlerReturnAddress):
             node = node.then
             continue
         if isinstance(first, Bind):
