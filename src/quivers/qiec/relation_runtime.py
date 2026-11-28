@@ -24,6 +24,7 @@ from quivers.qiec.relation_composition import (
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
     FixedTransformedRelationRequest,
     UnaryRelationTransformSpec,
 )
@@ -46,6 +47,7 @@ def _relation_score_handler_id(
     relation: RationalRelationSpec
     | ComposedRelationSpec
     | UnaryRelationTransformSpec
+    | BinaryRelationTransformSpec
     | None = None,
 ) -> HandlerId:
     """Derive the checked handler identity of a source score.

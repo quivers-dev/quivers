@@ -20,7 +20,7 @@ from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import RationalRelationSpec, _bind_relation_operands
 from quivers.qiec.types import REAL, TypeExpr
 
 
@@ -92,18 +92,9 @@ class ComposedRelationSpec(QiecModel):
             If different identities alias one tensor or the bindings have
             different dtypes or devices.
         """
-        left = self.left.bind(parameters)
-        right = left if self.left == self.right else self.right.bind(parameters)
-        identities = dict.fromkeys(
-            (*self.left.weight_parameters, *self.right.weight_parameters)
+        left, right = _bind_relation_operands(
+            self.left, self.right, parameters, description="composition"
         )
-        values = [parameters[identity] for identity in identities]
-        if len({id(value) for value in values}) != len(values):
-            raise ValueError(
-                "shared composition weights must use the same parameter identity"
-            )
-        if len({(value.dtype, value.device) for value in values}) > 1:
-            raise ValueError("composition parameters require a common dtype and device")
         return ComposedRelation(left, right)
 
 

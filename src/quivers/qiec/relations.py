@@ -572,6 +572,50 @@ class FixedRelationArcCountsRequest(QiecModel):
         return tensor_type(REAL, (extent,))
 
 
+def _bind_relation_operands(
+    left_spec: RationalRelationSpec,
+    right_spec: RationalRelationSpec,
+    parameters: Mapping[ParameterId, torch.Tensor],
+    *,
+    description: str,
+) -> tuple[RationalRelation, RationalRelation]:
+    """Bind two checked relations to one common parameter store.
+
+    Parameters
+    ----------
+    left_spec, right_spec : RationalRelationSpec
+        The ordered original operand specifications.
+    parameters : Mapping of ParameterId to torch.Tensor
+        The original scalar tensor owners.
+    description : str
+        The operation name for binding diagnostics.
+
+    Returns
+    -------
+    tuple of RationalRelation
+        Both bound operands, sharing the runtime object when the
+        specifications are identical.
+
+    Raises
+    ------
+    ValueError
+        Distinct parameter IDs alias, or the tensor domains disagree.
+    """
+    left = left_spec.bind(parameters)
+    right = left if left_spec == right_spec else right_spec.bind(parameters)
+    identities = dict.fromkeys(
+        (*left_spec.weight_parameters, *right_spec.weight_parameters)
+    )
+    values = [parameters[identity] for identity in identities]
+    if len({id(value) for value in values}) != len(values):
+        raise ValueError(
+            f"shared {description} weights must use the same parameter identity"
+        )
+    if len({(value.dtype, value.device) for value in values}) > 1:
+        raise ValueError(f"{description} parameters require a common dtype and device")
+    return left, right
+
+
 def _validate_fixed_observation(
     relation: RationalRelationSpec,
     words: Words,

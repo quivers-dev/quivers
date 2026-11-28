@@ -11,6 +11,7 @@ from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.relations import ProductiveEpsilonCycleError, RelationLimitError
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
+    LOG_WEIGHT,
     CoreRuntimeProvider,
     FixedRelationRuntimeProvider,
     FixedTransformedRelationRequest,
@@ -26,9 +27,7 @@ from tests.qiec.test_relation_runtime import _request
 
 
 def _execute(request, parameters):
-    type_name = (
-        "LogWeight" if request.relation.source.algebra == LOG_PROB.subject else "Real"
-    )
+    type_name = "LogWeight" if request.result_type == LOG_WEIGHT else "Real"
     source = f"relation_score score : {type_name} [operation=pair_weight]\n"
     compiler = Compiler(parse(source), module_name="checked-unary-transform")
     compiler.compile()
