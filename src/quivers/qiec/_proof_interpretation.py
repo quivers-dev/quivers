@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from quivers.qiec.checking import ComputationSignature, KernelError, KernelRegistry
+from quivers.qiec.checking import (
+    ComputationSignature,
+    KernelError,
+    KernelRegistry,
+    StaticScope,
+)
 from quivers.qiec.coverage import constructor_skolems
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.effects import ComputationType, EffectRow
@@ -16,9 +21,15 @@ from quivers.qiec.identifiers import (
     SourceOrigin,
     StaticScopeId,
 )
-from quivers.qiec.kinds import IndexBinder
+from quivers.qiec.kinds import IndexBinder, Telescope
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
-from quivers.qiec.rules import AxiomSlot, InterpretationDecl, Rule, RulePresentation
+from quivers.qiec.rules import (
+    AxiomSlot,
+    InterpretationDecl,
+    JudgmentDecl,
+    Rule,
+    RulePresentation,
+)
 from quivers.qiec.substitution import instantiate_telescope, substitute_type
 from quivers.qiec.terms import (
     Bind,
@@ -30,7 +41,7 @@ from quivers.qiec.terms import (
     Local,
     Var,
 )
-from quivers.qiec.types import IndexVariable, TypeApplication, TypeExpr
+from quivers.qiec.types import IndexVariable, StaticArgument, TypeApplication, TypeExpr
 
 
 @dataclass(frozen=True)
@@ -87,8 +98,9 @@ def lower_closed_interpretation(
     Each fold receives a checked proof and calls the corresponding rule
     operation after folding its premises in their declared order. No proof
     occurrence is reused across calls. Within a branch, the rule's rigid
-    constructor indices specialize the recursive calls. A result carrier is
-    closed, so those indices cannot escape in a result type.
+    constructor indices specialize the recursive calls and their result
+    carriers. Only the declared judgment indices can appear in the
+    carrier of the resulting proof fold.
 
     Parameters
     ----------
@@ -102,7 +114,7 @@ def lower_closed_interpretation(
     name
         The generated fold name prefix, followed by `__` and the family name.
     carriers
-        One closed result type per judgment family.
+        One result type per judgment family, over that family's indices.
 
     Returns
     -------
@@ -159,7 +171,7 @@ def prepare_closed_interpretation(
     names
         The computation name for each judgment family.
     carriers
-        The closed result type for each judgment family.
+        The result type for each judgment family, over its declared indices.
     origin
         The source declaration to which the generated computations belong.
 
@@ -201,11 +213,13 @@ def prepare_closed_interpretation(
             "a proof fold needs a distinct name for every judgment family"
         )
     if set(carriers) != declared:
-        raise KernelError(
-            "a proof fold needs one closed result type per judgment family"
+        raise KernelError("a proof fold needs one result type per judgment family")
+    judgments = presentation.judgments_by_id
+    for family in families:
+        scope = StaticScope().extend(
+            judgments[family.id].indices, subject="proof interpretation carrier"
         )
-    for type_ in carriers.values():
-        registry.validate_type(type_)
+        registry.validate_type(carriers[family.id], scope)
     selected = dict(interpretation.operations)
     if set(selected) != set(sources) or len(selected) != len(interpretation.operations):
         raise KernelError(
@@ -214,7 +228,11 @@ def prepare_closed_interpretation(
 
     operations = {
         identity: _check_operation(
-            source, registry.computation(selected[identity]), carriers
+            source,
+            registry.computation(selected[identity]),
+            judgments,
+            carriers,
+            registry,
         )
         for identity, source in sources.items()
     }
@@ -224,21 +242,53 @@ def prepare_closed_interpretation(
             origin.module,
             names[family.id],
             family,
+            judgments[family.id].indices,
             carriers[family.id],
             rows[family.id],
         )
         for family in families
     }
     return tuple(
-        _fold(origin, family, signatures, operations, registry.constructors)
+        _fold(
+            origin,
+            family,
+            signatures,
+            operations,
+            registry.constructors,
+            CaseMotive(
+                indices=judgments[family.id].indices, result_type=carriers[family.id]
+            ),
+        )
         for family in families
     )
+
+
+def _carrier_at(
+    carrier: TypeExpr, indices: Telescope, arguments: tuple[StaticArgument, ...]
+) -> TypeExpr:
+    """Instantiate a result carrier at one judgment's indices.
+
+    Parameters
+    ----------
+    carrier, indices
+        The carrier type and the binders it abstracts.
+    arguments
+        The checked static arguments supplied to those binders.
+
+    Returns
+    -------
+    TypeExpr
+        The result type at this instance of the judgment.
+    """
+    return substitute_type(carrier, instantiate_telescope(indices, arguments))
 
 
 def _check_operation(
     source: Rule | AxiomSlot,
     signature: ComputationSignature,
+    judgments: Mapping[FamilyId, JudgmentDecl],
     carriers: Mapping[FamilyId, TypeExpr],
+    registry: KernelRegistry,
 ) -> _RuleOperation:
     """Check ordinary parameters, result and effect row against a rule.
 
@@ -248,8 +298,12 @@ def _check_operation(
         The rule or axiom slot being interpreted.
     signature
         The checked operation selected for this constructor.
+    judgments
+        The declaration of each judgment family, including its index binders.
     carriers
-        The chosen result types.
+        The carrier types abstracted over those binders.
+    registry
+        The kernel declarations needed to validate instance references.
 
     Returns
     -------
@@ -261,27 +315,54 @@ def _check_operation(
     KernelError
         If the operation has the wrong parameters, result, or effect row.
     """
-    if isinstance(source, Rule):
-        premises = tuple(premise.judgment.family for premise in source.premises)
-        conclusion = source.conclusion.family
-    else:
-        premises = ()
-        conclusion = source.judgment.family
+    premises = (
+        tuple(premise.judgment for premise in source.premises)
+        if isinstance(source, Rule)
+        else ()
+    )
+    conclusion = source.conclusion if isinstance(source, Rule) else source.judgment
+    error = f"operation {signature.name!r} does not match the closed interpretation of {source.name!r}"
+    if signature.telescope and not all(
+        isinstance(binder, IndexBinder) for binder in source.telescope
+    ):
+        raise KernelError(error, "qiec-call")
+    arguments = (
+        tuple(
+            IndexVariable(name=binder.name, sort=binder.sort)
+            for binder in source.telescope
+            if isinstance(binder, IndexBinder)
+        )
+        if signature.telescope
+        else ()
+    )
+    try:
+        substitution = instantiate_telescope(signature.telescope, arguments)
+    except (KernelError, TypeError, ValueError) as exc:
+        raise KernelError(error, "qiec-call") from exc
     expected = (
-        *(carriers[family] for family in premises),
+        *(
+            _carrier_at(carriers[p.family], judgments[p.family].indices, p.arguments)
+            for p in premises
+        ),
         *(value.type for value in source.values),
     )
     if (
-        signature.telescope
-        or signature.effects.tail is not None
-        or signature.parameters != expected
-        or signature.result != carriers[conclusion]
-    ):
-        raise KernelError(
-            f"operation {signature.name!r} does not match the closed interpretation of {source.name!r}",
-            "qiec-call",
+        signature.effects.tail is not None
+        or tuple(substitute_type(type_, substitution) for type_ in signature.parameters)
+        != expected
+        or substitute_type(signature.result, substitution)
+        != _carrier_at(
+            carriers[conclusion.family],
+            judgments[conclusion.family].indices,
+            conclusion.arguments,
         )
-    return _RuleOperation(premises, conclusion, signature)
+    ):
+        raise KernelError(error, "qiec-call")
+    for entry in signature.effects.entries:
+        registry.validate_static(entry.effect, StaticScope())
+    return _RuleOperation(
+        tuple(p.family for p in premises), conclusion.family, signature
+    )
 
 
 def _fold_rows(
@@ -324,7 +405,12 @@ def _fold_rows(
 
 
 def _fold_signature(
-    module: str, name: str, family: FamilyDecl, output: TypeExpr, effects: EffectRow
+    module: str,
+    name: str,
+    family: FamilyDecl,
+    indices: Telescope,
+    output: TypeExpr,
+    effects: EffectRow,
 ) -> ComputationSignature:
     """Give the fold an ordinary function signature over all proof indices.
 
@@ -334,8 +420,10 @@ def _fold_signature(
         The module and the generated fold's name.
     family
         The indexed family of proofs.
+    indices
+        The original judgment index names as used in the result carrier.
     output, effects
-        The closed result type and the reachable effect row.
+        The result type over the proof indices and the reachable effect row.
 
     Returns
     -------
@@ -343,10 +431,14 @@ def _fold_signature(
         The signature of a fold over a single proof.
     """
     assert all(isinstance(index, IndexBinder) for index in family.indices)
-    telescope = tuple(
-        index.with_(name=f"i{position}", refinable=False)
-        for position, index in enumerate(family.indices)
-    )
+    occupied = {index.name for index in indices}
+    telescope = []
+    for position, index in enumerate(family.indices):
+        binder_name = f"i{position}"
+        while binder_name in occupied:
+            binder_name = f"_{binder_name}"
+        occupied.add(binder_name)
+        telescope.append(index.with_(name=binder_name, refinable=False))
     proof = TypeApplication(
         constructor=family.type_constructor,
         arguments=tuple(
@@ -356,9 +448,9 @@ def _fold_signature(
     return ComputationSignature(
         id=ComputationId.derive(module, "computation", name),
         name=name,
-        telescope=telescope,
+        telescope=tuple(telescope),
         parameters=(proof,),
-        result=output,
+        result=_carrier_at(output, indices, proof.arguments),
         effects=effects,
     )
 
@@ -369,6 +461,7 @@ def _fold(
     signatures: Mapping[FamilyId, ComputationSignature],
     operations: Mapping[ConstructorId, _RuleOperation],
     constructors: Mapping[ConstructorId, ConstructorDecl],
+    motive: CaseMotive,
 ) -> NamedComputation:
     """Build the indexed case analysis of a checked proof.
 
@@ -378,6 +471,8 @@ def _fold(
         The declaration of the interpretation and the proof family consumed.
     signatures, operations, constructors
         The folds, checked interpretations, and proof constructors in scope.
+    motive
+        The result carrier over the original judgment's abstract indices.
 
     Returns
     -------
@@ -397,7 +492,7 @@ def _fold(
         type=ComputationType(effects=signature.effects, result=signature.result),
         body=Case(
             scrutinee=Var(local=proof),
-            motive=CaseMotive(indices=family.indices, result_type=signature.result),
+            motive=motive,
             branches=tuple(
                 _fold_branch(constructors[id], operations[id], signatures, origin)
                 for id in family.constructors
@@ -444,7 +539,10 @@ def _fold_branch(
     ):
         signature = signatures[family]
         assert isinstance(child.type, TypeApplication)
-        folded = Local(name=f"folded_premise{index}", type=signature.result)
+        result = _carrier_at(
+            signature.result, signature.telescope, child.type.arguments
+        )
+        folded = Local(name=f"folded_premise{index}", type=result)
         children.append(
             (
                 folded,
@@ -453,7 +551,7 @@ def _fold_branch(
                     name=signature.name,
                     static_arguments=child.type.arguments,
                     arguments=(Var(local=child),),
-                    result_type=signature.result,
+                    result_type=result,
                     effects=signature.effects,
                     origin=origin.with_(
                         structural_path=(*path, "premise", index), role="call"
@@ -462,15 +560,16 @@ def _fold_branch(
             )
         )
     signature = operation.computation
+    static = skolems if signature.telescope else ()
     body: Computation = Call(
         callee=signature.id,
         name=signature.name,
-        static_arguments=(),
+        static_arguments=static,
         arguments=tuple(
             Var(local=value)
             for value in (*(local for local, _ in children), *fields[arity:])
         ),
-        result_type=signature.result,
+        result_type=_carrier_at(signature.result, signature.telescope, static),
         effects=signature.effects,
         origin=origin.with_(structural_path=(*path, "operation"), role="call"),
     )

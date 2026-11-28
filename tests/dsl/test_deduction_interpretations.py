@@ -12,11 +12,13 @@ from quivers.dsl.emit import module_to_source
 from quivers.dsl.parser import parse
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import qiec_binding_map
-from quivers.qiec.execution import ExecutionFailure
+from quivers.qiec.execution import ExecutionFailure, run_named
+from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import run_program
 from quivers.qiec.serialization import dumps, loads
 from quivers.qiec.terms import Case
+from quivers.qiec.types import IndexLiteral, TypeApplication
 
 
 GRAMMAR = """\
@@ -100,6 +102,107 @@ program assess : Token -> Result
 
 export assess
 """
+
+
+INDEXED = """\
+object Token : FinSet 2
+object Result : Real 1
+
+deduction Indexed : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, S, lex
+    rule pair : span(I, K, A), span(K, J, B) |- span(I, J, S)
+    lexicon
+        "x" : A = lex
+        "y" : B = lex
+
+family Measurement(position : Nat) : Type
+    constructor measured[n : Nat] : Real -> Measurement(n)
+
+interpret measure : Indexed -> Measurement(x1)
+    rule pair = combine
+    axiom span = reading
+
+define reading[left : Nat, right : Nat, tag : Indexed__Term](word : String) : Measurement(right) !{} =
+    if word == "x" then
+        return construct measured[right](2.0) as Measurement(right)
+    else
+        return construct measured[right](3.0) as Measurement(right)
+
+define extract[n : Nat](reading : Measurement(n)) : Real !{} =
+    case reading motive (p : Nat) => Real
+        measured[k](value) =>
+            return value
+
+define combine[i : Nat, k : Nat, j : Nat](left : Measurement(k), right : Measurement(j)) : Measurement(j) !{} =
+    let x <- extract[k](left)
+    let y <- extract[j](right)
+    return construct measured[j](x * x - y) as Measurement(j)
+
+define source_proof() : Indexed__SpanProof(0, 2, S) !{} =
+    let left = construct Indexed__axiom_span[0, 1, A]("x") as Indexed__SpanProof(0, 1, A)
+    let right = construct Indexed__axiom_span[1, 2, B]("y") as Indexed__SpanProof(1, 2, B)
+    return construct Indexed__rule_pair[0, 1, 2](left, right) as Indexed__SpanProof(0, 2, S)
+
+define reading_of_proof() : Measurement(2) !{} =
+    let proof <- source_proof()
+    measure[0, 2, S](proof)
+
+define result() : Real !{} =
+    let reading <- reading_of_proof()
+    extract[2](reading)
+
+program assess_indexed : Token -> Result
+    let value <- result()
+    return value
+
+export assess_indexed
+"""
+
+
+def test_indexed_proof_carrier_substitutes_each_premise_and_conclusion() -> None:
+    compiled = load_source(INDEXED)
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    restored = loads(dumps(module))
+    assert isinstance(restored, QiecModule) and restored == module
+    fold = next(item for item in restored.computations if item.name == "measure")
+    assert isinstance(fold.body, Case)
+    assert {binder.name for binder in fold.telescope}.isdisjoint(
+        binder.name for binder in fold.body.motive.indices
+    )
+    measured = run_named(restored, "reading_of_proof").value
+    assert isinstance(measured, RuntimeConstructor)
+    assert isinstance(measured.result_type, TypeApplication)
+    (position,) = measured.result_type.arguments
+    assert isinstance(position, IndexLiteral) and position.value == 2
+    (value,) = measured.fields
+    assert float(value) == 1.0
+    assert float(compiled.run("assess_indexed", data={}).value) == 1.0
+
+
+@pytest.mark.parametrize(
+    "old,new,message",
+    [
+        (
+            "right : Measurement(j)) : Measurement(j)",
+            "right : Measurement(k)) : Measurement(j)",
+            "operation 'combine' does not match the closed interpretation",
+        ),
+        (
+            "let y <- extract[j](right)",
+            "let y <- extract[2](right)",
+            r"expected Measurement\[2\], got Measurement\[j\]",
+        ),
+        (
+            "reading_of_proof() : Measurement(2)",
+            "reading_of_proof() : Measurement(1)",
+            r"returns Measurement\[2\], expected Measurement\[1\]",
+        ),
+    ],
+)
+def test_indexed_proof_carrier_refuses_wrong_indices(old, new, message) -> None:
+    with pytest.raises(QiecDiagnosticError, match=message):
+        load_source(INDEXED.replace(old, new))
 
 
 def test_authored_folds_score_one_chart_and_preserve_effect_occurrences() -> None:

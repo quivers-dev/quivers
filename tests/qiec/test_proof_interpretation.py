@@ -12,6 +12,7 @@ from quivers.qiec.checking import KernelError
 from quivers.qiec.contracts import InterpretationId, OccurrenceId, PresentationId
 from quivers.qiec.declarations import FieldDef
 from quivers.qiec.effects import ComputationType, EffectRow
+from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.execution import run_named
 from quivers.qiec.identifiers import (
     ComputationId,
@@ -37,7 +38,7 @@ from quivers.qiec.rules import (
     closed_derivation_value,
 )
 from quivers.qiec.serialization import dumps, loads
-from quivers.qiec.terms import Call, ConstructorValue, Handle, Local, Var
+from quivers.qiec.terms import Call, Case, ConstructorValue, Handle, Local, Var
 from quivers.qiec.types import BOOL, REAL, IndexLiteral, IndexVariable, TypeApplication
 from quivers.stochastic.forest import (
     build_forest,
@@ -75,6 +76,76 @@ define conjunction(left : Bool, right : Bool) : Bool !{} =
     else
         return false
 """
+
+
+def test_indexed_carrier_motive_names_cannot_capture_fold_instantiation() -> None:
+    source = """\
+family IndexedValue(position : Nat) : Type
+    constructor stored[at : Nat] : Real -> IndexedValue(at)
+
+define pack[at : Nat](value : Real) : IndexedValue(at) !{} =
+    return construct stored[at](value) as IndexedValue(at)
+"""
+    module = load_source(source).qiec
+    assert isinstance(module, QiecModule)
+    carrier_family = module.families[0]
+    (pack,) = module.computations
+    identity = PresentationId.derive("proof-carrier-alpha")
+    judgment = JudgmentDecl(
+        id=FamilyId.derive(identity, "Proof"),
+        name="Proof",
+        indices=(IndexBinder(name="i0", sort=NAT, refinable=True),),
+    )
+    slot = AxiomSlot(
+        id=ConstructorId.derive(identity, "given"),
+        name="given",
+        telescope=(IndexBinder(name="n", sort=NAT),),
+        judgment=Judgment(
+            family=judgment.id, arguments=(IndexVariable(name="n", sort=NAT),)
+        ),
+        values=(FieldDef(name="value", type=REAL),),
+    )
+    presentation = RulePresentation(
+        id=identity, name="carrier_alpha", judgments=(judgment,), axioms=(slot,)
+    )
+    families, constructors = presentation.declarations()
+    module = module.with_(
+        families=(*module.families, *families),
+        constructors=(*module.constructors, *constructors),
+    )
+    interpretation = InterpretationDecl(
+        id=InterpretationId.derive(identity, "carrier"),
+        presentation=identity,
+        operations=((slot.id, pack.id),),
+    )
+    carrier = TypeApplication(
+        constructor=carrier_family.type_constructor,
+        arguments=(IndexVariable(name="i0", sort=NAT),),
+    )
+    lowered = lower_closed_interpretation(
+        module,
+        presentation,
+        interpretation,
+        name="fold",
+        carriers={judgment.id: carrier},
+    )
+    fold = next(item for item in lowered.computations if item.name == "fold__Proof")
+    assert isinstance(fold.body, Case) and fold.body.motive.result_type == carrier
+    assert fold.telescope[0].name != fold.body.motive.indices[0].name == "i0"
+    index = IndexLiteral(value=4, sort=NAT)
+    proof = RuntimeConstructor(
+        constructor=slot.id,
+        static_arguments=(index,),
+        fields=(5.5,),
+        result_type=TypeApplication(
+            constructor=families[0].type_constructor, arguments=(index,)
+        ),
+    )
+    result = run_named(lowered, fold.name, (proof,), static_arguments=(index,)).value
+    assert isinstance(result, RuntimeConstructor)
+    assert result.result_type == carrier.with_(arguments=(index,))
+    assert result.static_arguments == (index,)
+    assert float(result.fields[0]) == 5.5
 
 
 def _setup() -> tuple[QiecModule, RulePresentation, InterpretationDecl, FamilyId]:
