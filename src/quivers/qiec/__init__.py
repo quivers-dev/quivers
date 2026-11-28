@@ -175,8 +175,12 @@ from quivers.qiec.numbers import (
     number_kind,
     static_shape,
 )
-from quivers.qiec.effect_laws import (
+from quivers.qiec.effect_law_schema import (
     EffectEquation,
+    EffectLawBundle,
+    EffectLawObligation,
+)
+from quivers.qiec.effect_laws import (
     FiniteEffectLawDecision,
     ScalarEffectLawDecision,
     check_finite_effect_law,
@@ -1085,6 +1089,8 @@ __all__ += [
 ]
 __all__ += [
     "EffectEquation",
+    "EffectLawBundle",
+    "EffectLawObligation",
     "FiniteEffectLawDecision",
     "ScalarEffectLawDecision",
     "check_finite_effect_law",

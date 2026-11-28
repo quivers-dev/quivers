@@ -289,6 +289,17 @@ assert decision.result.domain_polynomial == (((0, 0, 1), 1),)
 
 ::: quivers.qiec.effect_laws
 
+### Effect law obligations
+
+An `EffectLawBundle` pairs a checked module with a set of
+`EffectLawObligation` records. Each obligation names the equation,
+handler and checking method and can carry named hypotheses. The bundle
+checks these identifiers against the module and assigns one statement to
+each effect's law name. Use the indicated exact checker on the module
+and equation to obtain a decision.
+
+::: quivers.qiec.effect_law_schema
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

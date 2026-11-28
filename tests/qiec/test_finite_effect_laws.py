@@ -190,7 +190,7 @@ def test_prior_evidence_checks_the_equation_handler_and_finite_domain(
     unrelated = next(
         item.id for item in module.computations if item.name == "ignore_choice"
     )
-    revised = replace(equation, right=unrelated)
+    revised = equation.with_(right=unrelated)
     for wanted, handler, receipt in (
         (revised, state.id, good),
         (equation, constant.id, good),
@@ -224,10 +224,10 @@ def test_nominal_effect_instance_operations_and_computations_are_checked(
     )
     unrelated = ComputationId.derive("unrelated", "write_read")
     for invalid, reason in (
-        (replace(equation, effect=foreign_effect), "nominal instance"),
-        (replace(equation, instance=other_instance), "incompatible row"),
-        (replace(equation, operations=equation.operations[:1]), "performed operations"),
-        (replace(equation, left=unrelated), "unknown computation"),
+        (equation.with_(effect=foreign_effect), "nominal instance"),
+        (equation.with_(instance=other_instance), "incompatible row"),
+        (equation.with_(operations=equation.operations[:1]), "performed operations"),
+        (equation.with_(left=unrelated), "unknown computation"),
     ):
         with pytest.raises(FiniteLawUnsupported, match=reason):
             check_finite_effect_law(module, invalid, state.id)
@@ -235,7 +235,7 @@ def test_nominal_effect_instance_operations_and_computations_are_checked(
         item.id for item in module.computations if item.name == "delegated"
     )
     with pytest.raises(FiniteLawUnsupported, match="unsupported Call"):
-        check_finite_effect_law(module, replace(equation, right=delegated), state.id)
+        check_finite_effect_law(module, equation.with_(right=delegated), state.id)
 
 
 def test_same_subject_binds_across_canonical_module_roundtrip(
@@ -260,7 +260,7 @@ def test_operation_set_includes_requests_from_both_branches(module: QiecModule) 
     )
     effect = next(item for item in module.effects if item.ref.id == equation.effect)
     write = next(item.id for item in effect.operations if item.name == "write_cell")
-    incomplete = replace(equation, left=branch, operations=(write,))
+    incomplete = equation.with_(left=branch, operations=(write,))
     with pytest.raises(FiniteLawUnsupported, match="performed operations"):
         check_finite_effect_law(module, incomplete, module.handlers[0].id)
 
@@ -272,8 +272,7 @@ def test_pure_side_still_runs_the_actual_handlers_return_clause(
     effect = next(item for item in module.effects if item.ref.id == equation.effect)
     read = next(item.id for item in effect.operations if item.name == "read_cell")
     ids = {item.name: item.id for item in module.computations}
-    pure = replace(
-        equation,
+    pure = equation.with_(
         name="ignore-read",
         operations=(read,),
         left=ids["read_and_true"],
@@ -290,8 +289,7 @@ def test_pure_side_does_not_execute_the_row_witness(module: QiecModule) -> None:
     effect = next(item for item in module.effects if item.ref.id == equation.effect)
     write = next(item.id for item in effect.operations if item.name == "write_cell")
     ids = {item.name: item.id for item in module.computations}
-    ignored = replace(
-        equation,
+    ignored = equation.with_(
         name="ignore-write",
         operations=(write,),
         left=ids["write_and_true"],

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal
 
+from quivers.qiec.effect_law_schema import EffectEquation, _CheckMethod
 from quivers.qiec.effects import (
     EMPTY_ROW,
     ComputationType,
@@ -14,8 +15,6 @@ from quivers.qiec.effects import (
 )
 from quivers.qiec.identifiers import (
     ComputationId,
-    EffectId,
-    EffectInstanceId,
     HandlerId,
     OperationId,
 )
@@ -45,58 +44,11 @@ from quivers.qiec.terms import (
 )
 from quivers.qiec.types import BOOL, TypeExpr
 
-type _CheckMethod = Literal["finite", "polynomial", "rational"]
-
 _UNSUPPORTED = {
     "finite": FiniteLawUnsupported,
     "polynomial": PolynomialLawUnsupported,
     "rational": RationalLawUnsupported,
 }
-
-
-@dataclass(frozen=True, slots=True)
-class EffectEquation:
-    """Declare a pair of checked computations over one nominal effect.
-
-    The law's name is scoped to its effect. Its statement is the two
-    computation bodies, checked under the listed nominal operation set.
-
-    Parameters
-    ----------
-    effect : EffectId
-        The declared interface owning the law.
-    name : str
-        The law's name within that interface.
-    instance : EffectInstanceId
-        The concrete checked instance whose requests form the two sides.
-    operations : tuple[OperationId, ...]
-        The operations occurring across both bodies.
-    left : ComputationId
-        The left computation.
-    right : ComputationId
-        The right computation, with the same positional domain and result.
-    """
-
-    effect: EffectId
-    name: str
-    instance: EffectInstanceId
-    operations: tuple[OperationId, ...]
-    left: ComputationId
-    right: ComputationId
-
-    def __post_init__(self) -> None:
-        """Require a law name and a nonempty, distinct operation set.
-
-        Raises
-        ------
-        ValueError
-            If the name is empty or the operation set is empty or repeated.
-        """
-        if not self.name.strip():
-            raise ValueError("an effect equation needs a name")
-        if not self.operations or len(set(self.operations)) != len(self.operations):
-            raise ValueError("an effect equation needs distinct performed operations")
-        object.__setattr__(self, "operations", tuple(sorted(self.operations, key=str)))
 
 
 @dataclass(frozen=True, slots=True)

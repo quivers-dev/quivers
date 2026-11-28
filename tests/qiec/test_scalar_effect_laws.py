@@ -141,7 +141,7 @@ def test_strict_rational_guards_and_polynomial_limit_have_distinct_contracts(
     equation = _equation(module)
     rational = module.handlers[2]
     guarded = next(item.id for item in module.computations if item.name == "guarded")
-    narrowed = replace(equation, left=guarded)
+    narrowed = equation.with_(left=guarded)
     with pytest.raises(RationalLawUnsupported, match="equal rational law domains"):
         check_scalar_effect_law(module, narrowed, rational.id, method="rational")
     with pytest.raises(PolynomialLawUnsupported):
