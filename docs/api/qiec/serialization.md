@@ -323,6 +323,35 @@ lacks the native handler reports the missing capability.
 
 ::: quivers.qiec.relation_log_path_certificate.FixedLogProbPathCertificateRuntimeProvider
 
+## Checked cyclic LogProb path certificates
+
+`FixedCyclicLogProbPathCertificateRequest` requires a LogProb pair
+observation with a local closure order bound. It also declares an
+aggregate closure cell limit and the arithmetic limits for exact
+endpoint solves. The handler name identifies the cyclic objective,
+the relation and original parameter owners, the tape-ordered words,
+and the canonical absolute tolerance in log units. Execution limits
+can vary for the same handler.
+
+`FixedCyclicLogProbPathCertificateRuntimeProvider` returns the same
+typed log score and exact witness fields as the acyclic provider.
+The ordinary checked native computation uses a single evaluated
+binary64 snapshot for its score and bounds. The value report is
+detached. Targets missing the native handler report that capability.
+
+A divergent lower-endpoint star yields `divergent_closure`. This
+diagnostic concerns the local structurally productive component.
+An upper star that cannot be proved finite gives `unverified_accuracy`
+when its lower endpoint provides no divergence witness. The
+native star may separately yield `undecided_closure` if its working
+precision cannot establish a usable closure. Resource exhaustion and
+unsupported dtype have separate unavailable statuses.
+[The cyclic arithmetic and limits](../core/morphisms.md#certifying-numerical-accuracy-of-cyclic-logprob-path-weights)
+
+::: quivers.qiec.relation_log_path_certificate.FixedCyclicLogProbPathCertificateRequest
+
+::: quivers.qiec.relation_log_path_certificate.FixedCyclicLogProbPathCertificateRuntimeProvider
+
 ## Typed sparse path posteriors
 
 A `FixedRelationPathSampleRequest` binds a fixed word tuple and a

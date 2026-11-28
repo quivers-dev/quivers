@@ -6,6 +6,7 @@ from math import exp, expm1, factorial, log
 import pytest
 import torch
 
+from quivers.core.algebras import DivergentClosureError
 from quivers.core.relations import (
     Arc,
     Boundary,
@@ -174,7 +175,7 @@ def test_nonfinite_upper_star_refuses_before_ordinary_packed_evaluation(monkeypa
     with pytest.raises(RelationAccuracyError, match="finite upper star"):
         _certify(relation, decimal_precision=8)
     actual_divergence, _ = _self_cycle(log_loop=0)
-    with pytest.raises(RelationAccuracyError, match="finite upper star"):
+    with pytest.raises(DivergentClosureError, match="lower return mass"):
         _certify(actual_divergence)
 
 

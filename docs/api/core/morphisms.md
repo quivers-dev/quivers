@@ -379,12 +379,15 @@ The verifier transfers the two exact rational solutions outward into
 Decimal. Directed sparse updates connect the components and the
 terminal logarithm yields the log endpoints. The verifier preserves
 masses such as $\exp(-1000)$ when they fall below the binary64 range.
-Any upper pivot at or below zero yields an unverified accuracy outcome.
-A coarse enclosure can cause this refusal on a relation with finite
-true mass. The verifier checks every structurally productive component,
-including those with zero current boundary mass. It also refuses when
-the usual LogProb score cannot meet the requested tolerance or the
-numerical star evaluator cannot establish its own closure.
+If an upper pivot is nonpositive, the verifier checks whether the
+lower endpoint system proves divergence. A nonpositive lower pivot
+gives return mass at least one, so its geometric series diverges.
+If all lower pivots remain positive, the available bounds give an
+unverified accuracy outcome. This may occur when the true mass is
+finite. The verifier checks every structurally productive component,
+including those with zero current boundary mass, so a divergence
+diagnostic concerns that local star. The requested score accuracy and
+the numerical star evaluator must also pass their respective checks.
 
 The rational elimination uses $O(n^2)$ cells and $O(n^3)$ exact
 operations per component of $n$ original observation states, in

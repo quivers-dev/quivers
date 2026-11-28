@@ -27,7 +27,7 @@ from math import isfinite
 
 import torch
 
-from quivers.core.algebras import LOG_PROB
+from quivers.core.algebras import LOG_PROB, DivergentClosureError
 from quivers.core.relations import RationalRelation
 from quivers.core.relations.accuracy import (
     RelationAccuracyError,
@@ -232,6 +232,10 @@ def _rational(decimal: Decimal, budget: _RationalBudget) -> Fraction:
     return Fraction(*decimal.as_integer_ratio())
 
 
+class _NonpositivePivot(ArithmeticError):
+    """A return mass in an exact endpoint system reaches or exceeds one."""
+
+
 def _eliminate_walks(
     matrix: list[list[Fraction]],
     suffix: list[Fraction],
@@ -243,9 +247,7 @@ def _eliminate_walks(
         # eliminated states. Its star exists exactly below one.
         pivot = budget.add(Fraction(1), row[state], subtract=True)
         if pivot <= 0:
-            raise RelationAccuracyError(
-                "LogProb path certificate could not establish a finite upper star"
-            )
+            raise _NonpositivePivot
         suffix[state] = budget.divide(suffix[state], pivot)
         for target in range(state + 1, size):
             if row[target]:
@@ -296,6 +298,33 @@ def _component_endpoint(
     return tuple(decimal.from_rational(value, lower=lower) for value in result)
 
 
+def _component_bounds(
+    edges: list[tuple[int, int, int]],
+    rhs: list[_Bounds],
+    mass: Callable[[int], _Bounds],
+    decimal: _DirectedDecimal,
+    budget: _RationalBudget,
+) -> list[_Bounds]:
+    try:
+        high = _component_endpoint(edges, rhs, mass, decimal, budget, lower=False)
+    except _NonpositivePivot as upper:
+        # Star finiteness is independent of exits. Test lower pivots with
+        # a zero right side, which needs no rational-to-Decimal transfer.
+        try:
+            _component_endpoint(
+                edges, [_ZERO_BOUNDS] * len(rhs), mass, decimal, budget, lower=True
+            )
+        except _NonpositivePivot as lower:
+            raise DivergentClosureError(
+                "a lower return mass is at least one in a productive epsilon component"
+            ) from lower
+        raise RelationAccuracyError(
+            "LogProb path certificate could not establish a finite upper star"
+        ) from upper
+    low = _component_endpoint(edges, rhs, mass, decimal, budget, lower=True)
+    return list(zip(low, high, strict=True))
+
+
 def _cyclic_mass_bounds(
     graph: _ActiveObservation,
     weights: list[float],
@@ -320,10 +349,7 @@ def _cyclic_mass_bounds(
                         total = decimal.accumulate(total, weight, suffix)
             rhs.append(total)
         if edges:
-            # Certify finiteness before computing the lower endpoint.
-            high = _component_endpoint(edges, rhs, mass, decimal, budget, lower=False)
-            low = _component_endpoint(edges, rhs, mass, decimal, budget, lower=True)
-            rhs = list(zip(low, high, strict=True))
+            rhs = _component_bounds(edges, rhs, mass, decimal, budget)
         suffixes.update(zip(members, rhs, strict=True))
     result = _ZERO_BOUNDS
     for state, slot in graph.initial:
@@ -457,6 +483,8 @@ def certify_cyclic_logprob_path_weight(
     RelationAccuracyError
         The directed upper star cannot be proved finite or the score's
         error cannot be certified at the requested tolerance.
+    DivergentClosureError
+        A directed lower endpoint proves a local productive star diverges.
     UndecidedClosureError
         The ordinary numerical LogProb evaluator cannot establish closure.
     """

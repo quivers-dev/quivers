@@ -1,4 +1,4 @@
-"""Checked native value certificates for acyclic LogProb observations."""
+"""Checked native value certificates for fixed-word LogProb observations."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE
-from quivers.core.algebras import LOG_PROB
+from quivers.core.algebras import LOG_PROB, DivergentClosureError, UndecidedClosureError
 from quivers.core.relations import (
     LogPathWeightCertificate,
     ProductiveEpsilonCycleError,
@@ -92,36 +92,7 @@ class FixedLogProbPathCertificateRequest(QiecModel):
             raise ValueError(
                 "LogProb path certificates require an acyclic checked LogProb pair weight"
             )
-        _validate_decimal_settings(self.decimal_precision, self.max_decimal_exponent)
-        for limit in (self.max_decimal_work, self.max_exact_bits, self.max_exact_work):
-            if type(limit) is not int or not 0 <= limit <= torch.iinfo(torch.int64).max:
-                raise ValueError(
-                    "LogProb path certificate resource limits must fit in Int"
-                )
-        ratio = self.absolute_log_tolerance
-        if (
-            not isinstance(ratio, tuple)
-            or len(ratio) != 2
-            or any(type(value) is not int for value in ratio)
-            or ratio[0] < 0
-            or ratio[1] <= 0
-        ):
-            raise ValueError(
-                "absolute_log_tolerance requires a nonnegative rational pair"
-            )
-        if max(ratio[0].bit_length(), ratio[1].bit_length()) > self.max_exact_bits:
-            raise ValueError("absolute_log_tolerance exceeds max_exact_bits")
-
-    @cached_property
-    def _tolerance(self) -> Fraction:
-        """Read the exact canonical tolerance.
-
-        Returns
-        -------
-        Fraction
-            The required absolute error in log units.
-        """
-        return Fraction(*self.absolute_log_tolerance)
+        _validate_numeric_policy(self)
 
     @property
     def handler_name(self) -> str:
@@ -132,16 +103,7 @@ class FixedLogProbPathCertificateRequest(QiecModel):
         str
             The name binding the relation, ordered words, and canonical tolerance.
         """
-        from quivers.qiec.serialization import dumps
-
-        identity = (
-            self.observation.relation,
-            self.observation.words,
-            _encode(self._tolerance),
-        )
-        return (
-            f"__logprob_path_certificate_{sha256(dumps(identity).encode()).hexdigest()}"
-        )
+        return _certificate_handler(self, "__logprob_path_certificate_")
 
     @property
     def result_type(self) -> TypeExpr:
@@ -153,39 +115,188 @@ class FixedLogProbPathCertificateRequest(QiecModel):
             Status, diagnostic, score availability, log score, three
             rational rows, endpoint availability, and three work counters.
         """
-        three = IndexLiteral(value=3, sort=NAT)
-        pair = IndexLiteral(value=2, sort=NAT)
-        return product_type(
-            STRING,
-            STRING,
-            BOOL,
-            LOG_WEIGHT,
-            tensor_type(STRING, (three, pair)),
-            BOOL,
-            tensor_type(INT, (three,)),
-        )
+        return _certificate_result_type()
 
 
-class FixedLogProbPathCertificateRuntimeProvider:
-    """Bind one checked acyclic LogProb value report to original live owners.
-
-    The provider reuses the structural observation plan. Each evaluation
-    uses one binary64 weight snapshot to score and to verify the result.
-    The native report is detached and supplies value-only assurance.
+class FixedCyclicLogProbPathCertificateRequest(QiecModel):
+    """Request log accuracy with explicitly bounded productive epsilon closure.
 
     Parameters
     ----------
-    request : FixedLogProbPathCertificateRequest
-        The checked observation, tolerance, and numerical limits.
-    parameters : RelationWeightBindings
-        The binding to the original scalar owners.
+    observation : FixedRelationRequest
+        The checked LogProb pair observation, original weight owners,
+        and required local closure order limit.
+    absolute_log_tolerance : tuple of int
+        Nonnegative numerator and positive denominator in log units.
+    max_closure_cells : int
+        The aggregate local star cell bound, including auxiliary states.
+    decimal_precision, max_decimal_exponent, max_decimal_work : int
+        Significant digits, symmetric adjusted exponent bound, and number
+        of primitive calls and exact Decimal input conversions permitted.
+    max_exact_bits, max_exact_work : int
+        Integer bit and operation bounds for the rational report.
     """
 
-    name = "fixed-logprob-path-certificate"
+    observation: FixedRelationRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    absolute_log_tolerance: tuple[int, int] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    max_closure_cells: int
+    decimal_precision: int
+    max_decimal_exponent: int
+    max_decimal_work: int
+    max_exact_bits: int
+    max_exact_work: int
+
+    @dx.model_validator()
+    def _validate_certificate_request(self) -> None:
+        """Check the value objective, tolerance, and closure policy.
+
+        Raises
+        ------
+        ValueError
+            The observation, tolerance, or resource policy is invalid.
+        """
+        observation = self.observation
+        if (
+            observation.operation != "pair_weight"
+            or observation.relation.algebra != LOG_PROB.subject
+            or observation.max_closure_size is None
+        ):
+            raise ValueError(
+                "cyclic LogProb path certificates require a checked LogProb pair "
+                "weight with a closure order limit"
+            )
+        if (
+            type(self.max_closure_cells) is not int
+            or not 0 <= self.max_closure_cells <= torch.iinfo(torch.int64).max
+        ):
+            raise ValueError("max_closure_cells must be a nonnegative Int")
+        _validate_numeric_policy(self)
+
+    @property
+    def handler_name(self) -> str:
+        """Derive the identity of the exact bounded cyclic objective.
+
+        Returns
+        -------
+        str
+            The handler binding the relation, ordered words, and tolerance.
+        """
+        return _certificate_handler(self, "__cyclic_logprob_path_certificate_")
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Give the checked log score and exact-rational evidence carrier.
+
+        Returns
+        -------
+        TypeExpr
+            Status, diagnostic, score availability, log score, three
+            rational rows, endpoint availability, and three work counters.
+        """
+        return _certificate_result_type()
+
+
+type _CertificateRequest = (
+    FixedLogProbPathCertificateRequest | FixedCyclicLogProbPathCertificateRequest
+)
+
+
+def _validate_numeric_policy(request: _CertificateRequest) -> None:
+    """Check the shared arithmetic policy.
+
+    Parameters
+    ----------
+    request : FixedLogProbPathCertificateRequest or FixedCyclicLogProbPathCertificateRequest
+        A fixed LogProb request with declared tolerance and arithmetic limits.
+
+    Raises
+    ------
+    ValueError
+        A tolerance or resource declaration is unsupported.
+    """
+    _validate_decimal_settings(request.decimal_precision, request.max_decimal_exponent)
+    for limit in (
+        request.max_decimal_work,
+        request.max_exact_bits,
+        request.max_exact_work,
+    ):
+        if type(limit) is not int or not 0 <= limit <= torch.iinfo(torch.int64).max:
+            raise ValueError("LogProb path certificate resource limits must fit in Int")
+    ratio = request.absolute_log_tolerance
+    if (
+        not isinstance(ratio, tuple)
+        or len(ratio) != 2
+        or any(type(value) is not int for value in ratio)
+        or ratio[0] < 0
+        or ratio[1] <= 0
+    ):
+        raise ValueError("absolute_log_tolerance requires a nonnegative rational pair")
+    if max(ratio[0].bit_length(), ratio[1].bit_length()) > request.max_exact_bits:
+        raise ValueError("absolute_log_tolerance exceeds max_exact_bits")
+
+
+def _certificate_handler(request: _CertificateRequest, prefix: str) -> str:
+    """Bind a value-certificate handler to the exact requested objective.
+
+    Parameters
+    ----------
+    request : FixedLogProbPathCertificateRequest or FixedCyclicLogProbPathCertificateRequest
+        The declaration of relation identity, ordered words, and tolerance.
+    prefix : str
+        The handler namespace for the request's closure policy.
+
+    Returns
+    -------
+    str
+        A stable handler name that a compiled source module may request.
+    """
+    from quivers.qiec.serialization import dumps
+
+    identity = (
+        request.observation.relation,
+        request.observation.words,
+        _encode(Fraction(*request.absolute_log_tolerance)),
+    )
+    return f"{prefix}{sha256(dumps(identity).encode()).hexdigest()}"
+
+
+def _certificate_result_type() -> TypeExpr:
+    """Give the common typed value-certificate report.
+
+    Returns
+    -------
+    TypeExpr
+        The product of status, score, exact witness, and work fields.
+    """
+    three = IndexLiteral(value=3, sort=NAT)
+    pair = IndexLiteral(value=2, sort=NAT)
+    return product_type(
+        STRING,
+        STRING,
+        BOOL,
+        LOG_WEIGHT,
+        tensor_type(STRING, (three, pair)),
+        BOOL,
+        tensor_type(INT, (three,)),
+    )
+
+
+class _LogProbCertificateRuntime:
+    """Share checked attachment and live snapshot evaluation across closure modes.
+
+    Parameters
+    ----------
+    request : FixedLogProbPathCertificateRequest or FixedCyclicLogProbPathCertificateRequest
+        The validated observation, arithmetic policy, and nominal identity.
+    parameters : RelationWeightBindings
+        The original scalar weight owners.
+    """
 
     def __init__(
         self,
-        request: FixedLogProbPathCertificateRequest,
+        request: _CertificateRequest,
         parameters: RelationWeightBindings,
     ) -> None:
         self._request = request
@@ -209,12 +320,18 @@ class FixedLogProbPathCertificateRuntimeProvider:
             observation.words,
             max_states=observation.max_states,
             max_work=observation.max_work,
-            absolute_log_tolerance=request._tolerance,
+            absolute_log_tolerance=Fraction(*request.absolute_log_tolerance),
             decimal_precision=request.decimal_precision,
             max_decimal_exponent=request.max_decimal_exponent,
             max_decimal_work=request.max_decimal_work,
             max_exact_bits=request.max_exact_bits,
             max_exact_work=request.max_exact_work,
+            max_closure_size=observation.max_closure_size,
+            max_closure_cells=(
+                request.max_closure_cells
+                if isinstance(request, FixedCyclicLogProbPathCertificateRequest)
+                else None
+            ),
         )
 
     def _evaluate(self, argument: object, _context: ClauseContext) -> _Report:
@@ -244,6 +361,10 @@ class FixedLogProbPathCertificateRuntimeProvider:
                 proof = self._plan()
         except RelationLimitError as error:
             return _unavailable("resource_limit", error)
+        except DivergentClosureError as error:
+            return _unavailable("divergent_closure", error)
+        except UndecidedClosureError as error:
+            return _unavailable("undecided_closure", error)
         except ProductiveEpsilonCycleError as error:
             return _unavailable("unsupported_closure", error)
         except _UnsupportedAccuracyPrecision as error:
@@ -317,6 +438,61 @@ class FixedLogProbPathCertificateRuntimeProvider:
         return CoreRuntimeProvider().validator_for(type_)
 
 
+class FixedLogProbPathCertificateRuntimeProvider(_LogProbCertificateRuntime):
+    """Bind one checked acyclic LogProb value report to original live owners.
+
+    The provider reuses the structural observation plan. Each evaluation
+    uses one binary64 weight snapshot to score and to verify the result.
+    The native report is detached and supplies value-only assurance.
+
+    Parameters
+    ----------
+    request : FixedLogProbPathCertificateRequest
+        The checked observation, tolerance, and numerical limits.
+    parameters : RelationWeightBindings
+        The binding to the original scalar owners.
+    """
+
+    name = "fixed-logprob-path-certificate"
+
+    def __init__(
+        self,
+        request: FixedLogProbPathCertificateRequest,
+        parameters: RelationWeightBindings,
+    ) -> None:
+        if not isinstance(request, FixedLogProbPathCertificateRequest):
+            raise TypeError("the acyclic provider requires an acyclic request")
+        super().__init__(request, parameters)
+
+
+class FixedCyclicLogProbPathCertificateRuntimeProvider(_LogProbCertificateRuntime):
+    """Bind one checked cyclic LogProb value report to original live owners.
+
+    Each evaluation scores and verifies the same evaluated binary64
+    vector. A proven divergent local star has a different status from
+    an upper enclosure that cannot establish convergence. The native
+    report is detached and supplies value-only assurance.
+
+    Parameters
+    ----------
+    request : FixedCyclicLogProbPathCertificateRequest
+        The exact checked observation, arithmetic policy, and closure limits.
+    parameters : RelationWeightBindings
+        The binding to the original scalar owners.
+    """
+
+    name = "fixed-cyclic-logprob-path-certificate"
+
+    def __init__(
+        self,
+        request: FixedCyclicLogProbPathCertificateRequest,
+        parameters: RelationWeightBindings,
+    ) -> None:
+        if not isinstance(request, FixedCyclicLogProbPathCertificateRequest):
+            raise TypeError("the cyclic provider requires a bounded cyclic request")
+        super().__init__(request, parameters)
+
+
 def _unavailable(status: str, error: Exception) -> _Report:
     """Represent an unavailable score and exact witness.
 
@@ -346,6 +522,8 @@ def _unavailable(status: str, error: Exception) -> _Report:
 
 
 __all__ = [
+    "FixedCyclicLogProbPathCertificateRequest",
+    "FixedCyclicLogProbPathCertificateRuntimeProvider",
     "FixedLogProbPathCertificateRequest",
     "FixedLogProbPathCertificateRuntimeProvider",
 ]
