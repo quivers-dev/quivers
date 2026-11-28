@@ -123,3 +123,32 @@ graph. A word query has type `LogWeight` and sums out the other
 variables before normalizing. Attachments serve these computations on
 the checked reference machine, with foreign-handler diagnostics for
 targets that cannot lower them.
+
+## String solver configurations
+
+Encode a `StringFactorGraphSpec` and its solver settings separately. A
+`JointAlignmentMapConfig` reconstructs the exact acyclic local decoder
+with the saved iteration, feature, state, and work limits. Its rational
+step is stored as two integers. Local maximization adds the original path
+scores, including boundary marks. The dual bound applies to the best
+joint alignment and words, and a certificate requires agreement on the
+complete words. An iteration limit may return a feasible assignment and
+bound without a certificate. General joint string MAP can be undecidable
+for cyclic multi-tape factors, as the reduction from Post's correspondence
+problem shows. See §2.5 of [Peng, Cotterell, and Eisner (2015)](https://aclanthology.org/D15-1108/).
+
+A `RegularStringEPConfig` uses the same factor declaration for approximate
+sum-product. Its settings record finite regular reference languages,
+ordered candidate n-grams, penalty, synchronous scheduling limits, and
+projection tolerances. Reference weights enter the model for this run.
+A reference that gives unit weight to each supported word only restricts
+support. The result distinguishes local projection failure from an outer
+sweep limit. Relation resource failures are reported by the underlying
+operation. Message stabilization alone does not certify exact marginals.
+
+Both solvers bind the original weight identities at invocation. The wire
+records carry neither a previous fitted belief nor an optimum certificate.
+
+::: quivers.qiec.string_solvers.JointAlignmentMapConfig
+
+::: quivers.qiec.string_solvers.RegularStringEPConfig
