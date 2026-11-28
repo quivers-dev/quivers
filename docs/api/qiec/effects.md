@@ -155,6 +155,108 @@ assert (result.replay_steps, result.reverse_steps, result.peak_saved_states) == 
 
 ::: quivers.qiec.checkpointing
 
+## Superposition, repeated draws, and completion
+
+In `superposed`, the measure at `x` is
+$p\,\mathcal N(\mu_a,1)+(1-p)\,\mathcal N(\mu_b,1)$. Replay at
+$x$ scores the logarithm of that sum and records one `Random` address.
+In `two_shots`, the handler evaluates two resumption branches. Each reaches
+the same source origin with a distinct resumption ordinal. Their replay
+joint is the product of the two Normal densities. The handler returns the
+weighted arithmetic mean of the two drawn values.
+
+The last two programs give a product-space completion with different sites.
+In `disjoint`, the selector $z$ determines the sole reached Bernoulli site.
+Write its conditional mass as $f_z(x)$ and the selector mass as $q_z$.
+`completed` also draws the inactive site from the normalized law
+$f_{1-z}(y)$. For each selector and active result, summing its extended
+mass $q_z f_z(x) f_{1-z}(y)$ over $y$ gives $q_z f_z(x)$. The returned
+value and its marginal score under the selector are preserved. The
+completed program has three realized addresses where the disjoint program
+has two. An auxiliary factor with total mass other than one changes the
+marginal by that factor.
+
+<!-- compile: qiec -->
+```qvr
+object UnitInput : FinSet 1
+object Output : Real 1
+
+instance random : Random
+
+effect Choice
+    split : Real -> Bool
+
+instance choice : Choice
+
+handler both for Choice : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    split(probability : Real) resumes omega =>
+        let first <- resume(true)
+        let second <- resume(false)
+        return probability * first + (1.0 - probability) * second
+
+define choose_mean(first : Bool, left : Real, right : Real) : Real !{} =
+    if first then
+        return left
+    else
+        return right
+
+define draw_twice(p : Real, left : Real, right : Real) : Real !{random} =
+    handle choice with both in
+        let first <- perform choice.split(p)
+        let mean <- choose_mean(first, left, right)
+        perform random.sample[Real](site("x"), Normal(mean, 1.0))
+
+define lift_truth(flag : Bool) : Real !{} =
+    if flag then
+        return 1.0
+    else
+        return 0.0
+
+define selected_draw(first : Bool, p_left : Real, p_right : Real) : Real !{random} =
+    if first then
+        let value <- perform random.sample[Bool](site("left"), Bernoulli(p_left))
+        lift_truth(value)
+    else
+        let value <- perform random.sample[Bool](site("right"), Bernoulli(p_right))
+        lift_truth(value)
+
+define selected_value(first : Bool, left : Bool, right : Bool) : Real !{} =
+    if first then
+        lift_truth(left)
+    else
+        lift_truth(right)
+
+define draw_mixture(p : Real, mu_a : Real, mu_b : Real) : Real !{random} =
+    let weights = [p, 1.0 - p]
+    let locations = [mu_a, mu_b]
+    perform random.sample[Real](site("x"), MixtureNormal(weights, locations, [1.0, 1.0]))
+
+program superposed(p : Real, mu_a : Real, mu_b : Real) : UnitInput -> Output
+    let x <- draw_mixture(p, mu_a, mu_b)
+    return x
+
+program two_shots(p : Real, mu_a : Real, mu_b : Real) : UnitInput -> Output
+    let x <- draw_twice(p, mu_a, mu_b)
+    return x
+
+program disjoint(p : Real, p_left : Real, p_right : Real) : UnitInput -> Output
+    sample first <- Bernoulli(probs=p)
+    let x <- selected_draw(first, p_left, p_right)
+    return x
+
+program completed(p : Real, p_left : Real, p_right : Real) : UnitInput -> Output
+    sample first <- Bernoulli(probs=p)
+    sample left <- Bernoulli(probs=p_left)
+    sample right <- Bernoulli(probs=p_right)
+    let x <- selected_value(first, left, right)
+    return x
+
+export superposed
+export two_shots
+export disjoint
+export completed
+```
+
 ::: quivers.qiec.effects
 
 ## Handler carrier shapes
