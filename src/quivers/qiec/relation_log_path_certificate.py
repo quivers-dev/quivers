@@ -45,6 +45,7 @@ from quivers.qiec.types import (
 
 if TYPE_CHECKING:
     from quivers.qiec.centered_string_certificate import (
+        CenteredCyclicStringLogProbCertificateRequest,
         CenteredStringLogProbCertificateRequest,
     )
 
@@ -211,13 +212,15 @@ type _CertificateRequest = (
 
 
 def _validate_numeric_policy(
-    request: _CertificateRequest | CenteredStringLogProbCertificateRequest,
+    request: _CertificateRequest
+    | CenteredStringLogProbCertificateRequest
+    | CenteredCyclicStringLogProbCertificateRequest,
 ) -> None:
     """Check the shared arithmetic policy.
 
     Parameters
     ----------
-    request : FixedLogProbPathCertificateRequest or FixedCyclicLogProbPathCertificateRequest or CenteredStringLogProbCertificateRequest
+    request : _CertificateRequest or CenteredStringLogProbCertificateRequest or CenteredCyclicStringLogProbCertificateRequest
         A LogProb request with declared tolerance and arithmetic limits.
 
     Raises

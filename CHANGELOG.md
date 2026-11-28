@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked centered cyclic likelihoods.** Bounded conditional queries preserve internal cycle weights and use directed finite stars to certify a centered native log ratio.
 - **Checked effect-stage receipts.** Serialize the selected target stage and verify its emitted artifact or named refusal against the original checked program.
 - **Checked lexical projection plans.** Category and form outcomes report their nominal source judgment, projected binder, and normalization contract.
 - **Guarded lexical outcome plans.** Packed item, category, and form reports retain ordered guard bindings and count every checked guard decision.

@@ -452,6 +452,21 @@ request and handler.
 
 ::: quivers.qiec.centered_string_certificate.CenteredStringLogProbCertificateRuntimeProvider
 
+#### Checked centered cyclic string log ratios
+
+`CenteredCyclicStringLogProbCertificateRequest` wraps a checked
+fixed-input LogProb conditional observation with a local closure order
+limit. It adds a shared closure-cell cap and the two centered proof
+budgets. The distinct handler keeps the original relation, words and
+absolute log tolerance. The centered certificate provider returns the
+same value-only rational endpoint report shape. Proven divergence,
+unverified upper-star finiteness, and an unavailable numerical star
+have distinct statuses. The cyclic centered contract is available for
+fixed-input conditionals. Tree-centered certificates use the acyclic
+request.
+
+::: quivers.qiec.centered_string_certificate.CenteredCyclicStringLogProbCertificateRequest
+
 ### A tail outcome for capped cyclic paths
 
 `FixedCappedCyclicRelationPathSampleRequest` specifies a different

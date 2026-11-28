@@ -578,6 +578,7 @@ from quivers.qiec.relation_path_law import (
     RelationPathLaw,
 )
 from quivers.qiec.centered_string_certificate import (
+    CenteredCyclicStringLogProbCertificateRequest,
     CenteredStringLogProbCertificateRequest,
     CenteredStringLogProbCertificateRuntimeProvider,
 )
@@ -976,6 +977,7 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "CenteredCyclicStringLogProbCertificateRequest",
     "CenteredStringLogProbCertificateRequest",
     "CenteredStringLogProbCertificateRuntimeProvider",
     "CenteredStringLogProbRequest",

@@ -502,6 +502,43 @@ and the final comparison have their own charged bit bounds. The
 centering work and occurrence caps continue to preflight the two
 sparse charts before their lifted factors are built.
 
+
+#### Centered likelihoods with productive cycles
+
+`certify_centered_cyclic_log_ratio` admits a bounded fixed-input
+conditional query. Each structurally productive strongly connected
+component uses one constant exact dyadic potential. A reverse pass
+maximizes the final marks and the cross-component exit scores plus their
+successor potentials on the condensation DAG. The initial marks give
+one chart offset. The difference of the two chart offsets enters the
+final log ratio in exact rational arithmetic.
+
+The potential cancels on every internal arc. Its original binary64
+log factor and occurrence identity therefore reach the same local
+star, including parallel arcs and repeat visits. The remaining
+reduced factors lie on boundaries and condensation edges. Every
+positive original path has an acyclic component itinerary, so its
+rounding perturbation is bounded by the minimum and maximum sums
+on that DAG. Zero internal weights can make the structural DAG's
+bounds more conservative. The original sparse verifier still checks
+the supported path sum and finite stars inside each productive
+component. It distinguishes proved lower-star divergence from a
+failure to establish a finite upper star.
+
+The local order cap and combined matrix-cell limit cover both
+numerical charts, including auxiliary states for parallel arcs. If the
+local expanded orders are $m_i$, elimination uses
+$O(\sum_i m_i^3)$ scalar operations, with separate convergence checks.
+The forward matrix cap is $O(\sum_i m_i^2)$ cells. Host autograd can
+also retain intermediate pivot tensors. Exact directed endpoint
+elimination uses original component orders under the same cell cap
+and separate shared bit and arithmetic budgets.
+Gauging and the perturbation pass use linear work in the active
+observations. Large original factors inside a component still have to
+fit the directed exponent range. The host score retains ordinary
+autograd through the admitted numerical stars. Its proof certifies
+the value on one snapshot.
+
 ## Certified finite string MAP
 
 A `FiniteStringScore` lists the feasible tuples of words for a factor and
@@ -1352,6 +1389,7 @@ choices held fixed.
         - best_marginal_output
         - certify_markov_path_weight
         - certify_cyclic_logprob_path_weight
+        - certify_centered_cyclic_log_ratio
         - certify_logprob_path_weight
         - closure
         - compile_ranked_ot

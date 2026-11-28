@@ -76,6 +76,19 @@ def _reduce_factors(
             rounding.append((slot, delta, rounded))
 
 
+def _centered_score(
+    weights: torch.Tensor,
+    difference: Fraction,
+    numerator: torch.Tensor,
+    denominator: torch.Tensor,
+) -> torch.Tensor:
+    value = difference + Fraction(numerator.detach().item())
+    value -= Fraction(denominator.detach().item())
+    nominal = weights.new_tensor(_as_float(value, "the centered log ratio"))
+    correction = numerator - denominator
+    return nominal + (correction - correction.detach())
+
+
 def _active_dag(
     topology: RelationTopology,
     words: Words,
@@ -276,13 +289,7 @@ class _CenteredLogRatio:
             difference = part_max - whole_max
             if rounding is not None:
                 rounding.maximum_difference = difference
-            difference += Fraction(part_residual.detach().item())
-            difference -= Fraction(whole_residual.detach().item())
-            nominal = weights.new_tensor(
-                _as_float(difference, "the centered log ratio")
-            )
-            correction = part_residual - whole_residual
-            score = nominal + (correction - correction.detach())
+            score = _centered_score(weights, difference, part_residual, whole_residual)
         return CenteredStringLogScore(
             score,
             self.states,
