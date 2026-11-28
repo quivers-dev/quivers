@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import cached_property
-from heapq import nlargest
+from heapq import merge
 from operator import add, mul
 
 import torch
@@ -289,22 +289,31 @@ class _AcyclicWalks:
         values = weights.detach().to(device="cpu", dtype=torch.float64)
         return values if algebra is LOG_PROB else values.log()
 
-    def _options(
+    @staticmethod
+    def _prepend(
+        weight: Fraction,
+        arc_id: int,
+        tails: list[_Suffix],
+        scale: Callable[[Fraction, Fraction], Fraction],
+    ) -> Iterator[_Suffix]:
+        for tail in tails:
+            yield _Suffix(scale(weight, tail.score), tail.final, arc_id, tail)
+
+    def _suffix_streams(
         self,
         source: int,
         suffixes: dict[int, list[_Suffix]],
         exact_weights: list[Fraction | None],
         scale: Callable[[Fraction, Fraction], Fraction],
-    ) -> Iterator[_Suffix]:
+    ) -> Iterator[Iterator[_Suffix]]:
         if (slot := self._final.get(source)) is not None:
             weight = exact_weights[slot]
             if weight is not None:
-                yield _Suffix(weight, source)
+                yield iter((_Suffix(weight, source),))
         for target, arc_id in self._arcs[source]:
             weight = exact_weights[self._topology.arcs[arc_id].weight]
-            if weight is not None:
-                for tail in suffixes[target]:
-                    yield _Suffix(scale(weight, tail.score), tail.final, arc_id, tail)
+            if weight is not None and suffixes[target]:
+                yield self._prepend(weight, arc_id, suffixes[target], scale)
 
     def k_best(
         self, k: int, weights: torch.Tensor, algebra: Semiring
@@ -312,29 +321,39 @@ class _AcyclicWalks:
         algebra = _probability_algebra(weights, algebra)
         if k == 0:
             return ()
-        # Binary floating inputs are exact rationals. Compare their products
-        # (sums in log space) before any rounding of a selected path score.
+        # A positive arc scales every suffix score by the same
+        # order-preserving operation. Merge only the required heads of
+        # these ranked streams, in original stream order on ties.
         zero, scale = (-torch.inf, add) if algebra is LOG_PROB else (0.0, mul)
         values = weights.detach().cpu().tolist()
         exact = [None if value == zero else Fraction(value) for value in values]
         suffixes: dict[int, list[_Suffix]] = {}
         for state in reversed(self._order):
-            suffixes[state] = nlargest(
-                k,
-                self._options(state, suffixes, exact, scale),
+            tails = merge(
+                *self._suffix_streams(state, suffixes, exact, scale),
                 key=lambda tail: tail.score,
+                reverse=True,
             )
-        starts = (
-            (scale(weight, tail.score), state, slot, tail)
-            for state, slot in self._initial
-            if (weight := exact[slot]) is not None
-            for tail in suffixes[state]
+            suffixes[state] = [tail for _, tail in zip(range(k), tails, strict=False)]
+
+        def initial_stream(
+            state: int, slot: int, weight: Fraction
+        ) -> Iterator[tuple[Fraction, int, int, _Suffix]]:
+            for tail in suffixes[state]:
+                yield scale(weight, tail.score), state, slot, tail
+
+        starts = merge(
+            *(
+                initial_stream(state, slot, weight)
+                for state, slot in self._initial
+                if (weight := exact[slot]) is not None
+            ),
+            key=lambda choice: choice[0],
+            reverse=True,
         )
         return tuple(
             self._path(state, slot, tail.arc_ids(), tail.final, weights, algebra)
-            for _, state, slot, tail in nlargest(
-                k, starts, key=lambda choice: choice[0]
-            )
+            for _, (_, state, slot, tail) in zip(range(k), starts, strict=False)
         )
 
     def sample(

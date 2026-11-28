@@ -8,6 +8,7 @@ import pytest
 import torch
 from torch import nn
 
+import quivers.core.relations.paths as path_engine
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.relations import (
     Arc,
@@ -320,3 +321,46 @@ def test_recomputing_backward_saves_path_intermediates_and_keeps_gradients():
     ]
     assert recomputed[3] <= 2 * len(source.slots)
     assert direct[3] >= steps * 2
+
+
+def test_ranked_merge_scores_only_stream_heads_and_preserves_stable_ties(monkeypatch):
+    degree = 128
+    k = 16
+    topology = RelationTopology(
+        (_INPUT,),
+        0,
+        3,
+        (Arc(0, 1, (0,), 0),) * degree + (Arc(1, 2, (0,), 0),) * degree,
+        (Boundary(0, 0),),
+        (Boundary(2, 0),),
+        ("one",),
+    )
+    relation = RationalRelation(topology, torch.ones(1), algebra=MARKOV)
+    query = relation.query(((0, 0),))
+    original = path_engine.mul
+    products = 0
+
+    def counted(left: Fraction, right: Fraction) -> Fraction:
+        nonlocal products
+        products += 1
+        return original(left, right)
+
+    monkeypatch.setattr(path_engine, "mul", counted)
+    chosen = query.k_best_paths(k)
+    assert [path.arc_ids for path in chosen] == [(0, degree + i) for i in range(k)]
+    assert products == 2 * degree + 2 * k - 1
+
+
+@pytest.mark.parametrize("k", [1, 10**100])
+def test_stream_ranking_does_not_narrow_python_integer_limits(k):
+    topology = RelationTopology(
+        (_INPUT,),
+        0,
+        2,
+        (Arc(0, 1, (0,), 0),),
+        (Boundary(0, 0),),
+        (Boundary(1, 0),),
+        ("one",),
+    )
+    source = RationalRelation(topology, torch.ones(1), algebra=MARKOV)
+    assert len(source.query(((0,),)).k_best_paths(k)) == 1

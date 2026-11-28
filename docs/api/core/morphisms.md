@@ -173,11 +173,15 @@ in the original records and introduces one arc per connecting boundary.
 A fixed-word query with an acyclic productive graph supports `best_path`
 and `k_best_paths` for Markov and LogProb weights. Ranking compares the exact
 values of the stored binary weights and reports path occurrence IDs in the
-original topology. Several paths can realize the same strings. At each active
-vertex, the ranking retains at most $k$ suffixes and considers at most $k$
-extensions per outgoing arc. Heap selection uses $O(\log(k+1))$ comparisons
-per candidate. The cost of each exact comparison depends on the sizes of its
-rational operands, and materializing the answers also costs their total length.
+original topology. Several paths can realize the same strings. Each
+outgoing arc gives one ordered stream of suffixes, since multiplying
+by a positive weight preserves their order. The query merges the
+stream heads. With $d_q$ streams at state $q$ and $K_q$ retained suffixes,
+the work is $O(d_q + K_q \log(d_q+1))$ arithmetic operations per
+state, and an analogous merge chooses the initial marks. Reading
+weight slots, the bit lengths of the exact rational scores, and
+materializing the selected arc sequences contribute additional
+costs.
 
 To sample from these paths, `sample_path` chooses an initial state by its weighted
 suffix mass, then chooses an arc or a stop with probability proportional to
@@ -358,8 +362,7 @@ through both compatible paths and local normalization.
 The scorer's rectangular action table scales with input positions,
 the insertion bound, and output alphabet size. Its cells and the
 compatible observation arcs count toward the explicit work budget.
-No table of all output words is constructed. The bound on
-consecutive insertions is part of the channel model, and the scorer
+The bound on consecutive insertions is part of the channel model, and the scorer
 can use the whole input as context for each edit.
 
 ### Path entropy and additive risk

@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **Ranked path decoding.** Lazy merging of exact suffix scores avoids multiplying each retained suffix by every incoming arc.
 - Fixed-word path sums can recompute path intermediates during backward. The weight source is evaluated once.
 - Fixed-word path sums evaluate arcs in batches by topological level. Incoming terms use linear space even when states have very different numbers of incoming arcs.
 

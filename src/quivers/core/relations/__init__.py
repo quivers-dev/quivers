@@ -451,9 +451,9 @@ class FixedStringQuery:
 
         Ties follow a deterministic order determined by the topology.
         Ranking compares the exact rational values of the stored binary
-        weights. It costs O(k (Q + E) log(k + 1)) arithmetic operations,
-        with additional cost for the bits of the path scores and for
-        returning the arc IDs. Zero-weight paths are omitted.
+        weights. Each arc supplies a ranked stream of suffixes,
+        and merging computes only the heads needed for the result.
+        Zero-weight paths are omitted.
         """
         if type(k) is not int or k < 0:
             raise ValueError("k must be a nonnegative integer")
