@@ -1272,6 +1272,71 @@ class QiecInterpretationDecl(Statement):
     kind: Literal["interpretation_decl"] = "interpretation_decl"
 
 
+class QiecRelationTape(dx.Model):
+    """One typed input or output tape of an authored relation."""
+
+    direction: Literal["input", "output"]
+    alphabet: str
+
+
+class QiecRelationMark(dx.Model):
+    """One initial or final occurrence of a named weight at a state."""
+
+    state: int
+    weight: str
+
+
+class QiecRelationArc(dx.Model):
+    """One primitive authored arc, with None denoting an epsilon label."""
+
+    source: int
+    target: int
+    labels: tuple[int | None, ...]
+    weight: str
+
+
+class QiecRelationDecl(Statement):
+    """A finite sparse topology over typed string tapes.
+
+    Tape order includes the input and output boundary. Each record in
+    the arc tuple is a distinct occurrence. Identical weight names
+    denote one original scalar parameter across the module.
+
+    Parameters
+    ----------
+    name
+        The authored relation name.
+    algebra
+        The shipped Markov or LogProb scalar algebra.
+    n_states
+        The number of finite control states.
+    tapes
+        Ordered direction and finite alphabet names.
+    arcs
+        Ordered source, target, label tuple, and weight-name records.
+    initial, final
+        The state and weight-name boundary records.
+    docs
+        The attached documentation comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    algebra: Literal["markov", "logprob"]
+    n_states: int
+    tapes: tuple[QiecRelationTape, ...]
+    arcs: tuple[QiecRelationArc, ...] = ()
+    initial: tuple[QiecRelationMark, ...] = ()
+    final: tuple[QiecRelationMark, ...] = ()
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_decl"] = "relation_decl"
+
+
 class QiecRelationScoreDecl(Statement):
     """A named score whose fixed relation request is supplied at runtime.
 
@@ -1283,6 +1348,8 @@ class QiecRelationScoreDecl(Statement):
         The closed scalar type of the score.
     operation
         The relation objective the runtime attachment must implement.
+    relation
+        The optional authored topology required by the score.
     docs
         The attached source doc comments.
     line, col
@@ -1293,7 +1360,10 @@ class QiecRelationScoreDecl(Statement):
 
     name: str
     result_type: QiecTypeExpr
-    operation: Literal["pair_weight", "conditional_log_prob"]
+    operation: Literal[
+        "pair_weight", "conditional_log_prob", "path_entropy", "expected_path_cost"
+    ]
+    relation: str | None = None
     docs: tuple[str, ...] = ()
     line: int = 0
     col: int = 0
@@ -1375,6 +1445,10 @@ __all__ = [
     "QiecComputationDecl",
     "QiecInterpretationClause",
     "QiecInterpretationDecl",
+    "QiecRelationArc",
+    "QiecRelationDecl",
+    "QiecRelationMark",
+    "QiecRelationTape",
     "QiecRelationScoreDecl",
     "QiecStringGraphScoreDecl",
 ]

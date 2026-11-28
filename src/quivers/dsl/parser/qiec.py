@@ -15,6 +15,10 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecInterpretationClause,
     QiecInterpretationDecl,
+    QiecRelationArc,
+    QiecRelationDecl,
+    QiecRelationMark,
+    QiecRelationTape,
     QiecRelationScoreDecl,
     QiecStringGraphScoreDecl,
     QiecConstructorValue,
@@ -81,6 +85,7 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "handler_decl",
         "computation_decl",
         "interpretation_decl",
+        "relation_decl",
         "relation_score_decl",
         "string_graph_score_decl",
     }
@@ -192,14 +197,23 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             line=line,
             col=col,
         )
+    if kind == "relation_decl":
+        return _walk_relation_decl(t, vid, docs, line, col)
     if kind == "relation_score_decl":
+        relation = t.field(vid, "relation")
         return QiecRelationScoreDecl(
             name=_field_text(t, vid, "name"),
             result_type=_walk_type(t, _required_field(t, vid, "result")),
             operation=cast(
-                Literal["pair_weight", "conditional_log_prob"],
+                Literal[
+                    "pair_weight",
+                    "conditional_log_prob",
+                    "path_entropy",
+                    "expected_path_cost",
+                ],
                 _field_text(t, vid, "operation"),
             ),
+            relation=None if relation is None else t.text(relation),
             docs=docs,
             line=line,
             col=col,
@@ -231,6 +245,62 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             col=col,
         )
     raise ParseError(f"unexpected QIEC statement kind {kind!r} at {vid}")
+
+
+def _walk_relation_decl(
+    t: _Tree, vid: str, docs: tuple[str, ...], line: int, col: int
+) -> QiecRelationDecl:
+    tapes: list[QiecRelationTape] = []
+    initial: list[QiecRelationMark] = []
+    final: list[QiecRelationMark] = []
+    arcs: list[QiecRelationArc] = []
+    for child in t.fields(vid, "entries"):
+        kind = t.kind(child)
+        if kind == "relation_tape_decl":
+            direction = cast(
+                Literal["input", "output"], _field_text(t, child, "direction")
+            )
+            tapes.append(
+                QiecRelationTape(
+                    direction=direction, alphabet=_field_text(t, child, "alphabet")
+                )
+            )
+        elif kind == "relation_boundary_decl":
+            boundary = _field_text(t, child, "boundary")
+            marks = initial if boundary == "initial" else final
+            marks.append(
+                QiecRelationMark(
+                    state=int(_field_text(t, child, "state")),
+                    weight=_field_text(t, child, "weight"),
+                )
+            )
+        elif kind == "relation_arc_decl":
+            labels = tuple(
+                None if t.text(label) == "eps" else int(t.text(label))
+                for label in t.fields(child, "labels")
+            )
+            arcs.append(
+                QiecRelationArc(
+                    source=int(_field_text(t, child, "source")),
+                    target=int(_field_text(t, child, "target")),
+                    labels=labels,
+                    weight=_field_text(t, child, "weight"),
+                )
+            )
+        else:
+            raise AssertionError(f"unexpected relation record {kind!r}")
+    return QiecRelationDecl(
+        name=_field_text(t, vid, "name"),
+        algebra=cast(Literal["markov", "logprob"], _field_text(t, vid, "algebra")),
+        n_states=int(_field_text(t, vid, "states")),
+        tapes=tuple(tapes),
+        arcs=tuple(arcs),
+        initial=tuple(initial),
+        final=tuple(final),
+        docs=docs,
+        line=line,
+        col=col,
+    )
 
 
 def _docs(t: _Tree, vid: str) -> tuple[str, ...]:

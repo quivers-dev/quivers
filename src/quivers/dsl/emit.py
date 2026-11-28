@@ -160,6 +160,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputation,
     QiecComputationDecl,
     QiecInterpretationDecl,
+    QiecRelationDecl,
     QiecRelationScoreDecl,
     QiecStringGraphScoreDecl,
     QiecConstructorValue,
@@ -1030,6 +1031,27 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
             for clause in stmt.clauses
         )
         return "\n".join(lines)
+    if isinstance(stmt, QiecRelationDecl):
+        lines = _doc_lines(stmt.docs, indent)
+        lines.append(
+            f"{_pad(indent)}relation {stmt.name} [algebra={stmt.algebra}, states={stmt.n_states}]"
+        )
+        pad = _pad(indent + 1)
+        lines.extend(f"{pad}{tape.direction} {tape.alphabet}" for tape in stmt.tapes)
+        lines.extend(
+            f"{pad}initial {mark.state} [weight={mark.weight}]" for mark in stmt.initial
+        )
+        for arc in stmt.arcs:
+            encoded = ", ".join(
+                "eps" if label is None else str(label) for label in arc.labels
+            )
+            lines.append(
+                f"{pad}arc {arc.source} -> {arc.target} [labels=({encoded}), weight={arc.weight}]"
+            )
+        lines.extend(
+            f"{pad}final {mark.state} [weight={mark.weight}]" for mark in stmt.final
+        )
+        return "\n".join(lines)
     if isinstance(stmt, QiecRelationScoreDecl | QiecStringGraphScoreDecl):
         result = _emit_qiec_type(stmt.result_type)
         keyword = (
@@ -1037,7 +1059,14 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
             if isinstance(stmt, QiecStringGraphScoreDecl)
             else "relation_score"
         )
-        text = f"{keyword} {stmt.name} : {result} [operation={stmt.operation}]"
+        relation = (
+            f", relation={stmt.relation}"
+            if isinstance(stmt, QiecRelationScoreDecl) and stmt.relation is not None
+            else ""
+        )
+        text = (
+            f"{keyword} {stmt.name} : {result} [operation={stmt.operation}{relation}]"
+        )
         return _with_docs(stmt.docs, indent, text)
     if isinstance(stmt, QiecComputationDecl):
         return _emit_qiec_computation_decl(stmt, indent)

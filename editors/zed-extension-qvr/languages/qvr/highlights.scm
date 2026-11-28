@@ -18,6 +18,8 @@
 
 [
   "aff"
+  "algebra"
+  "arc"
   "as"
   "atoms"
   "attention"
@@ -54,10 +56,13 @@
   "effect_depth"
   "else"
   "encoder"
+  "eps"
+  "expected_path_cost"
   "export"
   "factor"
   "false"
   "family"
+  "final"
   "for"
   "foreign"
   "forwards"
@@ -69,17 +74,22 @@
   "implementation"
   "in"
   "init"
+  "initial"
+  "input"
   "instance"
   "interpret"
   "introduces"
   "iterations"
+  "labels"
   "lacks"
   "lambek"
   "let"
   "lex"
   "lexicon"
+  "logprob"
   "loss"
   "marginalize"
+  "markov"
   "max_length"
   "message"
   "morphism"
@@ -91,15 +101,18 @@
   "op"
   "operation"
   "ops"
+  "output"
   "outputs"
   "pair_weight"
   "partial"
+  "path_entropy"
   "perform"
   "primitive"
   "program"
   "readout"
   "recurrent"
   "recursive"
+  "relation"
   "relation_score"
   "resume"
   "resumes"
@@ -113,6 +126,7 @@
   "signature"
   "sorts"
   "start"
+  "states"
   "string_graph_score"
   "structure"
   "terminal"
@@ -127,6 +141,7 @@
   "update"
   "var_init"
   "vertex_kinds"
+  "weight"
   "where"
   "with"
 ] @keyword
@@ -431,6 +446,16 @@
 (qiec_handler_operation_clause parameters: (qiec_local_binding name: (identifier) @variable.parameter))
 (qiec_handler_return_clause binder: (qiec_local_binding name: (identifier) @variable.parameter))
 (computation_decl name: (identifier) @function)
+(relation_decl "relation" @keyword)
+(relation_decl name: (identifier) @type)
+(relation_algebra) @type.builtin
+(relation_tape_direction) @keyword
+(relation_tape_decl alphabet: (identifier) @type)
+(relation_boundary_kind) @keyword
+(relation_boundary_decl weight: (identifier) @variable.parameter)
+(relation_arc_decl weight: (identifier) @variable.parameter)
+(relation_label "eps" @constant.builtin)
+(relation_score_decl relation: (identifier) @type)
 (relation_score_decl name: (identifier) @function)
 (relation_score_operation) @keyword
 (string_graph_score_decl name: (identifier) @function)

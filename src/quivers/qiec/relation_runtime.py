@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from functools import partial
+from hashlib import sha256
 
 import torch
 
@@ -17,14 +18,23 @@ from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
-from quivers.qiec.relations import FixedRelationCostRequest, FixedRelationRequest
+from quivers.qiec.relations import (
+    FixedRelationCostRequest,
+    FixedRelationRequest,
+    RationalRelationSpec,
+)
 from quivers.qiec.types import UNIT, TypeExpr
 
 
 _RELATION_SCORE_HANDLER_PREFIX = "__relation_score_"
 
 
-def _relation_score_handler_id(module: str, name: str, operation: str) -> HandlerId:
+def _relation_score_handler_id(
+    module: str,
+    name: str,
+    operation: str,
+    relation: RationalRelationSpec | None = None,
+) -> HandlerId:
     """Derive the checked handler identity of a source score.
 
     Parameters
@@ -35,13 +45,21 @@ def _relation_score_handler_id(module: str, name: str, operation: str) -> Handle
         The score's source name.
     operation
         The explicitly declared relation objective.
+    relation
+        An authored specification when the score binds its topology.
 
     Returns
     -------
     HandlerId
         The stable identity that includes the declared operation.
     """
-    return HandlerId.derive(module, "relation_scores", name, operation, "handler")
+    path = ("relation_scores", name, operation)
+    if relation is not None:
+        from quivers.qiec.serialization import dumps
+
+        fingerprint = sha256(dumps(relation).encode("utf-8")).hexdigest()
+        path += ("authored_topology", fingerprint)
+    return HandlerId.derive(module, *path, "handler")
 
 
 def _relation_score_handler_name(name: str) -> str:
@@ -121,6 +139,7 @@ class FixedRelationRuntimeProvider:
             raise ValueError("a fixed relation provider requires a handler name")
         self._handler_name = handler_name
         self._operation = request.operation
+        self._relation_spec = request.relation
         self._result_type = request.result_type
         relation = request.relation.bind(parameters)
         limits = dict(
@@ -278,10 +297,14 @@ class FixedRelationRuntimeProvider:
                 module.module, score_name, self._operation
             )
             if definition.id != expected_id:
-                raise TypeError(
-                    f"relation score {score_name!r} has a different declared operation "
-                    f"from the supplied {self._operation!r} request"
+                bound_id = _relation_score_handler_id(
+                    module.module, score_name, self._operation, self._relation_spec
                 )
+                if definition.id != bound_id:
+                    raise TypeError(
+                        f"relation score {score_name!r} has a different declared operation "
+                        f"or authored topology from the supplied {self._operation!r} request"
+                    )
         validation = self.validator_for(result)
         assert validation is not None
         runtime = compute_handler(
