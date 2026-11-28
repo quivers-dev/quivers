@@ -14,6 +14,7 @@ from quivers.qiec.contracts import Condition, DerivativeSemantics
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.evaluator import EvaluationError, Evaluator, FuelExhaustedError
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
+from quivers.qiec.numbers import decide
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.terms import (
     ConditionalValue,
@@ -382,6 +383,11 @@ class _ScalarDerivativeEvaluator(Evaluator):
         """
         if term.primitive in _BOOLEANS and term.result_type == BOOL:
             return super()._value(term, environment)
+        if term.primitive == PRIMITIVES["bool_to_real"].id and term.result_type == REAL:
+            value = self._value(term.arguments[0], environment)
+            # Replayed choices are fixed, and real comparisons have already
+            # established local stability before they yield a Boolean.
+            return self._constant(Fraction(int(decide(value, "a Boolean conversion"))))
         name = _ARITHMETIC.get(term.primitive)
         compare = _COMPARISONS.get(term.primitive)
         if not (

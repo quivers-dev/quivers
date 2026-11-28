@@ -1411,6 +1411,63 @@ assert replay.linearization.jvp((1,), ((0, 0), (0, 0))) == (0, 4)
 
 ::: quivers.qiec.finite_bernoulli_batch
 
+### Tensor replay and sampling
+
+`BernoulliTensorAxis` runs a narrower fragment through one QIEC evaluator
+pass using Torch tensors. Shared inputs stay scalar until an operation
+needs the row axis. Each Bernoulli request produces a separate choice and
+log probability for each row, even when every row has the same
+probability. The tensor pass retains the original request address and adds
+the row ordinal on each tape. The output reports source passes and steps.
+
+The active source uses addition, subtraction, multiplication, negation,
+and conversion of a Boolean to a Real. Branches must have literal Boolean
+conditions. The evaluator runs only the selected arm, so an unselected
+division by zero has no effect. The tensor pass checks that every reached
+probability is strictly between zero and one in the run's floating dtype.
+
+`replay` accepts the same addressed tapes as the exact scalar plan when
+the source satisfies both fragments. The output has one value per row
+and a log score per row and request. A PyTorch JVP or VJP through
+`replay` differentiates the value and log score with those choices
+fixed. A derivative of an expectation must also account for the
+dependence of the choice probabilities on the parameters. See the
+[finite Bernoulli estimator rules](#finite-bernoulli-estimators) for that
+calculation.
+
+```python
+import torch
+from quivers.dsl import Compiler, parse
+from quivers.qiec import BernoulliTensorAxis
+
+source = """
+instance random : Random
+
+define unit(s : Real, p : Real, x : Real) : Real !{random} =
+    let yes <- perform random.sample[Bool](site("yes"), Bernoulli(p))
+    return x + s * real(yes)
+"""
+module = Compiler(parse(source), module_name="tensor-batch").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "unit")
+axis = BernoulliTensorAxis(module, entry.id, "Items", shared_arity=1)
+shared = torch.tensor([2.0], dtype=torch.float64)
+rows = torch.tensor([[0.25, 3.0], [0.75, 4.0]], dtype=torch.float64)
+sample = axis.sample(shared, rows, generator=torch.Generator().manual_seed(7))
+assert sample.source_passes == 1
+assert sample.log_scores.shape == (2, 1)
+assert [tape.ordinal for tape in sample.tapes] == [0, 1]
+
+def fixed(s):
+    return axis.replay(s, rows, sample.tapes).values
+
+values, tangents = torch.func.jvp(fixed, (shared,), (torch.ones_like(shared),))
+torch.testing.assert_close(values, sample.values)
+assert tangents.tolist() == [float(tape.choices[0][1]) for tape in sample.tapes]
+```
+
+::: quivers.qiec.bernoulli_tensor_axis
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

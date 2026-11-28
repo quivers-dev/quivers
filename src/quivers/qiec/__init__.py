@@ -272,6 +272,10 @@ from quivers.qiec.finite_bernoulli_batch import (
     BernoulliRowReplay,
     plan_bernoulli_batch,
 )
+from quivers.qiec.bernoulli_tensor_axis import (
+    BernoulliTensorAxis,
+    BernoulliTensorResult,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1275,6 +1279,8 @@ __all__ += [
     "BernoulliBatchReplay",
     "BernoulliRowReplay",
     "plan_bernoulli_batch",
+    "BernoulliTensorAxis",
+    "BernoulliTensorResult",
 ]
 __all__ += [
     "FiniteAlgebra",
