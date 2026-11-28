@@ -2742,14 +2742,18 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
         pr.ProgramSite: IRQiecProgramSite,
         pr.ProgramEntry: IRQiecProgramEntry,
     }
-    model = model_map.get(type(value))
+    weakened = isinstance(value, m._WeakenedComputation)
+    record = m.NamedComputation if weakened else type(value)
+    model = model_map.get(record)
     if model is None:
         raise TypeError(f"unsupported QIEC kernel record {type(value).__qualname__}")
     values = {
         name: _convert(getattr(value, name))
-        for name in type(value).__field_specs__
+        for name in record.__field_specs__
         if name != "tag"
     }
+    if weakened:
+        values["type"] = _convert(value.type.with_(effects=value.body_effects))
     return model(**values)
 
 
@@ -2769,6 +2773,8 @@ def lower_qiec_ir(module: QiecModule) -> IRQiecModule:
     """
     module = outcome_target_scope(module)
     _refuse_outcome_projection(module, "ir")
+    if any(isinstance(item, m._WeakenedComputation) for item in module.computations):
+        m.validate_module(module)
     reachable = m.reachable_computations(module)
     standalone_deduction_roots = (
         {

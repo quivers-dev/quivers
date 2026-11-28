@@ -29,6 +29,7 @@ read it, so a handler is discharged for all of them or for none.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from functools import cached_property
 from typing import Literal, cast
 
 import didactic.api as dx
@@ -36,6 +37,7 @@ import didactic.api as dx
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, HeldValue
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.qiec.checking import KernelRegistry
 from quivers.qiec.declarations import ConstructorDecl
 from quivers.qiec.effects import (
     EffectDef,
@@ -60,7 +62,15 @@ from quivers.qiec.identifiers import (
     _CLAUSE_SCOPE,
     _clause_address,
 )
-from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
+from quivers.qiec.module import (
+    NamedComputation,
+    QiecModule,
+    _WeakenedComputation,
+    _infer_named_body,
+    _return_observes_address,
+    _strict_closed_subrow,
+    validate_module,
+)
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.state_specialization import (
     StateSpecializationUnsupported,
@@ -2527,6 +2537,7 @@ class _Tables:
     """
 
     def __init__(self, module: QiecModule) -> None:
+        self._module = module
         self.handlers: dict[HandlerId, HandlerDef] = {
             item.id: item for item in module.handlers
         }
@@ -2548,6 +2559,17 @@ class _Tables:
             item.id: item for item in module.constructors
         }
         self.families = {item.id: item for item in module.families}
+
+    @cached_property
+    def registry(self) -> KernelRegistry:
+        """Resolve the checked signatures used to re-infer a discharged body.
+
+        Returns
+        -------
+        KernelRegistry
+            The module registry with the original nominal calling types.
+        """
+        return validate_module(self._module)
 
     def field_types(self, value: ConstructorValue) -> tuple[TypeExpr, ...]:
         """The types of a constructor application's fields.
@@ -2925,7 +2947,24 @@ def _discharged(
             reason=error.reason,
             origin=error.origin,
         )
-    return computation.with_(body=body)
+    reduced = computation.with_(body=body)
+    declared = computation.type
+    if declared.effects.tail is None and declared.effects.entries:
+        actual = _infer_named_body(reduced, tables.registry)
+        if actual.result == declared.result and _strict_closed_subrow(
+            actual.effects, declared.effects
+        ):
+            return _WeakenedComputation(
+                id=computation.id,
+                name=computation.name,
+                telescope=computation.telescope,
+                parameters=computation.parameters,
+                body=body,
+                type=declared,
+                origin=computation.origin,
+                body_effects=actual.effects,
+            )
+    return reduced
 
 
 def discharge_module(module: QiecModule) -> DischargedModule:

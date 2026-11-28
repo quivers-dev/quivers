@@ -332,6 +332,16 @@ that the request captures, so resuming that continuation with $y$ runs the same 
 $\mathcal{E}[\mathsf{return}\ y]$. An `if` whose condition is a variable is kept, so no step depends on an
 assumption about a value. $\square$
 
+A lowered named computation keeps its original calling type. If the
+rewritten body has a smaller closed row, the declaration carries that
+body row explicitly. The module checker infers the body type again and
+requires the same result type and exact body row. Each remaining row entry
+must have the original instance identity and applied effect. Thus callers
+retain the same nominal type, and the target can check the rewritten body
+against the effects it actually needs. For instance, a zero-grade clause
+may drop the only draw and score in a continuation, leaving a pure body
+whose callable signature still names both effects.
+
 **Address preservation.** A residual request has an address $(o,d,s)$ consisting of its static
 site identifier $o$, its ordered dynamic frames $d$, and its resumption path $s$. For the admitted
 discharge fragment, the corresponding residual requests of $c$ and $c'$ have equal addresses

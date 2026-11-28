@@ -284,7 +284,12 @@ from quivers.qiec.kinds import (
     TypeKind,
     UserIndexSort,
 )
-from quivers.qiec.module import NamedComputation, NamedEffectInstance, QiecModule
+from quivers.qiec.module import (
+    NamedComputation,
+    NamedEffectInstance,
+    QiecModule,
+    _WeakenedComputation,
+)
 from quivers.qiec.programs import ProgramEntry, ProgramParameter, ProgramSite
 from quivers.qiec.substitution import StaticSubstitution
 from quivers.qiec.terms import (
@@ -530,6 +535,7 @@ _NODE_CLASSES = (
     EffectRequest,
     NamedEffectInstance,
     NamedComputation,
+    _WeakenedComputation,
     QiecModule,
     EffectEquation,
     EffectLawObligation,
