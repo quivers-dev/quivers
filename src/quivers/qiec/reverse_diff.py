@@ -100,7 +100,17 @@ type _ReverseVertex = _SeedVertex | _BinaryVertex
 
 @dataclass(frozen=True)
 class _SinkGuard:
-    """A strict comparison and its two lazy choices of output slot."""
+    """A strict comparison and its two lazy choices of output slot.
+
+    Parameters
+    ----------
+    left, right : int
+        The operand positions in the common primal table.
+    then, otherwise : int or _SinkGuard
+        The selected output or next comparison for each outcome.
+    origin : SourceOrigin
+        The authored comparison's source location.
+    """
 
     left: int
     right: int
@@ -118,11 +128,47 @@ def _source_sink(
     operations: dict[str, OperationDef],
     positions: dict[Local, int],
 ) -> _ReverseSink:
-    """Check a lazy decision that only compares or selects existing vertices."""
+    """Check a lazy decision that only compares or selects existing vertices.
+
+    Parameters
+    ----------
+    term : Computation
+        The decision after the common vertex allocations.
+    instance : EffectInstanceId
+        The nominal instance that owns the vertices and requests.
+    operations : dict of str to OperationDef
+        The checked operations of that instance.
+    positions : dict of Local to int
+        The position of each local vertex in allocation order.
+
+    Returns
+    -------
+    int or _SinkGuard
+        A terminal output slot or a checked decision selecting one.
+    """
     less = operations.get("less")
     comparisons = 0
 
     def visit(current: Computation, depth: int) -> _ReverseSink:
+        """Check one decision subtree and charge any visited comparison.
+
+        Parameters
+        ----------
+        current : Computation
+            The source subtree to check.
+        depth : int
+            The number of strict comparisons enclosing this subtree.
+
+        Returns
+        -------
+        int or _SinkGuard
+            The output slot or decision represented by this subtree.
+
+        Raises
+        ------
+        KernelError
+            The decision violates a vertex, ownership, or budget check.
+        """
         nonlocal comparisons
         if isinstance(current, Perform):
             request = current.request
@@ -817,7 +863,20 @@ def _scalar_operation(
 
 
 def _compiled_sink(sink: _ReverseSink, primals: list[Var]) -> Value:
-    """Select the output slot and primal using only reached comparisons."""
+    """Select the output slot and primal using only reached comparisons.
+
+    Parameters
+    ----------
+    sink : int or _SinkGuard
+        The checked output slot or decision that selects it.
+    primals : list of Var
+        References to the common primal bindings, in vertex order.
+
+    Returns
+    -------
+    Value
+        The selected slot and its primal as a checked pair.
+    """
     if isinstance(sink, int):
         return TupleValue(
             items=(LiteralValue(value=sink, type=INT), primals[sink]),
