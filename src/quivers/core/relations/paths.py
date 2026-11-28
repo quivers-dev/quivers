@@ -239,6 +239,76 @@ class _PathWalks:
         self._final = dict(observation.final)
 
     @cached_property
+    def max_path_length(self) -> int | None:
+        if self._cyclic:
+            raise ProductiveEpsilonCycleError(
+                "a finite trace capacity requires an acyclic productive graph"
+            )
+        longest: dict[int, int] = {}
+        for state in reversed(self._order):
+            longest[state] = max(
+                (1 + longest[target] for target, _ in self._arcs[state]), default=0
+            )
+        return max((longest[state] for state, _ in self._initial), default=None)
+
+    def path_log_prob(
+        self,
+        words: Words,
+        initial: int,
+        arcs: tuple[int, ...],
+        final: int,
+        log_weights: torch.Tensor,
+        total: torch.Tensor,
+    ) -> torch.Tensor:
+        slots = self._path_slots(words, initial, arcs, final)
+        if slots is None:
+            return log_weights.new_full((), -torch.inf)
+        values = _take(log_weights, slots)
+        if bool(torch.isneginf(values).any()):
+            return log_weights.new_full((), -torch.inf)
+        result = values.sum() - total
+        if not bool(torch.isfinite(result)):
+            raise OverflowError("normalized trace score is outside the input precision")
+        return result
+
+    @cached_property
+    def _initial_by_state(self) -> dict[int, int]:
+        return {mark.state: mark.weight for mark in self._topology.initial}
+
+    def _path_slots(
+        self, words: Words, initial: int, ids: tuple[int, ...], final: int
+    ) -> tuple[int, ...] | None:
+        topology = self._topology
+        if type(initial) is not int or type(final) is not int:
+            return None
+        start = self._initial_by_state.get(initial)
+        end = topology._final_slots.get(final)
+        if start is None or end is None:
+            return None
+        offsets = [0] * len(words)
+        locations = [start]
+        current = initial
+        for arc_id in ids:
+            if type(arc_id) is not int or not 0 <= arc_id < len(topology.arcs):
+                return None
+            arc = topology.arcs[arc_id]
+            if arc.source != current:
+                return None
+            for tape, (symbol, word) in enumerate(zip(arc.labels, words, strict=True)):
+                if symbol is not None:
+                    offset = offsets[tape]
+                    if offset == len(word) or word[offset] != symbol:
+                        return None
+                    offsets[tape] += 1
+            current = arc.target
+            locations.append(arc.weight)
+        if current != final or any(
+            offset != len(word) for offset, word in zip(offsets, words, strict=True)
+        ):
+            return None
+        return (*locations, end)
+
+    @cached_property
     def _forward(self) -> _Chart:
         arcs = [
             [(target, self._topology.arcs[arc_id].weight) for target, arc_id in row]

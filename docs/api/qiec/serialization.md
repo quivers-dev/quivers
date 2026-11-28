@@ -119,6 +119,36 @@ primitive relation checks that declaration's topology instead.
 
 ::: quivers.qiec.relation_composition.FixedComposedRelationRequest
 
+## Typed sparse path posteriors
+
+A `FixedRelationPathSampleRequest` binds a fixed word tuple and a
+reproducible CPU generator to the original Markov or LogProb weights.
+The result is a checked `Sampleable` whose values contain the initial
+state, final state, and a fixed-size vector of original arc IDs.
+Trailing positions use `-1` padding. Parallel arcs remain distinct
+even when their weights share one parameter.
+
+The productive fixed-word graph must be acyclic. Before binding a
+law, a reverse topological pass verifies that every structurally
+accepting path fits the trace capacity, including paths whose current
+weights are zero. This preserves the full support after changes to the
+weights. Scoring validates each original trace and subtracts the
+observed log partition from its log weight. Draws use the existing
+float64 conditional suffix sampler. Multiplying the successive
+choice probabilities cancels the intermediate suffix weights and
+leaves the same normalized path probability.
+
+Pass the law to a checked `Random.sample` operation or use it in
+`log_prob` and `log_mass`. A trace that violates the path topology,
+does not match the words, or has zero weight has log probability
+negative infinity. The law reads live parameter values and scoring
+differentiates on the current positive support. The reference machine
+can replay a trace by site name with the same checked result type.
+
+::: quivers.qiec.relation_path_law.FixedRelationPathSampleRequest
+
+::: quivers.qiec.relation_path_law.RelationPathLaw
+
 ## String factor graphs
 
 `StringFactorGraphSpec` records the nominal alphabet and optional
