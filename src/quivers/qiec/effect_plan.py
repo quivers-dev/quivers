@@ -15,7 +15,11 @@ from quivers.qiec.effect_laws import (
 )
 from quivers.qiec.handler_carriers import HandlerCarrierShape, classify_handler_carrier
 from quivers.qiec.identifiers import ComputationId
-from quivers.qiec.laws import FiniteLawLimit, FiniteLawUnsupported
+from quivers.qiec.handler_interchange import (
+    FiniteHandlerInterchange,
+    check_finite_handler_interchange,
+)
+from quivers.qiec.laws import FiniteLawDecision, FiniteLawLimit, FiniteLawUnsupported
 from quivers.qiec.module import QiecModule, reached_handlers, validate_module
 from quivers.qiec.polynomial_laws import PolynomialLawLimit, PolynomialLawUnsupported
 from quivers.qiec.rational_laws import RationalLawLimit, RationalLawUnsupported
@@ -57,6 +61,38 @@ class EffectLawReport:
 
 
 @dataclass(frozen=True, slots=True)
+class EffectInterchangeReport:
+    """The returned-value observation of one requested finite interchange.
+
+    Parameters
+    ----------
+    statement : FiniteHandlerInterchange
+        The two named computations whose installation orders are compared.
+    decision : FiniteLawDecision or None
+        The result of the finite comparison when it can be decided.
+    reason : str or None
+        The obstacle to deciding the interchange, if there is one.
+    """
+
+    statement: FiniteHandlerInterchange
+    decision: FiniteLawDecision | None
+    reason: str | None
+
+    @property
+    def status(self) -> _Status:
+        """The status of the returned-value comparison.
+
+        Returns
+        -------
+        _Status
+            Whether the interchange was checked, refuted, or left unresolved.
+        """
+        if self.decision is None:
+            return "unresolved"
+        return "checked" if self.decision.counterexample is None else "refuted"
+
+
+@dataclass(frozen=True, slots=True)
 class EffectPlan:
     """A view of the source, carrier analysis, law results, and discharge.
 
@@ -74,6 +110,8 @@ class EffectPlan:
     discharge : DischargedModule
         The result of ordinary checked discharge, including its obstacles.
         Ordinary discharge applies its own checked rules.
+    interchanges : tuple[EffectInterchangeReport, ...]
+        Returned-value observations from independently checked finite interchanges.
     """
 
     bundle: EffectLawBundle
@@ -81,6 +119,7 @@ class EffectPlan:
     carriers: tuple[HandlerCarrierShape, ...]
     laws: tuple[EffectLawReport, ...]
     discharge: DischargedModule
+    interchanges: tuple[EffectInterchangeReport, ...] = ()
 
 
 def _law_report(
@@ -151,6 +190,7 @@ def checked_effect_plan(
     bundle: EffectLawBundle,
     computation: ComputationId,
     *,
+    interchanges: tuple[FiniteHandlerInterchange, ...] = (),
     max_assignments: int = 65_536,
     max_work: int = 65_536,
     fuel: int = 65_536,
@@ -168,6 +208,8 @@ def checked_effect_plan(
         The source module and the nominal obligations to inspect.
     computation : ComputationId
         The source declaration whose reachable handlers to classify.
+    interchanges : tuple[FiniteHandlerInterchange, ...]
+        Named finite observations checked independently of discharge.
     max_assignments : int
         The maximum number of assignments per finite obligation.
     max_work : int
@@ -214,7 +256,29 @@ def checked_effect_plan(
         )
         for obligation in bundle.obligations
     )
-    return EffectPlan(bundle, computation, carriers, laws, discharge_module(module))
+    comparisons: list[EffectInterchangeReport] = []
+    for statement in interchanges:
+        try:
+            decision = check_finite_handler_interchange(
+                module, statement, max_assignments=max_assignments, fuel=fuel
+            )
+        except (FiniteLawLimit, FiniteLawUnsupported) as error:
+            comparisons.append(EffectInterchangeReport(statement, None, str(error)))
+        else:
+            comparisons.append(EffectInterchangeReport(statement, decision, None))
+    return EffectPlan(
+        bundle,
+        computation,
+        carriers,
+        laws,
+        discharge_module(module),
+        tuple(comparisons),
+    )
 
 
-__all__ = ["EffectLawReport", "EffectPlan", "checked_effect_plan"]
+__all__ = [
+    "EffectInterchangeReport",
+    "EffectLawReport",
+    "EffectPlan",
+    "checked_effect_plan",
+]

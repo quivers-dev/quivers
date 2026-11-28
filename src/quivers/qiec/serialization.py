@@ -124,6 +124,7 @@ from quivers.qiec.effect_law_schema import (
     EffectLawBundle,
     EffectLawObligation,
 )
+from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
@@ -490,6 +491,7 @@ _NODE_CLASSES = (
     EffectEquation,
     EffectLawObligation,
     EffectLawBundle,
+    FiniteHandlerInterchange,
     ProgramEntry,
     ProgramParameter,
     ProgramSite,

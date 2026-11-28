@@ -186,7 +186,16 @@ from quivers.qiec.effect_laws import (
     check_finite_effect_law,
     check_scalar_effect_law,
 )
-from quivers.qiec.effect_plan import EffectLawReport, EffectPlan, checked_effect_plan
+from quivers.qiec.handler_interchange import (
+    FiniteHandlerInterchange,
+    check_finite_handler_interchange,
+)
+from quivers.qiec.effect_plan import (
+    EffectInterchangeReport,
+    EffectLawReport,
+    EffectPlan,
+    checked_effect_plan,
+)
 from quivers.qiec.bernoulli_estimators import (
     BernoulliBranch,
     BernoulliGradientPlan,
@@ -1120,6 +1129,8 @@ __all__ += [
 __all__ += [
     "EffectEquation",
     "EffectLawBundle",
+    "FiniteHandlerInterchange",
+    "check_finite_handler_interchange",
     "EffectLawObligation",
     "FiniteEffectLawDecision",
     "ScalarEffectLawDecision",
@@ -1127,7 +1138,12 @@ __all__ += [
     "check_scalar_effect_law",
 ]
 __all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carrier"]
-__all__ += ["EffectLawReport", "EffectPlan", "checked_effect_plan"]
+__all__ += [
+    "EffectInterchangeReport",
+    "EffectLawReport",
+    "EffectPlan",
+    "checked_effect_plan",
+]
 __all__ += [
     "BernoulliBranch",
     "BernoulliGradientPlan",

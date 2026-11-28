@@ -709,6 +709,104 @@ assert estimate.virtual_branches == ((False,), (True,))
 
 ::: quivers.qiec.bernoulli_estimators
 
+## Finite handler interchange
+
+A `FiniteHandlerInterchange` names two checked computations whose only
+structural difference is the order of two distinct handler installations.
+They supply the same initial state to each installation and invoke the
+same body. `check_finite_handler_interchange` tests the returned value
+on every assignment to the finite inputs.
+
+In the example below, `cells_lr` and `cells_rl` agree on all eight
+Boolean input triples. Each cell updates its own component of the
+product state, and the body still sequences every read and write.
+With a multi-shot choice, `state_first(false)` returns `true` because
+the first resumption updates the outer cell before the second reads it.
+`choice_first(false)` returns `false` because each resumption of the
+inner cell starts from the captured initial state. The certificate
+concerns the returned value for this body. Trace observations and
+other computations require their own evidence. Pass both statements to
+`Compiler.effect_plan(..., interchanges=...)` to report the comparisons
+as checked and refuted beside the ordinary discharge plan.
+
+<!-- compile: qiec -->
+```qvr
+effect Cell
+    get : Unit -> Bool
+    put : Bool -> Unit
+
+instance left_cell : Cell
+instance right_cell : Cell
+
+effect Choice
+    pick : Unit -> Bool
+
+instance choice : Choice
+
+handler state for Cell : Bool -> Bool with (current : Bool) [coverage=total, forwards=none, implementation=authored]
+    return v =>
+        return v
+    get resumes 1 =>
+        resume(current)
+    put(v : Bool) resumes 1 =>
+        resume(unit) with (v)
+
+handler some for Choice : Bool -> Bool [coverage=total, forwards=none, implementation=authored]
+    return v =>
+        return v
+    pick resumes omega =>
+        let a <- resume(true)
+        let b <- resume(false)
+        if a then
+            return true
+        else
+            return b
+
+define two_cells(new : Bool) : Bool !{left_cell, right_cell} =
+    let old <- perform right_cell.get()
+    perform left_cell.put(new)
+    let current <- perform left_cell.get()
+    perform right_cell.put(current)
+    let check <- perform right_cell.get()
+    if old then
+        return check
+    else
+        if check then
+            return false
+        else
+            return true
+
+define cells_lr(a : Bool, b : Bool, new : Bool) : Bool !{} =
+    handle left_cell with state(a) in
+        handle right_cell with state(b) in
+            two_cells(new)
+
+define cells_rl(a : Bool, b : Bool, new : Bool) : Bool !{} =
+    handle right_cell with state(b) in
+        handle left_cell with state(a) in
+            two_cells(new)
+
+define cell_choice() : Bool !{left_cell, choice} =
+    let positive <- perform choice.pick()
+    if positive then
+        perform left_cell.put(true)
+        return false
+    else
+        perform left_cell.get()
+
+define state_first(initial : Bool) : Bool !{} =
+    handle left_cell with state(initial) in
+        handle choice with some in
+            cell_choice()
+
+define choice_first(initial : Bool) : Bool !{} =
+    handle choice with some in
+        handle left_cell with state(initial) in
+            cell_choice()
+```
+
+::: quivers.qiec.handler_interchange
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

@@ -68,6 +68,7 @@ from quivers.qiec import (
 )
 from quivers.qiec.effect_law_schema import EffectLawBundle, EffectLawObligation
 from quivers.qiec.effect_plan import EffectPlan, checked_effect_plan
+from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.terms import PlateAxis
@@ -503,6 +504,7 @@ class Compiler(
         name: str,
         *,
         obligations: tuple[EffectLawObligation, ...] = (),
+        interchanges: tuple[FiniteHandlerInterchange, ...] = (),
         max_assignments: int = 65_536,
         max_work: int = 65_536,
         fuel: int = 65_536,
@@ -515,6 +517,8 @@ class Compiler(
             The program or computation entry point's name.
         obligations : tuple[EffectLawObligation, ...]
             The nominal equations to check against this compiler's module.
+        interchanges : tuple[FiniteHandlerInterchange, ...]
+            The finite handler interchanges to check against this module.
         max_assignments : int
             The domain size limit per finite obligation.
         max_work : int
@@ -547,6 +551,7 @@ class Compiler(
         return checked_effect_plan(
             EffectLawBundle(module=module, obligations=obligations),
             root,
+            interchanges=interchanges,
             max_assignments=max_assignments,
             max_work=max_work,
             fuel=fuel,
