@@ -11,6 +11,7 @@ from torch import nn
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.objects import StringSet
 from quivers.core.relations import RationalRelation, _weight_snapshot
+from quivers.core.relations._centered import CenteredStringLogScore, _CenteredLogRatio
 from quivers.core.relations.joins import join
 from quivers.core.relations.paths import _conditional_log_ratio, _require_normalizer
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
@@ -214,6 +215,40 @@ class TreeStringMarginal:
                     _require_normalizer(mass, algebra)
                 score = plan.weight()
             return _conditional_log_ratio(score, masses[0], algebra)
+
+        return evaluate
+
+    def centered_query(
+        self,
+        word: tuple[int, ...],
+        *,
+        max_center_occurrences: int,
+        max_dyadic_work: int,
+    ) -> Callable[[], CenteredStringLogScore]:
+        """Compile a centered binary64 LogProb query in the root component.
+
+        The queried component's productive observations must be
+        acyclic. Disconnected components still require a positive
+        normalizer under their existing closure and precision contract.
+        Work in the returned report concerns the centered component.
+        """
+        if self._relation.algebra is not LOG_PROB:
+            raise TypeError("centered log ratios require LogProb relations")
+        plan = _CenteredLogRatio.compile(
+            self._relation.topology,
+            self._normalizers[0]._relation.topology,
+            (word,),
+            max_states=self._bounds.max_states,
+            max_work=self._bounds.max_work,
+            max_center_occurrences=max_center_occurrences,
+            max_dyadic_work=max_dyadic_work,
+        )
+
+        def evaluate() -> CenteredStringLogScore:
+            with _weight_snapshot():
+                for query in self._normalizers[1:]:
+                    _require_normalizer(query.weight(), LOG_PROB)
+                return plan.evaluate(self._relation._weights())
 
         return evaluate
 

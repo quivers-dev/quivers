@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.relations import RationalRelation
+from quivers.core.relations._centered import CenteredStringLogScore, _CenteredLogRatio
 from quivers.core.relations.paths import _conditional_log_ratio
 from quivers.core.relations.queries import _validate_limits
 from quivers.core.relations.topology import Words
@@ -75,6 +78,34 @@ class ConditionalStringQuery:
         mass = self._mass._plan.evaluate(values, algebra)
         score = query._plan.evaluate(values, algebra)
         return _conditional_log_ratio(score, mass, algebra)
+
+    def centered_query(
+        self, output_words: Words, *, max_center_occurrences: int, max_dyadic_work: int
+    ) -> Callable[[], CenteredStringLogScore]:
+        """Compile an opt-in centered binary64 LogProb likelihood.
+
+        Both the fixed-output and all-output productive observations
+        must be acyclic. Each call reads one live weight vector and
+        uses its exact binary64 factors to remove the large absolute
+        log masses before packed summation. The limits bound occurrence
+        storage and a worst-case count of exact pass visits.
+        """
+        if self._relation.algebra is not LOG_PROB:
+            raise TypeError("centered log ratios require LogProb relations")
+        plan = _CenteredLogRatio.compile(
+            self._relation.topology,
+            self._mass._relation.topology,
+            output_words,
+            max_states=self._max_states,
+            max_work=self._max_work,
+            max_center_occurrences=max_center_occurrences,
+            max_dyadic_work=max_dyadic_work,
+        )
+
+        def evaluate() -> CenteredStringLogScore:
+            return plan.evaluate(self._relation._weights())
+
+        return evaluate
 
 
 __all__ = ["ConditionalStringQuery"]
