@@ -19,14 +19,23 @@ from quivers.qiec.identifiers import (
     ComputationId,
     ConstructorId,
     DistributionId,
+    DynamicAddressFrame,
     EffectInstanceId,
     HandlerId,
     PrimitiveId,
+    SiteId,
     SourceOrigin,
     StaticScopeId,
 )
 from quivers.qiec.kinds import Telescope
-from quivers.qiec.types import EffectRef, IndexTerm, StaticArgument, TypeExpr
+from quivers.qiec.types import (
+    EffectRef,
+    IndexTerm,
+    StaticArgument,
+    TypeApplication,
+    TypeConstructorRef,
+    TypeExpr,
+)
 
 
 class Local(QiecModel):
@@ -1018,6 +1027,116 @@ class Resume(QiecModel):
     tag: Literal["resume"] = "resume"
 
 
+_CALL_ADDRESS = TypeApplication(constructor=TypeConstructorRef.builtin("CallAddress"))
+_INSTANCE_ADDRESS = TypeApplication(
+    constructor=TypeConstructorRef.builtin("InstanceAddress")
+)
+_RETURN_ADDRESS = TypeApplication(
+    constructor=TypeConstructorRef.builtin("HandlerReturnAddress")
+)
+
+
+class CallAddress(QiecModel):
+    """Allocate the address of a call that discharge has inlined.
+
+    Allocation takes place at the original call entry. The address can
+    be restored around several parts of the rewritten continuation.
+
+    Parameters
+    ----------
+    callee
+        The called computation's identity.
+    origin
+        The original call site.
+    previous
+        The replaced call's allocation when this was a tail call.
+    tag
+        The serialization discriminator.
+    """
+
+    callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    previous: Var | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["call_address"] = "call_address"
+
+
+class InstanceAddress(QiecModel):
+    """Allocate the address of a local instance removed during discharge.
+
+    Parameters
+    ----------
+    origin
+        The site of the original allocation.
+    tag
+        The serialization discriminator.
+    """
+
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["instance_address"] = "instance_address"
+
+
+class HandlerReturnAddress(QiecModel):
+    """Allocate the return address of a discharged handler installation.
+
+    Parameters
+    ----------
+    handler
+        The installed declaration whose return clause can make requests.
+    tag
+        The serialization discriminator.
+    """
+
+    handler: HandlerId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["handler_return_address"] = "handler_return_address"
+
+
+class HandlerClauseAddress(QiecModel):
+    """A relative operation-clause address that reads captured scopes.
+
+    Parameters
+    ----------
+    site
+        The static site of the request that entered the clause.
+    captured
+        The ordered call sites and bindings for captured instance or return addresses.
+    """
+
+    site: SiteId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    captured: tuple[SiteId | Var, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+
+class WithTraceAddresses(QiecModel):
+    """Run a residual computation under previously allocated trace addresses.
+
+    Parameters
+    ----------
+    addresses
+        The live calls, local instances and handler returns, in outer-to-inner order.
+    body
+        The computation that observes the restored addresses.
+    previous
+        A replaced inlined caller whose lexical path a residual tail
+        call inherits.
+    resumptions
+        The discharged shots enclosing a residual call, in order.
+    clauses
+        The discharged clause activations enclosing a residual call.
+    tag
+        The serialization discriminator.
+    """
+
+    addresses: tuple[Var, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    previous: Var | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
+    resumptions: tuple[int, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    clauses: tuple[DynamicAddressFrame | HandlerClauseAddress, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    tag: Literal["with_trace_addresses"] = "with_trace_addresses"
+
+
 class NewInstance(QiecModel):
     """Lexically scoped allocation of an effect instance.
 
@@ -1074,7 +1193,19 @@ class If(QiecModel):
 
 
 type Computation = (
-    Return | Bind | Perform | Handle | Case | If | Call | Resume | NewInstance
+    Return
+    | Bind
+    | Perform
+    | Handle
+    | Case
+    | If
+    | Call
+    | CallAddress
+    | HandlerReturnAddress
+    | InstanceAddress
+    | WithTraceAddresses
+    | Resume
+    | NewInstance
 )
 """A computation term: every term that may perform effects or control flow."""
 
@@ -1084,6 +1215,7 @@ __all__ = [
     "AttachmentRef",
     "Bind",
     "Call",
+    "CallAddress",
     "Case",
     "CaseBranch",
     "CaseMotive",
@@ -1095,7 +1227,10 @@ __all__ = [
     "EvidenceValue",
     "Gather",
     "Handle",
+    "HandlerClauseAddress",
+    "HandlerReturnAddress",
     "If",
+    "InstanceAddress",
     "KernelMatrix",
     "LetBinding",
     "LetValue",
@@ -1125,4 +1260,5 @@ __all__ = [
     "Value",
     "Var",
     "WeightSum",
+    "WithTraceAddresses",
 ]

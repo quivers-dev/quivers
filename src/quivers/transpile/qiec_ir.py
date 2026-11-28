@@ -2624,10 +2624,18 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
         )
     if isinstance(value, tm.Return):
         return IRQiecReturn(value=cast(IRQiecValue, _convert(value.value)))
+    if isinstance(value, tm.WithTraceAddresses):
+        return _convert(value.body)
     if isinstance(value, tm.Bind):
         steps: list[IRQiecBindStep] = []
         current: tm.Computation = value
         while isinstance(current, tm.Bind):
+            if isinstance(
+                current.first,
+                tm.CallAddress | tm.InstanceAddress | tm.HandlerReturnAddress,
+            ):
+                current = current.then
+                continue
             steps.append(
                 IRQiecBindStep(
                     binder=cast(IRQiecLocal, _convert(current.binder)),
@@ -2635,6 +2643,8 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
                 )
             )
             current = current.then
+        if not steps:
+            return _convert(current)
         return IRQiecBind(
             steps=tuple(steps),
             then=cast(IRQiecComputation, _convert(current)),

@@ -68,11 +68,14 @@ from quivers.qiec.terms import (
     AffineMap,
     Bind,
     Call,
+    CallAddress,
     Comprehension,
     Computation,
     DistributionValue,
     Gather,
     Handle,
+    HandlerReturnAddress,
+    InstanceAddress,
     KernelMatrix,
     LetBinding,
     LiteralValue,
@@ -91,6 +94,7 @@ from quivers.qiec.terms import (
     TensorValue,
     TupleValue,
     Value,
+    WithTraceAddresses,
     Var,
     WeightSum,
 )
@@ -475,6 +479,11 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
+            if isinstance(first, CallAddress | InstanceAddress | HandlerReturnAddress):
+                node = node.then
+                continue
+            while isinstance(first, WithTraceAddresses):
+                first = first.body
             if isinstance(first, Bind):
                 # ``traverse`` and other finite sequencing forms elaborate to
                 # a computation in the first position of the source binding.
@@ -1297,6 +1306,11 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
+            if isinstance(first, CallAddress | InstanceAddress | HandlerReturnAddress):
+                node = node.then
+                continue
+            while isinstance(first, WithTraceAddresses):
+                first = first.body
             if isinstance(first, Bind):
                 node = Bind(
                     binder=first.binder,

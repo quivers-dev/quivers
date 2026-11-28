@@ -19,7 +19,7 @@ run in. A surviving request inside a discharged shot keeps the computation
 on the reference machine if its operation has a checked unrestricted
 clause. A residual effectful call in a discharged clause keeps its
 reference continuation. A linear clause with effects can record the
-source sites of captured non-tail calls.
+source sites of captured acyclic calls.
 
 The result depends on no target and no runtime. The compiled runtime, the
 transpile planner, the static targets' projection, and the capability analysis
@@ -53,13 +53,14 @@ from quivers.qiec.identifiers import (
     EffectInstanceId,
     HandlerId,
     OperationId,
+    SiteId,
     SourceOrigin,
     StaticScopeId,
     StaticVariableId,
     _CLAUSE_SCOPE,
     _clause_address,
 )
-from quivers.qiec.module import NamedComputation, QiecModule
+from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
 from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_telescope,
@@ -70,6 +71,7 @@ from quivers.qiec.terms import (
     AttachmentRef,
     Bind,
     Call,
+    CallAddress,
     Case,
     CaseBranch,
     CaseMotive,
@@ -79,7 +81,10 @@ from quivers.qiec.terms import (
     EvidenceValue,
     Gather,
     Handle,
+    HandlerClauseAddress,
+    HandlerReturnAddress,
     If,
+    InstanceAddress,
     LetBinding,
     LetValue,
     LiteralValue,
@@ -94,6 +99,10 @@ from quivers.qiec.terms import (
     TupleValue,
     Value,
     Var,
+    WithTraceAddresses,
+    _CALL_ADDRESS,
+    _INSTANCE_ADDRESS,
+    _RETURN_ADDRESS,
 )
 from quivers.qiec.types import (
     UNIT,
@@ -143,8 +152,7 @@ class DischargeObstacle(QiecModel):
         whose branches do not meet in one continuation, ``"growth"`` for a
         rewriting past the size bounds, and ``"address"`` when a surviving
         operation can open a runtime shot inside one being discharged or a
-        residual effectful call needs its original clause scope or a
-        captured tail call removed a frame needed to address a clause.
+        residual effectful call needs its original clause scope.
     reason
         The obstacle as a clause naming the handler and the clause, to
         follow "the computation".
@@ -250,6 +258,9 @@ type _Environment = Mapping[str, Value]
 type _Statements = tuple[tuple[Local, Computation], ...]
 """Statements of a rewritten term: each binder and what it binds."""
 
+type _ClausePath = tuple[DynamicAddressFrame | HandlerClauseAddress, ...]
+"""The fixed and deferred components of an operation-clause path."""
+
 
 class _Frame(QiecModel):
     """One frame of the symbolic continuation.
@@ -295,6 +306,8 @@ class _HandlerFrame(_Frame):
         The declaration's telescope at this installation.
     arguments
         The current values of the handler's parameters.
+    return_address
+        The allocated trace address of its authored return clause.
     """
 
     serial: int
@@ -302,6 +315,7 @@ class _HandlerFrame(_Frame):
     handler: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     statics: StaticSubstitution = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     arguments: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    return_address: Var | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
     def carrying(self, arguments: tuple[Value, ...]) -> _HandlerFrame:
         """This installation with its parameters at other values.
@@ -322,6 +336,7 @@ class _HandlerFrame(_Frame):
             handler=self.handler,
             statics=self.statics,
             arguments=arguments,
+            return_address=self.return_address,
         )
 
 
@@ -356,12 +371,8 @@ class _ClauseFrame(_Frame):
     grade: ResumptionGrade = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     next_shot: int = 0
-    clause_path: tuple[DynamicAddressFrame, ...] = dx.field(
-        opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    captured_clauses: tuple[DynamicAddressFrame, ...] = dx.field(
-        opaque=True, extras=OPAQUE_BY_VALUE
-    )
+    clause_path: _ClausePath = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    captured_clauses: _ClausePath = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _ShotFrame(_Frame):
@@ -376,9 +387,7 @@ class _ShotFrame(_Frame):
     """
 
     resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    clause_path: tuple[DynamicAddressFrame, ...] = dx.field(
-        opaque=True, extras=OPAQUE_BY_VALUE
-    )
+    clause_path: _ClausePath = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _CallFrame(_Frame):
@@ -392,15 +401,41 @@ class _CallFrame(_Frame):
         The call's result type.
     origin
         The static site of the call.
-    replaced_caller
-        Whether the reference evaluator replaces the caller's frame at
-        this call.
+    address
+        The binding holding the runtime call address.
+    previous_address
+        The address of the caller this tail call replaced, if any.
     """
 
     callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    replaced_caller: bool
+    address: Var = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    previous_address: Var | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+
+class _InstanceAddressFrame(_Frame):
+    """A local instance's scope while its body runs.
+
+    Parameters
+    ----------
+    address
+        The binding holding the runtime instance address.
+    """
+
+    address: Var = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+
+class _HandlerReturnFrame(_Frame):
+    """The trace scope during an authored return clause.
+
+    Parameters
+    ----------
+    address
+        The binding holding the handler's return activation.
+    """
+
+    address: Var = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _JoinFrame(_Frame):
@@ -585,7 +620,7 @@ def _subterms(term: Computation) -> tuple[Computation, ...]:
             pending.extend((item.otherwise, item.then))
         elif isinstance(item, Case):
             pending.extend(branch.body for branch in item.branches)
-        elif isinstance(item, NewInstance):
+        elif isinstance(item, NewInstance | WithTraceAddresses):
             pending.append(item.body)
     return tuple(found)
 
@@ -676,11 +711,24 @@ def _computation_reads(term: Computation) -> frozenset[str]:
                 found |= _read(argument)
         elif isinstance(item, Case):
             found |= _read(item.scrutinee)
+        elif isinstance(item, CallAddress) and item.previous is not None:
+            found |= _read(item.previous)
+        elif isinstance(item, WithTraceAddresses):
+            found |= frozenset(address.local.name for address in item.addresses)
+            found |= frozenset(
+                component.local.name
+                for clause in item.clauses
+                if isinstance(clause, HandlerClauseAddress)
+                for component in clause.captured
+                if isinstance(component, Var)
+            )
+            if item.previous is not None:
+                found |= _read(item.previous)
     return frozenset(found)
 
 
 def _pure(term: Computation) -> bool:
-    """Whether a rewritten computation makes no request.
+    """Whether a rewritten computation has no requests or trace allocations.
 
     Parameters
     ----------
@@ -690,14 +738,11 @@ def _pure(term: Computation) -> bool:
     Returns
     -------
     bool
-        True when every call in it has the empty closed row and nothing in
-        it requests.
+        True when nothing in it requests or advances a trace ordinal.
     """
-    return all(
-        not isinstance(item, Perform)
-        and not (
-            isinstance(item, Call)
-            and (item.effects.entries or item.effects.tail is not None)
+    return not any(
+        isinstance(
+            item, Perform | Call | CallAddress | InstanceAddress | HandlerReturnAddress
         )
         for item in _subterms(term)
     )
@@ -1213,6 +1258,11 @@ class _Discharger:
                             **self.parameters(frame),
                             answer.binder.name: read,
                         }
+                        if frame.return_address is not None:
+                            stack = (
+                                _HandlerReturnFrame(address=frame.return_address),
+                                *stack,
+                            )
                         state = substitute_computation(answer.body, frame.statics)
                 elif isinstance(frame, _ClauseFrame | _ShotFrame):
                     resumptions = frame.resumptions
@@ -1237,6 +1287,12 @@ class _Discharger:
                 )
                 state = term.first
             elif isinstance(term, NewInstance):
+                address = Local(
+                    name=self.fresh("instance_address"), type=_INSTANCE_ADDRESS
+                )
+                made.append((address, InstanceAddress(origin=term.origin)))
+                self.count(1)
+                stack = (_InstanceAddressFrame(address=Var(local=address)), *stack)
                 state = term.body
             elif isinstance(term, Handle):
                 frame, bound = self.install(term, environment)
@@ -1245,27 +1301,51 @@ class _Discharger:
                 state = term.computation
             elif isinstance(term, Call):
                 entered = self.enter(term, stack)
+                caller = next(
+                    (frame for frame in stack if not isinstance(frame, _JoinFrame)),
+                    None,
+                )
+                previous = caller.address if isinstance(caller, _CallFrame) else None
                 if entered is None:
-                    if (term.effects.entries or term.effects.tail is not None) and (
-                        _clause_path(stack)
+                    clauses = _clause_path(stack)
+                    if (resumptions or clauses) and (
+                        term.effects.tail is not None
+                        or any(
+                            entry.effect.id in self.tables.multi_shot_effects
+                            for entry in term.effects.entries
+                        )
                     ):
                         raise _Undischarged(
                             "address",
-                            f"calls `{term.name}` with residual effects from a "
-                            "discharged operation clause",
+                            f"calls `{term.name}` within a discharged handler path, "
+                            "where its residual row can leave the path and resume "
+                            "its continuation more than once",
                             term.origin,
                         )
                     binder = Local(
                         name=self.fresh(_awaiting(stack, "called")),
                         type=term.result_type,
                     )
-                    call = term.with_(
+                    call: Computation = term.with_(
                         arguments=tuple(
                             self.value(item, environment) for item in term.arguments
                         )
                     )
+                    if caller is not None:
+                        addresses = tuple(
+                            address
+                            for address in _active_addresses(stack)
+                            if address != previous
+                        )
+                        call = WithTraceAddresses(
+                            addresses=addresses,
+                            previous=previous,
+                            body=call,
+                            resumptions=resumptions,
+                            clauses=clauses,
+                        )
                     made.append((binder, call))
-                    self.count(1)
+                    self.count(1 + (caller is not None))
                     state = Var(local=binder)
                     continue
                 parameters, body = entered
@@ -1278,16 +1358,23 @@ class _Discharger:
                     )
                     made.extend(bound)
                     scope[parameter.name] = read
-                caller = next(
-                    (frame for frame in stack if not isinstance(frame, _JoinFrame)),
-                    None,
+                address = Local(name=self.fresh("call_address"), type=_CALL_ADDRESS)
+                made.append(
+                    (
+                        address,
+                        CallAddress(
+                            callee=term.callee, origin=term.origin, previous=previous
+                        ),
+                    )
                 )
+                self.count(1)
                 stack = (
                     _CallFrame(
                         callee=term.callee,
                         result=term.result_type,
                         origin=term.origin,
-                        replaced_caller=isinstance(caller, _CallFrame),
+                        address=Var(local=address),
+                        previous_address=previous,
                     ),
                     *stack,
                 )
@@ -1302,18 +1389,22 @@ class _Discharger:
                 position = self.answering(request, stack)
                 clause_path = _clause_path(stack)
                 if position is None:
+                    deferred = any(
+                        isinstance(component, HandlerClauseAddress)
+                        for component in clause_path
+                    )
+                    if (resumptions or deferred) and (
+                        request.operation in self.tables.multi_shot_operations
+                    ):
+                        effect, operation = self.tables.operations[request.operation]
+                        raise _Undischarged(
+                            "address",
+                            f"leaves `{effect.ref.name}.{operation.name}` inside "
+                            "a discharged handler path, where a runtime handler "
+                            "could resume its continuation more than once",
+                            request.origin.origin,
+                        )
                     if resumptions:
-                        if request.operation in self.tables.multi_shot_operations:
-                            effect, operation = self.tables.operations[
-                                request.operation
-                            ]
-                            raise _Undischarged(
-                                "address",
-                                f"leaves `{effect.ref.name}.{operation.name}` inside "
-                                "a discharged shot, where a runtime handler could "
-                                "resume its continuation more than once",
-                                request.origin.origin,
-                            )
                         request = request.with_(
                             origin=request.origin.with_(
                                 resumption_path=(
@@ -1322,11 +1413,15 @@ class _Discharger:
                                 )
                             )
                         )
-                    if clause_path:
+                    if clause_path and not deferred:
                         request = request.with_(
                             origin=request.origin.with_(
                                 dynamic_path=(
-                                    *clause_path,
+                                    *(
+                                        component
+                                        for component in clause_path
+                                        if isinstance(component, DynamicAddressFrame)
+                                    ),
                                     *request.origin.dynamic_path,
                                 )
                             )
@@ -1335,8 +1430,16 @@ class _Discharger:
                         name=self.fresh(_awaiting(stack, "answer")),
                         type=request.result_type,
                     )
-                    made.append((binder, Perform(request=request)))
-                    self.count(1)
+                    residual: Computation = Perform(request=request)
+                    addresses = _active_addresses(stack)
+                    if addresses or deferred:
+                        residual = WithTraceAddresses(
+                            addresses=addresses,
+                            body=residual,
+                            clauses=clause_path if deferred else (),
+                        )
+                    made.append((binder, residual))
+                    self.count(1 + bool(addresses or deferred))
                     state = Var(local=binder)
                     continue
                 answering = cast(_HandlerFrame, stack[position])
@@ -1354,7 +1457,9 @@ class _Discharger:
                     if clause.grade is ResumptionGrade.LINEAR:
                         clause_path = (
                             *clause_path,
-                            self.clause_address(request, answering, stack[:position]),
+                            _captured_clause_address(
+                                request.origin.static_site, stack[:position]
+                            ),
                         )
                 bound, environment, state = self.clause(request, answering, clause)
                 made.extend(bound)
@@ -1420,6 +1525,19 @@ class _Discharger:
                 stack = path.stack
                 resumptions = path.resumptions
                 state = path.value
+            elif isinstance(
+                term,
+                CallAddress
+                | InstanceAddress
+                | HandlerReturnAddress
+                | WithTraceAddresses,
+            ):
+                raise _Undischarged(
+                    "address",
+                    "enters an already discharged region whose restored addresses "
+                    "would cross a new handler boundary",
+                    self.owner.origin,
+                )
             else:  # pragma: no cover - closed union
                 raise TypeError(f"unknown computation term {term!r}")
 
@@ -1488,12 +1606,19 @@ class _Discharger:
             )
             made.extend(bound)
             arguments.append(read)
+        return_address = None
+        if _return_observes_address(handler):
+            address = Local(name=self.fresh("return_address"), type=_RETURN_ADDRESS)
+            made.append((address, HandlerReturnAddress(handler=handler.id)))
+            self.count(1)
+            return_address = Var(local=address)
         frame = _HandlerFrame(
             serial=self.ordinal(),
             instance=term.instance,
             handler=handler,
             statics=statics,
             arguments=tuple(arguments),
+            return_address=return_address,
         )
         return frame, tuple(made)
 
@@ -1579,54 +1704,6 @@ class _Discharger:
             made.extend(bound)
             environment[parameter.name] = read
         return tuple(made), environment, substitute_computation(clause.body, statics)
-
-    def clause_address(
-        self,
-        request: EffectRequest,
-        handler: _HandlerFrame,
-        capture: tuple[_Frame, ...],
-    ) -> DynamicAddressFrame:
-        """Build the relative address of a linear operation clause.
-
-        Parameters
-        ----------
-        request : EffectRequest
-            The answered operation.
-        handler : _HandlerFrame
-            The handler that answers it.
-        capture : tuple[_Frame, ...]
-            The captured frames above the handler, innermost first.
-
-        Returns
-        -------
-        DynamicAddressFrame
-            The request site and the ordered source call sites removed
-            from the active stack by this clause.
-
-        Raises
-        ------
-        _Undischarged
-            If a captured tail call replaced a frame and the clause may
-            emit effects that need an activation address.
-        """
-        calls = tuple(
-            frame for frame in reversed(capture) if isinstance(frame, _CallFrame)
-        )
-        tail_call = next((call for call in calls if call.replaced_caller), None)
-        if tail_call is None:
-            return _clause_address(
-                request.origin.static_site,
-                tuple(call.origin.site_id() for call in calls),
-            )
-        introduced = handler.handler.introduced
-        if introduced.entries or introduced.tail is not None:
-            raise _Undischarged(
-                "address",
-                f"captures a tail call while addressing a linear clause of "
-                f"`{handler.handler.name}`",
-                tail_call.origin,
-            )
-        return _clause_address(request.origin.static_site)
 
     def resume(
         self,
@@ -2358,6 +2435,10 @@ class _Tables:
             item.id: item for item in module.computations
         }
         self.operations = _operations(module)
+        self.multi_shot_effects = frozenset(
+            self.operations[operation][0].ref.id
+            for operation in self.multi_shot_operations
+        )
         self.constructors: dict[ConstructorId, ConstructorDecl] = {
             item.id: item for item in module.constructors
         }
@@ -2481,6 +2562,32 @@ def _awaiting(stack: tuple[_Frame, ...], default: str) -> str:
     return frame.binder.name if isinstance(frame, _BindFrame) else default
 
 
+def _active_addresses(stack: tuple[_Frame, ...]) -> tuple[Var, ...]:
+    """Read the inlined calls and instances contributing to the address.
+
+    Parameters
+    ----------
+    stack : tuple[_Frame, ...]
+        The symbolic continuation, innermost first.
+
+    Returns
+    -------
+    tuple[Var, ...]
+        The surviving allocations, outermost first.
+    """
+    retired = {
+        frame.previous_address
+        for frame in stack
+        if isinstance(frame, _CallFrame) and frame.previous_address is not None
+    }
+    return tuple(
+        frame.address
+        for frame in reversed(stack)
+        if isinstance(frame, _CallFrame | _InstanceAddressFrame | _HandlerReturnFrame)
+        and frame.address not in retired
+    )
+
+
 def _entered(stack: tuple[_Frame, ...]) -> frozenset[ComputationId]:
     """The computations a continuation is inside of.
 
@@ -2499,7 +2606,37 @@ def _entered(stack: tuple[_Frame, ...]) -> frozenset[ComputationId]:
     return frozenset(frame.callee for frame in stack if isinstance(frame, _CallFrame))
 
 
-def _clause_path(stack: tuple[_Frame, ...]) -> tuple[DynamicAddressFrame, ...]:
+def _captured_clause_address(
+    site: SiteId, captured: tuple[_Frame, ...]
+) -> DynamicAddressFrame | HandlerClauseAddress:
+    """Derive the clause address from the continuation that entered it.
+
+    Parameters
+    ----------
+    site : SiteId
+        The handled operation's static site.
+    captured : tuple[_Frame, ...]
+        The continuation inside the handler, innermost first.
+
+    Returns
+    -------
+    DynamicAddressFrame or HandlerClauseAddress
+        A fixed or deferred relative address.
+    """
+    components = tuple(
+        frame.origin.site_id() if isinstance(frame, _CallFrame) else frame.address
+        for frame in reversed(captured)
+        if isinstance(frame, _CallFrame | _InstanceAddressFrame | _HandlerReturnFrame)
+    )
+    if any(isinstance(component, Var) for component in components):
+        return HandlerClauseAddress(site=site, captured=components)
+    return _clause_address(
+        site,
+        tuple(component for component in components if isinstance(component, SiteId)),
+    )
+
+
+def _clause_path(stack: tuple[_Frame, ...]) -> _ClausePath:
     """Find the active clause ancestry of a symbolic continuation.
 
     Parameters
@@ -2509,7 +2646,7 @@ def _clause_path(stack: tuple[_Frame, ...]) -> tuple[DynamicAddressFrame, ...]:
 
     Returns
     -------
-    tuple[DynamicAddressFrame, ...]
+    _ClausePath
         The ancestry set by the nearest clause or shot boundary.
     """
     return next(

@@ -12,6 +12,7 @@ from quivers.qiec._models import QiecModel
 import didactic.api as dx
 
 from collections.abc import Mapping
+from functools import lru_cache
 
 from quivers.qiec.checking import (
     ComputationSignature,
@@ -52,13 +53,17 @@ from quivers.qiec.kinds import (
 from quivers.qiec.terms import (
     Bind,
     Call,
+    CallAddress,
     Case,
     CaseMotive,
     Computation,
     Handle,
     If,
+    InstanceAddress,
     Local,
     NewInstance,
+    Perform,
+    WithTraceAddresses,
 )
 from quivers.qiec.types import (
     EffectRef,
@@ -339,6 +344,32 @@ def _children(node: object) -> tuple[object, ...]:
     return ()
 
 
+@lru_cache(maxsize=512)
+def _return_observes_address(handler: HandlerDef) -> bool:
+    """Whether the authored return can execute another computation with a trace.
+
+    Parameters
+    ----------
+    handler : HandlerDef
+        The checked declaration.
+
+    Returns
+    -------
+    bool
+        Whether to allocate a distinct address for its return activations.
+    """
+    clause = handler.return_clause
+    if handler.implementation != "authored" or clause is None:
+        return False
+    pending: list[object] = [clause.body]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Perform | Call | Handle):
+            return True
+        pending.extend(_children(item))
+    return False
+
+
 def called_computations(body: Computation) -> frozenset[ComputationId]:
     """The computations a body calls, directly.
 
@@ -368,7 +399,7 @@ def called_computations(body: Computation) -> frozenset[ComputationId]:
         elif isinstance(term, If):
             pending.append(term.otherwise)
             pending.append(term.then)
-        elif isinstance(term, NewInstance):
+        elif isinstance(term, NewInstance | WithTraceAddresses):
             pending.append(term.body)
     return frozenset(found)
 
@@ -401,7 +432,7 @@ def installed_handlers(body: Computation) -> frozenset[HandlerId]:
         elif isinstance(term, If):
             pending.append(term.otherwise)
             pending.append(term.then)
-        elif isinstance(term, NewInstance):
+        elif isinstance(term, NewInstance | WithTraceAddresses):
             pending.append(term.body)
     return frozenset(found)
 
@@ -893,6 +924,14 @@ def _validate_effect_instances(
                 )
         elif isinstance(node, Handle):
             require(node.instance, scope)
+        elif isinstance(node, CallAddress | InstanceAddress):
+            if (
+                node.origin.module != module
+                or node.origin.source_protocol != source_protocol
+            ):
+                raise KernelError(
+                    f"{subject} has incompatible trace address provenance"
+                )
         for child in reversed(_children(node)):
             pending.append((child, scope))
 

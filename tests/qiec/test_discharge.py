@@ -14,6 +14,7 @@ from itertools import product
 import pytest
 import torch
 
+import quivers.qiec.discharge as discharge
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     RANDOM_SAMPLE,
@@ -26,16 +27,18 @@ from quivers.qiec import (
     Computation,
     DischargeObstacle,
     DischargedModule,
+    ExecutionFailure,
     Handle,
     If,
+    InstanceAddress,
     NamedComputation,
     NewInstance,
     Perform,
     QiecModule,
     Resume,
-    Return,
     RuntimeConfiguration,
     RuntimeSelection,
+    WithTraceAddresses,
     discharge_computation,
     discharge_module,
     infer_computation,
@@ -76,7 +79,7 @@ def _terms(body: Computation) -> list[Computation]:
             pending += [branch.body for branch in term.branches]
         elif isinstance(term, Handle):
             pending.append(term.computation)
-        elif isinstance(term, NewInstance):
+        elif isinstance(term, NewInstance | WithTraceAddresses):
             pending.append(term.body)
     return found
 
@@ -536,16 +539,15 @@ def test_linear_clauses_address_repeated_effects_by_trigger_site(
         assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
 
 
-def test_an_effectful_call_inside_a_linear_clause_keeps_the_reference_path(
+def test_an_effectful_call_inside_a_linear_clause_restores_its_path(
     clause_address_module: tuple[QiecModule, DischargedModule],
 ) -> None:
     module, discharged = clause_address_module
     name = "report_through_call"
-    obstacle = discharged.obstacle(name)
-    assert obstacle is not None and obstacle.kind == "address"
-    assert "`report_twice`" in obstacle.reason
+    assert discharged.obstacle(name) is None
     original = _computation(module, name)
-    assert _computation(discharged.module, name) is original
+    rewritten = _computation(discharged.module, name)
+    assert not any(isinstance(term, Handle) for term in _terms(rewritten.body))
     assert discharged.obstacle("report_twice") is None
     callee = _computation(module, "report_twice").body
     nested = _effect_sites(callee, "Relay")
@@ -562,7 +564,9 @@ def test_an_effectful_call_inside_a_linear_clause_keeps_the_reference_path(
             (score, (*path, ("handler-clause", site)), ()) for site in nested
         )
         expected.append((after_resume, path, ()))
-    for checked in (module, discharged.module):
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
         assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
 
 
@@ -581,6 +585,22 @@ define relay_tail(x : Real) : Real !{relay} =
     else
         relay_leaf(0.0 - x)
 
+define relay_cycle(n : Int, x : Real) : Real !{relay, score} =
+    if n > 0 then
+        relay_cycle(n - 1, x)
+    else
+        let result <- perform relay.pass(x)
+        perform score.add(weight(result))
+        return result
+
+define relay_lexical_cycle(n : Int, x : Real) : Real !{relay} =
+    if n > 0 then
+        relay_lexical_cycle(n - 1, x)
+    else
+        let first <- relay_leaf(x)
+        let second <- relay_leaf(first)
+        return second
+
 define report_captured(x : Real) : Real !{score} =
     handle relay with recording_relay in
         let first <- relay_chain(x)
@@ -592,6 +612,7 @@ define report_tail(x : Real) : Real !{score} =
     handle relay with recording_relay in
         let first <- relay_tail(x)
         let second <- relay_tail(first)
+        perform score.add(weight(second))
         return second
 
 define report_pure_tail(x : Real) : Real !{score} =
@@ -599,6 +620,17 @@ define report_pure_tail(x : Real) : Real !{score} =
         let result <- relay_tail(x)
         perform score.add(weight(result))
         return result
+
+define report_cycle(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let first <- relay_cycle(64, x)
+        let second <- relay_cycle(64, first)
+        perform score.add(weight(second))
+        return second
+
+define report_lexical_cycle(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        relay_lexical_cycle(3, x)
 
 define report_captured_run(x : Real) : Real * LogWeight !{} =
     handle score with accumulate in
@@ -611,6 +643,16 @@ define report_tail_run(x : Real) : Real * LogWeight !{} =
 define report_pure_tail_run(x : Real) : Real * LogWeight !{} =
     handle score with accumulate in
         report_pure_tail(x)
+
+define report_cycle_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let result <- report_cycle(x)
+        perform score.add(weight(result))
+        return result
+
+define report_lexical_cycle_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        report_lexical_cycle(x)
 """
 
 
@@ -620,11 +662,16 @@ def captured_call_module() -> tuple[QiecModule, DischargedModule]:
     return module, discharge_module(module)
 
 
-def test_non_tail_captured_calls_distinguish_one_lexical_operation(
+@pytest.mark.parametrize(
+    ("name", "helper"),
+    (("report_captured", "relay_chain"), ("report_tail", "relay_tail")),
+)
+def test_captured_call_words_distinguish_one_lexical_operation(
     captured_call_module: tuple[QiecModule, DischargedModule],
+    name: str,
+    helper: str,
 ) -> None:
     module, discharged = captured_call_module
-    name = "report_captured"
     assert discharged.obstacle(name) is None
     original = _computation(module, name).body
     rewritten = _computation(discharged.module, name).body
@@ -634,10 +681,13 @@ def test_non_tail_captured_calls_distinguish_one_lexical_operation(
         key=lambda term: term.origin.line or 0,
     )
     assert len(entries) == 2
-    (leaf_call,) = (
-        term
-        for term in _terms(_computation(module, "relay_chain").body)
-        if isinstance(term, Call)
+    leaf_call = min(
+        (
+            term
+            for term in _terms(_computation(module, helper).body)
+            if isinstance(term, Call)
+        ),
+        key=lambda term: term.origin.line or 0,
     )
     (trigger,) = _effect_sites(_computation(module, "relay_leaf").body, "Relay")
     (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
@@ -673,20 +723,6 @@ def test_non_tail_captured_calls_distinguish_one_lexical_operation(
         assert _request_addresses(checked, name + "_run", 1.0) == expected
 
 
-def test_an_effectful_clause_with_an_elided_caller_keeps_reference_execution(
-    captured_call_module: tuple[QiecModule, DischargedModule],
-) -> None:
-    module, discharged = captured_call_module
-    name = "report_tail"
-    obstacle = discharged.obstacle(name)
-    assert obstacle is not None and obstacle.kind == "address"
-    assert "tail call" in obstacle.reason
-    assert _computation(discharged.module, name) is _computation(module, name)
-    observed = _request_addresses(module, name + "_run", 1.0)
-    assert len(observed) == 2
-    assert _request_addresses(discharged.module, name + "_run", 1.0) == observed
-
-
 def test_a_pure_clause_does_not_need_an_elided_callers_address(
     captured_call_module: tuple[QiecModule, DischargedModule],
 ) -> None:
@@ -699,6 +735,662 @@ def test_a_pure_clause_does_not_need_an_elided_callers_address(
     expected = ((score, (("call", f"{name}#1"),), ()),)
     for checked in (module, discharged.module):
         assert _request_addresses(checked, name + "_run", 1.0) == expected
+
+
+def test_recurrent_tail_calls_keep_their_own_clause_activation(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_cycle"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "recursion"
+    recursive = _computation(module, "relay_cycle").body
+    (trigger,) = _effect_sites(recursive, "Relay")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    (resumed,) = _effect_sites(recursive, "Score")
+    (outside,) = _effect_sites(_computation(module, name).body, "Score")
+    (after_call,) = _effect_sites(_computation(module, name + "_run").body, "Score")
+    parent = (("call", f"{name}#1"),)
+    expected = []
+    # Each loop enters once at 64 and once at each smaller value down to 0.
+    for active in (1 + 65, 1 + 2 * 65):
+        clause = ("handler-clause", f"{trigger}/runtime-call:{active}")
+        expected.append((score, (*parent, clause), ()))
+        expected.append((resumed, (*parent, ("call", f"relay_cycle#{active}")), ()))
+    expected.extend(((outside, parent, ()), (after_call, (), ())))
+    assert len(set(expected)) == len(expected)
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
+
+
+def test_acyclic_call_sites_stay_ordered_after_a_recurrent_frame(
+    captured_call_module: tuple[QiecModule, DischargedModule],
+) -> None:
+    module, discharged = captured_call_module
+    name = "report_lexical_cycle"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "recursion"
+    (trigger,) = _effect_sites(_computation(module, "relay_leaf").body, "Relay")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    calls = sorted(
+        (
+            term
+            for term in _terms(_computation(module, "relay_lexical_cycle").body)
+            if isinstance(term, Call) and term.name == "relay_leaf"
+        ),
+        key=lambda term: term.origin.line or 0,
+    )
+    assert len(calls) == 2
+    # The wrapper has ordinal 1, then four recursive entries reach zero.
+    expected = tuple(
+        (
+            score,
+            (
+                ("call", f"{name}#1"),
+                ("handler-clause", f"{trigger}/runtime-call:5/{call.origin.site_id()}"),
+            ),
+            (),
+        )
+        for call in calls
+    )
+    for checked in (module, discharged.module):
+        assert _request_addresses(checked, name + "_run", 1.0) == expected
+
+
+_INLINED_ADDRESS_SOURCE = """
+define scoped_leaf(x : Real) : Real !{relay, score} =
+    perform score.add(weight(x))
+    let y <- perform relay.pass(x)
+    perform score.add(weight(y))
+    return y
+
+define scoped_tail(x : Real) : Real !{relay, score} =
+    scoped_leaf(x)
+
+define scoped_parent(x : Real) : Real !{score} =
+    handle relay with recording_relay in
+        let y <- scoped_tail(x)
+        perform score.add(weight(y))
+        return y
+
+define scoped_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        scoped_parent(x)
+
+define scoped_draw(x : Real) : Real !{branch, random} =
+    let y <- perform branch.split(x)
+    let z <- perform random.sample[Real](site("inside"), Normal(y, 1.0))
+    return z
+
+define scoped_shots(x : Real) : Real !{random} =
+    handle branch with twice in
+        scoped_draw(x)
+
+define scoped_shots_run(x : Real) : Real !{} =
+    handle random with draw in
+        scoped_shots(x)
+
+define ordinal_leaf(x : Real) : Real !{relay} =
+    let y <- perform relay.pass(x)
+    return y
+
+define ordinal_pure(x : Real) : Real !{} =
+    handle relay with identity in
+        ordinal_leaf(x)
+
+define ordinal_score(x : Real) : Real !{score} =
+    perform score.add(weight(x))
+    return x
+
+define ordinal_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let value <- ordinal_pure(x)
+        ordinal_score(value)
+
+define scoped_bound_call(x : Real) : Real !{relay, score} =
+    let y <- perform relay.pass(x)
+    let z <- ordinal_score(y)
+    return z
+
+define scoped_tail_call(x : Real) : Real !{relay, score} =
+    let y <- perform relay.pass(x)
+    ordinal_score(y)
+
+define scoped_bound_parent(x : Real) : Real !{score} =
+    handle relay with identity in
+        scoped_bound_call(x)
+
+define scoped_tail_parent(x : Real) : Real !{score} =
+    handle relay with identity in
+        scoped_tail_call(x)
+
+define scoped_bound_parent_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        scoped_bound_parent(x)
+
+define scoped_tail_parent_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        scoped_tail_parent(x)
+
+define scoped_tap_leaf(x : Real) : Real !{tap} =
+    let value <- perform tap.echo(x)
+    return value
+
+define scoped_tap_tail(x : Real) : Real !{relay, tap} =
+    let y <- perform relay.pass(x)
+    scoped_tap_leaf(y)
+
+define scoped_tap_parent(x : Real) : Real !{tap} =
+    handle relay with identity in
+        scoped_tap_tail(x)
+
+define scoped_tap_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle tap with recording_tap in
+            scoped_tap_parent(x)
+
+define local_subject(x : Real) : Real !{score} =
+    with instance local : Relay in
+        handle local with identity in
+            let y <- perform local.pass(x)
+            perform score.add(weight(y))
+            return y
+
+define local_pure(x : Real) : Real !{} =
+    with instance local : Relay in
+        handle local with identity in
+            let y <- perform local.pass(x)
+            return y
+
+define repeated_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let first <- local_subject(x)
+        let second <- local_subject(first)
+        perform score.add(weight(second))
+        return second
+
+define ordinal_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- local_pure(x)
+        local_subject(y)
+
+define mixed_local_parent(x : Real) : Real !{score} =
+    with instance local : Relay in
+        handle relay with recording_relay in
+            scoped_leaf(x)
+
+define mixed_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        mixed_local_parent(x)
+
+define retained_local_parent(x : Real) : Real !{score} =
+    with instance local : Relay in
+        ordinal_score(x)
+
+define retained_local_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        retained_local_parent(x)
+
+define residual_draw(x : Real) : Real !{random} =
+    let value <- perform random.sample[Real](site("residual"), Normal(x, 1.0))
+    return value
+
+define residual_shot_subject(x : Real) : Real !{random} =
+    handle branch with twice in
+        let y <- perform branch.split(x)
+        let inside <- residual_draw(y)
+        let after <- perform random.sample[Real](site("after-call"), Normal(inside, 1.0))
+        return after
+
+define residual_shot_run(x : Real) : Real !{} =
+    handle random with draw in
+        residual_shot_subject(x)
+
+define residual_nested_run(x : Real) : Real !{} =
+    handle random with draw in
+        handle outside_branch with twice in
+            let y <- perform outside_branch.split(x)
+            residual_shot_subject(y)
+
+define residual_omega_leaf(x : Real) : Real !{outside_branch, random} =
+    let y <- perform outside_branch.split(x)
+    let z <- perform random.sample[Real](site("inner"), Normal(y, 1.0))
+    return z
+
+define residual_omega_subject(x : Real) : Real !{outside_branch, random} =
+    handle branch with guarded_shots in
+        let y <- perform branch.split(x)
+        residual_omega_leaf(y)
+
+define residual_omega_call_run(x : Real) : Real !{} =
+    handle random with draw in
+        handle outside_branch with twice in
+            residual_omega_subject(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def inlined_address_module() -> tuple[QiecModule, DischargedModule, QiecModule]:
+    module = _module(_ADDRESS_SOURCE + _CLAUSE_SOURCE + _INLINED_ADDRESS_SOURCE)
+    discharged = discharge_module(module)
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    return module, discharged, round_trip
+
+
+def test_inlined_tail_call_address_survives_capture_and_resume(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("scoped_parent") is None
+    parent = _computation(module, "scoped_parent").body
+    tail = _computation(module, "scoped_tail").body
+    leaf = _computation(module, "scoped_leaf").body
+    outer = (("call", "scoped_parent#1"),)
+    active = (*outer, ("call", "scoped_leaf#3"))
+    (request,) = _effect_sites(leaf, "Relay")
+    (before, after) = _effect_sites(leaf, "Score")
+    (outside,) = _effect_sites(parent, "Score")
+    (clause,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    first = next(
+        term.origin.site_id() for term in _terms(parent) if isinstance(term, Call)
+    )
+    second = next(
+        term.origin.site_id() for term in _terms(tail) if isinstance(term, Call)
+    )
+    clause_path = (*outer, ("handler-clause", f"{request}/{first}/{second}"))
+    expected = (
+        (before, active, ()),
+        (clause, clause_path, ()),
+        (after, active, ()),
+        (outside, outer, ()),
+    )
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "scoped_run", 1.0) == expected
+
+
+def test_inlined_call_keeps_one_activation_in_both_shots(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("scoped_shots") is None
+    sample = _address_site(module, "scoped_draw", str(RANDOM_SAMPLE))
+    address = (("call", "scoped_shots#1"), ("call", "scoped_draw#2"))
+    expected = tuple((sample, address, (shot,)) for shot in range(2))
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "scoped_shots_run", 1.0) == expected
+
+
+def test_an_inlined_pure_call_keeps_subsequent_call_ordinals(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("ordinal_pure") is None
+    score = _address_site(module, "ordinal_score", str(SCORE_ADD))
+    expected = ((score, (("call", "ordinal_score#3"),), ()),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "ordinal_run", 1.0) == expected
+
+
+@pytest.mark.parametrize("position", ("bound", "tail"))
+def test_retained_call_restores_the_right_surrounding_call_path(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+    position: str,
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    parent = f"scoped_{position}_parent"
+    assert discharged.obstacle(parent) is None
+    score = _address_site(module, "ordinal_score", str(SCORE_ADD))
+    middle = (("call", "scoped_bound_call#2"),) if position == "bound" else ()
+    expected = (
+        (score, (("call", f"{parent}#1"), *middle, ("call", "ordinal_score#3")), ()),
+    )
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, parent + "_run", 1.0) == expected
+
+
+def test_retained_tail_call_keeps_its_captured_lexical_history(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("scoped_tap_parent") is None
+    trigger = _effect_sites(_computation(module, "scoped_tap_leaf").body, "Tap")[0]
+    score = _effect_sites(_effect_clause_body(module, "recording_tap"), "Score")[0]
+    source_sites = tuple(
+        next(
+            term.origin.site_id()
+            for term in _terms(_computation(module, name).body)
+            if isinstance(term, Call)
+        )
+        for name in ("scoped_tap_run", "scoped_tap_parent", "scoped_tap_tail")
+    )
+    key = "/".join((trigger, *(str(site) for site in source_sites)))
+    expected = ((score, (("handler-clause", key),), ()),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "scoped_tap_run", 1.0) == expected
+
+
+def test_repeated_local_instances_keep_distinct_addresses_at_one_site(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("local_subject") is None
+    score = _address_site(module, "local_subject", str(SCORE_ADD))
+    after = _address_site(module, "repeated_local_run", str(SCORE_ADD))
+    expected = (
+        *(
+            (score, (("call", f"local_subject#{ordinal}"), ("instance", ordinal)), ())
+            for ordinal in (1, 2)
+        ),
+        (after, (), ()),
+    )
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "repeated_local_run", 1.0) == expected
+
+
+def test_pure_local_instance_allocation_advances_only_its_counter(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("local_pure") is None
+    score = _address_site(module, "local_subject", str(SCORE_ADD))
+    expected = ((score, (("call", "local_subject#2"), ("instance", 2)), ()),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "ordinal_local_run", 1.0) == expected
+
+
+def test_restored_call_and_instance_addresses_keep_their_order_across_capture(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    name = "mixed_local_parent"
+    assert discharged.obstacle(name) is None
+    parent = _computation(module, name).body
+    leaf = _computation(module, "scoped_leaf").body
+    (trigger,) = _effect_sites(leaf, "Relay")
+    (before, after) = _effect_sites(leaf, "Score")
+    (clause,) = _effect_sites(_effect_clause_body(module, "recording_relay"), "Score")
+    site = next(
+        term.origin.site_id() for term in _terms(parent) if isinstance(term, Call)
+    )
+    outer = (("call", f"{name}#1"), ("instance", 1))
+    active = (*outer, ("call", "scoped_leaf#2"))
+    expected = (
+        (before, active, ()),
+        (clause, (*outer, ("handler-clause", f"{trigger}/{site}")), ()),
+        (after, active, ()),
+    )
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "mixed_local_run", 1.0) == expected
+
+
+def test_a_local_instance_blocks_tail_replacement_of_its_caller(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("retained_local_parent") is None
+    score = _address_site(module, "ordinal_score", str(SCORE_ADD))
+    path = (
+        ("call", "retained_local_parent#1"),
+        ("instance", 1),
+        ("call", "ordinal_score#2"),
+    )
+    expected = ((score, path, ()),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "retained_local_run", 1.0) == expected
+
+
+@pytest.mark.parametrize("outer_omega", (False, True))
+def test_a_retained_call_keeps_its_scoped_shots(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+    outer_omega: bool,
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("residual_shot_subject") is None
+    sample = _address_site(module, "residual_draw", str(RANDOM_SAMPLE))
+    after = _address_site(module, "residual_shot_subject", str(RANDOM_SAMPLE))
+    expected = []
+    for outer in range(2 if outer_omega else 1):
+        parent, first_child = 3 * outer + 1, 3 * outer + 2
+        for inner in range(2):
+            path = (
+                ("call", f"residual_shot_subject#{parent}"),
+                ("call", f"residual_draw#{first_child + inner}"),
+            )
+            shots = (outer, inner) if outer_omega else (inner,)
+            expected.append((sample, path, shots))
+            expected.append((after, path[:-1], shots))
+    name = "residual_nested_run" if outer_omega else "residual_shot_run"
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name, 1.0) == tuple(expected)
+
+
+def test_a_retained_call_with_an_interleaved_omega_request_uses_the_reference(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    name = "residual_omega_subject"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "`residual_omega_leaf`" in obstacle.reason
+    assert _computation(module, name) is _computation(discharged.module, name)
+    sample = _address_site(module, "residual_omega_leaf", str(RANDOM_SAMPLE))
+    path = (("call", f"{name}#1"), ("call", "residual_omega_leaf#2"))
+    expected = tuple((sample, path, (0, shot)) for shot in range(2))
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "residual_omega_call_run", -1.0) == expected
+
+
+_RETURN_ADDRESS_SOURCE = """
+instance second_relay : Relay
+
+handler return_score for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        perform score.add(weight(x))
+        return x
+    pass(v : Real) resumes 1 =>
+        resume(v)
+
+handler return_twice for Fork : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        perform score.add(weight(x))
+        return x
+    split(v : Real) resumes omega =>
+        let first <- resume(v)
+        let second <- resume(v)
+        return first + second
+
+handler return_tap for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{tap}, implementation=authored]
+    return x =>
+        let y <- perform tap.echo(x)
+        return y
+    pass(v : Real) resumes 1 =>
+        resume(v)
+
+handler tap_forks for Tap : Real -> Real [coverage=total, forwards=none, introduces=!{outside_branch, score}, implementation=authored]
+    return x =>
+        return x
+    echo(v : Real) resumes 1 =>
+        let y <- perform outside_branch.split(v)
+        perform score.add(weight(y))
+        resume(y)
+
+define return_subject(x : Real) : Real !{score} =
+    handle second_relay with return_score in
+        handle relay with return_score in
+            let y <- perform second_relay.pass(x)
+            let z <- perform relay.pass(y)
+            perform score.add(weight(z))
+            return z
+
+define return_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- return_subject(x)
+        perform score.add(weight(y))
+        return y
+
+define return_shots_subject(x : Real) : Real !{score} =
+    handle branch with return_twice in
+        let y <- perform branch.split(x)
+        return y
+
+define return_shots_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- return_shots_subject(x)
+        perform score.add(weight(y))
+        return y
+
+define return_capture_subject(x : Real) : Real !{tap} =
+    with instance local : Relay in
+        handle second_relay with return_tap in
+            handle relay with return_tap in
+                let y <- perform second_relay.pass(x)
+                let z <- perform relay.pass(y)
+                return z
+
+define direct_capture_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle tap with recording_tap in
+            return_capture_subject(x)
+
+define capture_within(x : Real) : Real !{score} =
+    handle tap with recording_tap in
+        return_capture_subject(x)
+
+define capture_within_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        capture_within(x)
+
+define one_return_tap(x : Real) : Real !{tap} =
+    handle relay with return_tap in
+        let y <- perform relay.pass(x)
+        return y
+
+define deferred_omega_subject(x : Real) : Real !{outside_branch, score} =
+    handle tap with tap_forks in
+        one_return_tap(x)
+
+define deferred_omega_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        handle outside_branch with guarded_shots in
+            deferred_omega_subject(x)
+"""
+
+
+@pytest.fixture(scope="module")
+def return_address_module() -> tuple[QiecModule, DischargedModule, QiecModule]:
+    module = _module(_ADDRESS_SOURCE + _CLAUSE_SOURCE + _RETURN_ADDRESS_SOURCE)
+    discharged = discharge_module(module)
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    return module, discharged, round_trip
+
+
+@pytest.mark.parametrize("repeated_shots", (False, True))
+def test_return_clauses_use_the_installation_address_until_their_answer(
+    return_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+    repeated_shots: bool,
+) -> None:
+    module, discharged, round_trip = return_address_module
+    suffix = "_shots" if repeated_shots else ""
+    subject = "return" + suffix + "_subject"
+    root = "return" + suffix + "_run"
+    handler_name = "return_twice" if repeated_shots else "return_score"
+    handler = next(item for item in module.handlers if item.name == handler_name)
+    assert handler.return_clause is not None and discharged.obstacle(subject) is None
+    (score,) = _effect_sites(handler.return_clause.body, "Score")
+    after = _address_site(module, root, str(SCORE_ADD))
+    call = (("call", f"{subject}#1"),)
+    visits = ((1, (0,)), (1, (1,))) if repeated_shots else ((2, ()), (1, ()))
+    before = (
+        ()
+        if repeated_shots
+        else ((_address_site(module, subject, str(SCORE_ADD)), call, ()),)
+    )
+    expected = (
+        *before,
+        *(
+            (score, (*call, ("handler-return", f"{handler.id}#{ordinal}")), shots)
+            for ordinal, shots in visits
+        ),
+        (after, (), ()),
+    )
+    assert len(set(expected)) == len(expected)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, root, 1.0) == expected
+
+
+@pytest.mark.parametrize("outer_static", (False, True))
+def test_a_captured_return_activation_identifies_the_outer_operation_clause(
+    return_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+    outer_static: bool,
+) -> None:
+    module, discharged, round_trip = return_address_module
+    assert discharged.obstacle("return_capture_subject") is None
+    assert discharged.obstacle("capture_within") is None
+    assert not any(
+        isinstance(term, Handle)
+        for term in _terms(_computation(discharged.module, "capture_within").body)
+    )
+    handler = next(item for item in module.handlers if item.name == "return_tap")
+    assert handler.return_clause is not None
+    (trigger,) = _effect_sites(handler.return_clause.body, "Tap")
+    (score,) = _effect_sites(_effect_clause_body(module, "recording_tap"), "Score")
+    caller = "capture_within" if outer_static else "direct_capture_run"
+    call = next(
+        term.origin.site_id()
+        for term in _terms(_computation(module, caller).body)
+        if isinstance(term, Call)
+    )
+    parent = (("call", "capture_within#1"),) if outer_static else ()
+    expected = tuple(
+        (
+            score,
+            (
+                *parent,
+                (
+                    "handler-clause",
+                    f"{trigger}/{call}/instance:1/handler-return:{handler.id}#{ordinal}",
+                ),
+            ),
+            (),
+        )
+        for ordinal in (2, 1)
+    )
+    root = "capture_within_run" if outer_static else caller
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, root, 1.0) == expected
+
+
+def test_an_interleaved_omega_keeps_the_reference_for_a_deferred_clause_scope(
+    return_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = return_address_module
+    name = "deferred_omega_subject"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "Fork.split" in obstacle.reason
+    assert _computation(discharged.module, name) is _computation(module, name)
+    handler = next(item for item in module.handlers if item.name == "return_tap")
+    assert handler.return_clause is not None
+    (trigger,) = _effect_sites(handler.return_clause.body, "Tap")
+    (score,) = _effect_sites(_effect_clause_body(module, "tap_forks"), "Score")
+    call = next(
+        term.origin.site_id()
+        for term in _terms(_computation(module, name).body)
+        if isinstance(term, Call)
+    )
+    key = f"{trigger}/{call}/handler-return:{handler.id}#1"
+    path = (("call", f"{name}#1"), ("handler-clause", key))
+    expected = ((score, path, (0,)),)
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "deferred_omega_run", -1.0) == expected
+        with pytest.raises(
+            ExecutionFailure, match="a '1' resumption was invoked more than once"
+        ):
+            _request_addresses(checked, "deferred_omega_run", 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1235,7 +1927,7 @@ define inner(a : Real) : Real !{} =
     for parameter in pair.parameters:
         context = context.extend(parameter)
     assert infer_computation(pair.body, registry, context).result == pair.type.result
-    assert isinstance(pair.body, Return)
+    assert sum(isinstance(term, InstanceAddress) for term in _terms(pair.body)) == 1
     for checked in (module, result.module):
         assert run_named(checked, "inner", (0.5,)).value == pytest.approx(10.5)
 
@@ -1263,13 +1955,19 @@ define subject(a : Real, b : Real) : Real !{} =
     assert value == pytest.approx(b - 2.0 * a + a + 0.5 * b)
 
 
-def test_the_bound_holds_of_the_body_and_not_of_the_steps_taken() -> None:
-    """Copies of a conditional's branches count against the bound.
+def test_the_bound_holds_of_the_body_and_not_of_the_steps_taken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closing the branches adds statements after reduction has finished.
 
-    Seed 23 reduces in few steps to a body whose conditionals, nested and
-    each stated once per value their branches differ in, pass the bound.
+    This case emits thirteen statements during reduction and has
+    fourteen in its closed body.
     """
-    module = _module(HANDLERS + random_body(23))
+    module = _module(HANDLERS + random_body(42))
+    monkeypatch.setattr(discharge, "DISCHARGE_STATEMENTS", 14)
+    rewritten = _discharged(module, "handled")
+    assert sum(not isinstance(term, Bind) for term in _terms(rewritten.body)) == 14
+    monkeypatch.setattr(discharge, "DISCHARGE_STATEMENTS", 13)
     obstacle = discharge_module(module).obstacle("handled")
     assert obstacle is not None
     assert obstacle.kind == "growth"

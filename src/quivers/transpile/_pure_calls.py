@@ -49,6 +49,7 @@ from quivers.qiec.effects import EffectRequest
 from quivers.qiec.terms import (
     Bind,
     Call,
+    CallAddress,
     Case,
     Comprehension,
     Computation,
@@ -56,7 +57,9 @@ from quivers.qiec.terms import (
     DistributionValue,
     Gather,
     Handle,
+    HandlerReturnAddress,
     If,
+    InstanceAddress,
     LetBinding,
     LetValue,
     LiteralValue,
@@ -78,6 +81,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
     WeightSum,
+    WithTraceAddresses,
 )
 from quivers.qiec.types import (
     INT,
@@ -1408,6 +1412,9 @@ def computation_value(
     node = term
     while isinstance(node, Bind):
         first = node.first
+        if isinstance(first, CallAddress | InstanceAddress | HandlerReturnAddress):
+            node = node.then
+            continue
         if isinstance(first, Bind):
             # A nested sequence associates into the enclosing one; its
             # binder is fresh to the continuation.
@@ -1467,6 +1474,10 @@ def _step_value(
     CallNotLowered
         As `computation_value` does.
     """
+    if isinstance(term, WithTraceAddresses):
+        return computation_value(
+            term.body, replaced, result_type, owner, computations, active
+        )
     if isinstance(term, Return):
         return replace_locals(term.value, replaced)
     if isinstance(term, Call):
