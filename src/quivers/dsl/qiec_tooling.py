@@ -22,6 +22,7 @@ from quivers.dsl.ast_nodes.program_steps import CallStep, MarginalizeStep
 from quivers.dsl.ast_nodes.qiec import (
     QiecCallComputation,
     QiecComputationDecl,
+    QiecInterpretationDecl,
     QiecSequenceComputation,
     QiecPureBinding,
     QiecInstanceComputation,
@@ -90,6 +91,7 @@ QIEC_DIAGNOSTIC_CODES = frozenset(
         "qiec-instance-escape",
         "qiec-program-gap",
         "qiec-deduction-outcomes",
+        "qiec-interpretation",
     }
 )
 
@@ -534,7 +536,7 @@ def qiec_bindings(module: Module) -> tuple[QiecBinding, ...]:
                     owner=statement,
                 )
             )
-        elif isinstance(statement, QiecComputationDecl):
+        elif isinstance(statement, QiecComputationDecl | QiecInterpretationDecl):
             out.append(
                 QiecBinding(
                     name=statement.name,

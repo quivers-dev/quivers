@@ -656,6 +656,68 @@ program proof_mass : Token -> Mass
 export proof_mass
 ```
 
+#### Interpreting a proof
+
+An `interpret` declaration assigns one checked computation to each rule and
+lexical axiom slot. Its result is a named computation over the indexed proof
+family. The computation interprets the premise proofs in their declared order,
+then passes their results and the constructor's value fields to the selected
+operation. For `axiom span`, the value field is the lexical word.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 2
+object Result : Real 1
+
+deduction Words : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, S, word
+    rule join : span(I, K, A), span(K, J, B) |- span(I, J, S)
+    lexicon
+        "left" : A = word
+        "right" : B = word
+
+interpret difference : Words -> Real
+    rule join = subtract
+    axiom span = word_value
+
+define subtract(left : Real, right : Real) : Real !{} =
+    return left - right
+
+define word_value(word : String) : Real !{} =
+    if word == "left" then
+        return 3.0
+    else
+        return 1.0
+
+define read_example() : Real !{} =
+    let left = construct Words__axiom_span[0, 1, A]("left") as Words__SpanProof(0, 1, A)
+    let right = construct Words__axiom_span[1, 2, B]("right") as Words__SpanProof(1, 2, B)
+    let proof = construct Words__rule_join[0, 1, 2](left, right) as Words__SpanProof(0, 2, S)
+    difference[0, 2, S](proof)
+
+program difference_example : Token -> Result
+    let value <- read_example()
+    return value
+
+export difference_example
+```
+
+Each operation takes one carrier value per premise, then its constructor's
+ordinary fields, and returns the declared carrier. The carrier is a closed
+type, common to this deduction's single span judgment. A rule operation may
+use a closed effect row. The interpretation's row is the union of the reachable
+operation rows, and callers handle those instances as for any checked computation.
+
+The checked case and calls follow the initial algebra for the presentation's
+finite ordered proof trees. They visit each constructor occurrence once and
+make one rule or axiom call there. The traversal therefore makes as many
+operation calls as the proof has nodes. The operations' own work, static
+checking, and effect trace storage are additional costs. Reusing a premise
+value as part of a proof preserves both occurrences. Its interpretation
+executes once for each, with separate dynamic addresses. A finite proof can
+be interpreted even if the grammar admits infinitely many other proofs.
+Finding all proofs in a chart is a separate query with its own finiteness check.
+
 #### Scoring a response with a prover
 
 The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules

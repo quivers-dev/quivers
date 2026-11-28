@@ -1219,6 +1219,59 @@ class QiecComputationDecl(Statement):
     kind: Literal["computation_decl"] = "computation_decl"
 
 
+class QiecInterpretationClause(dx.Model):
+    """A computation assigned to one rule or axiom slot.
+
+    Parameters
+    ----------
+    constructor_kind
+        Whether the constructor is a rule or an input axiom slot.
+    constructor
+        The constructor's name in its deduction.
+    operation
+        The name of the checked computation that interprets it.
+    line, col
+        The source position.
+    """
+
+    constructor_kind: Literal["rule", "axiom"]
+    constructor: str
+    operation: str
+    line: int = 0
+    col: int = 0
+
+
+class QiecInterpretationDecl(Statement):
+    """A named computation that folds a deduction's typed proof.
+
+    Parameters
+    ----------
+    name
+        The computation's name.
+    deduction
+        The deduction whose proof family it consumes.
+    carrier
+        The closed result type of the fold.
+    clauses
+        One computation assignment per rule or axiom slot.
+    docs
+        The attached doc comments.
+    line, col
+        The source position.
+    kind
+        The syntax discriminator.
+    """
+
+    name: str
+    deduction: str
+    carrier: QiecTypeExpr
+    clauses: tuple[QiecInterpretationClause, ...]
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["interpretation_decl"] = "interpretation_decl"
+
+
 __all__ = [
     "QiecKindExpr",
     "QiecTypeKind",
@@ -1280,4 +1333,6 @@ __all__ = [
     "QiecHandlerImplementation",
     "QiecHandlerDecl",
     "QiecComputationDecl",
+    "QiecInterpretationClause",
+    "QiecInterpretationDecl",
 ]

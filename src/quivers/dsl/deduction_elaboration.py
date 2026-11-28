@@ -69,6 +69,7 @@ from quivers.dsl._deduction_outcomes import (
     PROOF_CALLS,
     OutcomeKey,
     OutcomeQuery,
+    declare_lexical_proofs,
     declare_outcome_key_types,
     declare_outcomes,
     elaborate_outcomes,
@@ -99,6 +100,7 @@ from quivers.dsl.ast_nodes import (
     OptionName,
     OptionNumber,
     ProgramDecl,
+    QiecInterpretationDecl,
     SchemaDecl,
     SequentRule,
     TypeEnumSet,
@@ -128,7 +130,7 @@ from quivers.dsl.compiler._deduction_presentation import (
     category_term,
     deduction_presentation,
 )
-from quivers.qiec.rules import Judgment
+from quivers.qiec.rules import Judgment, RulePresentation
 from quivers.stochastic.categories import (
     AtomicCategory,
     Category,
@@ -1367,6 +1369,7 @@ class _DeductionElaboration:
         self._deductions: dict[str, _System] = {}
         self._outcome_queries: dict[str, OutcomeQuery] = {}
         self._proof_queries: dict[str, OutcomeQuery] = {}
+        self._lexical_proofs: dict[str, RulePresentation] = {}
         self._outcome_keys: dict[tuple[str, str], OutcomeKey] = {}
         declarations = [
             statement
@@ -1388,6 +1391,11 @@ class _DeductionElaboration:
             call.args[0].name: call
             for call in calls
             if call.func in PROOF_CALLS and isinstance(call.args[0], LetExprVar)
+        }
+        interpretations = {
+            statement.deduction: statement
+            for statement in self.source.syntax.statements
+            if isinstance(statement, QiecInterpretationDecl)
         }
         self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
@@ -1426,6 +1434,11 @@ class _DeductionElaboration:
                     self, system, query
                 )
             proof = proof_calls.get(declaration.name)
+            proof_declaration = interpretations.get(declaration.name, proof)
+            if proof_declaration is not None:
+                self._lexical_proofs[declaration.name] = declare_lexical_proofs(
+                    self, system, proof_declaration
+                )
             if proof is not None:
                 self._proof_queries[declaration.name] = declare_outcomes(
                     self, system, proof, proofs=True
