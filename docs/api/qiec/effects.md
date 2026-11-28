@@ -178,6 +178,66 @@ An unsupported term or an exhausted limit raises an error.
 
 ::: quivers.qiec.laws
 
+### Nominal finite effect equations
+
+`EffectEquation` names one effect interface, a concrete instance, the
+operations in the equation, and two checked computations over that
+instance. `check_finite_effect_law` installs the selected authored handler
+around each computation. Each assignment includes the initial values of
+the handler's parameters. An equation can use a finite product as a
+continuation table, so the checker sees every possible response in the
+declared carrier.
+
+The decision binds the checked module, equation and handler identities,
+and the finite checking domain. Passing an earlier decision checks that
+binding and runs the finite check again.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import EffectEquation, check_finite_effect_law
+
+source = """
+effect ReadOnly
+    read_value : Unit -> Bool
+
+instance reader : ReadOnly
+
+handler fixed for ReadOnly : Bool -> Bool with (current : Bool) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    read_value resumes 1 =>
+        resume(current)
+
+define repeated() : Bool !{reader} =
+    let first <- perform reader.read_value()
+    let second <- perform reader.read_value()
+    if first then
+        return second
+    else
+        if second then
+            return false
+        else
+            return true
+
+define agreed() : Bool !{} =
+    return true
+"""
+module = Compiler(parse(source), module_name="read-effect-law").qiec_module
+assert module is not None
+instance = next(item.entry for item in module.instances if item.name == "reader")
+effect = next(item for item in module.effects if item.ref.id == instance.effect.id)
+roots = {item.name: item.id for item in module.computations}
+equation = EffectEquation(
+    effect.ref.id, "same-read", instance.instance, (effect.operations[0].id,),
+    roots["repeated"], roots["agreed"],
+)
+decision = check_finite_effect_law(module, equation, module.handlers[0].id)
+assert decision.certified
+assert decision.result.checked == 2
+```
+
+::: quivers.qiec.effect_laws
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

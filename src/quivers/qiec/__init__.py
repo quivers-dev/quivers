@@ -175,6 +175,11 @@ from quivers.qiec.numbers import (
     number_kind,
     static_shape,
 )
+from quivers.qiec.effect_laws import (
+    EffectEquation,
+    FiniteEffectLawDecision,
+    check_finite_effect_law,
+)
 from quivers.qiec.effects import (
     ArgumentDef,
     ComputationType,
@@ -1076,6 +1081,7 @@ __all__ += [
     "check_finite_law",
     "finite_continuation_type",
 ]
+__all__ += ["EffectEquation", "FiniteEffectLawDecision", "check_finite_effect_law"]
 __all__ += [
     "PolynomialLawCounterexample",
     "PolynomialLawDecision",
