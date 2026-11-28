@@ -574,16 +574,32 @@ for each symbol. A constructor can occur only in the lexicon. The
 grounded route reconstructs each matched term once per argument
 occurrence, checking its constructors in field order.
 
-Checked scalar `parse`, `run_deduction`, and lexical item outcome queries
-use the same checked guard body. The indexed query calls the guard once per
-completed candidate binding and reports this count in its trace. If there
-are $G$ candidate bindings, at most $m$ matched coordinates per binding,
-and at most $g$ scalar body steps per guard, guard execution and argument
-conversion take $O(G(m+g))$ work. Space for retained edges depends on the
-accepted applications. Removing edges
-preserves the span order certified from the unfiltered rule patterns.
-The production probabilities of a locally normalized grammar still use
-their original groups.
+Checked scalar `parse`, `run_deduction`, and packed lexical outcome queries
+use the same checked guard body. The packed query evaluates the guard once
+per completed match before adding an edge. Removing edges preserves the
+span order certified from the unfiltered rule patterns. The production
+probabilities of a locally normalized grammar still use their original groups.
+
+For a successful packed outcome query, `deduction.outcomes.plan` records
+the count from construction, including rejected matches. Its `guard_bindings`
+payload contains the checked rule identities, their side conditions and
+ordered binders, and the checked bodies referenced by those conditions.
+Two rules referring to one condition share its body in the payload. The
+plan describes the built-in item, category, or form projection and states
+whether the positive rows share a common normalizer.
+
+With $D$ decisions, scalar guard execution adds $O(D(1+Q)+L)$ construction
+work, where $Q$ bounds the size of one guard body, including branch search
+and field bindings, and $L$ counts all argument occurrences. Terms add
+$O(PX+SU)$ work, where $P$ bounds a telescope scan, $X$ counts term argument
+occurrences, $S$ bounds the work of one vocabulary scan, and $U$ counts
+all reified constructor occurrences. A guard body has no calls or effects
+and visits each executed syntax occurrence at most once. Guards run
+sequentially, so their temporary space depends on the largest body and
+the arguments and reified nodes of a single call. These bounds use the
+word RAM model with expected hashing. The trace measures $D$ directly.
+Refits reconstruct the chart and repeat the guards. Their decisions fix
+support for the weight derivative and add no reverse tape.
 
 The legacy agenda and external targets refuse guarded executions. Proof
 values, packed Boolean proof interpretations, and the linear-cycle

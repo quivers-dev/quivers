@@ -27,7 +27,9 @@ from quivers.qiec import (
     validate_module,
 )
 from quivers.qiec.execution import ExecutionFailure
-from quivers.qiec.types import BOOL
+from quivers.qiec.kinds import NAT
+from quivers.qiec.types import BOOL, INT
+from quivers.stochastic.planning import PlanRecord
 from quivers.transpile import UnsupportedConstruct, transpile
 from quivers.transpile.qiec_ir import outcome_capability_diagnostics
 
@@ -181,6 +183,29 @@ define both(i : Int, k : Int, j : Int) : Bool !{} =
                 assert dict(work["construction_work"])["provenance_records"] == (
                     30 if chooses_second_split else 21
                 )
+                (report,) = (
+                    event.detail
+                    for event in run.result.trace
+                    if event.event == "deduction.outcomes.plan"
+                )
+                assert report["checked_rule_guards"] == 12
+                bindings, bodies = loads(report["guard_bindings"])
+                assert bodies == presentation.conditions
+                guarded = tuple(
+                    rule
+                    for rule in presentation.rules
+                    if rule.side_condition is not None
+                )
+                assert bindings == tuple(
+                    (rule.id, rule.side_condition, rule.telescope) for rule in guarded
+                )
+                assert all(
+                    binder.sort == NAT for _, _, fields in bindings for binder in fields
+                )
+                assert all(
+                    local.type == INT for body in bodies for local in body.parameters
+                )
+                assert isinstance(loads(report["plan"]), PlanRecord)
             for actual, wanted in zip(gradient, expected_gradient, strict=True):
                 torch.testing.assert_close(actual, wanted, atol=1e-12, rtol=1e-12)
         with torch.no_grad():
@@ -323,6 +348,7 @@ def test_unsupported_guard_evaluation_fails_the_query():
     source = SOURCE.replace("return i > j", "return i > 9223372036854775808")
     module = load_source(source + "\nexport scalar\n").qiec
     for entry in ("scalar", "packed"):
+        seen = []
         with pytest.raises(ExecutionFailure, match="Overflow"):
             run_program(
                 module,
@@ -330,7 +356,12 @@ def test_unsupported_guard_evaluation_fails_the_query():
                 data={"sentence": ("x", "x", "x")},
                 sites={"p_a": (0.35, 0.65), "p_s": (0.2, 0.3, 0.5)},
                 distributions=TensorBackend(),
+                observer=seen.append,
             )
+        assert all(
+            event.event not in {"deduction.outcomes", "deduction.outcomes.plan"}
+            for event in seen
+        )
 
 
 CHART = """\

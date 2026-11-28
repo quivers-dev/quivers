@@ -203,6 +203,99 @@ def normalized_row_complexity(work: ComplexityClaim, quantity: str) -> Complexit
     )
 
 
+def _guarded_complexity(work: ComplexityClaim) -> ComplexityClaim:
+    """Charge all guard decisions and the largest temporary guard invocation.
+
+    Parameters
+    ----------
+    work
+        The same packed query's bounds before charging its checked guards.
+
+    Returns
+    -------
+    ComplexityClaim
+        The construction and refit bounds including checked guard work.
+    """
+    extra = {
+        "time": "D (1 + Q_g) + L_g + P_g X_g + S_g U_g",
+        "space": "Q_g + M_g",
+    }
+    return work.with_(
+        parameters=(
+            *work.parameters,
+            *(
+                ComplexityParameter(name=name, meaning=meaning)
+                for name, meaning in (
+                    ("D", "actual checked guard decisions on completed matches"),
+                    ("Q_g", "maximum guard body size in syntax and operand words"),
+                    ("L_g", "all matched arguments across guard invocations"),
+                    ("X_g", "term-valued matched arguments across guard invocations"),
+                    ("P_g", "maximum words scanned in a matched rule's telescope"),
+                    ("U_g", "constructor occurrences reified across guard invocations"),
+                    ("S_g", "maximum vocabulary word visits per constructor check"),
+                    (
+                        "M_g",
+                        "largest invocation's combined argument and reified node count",
+                    ),
+                )
+            ),
+        ),
+        bounds=tuple(
+            bound.with_(expression=f"{bound.expression} + {extra[bound.resource]}")
+            if bound.phase in (Phase.CONSTRUCTION, Phase.REFIT)
+            else bound
+            for bound in work.bounds
+        ),
+        conditions=(
+            *work.conditions,
+            "each successful guard is a closed, call-free Int and Bool body, "
+            "optionally with case over the deduction's owned item family",
+            "guard evaluation visits each executed syntax occurrence once; "
+            "body size includes branch search and binding fields",
+            "term arguments use a telescope lookup and reify and check every "
+            "constructor occurrence, including children a guard does not inspect",
+            "a guard runs before recording an edge; guards are sequential and "
+            "their work saves no values for the weight derivative",
+            "D is measured; the other guard parameters describe work or space "
+            "that this trace does not measure",
+        ),
+    )
+
+
+def _guard_trace(presentation: RulePresentation, decisions: int) -> dict[str, object]:
+    """Record the actual guard bindings and checked bodies of this presentation.
+
+    Parameters
+    ----------
+    presentation
+        The exact checked presentation used by the indexed forest.
+    decisions
+        All guard calls, including the calls that did not admit an edge.
+
+    Returns
+    -------
+    dict of str to object
+        The count and a portable pair of ordered rule bindings and shared bodies.
+    """
+    from quivers.qiec.serialization import dumps
+
+    bindings = tuple(
+        (
+            rule.id,
+            guard,
+            tuple(
+                binder for binder in rule.telescope if binder.name in guard.arguments
+            ),
+        )
+        for rule in presentation.rules
+        if (guard := rule.side_condition) is not None
+    )
+    return {
+        "checked_rule_guards": decisions,
+        "guard_bindings": dumps((bindings, presentation.conditions)),
+    }
+
+
 def lexical_outcome_plan_trace(
     descriptor: DeductionOutcomes,
     definition: HandlerDef,
@@ -213,13 +306,14 @@ def lexical_outcome_plan_trace(
     selector: str,
     projection: int | None,
     normalized: bool,
+    guard_decisions: int,
 ) -> dict[str, object]:
     """Describe the checked lexical operation that just returned its outcome rows.
 
     Parameters
     ----------
     descriptor
-        The original checked unguarded lexical declaration.
+        The original checked lexical declaration.
     definition, operation
         The installed handler and its executed operation identity.
     tokens, terms
@@ -231,6 +325,8 @@ def lexical_outcome_plan_trace(
         it. None denotes the entire item.
     normalized
         Whether the returned positive rows share a finite log normalizer.
+    guard_decisions
+        The indexed chart's actual number of checked guard calls.
 
     Returns
     -------
@@ -276,6 +372,9 @@ def lexical_outcome_plan_trace(
         )
     mass = "normalized" if normalized else "raw"
     quantity = f"{mass} log mass per positive {item}"
+    guarded = bool(presentation.conditions)
+    if guarded:
+        work = _guarded_complexity(work)
     record = PlanRecord(
         query=QuerySpec(
             presentation=presentation.id,
@@ -306,6 +405,14 @@ def lexical_outcome_plan_trace(
             "references are retained inside the provider until the fold returns",
             "the host fold has no compute or memory cap; QIEC step fuel does not "
             "charge each chart or reification operation",
+            *(
+                (
+                    "guards use the trace's checked rule bindings and bodies; a guarded "
+                    "match contributes edges and weight only when its guard returns true",
+                )
+                if guarded
+                else ()
+            ),
             *((NORMALIZATION_ASSUMPTION,) if normalized else ()),
         ),
         structure=presentation.analysis,
@@ -313,8 +420,12 @@ def lexical_outcome_plan_trace(
         alternatives=(
             Alternative(
                 algorithm="proof enumeration",
-                reason="it preserves the finite mass but requires work in the "
-                "unfolded proof sizes and an explicit proof budget",
+                reason=(
+                    "the checked proof-row provider requires unconditional rules"
+                    if guarded
+                    else "it preserves the finite mass but requires work in the "
+                    "unfolded proof sizes and an explicit proof budget"
+                ),
             ),
             Alternative(
                 algorithm="two-pass weight evaluation",
@@ -344,6 +455,7 @@ def lexical_outcome_plan_trace(
         "temporary_provenance": "packed-forest",
         "derivative": dumps(DerivativeSemantics()),
         "derivative_inputs": "ordered finite log weights at fixed support",
+        **(_guard_trace(presentation, guard_decisions) if guarded else {}),
         "plan": dumps(record),
     }
 

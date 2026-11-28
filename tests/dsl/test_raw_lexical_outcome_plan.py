@@ -26,6 +26,7 @@ from quivers.qiec.execution import RuntimeConfiguration, RuntimeSelection, run_n
 from quivers.qiec.foreign import DeductionOutcomes
 from quivers.qiec.kinds import NAT
 from quivers.qiec.program_runtime import (
+    ACCUMULATE_HANDLER,
     PARAMS_HANDLER,
     foreign_handler_configuration,
     joint_module,
@@ -241,34 +242,43 @@ def test_plan_record_is_scoped_and_skipped_when_not_traced(checked, monkeypatch)
     assert ordinary.detail["key"] == "item"
     assert ordinary.detail["normalized"] is False
     assert ordinary.detail["checked_rule_guards"] == 6
-    assert all(
-        event.event != "deduction.outcomes.plan" for event in result.result.trace
-    )
+    (guard_plan,) = [
+        event
+        for event in result.result.trace
+        if event.event == "deduction.outcomes.plan"
+    ]
+    assert guard_plan.detail["checked_rule_guards"] == 6
 
     def forbidden(*args, **kwargs):
         pytest.fail("an untraced result must not construct plan metadata")
 
     monkeypatch.setattr(deduction_outcomes, "lexical_outcome_plan_trace", forbidden)
-    extended, entry_name = joint_module(checked, "listed")
-    entry = program_entry(checked, "listed")
-    handlers = foreign_handler_configuration(checked)
-    handlers[PARAMS_HANDLER] = {"kind": "param", "values": {}}
-    runtime = RuntimeConfiguration(
-        selections=(RuntimeSelection(provider="core", options={"handlers": handlers}),)
-    )
-    plain = run_named(
-        extended,
-        entry_name,
-        tuple(DATA[parameter.name] for parameter in entry.parameters),
-        static_arguments=static_arguments_for(entry, DATA, ()),
-        runtime=runtime,
-        record_trace=False,
-    )
-    assert plain.trace == ()
-    returned, *_ = plain.value
-    assert isinstance(returned, RuntimeConstructor)
-    _, weight, _ = returned.fields
-    assert float(weight) in (0, math.log(2))
+    for module, name in ((checked, "listed"), (guarded, "packed")):
+        extended, entry_name = joint_module(module, name)
+        entry = program_entry(module, name)
+        handlers = foreign_handler_configuration(module)
+        handlers[PARAMS_HANDLER] = {"kind": "param", "values": {}}
+        if name == "packed":
+            handlers[ACCUMULATE_HANDLER] = {"kind": "score"}
+        runtime = RuntimeConfiguration(
+            selections=(
+                RuntimeSelection(provider="core", options={"handlers": handlers}),
+            )
+        )
+        plain = run_named(
+            extended,
+            entry_name,
+            tuple(DATA[parameter.name] for parameter in entry.parameters),
+            static_arguments=static_arguments_for(entry, DATA, ()),
+            runtime=runtime,
+            record_trace=False,
+        )
+        assert plain.trace == ()
+        returned, *_ = plain.value
+        if name == "listed":
+            assert isinstance(returned, RuntimeConstructor)
+            _, returned, _ = returned.fields
+        assert float(returned) in (0, math.log(2))
 
 
 def test_raw_plan_covers_only_the_item_stage_of_a_typed_key_query():
