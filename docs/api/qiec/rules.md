@@ -144,6 +144,53 @@ right block), so a binder decides what
 its variables stand for, and [`fold_open`][quivers.qiec.rules.HostInterpretation.fold_open] folds an
 open derivation at values of its context.
 
+### Checked right-scoped folds
+
+[`scoped_proof_types`][quivers.qiec.scoped_proof_types] derives checked QIEC proof and
+environment types from an unconditional, unindexed Cartesian presentation. The
+presentation explicitly grants exchange, weakening, and contraction. The adapter admits
+right-scoped hypotheses and requires a closed semantic carrier per judgment when interpreting
+a proof. A structural signature can use the existing [`presentation_of`][quivers.qiec.rules.presentation_of]
+and [`term_derivation`][quivers.qiec.rules.term_derivation] adapters. Set the Cartesian
+permissions on that presentation explicitly before preparing the scoped types.
+
+An environment extends a context with a nominal frame that carries the previous environment
+and the value of the newest hypothesis. A proof that refers to a hypothesis carries a checked
+witness of its exact position in that environment. Induction on the witness shows that lookup
+returns the newest value for the innermost reference and visits one preceding frame for each
+position it passes. Each premise's context is computed by extending its parent's context in
+the order the rule declares. Proof constructors and their stable identities are
+shared across choices of semantic carriers. [`ScopedProofTypes.value`][quivers.qiec.ScopedProofTypes.value]
+checks an open derivation and retains the original input occurrence identities.
+
+[`scoped_proof_fold`][quivers.qiec.scoped_proof_fold] fixes the carriers and closed effect
+rows for an interpretation. [`ScopedProofFold.operation_parameters`][quivers.qiec.ScopedProofFold.operation_parameters]
+gives the typed arguments of each rule operation at an arbitrary environment type. Eager
+premises run in written order. A scoped premise gives the operation a pair of its child proof
+and captured environment. [`ScopedProofFold.applications`][quivers.qiec.ScopedProofFold.applications]
+supplies the named computation that takes that pair and one value per introduced hypothesis.
+Each application extends the captured environment in order and evaluates the child once.
+Treating scoped arguments as functions of their hypotheses requires actions to consume them
+through these applications. An action can also inspect the proof in the pair as a proof
+observer, so extensional equations are an additional obligation on such actions.
+
+[`ScopedProofFold.assemble`][quivers.qiec.ScopedProofFold.assemble] combines the operations
+with the generated folds and checks the module. The resulting computations serialize and
+run on the native QIEC evaluator. Applying a scoped argument repeatedly runs its effects
+at the corresponding dynamic addresses. Skipping the argument skips those effects.
+Applications descend into strict proof subtrees. On finite proofs they terminate when each
+operation uses its supplied arguments finitely and terminates apart from these calls.
+The adapter checks scope and effect types. Ordered and left-scoped presentations,
+term-dependent judgments, and preservation of proof equations require a separate contract.
+
+For $J$ judgment forms, the membership declarations contain $J(J+1)$ constructors, each with
+$J$ uniform carrier types. Each concrete hypothesis reference at depth $d$ adds $d+1$
+membership nodes. Lowering also visits all rule nodes and their ordered premise fields once,
+sharing context tails in memory. Validation and serialization additionally process the
+written type arguments and the nested context types. These folds consume the supplied proofs.
+A deduction executor can still use a packed aggregate when its observable and algebra admit
+a more efficient computation.
+
 ## Binding
 
 Terms of a structural signature use de Bruijn indices.
