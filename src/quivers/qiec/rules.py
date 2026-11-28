@@ -1072,6 +1072,19 @@ class RulePresentation(QiecModel):
         tuple of tuple of FamilyDecl and tuple of ConstructorDecl
             The families and the constructors.
         """
+        return self._declarations
+
+    @cached_property
+    def _declarations(
+        self,
+    ) -> tuple[tuple[FamilyDecl, ...], tuple[ConstructorDecl, ...]]:
+        """Return the lowered declarations for this immutable presentation.
+
+        Returns
+        -------
+        tuple of tuple of FamilyDecl and tuple of ConstructorDecl
+            The declarations, reused for subsequent folds and checks.
+        """
         return _lower(self)
 
     def to_module(self) -> QiecModule:

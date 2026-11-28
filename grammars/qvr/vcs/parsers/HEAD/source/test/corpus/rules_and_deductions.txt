@@ -270,3 +270,31 @@ deduction lexparse : T -> T
         (option_entry
           (identifier)
           (identifier))))))
+
+==================
+Typed rule interpretation
+==================
+
+#! Fold each proof using its constructor.
+interpret meaning : Words -> Bool
+    rule join = combine
+    axiom span = leaf
+
+---
+
+(source_file
+  (interpretation_decl
+    (doc_comment_group
+      (doc_comment))
+    (identifier)
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (interpretation_clause
+      (interpretation_clause_kind)
+      (identifier)
+      (identifier))
+    (interpretation_clause
+      (interpretation_clause_kind)
+      (identifier)
+      (identifier))))
