@@ -63,6 +63,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecInterpretationDecl,
     QiecRelationScoreDecl,
+    QiecStringGraphScoreDecl,
     QiecEffectDecl,
     QiecEffectInstanceDecl,
     QiecFamilyDecl,
@@ -828,7 +829,11 @@ def _render_hover(
     inferred = (
         _inferred_row(doc, name)
         if isinstance(
-            decl, QiecComputationDecl | QiecInterpretationDecl | QiecRelationScoreDecl
+            decl,
+            QiecComputationDecl
+            | QiecInterpretationDecl
+            | QiecRelationScoreDecl
+            | QiecStringGraphScoreDecl,
         )
         else None
     )
@@ -1485,7 +1490,8 @@ def _symbol_kind(stmt: Statement) -> lsp.SymbolKind:
         QiecHandlerDecl
         | QiecComputationDecl
         | QiecInterpretationDecl
-        | QiecRelationScoreDecl,
+        | QiecRelationScoreDecl
+        | QiecStringGraphScoreDecl,
     ):
         return lsp.SymbolKind.Function
     return lsp.SymbolKind.Variable

@@ -1300,6 +1300,18 @@ class QiecRelationScoreDecl(Statement):
     kind: Literal["relation_score_decl"] = "relation_score_decl"
 
 
+class QiecStringGraphScoreDecl(Statement):
+    """A named partition or normalized word score on a runtime string graph."""
+
+    name: str
+    result_type: QiecTypeExpr
+    operation: Literal["tree_partition", "tree_log_prob"]
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["string_graph_score_decl"] = "string_graph_score_decl"
+
+
 __all__ = [
     "QiecKindExpr",
     "QiecTypeKind",
@@ -1364,4 +1376,5 @@ __all__ = [
     "QiecInterpretationClause",
     "QiecInterpretationDecl",
     "QiecRelationScoreDecl",
+    "QiecStringGraphScoreDecl",
 ]

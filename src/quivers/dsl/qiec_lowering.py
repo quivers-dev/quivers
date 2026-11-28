@@ -226,6 +226,7 @@ QIEC_STATEMENT_TYPES = (
     surface.QiecComputationDecl,
     surface.QiecInterpretationDecl,
     surface.QiecRelationScoreDecl,
+    surface.QiecStringGraphScoreDecl,
 )
 """The declaration classes that make up the QIEC surface of a module.
 

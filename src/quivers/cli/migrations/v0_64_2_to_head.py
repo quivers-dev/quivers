@@ -19,8 +19,8 @@ after a handler's answer type or after ``resume(...)``, nor parentheses after th
 handler a ``handle`` installs.
 Ground deduction rules and literal application arguments are additive
 too, so existing deduction rules need no rewrite at this hop. The authored
-proof interpretation and fixed relation score declarations likewise leave
-prior declarations unchanged.
+proof interpretation, fixed relation scores, and string graph score
+declarations likewise leave prior declarations unchanged.
 
 This is a directed migration, not a target-source formatter. Reapplying it to a
 new static telescope fails the historical source gate rather than guessing at
