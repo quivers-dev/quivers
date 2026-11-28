@@ -522,6 +522,11 @@ returning a certified interval. General joint string MAP can be undecidable
 for cyclic multi-tape factors, as the reduction from Post's correspondence
 problem shows. See §2.5 of [Peng, Cotterell, and Eisner (2015)](https://aclanthology.org/D15-1108/).
 
+The local `max_work` is a cap per forward decoder and per verification
+scan. Each independently verified local witness requires two scans
+of the same candidate arc set, at most twice `max_work`, and a separate
+check of its original trace. The result reports these counts separately.
+
 `JointAlignmentMapGapConfig` pairs the ordinary solver settings with
 one or both rational gap targets. The executor checks them against the
 feasible score and dual bound computed from the original live model.
@@ -530,6 +535,14 @@ cannot satisfy the target. A `gap` stop reports that the objective
 bound was established. The `optimal` status and agreement certificate
 retain their stricter condition. The original settings record keeps
 its wire representation.
+
+`JointAlignmentMapDecomposition` wraps either alignment search policy
+with a partition into singleton and paired factor occurrences. A pair
+shares exactly one tape variable and has explicit product limits.
+The same authored graph supplies both the ordinary and grouped solver.
+The grouped certificate follows the partition order. Feasible paths
+expanded from the certificate or lower-bound witness follow original
+factor order and keep the original boundary and arc identities.
 
 A `RegularStringEPConfig` uses the same factor declaration for approximate
 sum-product. Its settings record finite regular reference languages,
@@ -553,6 +566,8 @@ returned approximate result.
 ::: quivers.qiec.string_solvers.JointAlignmentMapConfig
 
 ::: quivers.qiec.string_solvers.JointAlignmentMapGapConfig
+
+::: quivers.qiec.string_solvers.JointAlignmentMapDecomposition
 
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
 

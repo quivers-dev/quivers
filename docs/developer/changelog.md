@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Typed paired alignment-MAP decomposition.** Optional bounded one-tape joins coordinate exact grouped decoders. Feasible solutions retain each original factor's boundary states, arc occurrences, and rational score.
 - **Independent local verification for alignment MAP.** Returned bounds and certificates check original traces, exact suffix optima and centered multipliers, with reported verification work.
 - **Source-authored pruned graph queries.** A native QVR foreign computation can call a checked graph belief provider with its exact graph and candidate identity.
 - **Computed deduction rule weights.** A checked rule can name a pure `LogWeight` computation over its matched fields. Native lexical search and chart execution use the grounded weight with live derivatives.

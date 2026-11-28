@@ -306,14 +306,15 @@ def _materialize_product(
     max_work: int,
     *,
     arc_origins: list[_ArcOrigin] | None = None,
-) -> tuple[RelationTopology, tuple[_WeightPair, ...]]:
+    boundary_origins: dict[int, tuple[int, int]] | None = None,
+) -> tuple[RelationTopology, tuple[tuple[int, int], ...]]:
     if len(left.initial) * len(right.initial) > max_states:
         raise RelationLimitError("composition exceeds max_states")
     left_index = _arc_index(left, None, layout.left_tape)
     right_index = _arc_index(right, None, layout.right_tape)
     left_count = len(left.weight_names)
     source_slots = left_count + len(right.weight_names)
-    boundary_slots: dict[_WeightPair, int] = {}
+    boundary_slots: dict[tuple[int, int], int] = {}
     states: list[tuple[int, _ProductState]] = []
     state_ids: dict[_ProductState, int] = {}
     initial: list[Boundary] = []
@@ -360,11 +361,15 @@ def _materialize_product(
     for l_mark, r_mark in product(left.initial, right.initial):
         state = state_id((l_mark.state, r_mark.state, _Filter.MATCH))
         initial.append(Boundary(state, boundary_slot(l_mark.weight, r_mark.weight)))
+        if boundary_origins is not None:
+            boundary_origins[state] = l_mark.state, r_mark.state
     for source, (l_state, r_state, phase) in states:
         l_final = left._final_slots.get(l_state)
         r_final = right._final_slots.get(r_state)
         if l_final is not None and r_final is not None:
             final.append(Boundary(source, boundary_slot(l_final, r_final)))
+            if boundary_origins is not None:
+                boundary_origins[source] = l_state, r_state
         l_group = left_index.get((l_state, EPSILON))
         r_group = right_index.get((r_state, EPSILON))
         for l_id, r_id, next_phase in _moves(

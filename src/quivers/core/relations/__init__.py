@@ -65,6 +65,7 @@ __all__ = [
     "NgramProjection",
     "PenalizedNgramProjection",
     "PathStatistics",
+    "PairedAlignmentMapResult",
     "ProductiveEpsilonCycleError",
     "QueryWork",
     "RationalRelation",
@@ -80,6 +81,7 @@ __all__ = [
     "StringAlignment",
     "StringAlignmentCertificate",
     "StringAlignmentMapResult",
+    "StringAlignmentTrace",
     "StringBeliefResult",
     "PrunedStringBeliefResult",
     "StringEPResult",
@@ -102,6 +104,7 @@ __all__ = [
     "concatenate",
     "condition",
     "dual_alignment_map",
+    "paired_dual_alignment_map",
     "dual_string_map",
     "intersect",
     "invert",
@@ -795,6 +798,11 @@ from quivers.core.relations.alignment_dual import (  # noqa: E402
     StringAlignmentCertificate,
     StringAlignmentMapResult,
     dual_alignment_map,
+)
+from quivers.core.relations.alignment_groups import (  # noqa: E402
+    PairedAlignmentMapResult,
+    StringAlignmentTrace,
+    paired_dual_alignment_map,
 )
 
 from quivers.core.relations.marginal_map import (  # noqa: E402

@@ -14,9 +14,9 @@ import torch
 from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import _weight_snapshot
 from quivers.core.relations._ngram import _NgramAutomaton
-from quivers.core.relations.graph import StringFactor, StringFactorGraph
+from quivers.core.relations.graph import StringFactorGraph
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
-from quivers.core.relations.topology import Words
+from quivers.core.relations.topology import RelationTopology, Words
 from quivers.core.relations.transforms import _reached
 
 type _Word = tuple[int, ...]
@@ -67,12 +67,11 @@ class _Trace:
 
 
 class _LocalAlignments:
-    def __init__(self, factor: StringFactor, weights: torch.Tensor) -> None:
-        self._topology = topology = factor.relation.topology
-        self._weights = values = tuple(
-            None if value == -torch.inf else Fraction(value)
-            for value in weights.detach().tolist()
-        )
+    def __init__(
+        self, topology: RelationTopology, values: tuple[Fraction | None, ...]
+    ) -> None:
+        self._topology = topology
+        self._weights = values
         forward: dict[int, list[int]] = defaultdict(list)
         backward: dict[int, list[int]] = defaultdict(list)
         by_state: dict[int, list[int]] = defaultdict(list)
@@ -563,6 +562,72 @@ class _DualAlignmentRun:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _AlignmentSettings:
+    max_iterations: int
+    max_ngram_order: int
+    max_features: int
+    max_states: int
+    max_work: int
+    step_size: Fraction | int
+    absolute_gap: Fraction | int | None
+    relative_gap: Fraction | int | None
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not int or value < 1
+            for value in (self.max_iterations, self.max_ngram_order)
+        ):
+            raise ValueError(
+                "max_iterations and max_ngram_order must be positive integers"
+            )
+        if type(self.max_features) is not int or self.max_features < 0:
+            raise ValueError("max_features must be a nonnegative integer")
+        if type(self.step_size) not in (Fraction, int) or self.step_size <= 0:
+            raise ValueError("step_size must be a positive rational")
+        for name, target in (
+            ("absolute_gap", self.absolute_gap),
+            ("relative_gap", self.relative_gap),
+        ):
+            if target is not None and (
+                type(target) not in (Fraction, int) or target < 0
+            ):
+                raise ValueError(f"{name} must be a nonnegative rational or None")
+        if self.max_states is None or self.max_work is None:
+            raise ValueError(
+                "string alignment MAP requires explicit state and work limits"
+            )
+        _validate_limits(self.max_states, self.max_work)
+
+
+def _alignment_inputs(
+    graph: StringFactorGraph,
+) -> tuple[
+    tuple[_LocalAlignments, ...], tuple[tuple[str, ...], ...], dict[str, _Word | None]
+]:
+    factors = graph._factors
+    scopes = tuple(factor.variables for factor in factors)
+    if any(factor.relation.algebra is not LOG_PROB for factor in factors):
+        raise TypeError("joint string alignment MAP requires LogProb factors")
+    observations = {
+        name: variable.observed for name, variable in graph._variables.items()
+    }
+    if set(observations) != {name for scope in scopes for name in scope}:
+        raise ValueError("joint string alignment MAP does not allow isolated variables")
+    with _weight_snapshot():
+        decoders = tuple(
+            _LocalAlignments(
+                factor.relation.topology,
+                tuple(
+                    None if value == -torch.inf else Fraction(value)
+                    for value in factor.relation._weights().detach().tolist()
+                ),
+            )
+            for factor in factors
+        )
+    return decoders, scopes, observations
+
+
 def dual_alignment_map(
     graph: StringFactorGraph,
     *,
@@ -601,7 +666,9 @@ def dual_alignment_map(
     max_states : int
         Maximum reached configurations per local decoding.
     max_work : int
-        Maximum examined candidate transitions per local decoding.
+        Maximum examined candidate transitions per local decoding or
+        individual verification scan. Each independently verified local
+        witness has two scans and an additional original trace check.
     step_size : Fraction or int
         Positive multiplier step. The step is divided by the iteration.
     absolute_gap : Fraction or int or None
@@ -630,38 +697,29 @@ def dual_alignment_map(
     RelationLimitError
         If an exact local decoder exceeds a state or work budget.
     """
-    if any(
-        type(value) is not int or value < 1
-        for value in (max_iterations, max_ngram_order)
-    ):
-        raise ValueError("max_iterations and max_ngram_order must be positive integers")
-    if type(max_features) is not int or max_features < 0:
-        raise ValueError("max_features must be a nonnegative integer")
-    if type(step_size) not in (Fraction, int) or step_size <= 0:
-        raise ValueError("step_size must be a positive rational")
-    for name, target in (
-        ("absolute_gap", absolute_gap),
-        ("relative_gap", relative_gap),
-    ):
-        if target is not None and (type(target) not in (Fraction, int) or target < 0):
-            raise ValueError(f"{name} must be a nonnegative rational or None")
-    if max_states is None or max_work is None:
-        raise ValueError("string alignment MAP requires explicit state and work limits")
-    _validate_limits(max_states, max_work)
-    factors = graph._factors
-    scopes = tuple(factor.variables for factor in factors)
-    if any(factor.relation.algebra is not LOG_PROB for factor in factors):
-        raise TypeError("joint string alignment MAP requires LogProb factors")
-    observations = {
-        name: variable.observed for name, variable in graph._variables.items()
-    }
-    if set(observations) != {name for scope in scopes for name in scope}:
-        raise ValueError("joint string alignment MAP does not allow isolated variables")
-    with _weight_snapshot():
-        decoders = tuple(
-            _LocalAlignments(factor, factor.relation._weights()) for factor in factors
-        )
+    settings = _AlignmentSettings(
+        max_iterations,
+        max_ngram_order,
+        max_features,
+        max_states,
+        max_work,
+        step_size,
+        absolute_gap,
+        relative_gap,
+    )
+    decoders, scopes, observations = _alignment_inputs(graph)
     run = _DualAlignmentRun(decoders, scopes, max_states, max_work)
+    result, _ = _run_alignment_map(run, observations, settings)
+    return result
+
+
+def _run_alignment_map(
+    run: _DualAlignmentRun,
+    observations: Mapping[str, _Word | None],
+    settings: _AlignmentSettings,
+) -> tuple[StringAlignmentMapResult, tuple[StringAlignment, ...] | None]:
+    scopes = run.scopes
+    absolute_gap, relative_gap = settings.absolute_gap, settings.relative_gap
     multipliers: _Multipliers = tuple(tuple({} for _ in scope) for scope in scopes)
     zero: _Multipliers = tuple(tuple({} for _ in scope) for scope in scopes)
     features: dict[str, set[_Ngram]] = {name: set() for name in observations}
@@ -676,7 +734,7 @@ def dual_alignment_map(
     gap_target_met = False
     gap_requested = absolute_gap is not None or relative_gap is not None
     iteration = 0
-    for iteration in range(1, max_iterations + 1):
+    for iteration in range(1, settings.max_iterations + 1):
         paths = run.decode(observations, multipliers)
         if paths is None:
             run.verify_infeasible(observations)
@@ -728,6 +786,7 @@ def dual_alignment_map(
                 )
             run.verify_paths(observations, multipliers, paths, maximizing=True)
             assignment = tuple(proposed.items())
+            primal_paths = paths
             frozen = tuple(
                 tuple(tuple(sorted(shift.items())) for shift in shifts)
                 for shifts in multipliers
@@ -738,16 +797,16 @@ def dual_alignment_map(
         if gap_target_met:
             status = "gap"
             break
-        if iteration == max_iterations:
+        if iteration == settings.max_iterations:
             break
-        step = Fraction(step_size) / iteration
+        step = Fraction(settings.step_size) / iteration
         for name, local in copies.items():
             selected = tuple(word for word, _ in local)
             if len(set(selected)) == 1:
                 continue
             active = features[name]
-            if n_features < max_features:
-                gram = _expand(selected, active, max_ngram_order)
+            if n_features < settings.max_features:
+                gram = _expand(selected, active, settings.max_ngram_order)
                 if gram is not None:
                     active.add(gram)
                     n_features += 1
@@ -765,7 +824,7 @@ def dual_alignment_map(
         if primal_paths is not None:
             assert assignment is not None
             run.verify_paths(dict(assignment), zero, primal_paths, maximizing=False)
-    return StringAlignmentMapResult(
+    result = StringAlignmentMapResult(
         status,
         iteration,
         assignment,
@@ -779,6 +838,7 @@ def dual_alignment_map(
         run.max_verification_states,
         run.verification_work,
     )
+    return result, primal_paths
 
 
 __all__ = [

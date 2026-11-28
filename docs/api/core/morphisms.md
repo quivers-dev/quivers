@@ -575,7 +575,9 @@ subproblem with no accepting path under its observations.
 
 Reachability and suffix verification each examine the same reachable
 configurations and candidate arcs as a local forward decode. They
-reuse its state and per-pass arc limits. The verifier stores one exact
+reuse its state limits. With `max_work = B`, each scan examines at
+most $B$ arcs, for at most $2B$ candidate arc probes per checked local
+witness, plus visits to the witness's original arcs. The verifier stores one exact
 score per reachable configuration and no materialized transition table.
 Trace checking additionally visits the selected primitive arcs and
 computes n-gram counts for the selected words. Exact rational arithmetic
@@ -608,6 +610,32 @@ arc examinations, including primal feasibility checks. The [joint alignment
 MAP benchmark](../../developer/string-alignment-map-benchmark.md)
 compares these counts with a materialized intersection and verifies
 both against independent path enumeration.
+
+`paired_dual_alignment_map` accepts a partition of original factor
+positions into singletons and pairs. Each pair must share exactly one
+nominal tape variable. Its filtered sparse join keeps the shared tape
+once, retains the other tapes in join order, and represents every
+compatible original path pair once. The solver applies one multiplier
+copy per group for each shared variable. Equality between groups thus
+imposes the same original feasible assignments as the singleton solver.
+
+The grouped decoder reads the original binary-rational log coefficients.
+Its arc macros retain primitive weight slots, and it adds the two
+boundary coefficients directly as rationals. This preserves the
+original objective even when adding the boundary in a float would
+lose a smaller coefficient. A feasible grouped path yields one
+`StringAlignmentTrace` per original factor. Each expansion checks its
+original endpoints, ordered arcs, emitted words, and exact base score.
+The grouped result's certificate has one local maximum per group.
+
+Each paired product uses its own state and work limits. If its two
+operands have $V_l$ and $V_r$ states and the builder emits $M$ matched
+moves, it has at most $3 V_l V_r+M$ states. The extra states keep
+matched primitive weights separate. Label probes and emitted arcs are
+charged to `max_group_work`, and products remain available between
+dual updates. Local graph sizes and work are then bounded and reported
+as for singleton decoding. This groups only the explicitly requested
+factor pairs. A pair with zero or multiple shared variables is refused.
 
 ### Compact regular n-gram messages
 
@@ -1002,6 +1030,8 @@ choices held fixed.
         - StringAlignment
         - StringAlignmentCertificate
         - StringAlignmentMapResult
+        - StringAlignmentTrace
+        - PairedAlignmentMapResult
         - StringBeliefResult
         - StringEPResult
         - StringSiteProjection
@@ -1022,6 +1052,7 @@ choices held fixed.
         - concatenate
         - condition
         - dual_alignment_map
+        - paired_dual_alignment_map
         - dual_string_map
         - intersect
         - invert

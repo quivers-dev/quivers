@@ -13,12 +13,15 @@ from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import (
     FiniteStringBeliefPlan,
+    PairedAlignmentMapResult,
     PrunedStringBeliefResult,
     RegularStringEPResult,
     StringAlignmentMapResult,
     dual_alignment_map,
+    paired_dual_alignment_map,
     regular_string_ep,
 )
+from quivers.core.relations.alignment_groups import _validate_groups
 from quivers.core.relations.beliefs import _validate_pruned_settings, _validate_sweeps
 from quivers.core.relations.projection import _validate_projection_settings
 from quivers.core.relations.queries import _validate_limits
@@ -30,6 +33,7 @@ from quivers.qiec.string_graphs import StringFactorGraphSpec
 
 __all__ = [
     "JointAlignmentMapConfig",
+    "JointAlignmentMapDecomposition",
     "JointAlignmentMapGapConfig",
     "PrunedStringBPConfig",
     "RegularStringEPConfig",
@@ -55,7 +59,9 @@ class JointAlignmentMapConfig(QiecModel):
     max_states : int
         Configuration limit per exact factor decode.
     max_work : int
-        Transition examinations allowed per exact factor decode.
+        Transition examinations allowed per exact factor decode or
+        individual verification scan. The independent final check
+        has two such scans and a separate original trace check.
     step_ratio : tuple of int
         Positive numerator and denominator of the rational multiplier step.
     """
@@ -219,18 +225,119 @@ class JointAlignmentMapGapConfig(QiecModel):
             The feasible assignment and upper bound, whether the gap
             target was established, and any agreement certificate.
         """
-        absolute = (
-            None
-            if self.absolute_gap_ratio is None
-            else Fraction(*self.absolute_gap_ratio)
-        )
-        relative = (
-            None
-            if self.relative_gap_ratio is None
-            else Fraction(*self.relative_gap_ratio)
-        )
+        absolute, relative = self._targets()
         return self.solver.solve(
             model, parameters, absolute_gap=absolute, relative_gap=relative
+        )
+
+    def _targets(self) -> tuple[Fraction | None, Fraction | None]:
+        """Decode the stored ratios without floating-point conversion.
+
+        Returns
+        -------
+        tuple of Fraction or None
+            The absolute and relative targets in that order.
+        """
+        return (
+            None
+            if self.absolute_gap_ratio is None
+            else Fraction(*self.absolute_gap_ratio),
+            None
+            if self.relative_gap_ratio is None
+            else Fraction(*self.relative_gap_ratio),
+        )
+
+
+class JointAlignmentMapDecomposition(QiecModel):
+    """Configure exact singleton and one-shared-tape paired subproblems.
+
+    Factor indices refer to occurrences in the separate checked graph.
+    Equal factor definitions can appear at different positions. The
+    group order specifies multiplier scope order. Returned original
+    traces follow the graph's original factor order.
+
+    Parameters
+    ----------
+    solver : JointAlignmentMapConfig or JointAlignmentMapGapConfig
+        The search, local bounds, and optional gap policy.
+    groups : tuple of tuples of int
+        An ordered partition of all original factor occurrence indices
+        into singletons and pairs sharing exactly one tape variable.
+    max_group_states : int
+        Maximum states constructed by each filtered pair join.
+    max_group_work : int
+        Maximum label probes and arcs constructed by each pair join.
+    """
+
+    solver: JointAlignmentMapConfig | JointAlignmentMapGapConfig = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    groups: tuple[tuple[int, ...], ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_group_states: int
+    max_group_work: int
+
+    @dx.model_validator()
+    def _validate_decomposition(self) -> None:
+        """Check the portable policy before binding a specific graph.
+
+        Raises
+        ------
+        ValueError
+            A factor group, occurrence index or resource limit is invalid.
+        """
+        _validate_groups(self.groups)
+        _validate_limits(self.max_group_states, self.max_group_work)
+
+    @property
+    def objective(self) -> Literal["joint_alignment_map"]:
+        """Identify the exact objective shared with the singleton solver.
+
+        Returns
+        -------
+        Literal["joint_alignment_map"]
+            Joint maximization over full words and original local paths.
+        """
+        return self.solver.objective
+
+    def solve(
+        self,
+        model: StringFactorGraphSpec,
+        parameters: Mapping[ParameterId, torch.Tensor],
+    ) -> PairedAlignmentMapResult:
+        """Bind the graph and run the verified grouped local search.
+
+        Parameters
+        ----------
+        model : StringFactorGraphSpec
+            The unchanged checked graph and original occurrence order.
+        parameters : Mapping of ParameterId to torch.Tensor
+            Original live LogProb scalar owners for the factor graph.
+
+        Returns
+        -------
+        PairedAlignmentMapResult
+            Grouped local evidence and feasible traces in original factor order.
+        """
+        solver = self.solver
+        absolute = relative = None
+        if isinstance(solver, JointAlignmentMapGapConfig):
+            absolute, relative = solver._targets()
+            solver = solver.solver
+        return paired_dual_alignment_map(
+            model.bind(
+                parameters, max_states=solver.max_states, max_work=solver.max_work
+            ),
+            groups=self.groups,
+            max_group_states=self.max_group_states,
+            max_group_work=self.max_group_work,
+            max_iterations=solver.max_iterations,
+            max_ngram_order=solver.max_ngram_order,
+            max_features=solver.max_features,
+            max_states=solver.max_states,
+            max_work=solver.max_work,
+            step_size=Fraction(*solver.step_ratio),
+            absolute_gap=absolute,
+            relative_gap=relative,
         )
 
 
