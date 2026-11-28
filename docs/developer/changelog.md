@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked static minimized relation scores.** An authored Markov acceptor's declared pair weight can use an exact bounded quotient of frozen weights. The snapshot request retains the original topology's checked identity.
 - **Cyclic deterministic weighted acceptor minimization.** A static Markov quotient preserves exact weights of finite words and reports sparse smaller-half refinement work, with explicit refinement budgets and coefficient representability checks.
 - **Original-arc moments through composition.** Checked materialized compositions can report unnormalized nonnegative moments of each operand's original arc features, including compatible pairs with a hidden middle word and certified epsilon cycles.
 - **Certified cyclic feature moments.** Checked fixed-word requests can combine scalar component closures to sum nonnegative features over all visits, with an explicit closure order bound.

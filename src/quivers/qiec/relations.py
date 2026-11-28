@@ -18,10 +18,13 @@ from quivers.core.objects import FinSet, StringSet
 from quivers.core.relations import (
     Arc,
     Boundary,
+    FixedStringQuery,
     Label,
     RationalRelation,
     RelationTopology,
+    StaticMinimizationWork,
     Words,
+    minimize_static_acceptor_with_work,
 )
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
@@ -394,6 +397,103 @@ class FixedRelationRequest(QiecModel):
         return REAL
 
 
+class FixedMinimizedRelationRequest(QiecModel):
+    """Score one declared acceptor through an exact minimized snapshot.
+
+    The observation keeps the original authored topology and weight
+    identities. Its fixed-word state and work limits apply to the
+    quotient. The separate minimization limits apply to the source
+    acceptor. Binding requires nontrainable weights and an exactly
+    representable quotient in the dtype supplied by the caller.
+
+    Parameters
+    ----------
+    observation : FixedRelationRequest
+        The original static Markov acceptor and its fixed pair weight
+        observation. The acceptor has one tape, deterministic symbols,
+        and at most one initial state.
+    max_minimization_states : int
+        The source's productive state limit.
+    max_minimization_work : int
+        The source input record and refinement work limit.
+    """
+
+    observation: FixedRelationRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_minimization_states: int
+    max_minimization_work: int
+
+    @dx.model_validator()
+    def _validate_minimization(self) -> None:
+        """Check the objective, static acceptor capability, and limits.
+
+        Raises
+        ------
+        ValueError
+            A limit is invalid or the observation lacks the required
+            one-tape Markov pair weight or has epsilon closure settings.
+        """
+        _validate_limits(self.max_minimization_states, self.max_minimization_work)
+        source = self.observation
+        topology = source.relation.topology
+        if (
+            source.operation != "pair_weight"
+            or source.relation.algebra != MARKOV.subject
+            or len(topology.tapes) != 1
+            or len(topology.initial) > 1
+            or source.max_closure_size is not None
+        ):
+            raise ValueError(
+                "minimized relation requests require a one-tape Markov pair_weight "
+                "with at most one initial mark and no closure setting"
+            )
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Return the checked `Real` type of the unchanged pair-weight objective.
+
+        Returns
+        -------
+        TypeExpr
+            The scalar `Real` result type.
+        """
+        return self.observation.result_type
+
+    def plan(
+        self, parameters: Mapping[ParameterId, torch.Tensor]
+    ) -> tuple[FixedStringQuery, StaticMinimizationWork]:
+        """Snapshot the source, minimize it, and plan the declared observation.
+
+        Parameters
+        ----------
+        parameters : Mapping of ParameterId to torch.Tensor
+            The original nontrainable scalar leaves indexed by identity.
+
+        Returns
+        -------
+        tuple[FixedStringQuery, StaticMinimizationWork]
+            The fixed-word plan over detached quotient weights and the
+            source minimization counters. Rebinding takes a new snapshot.
+
+        Raises
+        ------
+        TypeError
+            The source weights are unsupported or trainable.
+        ValueError
+            A binding is invalid, the acceptor is ambiguous or has
+            epsilon arcs, a budget is exhausted, or a quotient weight
+            is unrepresentable in the input dtype.
+        """
+        source = self.observation
+        quotient, work = minimize_static_acceptor_with_work(
+            source.relation.bind(parameters),
+            max_states=self.max_minimization_states,
+            max_work=self.max_minimization_work,
+        )
+        return quotient.query(
+            source.words, max_states=source.max_states, max_work=source.max_work
+        ), work
+
+
 class FixedRelationCostRequest(QiecModel):
     """A fixed-word expectation of a signed additive path cost.
 
@@ -650,6 +750,7 @@ def _validate_fixed_observation(
 
 
 __all__ = [
+    "FixedMinimizedRelationRequest",
     "FixedRelationArcCountsRequest",
     "FixedRelationCostRequest",
     "FixedRelationRequest",

@@ -138,6 +138,7 @@ from quivers.qiec.relation_transforms import (
     UnaryRelationTransformSpec,
 )
 from quivers.qiec.relations import (
+    FixedMinimizedRelationRequest,
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -384,6 +385,7 @@ _NODE_CLASSES = (
     RelationCascadeStep,
     FixedTransformedRelationRequest,
     FixedComposedRelationRequest,
+    FixedMinimizedRelationRequest,
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
     FixedRelationMarginalMapRequest,

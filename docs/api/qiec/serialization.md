@@ -108,9 +108,25 @@ the foreign handler that would require this capability.
 
 ::: quivers.qiec.relation_marginal_map.FixedRelationMarginalMapRequest
 
+### Checked static minimization
+
+A `FixedMinimizedRelationRequest` wraps a `pair_weight` observation of
+an authored deterministic one-tape Markov acceptor. It uses the score's
+existing checked identity for the original named topology. The provider
+requires that exact authored identity and reads the original nontrainable
+weight tensors to produce a detached quotient. It checks the quotient's
+representability in the input dtype and applies separate minimization
+and observation limits.
+The serialized request stores the original topology and limits. The
+caller supplies the weights for each new binding. An ordinary
+`FixedRelationRequest` continues to score the same declaration with its
+live weights.
+
 ::: quivers.qiec.relations.FixedRelationRequest
 
 ::: quivers.qiec.relations.FixedRelationCostRequest
+
+::: quivers.qiec.relations.FixedMinimizedRelationRequest
 
 ::: quivers.qiec.relation_runtime.FixedRelationRuntimeProvider
 

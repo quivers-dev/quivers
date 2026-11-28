@@ -35,6 +35,7 @@ from quivers.qiec.relation_transforms import (
     UnaryRelationTransformSpec,
 )
 from quivers.qiec.relations import (
+    FixedMinimizedRelationRequest,
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -169,10 +170,11 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest or FixedMinimizedRelationRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
-        The live scalar tensors supplying the request's weight identities.
+        The original scalar tensors supplying the request's weight
+        identities. A minimized request snapshots nontrainable values.
     handler_name : str
         The name of the foreign handler to bind in the checked module.
     """
@@ -189,7 +191,8 @@ class FixedRelationRuntimeProvider:
         | FixedTransformedRelationRequest
         | FixedRelationFeatureMomentRequest
         | FixedCyclicRelationFeatureMomentRequest
-        | FixedComposedArcFeatureMomentRequest,
+        | FixedComposedArcFeatureMomentRequest
+        | FixedMinimizedRelationRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
         handler_name: str,
@@ -205,6 +208,14 @@ class FixedRelationRuntimeProvider:
         )
         self._score: Callable[[], torch.Tensor]
         self._feature_size: int | None = None
+        self._requires_authored_topology = isinstance(
+            request, FixedMinimizedRelationRequest
+        )
+        if isinstance(request, FixedMinimizedRelationRequest):
+            self._operation = request.observation.operation
+            self._relation_spec = request.observation.relation
+            self._score = request.plan(parameters)[0].weight
+            return
         if isinstance(
             request,
             FixedRelationFeatureMomentRequest
@@ -294,7 +305,8 @@ class FixedRelationRuntimeProvider:
         | FixedRelationArcCountsRequest
         | FixedComposedRelationRequest
         | FixedRelationMarginalMapRequest
-        | FixedTransformedRelationRequest,
+        | FixedTransformedRelationRequest
+        | FixedMinimizedRelationRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
     ) -> FixedRelationRuntimeProvider:
         """Bind a fixed request to a source-declared relation score.
@@ -307,6 +319,7 @@ class FixedRelationRuntimeProvider:
             The serialized and validated fixed relation request.
         parameters
             The original scalar parameter objects indexed by identity.
+            A minimized request takes a nontrainable snapshot at binding.
 
         Returns
         -------
@@ -323,7 +336,7 @@ class FixedRelationRuntimeProvider:
         return cls(request, parameters, handler_name=_relation_score_handler_name(name))
 
     def _evaluate(self, argument: object, _context: ClauseContext) -> torch.Tensor:
-        """Evaluate the objective using its current parameter values.
+        """Evaluate the objective with its live values or static snapshot.
 
         Parameters
         ----------
@@ -421,11 +434,13 @@ class FixedRelationRuntimeProvider:
                 f"incompatible fixed relation handler {self._handler_name!r}"
             )
         score_name = definition.name.removeprefix(_RELATION_SCORE_HANDLER_PREFIX)
+        if self._requires_authored_topology and score_name == definition.name:
+            raise TypeError("a minimized relation score requires its authored topology")
         if score_name != definition.name:
             expected_id = _relation_score_handler_id(
                 module.module, score_name, self._operation
             )
-            if definition.id != expected_id:
+            if self._requires_authored_topology or definition.id != expected_id:
                 bound_id = _relation_score_handler_id(
                     module.module, score_name, self._operation, self._relation_spec
                 )
