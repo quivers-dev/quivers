@@ -356,7 +356,8 @@ from quivers.qiec.programs import (
 from quivers.qiec.reference_support import (
     DistributionError,
 )
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
+from quivers.qiec.relations import FixedRelationRequest, RationalRelationSpec
 from quivers.qiec.serialization import (
     JsonValue,
     QIEC_WIRE_FORMAT,
@@ -659,6 +660,8 @@ __all__ = [
     "RANDOM_SAMPLE",
     "REAL",
     "ROW",
+    "FixedRelationRequest",
+    "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
     "Reachability",
     "Reduction",

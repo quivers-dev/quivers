@@ -118,7 +118,7 @@ from quivers.qiec.contracts import (
     WorkReport,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import FixedRelationRequest, RationalRelationSpec
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
@@ -339,6 +339,7 @@ _NODE_CLASSES = (
     DistributionFamily,
     FamilyParameter,
     FamilyShapeSignature,
+    FixedRelationRequest,
     RationalRelationSpec,
     # source identity and kinds
     SourceOrigin,
