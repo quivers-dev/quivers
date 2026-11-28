@@ -3727,6 +3727,119 @@
     }
   },
   {
+    "type": "interpretation_clause",
+    "named": true,
+    "fields": {
+      "constructor": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "constructor_kind": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "interpretation_clause_kind",
+            "named": true
+          }
+        ]
+      },
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "interpretation_clause_kind",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "interpretation_decl",
+    "named": true,
+    "fields": {
+      "carrier": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qiec_function_type",
+            "named": true
+          },
+          {
+            "type": "qiec_product_type",
+            "named": true
+          },
+          {
+            "type": "qiec_type_application",
+            "named": true
+          },
+          {
+            "type": "qiec_type_name",
+            "named": true
+          },
+          {
+            "type": "qiec_type_paren",
+            "named": true
+          }
+        ]
+      },
+      "clauses": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "interpretation_clause",
+            "named": true
+          }
+        ]
+      },
+      "deduction": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "let_binop",
     "named": true,
     "fields": {
@@ -10805,6 +10918,10 @@
           "named": true
         },
         {
+          "type": "interpretation_decl",
+          "named": true
+        },
+        {
           "type": "loss_decl",
           "named": true
         },
@@ -11547,6 +11664,10 @@
     "named": false
   },
   {
+    "type": "axiom",
+    "named": false
+  },
+  {
     "type": "binary",
     "named": false
   },
@@ -11782,6 +11903,10 @@
   {
     "type": "integer",
     "named": true
+  },
+  {
+    "type": "interpret",
+    "named": false
   },
   {
     "type": "introduces",

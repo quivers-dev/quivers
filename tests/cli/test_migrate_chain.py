@@ -85,6 +85,11 @@ def test_hop_composition_is_coherent_across_identity_releases() -> None:
     assert compose_migration("v0.18.0", "HEAD")(direct) == direct
 
 
+def test_authored_interpretation_keywords_are_contextual_for_old_source() -> None:
+    source = b"object interpret : FinSet 2\nobject axiom : FinSet 2\n"
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_zero_hop_rejects_missing_recovery_vertices() -> None:
     with pytest.raises(MigrationError, match="missing .* token"):
         compose_migration("HEAD", "HEAD")(b"object A :\n")

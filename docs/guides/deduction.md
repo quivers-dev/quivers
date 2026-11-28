@@ -465,6 +465,48 @@ lists the families, effects,
 [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries
 a deduction or a parser built from rule schemata adds.
 
+### Cyclic inside weights and finite-height proofs
+
+For the one-token sentence `seed`, let $a$ be the lexical mass and $r$
+the rule mass. The unary rule in `Linear` gives $x=a+rx$. The rule in
+`Branching` uses the same item in two premise positions and gives
+$x=a+rx^2$. Each premise independently chooses a proof. The examples share
+the `LogProb` carrier and supply $\log a$ and $\log r$ as learned weights.
+[Checked cyclic deductions](../examples/qiec/checked-cyclic-deduction.qvr)
+
+The checked `run_deduction` entry iterates from zero. With
+$(a,r)=(0.3,0.4)$ and the declared absolute log tolerance $0.15$, it stops at
+$0.468$ for the unary rule and $0.336$ for the binary rule. The default
+failure policy refuses those stops. The explicit return policy exposes
+each finite iterate in an `Unestablished` wrapper with its residual.
+Differentiating that iterate in the host gives the derivative of the
+executed rounds. The settlement report makes no derivative claim.
+
+The Python `plan` interface accepts the same compiled rule presentations.
+`LinearCyclic` selects the span executor with unary closure. For $r<1$ it
+sums the geometric series to $a/(1-r)$, with log derivatives $1$ and
+$r/(1-r)$ with respect to $\log a$ and $\log r$. For $r=1$ and $a>0$ the
+closure refuses divergence even though the checked log residual can become
+small as the mass grows.
+
+`MonotonePolynomial` selects the certified Newton plan for the branching
+rule. For $a,r>0$ and $4ar<1$, the smaller quadratic root is
+$x=2a/(1+\sqrt{1-4ar})$. The iterates from zero stay below that root by
+monotonicity. Their limit is a fixed point by continuity, so this root is
+the least solution. The plan encloses it and reports an implicit derivative
+when it certifies $2rx<1$. In that domain,
+$(1-2rx)\,dx=da+x^2\,dr$. At $a=r=1/2$ the root is $1$ and its Jacobian
+is $1$. The plan refuses the requested bound and implicit derivative. The
+checked iteration stops at $89/128$, with a log residual below $0.15$ and
+a log error above $0.15$.
+
+A forest plan with `Bounded(measure="height", limit=2)` asks for a different
+sum. A lexical leaf has height one, so the unary example counts precisely
+the lexical proof and its one-step extension, with mass $a(1+r)$. On
+these same rules, a checked source `parse_proofs` query requires acyclic
+spans and refuses the cycle. Its row budget cannot change the recurrence
+into a finite-height model.
+
 ### Weighted outcomes of a lexical deduction
 
 In a `program`, write `let readings = parse_outcomes(D, sentence, "form")` to get
@@ -597,6 +639,194 @@ in a hash table. Its extra work depends on the number of goal items and
 the cost of computing and comparing their keys, even when the proof count
 is much larger. The masses and their normalizer retain their gradients.
 
+#### Returning weighted proofs
+
+Use `parse_proofs(D, sentence, limit)` when a later computation needs to
+inspect the rule applications of each proof. `limit` is a positive `Int`.
+The runtime counts the structural proofs of all selected goals against
+this limit before constructing any proof values. The count includes
+zero-weight proofs. An exceeded limit raises an error, and a successful
+query returns each positive-weight proof with its log weight.
+
+`parse_normalized_proofs` normalizes over these same proofs and requires
+positive total mass. A raw query returns an empty list when no proof has
+positive mass. Two proofs of the same goal keep separate entries. The
+rule and lexical weight bindings of `parse_outcomes` are available here
+as well.
+
+The result family is `D__Proofs`. Its `D__proof_end` constructor is empty.
+`D__proof_entry[i, j, c, f](proof, weight, tail)` binds the endpoints,
+category, and form indices of a proof of type `D__SpanProof(i, j, c, f)`.
+For a deduction without forms, the entry has three indices. The category
+and form indices inhabit `D__Term`. The proof's constructors include
+`D__rule_<name>` for each rule and `D__axiom_span` for a lexical occurrence.
+A QVR `case` can bind these indices and pass the proof to another checked
+computation. Enumeration makes no requests on behalf of that computation.
+The proof limit counts returned alternatives before zero-weight filtering.
+Reifying them also takes work proportional to their explicit proof sizes.
+
+For instance, two rules can prove the same full span. This program uses
+the packed chart to return their total weight by summing the two proof rows.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 2
+object Mass : Real 1
+
+deduction Reading : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, C, S, meaning, word
+    rule first : span(I, K, A, word), span(K, J, C, word) |- span(I, J, S, meaning)
+    rule second : span(I, K, B, word), span(K, J, C, word) |- span(I, J, S, meaning)
+    lexicon
+        "left" : A = word
+        "left" : B = word
+        "right" : C = word
+
+define total(rows : Reading__Proofs) : Real !{} =
+    case rows motive => Real
+        Reading__proof_end =>
+            return 0.0
+        Reading__proof_entry[i, j, c, f](proof, weight, tail) =>
+            let rest <- total(tail)
+            return exp(weight) + rest
+
+program proof_mass : Token -> Mass
+    let proofs = parse_proofs(Reading, sentence, 2)
+    let weight <- total(proofs)
+    return weight
+
+export proof_mass
+```
+
+#### Interpreting a proof
+
+An `interpret` declaration assigns one checked computation to each rule and
+lexical axiom slot. Its result is a named computation over the indexed proof
+family. The computation interprets the premise proofs in their declared order,
+then passes their results and the constructor's value fields to the selected
+operation. For `axiom span`, the value field is the lexical word.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 2
+object Result : Real 1
+
+deduction Words : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, S, word
+    rule join : span(I, K, A), span(K, J, B) |- span(I, J, S)
+    lexicon
+        "left" : A = word
+        "right" : B = word
+
+interpret difference : Words -> Real
+    rule join = subtract
+    axiom span = word_value
+
+define subtract(left : Real, right : Real) : Real !{} =
+    return left - right
+
+define word_value(word : String) : Real !{} =
+    if word == "left" then
+        return 3.0
+    else
+        return 1.0
+
+define read_example() : Real !{} =
+    let left = construct Words__axiom_span[0, 1, A]("left") as Words__SpanProof(0, 1, A)
+    let right = construct Words__axiom_span[1, 2, B]("right") as Words__SpanProof(1, 2, B)
+    let proof = construct Words__rule_join[0, 1, 2](left, right) as Words__SpanProof(0, 2, S)
+    difference[0, 2, S](proof)
+
+program difference_example : Token -> Result
+    let value <- read_example()
+    return value
+
+export difference_example
+```
+
+Each operation takes one carrier value per premise, then its constructor's
+ordinary fields, and returns the carrier at the rule's conclusion. For a
+lexical span the carrier may use the span judgment's indices. `x0` and
+`x1` are its left and right endpoints. The category is `x2`, and the
+form, when present, is `x3`. For instance, a declared family
+`Measurement(position : Nat)` can serve as the carrier
+`Measurement(x1)`. A rule joining spans `(I, K)` and `(K, J)`
+then takes `Measurement(K)` and `Measurement(J)` in that order and
+returns `Measurement(J)`. An operation that takes static arguments
+must take the full constructor telescope in its declared order and
+at its declared sorts. A closed operation can omit that telescope
+when its input and result types agree at every constructor instantiation.
+
+A rule operation may use a closed effect row independent of its static
+arguments. The interpretation's row is the union of the reachable operation
+rows, and callers handle those instances as for any checked computation.
+
+The result type template binds only the indices of the judgment. Lowering
+gives the fold's static parameters names distinct from the case motive's
+index binders. In each constructor branch it substitutes the premise
+indices into their carrier templates and the conclusion indices into the
+result template. By induction on the input proof, the recursive calls
+return the types required by the rule operation. At runtime the selected
+constructor supplies the branch indices by identity, including indices
+hidden from the constructor's result type. This preserves the distinction
+between, for instance, the right endpoint of the first premise and the right
+endpoint of the conclusion.
+
+The checked case and calls follow the initial algebra for the presentation's
+finite ordered proof trees. They visit each constructor occurrence once and
+make one rule or axiom call there. The traversal therefore makes as many
+operation calls as the proof has nodes. The operations' own work, static
+checking, and effect trace storage are additional costs. Reusing a premise
+value as part of a proof preserves both occurrences. Its interpretation
+executes once for each, with separate dynamic addresses. A finite proof can
+be interpreted even if the grammar admits infinitely many other proofs.
+Finding all proofs in a chart is a separate query with its own finiteness check.
+
+#### Grouping proof meanings
+
+Use `parse_proof_outcomes(D, sentence, limit, meaning)` if the outcome
+depends on the proof, including when different proofs give the same chart
+item. For each supported proof the query calls the named pure
+`meaning` computation at the proof's indices. A pure `interpret` declaration
+can supply that computation. Its result is a closed outcome key of the same
+kind supported by the named keys of `parse_outcomes`.
+
+The query adds the weights of proofs with equal keys. It returns a
+`D__meaning__Outcomes` list with one entry per key. An entry contains the
+meaning and its unnormalized log weight. The normalized form,
+`parse_normalized_proof_outcomes`, divides these masses by their total and
+requires positive total mass. Each key receives the sum of the mass
+assigned to its proofs, so grouping preserves the total mass and its
+derivative with respect to the grammar weights.
+
+This query performs the same structural budget check as `parse_proofs`
+before rendering any proofs or calling the key computation. It then calls
+the key once per returned proof and groups the result. The cost includes
+the explicit proof sizes, the key computations, and hashing the resulting
+key values. When the key depends only on the conclusion item, use
+`parse_outcomes` with an item key to sum the proofs first in the packed chart.
+
+#### Encoding two proofs of one logical form
+
+The [shared proof encoder](../examples/qiec/shared-proof-encoder.qvr)
+uses one weighted deduction and two interpretations. `meaning` gives a
+nominal logical form, and `embed_proof` folds the ordered rule applications
+into a two-dimensional code. For the sentence `x y`, both proofs conclude
+the same item and return the logical form `approved`. The two rule
+operations give codes $(7,2)$ and $(11,-2)$, respectively. Both
+interpretations consume proofs supplied by the same packed parse.
+
+The model evaluates a neural response at each code and weights it by that
+proof’s normalized mass. If $q_r$ is a proof’s probability, $c_r$ its code,
+and $p(c_r)$ the response probability for the common form, the observation
+has probability $\sum_r q_r p(c_r)$. The model preserves proof occurrences
+even though their logical forms are identical. Replacing the codes by one
+item-level code changes the response and removes the lexical-weight
+gradient in this example. Scoring an average code also changes the
+response because the neural operation is nonlinear. The authored proof
+query has a bound of two derivations and checks that bound before folding
+the requested proofs.
+
 #### Scoring a response with a prover
 
 The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules
@@ -659,7 +889,39 @@ program assess(first : String, last : String, yes : Real, no : Real) : Word -> W
     score response = log(likelihood)
     return response
 
+define read_network() : Tensor[Real]([4]) !{params} =
+    perform params.get[Tensor[Real]([4])]("response.network")
+
+define neural_score(feature : Real, theta : Tensor[Real]([4])) : Real !{} =
+    return sigmoid(theta[0] + theta[1] * tanh(theta[2] + theta[3] * feature))
+
+define neural_response(proved : Bool, theta : Tensor[Real]([4])) : Real !{} =
+    if proved then
+        neural_score(1.0, theta)
+    else
+        neural_score(-1.0, theta)
+
+define neural_mass(rows : Reading__Outcomes, theta : Tensor[Real]([4])) : Real !{} =
+    case rows motive => Real
+        Reading__outcome_end =>
+            return 0.0
+        Reading__outcome_entry(form, log_weight, tail) =>
+            let claim <- to_claim(form)
+            let proved <- Prover__run[1]([claim], [true])
+            let probability <- neural_response(proved, theta)
+            let remaining <- neural_mass(tail, theta)
+            return remaining + exp(log_weight) * probability
+
+program assess_neural(first : String, last : String, response : Bool) : Word -> Weight
+    let sentence <- pack_tokens(first, last)
+    let readings = parse_normalized_outcomes(Reading, sentence, "form")
+    let theta <- read_network()
+    let probability <- neural_mass(readings, theta)
+    observe response <- Bernoulli(probs=probability)
+    return probability
+
 export assess
+export assess_neural
 ```
 
 The likelihood sums the reading probabilities weighted by `yes` when the
@@ -682,6 +944,15 @@ qvr run weighted_parser_prover.qvr assess \
 This example uses a pure typed adapter and Boolean deduction. Typed rule
 interpretations with effects require a separate account of what each rule
 does and which uses of its result may share an effect.
+
+`assess_neural` uses the same parser and prover to compute the response
+probability. The prover's result determines the input to a one-hidden-unit
+network with the four parameters named `response.network`. The program
+reads them once through `Param` and observes a Boolean response under the
+mixture of the network's predictions over readings. Differentiating its
+log joint reaches both the lexical weights and the network parameters.
+Supply the parameter values by name to
+[`run_program`][quivers.qiec.program_runtime.run_program].
 
 ## Schema export
 

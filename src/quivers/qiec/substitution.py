@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 import didactic.api as dx
@@ -14,6 +16,7 @@ from quivers.qiec.effects import (
     RowEntry,
 )
 from quivers.qiec.evidence import BranchGiven, EqualityEvidence, Reflexivity
+from quivers.qiec.identifiers import StaticVariableId
 from quivers.qiec.terms import (
     AttachmentRef,
     Bind,
@@ -97,6 +100,10 @@ class StaticSubstitution(QiecModel):
     effects
         Bindings from effect-variable names to interface applications or
         other effect variables.
+    rigid
+        Bindings by stable identity. The evaluator supplies these when a
+        selected case branch reveals actual constructor arguments.
+        Declaration instantiations leave this empty.
     """
 
     types: tuple[tuple[str, TypeExpr], ...] = dx.field(
@@ -106,6 +113,9 @@ class StaticSubstitution(QiecModel):
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     effects: tuple[tuple[str, EffectRef | EffectVariable], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    rigid: tuple[tuple[StaticVariableId, StaticArgument], ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -119,10 +129,25 @@ class StaticSubstitution(QiecModel):
             If a name repeats within a namespace. Two bindings for one
             name would make the result depend on lookup order.
         """
-        for namespace in (self.types, self.indices, self.effects):
+        for namespace in (self.types, self.indices, self.effects, self.rigid):
             names = [name for name, _ in namespace]
             if len(set(names)) != len(names):
                 raise ValueError("duplicate substitution binding")
+
+    def at_identity(self, identity: StaticVariableId) -> StaticArgument | None:
+        """Look up the runtime argument of a rigid variable.
+
+        Parameters
+        ----------
+        identity
+            The stable identity bound by a checked case branch.
+
+        Returns
+        -------
+        StaticArgument or None
+            The selected static argument, if this substitution binds it.
+        """
+        return next((value for key, value in self.rigid if key == identity), None)
 
     def type(self, name: str) -> TypeExpr | None:
         """What a type binder of this name is bound to.
@@ -217,12 +242,13 @@ def substitute_index(term: IndexTerm, substitution: StaticSubstitution) -> Index
     Returns
     -------
     IndexTerm
-        The rewritten index. A variable carrying an identity is rigid and
-        is returned unchanged, which is what keeps a branch's skolem from
-        being captured by a like-named declaration binder.
+        The rewritten index. A branch variable can only be substituted
+        by its rigid identity, independently of its displayed name.
     """
-    if isinstance(term, IndexVariable) and term.identity is None:
-        return substitution.index(term.name) or term
+    if isinstance(term, IndexVariable):
+        if term.identity is None:
+            return substitution.index(term.name) or term
+        return cast(IndexTerm | None, substitution.at_identity(term.identity)) or term
     if isinstance(term, IndexSum):
         from quivers.qiec.kinds import NAT
         from quivers.qiec.types import IndexLiteral
@@ -315,8 +341,8 @@ def substitute_type(type_: TypeExpr, substitution: StaticSubstitution) -> TypeEx
     Returns
     -------
     TypeExpr
-        The rewritten type. As with indices, a variable carrying an
-        identity is rigid and survives unchanged.
+        The rewritten type. Only an identity binding can replace a rigid
+        type variable.
 
     Raises
     ------
@@ -326,7 +352,7 @@ def substitute_type(type_: TypeExpr, substitution: StaticSubstitution) -> TypeEx
     if isinstance(type_, TypeVariable) and type_.identity is None:
         return substitution.type(type_.name) or type_
     if isinstance(type_, TypeVariable):
-        return type_
+        return cast(TypeExpr | None, substitution.at_identity(type_.identity)) or type_
     if isinstance(type_, TypeApplication):
         return TypeApplication(
             constructor=type_.constructor,
@@ -375,7 +401,7 @@ def substitute_static(
     if isinstance(term, EffectVariable) and term.identity is None:
         return substitution.effect(term.name) or term
     if isinstance(term, EffectVariable):
-        return term
+        return substitution.at_identity(term.identity) or term
     if isinstance(term, EffectRef):
         return substitute_effect(term, substitution)
     if isinstance(term, (IndexVariable, IndexConstructor, ShapeIndex)) or hasattr(
@@ -756,15 +782,12 @@ def substitute_computation(
 ) -> Computation:
     """Substitute static arguments throughout a computation.
 
-    Capture cannot occur, and the reason is structural rather than a
-    freshening pass. A substitution binds declaration binders, which
-    carry no identity and are matched by name. Every binder a computation
-    introduces is rigid: a case branch's skolems are built with derived
-    `StaticVariableId`s, and `substitute_type` and `substitute_static`
-    return a variable carrying an identity unchanged. So a branch's own
-    binders are invisible to substitution while references to an
-    enclosing declaration binder inside that branch are rewritten, which
-    is exactly the capture-avoiding behavior.
+    Declaration parameters are replaced by name. Constructor skolems
+    carry derived `StaticVariableId`s, so substituting for a declaration
+    binder cannot capture a branch variable with the same name. The
+    evaluator can additionally replace the selected branch's skolems by
+    identity. That substitution leaves other branches' binders and the
+    named binders of case motives in scope.
 
     Parameters
     ----------
@@ -807,6 +830,7 @@ def substitute_computation(
         and not substitution.types
         and not substitution.indices
         and not substitution.effects
+        and not substitution.rigid
     ):
         return computation
     if isinstance(computation, Return):

@@ -69,6 +69,7 @@ from quivers.qiec.types import (
 
 if TYPE_CHECKING:
     from quivers.qiec._span_finiteness import SpanOrder
+    from quivers.qiec.rules import RulePresentation
 
 
 KERNEL_ALGEBRAS: Mapping[str, Semiring] = MappingProxyType(
@@ -678,6 +679,42 @@ class DeductionOutcomes(QiecModel):
         return self.span_order.unary_height
 
 
+class DeductionProofs(QiecModel):
+    """Return supported full-span proofs under one exact proof budget.
+
+    Each result entry binds its proof's indexed family arguments. The
+    entry holds that proof, its log weight, and the next entry. The
+    operation accepts a structural proof limit and a normalization
+    choice. Different derivations keep their own weights.
+
+    Parameters
+    ----------
+    chart
+        The existing lexical chart descriptor and its result constructors.
+        Its lexical span syntax and grammar parameters remain unchanged.
+    """
+
+    chart: DeductionOutcomes = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["deduction-proofs"] = "deduction-proofs"
+
+    @cached_property
+    def proof_presentation(self) -> RulePresentation:
+        """Rename the chart's proof declarations into the calling module.
+
+        Returns
+        -------
+        RulePresentation
+            The same rule, axiom and judgment identities at renamed sorts,
+            with proof constructors named by the deduction.
+        """
+        from quivers.qiec._lexical_proof_types import export_lexical_proofs
+        from quivers.qiec.rules import RulePresentation
+
+        presentation = self.chart.presentation
+        assert isinstance(presentation, RulePresentation)
+        return export_lexical_proofs(presentation, presentation.name)
+
+
 class DeductionOutcomeGrouping(QiecModel):
     """Group a typed list of finite log masses by exact structural equality.
 
@@ -703,6 +740,7 @@ type ForeignSemantics = (
     | Enumeration
     | Settlement
     | DeductionOutcomes
+    | DeductionProofs
     | DeductionOutcomeGrouping
 )
 """What a foreign handler computes."""
@@ -711,6 +749,7 @@ type ForeignSemantics = (
 __all__ = [
     "DeductionOutcomeGrouping",
     "DeductionOutcomes",
+    "DeductionProofs",
     "EXACT_COUNT",
     "Enumeration",
     "EnumerationReduction",

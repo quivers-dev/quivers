@@ -869,10 +869,10 @@ def _unit(algebra: OrderPreservingSemiring, like: torch.Tensor) -> torch.Tensor:
     return algebra.unit_like((), like)
 
 
-def _add(
+def _add[Key](
     algebra: OrderPreservingSemiring,
-    table: dict[tuple[Ground, ...], torch.Tensor],
-    key: tuple[Ground, ...],
+    table: dict[Key, torch.Tensor],
+    key: Key,
     term: torch.Tensor,
     work: JoinCounter,
 ) -> None:
@@ -882,9 +882,9 @@ def _add(
     ----------
     algebra : OrderPreservingSemiring
         The algebra.
-    table : dict of tuple of Ground to torch.Tensor
+    table : dict of Key to torch.Tensor
         The table.
-    key : tuple of Ground
+    key : Key
         The entry.
     term : torch.Tensor
         The term.
@@ -902,8 +902,10 @@ def _add(
 def _conclusions(
     query: BodyQuery,
     table: Mapping[tuple[Ground, ...], torch.Tensor],
+    algebra: OrderPreservingSemiring,
+    work: JoinCounter,
 ) -> dict[Item, torch.Tensor]:
-    """The conclusion items of a table over the free variables.
+    """Sum each fiber of the map from free bindings to conclusion items.
 
     Parameters
     ----------
@@ -911,6 +913,10 @@ def _conclusions(
         The query.
     table : Mapping of tuple of Ground to torch.Tensor
         Weights by the values of the free variables, in their order.
+    algebra : OrderPreservingSemiring
+        The algebra for summing weights that give the same item.
+    work : JoinCounter
+        Counts these additional sums.
 
     Returns
     -------
@@ -922,7 +928,13 @@ def _conclusions(
     for values, weight in table.items():
         binding = dict(zip(query.free, values, strict=True))
         arguments = tuple(evaluate_index(a, binding) for a in conclusion.arguments)
-        found[Item(family=conclusion.family, arguments=arguments)] = weight
+        _add(
+            algebra,
+            found,
+            Item(family=conclusion.family, arguments=arguments),
+            weight,
+            work,
+        )
     return found
 
 
@@ -1041,7 +1053,7 @@ def eliminate(
             work,
         )
     return Elimination(
-        values=_conclusions(query, output),
+        values=_conclusions(query, output, algebra, work),
         algorithm="variable elimination",
         order=chosen,
         steps=tuple(steps),
@@ -1124,7 +1136,7 @@ def enumerate_aggregate(
             total = algebra.tensor_op(total, weight)
         _add(algebra, output, tuple(binding[v] for v in query.free), total, work)
     return Elimination(
-        values=_conclusions(query, output),
+        values=_conclusions(query, output, algebra, work),
         algorithm="enumeration in premise order",
         order=tuple(query.variables if order is None else order),
         work=work.report(),

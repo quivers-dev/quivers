@@ -8,7 +8,7 @@ responsibilities.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -44,6 +44,7 @@ from quivers.qiec.canonical import (
 from quivers.qiec.builtins import BUILTIN_EFFECTS
 from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.family_catalog import FamilyCatalog
+from quivers.qiec._proof_interpretation import bind_operands
 from quivers.qiec.checking import _plated_sample_type
 from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.effects import render_row
@@ -57,6 +58,7 @@ from quivers.dsl.pure_builtins import (
     HOST_ONLY_BUILTINS,
     LAYER_NORM_EPS,
     MATRIX_FUNCTIONS,
+    PURE_BUILTINS,
     RMS_NORM_EPS,
     SHAPE_BUILTINS,
     _BINARY_PRIMITIVES,
@@ -66,6 +68,7 @@ from quivers.dsl.pure_builtins import (
     _ROWWISE,
 )
 from quivers.dsl.deduction_elaboration import _DeductionElaboration
+from quivers.dsl._deduction_interpretations import declare_interpretations
 from quivers.dsl._deduction_outcomes import (
     check_outcome_key_bodies,
     declare_outcome_key_computations,
@@ -220,6 +223,7 @@ QIEC_STATEMENT_TYPES = (
     surface.QiecEffectInstanceDecl,
     surface.QiecHandlerDecl,
     surface.QiecComputationDecl,
+    surface.QiecInterpretationDecl,
 )
 """The declaration classes that make up the QIEC surface of a module.
 
@@ -420,6 +424,41 @@ _ATOMIC_LET_EXPRESSIONS = (
     surface.LetExprUnit,
     surface.LetExprString,
 )
+
+
+def _call_operand(
+    value: surface.QiecValue,
+    computations: Container[str],
+    distributions: Container[str],
+    macros: Container[str] = (),
+) -> surface.LetExprCall | None:
+    """Resolve a direct operand while preserving the value namespace.
+
+    Parameters
+    ----------
+    value
+        An argument in computation-call position.
+    computations, distributions, macros
+        The checked computation, constructor and lexical macro names in scope.
+
+    Returns
+    -------
+    LetExprCall or None
+        The application when it calls a computation. Other expressions use
+        the existing value lowering.
+    """
+    if not isinstance(value, surface.LetExprCall):
+        return None
+    name = value.func
+    if (
+        name in computations
+        and name not in PURE_BUILTINS
+        and name not in distributions
+        and name not in macros
+        and name not in ("site", "traverse")
+    ):
+        return value
+    return None
 
 
 def _atomic(expr: surface.LetExprNode) -> bool:
@@ -1601,6 +1640,7 @@ class _Elaborator(
         self._declare_deduction_declarations()
         self._declare_structural_signatures()
         self._declare_computation_signatures()
+        interpretations = declare_interpretations(self)
         self._declare_handlers()
         self._register_handlers()
         deductions = self._declare_deductions()
@@ -1608,7 +1648,14 @@ class _Elaborator(
         structural = self._declare_structural_computations()
         programs = self._declare_programs()
         computations = self._declare_computations()
-        bodies = (*deductions, *outcome_keys, *structural, *programs, *computations)
+        bodies = (
+            *deductions,
+            *outcome_keys,
+            *structural,
+            *interpretations,
+            *programs,
+            *computations,
+        )
         check_outcome_key_bodies(self, bodies)
         return QiecModule(
             module=self.source.module_name,
@@ -6531,7 +6578,9 @@ class _Elaborator(
 
         The callee is resolved against the signature table, which is
         complete before any body is lowered, so a call to a computation
-        declared later in the module resolves like any other.
+        declared later in the module resolves like any other. An operand
+        that calls a named computation is evaluated before the outer
+        call. All operands are evaluated once, in their written order.
 
         Parameters
         ----------
@@ -6548,10 +6597,9 @@ class _Elaborator(
 
         Returns
         -------
-        Call
-            The lowered call, carrying the instantiated result type and
-            effect row so a later check can compare them against the
-            callee's signature.
+        Computation
+            The lowered call and any operand bindings. The call carries
+            the instantiated result type and effect row for kernel checking.
 
         Raises
         ------
@@ -6586,19 +6634,61 @@ class _Elaborator(
             substitution = instantiate_telescope(signature.telescope, static_arguments)
         except (TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored, error, fallback="qiec-kind")
-        return Call(
-            callee=signature.id,
-            name=authored.callee,
-            static_arguments=static_arguments,
-            arguments=tuple(
-                self._lower_value(
-                    value, scope, context, static_bindings, (*path, position)
+        applications = tuple(
+            _call_operand(
+                value,
+                self.computation_signatures,
+                self.distribution_families,
+                self._lambda_macros,
+            )
+            for value in authored.arguments
+        )
+        bind_arguments = any(application is not None for application in applications)
+        operands: list[tuple[Local, Computation]] = []
+        arguments: list[Value] = []
+        for position, (value, application) in enumerate(
+            zip(authored.arguments, applications, strict=True)
+        ):
+            argument_path = (*path, position)
+            if application is not None:
+                operand = self._lower_call(
+                    surface.QiecCallComputation(
+                        callee=application.func,
+                        arguments=application.args,
+                        line=application.line,
+                        col=application.col,
+                    ),
+                    scope,
+                    context,
+                    argument_path,
+                    static_bindings,
                 )
-                for position, value in enumerate(authored.arguments)
+                # A value expression supplies no static instantiation. The
+                # recursive call checks this against the operand's telescope.
+                type_ = self.computation_signatures[application.func].result
+            else:
+                lowered = self._lower_value(
+                    value, scope, context, static_bindings, argument_path
+                )
+                if not bind_arguments:
+                    arguments.append(lowered)
+                    continue
+                type_ = self._value_type(lowered, context, value)
+                operand = Return(value=lowered)
+            local = self._shared_local("call_operand", type_, context)
+            operands.append((local, operand))
+            arguments.append(Var(local=local))
+        return bind_operands(
+            operands,
+            Call(
+                callee=signature.id,
+                name=authored.callee,
+                static_arguments=static_arguments,
+                arguments=tuple(arguments),
+                result_type=substitute_type(signature.result, substitution),
+                effects=substitute_row(signature.effects, substitution),
+                origin=self._origin(authored, path, "call"),
             ),
-            result_type=substitute_type(signature.result, substitution),
-            effects=substitute_row(signature.effects, substitution),
-            origin=self._origin(authored, path, "call"),
         )
 
     def _lower_traverse(

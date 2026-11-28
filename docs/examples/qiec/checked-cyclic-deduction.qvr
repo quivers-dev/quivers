@@ -1,0 +1,13 @@
+object Token : FinSet 1
+
+deduction Linear : Token -> Token [semiring=LogProb, start=S, tolerance=0.15]
+    atoms span, S, seed
+    rule step : span(I, J, S) |- span(I, J, S) #[learnable]
+    lexicon
+        "seed" : S = seed #[learnable]
+
+deduction Branching : Token -> Token [semiring=LogProb, start=S, tolerance=0.15]
+    atoms span, S, seed
+    rule step : span(I, J, S), span(I, J, S) |- span(I, J, S) #[learnable]
+    lexicon
+        "seed" : S = seed #[learnable]

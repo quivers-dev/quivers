@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Literal, cast
 
 from quivers.dsl.ast_nodes.qiec import (
     QiecBindComputation,
@@ -13,6 +13,8 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecCaseMotive,
     QiecComputation,
     QiecComputationDecl,
+    QiecInterpretationClause,
+    QiecInterpretationDecl,
     QiecConstructorValue,
     QiecContextSort,
     QiecEffectBinder,
@@ -76,6 +78,7 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "effect_instance_decl",
         "handler_decl",
         "computation_decl",
+        "interpretation_decl",
     }
 )
 
@@ -156,6 +159,31 @@ def _walk_qiec_statement(t: _Tree, vid: str):
                 _walk_handler_clause(t, child) for child in t.fields(vid, "clauses")
             ),
             duplicate_options=duplicate_options,
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "interpretation_decl":
+        clauses = []
+        for child in t.fields(vid, "clauses"):
+            clause_line, clause_col = t.line_col(child)
+            clauses.append(
+                QiecInterpretationClause(
+                    constructor_kind=cast(
+                        Literal["rule", "axiom"],
+                        _field_text(t, child, "constructor_kind"),
+                    ),
+                    constructor=_field_text(t, child, "constructor"),
+                    operation=_field_text(t, child, "operation"),
+                    line=clause_line,
+                    col=clause_col,
+                )
+            )
+        return QiecInterpretationDecl(
+            name=_field_text(t, vid, "name"),
+            deduction=_field_text(t, vid, "deduction"),
+            carrier=_walk_type(t, _required_field(t, vid, "carrier")),
+            clauses=tuple(clauses),
             docs=docs,
             line=line,
             col=col,

@@ -12,6 +12,7 @@ to the source line.
 | --- | --- | --- |
 | `program` | one computation over the built-in `random` and `score` instances, with helpers for [marginalization](probabilistic-programs.md#exact-marginalization) and scans | the core handlers, and any model attachments |
 | `deduction` | a family of items, a recursive derivation, `Search`, `Settle`, `Weight[K]`, `Param`, the search, collection, and settlement handlers, and a run entry | the core search, semiring, and parameter providers |
+| `interpret` | a checked case fold over a lexical deduction's indexed proof family | the named effects of the rule and axiom operations |
 | `define p = parser(...)` | a finite family of items and a [deduction](../../guides/deduction.md#the-framework) instantiated from rule schemata and bundles, searched from the goal | the search runtime of a deduction |
 | `signature` | an opaque family of terms indexed by the declared sorts | structural term values held in the Python process |
 | `encoder` | a typed `Compute[Term, Code]` request and a named computation | an attached PyTorch [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) |
@@ -76,6 +77,11 @@ grow, raises [`ContractNotMet`](../../api/qiec/contracts.md#quivers.qiec.contrac
 and `run_deduction(..., on_failure=FailurePolicy.RETURN_UNESTABLISHED)` returns it as an
 [`Unestablished`](../../api/qiec/contracts.md#quivers.qiec.contracts.Unestablished) value instead.
 A program that calls the deduction refuses such a stop.
+
+The [proof interpretation declaration](../../guides/deduction.md#interpreting-a-proof)
+generates an ordinary checked computation. Its type takes a proof at the
+deduction's indices and returns the declared carrier. Its effect row follows
+from the operations assigned to the proof constructors.
 
 The [weighted deduction guide](../../guides/deduction.md) and the
 [parsing tutorial](../../tutorials/qvr/11-parsing-and-search.md) build deductions step by step.

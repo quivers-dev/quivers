@@ -71,6 +71,7 @@ __all__ = [
     "encoder_interpretation",
     "expected_embedding",
     "fold_derivations",
+    "fold_derivations_many",
     "forest_fold",
     "forest_folds",
     "nonlinear_fold",
@@ -344,8 +345,15 @@ def _below(key: Key) -> int | None:
     return None if key[1] is None else key[1] - 1
 
 
-def _counts(forest: DerivationForest, height: int | None) -> dict[Key, int]:
-    """The number of derivations of every item within the height bound, exactly.
+def _counts(
+    forest: DerivationForest, height: int | None, *, cap: int | None = None
+) -> dict[Key, int]:
+    """Count derivations of every item, optionally saturating the count.
+
+    Over nonnegative integers, truncation at a positive cap preserves
+    addition and multiplication followed by truncation. A product of a
+    saturated count with zero is still zero. Each operand is thus at most
+    the cap, even when the exact count has exponentially many bits.
 
     Parameters
     ----------
@@ -353,11 +361,14 @@ def _counts(forest: DerivationForest, height: int | None) -> dict[Key, int]:
         The forest.
     height : int or None
         The bound on height.
+    cap : int or None
+        An optional positive saturation threshold for counts.
 
     Returns
     -------
     dict of Key to int
-        The count of each key with at least one derivation.
+        The count, limited by the cap when supplied, of each key with at
+        least one derivation.
 
     Raises
     ------
@@ -370,24 +381,30 @@ def _counts(forest: DerivationForest, height: int | None) -> dict[Key, int]:
             total = 0
             below = _below(key)
             for edge in forest.edges.get(key[0], ()):
-                if edge.occurrence is not None:
-                    total += 1
-                    continue
-                if below is not None and below < 0:
-                    continue
                 product = 1
-                for premise in edge.premises:
-                    product *= counts.get((premise, below), 0)
+                if edge.occurrence is None:
+                    if below is not None and below < 0:
+                        continue
+                    for premise in edge.premises:
+                        product *= counts.get((premise, below), 0)
+                        if cap is not None:
+                            product = min(product, cap)
                 total += product
+                if cap is not None and total >= cap:
+                    total = cap
+                    break
             if total:
                 counts[key] = total
     return counts
 
 
 def _useful(
-    forest: DerivationForest, goal: Item, height: int | None, counts: Mapping[Key, int]
+    forest: DerivationForest,
+    goals: Sequence[Item],
+    height: int | None,
+    counts: Mapping[Key, int],
 ) -> set[Key]:
-    """The keys whose derivations some derivation of the goal uses.
+    """The keys whose derivations some derivation of a requested goal uses.
 
     A key is useful when it is the goal's, or a premise of a live edge of
     a useful key, one whose premises all have derivations within the
@@ -399,8 +416,8 @@ def _useful(
     ----------
     forest : DerivationForest
         The forest.
-    goal : Item
-        The item.
+    goals : Sequence of Item
+        The requested items.
     height : int or None
         The bound on height.
     counts : Mapping of Key to int
@@ -411,11 +428,8 @@ def _useful(
     set of Key
         The useful keys.
     """
-    start = (goal, height)
-    if start not in counts:
-        return set()
-    useful = {start}
-    stack = [start]
+    useful = {(goal, height) for goal in goals if (goal, height) in counts}
+    stack = list(useful)
     while stack:
         key = stack.pop()
         below = _below(key)
@@ -811,12 +825,7 @@ def fold_derivations[V](
 
     Derivations are built bottom up and shared: a derivation of a premise
     is built and folded once and reused by every derivation above it.
-    The goal's count is computed exactly first, and nothing is built when
-    it exceeds the limit. Only the items, and under a height bound the
-    heights, that some derivation of the goal uses are listed; each of
-    their derivations extends to distinct derivations of the goal, so
-    each list holds at most ``limit``, and at most ``limit`` times the
-    number of listed keys derivations are built.
+    The exact budget decision happens before any derivation is built.
 
     Parameters
     ----------
@@ -849,16 +858,85 @@ def fold_derivations[V](
         If the goal has more derivations than ``limit``, or the forest
         has a cycle and no height is given.
     """
-    part = forest.below(goal)
-    counts = _counts(part, height)
-    total = counts.get((goal, height), 0)
+    return fold_derivations_many(
+        forest,
+        (goal,),
+        algebra,
+        inputs,
+        interpretation,
+        limit=limit,
+        like=like,
+        height=height,
+    )[goal]
+
+
+def fold_derivations_many[V](
+    forest: DerivationForest,
+    goals: Sequence[Item],
+    algebra: OrderPreservingSemiring,
+    inputs: Mapping[InputId, torch.Tensor],
+    interpretation: HostInterpretation[V],
+    *,
+    limit: int,
+    like: torch.Tensor,
+    height: int | None = None,
+) -> dict[Item, Listed[V]]:
+    """List several goals' derivations under one exact global proof budget.
+
+    Count structural proofs over the common subforest in one pass,
+    saturating integers at ``limit + 1``. Every useful subtree extends to
+    a requested proof, so each list in a successful run has at most
+    ``limit`` entries. Build and fold each sub-derivation once across all
+    goals. This sharing applies to host interpretations whose operations
+    may be reused. The count includes zero-weight structural proofs.
+
+    Parameters
+    ----------
+    forest : DerivationForest
+        The common forest of the requested goals.
+    goals : Sequence of Item
+        The roots to list. A repeated goal is counted and returned once,
+        at its first position.
+    algebra : OrderPreservingSemiring
+        The algebra of each derivation's weight.
+    inputs : Mapping of InputId to torch.Tensor
+        The rule and occurrence weights.
+    interpretation : HostInterpretation
+        The fold performed on each listed derivation.
+    limit : int
+        The maximum total number of proofs of the distinct goals.
+    like : torch.Tensor
+        The dtype and device of the unit.
+    height : int or None
+        The bound on height, required for a cyclic forest.
+
+    Returns
+    -------
+    dict of Item to Listed
+        Every requested goal's derivations, with weights and folds.
+
+    Raises
+    ------
+    ForestRefused
+        If there are more proofs than the limit or an unbounded cycle.
+    ValueError
+        If the proof budget is negative.
+    """
+    if limit < 0:
+        raise ValueError("the proof budget must be nonnegative")
+    goals = tuple(dict.fromkeys(goals))
+    if not goals:
+        return {}
+    part = forest.below_all(goals)
+    counts = _counts(part, height, cap=limit + 1)
+    total = sum(counts.get((goal, height), 0) for goal in goals)
     if total > limit:
         raise ForestRefused(
             ForestRefusal.TOO_MANY,
-            f"{total} derivations exceed the declared limit of {limit}; none is "
-            "returned, since a part of them is not the fold",
+            f"at least {total} derivations exceed the declared limit of {limit}; "
+            "none is returned",
         )
-    useful = _useful(part, goal, height, counts)
+    useful = _useful(part, goals, height, counts)
     operations = interpretation.operations
     listed: dict[Key, Listed[V]] = {}
     for level in _levels(part, height):
@@ -903,7 +981,7 @@ def fold_derivations[V](
                         (node, product, operations[edge.constructor](node, folds))
                     )
             listed[key] = found
-    return listed.get((goal, height), [])
+    return {goal: listed.get((goal, height), []) for goal in goals}
 
 
 def _choices[T](children: Sequence[list[T]]) -> list[list[T]]:

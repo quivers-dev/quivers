@@ -901,6 +901,31 @@ marginalization, deductions, and parameter maps against them, and
 | `ambiguous_deduction.qvr` | a grammar with prepositional attachment ambiguity, whose two derivations are summed under an unrestricted `Choose` handler and added to a program's score |
 | `network_decoder.qvr` | a morphism parameterized by a network, observed through the built-in effects, with gradients reaching the attached weights |
 
+## Closed proof interpretations
+
+An `InterpretationDecl` assigns an ordinary computation to every constructor
+of a `RulePresentation`. The closed proof fold requires one result carrier
+per judgment family. A rule operation takes the folded premise values in
+premise order, followed by the constructor's data fields, and returns a value
+of the conclusion's carrier. Each operation has an explicit closed effect row.
+
+The generated fold is a QIEC `Case` on the proof. In the branch for a rule,
+the constructor's rigid indices specialize the recursive premise calls.
+Each `Bind` finishes one premise before the next, and the last `Call` applies
+the rule operation. Induction on a finite proof gives the value of this fold.
+For a nullary constructor the fold calls its operation directly. For a rule
+with premises, the induction hypotheses give the meaning of each premise at
+its own indices, and the rule operation combines those values in order.
+
+A fold's declared row is the union of the operations reachable from its
+judgment family. A caller can install handlers for those effects through
+ordinary QIEC scope. The fold traverses each premise occurrence separately,
+and repeated occurrences may make distinct requests. It makes no claim
+about sharing requests across derivations or replacing proof observations
+with item weights. The closed fold accepts unconditional rules without proof
+equations or hypotheses introduced under a premise. It produces the usual
+serializable QIEC terms and requires no additional execution provider.
+
 ## Integration contract
 
 The integration has five parts.

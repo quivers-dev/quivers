@@ -66,8 +66,10 @@ from quivers.qiec._models import QiecModel
 from quivers.dsl._deduction_chart import declare_chart, elaborate_chart
 from quivers.dsl._deduction_outcomes import (
     OUTCOME_CALLS,
+    PROOF_CALLS,
     OutcomeKey,
     OutcomeQuery,
+    declare_lexical_proofs,
     declare_outcome_key_types,
     declare_outcomes,
     elaborate_outcomes,
@@ -98,6 +100,7 @@ from quivers.dsl.ast_nodes import (
     OptionName,
     OptionNumber,
     ProgramDecl,
+    QiecInterpretationDecl,
     SchemaDecl,
     SequentRule,
     TypeEnumSet,
@@ -127,7 +130,7 @@ from quivers.dsl.compiler._deduction_presentation import (
     category_term,
     deduction_presentation,
 )
-from quivers.qiec.rules import Judgment
+from quivers.qiec.rules import Judgment, RulePresentation
 from quivers.stochastic.categories import (
     AtomicCategory,
     Category,
@@ -1365,6 +1368,8 @@ class _DeductionElaboration:
         """
         self._deductions: dict[str, _System] = {}
         self._outcome_queries: dict[str, OutcomeQuery] = {}
+        self._proof_queries: dict[str, OutcomeQuery] = {}
+        self._lexical_proofs: dict[str, RulePresentation] = {}
         self._outcome_keys: dict[tuple[str, str], OutcomeKey] = {}
         declarations = [
             statement
@@ -1380,7 +1385,17 @@ class _DeductionElaboration:
         outcome_calls = {
             call.args[0].name: call
             for call in calls
-            if isinstance(call.args[0], LetExprVar)
+            if call.func not in PROOF_CALLS and isinstance(call.args[0], LetExprVar)
+        }
+        proof_calls = {
+            call.args[0].name: call
+            for call in calls
+            if call.func in PROOF_CALLS and isinstance(call.args[0], LetExprVar)
+        }
+        interpretations = {
+            statement.deduction: statement
+            for statement in self.source.syntax.statements
+            if isinstance(statement, QiecInterpretationDecl)
         }
         self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
@@ -1417,6 +1432,16 @@ class _DeductionElaboration:
             if query is not None:
                 self._outcome_queries[declaration.name] = declare_outcomes(
                     self, system, query
+                )
+            proof = proof_calls.get(declaration.name)
+            proof_declaration = interpretations.get(declaration.name, proof)
+            if proof_declaration is not None:
+                self._lexical_proofs[declaration.name] = declare_lexical_proofs(
+                    self, system, proof_declaration
+                )
+            if proof is not None:
+                self._proof_queries[declaration.name] = declare_outcomes(
+                    self, system, proof, proofs=True
                 )
             if not system.searched:
                 declare_chart(self, system)
@@ -2730,7 +2755,7 @@ class _DeductionElaboration:
         threaded = (
             {
                 system.name(suffix): system.name(f"weighted_{suffix}")
-                for suffix in (*THREADED, "outcomes")
+                for suffix in (*THREADED, "outcomes", "proofs")
             }
             if weighted
             else {}
@@ -2951,17 +2976,23 @@ class _DeductionElaboration:
         if system.depth_cell[0] is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
         normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
-        outcome_query = self._outcome_queries.get(system.decl.name)
-        outcome_entry = (
-            declare(
-                system.name("outcomes"),
-                (extent,),
-                (tokens_type, STRING, BOOL),
-                outcome_query.handler.output_type,
-                outer,
+        queries = (
+            ("outcomes", self._outcome_queries.get(system.decl.name), STRING),
+            ("proofs", self._proof_queries.get(system.decl.name), INT),
+        )
+        query_entries = tuple(
+            (
+                query,
+                declare(
+                    system.name(suffix),
+                    (extent,),
+                    (tokens_type, control, BOOL),
+                    query.handler.output_type,
+                    outer,
+                ),
             )
-            if outcome_query is not None
-            else None
+            for suffix, query, control in queries
+            if query is not None
         )
         if system.normalized_cell[0] and not weighted:
             for index, group in enumerate(system.groups_cell[0]):
@@ -2984,10 +3015,10 @@ class _DeductionElaboration:
         computations: list[NamedComputation] = [
             context.normalizer(signature, group) for signature, group in normalizers
         ]
-        if outcome_query is not None and outcome_entry is not None:
-            computations.append(
-                elaborate_outcomes(context, outcome_query, outcome_entry)
-            )
+        computations.extend(
+            elaborate_outcomes(context, query, signature)
+            for query, signature in query_entries
+        )
         if not weighted:
             computations.extend(
                 (

@@ -14,6 +14,9 @@ from that statement and from nothing else, in particular never from the handler'
   only when the stop certifies it.
 - [`DeductionOutcomes`][quivers.qiec.foreign.DeductionOutcomes] folds a finite packed lexical
   chart in `LogProb` and groups full-span goal masses by a structural key.
+- [`DeductionProofs`][quivers.qiec.foreign.DeductionProofs] uses the same chart and returns
+  the supported full-span proofs after an exact budget check. Each row binds its proof's indices
+  and carries its `LogProb` weight.
 - [`DeductionOutcomeGrouping`][quivers.qiec.foreign.DeductionOutcomeGrouping] groups weighted rows
   whose checked keys admit exact structural equality. Ordinary QIEC calls compute the keys before
   this handler runs.
