@@ -290,6 +290,11 @@ from quivers.qiec.family_shapes import (
     match_family_shapes,
     validate_family_shape_dimensions,
 )
+from quivers.qiec.handler_carriers import (
+    ClauseCarrierShape,
+    HandlerCarrierShape,
+    classify_handler_carrier,
+)
 from quivers.qiec.identifiers import (
     AddressRelation,
     AttachmentId,
@@ -1096,6 +1101,7 @@ __all__ += [
     "check_finite_effect_law",
     "check_scalar_effect_law",
 ]
+__all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carrier"]
 __all__ += [
     "PolynomialLawCounterexample",
     "PolynomialLawDecision",

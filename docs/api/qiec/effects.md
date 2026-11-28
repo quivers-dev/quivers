@@ -157,6 +157,48 @@ assert (result.replay_steps, result.reverse_steps, result.peak_saved_states) == 
 
 ::: quivers.qiec.effects
 
+## Handler carrier shapes
+
+`classify_handler_carrier` inspects the actual checked clauses of a
+handler. A `tail-state` clause resumes exactly once in tail position.
+A `tail-or-abort` clause can also return an answer directly. The
+classifier reports `continuation` when a clause uses general control,
+including a resumption followed by other work.
+
+The classifier checks both arms of a conditional unless its condition
+is a Boolean literal. Closed calls in a prefix are checked through their
+reachable bodies.
+
+The report retains the nominal operation, the declared resumption
+grade, and the handler's return action. A compiler uses separate
+conditions for each transformation, including exchanging handlers.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import classify_handler_carrier
+
+source = """
+effect Offset
+    advance : Real -> Real
+
+instance offset : Offset
+
+handler carry for Offset : Real -> Real with (current : Real) [coverage=total, forwards=none, implementation=authored]
+    return answer =>
+        return answer
+    advance(v : Real) resumes 1 =>
+        resume(v + current) with (v)
+"""
+module = Compiler(parse(source), module_name="carrier-example").qiec_module
+assert module is not None
+shape = classify_handler_carrier(module, module.handlers[0].id)
+assert shape.kind == "tail-state"
+assert shape.return_action == "identity"
+assert shape.clauses[0].completions == ("resume",)
+```
+
+::: quivers.qiec.handler_carriers
+
 ## Finite laws
 
 The finite law checker compares two named QIEC computations with the same
