@@ -7,18 +7,45 @@ import math
 import pytest
 import torch
 
+from quivers.core.algebras import LOG_PROB
 from quivers.dsl import loads as load_source
 from quivers.dsl.parser import parse
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.qiec_tooling import target_diagnostics
+from quivers.qiec import deduction_outcomes
 from quivers.qiec.checking import KernelError
-from quivers.qiec.execution import ExecutionFailure
+from quivers.qiec.contracts import (
+    Acyclic,
+    DerivativeSemantics,
+    Exact,
+    NoRetention,
+    Outcome,
+    Phase,
+    ResourceBudget,
+    check_admissible,
+    check_complexity,
+)
+from quivers.qiec.execution import (
+    ExecutionFailure,
+    RuntimeConfiguration,
+    RuntimeSelection,
+    run_named,
+)
 from quivers.qiec.foreign import DeductionOutcomeGrouping
 from quivers.qiec.module import QiecModule, validate_module
-from quivers.qiec.program_runtime import run_program
+from quivers.qiec.program_runtime import (
+    PARAMS_HANDLER,
+    foreign_handler_configuration,
+    joint_module,
+    program_entry,
+    run_program,
+    static_arguments_for,
+)
 from quivers.qiec.serialization import dumps, loads
-from quivers.qiec.types import REAL
+from quivers.qiec.terms import Bind, Local, Return, Var
+from quivers.qiec.types import BOOL, REAL
+from quivers.stochastic.planning import PlanRecord
 from quivers.transpile import UnsupportedConstruct, transpile
 
 
@@ -143,6 +170,10 @@ def test_packed_goals_map_once_then_group_and_normalize_exact_typed_keys() -> No
     ]
     assert calls == ["Mix__outcomes", "classify", "classify", "classify"]
     _assert_grouping_trace(result, normalized=True)
+    assert all(
+        event.event != "deduction.grouped_outcomes.plan"
+        for event in result.result.trace
+    )
     for yes, no, oracle in (
         (1.0, 0.0, weights[:3].exp().sum()),
         (0.0, 1.0, weights[3].exp()),
@@ -158,6 +189,125 @@ def test_packed_goals_map_once_then_group_and_normalize_exact_typed_keys() -> No
         assert isinstance(raw.value, torch.Tensor)
         torch.testing.assert_close(raw.value, oracle, atol=1e-12, rtol=1e-12)
         _assert_grouping_trace(raw, normalized=False)
+
+        torch.testing.assert_close(
+            torch.autograd.grad(raw.value, weights)[0],
+            torch.autograd.grad(oracle, weights)[0],
+            atol=1e-12,
+            rtol=1e-12,
+        )
+        (report,) = [
+            event
+            for event in raw.result.trace
+            if event.event == "deduction.grouped_outcomes.plan"
+        ]
+        (cascade,) = [
+            event
+            for event in raw.result.trace
+            if event.event == "deduction.grouped_outcomes"
+        ]
+        assert cascade.sequence < report.sequence
+        by_name = {
+            computation.name: computation for computation in restored.computations
+        }
+        key = by_name["classify"]
+        mapper = by_name["Mix__classify__map_outcomes"]
+        wrapper = by_name["Mix__classify__key_outcomes"]
+        request = wrapper.body.then.computation.request
+        record = loads(report.detail["plan"])
+        assert isinstance(record, PlanRecord)
+        assert dumps(record) == report.to_data()["detail"]["plan"]
+        assert tuple(report.detail[name] for name in ("key", "mapper", "wrapper")) == (
+            str(key.id),
+            str(mapper.id),
+            str(wrapper.id),
+        )
+        assert report.detail["site"] == str(request.origin.origin.site_id())
+        assert report.detail["operation"] == str(request.operation)
+        assert report.detail["handler"] == str(wrapper.body.then.handler)
+        assert loads(report.detail["output_type"]) == wrapper.type.result
+        assert loads(report.detail["key_type"]) == key.type.result
+        assert loads(report.detail["derivative"]) == DerivativeSemantics()
+        assert record.query.input_types == tuple(p.type for p in wrapper.parameters)
+        assert record.query.observable == Outcome(key=key.id)
+        assert str(record.query.presentation) == report.detail["presentation"]
+        assert record.query.retention == record.retention == NoRetention()
+        assert record.recursion == Acyclic() and record.joins == ()
+        assert record.algorithm == cascade.detail["algorithm"]
+        assert record.accuracy.guarantee == Exact()
+        assert record.accuracy.budget == ResourceBudget()
+        assert record.accuracy.numerics.dtype == "float64"
+        assert record.accuracy.numerics.rounding is None
+        assert record.algebra == LOG_PROB.subject
+        check_admissible(
+            record.query,
+            record.recursion,
+            record.accuracy,
+            algebra=record.algebra,
+            claims=record.claims,
+        )
+        assert {
+            bound.phase: bound.expression
+            for bound in record.complexity.bounds
+            if bound.resource == "time"
+        } == {
+            Phase.CONSTRUCTION: "N + T",
+            Phase.EXECUTION: "N + S",
+            Phase.DIFFERENTIATION: "N + D",
+            Phase.REFIT: "N + S + T + D",
+        }
+        check_complexity(record.complexity)
+
+
+def test_typed_key_plan_uses_the_checked_request_owner_and_lazy_trace(monkeypatch):
+    module = load_source(GRAMMAR + "\nexport raw\n").qiec
+    assert isinstance(module, QiecModule)
+    data = {"sentence": ("x", "y"), "yes": 0.8, "no": 0.3}
+    wrapper = next(
+        computation
+        for computation in module.computations
+        if computation.name == "Mix__classify__key_outcomes"
+    )
+    changed = wrapper.with_(
+        body=Bind(
+            binder=Local(name="extra_record", type=BOOL),
+            first=Return(value=Var(local=wrapper.parameters[1])),
+            then=wrapper.body,
+        )
+    )
+    mutated = module.with_(
+        computations=tuple(
+            changed if comp.id == wrapper.id else comp for comp in module.computations
+        )
+    )
+    validate_module(mutated)
+    result = run_program(mutated, "raw", data=data, sites={})
+    assert float(result.value) == pytest.approx(3 * 0.8 + 0.3)
+    events = [event.event for event in result.result.trace]
+    assert events.count("deduction.grouped_outcomes") == 1
+    assert "deduction.grouped_outcomes.plan" not in events
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("unobserved execution must not inspect the nominal key route")
+
+    monkeypatch.setattr(deduction_outcomes, "raw_key_plan_trace", forbidden)
+    extended, entry_name = joint_module(module, "raw")
+    entry = program_entry(module, "raw")
+    handlers = foreign_handler_configuration(module)
+    handlers[PARAMS_HANDLER] = {"kind": "param", "values": {}}
+    runtime = RuntimeConfiguration(
+        selections=(RuntimeSelection(provider="core", options={"handlers": handlers}),)
+    )
+    plain = run_named(
+        extended,
+        entry_name,
+        tuple(data[parameter.name] for parameter in entry.parameters),
+        static_arguments=static_arguments_for(entry, data, ()),
+        runtime=runtime,
+        record_trace=False,
+    )
+    assert plain.trace == ()
+    assert float(plain.value[0]) == pytest.approx(3 * 0.8 + 0.3)
 
 
 def _assert_grouping_trace(run, *, normalized: bool) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -16,6 +17,7 @@ from quivers.qiec._lexical_outcome_plan import (
     proof_rows_plan_trace,
     raw_item_plan_trace,
 )
+from quivers.qiec._typed_key_outcome_plan import GROUPING_ALGORITHM, raw_key_plan_trace
 from quivers.qiec.canonical import sampleable_type, tensor_type
 from quivers.qiec.checking import KernelError, KernelRegistry
 from quivers.qiec.contracts import OccurrenceId, ParameterId
@@ -75,6 +77,9 @@ from quivers.stochastic.forest import (
     fold_derivations_many,
     forest_folds,
 )
+
+if TYPE_CHECKING:
+    from quivers.qiec.module import QiecModule
 
 
 def proof_entry_type(
@@ -881,6 +886,8 @@ def outcome_grouping_handler(
     definition: HandlerDef,
     operation: OperationId,
     grouping: DeductionOutcomeGrouping,
+    *,
+    module: QiecModule | None = None,
 ) -> RuntimeHandler:
     """Push forward checked weighted rows without traversing their proofs.
 
@@ -892,6 +899,9 @@ def outcome_grouping_handler(
         The operation that groups rows and optionally normalizes their weights.
     grouping : DeductionOutcomeGrouping
         The checked descriptor for the input and output row representation.
+    module
+        The checked executable, available only for recognizing the actual
+        named conversion in a native trace.
 
     Returns
     -------
@@ -937,7 +947,7 @@ def outcome_grouping_handler(
                     "deduction.grouped_outcomes",
                     lambda: {
                         "observer": "weighted-typed-key-rows",
-                        "algorithm": "hash-grouped-structural-keys",
+                        "algorithm": GROUPING_ALGORITHM,
                         "key_type": render_static(grouping.key_type),
                         "normalized": normalized,
                         "derivative": "autograd-on-finite-log-weights-at-fixed-support",
@@ -954,14 +964,20 @@ def outcome_grouping_handler(
                         ),
                     },
                 )
-                return TailResume(
-                    value=_materialize_rows(
-                        definition.output_type,
-                        grouping.empty,
-                        grouping.entry,
-                        ((representatives[key], mass) for key, mass in masses.items()),
-                    )
+                result = _materialize_rows(
+                    definition.output_type,
+                    grouping.empty,
+                    grouping.entry,
+                    ((representatives[key], mass) for key, mass in masses.items()),
                 )
+                if not normalized and module is not None:
+                    context.emit_trace(
+                        "deduction.grouped_outcomes.plan",
+                        lambda: raw_key_plan_trace(
+                            module, definition, grouping, request, context, grouped
+                        ),
+                    )
+                return TailResume(value=result)
             if row.constructor != grouping.entry or len(row.fields) != 3:
                 break
             value, weight, row = row.fields

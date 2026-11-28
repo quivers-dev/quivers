@@ -849,6 +849,21 @@ measure the checked query and its isolated reducer as item count, key
 count, and key depth vary. The benchmark checks the masses and gradients
 at each parameter point in the refit.
 
+For a raw query that maps unguarded lexical item rows with a named key,
+`deduction.grouped_outcomes.plan` identifies the checked mapper, the key
+computation it calls, and the request that groups the results. Its
+`Outcome` uses that same computation identity. The record covers the
+conversion and grouping of supplied item rows. Chart construction
+has its own event and cost.
+
+The conversion makes one key call per row and forwards its log weight.
+The plan counts key evaluation separately from hash-table work. With
+expected table access, the grouping takes time linear in the number of
+rows and the total size of their keys. Collisions can require repeated
+comparisons. The reverse bound covers the grouping's scalar log sums at
+fixed keys and support. Normalized queries, proof keys and calls that
+supply already mapped rows continue to emit the ordinary grouping event.
+
 #### Returning weighted proofs
 
 Use `parse_proofs(D, sentence, limit)` when a later computation needs to

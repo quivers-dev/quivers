@@ -715,6 +715,7 @@ class CoreRuntimeProvider(QiecModel):
                 definition,
                 self._single_clause(definition, ResumptionGrade.LINEAR),
                 semantics,
+                module=module,
             )
         if isinstance(semantics, DeductionOutcomeLaw):
             from quivers.qiec.deduction_outcomes import outcome_law_handler
