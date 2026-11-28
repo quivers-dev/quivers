@@ -366,6 +366,7 @@ from quivers.qiec.serialization import (
     loads,
     to_data,
 )
+from quivers.qiec.structured_sampleables import FiniteSampleable
 from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_operation,
@@ -526,6 +527,7 @@ __all__ = [
     "DischargeObstacle",
     "DischargedModule",
     "DistributionBackend",
+    "FiniteSampleable",
     "DistributionError",
     "DistributionFamily",
     "DistributionId",

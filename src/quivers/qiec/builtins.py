@@ -802,7 +802,7 @@ def draw_handler(
             If the request does not carry a site and a sampleable, or the
             default draw finds no sampling interface on the sampleable.
         """
-        site, sampleable = _expect_arguments(request, 2, definition.name)
+        site, sampleable = _site_and_sampleable(request, definition.name)
         value = (
             draw(site, sampleable, request)
             if draw is not None
@@ -914,6 +914,36 @@ def _support(sampleable: object) -> tuple[object, ...]:
     )
 
 
+def _weighted_support(sampleable: object) -> Iterable[tuple[object, torch.Tensor]]:
+    """Read the live finite support and log probabilities for enumeration.
+
+    Parameters
+    ----------
+    sampleable
+        A machine distribution with finite support or a checked finite law.
+
+    Yields
+    ------
+    tuple
+        A value in the machine's runtime layout and its log probability,
+        with the density's batch positions preserved for numeric laws.
+    """
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
+    if isinstance(sampleable, FiniteSampleable):
+        yield from sampleable.weighted_support()
+        return
+    support = _support(sampleable)
+    distribution = cast(RuntimeDistribution, sampleable)
+    shape = (*distribution.batch, *distribution.event)
+    element = family(distribution.family).element
+    for choice in support:
+        point = machine_value(element, choice, distribution.numbers)
+        assert isinstance(point, torch.Tensor)
+        value = point.expand(shape).clone() if shape else point
+        yield value, distribution.log_prob(value, keep_batch=True)
+
+
 def enumerate_handler(
     result_validator: RuntimeValidator,
     *,
@@ -1013,17 +1043,9 @@ def enumerate_handler(
             other than a value paired with its weight, or the shots'
             weights do not fill the weight type's positions.
         """
-        _site, sampleable = _expect_arguments(request, 2, definition.name)
-        support = _support(sampleable)
-        distribution = cast(RuntimeDistribution, sampleable)
-        shape = (*distribution.batch, *distribution.event)
-        element = family(distribution.family).element
+        _site, sampleable = _site_and_sampleable(request, definition.name)
         weights: list[torch.Tensor] = []
-        for choice in support:
-            point = machine_value(element, choice, distribution.numbers)
-            assert isinstance(point, torch.Tensor)
-            value = point.expand(shape).clone() if shape else point
-            prior = distribution.log_prob(value, keep_batch=True)
+        for value, prior in _weighted_support(sampleable):
             answer = resume(value)
             if not isinstance(answer, tuple) or len(answer) != 2:
                 raise InvalidHandlerError(
@@ -1302,7 +1324,16 @@ def _site_and_sampleable(
         if the site is not hashable and so cannot key an observation
         or replay table.
     """
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
     site, sampleable = _expect_arguments(request, 2, handler)
+    if (
+        isinstance(sampleable, FiniteSampleable)
+        and sampleable.element != request.core.result_type
+    ):
+        raise RuntimeTypeMismatch(
+            "the finite sampleable's element type differs from its Random request"
+        )
     try:
         hash(site)
     except TypeError as error:
@@ -1357,7 +1388,9 @@ def _zero_weight(sampleable: object) -> object:
         If the distribution is not one the machine constructed, whose
         numbers are known.
     """
-    if not isinstance(sampleable, RuntimeDistribution):
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
+    if not isinstance(sampleable, RuntimeDistribution | FiniteSampleable):
         raise InvalidHandlerError(
             "an unscored observation needs a distribution of the machine's numbers"
         )
