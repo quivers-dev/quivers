@@ -29,7 +29,10 @@ from quivers.qiec.types import TypeExpr, TypeVariable
 
 
 def scoped_lookup_computations(
-    syntax: ScopedProofTypes, carriers: Mapping[FamilyId, TypeExpr]
+    syntax: ScopedProofTypes,
+    carriers: Mapping[FamilyId, TypeExpr],
+    *,
+    name: str = "scoped",
 ) -> dict[FamilyId, NamedComputation]:
     """Generate checked-code definitions for typed environment lookup.
 
@@ -48,6 +51,8 @@ def scoped_lookup_computations(
         The checked frame and membership declarations.
     carriers
         The closed semantic type of each judgment in this interpretation.
+    name
+        The stable name of the interpretation that owns these lookups.
 
     Returns
     -------
@@ -60,17 +65,20 @@ def scoped_lookup_computations(
     domains = (TypeBinder(name=ambient.name),)
     row = EffectRow()
     names = {
-        source: f"{family.name}__lookup" for source, family in syntax.members.items()
+        source: f"{name}__lookup_{family.name}"
+        for source, family in syntax.members.items()
     }
     lookups: dict[FamilyId, NamedComputation] = {}
     for selected, member in syntax.members.items():
         answer = carriers[selected]
-        identity = ComputationId.derive(syntax.module.module, selected, "scoped-lookup")
-        name = names[selected]
+        identity = ComputationId.derive(
+            syntax.module.module, name, selected, "scoped-lookup"
+        )
+        lookup_name = names[selected]
         origin = SourceOrigin(
             module=syntax.module.module,
             source_protocol=syntax.module.source_protocol,
-            structural_path=("scoped_lookup", str(selected)),
+            structural_path=("scoped_lookup", name, str(selected)),
             role="computation",
         )
         reference = Local(name="reference", type=_at(member, *semantic, ambient))
@@ -104,7 +112,7 @@ def scoped_lookup_computations(
                 fields = (tail,)
                 body = Call(
                     callee=identity,
-                    name=name,
+                    name=lookup_name,
                     static_arguments=(previous_type,),
                     arguments=(Var(local=tail), Var(local=previous)),
                     result_type=answer,
@@ -138,7 +146,7 @@ def scoped_lookup_computations(
             )
         lookups[selected] = NamedComputation(
             id=identity,
-            name=name,
+            name=lookup_name,
             telescope=domains,
             parameters=(reference, environment),
             type=ComputationType(effects=row, result=answer),
