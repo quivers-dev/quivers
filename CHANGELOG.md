@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - Checked lexical deductions can return weighted forms, categories, or full goal items. QVR programs can normalize reading weights and use them in a response likelihood, with gradients reaching lexical and supported production weights. Token tensors computed in QVR can feed the same query.
+- Checked outcome queries can group goal weights by a deterministic QVR computation that returns a discrete scalar or a closed constructor value.
 
 ### Fixed
 
