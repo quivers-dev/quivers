@@ -16,7 +16,15 @@ from quivers.qiec.polynomial_laws import (
     PolynomialLawUnsupported,
     check_polynomial_law,
 )
-from quivers.qiec.terms import Handle, LetValue, Return
+from quivers.qiec.terms import (
+    Bind,
+    CallAddress,
+    Handle,
+    HandlerReturnAddress,
+    InstanceAddress,
+    LetValue,
+    Return,
+)
 
 _SOURCE = """
 effect BitChoice
@@ -45,6 +53,29 @@ define half_left(a : Real, b : Real) : Real !{} =
 
 define half_right(a : Real, b : Real) : Real !{} =
     forward(1.0 / 2.0, b, a)
+
+define choice_body(a : Real, b : Real) : Real !{coin} =
+    let branch <- perform coin.pick()
+    if branch then
+        return b
+    else
+        return a
+
+define copy_real(a : Real) : Real !{} =
+    return a
+
+handler average_with_call for BitChoice : Real -> Real with (p : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        copy_real(x)
+    pick resumes omega =>
+        let lower <- resume(false)
+        let upper <- resume(true)
+        return (1.0 - p) * lower + p * upper
+
+define under_trace_scopes(a : Real, b : Real) : Real !{} =
+    with instance local : BitChoice in
+        handle coin with average_with_call(1.0 / 2.0) in
+            choice_body(a, b)
 
 define third_left(a : Real, b : Real) : Real !{} =
     forward(1.0 / 3.0, a, b)
@@ -121,6 +152,38 @@ def test_a_half_weighted_choice_commutes(module: QiecModule) -> None:
     expected = (((0, 1), Fraction(1, 2)), ((1, 0), Fraction(1, 2)))
     assert result.left == expected == result.right
     assert result.counterexample is None
+
+
+def test_discharge_trace_scopes_do_not_change_a_polynomial_law(
+    module: QiecModule,
+) -> None:
+    rewritten = discharge_module(module).module
+    body = next(
+        item.body
+        for item in rewritten.computations
+        if item.name == "under_trace_scopes"
+    )
+    assert isinstance(body, Bind) and isinstance(body.first, InstanceAddress)
+    assert isinstance(body.then, Bind)
+    # The constant parameter may be bound before the erased call is entered.
+    steps = body.then
+    found_return = False
+    while isinstance(steps, Bind) and not isinstance(steps.first, CallAddress):
+        found_return = found_return or isinstance(steps.first, HandlerReturnAddress)
+        steps = steps.then
+    assert (
+        found_return
+        and isinstance(steps, Bind)
+        and isinstance(steps.first, CallAddress)
+    )
+    for owner in (module, rewritten):
+        result = check_polynomial_law(owner, "under_trace_scopes", "half_left")
+        assert result.counterexample is None
+        assert (
+            result.left
+            == result.right
+            == (((0, 1), Fraction(1, 2)), ((1, 0), Fraction(1, 2)))
+        )
 
 
 def test_a_third_weighted_choice_has_an_exact_witness(module: QiecModule) -> None:

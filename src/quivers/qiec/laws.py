@@ -27,10 +27,14 @@ from quivers.qiec.module import (
 )
 from quivers.qiec.numbers import host_value
 from quivers.qiec.terms import (
+    Bind,
     Call,
+    CallAddress,
     Case,
     Computation,
     ConditionalValue,
+    HandlerReturnAddress,
+    InstanceAddress,
     LetValue,
     LiteralValue,
     Local,
@@ -38,6 +42,7 @@ from quivers.qiec.terms import (
     TupleValue,
     Value,
     Var,
+    WithTraceAddresses,
 )
 from quivers.qiec.types import (
     BOOL,
@@ -264,6 +269,14 @@ def _check_body(body: Computation) -> None:
         if id(term) in seen:
             continue
         seen.add(id(term))
+        if isinstance(term, Bind) and isinstance(
+            term.first, CallAddress | InstanceAddress | HandlerReturnAddress
+        ):
+            pending.append(term.then)
+            continue
+        if isinstance(term, WithTraceAddresses):
+            pending.append(term.body)
+            continue
         if isinstance(term, Case) or (
             isinstance(term, _VALUE_TERMS) and not isinstance(term, _FINITE_TERMS)
         ):

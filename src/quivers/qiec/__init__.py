@@ -303,6 +303,28 @@ from quivers.qiec.kinds import (
     UserIndexSort,
     validate_telescope,
 )
+from quivers.qiec.laws import (
+    FiniteLawCounterexample,
+    FiniteLawDecision,
+    FiniteLawLimit,
+    FiniteLawUnsupported,
+    FiniteValue,
+    check_finite_law,
+    finite_continuation_type,
+)
+from quivers.qiec.polynomial_laws import (
+    PolynomialLawCounterexample,
+    PolynomialLawDecision,
+    PolynomialLawLimit,
+    PolynomialLawUnsupported,
+    check_polynomial_law,
+)
+from quivers.qiec.rational_laws import (
+    RationalLawDecision,
+    RationalLawLimit,
+    RationalLawUnsupported,
+    check_rational_law,
+)
 from quivers.qiec.module import (
     NamedComputation,
     NamedEffectInstance,
@@ -888,4 +910,26 @@ __all__ = [
 ]
 __all__ += contracts.__all__
 __all__ += foreign.__all__
+__all__ += [
+    "FiniteLawCounterexample",
+    "FiniteLawDecision",
+    "FiniteLawLimit",
+    "FiniteLawUnsupported",
+    "FiniteValue",
+    "check_finite_law",
+    "finite_continuation_type",
+]
+__all__ += [
+    "PolynomialLawCounterexample",
+    "PolynomialLawDecision",
+    "PolynomialLawLimit",
+    "PolynomialLawUnsupported",
+    "check_polynomial_law",
+]
+__all__ += [
+    "RationalLawDecision",
+    "RationalLawLimit",
+    "RationalLawUnsupported",
+    "check_rational_law",
+]
 __all__ += rules.__all__
