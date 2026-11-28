@@ -298,3 +298,27 @@ interpret meaning : Words -> Bool
       (interpretation_clause_kind)
       (identifier)
       (identifier))))
+
+================================================================================
+Scoped interpretation qualifier
+================================================================================
+
+interpret meaning [structure=cartesian] : Binders -> Real
+    rule Pair = pair
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (interpretation_decl
+    (identifier)
+    (option_block
+      (option_entry
+        (identifier)
+        (identifier)))
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (interpretation_clause
+      (interpretation_clause_kind)
+      (identifier)
+      (identifier))))

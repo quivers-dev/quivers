@@ -376,6 +376,7 @@ module.exports = grammar({
       optional(field('docs', $.doc_comment_group)),
       'interpret',
       field('name', $.identifier),
+      optional(field('options', $.option_block)),
       ':',
       field('deduction', $.identifier),
       '->',

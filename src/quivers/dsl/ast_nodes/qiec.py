@@ -17,7 +17,7 @@ from typing import Literal
 
 import didactic.api as dx
 
-from quivers.dsl.ast_nodes._shared import Statement
+from quivers.dsl.ast_nodes._shared import OptionEntry, Statement
 from quivers.dsl.ast_nodes.let_expressions import LetExprNode
 
 
@@ -1242,18 +1242,20 @@ class QiecInterpretationClause(dx.Model):
 
 
 class QiecInterpretationDecl(Statement):
-    """A named computation that folds a deduction's typed proof.
+    """A named computation that folds a checked deduction or structural proof.
 
     Parameters
     ----------
     name
         The computation's name.
     deduction
-        The deduction whose proof family it consumes.
+        The deduction or structural signature whose proof family it consumes.
     carrier
         The closed result type of the fold.
     clauses
         One computation assignment per rule or axiom slot.
+    options
+        The explicit structural permissions of a scoped interpretation.
     docs
         The attached doc comments.
     line, col
@@ -1266,6 +1268,7 @@ class QiecInterpretationDecl(Statement):
     deduction: str
     carrier: QiecTypeExpr
     clauses: tuple[QiecInterpretationClause, ...]
+    options: tuple[OptionEntry, ...] = ()
     docs: tuple[str, ...] = ()
     line: int = 0
     col: int = 0
