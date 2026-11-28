@@ -133,7 +133,10 @@ from quivers.qiec.relation_feature_moments import (
     FixedRelationFeatureObservation,
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
-from quivers.qiec.relation_path_law import FixedRelationPathSampleRequest
+from quivers.qiec.relation_path_law import (
+    FixedCyclicRelationPathSampleRequest,
+    FixedRelationPathSampleRequest,
+)
 from quivers.qiec.relation_ranked import FixedRankedOTRelationRequest
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
@@ -398,6 +401,7 @@ _NODE_CLASSES = (
     FixedRelationCostRequest,
     FixedRelationMarginalMapRequest,
     FixedRelationPathSampleRequest,
+    FixedCyclicRelationPathSampleRequest,
     FixedRelationRequest,
     RationalRelationSpec,
     RelationWeightComplement,

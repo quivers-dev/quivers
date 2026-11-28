@@ -274,7 +274,30 @@ negative infinity. The law reads live parameter values and scoring
 differentiates on the current positive support. The reference machine
 can replay a trace by site name with the same checked result type.
 
+`FixedCyclicRelationPathSampleRequest` adds a closure-component limit
+to the original typed request. A productive cyclic observation must
+have a certified positive, finite path normalizer. The sampler uses
+the same float64 suffix weights. At a configuration $s$, a transition
+with weight $w$ to $t$ has conditional probability $w h(t)/h(s)$,
+where $h$ is the total suffix weight. The accepting choice uses the
+final weight divided by $h(s)$. Along a returned walk the intermediate
+suffix weights cancel, giving the trace probability $W_{\pi}/Z$ under
+the full posterior.
+
+The fixed trace capacity bounds the number of arcs in one attempted
+draw. If the next choice would take another arc, the draw raises a
+resource error. Successful draws record complete walks with ordinary
+padding. Their `log_prob` and replay scores use $\log W_{\pi}-\log Z$
+on the full posterior. Gradients follow the supplied trace and the
+finite normalizer. The discrete draw has no pathwise derivative.
+`log_mass` on the bounded carrier and finite enumeration refuse a
+structurally cyclic law, whose live support can contain arbitrarily
+long walks. The original acyclic request keeps its full-capacity law
+and serialized fields.
+
 ::: quivers.qiec.relation_path_law.FixedRelationPathSampleRequest
+
+::: quivers.qiec.relation_path_law.FixedCyclicRelationPathSampleRequest
 
 ::: quivers.qiec.relation_path_law.RelationPathLaw
 

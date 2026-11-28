@@ -397,6 +397,7 @@ from quivers.qiec.relation_composition import (
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relation_path_law import (
+    FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
     RelationPathLaw,
 )
@@ -757,6 +758,7 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "FixedCyclicRelationPathSampleRequest",
     "RelationPathLaw",
     "FixedRelationRequest",
     "RelationWeightBindings",
