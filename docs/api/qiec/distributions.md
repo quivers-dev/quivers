@@ -51,4 +51,25 @@ cost of running the continuation for each positive-mass value. The law has
 scalar log probabilities and one term-valued draw. It has no plate axes or
 reparameterized sampling rule.
 
+### An exact finite posterior
+
+The existing enumeration handler can also retain one scalar log joint per
+point. With `Enumeration(reduction="table", grouped=True)`, the handled
+computation returns its observation log likelihood together with its value.
+For one sampled structured site, the table's order is the order of
+`prior.weighted_support()`, and its declared extent must equal the number
+of positive-mass prior points. A provider can use the returned table as the
+log weights of a law on those same points.
+
+<!-- python: skip -->
+```python
+support = tuple(point for point, _ in prior.weighted_support())
+posterior = prior.with_(values=support, log_weights=table)
+```
+
+The exponentiated entries sum to the evidence. The resulting law
+normalizes it to the exact posterior for the declared finite support.
+Scoring that posterior preserves the gradient with respect to both the
+prior weights and the observation law.
+
 ::: quivers.qiec.structured_sampleables
