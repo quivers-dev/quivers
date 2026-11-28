@@ -380,10 +380,13 @@ carries a stack of at most $k$ effects, and the rules fire as described in
 
 ### 4.3 Deduction calls
 
-Three builtins act on [weighted deduction systems](grammar.md#93-let-expression-builtins):
+The following calls act on [weighted deduction systems](grammar.md#93-let-expression-builtins):
 
 - `parse(D, x)` evaluates the deduction system $D$ on the input $x$ and returns its chart, the
   weight function $\alpha : I \to K$ from the items $D$ proves to its semiring $K$;
+- `parse_outcomes(D, x, key)` and `parse_normalized_outcomes(D, x, key)` return
+  [typed weighted outcomes](grammar.md#94-checked-weighted-outcomes) from a checked lexical
+  `LogProb` deduction.
 - `compose(D_1, D_2)` builds the system whose axioms are the goal items of $D_1$ and whose rules,
   semiring, agenda, and goal are those of $D_2$ ([Weighted deduction §9.1](grammar.md#91-composing-deductions));
   fitting it fits the parameters of both;

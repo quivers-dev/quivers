@@ -55,6 +55,11 @@ several premises to one conclusion [@klein2001parsing]. It needs all its premise
 is not a set of separate rules with one premise. Each instance has a weight $\beta_r(\sigma) \in K$ in
 the deduction's semiring $K$, which is $\mathbf 1_K$ unless the rule is learnable or weighted.
 
+A ground rule `rule r : |- π` has no premises and a conclusion with no free rule variables.
+Its single instance contributes $\beta_r$ directly to the chart at $\pi$. In a checked lexical
+outcome query, the two positions of a ground span must be ordered natural literals. Equal
+positions denote an empty span.
+
 The compiler reads a deduction once into a rule presentation, a
 [`RulePresentation`](../api/qiec/rules.md#quivers.qiec.rules.RulePresentation): one judgment form for
 each kind of item, with its position slots typed as natural numbers, and one rule for each sequent.
@@ -449,12 +454,37 @@ length.
 | Builtin | Type | Value |
 |---|---|---|
 | `parse(D, x)` | `(DeductionSystem, Input) -> Chart` | the chart of $D$ on $x$ |
+| `parse_outcomes(D, x, key)` | checked rows of keys and log masses | the goal log masses grouped by `key` (§9.4) |
+| `parse_normalized_outcomes(D, x, key)` | checked rows of keys and log masses | the grouped goal log masses normalized over their support (§9.4) |
 | `compose(D_1, D_2)` | `(DeductionSystem, DeductionSystem) -> DeductionSystem` | §9.1 |
 | `subst(t, v, w)` | `(Term, Term, Term) -> Term` | $t$ with each subterm equal to $v$ replaced by $w$ |
 
 `subst` replaces subterms by structure. Because every binder of a lexicon logical form has been renamed
 to a fresh symbol (§4.1), no two different bound variables share a name, and the replacement does not
 capture a variable.
+
+### 9.4 Checked weighted outcomes {#94-checked-weighted-outcomes}
+
+For a checked lexical `LogProb` deduction on a sentence $x$, let $G_x$ be its finite set of
+proved goal items and let $\alpha(g)$ be the inside log mass of $g \in G_x$. A key $h$ maps a
+goal item to its form, category, or full item, or invokes a checked deterministic computation
+that returns a supported discrete value. Each returned row $(u, \ell(u))$ has log mass
+
+$$
+\ell(u) = \operatorname{logsumexp}_{g \in G_x\, :\, h(g)=u} \alpha(g).
+$$
+
+The sum retains each proof occurrence through its contribution to $\alpha(g)$, including when
+several goals have equal keys. The query omits rows with log mass $-\infty$. The normalized
+query subtracts $\operatorname{logsumexp}_u \ell(u)$ from every row and requires a finite
+normalizer. On fixed positive support these operations retain derivatives with respect to the
+deduction weights.
+
+The [checked lexical fragment](../guides/deduction.md) uses contiguous premises and orders
+dependencies by the pair of span width and category rank. A premise can preserve the width
+when the other premises are empty. The category rank must increase on every such transition,
+including transitions of rules with several premises. The finite grounding and this strict
+order justify computing $\alpha$ from the packed chart before grouping the goal items.
 
 ## 10. Grammar of the program and composition forms {#10-program-fragment-integration}
 
@@ -499,7 +529,7 @@ deduction_body_entry
 deduction_atoms     := 'atoms' IDENT (',' IDENT)*
 deduction_binders   := 'binders' IDENT (',' IDENT)*
 
-deduction_rule      := 'rule' IDENT ':' premise_list ('|-' | '⊢')
+deduction_rule      := 'rule' IDENT ':' [ premise_list ] ('|-' | '⊢')
                        conclusion [ '#[' pragma_entry (',' pragma_entry)* ']' ]
 # Rule pragma entries: learnable, bounded, parent = IDENT, weight = expr.
 
