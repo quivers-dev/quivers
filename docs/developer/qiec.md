@@ -173,10 +173,10 @@ duplicable. Each unrestricted shot appends its ordinal to the request address. L
 resumptions retain the surrounding shot path.
 
 A direct effect in a linear clause also records the site of the request that entered the clause.
-When distinct non-tail call paths reach one request site, the clause address includes those captured
-call sites in outer-to-inner order. Resuming restores the captured continuation's address scope.
-The discharger keeps reference execution when an erased tail frame or a residual unrestricted
-operation prevents it from preserving the addressed trace in this fragment.
+When distinct acyclic call paths reach one request site, the clause address includes those captured
+call sites in outer-to-inner order, including tail calls. Resuming restores the captured
+continuation's address scope. The discharger retains reference execution when recursion or a
+residual unrestricted operation prevents it from preserving the addressed trace.
 
 The built-in prelude declares the following interfaces, each with reference handlers:
 

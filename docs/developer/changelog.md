@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.
+- Linear handler clause addresses also preserve captured acyclic tail call paths through discharge.
 
 ### Changed
 
