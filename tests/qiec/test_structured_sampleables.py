@@ -13,6 +13,9 @@ from quivers.continuous.tensor_backend import TensorBackend
 from quivers.dsl import loads as load_source
 from quivers.effects import replay
 from quivers.inference import LatentRegistry, prior_draws, trace
+from quivers.inference._likelihood import collect_log_likelihood, row_log_likelihood
+from quivers.inference._posterior import collect_site_draws
+from quivers.inference._response import response_distribution, response_sample
 from quivers.inference.registry import _trace_latent_values
 from quivers.qiec.builtins import RANDOM, RANDOM_SAMPLE, TraceRecorder, trace_handler
 from quivers.qiec.canonical import sampleable_type
@@ -484,3 +487,48 @@ def test_seeded_public_prior_uses_torch_and_refuses_structured_tensor_draws(
     assert replayed.sites["meaning"].value is nested
     assert len(draws) == 2
     assert torch.equal(torch.random.get_rng_state(), cpu_state)
+
+
+def test_structured_observation_likelihood_is_raw_and_tensor_outputs_refuse() -> None:
+    compiled = load_source(SOURCE.replace("export recorded\n", ""))
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    weights = torch.tensor(
+        [0.2, -0.3, 1.2, -torch.inf], dtype=torch.float64, requires_grad=True
+    )
+    law, nested, _zero = _law(module, weights)
+    recorded = trace(
+        compiled.morphism,
+        weights.new_zeros((1, 1)),
+        {"law": law, "meaning": nested, "response": weights.new_tensor(1.7)},
+    )
+    site = recorded.sites["meaning"]
+    # A score handler may rescale the recorded contribution. The raw
+    # likelihood still reads the finite law at the actual typed observation.
+    transformed = recorded.with_(
+        sites={**recorded.sites, "meaning": site.with_(log_prob=2 * site.log_prob)}
+    )
+    raw = row_log_likelihood(transformed, {"meaning"})["meaning"]
+    expected = weights[1:3].logsumexp(0) - weights[:3].logsumexp(0)
+    assert raw.shape == (1,)
+    torch.testing.assert_close(raw, expected.reshape(1), atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(
+        torch.autograd.grad(raw.sum(), weights)[0],
+        torch.autograd.grad(expected, weights)[0],
+        atol=1e-12,
+        rtol=1e-12,
+    )
+    joint = collect_log_likelihood([transformed], {"meaning"}, (1, 1))["meaning"]
+    torch.testing.assert_close(joint, expected.reshape(1, 1, 1))
+    with pytest.raises(
+        TypeError, match="posterior site 'meaning'.*no tensor draw layout"
+    ):
+        collect_site_draws(({"meaning": site.value},), (1, 1))
+    with pytest.raises(
+        TypeError, match="structured response 'meaning'.*no tensor sample layout"
+    ):
+        response_sample(recorded, "meaning")
+    with pytest.raises(
+        TypeError, match="structured response 'meaning'.*no tensor distribution"
+    ):
+        response_distribution(recorded, "meaning")
