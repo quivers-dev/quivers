@@ -489,6 +489,61 @@ assert plan.laws[0].status == "checked"
 
 ::: quivers.qiec.effect_plan
 
+## Finite elimination
+
+`eliminate_finite` contracts explicit finite tables. Each factor gives its
+axes in table order, with the last axis varying fastest. The order of the
+factors is the written product order.
+
+The checker evaluates the actual named QIEC operations on every pair of
+carrier values. It checks the additive and multiplicative identities,
+associativity, additive commutativity, both distributive laws and the
+annihilating zero. Carrier values are Booleans, unit values and their
+finite products. A failing law returns unequal answers and their exact
+arguments in a `FiniteAlgebraLawError`.
+
+With a noncommutative product, eliminating a variable joins the interval
+from its first to last participating factor, including intervening
+factors. Each resulting factor occupies the original interval's position.
+With a commutative product, the planner may join a smaller bucket by
+leaving those intervening factors in place. The report records each
+step's factor positions and the largest table cardinality. This contract
+starts from explicit factors. Deriving those factors from an effectful
+program requires a separate justification.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import FiniteAlgebra, FiniteFactor, eliminate_finite
+
+source = """
+define add(a : Bool, b : Bool) : Bool !{} =
+    if a then
+        return true
+    else
+        return b
+
+define multiply(a : Bool, b : Bool) : Bool !{} =
+    if a then
+        return b
+    else
+        return false
+"""
+module = Compiler(parse(source), module_name="boolean-elimination").qiec_module
+assert module is not None
+ids = {item.name: item.id for item in module.computations}
+algebra = FiniteAlgebra(ids["add"], ids["multiply"], zero=False, one=True)
+factors = (
+    FiniteFactor(("x",), (True, False)),
+    FiniteFactor(("y",), (False, True)),
+    FiniteFactor(("x",), (True, True)),
+)
+answer = eliminate_finite(module, algebra, factors, ("y",), {"x": 2, "y": 2})
+assert answer.factor.cells == (False, True)
+assert answer.steps[0].positions == (0, 2)
+```
+
+::: quivers.qiec.finite_elimination
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging
