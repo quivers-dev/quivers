@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 from torch import nn
 
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.objects import StringSet
-from quivers.core.relations import FixedStringQuery, RationalRelation, _weight_snapshot
+from quivers.core.relations import RationalRelation, _weight_snapshot
 from quivers.core.relations.joins import join
 from quivers.core.relations.paths import _require_normalizer
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
@@ -75,6 +75,11 @@ class _TreeBounds:
     max_work: int
     max_closure_size: int | None
 
+    def __post_init__(self) -> None:
+        if self.max_states is None or self.max_work is None:
+            raise ValueError("tree inference requires explicit state and work limits")
+        _validate_limits(self.max_states, self.max_work, self.max_closure_size)
+
     def product(
         self,
         left: RationalRelation,
@@ -116,7 +121,6 @@ class _TreeBounds:
         )
 
 
-@dataclass(frozen=True, slots=True)
 class TreeStringMarginal:
     """An exact marginal compiled by eliminating the other string variables.
 
@@ -125,24 +129,37 @@ class TreeStringMarginal:
     component. Each evaluation reads the original weight sources afresh.
     """
 
-    relation: RationalRelation
-    _others: tuple[RationalRelation, ...] = field(repr=False)
-    _bounds: _TreeBounds = field(repr=False)
-
-    def __post_init__(self) -> None:
-        bounds = self._bounds
-        object.__setattr__(
-            self,
-            "_normalizers",
-            tuple(
-                relation._total_query(
-                    bounds.max_states, bounds.max_work, bounds.max_closure_size
-                )
-                for relation in (self.relation, *self._others)
-            ),
+    def __init__(
+        self,
+        relation: RationalRelation,
+        other_components: tuple[RationalRelation, ...] = (),
+        *,
+        max_states: int,
+        max_work: int,
+        max_closure_size: int | None = None,
+    ) -> None:
+        if relation.algebra is not MARKOV and relation.algebra is not LOG_PROB:
+            raise TypeError("exact tree marginals require Markov or LogProb algebra")
+        components = (relation, *other_components)
+        if any(
+            len(component.topology.tapes) != 1
+            or component.algebra is not relation.algebra
+            for component in components
+        ):
+            raise TypeError(
+                "tree marginals require unary relations with one shared algebra"
+            )
+        self._relation = relation
+        self._bounds = _TreeBounds(max_states, max_work, max_closure_size)
+        self._normalizers = tuple(
+            component._total_query(max_states, max_work, max_closure_size)
+            for component in components
         )
 
-    _normalizers: tuple[FixedStringQuery, ...] = field(init=False, repr=False)
+    @property
+    def relation(self) -> RationalRelation:
+        """The unnormalized unary relation for the queried component."""
+        return self._relation
 
     def partition(self) -> torch.Tensor:
         """Return total mass in the factor algebra, with its scale."""
@@ -304,9 +321,6 @@ class StringFactorGraph:
         """
         if variable not in self._variables:
             raise ValueError(f"unknown string variable {variable!r}")
-        if max_states is None or max_work is None:
-            raise ValueError("tree inference requires explicit state and work limits")
-        _validate_limits(max_states, max_work, max_closure_size)
         bounds = _TreeBounds(max_states, max_work, max_closure_size)
         visited: set[_Vertex] = set()
         orders = [self._tree_order(variable, visited)]
@@ -316,7 +330,13 @@ class StringFactorGraph:
             if name not in visited
         )
         marginal, *others = (self._eliminate(order, bounds) for order in orders)
-        return TreeStringMarginal(marginal, tuple(others), bounds)
+        return TreeStringMarginal(
+            marginal,
+            tuple(others),
+            max_states=max_states,
+            max_work=max_work,
+            max_closure_size=max_closure_size,
+        )
 
 
 __all__ = ["StringFactor", "StringFactorGraph", "StringVariable", "TreeStringMarginal"]
