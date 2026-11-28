@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Compact regular n-gram messages.** Deterministic suffix states reweight a sparse language by live n-gram coefficients, retaining epsilon alignments, original weight owners, and ordinary closure checks.
 - **Alignment-marginal output ranking.** Compare the exact sum of all alignments for each declared candidate output in acyclic Markov observations, with a differentiable log score for the selected pair.
 - **Adaptive joint string alignment MAP.** Exact sparse local decoders use bounded n-gram multipliers to coordinate acyclic LogProb factors. Agreement on full words can certify the joint alignment optimum.
 - **Sparse path entropy and additive risk.** Acyclic fixed-word observations expose log normalization, conditional path entropy, and expected costs on original arcs and boundary marks through packed inside–outside passes.
