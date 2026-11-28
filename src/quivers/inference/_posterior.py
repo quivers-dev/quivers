@@ -128,12 +128,13 @@ def constrained_draws(
 
 
 def collect_site_draws(
-    values: Iterable[Mapping[str, torch.Tensor]], shape: tuple[int, int]
+    values: Iterable[Mapping[str, object]], shape: tuple[int, int]
 ) -> dict[str, torch.Tensor]:
     """Preallocate rectangular posterior outputs once, preserving named sites.
 
     Every supplied mapping represents one chain/draw position. Site names,
     event shapes, dtypes and devices must remain constant across draws.
+    A retained value without a tensor layout is refused by its site name.
     """
     count = shape[0] * shape[1]
     if shape[0] < 1 or shape[1] < 1:
@@ -147,6 +148,10 @@ def collect_site_draws(
             if index and current.keys() != result.keys():
                 raise ValueError("posterior site names change between draws")
             for name, value in current.items():
+                if not isinstance(value, torch.Tensor):
+                    raise TypeError(
+                        f"posterior site {name!r} has no tensor draw layout"
+                    )
                 if not index:
                     result[name] = value.new_empty((*shape, *value.shape))
                 output = result[name]

@@ -36,6 +36,8 @@ def response_sample(recorded: Trace, response: str) -> torch.Tensor:
     sampleable = recorded.sites[response].sampleable
     if sampleable is None:
         raise TypeError("the response has no native sampling operation")
+    if isinstance(sampleable, FiniteSampleable):
+        raise TypeError(f"structured response {response!r} has no tensor sample layout")
     morphism = getattr(sampleable, "raw_morphism", sampleable.morphism)
     return morphism.rsample(sampleable.input)
 
@@ -63,6 +65,8 @@ def response_distribution(recorded: Trace, response: str) -> Distribution:
     sampleable = recorded.sites[response].sampleable
     if sampleable is None:
         raise TypeError("the response has no native conditional distribution")
+    if isinstance(sampleable, FiniteSampleable):
+        raise TypeError(f"structured response {response!r} has no tensor distribution")
     morphism = getattr(sampleable, "raw_morphism", sampleable.morphism)
     sampling = getattr(morphism, "sampling_distribution", None)
     if sampling is None:
