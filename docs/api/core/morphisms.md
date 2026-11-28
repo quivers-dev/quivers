@@ -391,6 +391,42 @@ on the current positive support. Zero-probability choices contribute
 zero. An entropy of paths can differ from an entropy of the output
 words when several paths emit the same word.
 
+### Adaptive joint alignment MAP
+
+`dual_alignment_map` maximizes the sum of log weights of one path per
+factor subject to agreement on the complete shared strings. Each
+factor comes from the same typed graph used for sum-product messages.
+The score includes the initial and final weights. LogProb entries
+are interpreted as exact binary rationals for decoding. In a model
+where several paths emit the same strings, a different objective would
+sum their probabilities before comparing strings.
+
+Each factor must have acyclic productive positive support before
+observation restrictions. Its exact decoder tracks the original
+state, positions in observed strings, and one finite suffix state
+per tape. The suffix state counts occurrences of active n-grams,
+including beginning and end markers. Two partial paths at the same
+configuration have the same continuations and future adjustments.
+Thus only the better adjusted partial score and its original
+trace need be retained. The decoder counts state visits and
+examined arcs against its configured limits.
+
+For each shared variable and n-gram, the solver's multipliers sum
+to zero across copies. Thus the adjusted score sum of any feasible
+joint assignment equals its unadjusted score. Summing exact local
+maxima gives an upper bound. If the selected local paths agree on
+their full words, they are jointly feasible and attain that bound.
+If their words differ, the solver can activate a distinguishing
+n-gram within the order and feature limits and update centered
+multipliers. It can return an uncertified feasible assignment and an
+upper bound at the iteration limit. Feature-count agreement alone
+does not establish a certificate.
+
+The returned score and certificate concern the evaluated parameter
+snapshot. Local paths are discrete decisions. The solver reports
+the peak number of reached local configurations and total local
+arc examinations, including primal feasibility checks.
+
 ::: quivers.core.relations
     options:
       members:
@@ -419,6 +455,9 @@ words when several paths emit the same word.
         - ProductiveEpsilonCycleError
         - RelationLimitError
         - RelationPath
+        - StringAlignment
+        - StringAlignmentCertificate
+        - StringAlignmentMapResult
         - StringBeliefResult
         - StringEPResult
         - StringSiteProjection
@@ -431,6 +470,7 @@ words when several paths emit the same word.
         - closure
         - concatenate
         - condition
+        - dual_alignment_map
         - dual_string_map
         - intersect
         - invert
