@@ -387,6 +387,8 @@ from quivers.qiec.serialization import (
     loads,
     to_data,
 )
+from quivers.qiec._scoped_proof_fold import ScopedProofFold, scoped_proof_fold
+from quivers.qiec._scoped_proof_types import ScopedProofTypes, scoped_proof_types
 from quivers.qiec.structured_sampleables import FiniteSampleable
 from quivers.qiec.substitution import (
     StaticSubstitution,
@@ -925,6 +927,12 @@ __all__ = [
     "positive_parameter",
     "scale_weight",
     "static_shape",
+]
+__all__ += [
+    "ScopedProofFold",
+    "ScopedProofTypes",
+    "scoped_proof_fold",
+    "scoped_proof_types",
 ]
 __all__ += contracts.__all__
 __all__ += foreign.__all__

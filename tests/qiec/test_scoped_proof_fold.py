@@ -8,8 +8,7 @@ import pytest
 import torch
 
 from quivers.dsl import loads as loads_qvr
-from quivers.qiec._scoped_proof_fold import ScopedProofFold, scoped_proof_fold
-from quivers.qiec._scoped_proof_types import scoped_proof_types
+from quivers.qiec import ScopedProofFold, scoped_proof_fold, scoped_proof_types
 from quivers.qiec.builtins import LOG_WEIGHT, SCORE_ADD
 from quivers.qiec.checking import KernelError
 from quivers.qiec.contracts import OccurrenceId, PresentationId
@@ -36,8 +35,11 @@ from quivers.qiec.rules import (
     OpenDerivation,
     Premise,
     Rule,
+    RuleError,
     RulePresentation,
+    presentation_of,
     substitute_hypotheses,
+    term_derivation,
 )
 from quivers.qiec.serialization import dumps, loads
 from quivers.qiec.terms import (
@@ -59,6 +61,8 @@ from quivers.qiec.types import (
     TypeVariable,
     product_type,
 )
+
+from quivers.structural import Term
 
 
 _ID = PresentationId.derive("scoped-fold-experiment")
@@ -445,3 +449,117 @@ def test_native_scoped_fold_keeps_lexical_values_multiplicity_and_effects() -> N
     ).value
     assert not torch.equal(wrong_value, expected)
     assert torch.equal(wrong_joint, joint)
+
+
+def test_authored_structural_signature_supplies_the_same_scoped_proof() -> None:
+    authored = loads_qvr(
+        """\
+signature Binders
+    sorts
+        Expr : object
+    constructors
+        Pair : Expr, Expr -> Expr
+    binders
+        Outer : binds (outer : Expr) in (body : Expr) -> Expr
+        Inner : binds (inner : Expr) in (body : Expr) -> Expr
+"""
+    )
+    signature = authored.signatures["Binders"]
+    ordered = presentation_of(signature)
+    with pytest.raises(RuleError, match="Cartesian structural permissions"):
+        scoped_proof_types(ordered)
+    presentation = ordered.with_(structure=CARTESIAN)
+    syntax = scoped_proof_types(presentation)
+    (judgment,) = presentation.judgments
+    carriers = {judgment.id: REAL}
+    row = EffectRow()
+    plan = scoped_proof_fold(syntax, carriers, {judgment.id: row}, name="interpret")
+    applications = plan.applications()
+
+    def variable(index: int) -> Term:
+        return Term(op="BoundVar", args=(index,))
+
+    core = Term(op="Pair", args=(variable(1), variable(0)))
+    term = Term(op="Outer", args=(Term(op="Inner", args=(core,)),))
+    conventional = term_derivation(signature, term)
+    proof = syntax.value(conventional, carriers)
+
+    ambient = TypeVariable(name="semantic_context")
+    ops = {}
+    for rule in presentation.rules:
+        origin = SourceOrigin(
+            module=syntax.module.module,
+            source_protocol=syntax.module.source_protocol,
+            structural_path=(rule.name,),
+            role="computation",
+        )
+        params = tuple(
+            Local(name=f"arg{i}", type=type_)
+            for i, type_ in enumerate(plan.operation_parameters(rule.id, ambient))
+        )
+        arguments = tuple(Var(local=local) for local in params)
+        if rule.name == "Pair":
+            first, second = arguments
+            body = Return(
+                value=_binary("+", _binary("*", _literal(10.0), first), second)
+            )
+        else:
+            target = applications[rule.id, 0]
+            introduced = 2.0 if rule.name == "Outer" else 7.0
+            body = Call(
+                callee=target.id,
+                name=target.name,
+                static_arguments=(ambient,),
+                arguments=(*arguments, _literal(introduced)),
+                result_type=REAL,
+                effects=row,
+                origin=origin,
+            )
+        ops[rule.id] = NamedComputation(
+            id=ComputationId.derive(
+                syntax.module.module, rule.name, "semantic-operation"
+            ),
+            name=f"semantic_{rule.name}",
+            telescope=(TypeBinder(name=ambient.name),),
+            parameters=params,
+            body=body,
+            origin=origin,
+            type=ComputationType(effects=row, result=REAL),
+        )
+    module, folds = plan.assemble(ops)
+    (fold,) = folds.values()
+    empty_type = TypeApplication(constructor=syntax.empty.type_constructor)
+    environment = ConstructorValue(
+        constructor=syntax.empty.constructors[0],
+        static_arguments=(),
+        fields=(),
+        result_type=empty_type,
+    )
+    name = "meaning"
+    origin = fold.origin.with_(structural_path=(name,))
+    call = Call(
+        callee=fold.id,
+        name=fold.name,
+        static_arguments=(empty_type,),
+        arguments=(proof, environment),
+        result_type=REAL,
+        effects=row,
+        origin=origin,
+    )
+    run = NamedComputation(
+        id=ComputationId.derive(syntax.module.module, name),
+        name=name,
+        telescope=(),
+        parameters=(),
+        body=call,
+        origin=origin,
+        type=ComputationType(effects=row, result=REAL),
+    )
+    restored = loads(dumps(module.with_(computations=(*module.computations, run))))
+    assert isinstance(restored, QiecModule)
+    assert float(run_named(restored, name).value) == 27.0
+    wrong = term.with_(
+        args=(Term(op="Inner", args=(core.with_(args=(variable(2), variable(0))),)),)
+    )
+    with pytest.raises(RuleError, match="out of scope"):
+        term_derivation(signature, wrong)
