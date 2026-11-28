@@ -382,6 +382,33 @@ cross-multiplying the two rational expressions and can exhibit a distinguishing 
 away from the guard zeros. The checker reports when it cannot establish that the domains agree.
 [Effects API](../api/qiec/effects.md)
 
+Two independent tail-state handlers commute on returned values under
+an explicit product-state hypothesis. For a request at instance $i$,
+write the clause as a pure transition $S_i\times P\to S_i\times R$
+followed by one tail resumption, with an identity return clause.
+Assume the two instances are distinct, the transitions read and update
+only their own state, and the handled computation has a finite tree of
+requests to those instances. Interpret the tree with paired state
+$(s_1,s_2)$. At a request to either instance, both installation orders
+perform the same transition on its component, leave the other component
+as it was, and continue with the same reply. Induction on the tree
+proves equality of the returned value. The finite interchange checker
+compares two named source trees on all admitted inputs. A separate
+example changes the returned value by exchanging a state handler with
+multi-shot choice. There, the first shot can update a store shared with
+the second, while separate captured stores retain their initial state.
+[Finite handler interchange](../api/qiec/effects.md#finite-handler-interchange)
+
+The pure context operations use the cartesian adjunction
+$E\times(-)\dashv(E\to-)$ on the admitted ordinary values. Currying sends
+$f:E\times A\to B$ to $a\mapsto(e\mapsto f(e,a))$, and uncurrying
+applies this function at a pair $(e,a)$. The two substitutions cancel
+pointwise, and composing in $A$ or $B$ commutes with the substitutions.
+This gives the unit and counit equations for pure environments. Copying
+an environment value uses the diagonal on $E$ after the value has been
+computed. A computation that reaches a `Random` request on each
+resumption has the corresponding separate addresses and draws. [Scoped proof execution](../api/qiec/rules.md)
+
 ### 8.4 Superposition and trace completion
 
 Let a finite choice $z$ have weights $w_z$, and let the associated kernels
