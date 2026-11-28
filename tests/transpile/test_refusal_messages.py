@@ -89,6 +89,9 @@ RAISING_CLASSES: frozenset[str] = frozenset(
 #: function, with where the kinds come from. Every other site has to
 #: spell its kinds as literals or f-strings so this module can read them.
 FORWARDING_SITES: dict[tuple[str, str], str] = {
+    ("qiec/effect_plan.py", "check_target"): (
+        "the leading kind in the checked standalone QIEC module's elaboration gap"
+    ),
     ("transpile/_expand_composites.py", "expand_composite_lets"): (
         "a StepResolutionError's kinds, whose raise sites are scanned"
     ),
