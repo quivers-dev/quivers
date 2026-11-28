@@ -391,6 +391,24 @@ on the current positive support. Zero-probability choices contribute
 zero. An entropy of paths can differ from an entropy of the output
 words when several paths emit the same word.
 
+### Alignment-marginal output ranking
+
+`best_marginal_output` compares the Markov path sum for each supplied
+output at a fixed input. Each observation graph must be productively
+acyclic. Summing over its aligned paths can favor a word whose best
+individual path is weaker than another word's. Whenever a fixed
+input has a positive finite conditional normalizer, that same
+normalizer applies to all candidates.
+
+Each candidate is scored by a sparse topological pass over the
+reachable product of states and tape positions. Input coefficients
+are interpreted as exact binary rationals for comparison. State and
+arc limits apply cumulatively across candidates. The selected result
+also provides a packed log-space score whose derivatives flow to the
+original weights on the current positive support. Local derivatives
+hold the selected word fixed. This computation requires the
+candidate set to be supplied explicitly.
+
 ### Adaptive joint alignment MAP
 
 `dual_alignment_map` maximizes the sum of log weights of one path per
@@ -448,6 +466,7 @@ arc examinations, including primal feasibility checks.
         - FiniteRelationRestriction
         - FiniteStringBeliefPlan
         - FiniteStringScore
+        - MarginalOutputChoice
         - NgramFamily
         - NgramProjection
         - PathStatistics
@@ -467,6 +486,7 @@ arc examinations, including primal feasibility checks.
         - StringMapResult
         - StringVariable
         - TreeStringMarginal
+        - best_marginal_output
         - closure
         - concatenate
         - condition

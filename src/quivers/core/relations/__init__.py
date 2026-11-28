@@ -55,6 +55,7 @@ __all__ = [
     "FiniteStringBeliefPlan",
     "FiniteStringScore",
     "Label",
+    "MarginalOutputChoice",
     "NgramFamily",
     "NgramProjection",
     "PenalizedNgramProjection",
@@ -78,6 +79,7 @@ __all__ = [
     "StringVariable",
     "TreeStringMarginal",
     "Words",
+    "best_marginal_output",
     "closure",
     "concatenate",
     "condition",
@@ -650,4 +652,9 @@ from quivers.core.relations.alignment_dual import (  # noqa: E402
     StringAlignmentCertificate,
     StringAlignmentMapResult,
     dual_alignment_map,
+)
+
+from quivers.core.relations.marginal_map import (  # noqa: E402
+    MarginalOutputChoice,
+    best_marginal_output,
 )

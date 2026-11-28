@@ -167,6 +167,12 @@ def _probability_algebra(weights: torch.Tensor, algebra: Semiring) -> Semiring:
     return LOG_PROB if type(algebra) is LogProbAlgebra else MARKOV
 
 
+def _markov_log_weights(weights: torch.Tensor) -> torch.Tensor:
+    # Preserve zero support without differentiating a logarithm at zero.
+    positive = weights > 0
+    return torch.where(positive, weights, 1).log().masked_fill(~positive, -torch.inf)
+
+
 def _require_normalizer(total: torch.Tensor, algebra: Semiring) -> None:
     if not torch.isfinite(total).item() or (algebra is MARKOV and total.item() <= 0):
         raise ValueError("path operation requires a positive finite normalizer")
@@ -452,14 +458,7 @@ class _AcyclicWalks:
     ) -> PathStatistics:
         algebra = _probability_algebra(weights, algebra)
         if algebra is MARKOV:
-            # Differentiate on the current positive support. Masking before
-            # the logarithm avoids an undefined adjoint at zero.
-            positive = weights > 0
-            weights = (
-                torch.where(positive, weights, 1)
-                .log()
-                .masked_fill(~positive, -torch.inf)
-            )
+            weights = _markov_log_weights(weights)
         normalizer, prefix = self._forward.evaluate(weights, LOG_PROB)
         _require_normalizer(normalizer, LOG_PROB)
         _, suffix = self._backward.evaluate(weights, LOG_PROB)
