@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fractions import Fraction
+from functools import partial
 from math import isfinite
 
 import torch
@@ -14,6 +15,7 @@ from quivers.core.relations import RationalRelation
 from quivers.core.relations.queries import (
     RelationLimitError,
     _ActiveObservation,
+    _PathPlan,
     _compile_paths,
     _validate_limits,
 )
@@ -27,6 +29,10 @@ _TWO = Fraction(2)
 
 class RelationAccuracyError(ArithmeticError):
     """The available evaluation does not establish the requested accuracy."""
+
+
+class _UnsupportedAccuracyPrecision(TypeError):
+    """The evaluated weights are outside the supported binary64 dtype."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +273,34 @@ def certify_markov_path_weight(
     RelationLimitError
         A resource bound is exceeded.
     """
+    evaluate = _markov_accuracy_plan(
+        relation,
+        words,
+        max_states=max_states,
+        max_work=max_work,
+        max_exact_bits=max_exact_bits,
+        max_exact_work=max_exact_work,
+        max_closure_cells=max_closure_cells,
+        max_closure_size=max_closure_size,
+        absolute_tolerance=absolute_tolerance,
+        relative_tolerance=relative_tolerance,
+    )
+    return evaluate()
+
+
+def _markov_accuracy_plan(
+    relation: RationalRelation,
+    words: Words,
+    *,
+    max_states: int,
+    max_work: int,
+    max_exact_bits: int,
+    max_exact_work: int,
+    max_closure_cells: int,
+    max_closure_size: int | None,
+    absolute_tolerance: Fraction | int | None,
+    relative_tolerance: Fraction | int | None,
+) -> Callable[[], PathWeightCertificate]:
     if relation.algebra is not MARKOV:
         raise TypeError("certified fixed-word accuracy requires Markov weights")
     _validate_limits(max_states, max_work, max_closure_size)
@@ -303,12 +337,36 @@ def certify_markov_path_weight(
         max_closure_cells=max_closure_cells,
         retain_observation=True,
     )
+    return partial(
+        _certify_path_plan,
+        relation,
+        plan,
+        absolute,
+        relative,
+        max_exact_bits,
+        max_exact_work,
+    )
+
+
+def _certify_path_plan(
+    relation: RationalRelation,
+    plan: _PathPlan,
+    absolute: Fraction | None,
+    relative: Fraction | None,
+    max_exact_bits: int,
+    max_exact_work: int,
+) -> PathWeightCertificate:
+    budget = _RationalBudget(max_exact_bits, max_exact_work)
+    absolute = budget.value(absolute) if absolute is not None else None
+    relative = budget.value(relative) if relative is not None else None
     graph = plan.observation
     assert graph is not None
     values = relation._weights().clone()
     relation._check_weights(values)
     if values.dtype != torch.float64:
-        raise TypeError("certified fixed-word accuracy requires float64 weights")
+        raise _UnsupportedAccuracyPrecision(
+            "certified fixed-word accuracy requires float64 weights"
+        )
     weights = tuple(budget.value(value) for value in values.detach().tolist())
     closed = plan._closed_weights(values, MARKOV)
     suffixes = _suffix_intervals(graph, closed, weights, budget)

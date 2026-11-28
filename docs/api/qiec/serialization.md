@@ -248,6 +248,42 @@ primitive relation checks that declaration's topology instead.
 
 ::: quivers.qiec.relation_composition.FixedComposedRelationRequest
 
+## Checked Markov path certificates
+
+`FixedMarkovPathCertificateRequest` adds exact rational absolute or
+relative tolerances to an existing Markov pair-weight request. The
+original request keeps its wire fields. The computed foreign handler
+name binds the nominal topology, weight owner identities, observed
+words, and canonical tolerances. A check against the same numerical
+target may use a different resource budget.
+
+The ordinary named Compute returns status, diagnostic, availability,
+a detached `Real` score, `Tensor[String]([4, 2])`, relative-bound
+availability, and `Tensor[Int]([3])` counters. The four string rows
+encode the lower endpoint, upper endpoint, absolute error bound, and
+optional relative error bound in that order. Each row has the exact
+hexadecimal numerator and positive denominator. These strings preserve
+ratios beyond the `Int` range. A missing relative bound uses an empty
+row and a false availability flag. A verified exact zero has numerator
+`0x0`, denominator `0x1`, and true availability.
+
+The counters give exact operations, the maximum charged bit bound,
+and closure cells. A resource limit, divergent or undecided closure,
+unsupported closure or precision, and unverified accuracy have
+separate unavailable statuses. Unavailable reports carry empty rows,
+false flags, and zero placeholders. Consumers check availability
+before reading the scalar or evidence.
+
+The provider reuses the compiled sparse chart and reads one current
+binary64 slot snapshot per evaluation. Its returned interval concerns
+that evaluated vector. The checked report carries value assurance and
+has no derivative. Targets without this native foreign handler report
+that missing capability.
+
+::: quivers.qiec.relation_path_certificate.FixedMarkovPathCertificateRequest
+
+::: quivers.qiec.relation_path_certificate.FixedMarkovPathCertificateRuntimeProvider
+
 ## Typed sparse path posteriors
 
 A `FixedRelationPathSampleRequest` binds a fixed word tuple and a

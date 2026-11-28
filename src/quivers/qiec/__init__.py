@@ -560,6 +560,10 @@ from quivers.qiec.relation_path_law import (
     FixedRelationPathSampleRequest,
     RelationPathLaw,
 )
+from quivers.qiec.relation_path_certificate import (
+    FixedMarkovPathCertificateRequest,
+    FixedMarkovPathCertificateRuntimeProvider,
+)
 from quivers.qiec.relation_path_rank import (
     FixedRelationPathRankRequest,
     FixedRelationPathRankRuntimeProvider,
@@ -941,6 +945,8 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "FixedMarkovPathCertificateRequest",
+    "FixedMarkovPathCertificateRuntimeProvider",
     "FixedRelationPathRankRequest",
     "FixedRelationPathRankRuntimeProvider",
     "FixedCyclicRelationPathSampleRequest",
