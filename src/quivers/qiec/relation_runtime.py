@@ -24,6 +24,7 @@ from quivers.qiec.relation_composition import (
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relations import (
+    FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
     FixedRelationRequest,
     RationalRelationSpec,
@@ -114,6 +115,35 @@ def _expected_path_cost(
     return value
 
 
+def _selected_arc_counts(
+    query: FixedStringQuery, arc_ids: tuple[int, ...]
+) -> torch.Tensor:
+    """Return expected traversal counts in request order.
+
+    Parameters
+    ----------
+    query : FixedStringQuery
+        The observed path graph with live original weight sources.
+    arc_ids : tuple of int
+        Original arc occurrence IDs in the requested result order.
+
+    Returns
+    -------
+    torch.Tensor
+        The selected real counts, using zero for absent occurrences.
+    """
+    result = query.expected_arc_counts()
+    positions = {arc_id: row for row, arc_id in enumerate(result.arc_ids)}
+    missing = len(result.arc_ids)
+    rows = torch.tensor(
+        [positions.get(arc_id, missing) for arc_id in arc_ids],
+        dtype=torch.long,
+        device=result.counts.device,
+    )
+    with_zero = torch.cat((result.counts, result.counts.new_zeros(1)))
+    return with_zero.index_select(0, rows)
+
+
 class FixedRelationRuntimeProvider:
     """Bind one declared foreign Compute handler to a sparse request.
 
@@ -123,7 +153,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The live scalar tensors supplying the request's weight identities.
@@ -137,6 +167,7 @@ class FixedRelationRuntimeProvider:
         self,
         request: FixedRelationRequest
         | FixedRelationCostRequest
+        | FixedRelationArcCountsRequest
         | FixedComposedRelationRequest
         | FixedRelationMarginalMapRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
@@ -149,6 +180,11 @@ class FixedRelationRuntimeProvider:
         self._operation = request.operation
         self._relation_spec = request.relation
         self._result_type = request.result_type
+        self._result_shape = (
+            (len(request.arc_ids),)
+            if isinstance(request, FixedRelationArcCountsRequest)
+            else ()
+        )
         self._score: Callable[[], torch.Tensor]
         if isinstance(request, FixedComposedRelationRequest):
             self._score = request.plan(parameters).weight
@@ -175,7 +211,10 @@ class FixedRelationRuntimeProvider:
             max_work=request.max_work,
             max_closure_size=request.max_closure_size,
         )
-        if isinstance(request, FixedRelationCostRequest):
+        if isinstance(request, FixedRelationArcCountsRequest):
+            query = relation.query(request.words, **limits)
+            self._score = partial(_selected_arc_counts, query, request.arc_ids)
+        elif isinstance(request, FixedRelationCostRequest):
             query = relation.query(request.words, **limits)
             anchor = relation._weights()
             initial, arcs, final = (
@@ -210,6 +249,7 @@ class FixedRelationRuntimeProvider:
         name: str,
         request: FixedRelationRequest
         | FixedRelationCostRequest
+        | FixedRelationArcCountsRequest
         | FixedComposedRelationRequest
         | FixedRelationMarginalMapRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
@@ -252,30 +292,34 @@ class FixedRelationRuntimeProvider:
         Returns
         -------
         torch.Tensor
-            The scalar score in its declared carrier with its gradient path.
+            The query result in its declared carrier with its gradient path.
 
         Raises
         ------
         TypeError
             The argument is outside the unit carrier.
         ValueError
-            The score is outside the declared scalar carrier.
+            The result is outside its declared carrier.
         """
         if argument is not None:
             raise TypeError("a fixed relation request takes a unit argument")
         score = self._score()
         if self._result_type == LOG_WEIGHT:
             result_algebra = LOG_PROB
-        elif self._operation in ("pair_weight", "best_path_weight"):
+        elif self._operation in (
+            "pair_weight",
+            "best_path_weight",
+            "expected_arc_counts",
+        ):
             result_algebra = MARKOV
         else:
             result_algebra = REAL_ALGEBRA
         if (
-            score.shape != ()
+            score.shape != self._result_shape
             or not score.is_floating_point()
-            or not bool(result_algebra.contains(score))
+            or not bool(result_algebra.contains(score).all())
         ):
-            raise ValueError("fixed relation score is outside its scalar carrier")
+            raise ValueError("fixed relation score is outside its declared carrier")
         return score
 
     def attach(self, module: QiecModule, attachments: RuntimeAttachments) -> None:
@@ -349,7 +393,7 @@ class FixedRelationRuntimeProvider:
         attachments.bind_handler(runtime.with_(definition=definition))
 
     def validator_for(self, type_: TypeExpr) -> RuntimeValidator | None:
-        """Validate the request's differentiable scalar result.
+        """Validate the request's differentiable result.
 
         Parameters
         ----------
@@ -364,6 +408,8 @@ class FixedRelationRuntimeProvider:
         if type_ != self._result_type:
             return None
         core = CoreRuntimeProvider().validator_for(type_)
+        if self._result_shape:
+            return core
         algebra = LOG_PROB if type_ == LOG_WEIGHT else None
 
         def validate(value: object) -> bool:
