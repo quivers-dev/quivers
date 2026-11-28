@@ -149,6 +149,24 @@ so this is the sum over the weighted relation's entire support. If
 erasing the labels exposes a productive cycle, the caller supplies a
 closure limit and the algebra checks convergence in its domain.
 
+`auto_intersect` keeps paths whose words agree on two tapes of the same
+type. It checks a sufficient condition for bounded delay after
+trimming. Within each productive strongly connected component, each
+arc's difference in emitted tape lengths must equal the difference of
+an integer state potential. This exactly checks for zero net delay on
+each cycle in that component. Removing closed walks from a path
+prefix leaves its delay unchanged, so the length difference is bounded
+by the number of productive states minus one.
+
+The checked graph records only the unmatched suffix on the tape ahead.
+Each transition appends the two original labels, removes their common
+prefix and refuses a mismatch. An accepting path must have no
+unmatched suffix. The projection to the original arcs is bijective
+on paths with identical selected words, so parallel weights and
+derivatives are preserved. A reached configuration takes space linear
+in its suffix length. The work limit counts examined arcs after trimming and the linear
+cycle check. Building the indexes has the usual topology costs.
+
 `RationalRelation.conditional` fixes all input tapes and compiles a
 normalizer over every output word tuple. `ConditionalStringQuery.log_prob`
 compares the score of a supplied output to that normalizer. The
@@ -619,6 +637,7 @@ original algebra and must fit its input precision.
         - StringMapResult
         - StringVariable
         - TreeStringMarginal
+        - auto_intersect
         - best_marginal_output
         - closure
         - concatenate

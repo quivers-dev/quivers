@@ -85,6 +85,7 @@ __all__ = [
     "StringVariable",
     "TreeStringMarginal",
     "Words",
+    "auto_intersect",
     "best_marginal_output",
     "closure",
     "concatenate",
@@ -690,3 +691,4 @@ from quivers.core.relations.regular_ep import (  # noqa: E402
     RegularStringSiteUpdate,
     regular_string_ep,
 )
+from quivers.core.relations.equality import auto_intersect  # noqa: E402
