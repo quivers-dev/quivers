@@ -486,6 +486,11 @@ from quivers.qiec.serialization import (
     loads,
     to_data,
 )
+from quivers.qiec.state_specialization import (
+    StateSpecializationLimit,
+    StateSpecializationUnsupported,
+    specialize_recursive_state,
+)
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
 from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
 from quivers.qiec._packed_boolean_interpretation import (
@@ -1102,6 +1107,11 @@ __all__ += [
     "check_scalar_effect_law",
 ]
 __all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carrier"]
+__all__ += [
+    "StateSpecializationLimit",
+    "StateSpecializationUnsupported",
+    "specialize_recursive_state",
+]
 __all__ += [
     "PolynomialLawCounterexample",
     "PolynomialLawDecision",

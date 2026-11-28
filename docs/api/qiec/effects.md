@@ -199,6 +199,70 @@ assert shape.clauses[0].completions == ("resume",)
 
 ::: quivers.qiec.handler_carriers
 
+
+## Recursive state specialization
+
+`specialize_recursive_state` rewrites a named installation of a single
+nominal state handler into pure QIEC computations. The handler must be
+total and authored. Each operation must resume exactly once in tail
+position through ordinary closed prefixes. The specialization currently
+requires monomorphic declarations with no residual effects.
+
+The specialized body passes the current state to each effectful callee.
+Each callee returns its result and the new state. A clause evaluates the
+reply and all updated state coordinates in the old state, in declaration
+order. Recursive calls reuse the same companion definitions, so the size
+of the rewritten module does not depend on how many calls a run takes.
+Only the original installation applies the handler's return action.
+
+The original and specialized computations produce the same values under
+the checked contracts. The specialization removes the corresponding
+handler and request diagnostic events, and its runtime may use a different
+number of steps. Unsupported control and an exceeded construction limit
+raise separate errors.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import run_named, specialize_recursive_state
+
+source = """
+effect Counter
+    read_value : Unit -> Real
+    write_value : Real -> Unit
+
+instance counter : Counter
+
+handler threaded for Counter : Real -> (Real * Real) with (state : Real) [coverage=total, forwards=none, implementation=authored]
+    return answer =>
+        return (answer, state)
+    read_value resumes 1 =>
+        resume(state)
+    write_value(value : Real) resumes 1 =>
+        resume() with (value)
+
+define walk(n : Real) : Real !{counter} =
+    if n > 0.0 then
+        let prior <- perform counter.read_value()
+        perform counter.write_value(prior + 1.0)
+        let answer <- walk(n - 1.0)
+        return answer + prior
+    else
+        perform counter.read_value()
+
+define execute(n : Real, initial : Real) : (Real * Real) !{} =
+    handle counter with threaded(initial) in
+        walk(n)
+"""
+module = Compiler(parse(source), module_name="recursive-counter").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "execute")
+specialized = specialize_recursive_state(module, entry.id)
+result = run_named(specialized, "execute", (2, 3))
+assert tuple(map(float, result.value)) == (12.0, 5.0)
+```
+
+::: quivers.qiec.state_specialization
+
 ## Finite laws
 
 The finite law checker compares two named QIEC computations with the same
