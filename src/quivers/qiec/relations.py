@@ -310,7 +310,10 @@ class FixedRelationRequest(QiecModel):
     The words are in tape order. For `conditional_log_prob`, the
     topology's input split separates conditioning words from scored
     words. The `path_entropy` operation returns the conditional
-    entropy of the accepting paths in nats. The wire contains the
+    entropy of the accepting paths in nats. For `best_path_weight`,
+    the highest-weight positive path supplies its original scalar
+    weight. This objective requires an acyclic productive graph.
+    The wire contains the
     request and stable relation specification. The provider binds
     its live scalar parameters.
 
@@ -319,8 +322,8 @@ class FixedRelationRequest(QiecModel):
     relation : RationalRelationSpec
         The typed sparse topology and original weight identities.
     operation : str
-        The fixed-pair weight, conditional log probability, or path
-        entropy objective.
+        The fixed-pair weight, conditional log probability, path
+        entropy, or best path weight objective.
     words : Words
         One observed word per tape, in the topology's order.
     max_states : int
@@ -333,7 +336,9 @@ class FixedRelationRequest(QiecModel):
     """
 
     relation: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    operation: Literal["pair_weight", "conditional_log_prob", "path_entropy"]
+    operation: Literal[
+        "pair_weight", "conditional_log_prob", "path_entropy", "best_path_weight"
+    ]
     words: Words = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     max_states: int
     max_work: int
@@ -356,6 +361,10 @@ class FixedRelationRequest(QiecModel):
             self.max_work,
             self.max_closure_size,
         )
+        if self.operation == "best_path_weight" and self.max_closure_size is not None:
+            raise ValueError(
+                "best path weight requires an acyclic query without closure"
+            )
         topology = self.relation.topology
         if self.operation == "conditional_log_prob" and not (
             0 < topology.input_tapes < len(topology.tapes)
@@ -371,8 +380,8 @@ class FixedRelationRequest(QiecModel):
         Returns
         -------
         TypeExpr
-            `LogWeight` for a conditional or log-domain pair score,
-            or `Real` for entropy and Markov pair scores.
+            `LogWeight` for a conditional or log-domain path or pair
+            score, or `Real` for entropy and Markov path or pair scores.
         """
         if self.operation == "path_entropy":
             return REAL
