@@ -173,6 +173,21 @@ class ContextualEditChannel(nn.Module):
         self._scorer = scorer
         self._max_insertions = max_insertions
 
+    @property
+    def input_tape(self) -> StringSet:
+        """The nominal alphabet of the channel's fixed input context."""
+        return self._input_tape
+
+    @property
+    def output_tape(self) -> StringSet:
+        """The nominal alphabet of the channel's generated words."""
+        return self._output_tape
+
+    @property
+    def max_insertions(self) -> int:
+        """The maximum consecutive insertions, including at end of input."""
+        return self._max_insertions
+
     def plan(
         self,
         input_words: Words,

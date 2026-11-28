@@ -117,6 +117,7 @@ from quivers.qiec.contracts import (
     Weight,
     WorkReport,
 )
+from quivers.qiec.contextual_edit_runtime import FixedContextualEditRequest
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
@@ -376,6 +377,7 @@ _NODE_CLASSES = (
     DistributionFamily,
     FamilyParameter,
     FamilyShapeSignature,
+    FixedContextualEditRequest,
     ComposedRelationSpec,
     UnaryRelationTransformSpec,
     BinaryRelationTransformSpec,

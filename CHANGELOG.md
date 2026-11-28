@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked packed contextual edit likelihoods.** Typed native scores reuse one packed alignment plan with the caller's original live contextual network.
 - **Checked capped ranked relation scores.** Serialized requests compile finite capped profiles for a typed transducer and sum live weights over the winning original paths at an observed pair.
 - **Checked compact backoff relations.** Serialized fixed-word requests keep ordinary transition priority, original scalar weight identities, and a bounded sparse plan. A named QVR computation can call the checked native provider.
 - **Checked static minimized relation scores.** An authored Markov acceptor's declared pair weight can use an exact bounded quotient of frozen weights. The snapshot request retains the original topology's checked identity.

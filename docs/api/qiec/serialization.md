@@ -199,6 +199,30 @@ JAGS projections name the foreign handler when refusing this provider.
 
 ::: quivers.qiec.relation_ranked.FixedRankedOTRelationRequest
 
+## Packed contextual edit requests
+
+A `FixedContextualEditRequest` records paired observations in batch
+order, their nominal alphabets, the consecutive insertion bound,
+construction limits, and a stable `AttachmentId` for the channel. Its
+result is a `Tensor[LogWeight]` with one entry per observed pair. Each
+entry is the conditional log probability of the observed output and
+sums over the compatible alignments. The local normalization still
+includes every legal edit at each input position and insertion count.
+
+A native `ContextualEditRuntimeProvider` binds the original channel
+and builds its packed plan once. The scorer reads the complete fixed
+input batch on every execution, so later optimizer steps reach the
+same original parameters. The request can travel on the wire, and the
+caller supplies the original network as a runtime attachment. A QVR
+computation can install the request's named foreign `Compute`
+handler, as shown in the [contextual edit example](../../examples/contextual-edit-channel.md).
+The Stan, BUGS and JAGS projections report that foreign handler when
+refusing the computation.
+
+::: quivers.qiec.contextual_edit_runtime.FixedContextualEditRequest
+
+::: quivers.qiec.contextual_edit_runtime.ContextualEditRuntimeProvider
+
 ## Sparse relation composition requests
 
 A `ComposedRelationSpec` records the two original operands of a

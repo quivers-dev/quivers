@@ -12,7 +12,7 @@ from quivers.core.algebras import LOG_PROB, MARKOV, REAL as REAL_ALGEBRA
 from quivers.core.relations import FixedStringQuery
 from quivers.qiec.builtins import COMPUTE, COMPUTE_APPLY, compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT
-from quivers.qiec.effects import EMPTY_ROW, ResumptionGrade
+from quivers.qiec.effects import EMPTY_ROW, HandlerDef, ResumptionGrade
 from quivers.qiec.evaluator import ClauseContext, RuntimeAttachments
 from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.identifiers import HandlerId
@@ -167,6 +167,55 @@ def _selected_arc_counts(
     )
     with_zero = torch.cat((result.counts, result.counts.new_zeros(1)))
     return with_zero.index_select(0, rows)
+
+
+def _fixed_compute_definition(
+    module: QiecModule, name: str, result: TypeExpr
+) -> HandlerDef:
+    """Require a checked foreign once-resuming Compute handler.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked module containing the handler declaration.
+    name : str
+        The required name, including any request ownership identity.
+    result : TypeExpr
+        The exact result type of `Compute[Unit, A]`.
+
+    Returns
+    -------
+    HandlerDef
+        One compatible checked foreign declaration.
+
+    Raises
+    ------
+    ValueError
+        The module has no unique handler with the required name.
+    TypeError
+        The handler does not have the required linear compute contract.
+    """
+    declarations = [handler for handler in module.handlers if handler.name == name]
+    if len(declarations) != 1:
+        raise ValueError(f"unknown fixed relation handler {name!r}")
+    definition = declarations[0]
+    clauses = tuple((clause.operation, clause.grade) for clause in definition.clauses)
+    if (
+        definition.implementation != "foreign"
+        or definition.effect != COMPUTE.with_(arguments=(UNIT, result))
+        or definition.input_type != result
+        or definition.output_type != result
+        or clauses != ((COMPUTE_APPLY, ResumptionGrade.LINEAR),)
+        or definition.parameters
+        or definition.telescope
+        or definition.introduced != EMPTY_ROW
+        or not definition.total
+        or definition.forwards_unknown
+        or definition.return_clause is not None
+        or definition.foreign is not None
+    ):
+        raise TypeError(f"incompatible fixed relation handler {name!r}")
+    return definition
 
 
 class FixedRelationRuntimeProvider:
@@ -434,34 +483,8 @@ class FixedRelationRuntimeProvider:
         TypeError
             The declaration does not have the required linear compute contract.
         """
-        declarations = [
-            handler for handler in module.handlers if handler.name == self._handler_name
-        ]
-        if len(declarations) != 1:
-            raise ValueError(f"unknown fixed relation handler {self._handler_name!r}")
-        definition = declarations[0]
         result = self._result_type
-        expected = COMPUTE.with_(arguments=(UNIT, result))
-        clauses = tuple(
-            (clause.operation, clause.grade) for clause in definition.clauses
-        )
-        if (
-            definition.implementation != "foreign"
-            or definition.effect != expected
-            or definition.input_type != result
-            or definition.output_type != result
-            or clauses != ((COMPUTE_APPLY, ResumptionGrade.LINEAR),)
-            or definition.parameters
-            or definition.telescope
-            or definition.introduced != EMPTY_ROW
-            or not definition.total
-            or definition.forwards_unknown
-            or definition.return_clause is not None
-            or definition.foreign is not None
-        ):
-            raise TypeError(
-                f"incompatible fixed relation handler {self._handler_name!r}"
-            )
+        definition = _fixed_compute_definition(module, self._handler_name, result)
         score_name = definition.name.removeprefix(_RELATION_SCORE_HANDLER_PREFIX)
         if self._requires_authored_topology and score_name == definition.name:
             raise TypeError("a minimized relation score requires its authored topology")
@@ -482,7 +505,7 @@ class FixedRelationRuntimeProvider:
         assert validation is not None
         runtime = compute_handler(
             self._evaluate,
-            effect=expected,
+            effect=definition.effect,
             result_validator=validation,
             answer_type=result,
             key=self._handler_name,

@@ -385,6 +385,10 @@ from quivers.qiec.pruned_string_graph_runtime import (
     PrunedStringGraphRuntimeProvider,
     pruned_string_graph_handler,
 )
+from quivers.qiec.contextual_edit_runtime import (
+    ContextualEditRuntimeProvider,
+    FixedContextualEditRequest,
+)
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
@@ -744,6 +748,8 @@ __all__ = [
     "FixedRelationFeatureObservation",
     "FixedComposedRelationRequest",
     "FixedBackoffRelationRequest",
+    "ContextualEditRuntimeProvider",
+    "FixedContextualEditRequest",
     "FixedRankedOTRelationRequest",
     "FixedMinimizedRelationRequest",
     "FixedRelationArcCountsRequest",
