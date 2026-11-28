@@ -58,7 +58,7 @@ from quivers.qiec.contracts import (
     settle,
     unmet_fields,
 )
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import DistributionBackend, RuntimeDistribution
 from quivers.qiec.families import family
 from quivers.core.algebras import LOG_PROB
 from quivers.qiec.foreign import SemiringSum, Settlement
@@ -698,13 +698,15 @@ def _require(
         raise RuntimeTypeMismatch(f"{subject} does not inhabit {type!r}: {value!r}")
 
 
-def _default_draw(sampleable: object) -> object:
+def _default_draw(sampleable: object, backend: DistributionBackend) -> object:
     """Draw from a sampleable using whichever interface it offers.
 
     Parameters
     ----------
     sampleable
         The host distribution.
+    backend
+        The invocation's default distribution backend for structured laws.
 
     Returns
     -------
@@ -718,6 +720,10 @@ def _default_draw(sampleable: object) -> object:
     InvalidHandlerError
         If the object offers neither drawing interface.
     """
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
+    if isinstance(sampleable, FiniteSampleable):
+        return sampleable.sample(backend=backend)
     rsample = getattr(sampleable, "rsample", None)
     if callable(rsample):
         return rsample()
@@ -778,7 +784,7 @@ def draw_handler(
     def sample(
         request: RuntimeRequest,
         resume: Resumption,
-        _context: ClauseContext,
+        context: ClauseContext,
     ) -> object:
         """Answer a `Random.sample` request.
 
@@ -788,8 +794,8 @@ def draw_handler(
             The request being answered and its arguments.
         resume
             The continuation, invoked within the clause's declared grade.
-        _context
-            Runtime services, unused by this clause.
+        context
+            Runtime services providing the invocation's distribution backend.
 
         Returns
         -------
@@ -806,7 +812,7 @@ def draw_handler(
         value = (
             draw(site, sampleable, request)
             if draw is not None
-            else _default_draw(sampleable)
+            else _default_draw(sampleable, context.attachments.distributions)
         )
         return TailResume(value=value)
 
@@ -3317,7 +3323,7 @@ def draw_scoring_handler(
         value = (
             draw(site, sampleable, request)
             if draw is not None
-            else _default_draw(sampleable)
+            else _default_draw(sampleable, context.attachments.distributions)
         )
         _emit_score(
             context,
@@ -3649,7 +3655,7 @@ def block_handler(
         value = (
             draw(site, sampleable, request)
             if draw is not None
-            else _default_draw(sampleable)
+            else _default_draw(sampleable, context.attachments.distributions)
         )
         _emit_score(
             context,
