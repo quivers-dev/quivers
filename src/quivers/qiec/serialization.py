@@ -134,7 +134,10 @@ from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.alignment_map_runtime import JointAlignmentMapRequest
 from quivers.qiec.paired_alignment_map_runtime import PairedAlignmentMapRequest
-from quivers.qiec.finite_ep_runtime import FiniteStringEPRequest
+from quivers.qiec.finite_ep_runtime import (
+    FiniteStringEPRequest,
+    HigherOrderFiniteStringEPRequest,
+)
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
@@ -475,6 +478,7 @@ _NODE_CLASSES = (
     TreeStringGraphRequest,
     RegularStringEPRequest,
     FiniteStringEPRequest,
+    HigherOrderFiniteStringEPRequest,
     JointAlignmentMapRequest,
     PairedAlignmentMapRequest,
     # source identity and kinds

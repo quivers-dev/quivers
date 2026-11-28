@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Literal
@@ -10,6 +11,12 @@ from typing import Literal
 import torch
 
 type _Word = tuple[int, ...]
+
+
+def _ngram_windows(word: _Word, order: int) -> Iterator[_Word]:
+    for n in range(1, min(len(word), order) + 1):
+        for start in range(len(word) - n + 1):
+            yield word[start : start + n]
 
 
 def _affine_basis(rows: tuple[tuple[int, ...], ...]) -> tuple[int, ...]:
@@ -181,14 +188,7 @@ class NgramFamily:
             type(symbol) is not int or symbol < 0 for word in words for symbol in word
         ):
             raise ValueError("n-gram support words require nonnegative integer symbols")
-        counts = tuple(
-            Counter(
-                word[start : start + n]
-                for n in range(1, min(len(word), self.order) + 1)
-                for start in range(len(word) - n + 1)
-            )
-            for word in words
-        )
+        counts = tuple(Counter(_ngram_windows(word, self.order)) for word in words)
         vocabulary = tuple(sorted({feature for row in counts for feature in row}))
         rows = tuple(tuple(row[feature] for feature in vocabulary) for row in counts)
         columns = _affine_basis(rows)

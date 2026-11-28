@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked higher-order finite EP.** A named QVR computation can differentiate a fixed EP schedule with contiguous n-gram features, exact affine-basis warm sites, and bounded feature construction.
 - **Checked proof-key grouping plans.** Raw and normalized weighted proof rows report the nominal proof owner, direct checked key call, and measured grouping work.
 - **Checked centered cyclic likelihoods.** Bounded conditional queries preserve internal cycle weights and use directed finite stars to certify a centered native log ratio.
 - **Checked effect-stage receipts.** Serialize the selected target stage and verify its emitted artifact or named refusal against the original checked program.

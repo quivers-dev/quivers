@@ -20,7 +20,10 @@ from quivers.core.relations.beliefs import (
     _validate_finite_ep_initial_sites,
     _validate_sweeps,
 )
-from quivers.core.relations.projection import _validate_projection_settings
+from quivers.core.relations.projection import (
+    _ngram_windows,
+    _validate_projection_settings,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
@@ -222,6 +225,84 @@ class FiniteStringEPRequest(QiecModel):
         )
 
 
+class HigherOrderFiniteStringEPRequest(QiecModel):
+    """Request finite-unrolled EP with a checked higher-order n-gram family.
+
+    The schedule retains its graph, finite support, warm-site order, optimizer
+    settings, and result carrier. Feature cells now count all included
+    n-grams, and warm coefficients refer to the resulting affine basis.
+
+    Parameters
+    ----------
+    schedule : FiniteStringEPRequest
+        The finite update schedule and its ordered graph interface.
+    order : int
+        Include contiguous n-grams from order one through this order, at
+        least two. The declared order is part of the handler identity.
+    max_ngram_work : int
+        Cap the token slots of two window passes and of nonempty prefixes
+        of distinct features, after restricting observed coordinates.
+    """
+
+    schedule: FiniteStringEPRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    order: int
+    max_ngram_work: int
+
+    @dx.model_validator()
+    def _validate_features(self) -> None:
+        """Check the order and construction budget.
+
+        Raises
+        ------
+        ValueError
+            The schedule has the wrong type or a bound is outside its Int range.
+        """
+        if type(self.schedule) is not FiniteStringEPRequest:
+            raise ValueError("higher-order finite EP requires a finite EP schedule")
+        largest = torch.iinfo(torch.int64).max
+        if type(self.order) is not int or not 2 <= self.order <= largest:
+            raise ValueError("finite EP n-gram order must be an Int of at least two")
+        if (
+            type(self.max_ngram_work) is not int
+            or not 0 <= self.max_ngram_work <= largest
+        ):
+            raise ValueError("finite EP max_ngram_work must be a nonnegative Int")
+
+    @property
+    def gradient_policy(self) -> Literal["finite_unrolled"]:
+        """Give the derivative scope of the requested program.
+
+        Returns
+        -------
+        Literal["finite_unrolled"]
+            Autodiff follows the accepted finite sequence of operations.
+        """
+        return self.schedule.gradient_policy
+
+    @property
+    def handler_name(self) -> str:
+        """Bind the order and exact finite schedule to a foreign Compute.
+
+        Returns
+        -------
+        str
+            The higher-order handler identity.
+        """
+        static = f"{self.schedule.handler_name}:{self.order}"
+        return "__string_graph_finite_ngram_ep_" + sha256(static.encode()).hexdigest()
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Give the report type for the schedule's ordered probes.
+
+        Returns
+        -------
+        TypeExpr
+            The finite-unrolled EP report carrier.
+        """
+        return self.schedule.result_type
+
+
 def _check_words(words: tuple[_Word, ...], size: int) -> None:
     """Validate an ordered nonempty finite word axis.
 
@@ -249,12 +330,58 @@ def _check_words(words: tuple[_Word, ...], size: int) -> None:
         raise ValueError("finite EP requires distinct words in its declared alphabet")
 
 
+def _check_higher_order_features(
+    request: HigherOrderFiniteStringEPRequest, supports: dict[str, tuple[_Word, ...]]
+) -> None:
+    """Bound feature enumeration and dense matrices before compiling tables.
+
+    Parameters
+    ----------
+    request : HigherOrderFiniteStringEPRequest
+        The order, feature budgets, and graph observations.
+    supports : dict
+        The finite word axes by variable name.
+
+    Raises
+    ------
+    RelationLimitError
+        The window, prefix, or matrix construction would exceed its cap.
+    """
+    remaining = request.max_ngram_work
+    cells = 0
+    for name, _, _, observed in request.schedule.graph.variables:
+        words = supports[name] if observed is None else (observed,)
+        for word in words:
+            length = len(word)
+            order = min(length, request.order)
+            # Two passes over all windows, charged by their full tuple lengths.
+            remaining -= (length + 1) * order * (order + 1) - order * (order + 1) * (
+                2 * order + 1
+            ) // 3
+            if remaining < 0:
+                raise RelationLimitError("finite EP exceeds max_ngram_work")
+        features: set[_Word] = set()
+        for word in words:
+            for feature in _ngram_windows(word, request.order):
+                if feature in features:
+                    continue
+                length = len(feature)
+                # The finite family also constructs the prefixes of its features.
+                remaining -= length * (length + 1) // 2
+                if remaining < 0:
+                    raise RelationLimitError("finite EP exceeds max_ngram_work")
+                cells += len(words)
+                if cells > request.schedule.max_feature_cells:
+                    raise RelationLimitError("finite EP exceeds max_feature_cells")
+                features.add(feature)
+
+
 class FiniteStringEPRuntimeProvider:
     """Expose the accepted finite EP schedule through checked native Compute.
 
     Parameters
     ----------
-    request : FiniteStringEPRequest
+    request : FiniteStringEPRequest or HigherOrderFiniteStringEPRequest
         The exact finite program, graph, probes, and resource limits.
     parameters : RelationWeightBindings
         Original live scalar owners supplying a new evaluation snapshot.
@@ -263,9 +390,16 @@ class FiniteStringEPRuntimeProvider:
     name = "finite-string-ep"
 
     def __init__(
-        self, request: FiniteStringEPRequest, parameters: RelationWeightBindings
+        self,
+        request: FiniteStringEPRequest | HigherOrderFiniteStringEPRequest,
+        parameters: RelationWeightBindings,
     ) -> None:
-        self._request = request
+        if isinstance(request, HigherOrderFiniteStringEPRequest):
+            self._higher_order = request
+            self._request = request.schedule
+        else:
+            self._higher_order = None
+            self._request = request
         self._parameters = parameters
         self._handler_name = request.handler_name
         self._result_type = request.result_type
@@ -286,12 +420,15 @@ class FiniteStringEPRuntimeProvider:
         """
         request = self._request
         supports = dict(request.supports)
-        cells = 0
-        for name, _, _, observed in request.graph.variables:
-            words = supports[name] if observed is None else (observed,)
-            cells += len(words) * len({symbol for word in words for symbol in word})
-            if cells > request.max_feature_cells:
-                raise RelationLimitError("finite EP exceeds max_feature_cells")
+        if self._higher_order is None:
+            cells = 0
+            for name, _, _, observed in request.graph.variables:
+                words = supports[name] if observed is None else (observed,)
+                cells += len(words) * len({symbol for word in words for symbol in word})
+                if cells > request.max_feature_cells:
+                    raise RelationLimitError("finite EP exceeds max_feature_cells")
+        else:
+            _check_higher_order_features(self._higher_order, supports)
         attempts = (request.sweeps + 1) * sum(
             len(scope) for _, scope in request.graph.factors
         )
@@ -341,7 +478,7 @@ class FiniteStringEPRuntimeProvider:
         try:
             plan = self._plan
             result = plan.expectation_propagation(
-                order=1,
+                order=1 if self._higher_order is None else self._higher_order.order,
                 max_sweeps=request.sweeps,
                 tolerance=None,
                 damping=request.damping,
@@ -478,4 +615,8 @@ class FiniteStringEPRuntimeProvider:
         return CoreRuntimeProvider().validator_for(type_)
 
 
-__all__ = ["FiniteStringEPRequest", "FiniteStringEPRuntimeProvider"]
+__all__ = [
+    "FiniteStringEPRequest",
+    "FiniteStringEPRuntimeProvider",
+    "HigherOrderFiniteStringEPRequest",
+]

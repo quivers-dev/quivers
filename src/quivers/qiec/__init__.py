@@ -552,6 +552,7 @@ from quivers.qiec.paired_alignment_map_runtime import (
 from quivers.qiec.finite_ep_runtime import (
     FiniteStringEPRequest,
     FiniteStringEPRuntimeProvider,
+    HigherOrderFiniteStringEPRequest,
 )
 from quivers.qiec.regular_ep_runtime import (
     RegularStringEPRequest,
@@ -1013,6 +1014,7 @@ __all__ = [
     "pruned_string_graph_handler",
     "FiniteStringEPRequest",
     "FiniteStringEPRuntimeProvider",
+    "HigherOrderFiniteStringEPRequest",
     "RegularStringEPConfig",
     "RegularStringEPPolicy",
     "RegularStringEPRequest",
