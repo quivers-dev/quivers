@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from graphlib import CycleError, TopologicalSorter
 
 from quivers.qiec.builtins import RANDOM
 from quivers.qiec.checking import KernelRegistry
@@ -67,6 +68,8 @@ def _check_first_order_graph(
     owner: NamedComputation,
     fragment: str,
     check_request: Callable[[EffectRequest, EffectInstanceId], None],
+    *,
+    require_acyclic: bool = False,
 ) -> None:
     """Check the reachable graph of a first-order single-instance entry.
 
@@ -80,6 +83,8 @@ def _check_first_order_graph(
         The fragment named in refusal diagnostics.
     check_request : Callable
         The fragment's check of an operation on the chosen nominal instance.
+    require_acyclic : bool
+        Require the reachable source declarations to form an acyclic call graph.
 
     Raises
     ------
@@ -90,13 +95,14 @@ def _check_first_order_graph(
     row = owner.type.effects
     instance = row.entries[0].instance
     seen = {owner.id}
-    pending: list[Computation] = [owner.body]
+    pending: list[tuple[ComputationId, Computation]] = [(owner.id, owner.body)]
+    edges: dict[ComputationId, set[ComputationId]] = {}
     while pending:
-        term = pending.pop()
+        caller, term = pending.pop()
         if isinstance(term, Bind):
-            pending.extend((term.then, term.first))
+            pending.extend(((caller, term.then), (caller, term.first)))
         elif isinstance(term, If):
-            pending.extend((term.otherwise, term.then))
+            pending.extend(((caller, term.otherwise), (caller, term.then)))
         elif isinstance(term, Perform):
             check_request(term.request, instance)
         elif isinstance(term, Call):
@@ -111,10 +117,19 @@ def _check_first_order_graph(
                 )
             ):
                 raise JvpUnsupported(f"{fragment} cannot enter call `{term.name}`")
+            if require_acyclic:
+                edges.setdefault(caller, set()).add(target.id)
             if target.id not in seen:
                 seen.add(target.id)
-                pending.append(target.body)
+                pending.append((target.id, target.body))
         elif not isinstance(term, Return):
             raise JvpUnsupported(
                 f"{type(term).__name__} is outside the {fragment} fragment"
             )
+    if require_acyclic:
+        try:
+            TopologicalSorter(edges).prepare()
+        except CycleError as error:
+            raise JvpUnsupported(
+                f"{fragment} requires an acyclic call graph"
+            ) from error

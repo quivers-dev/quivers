@@ -261,6 +261,15 @@ from quivers.qiec.finite_clipping import (
     FiniteClippedEstimatorAudit,
     audit_clipped_bernoulli_gradient,
 )
+from quivers.qiec.finite_bernoulli_batch import (
+    BernoulliBatchCotangent,
+    BernoulliBatchLinearization,
+    BernoulliBatchPath,
+    BernoulliBatchPlan,
+    BernoulliBatchReplay,
+    BernoulliRowReplay,
+    plan_bernoulli_batch,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1253,6 +1262,15 @@ __all__ += [
     "ClippedEstimatorOutcome",
     "FiniteClippedEstimatorAudit",
     "audit_clipped_bernoulli_gradient",
+]
+__all__ += [
+    "BernoulliBatchCotangent",
+    "BernoulliBatchLinearization",
+    "BernoulliBatchPath",
+    "BernoulliBatchPlan",
+    "BernoulliBatchReplay",
+    "BernoulliRowReplay",
+    "plan_bernoulli_batch",
 ]
 __all__ += [
     "FiniteAlgebra",

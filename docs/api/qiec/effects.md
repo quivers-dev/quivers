@@ -1345,6 +1345,64 @@ assert result.decisions[0].losses == (10, 4)
 
 ::: quivers.qiec.finite_selection
 
+## Finite independent Bernoulli batches
+
+`plan_bernoulli_batch` checks an ordered batch of a scalar source
+with direct Bernoulli draws. Each row gets the shared deterministic
+input prefix and its own local inputs. The source must have an
+acyclic call graph, and every complete history must have the
+same ordered sequence of draw addresses in every row.
+
+The joint history law is the product of the row laws at the supplied
+shared values. Each observed address contains the axis label, row
+ordinal, and original source address. The row laws can agree while
+the joint coupling changes.
+For instance, two independent fair Booleans disagree with probability
+one half. Reusing one draw makes them agree on every run. The sampler
+draws each row's history from its checked finite support in row order.
+
+`expected` gives the exact row expectations and their derivatives.
+`replay` gives the results and derivatives with the named choices held
+fixed, together with the probability of those choices in the
+independent source law. In each case the Jacobian acts on shared and
+row-local tangents. Its transpose sums adjoints to the shared prefix
+and returns local adjoints in row order. The plan checks this fragment
+by scalar reference runs in basis directions.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import Bind, Perform, SiteEstimator, plan_bernoulli_batch
+
+source = """
+instance random : Random
+
+define unit(s : Real, p : Real, x : Real) : Real !{random} =
+    let yes <- perform random.sample[Bool](site("yes"), Bernoulli(p))
+    if yes then
+        return s * x
+    else
+        return x
+"""
+module = Compiler(parse(source), module_name="finite-batch").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "unit")
+assert isinstance(entry.body, Bind) and isinstance(entry.body.first, Perform)
+policy = SiteEstimator(site=entry.body.first.request.origin.static_site, estimator="enumerate")
+batch = plan_bernoulli_batch(
+    module, entry.id, "Items", (2,), ((Fraction(1, 2), 3), (Fraction(1, 4), 4)), (policy,),
+)
+assert batch.expected.values == (Fraction(9, 2), 5)
+assert batch.expected.jvp((1,), ((0, 0), (0, 0))) == (Fraction(3, 2), 1)
+assert batch.expected.vjp((2, -1)).shared == (2,)
+replay = batch.replay((batch.paths[0][0].tape, batch.paths[1][1].tape))
+assert replay.probability == Fraction(1, 8)
+assert replay.linearization.values == (3, 8)
+assert replay.linearization.jvp((1,), ((0, 0), (0, 0))) == (0, 4)
+```
+
+::: quivers.qiec.finite_bernoulli_batch
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging
