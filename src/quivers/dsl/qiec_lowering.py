@@ -44,6 +44,7 @@ from quivers.qiec.canonical import (
 from quivers.qiec.builtins import BUILTIN_EFFECTS
 from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.family_catalog import FamilyCatalog
+from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
 from quivers.qiec._proof_interpretation import bind_operands
 from quivers.qiec.checking import _plated_sample_type
 from quivers.qiec.programs import ProgramEntry
@@ -291,9 +292,14 @@ class CheckedQvrQiec(QiecModel):
     ----------
     module : QiecModule
         The kernel module the stages produced.
+    closed_interpretations : tuple of ClosedInterpretationBinding
+        Source companions retained through checked model schema extraction.
     """
 
     module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    closed_interpretations: tuple[ClosedInterpretationBinding, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def has_qiec_surface(module: surface.Module) -> bool:
@@ -578,9 +584,13 @@ class QvrQiecLowerer:
         KernelError
             If the lowered module fails its independent recheck.
         """
-        module = _Elaborator(source).elaborate()
+        elaborator = _Elaborator(source)
+        module = elaborator.elaborate()
         validate_module(module)
-        return CheckedQvrQiec(module=module)
+        return CheckedQvrQiec(
+            module=module,
+            closed_interpretations=tuple(elaborator.closed_interpretations),
+        )
 
     def lower(self, checked: CheckedQvrQiec, /) -> QiecModule:
         """Return the checked module.
@@ -1003,6 +1013,36 @@ def lower_qvr_to_qiec(
         If the lowered module fails its independent recheck.
     """
 
+    return _lower_qvr_with_companions(
+        module,
+        module_name=module_name,
+        file_path=file_path,
+        source_version=source_version,
+        target_version=target_version,
+        elaborate_programs=elaborate_programs,
+        families=families,
+    ).module
+
+
+class _QvrQiecCompanionLowerer(QvrQiecLowerer):
+    """Keep the checked source companions through the existing versioned route."""
+
+    def lower(self, checked: CheckedQvrQiec, /) -> QiecModule:
+        self.result = checked
+        return checked.module
+
+
+def _lower_qvr_with_companions(
+    module: surface.Module,
+    *,
+    module_name: str | None = None,
+    file_path: str = "<source>",
+    source_version: str = QVR_SOURCE_VERSION,
+    target_version: str = QIEC_ABI,
+    elaborate_programs: bool = True,
+    families: FamilyCatalog | None = None,
+) -> CheckedQvrQiec:
+    """Run the checked lowering route once, retaining its source companions."""
     if module_name is None:
         module_name = _module_name(file_path)
     try:
@@ -1022,12 +1062,14 @@ def lower_qvr_to_qiec(
         elaborate_programs=elaborate_programs,
         distribution_families=families.definitions if families is not None else (),
     )
-    return lower_checked(
+    lowerer = _QvrQiecCompanionLowerer()
+    lower_checked(
         source,
-        QvrQiecLowerer(),
+        lowerer,
         source_version=source_version,
         target_version=target_version,
     )
+    return lowerer.result
 
 
 def _authored_strings(syntax: surface.Module) -> frozenset[str]:
@@ -1583,6 +1625,7 @@ class _Elaborator(
         self.handlers: dict[str, HandlerDef] = {}
         self.computation_signatures: dict[str, ComputationSignature] = {}
         self.entries: list[ProgramEntry] = []
+        self.closed_interpretations: list[ClosedInterpretationBinding] = []
         self._lambda_macros: dict[str, surface.LetExprLambda] = {}
         # Numbers the locals a lowering introduces to share a value, so
         # each such binder is unique across the module.

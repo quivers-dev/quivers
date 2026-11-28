@@ -54,13 +54,14 @@ from quivers.dsl.compiler.resolution import _ResolutionMixin
 from quivers.dsl.compiler.expressions import _ExpressionsMixin
 from quivers.dsl.program_elaboration import GAP_CODE
 from quivers.dsl.qiec_lowering import (
+    CheckedQvrQiec,
     QiecDiagnosticError,
     has_qiec_surface,
-    lower_qvr_to_qiec,
+    _lower_qvr_with_companions,
     non_qiec_projection,
     _module_name,
 )
-from quivers.qiec import QiecModule
+from quivers.qiec import ClosedInterpretationBinding, QiecModule
 from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.terms import PlateAxis
@@ -150,6 +151,7 @@ class Compiler(
         self._family_catalog = families
         self._distribution_families = families if families is not None else FAMILIES
         self._qiec_module: QiecModule | None = None
+        self._closed_interpretations: tuple[ClosedInterpretationBinding, ...] = ()
         self._deferred_statements: tuple[Statement, ...] = ()
         # The QIEC projection is lowered on first use, after the
         # statements' own checks when `compile` drives it, so a source
@@ -336,7 +338,9 @@ class Compiler(
             program gap, which the module records instead.
         """
         if self._qiec_source is not None and self._qiec_module is None:
-            self._qiec_module = self._lower_qiec(self._qiec_source)
+            checked = self._lower_qiec_with_companions(self._qiec_source)
+            self._qiec_module = checked.module
+            self._closed_interpretations = checked.closed_interpretations
         return self._qiec_module
 
     @property
@@ -504,8 +508,12 @@ class Compiler(
         QiecDiagnosticError
             If the surface fails to lower other than by a program gap.
         """
+        return self._lower_qiec_with_companions(module).module
+
+    def _lower_qiec_with_companions(self, module: Module) -> CheckedQvrQiec:
+        """Keep source interpretation contracts alongside the checked module."""
         try:
-            return lower_qvr_to_qiec(
+            return _lower_qvr_with_companions(
                 module,
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
@@ -514,15 +522,14 @@ class Compiler(
         except QiecDiagnosticError as error:
             if error.code != GAP_CODE:
                 raise
-            return lower_qvr_to_qiec(
+            checked = _lower_qvr_with_companions(
                 module,
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
                 elaborate_programs=False,
                 families=self._family_catalog,
-            ).with_(
-                gap=error.message,
             )
+            return checked.with_(module=checked.module.with_(gap=error.message))
 
     def compile(self) -> Program:
         """Compile the module into a trainable Program.
@@ -636,13 +643,19 @@ class Compiler(
         if resolved is source:
             return
         self._qiec_module = None
+        self._closed_interpretations = ()
         if self._qiec_source is not None:
             self._qiec_source = resolved
             self._module = non_qiec_projection(resolved)
         else:
             self._module = resolved
 
-    def _reuse_checked_source(self, source: Module, checked: QiecModule) -> bool:
+    def _reuse_checked_source(
+        self,
+        source: Module,
+        checked: QiecModule,
+        closed_interpretations: tuple[ClosedInterpretationBinding, ...] = (),
+    ) -> bool:
         """Seed the lazy checked cache only when source expansion kept its identity."""
         if self._qiec_source is not source:
             return False
@@ -652,6 +665,7 @@ class Compiler(
         if checked.distribution_families != expected:
             return False
         self._qiec_module = checked
+        self._closed_interpretations = closed_interpretations
         return True
 
     def _attach_host_data_types(self, module: QiecModule) -> None:

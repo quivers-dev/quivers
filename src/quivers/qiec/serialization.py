@@ -143,6 +143,7 @@ from quivers.qiec.string_solvers import (
     RegularStringEPConfig,
 )
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
+from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
@@ -596,6 +597,7 @@ _NODE_CLASSES = (
     PresentationAnalysis,
     InterpretationDecl,
     ScopedInterpretationBinding,
+    ClosedInterpretationBinding,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}

@@ -12,11 +12,12 @@ from quivers.dsl._scoped_interpretations import (
     ScopedSource,
     lower_scoped_interpretation,
 )
+from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
 from quivers.qiec._proof_interpretation import prepare_closed_interpretation
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import InterpretationId
-from quivers.qiec.identifiers import ComputationId, ConstructorId
-from quivers.qiec.module import NamedComputation
+from quivers.qiec.identifiers import ComputationId, ConstructorId, EffectInstanceId
+from quivers.qiec.module import NamedComputation, NamedEffectInstance
 from quivers.qiec.rules import InterpretationDecl
 
 if TYPE_CHECKING:
@@ -29,6 +30,9 @@ def declare_interpretations(
     """Register ordinary fold signatures before lowering their callers."""
     generated: list[NamedComputation] = []
     seen: set[str] = set()
+    instances = {
+        instance.entry.instance: instance for instance in elaborator.instances.values()
+    }
     for declaration in elaborator.source.syntax.statements:
         if not isinstance(declaration, QiecInterpretationDecl):
             continue
@@ -42,11 +46,12 @@ def declare_interpretations(
                 code="qiec-interpretation",
             )
         source = scoped.get(declaration.deduction)
-        definitions = (
-            (_interpretation(elaborator, declaration),)
-            if source is None
-            else lower_scoped_interpretation(elaborator, declaration, source)
-        )
+        if source is None:
+            fold, binding = _interpretation(elaborator, declaration, instances)
+            elaborator.closed_interpretations.append(binding)
+            definitions = (fold,)
+        else:
+            definitions = lower_scoped_interpretation(elaborator, declaration, source)
         for computation in definitions:
             if (
                 computation.name in seen
@@ -75,8 +80,10 @@ def declare_interpretations(
 
 
 def _interpretation(
-    elaborator: _Elaborator, declaration: QiecInterpretationDecl
-) -> NamedComputation:
+    elaborator: _Elaborator,
+    declaration: QiecInterpretationDecl,
+    instances: Mapping[EffectInstanceId, NamedEffectInstance],
+) -> tuple[NamedComputation, ClosedInterpretationBinding]:
     """Resolve source clauses to checked constructor and computation identities."""
     presentation = elaborator._lexical_proofs.get(declaration.deduction)
     if presentation is None:
@@ -142,18 +149,24 @@ def _interpretation(
         operations=tuple(selected),
     )
     try:
+        carrier = elaborator._lower_type(declaration.carrier, judgment.indices)
         (fold,) = prepare_closed_interpretation(
             elaborator.registry,
             presentation,
             interpretation,
             names={judgment.id: declaration.name},
-            carriers={
-                judgment.id: elaborator._lower_type(
-                    declaration.carrier, judgment.indices
-                )
-            },
+            carriers={judgment.id: carrier},
             origin=origin,
         )
     except (KernelError, ValueError, dx.ValidationError) as error:
         elaborator._fail_kernel(declaration, error, fallback="qiec-interpretation")
-    return fold
+    return fold, ClosedInterpretationBinding(
+        presentation=presentation,
+        interpretation=interpretation,
+        computation=fold.id,
+        carrier=carrier,
+        effects=fold.type.effects,
+        instances=tuple(
+            instances[entry.instance] for entry in fold.type.effects.entries
+        ),
+    )

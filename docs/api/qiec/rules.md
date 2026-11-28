@@ -216,6 +216,31 @@ written type arguments and the nested context types. These folds consume the sup
 A deduction executor can still use a packed aggregate when its observable and algebra admit
 a more efficient computation.
 
+### Closed lexical interpretation contracts
+
+A `ModelSchema` also exposes the reachable
+[`ClosedInterpretationBinding`][quivers.qiec.ClosedInterpretationBinding]
+records through `closed_interpretations`. A binding retains the lexical
+proof presentation’s nominal rules and axioms, the operation assigned to
+each constructor, and the carrier over the judgment’s declared indices.
+It also gives the closed effect row and the lexical identity of each
+required instance. Reachability includes calls made in installed authored
+handlers. Source lowering records the companions while it builds the
+ordinary folds, so model binding can reuse them when the source is unchanged.
+The companion holds the existing immutable presentation and adds one
+assignment per constructor and one identity per required instance. Schema
+selection walks the checked call and handler graph once, independent of the
+number and size of proofs the program subsequently interprets.
+
+A companion has a standalone codec. Validation reconstructs the indexed
+case and compares the whole fold declaration, including its ordered rule
+calls and specialized result type. If the executable also has a packed
+query for the same presentation, validation compares the full query
+presentation after qualifying its proof declarations. A program that folds
+an explicitly supplied proof may have no such query. Its checked proof
+constructors and fold then establish the shape of the interpretation, while
+the interpretation makes no claim about weighted search or theory equations.
+
 ## Binding
 
 Terms of a structural signature use de Bruijn indices.

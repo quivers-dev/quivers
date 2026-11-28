@@ -420,6 +420,7 @@ from quivers.qiec.serialization import (
     to_data,
 )
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
+from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
 from quivers.qiec._scoped_proof_fold import ScopedProofFold, scoped_proof_fold
 from quivers.qiec._scoped_proof_types import ScopedProofTypes, scoped_proof_types
 from quivers.qiec.structured_sampleables import FiniteSampleable
@@ -968,6 +969,7 @@ __all__ = [
     "static_shape",
 ]
 __all__ += [
+    "ClosedInterpretationBinding",
     "ScopedInterpretationBinding",
     "ScopedProofFold",
     "ScopedProofTypes",

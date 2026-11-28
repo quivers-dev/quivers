@@ -270,7 +270,11 @@ def lower_scoped_interpretation(
 
 
 def selected_scoped_interpretations(
-    source: surface.Module, module: QiecModule, selected: ComputationId
+    source: surface.Module,
+    module: QiecModule,
+    selected: ComputationId,
+    *,
+    reached: set[ComputationId] | None = None,
 ) -> tuple[ScopedInterpretationBinding, ...]:
     """Extract and check the scoped contracts reached from one program."""
     declarations = [
@@ -286,7 +290,8 @@ def selected_scoped_interpretations(
         for declaration in source.statements
         if isinstance(declaration, surface.SignatureDecl)
     }
-    reached, _ = _execution_reachability(module, selected)
+    if reached is None:
+        reached, _ = _execution_reachability(module, selected)
     compiled = {computation.name: computation for computation in module.computations}
     prepared: dict[str, RulePresentation] = {}
     bindings = []

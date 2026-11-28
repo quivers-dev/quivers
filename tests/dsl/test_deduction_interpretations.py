@@ -12,6 +12,19 @@ from quivers.dsl.emit import module_to_source
 from quivers.dsl.parser import parse
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import qiec_binding_map
+from quivers.modeling import Model
+from quivers.qiec import (
+    BOOL,
+    ClosedInterpretationBinding,
+    ComputationId,
+    EffectRow,
+    LiteralValue,
+    ParameterId,
+    PresentationId,
+    Return,
+    RuleError,
+    validate_module,
+)
 from quivers.qiec.execution import ExecutionFailure, run_named
 from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.module import QiecModule
@@ -311,6 +324,138 @@ program inspect : Token -> Height
 export inspect
 """
     assert load_source(source).run("inspect").value == 2.0
+
+
+def test_closed_schema_checks_assigned_actions_and_weighted_proof_identity() -> None:
+    source = (
+        GRAMMAR.replace(
+            "instance audit : Inspection",
+            "instance audit : Inspection\ninstance spare : Inspection",
+        )
+        + """
+program unrelated : Token -> Result
+    let value = 0.0
+    return value
+"""
+    )
+    model = Model(source, entry="assess")
+    rating, evidence = model.schema.closed_interpretations
+    module = model.checked_module
+    wire = dumps(module)
+    assert {item.name for item in rating.presentation.rules} == {
+        "Mix__rule_first",
+        "Mix__rule_second",
+    }
+    assert rating.presentation == evidence.presentation
+    assert rating.carrier != evidence.carrier == BOOL
+    assert rating.interpretation.preserves == evidence.interpretation.preserves == ()
+    (audit,) = rating.instances
+    assert audit.name == "audit" and rating.effects == EffectRow(entries=(audit.entry,))
+    assert evidence.effects == EffectRow() and evidence.instances == ()
+    assert model.bind({"sentence": ("x", "y")}).schema.closed_interpretations == (
+        rating,
+        evidence,
+    )
+    assert Model(source, entry="unrelated").schema.closed_interpretations == ()
+
+    restored_module = loads(wire)
+    assert isinstance(restored_module, QiecModule)
+    for binding in (rating, evidence):
+        restored = loads(dumps(binding))
+        assert isinstance(restored, ClosedInterpretationBinding) and restored == binding
+        restored.validate(restored_module)
+    assert dumps(restored_module) == wire
+
+    first, second = rating.presentation.rules
+    changed_weight = rating.presentation.with_(
+        rules=(first.with_(weight=ParameterId.derive("stale")), second)
+    )
+    ((a, f), (b, g), leaf) = rating.interpretation.operations
+    reassigned = rating.interpretation.with_(operations=((a, g), (b, f), leaf))
+    spare = next(item for item in module.instances if item.name == "spare")
+    variants = (
+        (
+            rating.with_(
+                presentation=rating.presentation.with_(
+                    id=PresentationId.derive("stale")
+                )
+            ),
+            "nominal closed interpretation presentation",
+        ),
+        (
+            rating.with_(computation=ComputationId.derive("stale")),
+            "unknown closed interpretation root",
+        ),
+        (rating.with_(presentation=changed_weight), "differs from its packed query"),
+        (rating.with_(effects=EffectRow()), "effect row does not match"),
+        (rating.with_(instances=(spare,)), "lexical effect requirements are stale"),
+        (rating.with_(interpretation=reassigned), "differs from its checked fold"),
+    )
+    for changed, diagnostic in variants:
+        restored = loads(dumps(changed))
+        assert isinstance(restored, ClosedInterpretationBinding)
+        with pytest.raises(RuleError, match=diagnostic):
+            restored.validate(restored_module)
+
+    replaced = restored_module.with_(
+        computations=tuple(
+            computation.with_(body=Return(value=LiteralValue(value=False, type=BOOL)))
+            if computation.id == evidence.computation
+            else computation
+            for computation in restored_module.computations
+        )
+    )
+    validate_module(replaced)
+    with pytest.raises(RuleError, match="differs from its checked fold"):
+        evidence.validate(replaced)
+
+
+def test_closed_schema_keeps_index_template_reached_through_an_authored_handler() -> (
+    None
+):
+    source = (
+        INDEXED
+        + """
+effect Lookup
+    get : Unit -> Real
+
+instance lookup : Lookup
+
+handler use_proof for Lookup : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    get resumes 1 =>
+        let value <- result()
+        resume(value)
+
+define prompted() : Real !{} =
+    handle lookup with use_proof in
+        perform lookup.get()
+
+program through_handler : Token -> Result
+    let value <- prompted()
+    return value
+"""
+    )
+    model = Model(source, entry="through_handler")
+    (binding,) = model.bind({}).schema.closed_interpretations
+    assert binding == model.schema.closed_interpretations[0]
+    fold = next(
+        item
+        for item in model.checked_module.computations
+        if item.id == binding.computation
+    )
+    assert isinstance(fold.body, Case)
+    assert binding.carrier == fold.body.motive.result_type
+    assert binding.carrier != fold.type.result
+    (judgment,) = binding.presentation.judgments
+    assert fold.body.motive.indices == judgment.indices
+    restored = loads(dumps(binding))
+    assert isinstance(restored, ClosedInterpretationBinding)
+    restored.validate(model.checked_module)
+    assert float(load_source(source).run("through_handler").value) == 1.0
+    with pytest.raises(RuleError, match="does not match the closed interpretation"):
+        restored.with_(carrier=BOOL).validate(model.checked_module)
 
 
 @pytest.mark.parametrize(

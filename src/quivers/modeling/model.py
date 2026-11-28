@@ -10,7 +10,8 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous import ContinuousSpace, MonadicProgram
-from quivers.dsl import Compiler, CompileError, Module, parse, lower_qvr_to_qiec
+from quivers.dsl import Compiler, CompileError, Module, parse
+from quivers.dsl.qiec_lowering import _lower_qvr_with_companions
 from quivers.dsl._scoped_interpretations import selected_scoped_interpretations
 from quivers.family_catalog import FamilyCatalog
 from quivers.dsl.ast_nodes import (
@@ -37,14 +38,18 @@ from quivers.inference import (
 from quivers.diagnostics import ConvergenceSummary, summary
 from quivers.program import Program
 from quivers.qiec import (
+    ClosedInterpretationBinding,
+    ComputationId,
     IndexLiteral,
     ProgramEntry,
     ProgramParameter,
+    QiecModule,
     ScopedInterpretationBinding,
     TypeExpr,
     render_static,
     tensor_shape,
 )
+from quivers.qiec.module import _execution_reachability
 
 
 from quivers.diagnostics.posterior import PosteriorAnalysis
@@ -73,10 +78,16 @@ class ModelSchema(ValueModel):
     scoped_interpretations : tuple of ScopedInterpretationBinding
         The checked scoped contracts reachable from this entry, including
         calls from installed authored handler clauses.
+    closed_interpretations : tuple of ClosedInterpretationBinding
+        The reachable indexed lexical proof interpretations and their
+        exact carrier and effect requirements.
     """
 
     entry: ProgramEntry = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     scoped_interpretations: tuple[ScopedInterpretationBinding, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    closed_interpretations: tuple[ClosedInterpretationBinding, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -133,6 +144,28 @@ class ModelSchema(ValueModel):
             }
             for p in self.inputs
         }
+
+
+def _model_schema(
+    source: Module,
+    module: QiecModule,
+    entry: ProgramEntry,
+    root: ComputationId,
+    closed: tuple[ClosedInterpretationBinding, ...],
+) -> ModelSchema:
+    """Select interpretation companions by checked execution reachability."""
+    reached = _execution_reachability(module, root)[0] if closed else None
+    return ModelSchema(
+        entry=entry,
+        scoped_interpretations=selected_scoped_interpretations(
+            source, module, root, reached=reached
+        ),
+        closed_interpretations=(
+            ()
+            if reached is None
+            else tuple(binding for binding in closed if binding.computation in reached)
+        ),
+    )
 
 
 class InferenceMethod[Result](Protocol):
@@ -200,18 +233,20 @@ class Model:
         if entry not in names:
             raise ValueError(f"unknown program {entry!r}; choose from {names}")
         self.entry = entry
-        checked = lower_qvr_to_qiec(self.syntax, families=families)
+        artifacts = _lower_qvr_with_companions(self.syntax, families=families)
+        checked = artifacts.module
         self.checked_module = checked
-        self._checked_source = (self.syntax, checked)
+        self._checked_source = (self.syntax, checked, artifacts.closed_interpretations)
         self._checked_families = families
         typed_entry = next((e for e in checked.entries if e.name == entry), None)
         if typed_entry is None:
             raise CompileError(f"entry {entry!r} has no checked input contract")
-        self.schema = ModelSchema(
-            entry=typed_entry,
-            scoped_interpretations=selected_scoped_interpretations(
-                self.syntax, checked, typed_entry.computation
-            ),
+        self.schema = _model_schema(
+            self.syntax,
+            checked,
+            typed_entry,
+            typed_entry.computation,
+            artifacts.closed_interpretations,
         )
 
     @classmethod
@@ -401,13 +436,11 @@ class Model:
                 program = selected.morphism
         if not isinstance(program, (MonadicProgram, CheckedProgram)):
             raise TypeError(f"entry {self.entry!r} is not a probabilistic program")
+        root = entry.computation
         if program.input_contract is not None:
             entry = program.input_contract
-        schema = ModelSchema(
-            entry=entry,
-            scoped_interpretations=selected_scoped_interpretations(
-                self.syntax, qiec, entry.computation
-            ),
+        schema = _model_schema(
+            self.syntax, qiec, entry, root, compiler._closed_interpretations
         )
         expected = set(schema.types)
         required = (
