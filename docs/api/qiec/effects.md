@@ -807,6 +807,55 @@ define choice_first(initial : Bool) : Bool !{} =
 
 ::: quivers.qiec.handler_interchange
 
+## Scalar Normal pathwise derivatives
+
+`plan_normal_pathwise` checks a named scalar computation with direct,
+unplated `Normal` draws on one nominal `Random` instance. Each reached
+static site needs an explicit `reparam` policy. The plan assigns a fresh
+standard Normal coordinate to each addressed occurrence, including
+repeated calls to the same site.
+
+A location can depend polynomially on earlier draws. The checker
+requires a strictly positive, noise-independent scale, noise-independent
+comparisons and divisors, and fixed integral exponents. It also checks
+that parameter-dependent decisions stay on the same branch near the
+supplied point. In this fragment the return and its directional
+derivative are polynomials in the base noise with locally bounded
+coefficients. Their growth has an integrable Gaussian bound, which
+permits differentiation under the expectation.
+
+`plan.exact` gives the expected return and its directional derivative
+from exact Normal moments. `plan.at_noise` evaluates the return and
+its directional derivative at the supplied base-noise coordinates.
+Coordinates follow the order in `plan.visits` and use integers or
+fractions. Construction checks limits on source steps, noise
+coordinates, and polynomial and moment work.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import Bind, Perform, SiteEstimator, plan_normal_pathwise
+
+source = """
+instance random : Random
+
+define squared(m : Real, s : Real) : Real !{random} =
+    let x <- perform random.sample[Real](site("x"), Normal(m, s))
+    return x * x
+"""
+module = Compiler(parse(source), module_name="normal-pathwise").qiec_module
+assert module is not None
+owner = next(item for item in module.computations if item.name == "squared")
+assert isinstance(owner.body, Bind) and isinstance(owner.body.first, Perform)
+site = owner.body.first.request.origin.static_site
+policy = SiteEstimator(site=site, estimator="reparam")
+plan = plan_normal_pathwise(module, owner.id, (2, 3), (1, 2), (policy,))
+assert (plan.exact.value, plan.exact.tangent) == (13, 16)
+action = plan.at_noise((1,))
+assert (action.value, action.tangent) == (25, 30)
+```
+
+::: quivers.qiec.normal_pathwise
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

@@ -9,6 +9,11 @@ from random import Random
 from typing import Literal
 
 from quivers._values import HeldValue
+from quivers.qiec._random_site_graph import (
+    _Address,
+    _check_random_graph,
+    _random_computation,
+)
 from quivers.qiec.builtins import RANDOM, RANDOM_SAMPLE
 from quivers.qiec.contracts import SiteEstimator
 from quivers.qiec.differentiation import (
@@ -21,7 +26,7 @@ from quivers.qiec.differentiation import (
     _fraction,
     _ScalarDerivativeEvaluator,
 )
-from quivers.qiec.effects import EMPTY_ROW, EffectRequest
+from quivers.qiec.effects import EffectRequest
 from quivers.qiec.evaluator import (
     FuelExhaustedError,
     RuntimeRequest,
@@ -31,23 +36,16 @@ from quivers.qiec.evaluator import (
 )
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.identifiers import ComputationId, EffectInstanceId, SiteId
-from quivers.qiec.module import NamedComputation, QiecModule, validate_module
+from quivers.qiec.module import QiecModule
 from quivers.qiec.scope import Scope
 from quivers.qiec.terms import (
-    Bind,
-    Call,
-    Computation,
     DistributionValue,
-    If,
     Local,
-    Perform,
-    Return,
     SiteValue,
     Value,
 )
-from quivers.qiec.types import BOOL, REAL, UNIT
+from quivers.qiec.types import BOOL
 
-type _Address = tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
 type _Estimator = Literal["enumerate", "score", "measure"]
 
 
@@ -397,57 +395,6 @@ def _check_request(request: EffectRequest, instance: EffectInstanceId) -> None:
     _probability_argument(sampleable)
 
 
-def _check_graph(
-    module: QiecModule, owner: NamedComputation, instance: EffectInstanceId
-) -> None:
-    """Check the reachable first-order syntax before finite expansion.
-
-    Parameters
-    ----------
-    module : QiecModule
-        The validated module providing actual call declarations.
-    owner : NamedComputation
-        The selected scalar computation.
-    instance : EffectInstanceId
-        The one admitted Random instance.
-
-    Raises
-    ------
-    JvpUnsupported
-        If a declaration uses dynamic effect handling or unsupported control.
-    """
-    declarations = {item.id: item for item in module.computations}
-    seen: set[ComputationId] = {owner.id}
-    pending: list[Computation] = [owner.body]
-    while pending:
-        term = pending.pop()
-        if isinstance(term, Bind):
-            pending.extend((term.then, term.first))
-        elif isinstance(term, If):
-            pending.extend((term.otherwise, term.then))
-        elif isinstance(term, Perform):
-            _check_request(term.request, instance)
-        elif isinstance(term, Call):
-            target = declarations[term.callee]
-            if (
-                target.telescope
-                or target.type.effects not in (EMPTY_ROW, owner.type.effects)
-                or target.type.result not in (REAL, BOOL, UNIT)
-                or any(
-                    parameter.type not in (REAL, BOOL, UNIT)
-                    for parameter in target.parameters
-                )
-            ):
-                raise JvpUnsupported(f"site estimation cannot enter call `{term.name}`")
-            if target.id not in seen:
-                seen.add(target.id)
-                pending.append(target.body)
-        elif not isinstance(term, Return):
-            raise JvpUnsupported(
-                f"{type(term).__name__} is outside the Bernoulli fragment"
-            )
-
-
 class _NeedChoice(Exception):
     """A replay reached the next unresolved conditional draw.
 
@@ -638,22 +585,7 @@ def plan_bernoulli_gradient(
     for name, limit in (("max_paths", max_paths), ("fuel", fuel)):
         if type(limit) is not int or limit < 1:
             raise ValueError(f"{name} must be a positive integer")
-    registry = validate_module(module)
-    owner = next((item for item in module.computations if item.id == computation), None)
-    if owner is None:
-        raise ValueError(f"unknown computation for Bernoulli plan {computation}")
-    row = owner.type.effects
-    if (
-        owner.telescope
-        or owner.type.result != REAL
-        or any(parameter.type != REAL for parameter in owner.parameters)
-        or row.tail is not None
-        or len(row.entries) != 1
-        or row.entries[0].effect != RANDOM
-    ):
-        raise JvpUnsupported(
-            "a Bernoulli plan needs a scalar real entry with one nominal Random instance"
-        )
+    registry, owner = _random_computation(module, computation, "Bernoulli")
     if not len(arguments) == len(direction) == len(owner.parameters):
         raise ValueError("arguments and direction must match the computation's arity")
     methods: dict[SiteId, _Estimator] = {}
@@ -665,7 +597,7 @@ def plan_bernoulli_gradient(
                 f"unsupported Bernoulli estimator {policy.estimator!r}"
             )
         methods[policy.site] = policy.estimator
-    _check_graph(module, owner, row.entries[0].instance)
+    _check_random_graph(module, owner, "Bernoulli", _check_request)
     environment = {
         parameter: _dual(_fraction(value), _fraction(tangent), True)
         for parameter, value, tangent in zip(

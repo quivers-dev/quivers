@@ -205,6 +205,11 @@ from quivers.qiec.bernoulli_estimators import (
     BernoulliWeakSelector,
     plan_bernoulli_gradient,
 )
+from quivers.qiec.normal_pathwise import (
+    NormalPathwisePlan,
+    NormalVisit,
+    plan_normal_pathwise,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1153,6 +1158,7 @@ __all__ += [
     "BernoulliWeakSelector",
     "plan_bernoulli_gradient",
 ]
+__all__ += ["NormalPathwisePlan", "NormalVisit", "plan_normal_pathwise"]
 __all__ += [
     "FiniteAlgebra",
     "FiniteAlgebraLawError",
