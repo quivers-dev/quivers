@@ -347,15 +347,27 @@ class FixedStringQuery:
         """Work of compiling this query."""
         return self._plan.work
 
-    def weight(self) -> torch.Tensor:
+    def weight(self, *, recompute_backward: bool = False) -> torch.Tensor:
         """Evaluate the plan with the current weights.
 
         A cyclic plan requires floating-point weights and an algebra that
         establishes the semiring laws and the least-solution law of its
         star. Closure can raise `DivergentClosureError` or
         `UndecidedClosureError` for the current weights.
+
+        With `recompute_backward`, autograd retains the path-plan inputs
+        and recomputes required intermediate values during backward.
+        The weight source runs once, outside the checkpoint.
         """
-        return self._plan.evaluate(self._relation._weights(), self._relation.algebra)
+        weights = self._relation._weights()
+        algebra = self._relation.algebra
+        if recompute_backward and torch.is_grad_enabled() and weights.requires_grad:
+            from torch.utils.checkpoint import checkpoint
+
+            return checkpoint(
+                self._plan.evaluate, weights, algebra, use_reentrant=False
+            )
+        return self._plan.evaluate(weights, algebra)
 
     def best_path(self) -> RelationPath | None:
         """Return the highest-weight positive path, if the query has one.

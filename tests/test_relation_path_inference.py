@@ -265,3 +265,58 @@ def test_log_probability_two_extreme_paths_use_the_finite_log_normalizer():
     assert counts.counts.tolist() == pytest.approx([0.5, 0.5], abs=1e-13)
     assert set(counts.arc_ids) == {0, 1}
     assert query.sample_path().arc_ids in {(0,), (1,)}
+
+
+def test_recomputing_backward_saves_path_intermediates_and_keeps_gradients():
+    class SlotSource(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.slots = nn.Parameter(
+                torch.tensor([0.125, 0.875, 1.0], dtype=torch.float64)
+            )
+            self.calls = 0
+
+        def forward(self):
+            self.calls += 1
+            return self.slots
+
+    steps = 64
+    topology = RelationTopology(
+        (_INPUT,),
+        1,
+        steps + 1,
+        tuple(Arc(i, i + 1, (0,), slot) for i in range(steps) for slot in (0, 1)),
+        (Boundary(0, 2),),
+        (Boundary(steps, 2),),
+        ("left", "right", "boundary"),
+    )
+    source = SlotSource()
+    query = RationalRelation(topology, source, algebra=MARKOV).query(((0,) * steps,))
+
+    def evaluate(recompute):
+        saved = []
+
+        def pack(tensor):
+            saved.append(tensor.numel())
+            return tensor
+
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda value: value):
+            score = query.weight(recompute_backward=recompute)
+        (gradient,) = torch.autograd.grad(score, source.slots, create_graph=True)
+        (second_row,) = torch.autograd.grad(gradient[0], source.slots)
+        return score, gradient, second_row, sum(saved)
+
+    direct = evaluate(False)
+    recomputed = evaluate(True)
+    assert source.calls == 2
+    for ordinary, replay in zip(direct[:3], recomputed[:3], strict=True):
+        assert torch.equal(ordinary, replay)
+    assert recomputed[0].item() == 1.0
+    assert recomputed[1].tolist() == [steps, steps, 2]
+    assert recomputed[2].tolist() == [
+        steps * (steps - 1),
+        steps * (steps - 1),
+        2 * steps,
+    ]
+    assert recomputed[3] <= 2 * len(source.slots)
+    assert direct[3] >= steps * 2
