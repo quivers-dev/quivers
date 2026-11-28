@@ -149,7 +149,7 @@ define pruned_belief : {report} !{{}} =
     parameters.update(
         {
             _owner("w0"): p,
-            _owner("w1"): RelationWeightComplement(_owner("w0")),
+            _owner("w1"): RelationWeightComplement(owner=_owner("w0")),
             _owner("one"): p.new_ones(()),
         }
     )
