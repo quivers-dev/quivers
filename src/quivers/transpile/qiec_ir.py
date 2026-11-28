@@ -3692,7 +3692,10 @@ def _outcome_dependents(module: QiecModule) -> frozenset[StableId]:
         for handler in module.handlers
         if isinstance(
             handler.foreign,
-            fo.DeductionOutcomes | fo.DeductionOutcomeGrouping | fo.DeductionProofs,
+            fo.DeductionOutcomes
+            | fo.DeductionOutcomeGrouping
+            | fo.DeductionOutcomeLaw
+            | fo.DeductionProofs,
         )
     ]
     if not pending:

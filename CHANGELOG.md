@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Sampleable deduction outcomes.** A checked QVR program can turn weighted outcome rows into a typed finite law, draw a reading, and replay its score under the original grammar weights.
 - **Signed-delay tape equality.** A wider bounded-delay certificate permits productive cycles of a common sign along each accepting path, with exact refusals for mixed cyclic drift and unchanged original path weights.
 - **Checked sparse posterior path laws.** Fixed-word requests bind typed path posteriors for Random draws, replay, and differentiable trace scoring with original arc identities.
 - **Checked alignment-marginal ranking requests.** Serialize an explicit candidate set and sparse query limits for the exact alignment-sum objective, with a live selected log score.

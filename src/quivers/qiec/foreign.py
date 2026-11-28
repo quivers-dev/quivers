@@ -750,6 +750,19 @@ class DeductionOutcomeGrouping(QiecModel):
     tag: Literal["deduction-outcome-grouping"] = "deduction-outcome-grouping"
 
 
+class DeductionOutcomeLaw(QiecModel):
+    """Normalize checked deduction outcome rows as one finite sampleable.
+
+    Parameters
+    ----------
+    layout : DeductionOutcomeGrouping
+        The original key type and the two constructors of the weighted rows.
+    """
+
+    layout: DeductionOutcomeGrouping = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["deduction-outcome-law"] = "deduction-outcome-law"
+
+
 type ForeignSemantics = (
     SemiringSum
     | SemiringProduct
@@ -758,12 +771,14 @@ type ForeignSemantics = (
     | DeductionOutcomes
     | DeductionProofs
     | DeductionOutcomeGrouping
+    | DeductionOutcomeLaw
 )
 """What a foreign handler computes."""
 
 
 __all__ = [
     "DeductionOutcomeGrouping",
+    "DeductionOutcomeLaw",
     "DeductionOutcomes",
     "DeductionProofs",
     "EXACT_COUNT",

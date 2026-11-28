@@ -10,9 +10,13 @@ import torch
 from quivers.continuous.tensor_backend import TensorBackend
 from quivers.dsl import loads as load_source
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
-from quivers.qiec.module import QiecModule
-from quivers.qiec.program_runtime import run_program
+from quivers.qiec.checking import KernelError
+from quivers.qiec.execution import ExecutionFailure, run_named
+from quivers.qiec.foreign import DeductionOutcomeLaw
+from quivers.qiec.module import QiecModule, validate_module
+from quivers.qiec.program_runtime import run_program, sample_program
 from quivers.qiec.serialization import dumps, loads
+from quivers.qiec.types import BOOL
 
 GUIDE = Path(__file__).resolve().parents[2] / "docs/guides/deduction.md"
 
@@ -187,3 +191,145 @@ def test_neural_observation_backpropagates_through_parser_and_prover() -> None:
         with torch.no_grad():
             weights.add_(0.1 * actual_gradient[0])
             network.add_(0.2 * actual_gradient[1])
+
+
+def test_weighted_reading_law_draws_and_scores_the_same_nominal_forms() -> None:
+    compiled = load_source(
+        _example()
+        + """
+define approved_form() : Reading__Item !{} =
+    return construct Reading__approved() as Reading__Item
+
+define unresolved_form() : Reading__Item !{} =
+    return construct Reading__unresolved() as Reading__Item
+"""
+    )
+    module = loads(dumps(compiled.qiec))
+    assert isinstance(module, QiecModule)
+    forms = tuple(
+        run_named(module, name).value for name in ("approved_form", "unresolved_form")
+    )
+    weights = torch.tensor([-0.3, 0.7, -0.4], dtype=torch.float64, requires_grad=True)
+    rates = torch.tensor([0.82, 0.17], dtype=weights.dtype, requires_grad=True)
+    parameters = {
+        f"Reading.lex.{row}": weight for row, weight in enumerate(weights.unbind())
+    }
+    for observed in (False, True):
+        data = {
+            "first": "item",
+            "last": "reviewed",
+            "response": observed,
+            "yes": rates[0],
+            "no": rates[1],
+        }
+        options = dict(data=data, parameters=parameters, distributions=TensorBackend())
+        replayed = tuple(
+            run_program(module, "assess_drawn", sites={"reading": form}, **options)
+            for form in forms
+        )
+        likelihoods = rates if observed else 1 - rates
+        joint = torch.stack(tuple(run.log_joint for run in replayed))
+        expected = torch.stack((weights[:2].logsumexp(0), weights[2]))
+        expected = expected - weights.logsumexp(0) + likelihoods.log()
+        assert replayed[0].value == rates[0] and replayed[1].value == rates[1]
+        torch.testing.assert_close(joint, expected)
+
+        draw = sample_program(module, "assess_drawn", **options)
+        selected = 0 if draw.value == rates[0] else 1
+        assert draw.value == rates[selected]
+        torch.testing.assert_close(draw.log_joint, replayed[selected].log_joint)
+        actual = joint.logsumexp(0)
+        oracle = (weights + likelihoods[[0, 0, 1]].log()).logsumexp(0)
+        oracle = oracle - weights.logsumexp(0)
+        torch.testing.assert_close(actual, oracle)
+        actual_grad = torch.autograd.grad(actual, (weights, rates), retain_graph=True)
+        oracle_grad = torch.autograd.grad(oracle, (weights, rates))
+        for found, reference in zip(actual_grad, oracle_grad, strict=True):
+            torch.testing.assert_close(found, reference)
+
+
+def test_outcome_law_refuses_empty_rows_and_unrelated_carriers() -> None:
+    compiled = load_source(_example())
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    with pytest.raises(ExecutionFailure, match="no positive mass"):
+        sample_program(
+            module,
+            "assess_drawn",
+            data={
+                "first": "missing",
+                "last": "reviewed",
+                "response": True,
+                "yes": 0.8,
+                "no": 0.3,
+            },
+        )
+    wrong = _example().replace("outcome_law(readings)", "outcome_law(yes)")
+    with pytest.raises(
+        QiecDiagnosticError, match="requires checked weighted deduction outcomes"
+    ):
+        load_source(wrong)
+
+
+def test_outcome_law_accepts_rows_grouped_by_a_checked_key() -> None:
+    source = (
+        _example()
+        + """
+define meaning(item : Reading__Item) : Bool !{} =
+    return true
+
+define draw_meaning(law : Sampleable[Bool]) : Real !{random} =
+    let value <- perform random.sample[Bool](site("meaning"), law)
+    if value then
+        return 1.0
+    else
+        return 0.0
+
+program assess_grouped(first : String, last : String) : Word -> Weight
+    let sentence <- pack_tokens(first, last)
+    let readings = parse_outcomes(Reading, sentence, meaning)
+    let law = outcome_law(readings)
+    let prediction <- draw_meaning(law)
+    return prediction
+
+export assess_grouped
+"""
+    )
+    module = loads(dumps(load_source(source).qiec))
+    assert isinstance(module, QiecModule)
+    weights = torch.tensor([-1.2, 1.0, -0.2], dtype=torch.float64, requires_grad=True)
+    data = {"first": "item", "last": "reviewed"}
+    parameters = {
+        f"Reading.lex.{row}": weight for row, weight in enumerate(weights.unbind())
+    }
+    result = run_program(
+        module,
+        "assess_grouped",
+        data=data,
+        sites={"meaning": True},
+        parameters=parameters,
+    )
+    assert result.value == 1.0 and result.log_joint == 0.0
+    (gradient,) = torch.autograd.grad(result.log_joint, weights)
+    torch.testing.assert_close(gradient, torch.zeros_like(weights))
+
+
+def test_serialized_outcome_law_cannot_claim_another_result_carrier() -> None:
+    compiled = load_source(_example())
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    (handler,) = (
+        item
+        for item in module.handlers
+        if isinstance(item.foreign, DeductionOutcomeLaw)
+    )
+    law = handler.foreign
+    assert isinstance(law, DeductionOutcomeLaw)
+    forged = handler.with_(foreign=law.with_(layout=law.layout.with_(key_type=BOOL)))
+    changed = module.with_(
+        handlers=tuple(
+            forged if item.id == handler.id else item for item in module.handlers
+        )
+    )
+    with pytest.raises(KernelError, match="outcome law has an invalid query signature"):
+        validate_module(changed)

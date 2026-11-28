@@ -171,6 +171,7 @@ from quivers.qiec.effects import (
 from quivers.qiec.evidence import BranchGiven, Reflexivity
 from quivers.qiec.foreign import (
     DeductionOutcomeGrouping,
+    DeductionOutcomeLaw,
     DeductionOutcomes,
     DeductionProofs,
     Enumeration,
@@ -414,6 +415,7 @@ _NODE_CLASSES = (
     DeductionOutcomes,
     DeductionProofs,
     DeductionOutcomeGrouping,
+    DeductionOutcomeLaw,
     EffectRequest,
     NamedEffectInstance,
     NamedComputation,
