@@ -335,7 +335,7 @@ gradient mapping. The finite group implementation scans the declared
 feature vocabulary. Each shrink copies the coefficient vector, so a
 proximal update takes $O(rg)$ work for $r$ coefficients and $g$ groups.
 
-### Batched contextual edits
+## Batched contextual edits
 
 `ContextualEditChannel` sums the alignments of observed input-output
 pairs with a single packed semiring plan. At input position $i$ and
