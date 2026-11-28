@@ -125,7 +125,11 @@ def _interpretation(
             presentation,
             interpretation,
             names={judgment.id: declaration.name},
-            carriers={judgment.id: elaborator._lower_type(declaration.carrier, ())},
+            carriers={
+                judgment.id: elaborator._lower_type(
+                    declaration.carrier, judgment.indices
+                )
+            },
             origin=origin,
         )
     except (KernelError, ValueError, dx.ValidationError) as error:

@@ -703,10 +703,32 @@ export difference_example
 ```
 
 Each operation takes one carrier value per premise, then its constructor's
-ordinary fields, and returns the declared carrier. The carrier is a closed
-type, common to this deduction's single span judgment. A rule operation may
-use a closed effect row. The interpretation's row is the union of the reachable
-operation rows, and callers handle those instances as for any checked computation.
+ordinary fields, and returns the carrier at the rule's conclusion. For a
+lexical span the carrier may use the span judgment's indices. `x0` and
+`x1` are its left and right endpoints. The category is `x2`, and the
+form, when present, is `x3`. For instance, a declared family
+`Measurement(position : Nat)` can serve as the carrier
+`Measurement(x1)`. A rule joining spans `(I, K)` and `(K, J)`
+then takes `Measurement(K)` and `Measurement(J)` in that order and
+returns `Measurement(J)`. An operation that takes static arguments
+must take the full constructor telescope in its declared order and
+at its declared sorts. A closed operation can omit that telescope
+when its input and result types agree at every constructor instantiation.
+
+A rule operation may use a closed effect row independent of its static
+arguments. The interpretation's row is the union of the reachable operation
+rows, and callers handle those instances as for any checked computation.
+
+The result type template binds only the indices of the judgment. Lowering
+gives the fold's static parameters names distinct from the case motive's
+index binders. In each constructor branch it substitutes the premise
+indices into their carrier templates and the conclusion indices into the
+result template. By induction on the input proof, the recursive calls
+return the types required by the rule operation. At runtime the selected
+constructor supplies the branch indices by identity, including indices
+hidden from the constructor's result type. This preserves the distinction
+between, for instance, the right endpoint of the first premise and the right
+endpoint of the conclusion.
 
 The checked case and calls follow the initial algebra for the presentation's
 finite ordered proof trees. They visit each constructor occurrence once and
