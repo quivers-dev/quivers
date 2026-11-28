@@ -125,6 +125,14 @@ tape positions in increasing order, summing over the words on erased tapes.
 `trim` keeps the arcs and boundary marks on structurally accepting walks, including
 zero-weight occurrences. These operations reuse the relation's weight source.
 
+`condition` fixes one tape to a word and erases that tape. After indexing the
+source arcs by their selected label, it visits the reachable pairs of source
+state and consumed word length. The remaining relation assigns the joint
+weight at the fixed word, so it can be used to compute a normalizer.
+`intersect` multiplies two weighted languages on a common one-sided tape
+through the same epsilon-filtered product. Each pair of accepting paths with
+the same word contributes exactly once to this product.
+
 ::: quivers.core.relations
     options:
       members:
@@ -142,6 +150,8 @@ zero-weight occurrences. These operations reuse the relation's weight source.
         - FiniteRelationRestriction
         - ProductiveEpsilonCycleError
         - RelationLimitError
+        - condition
+        - intersect
         - invert
         - project
         - trim
