@@ -1098,4 +1098,38 @@ assert decision.certified
 assert decision.domain_polynomial == (((0, 1), 1),)
 ```
 
+A `RationalDerivativeDeclaration` identifies its primal, forward action,
+and reverse components by computation ID. It can be serialized
+independently of the executable module. Passing it to `exact_jvp` or
+`exact_gradient` checks the identities against the supplied module before
+executing the named action. The checker returns the primal guard and
+any separating input. Each application keeps the primal evaluation's
+ordinary domain and resource limits.
+
+<!-- python: run -->
+```python
+from fractions import Fraction
+
+from quivers.dsl import loads
+from quivers.qiec import RationalDerivativeDeclaration, dumps, exact_jvp
+from quivers.qiec import loads as read_qiec
+
+module = loads("""
+define mean_term(x : Real) : Real !{} =
+    return 1.0 / x
+
+define mean_direction(x : Real, step : Real) : Real !{} =
+    return -step / (x * x)
+""").qiec
+assert module is not None
+ids = {computation.name: computation.id for computation in module.computations}
+rule = RationalDerivativeDeclaration(primal=ids["mean_term"], jvp=ids["mean_direction"])
+decoded = read_qiec(dumps(rule))
+assert isinstance(decoded, RationalDerivativeDeclaration)
+result = exact_jvp(module, "mean_term", (2,), (3,), rule=decoded)
+assert (result.value, result.tangent) == (Fraction(1, 2), Fraction(-3, 4))
+```
+
+::: quivers.qiec.derivative_rule_schema.RationalDerivativeDeclaration
+
 ::: quivers.qiec.derivative_rules

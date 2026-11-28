@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from fractions import Fraction
 from math import isfinite
 from operator import eq, ge, gt, le, lt, ne
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from quivers.qiec.checking import KernelRegistry
 from quivers.qiec.contracts import Condition, DerivativeSemantics
+from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.evaluator import EvaluationError, Evaluator, FuelExhaustedError
 from quivers.qiec.module import NamedComputation, QiecModule, validate_module
 from quivers.qiec.primitives import PRIMITIVES
@@ -26,6 +27,9 @@ from quivers.qiec.terms import (
     Var,
 )
 from quivers.qiec.types import BOOL, REAL, UNIT
+
+if TYPE_CHECKING:
+    from quivers.qiec.derivative_rules import RationalDerivativeDecision
 
 _ARITHMETIC = {
     PRIMITIVES[name].id: name
@@ -746,12 +750,92 @@ def _fraction(value: int | Fraction) -> Fraction:
     return Fraction(value)
 
 
+def _check_action(
+    module: QiecModule,
+    owner: NamedComputation,
+    rule: RationalDerivativeDeclaration,
+    max_work: int,
+    fuel: int,
+) -> RationalDerivativeDecision:
+    """Certify an action against the source owner of the requested evaluation.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked module that supplies all the computations.
+    owner : NamedComputation
+        The actual requested primal computation.
+    rule : RationalDerivativeDeclaration
+        The nominal declaration to verify before use.
+    max_work : int
+        The symbolic certification work limit.
+    fuel : int
+        The reference machine step limit per computation.
+
+    Returns
+    -------
+    RationalDerivativeDecision
+        A fresh certificate over the actual checked source.
+
+    Raises
+    ------
+    JvpUnsupported
+        If the declaration names another primal or cannot be certified.
+    JvpLimit
+        If the certification exhausts a work or step limit.
+    """
+    from quivers.qiec.rational_laws import RationalLawLimit, RationalLawUnsupported
+
+    if rule.primal != owner.id:
+        raise JvpUnsupported("the declared derivative belongs to another computation")
+    try:
+        decision = rule.check(module, max_work=max_work, fuel=fuel)
+    except RationalLawUnsupported as error:
+        raise JvpUnsupported(str(error)) from error
+    except RationalLawLimit as error:
+        raise JvpLimit(str(error)) from error
+    if not decision.certified:
+        raise JvpUnsupported("the declared action differs from the exact derivative")
+    return decision
+
+
+def _scalar_value(
+    module: QiecModule,
+    name: str,
+    arguments: tuple[int | Fraction, ...],
+    fuel: int,
+) -> Fraction:
+    """Execute a certified scalar expression at its primal coordinates.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module that defines the named expression.
+    name : str
+        The primal or explicitly authored derivative computation.
+    arguments : tuple[int or Fraction, ...]
+        The exact inputs to that computation.
+    fuel : int
+        The reference step limit.
+
+    Returns
+    -------
+    Fraction
+        The exact returned real value with all perturbation seeds zero.
+    """
+    return _evaluate_dual(
+        module, name, arguments, (0,) * len(arguments), None, fuel
+    ).value
+
+
 def exact_gradient(
     module: QiecModule,
     computation: str,
     arguments: tuple[int | Fraction, ...],
     *,
     fuel: int = 65_536,
+    rule: RationalDerivativeDeclaration | None = None,
+    max_rule_work: int = 65_536,
 ) -> ExactGradient:
     """Evaluate a checked scalar computation and its exact reverse gradient.
 
@@ -771,6 +855,10 @@ def exact_gradient(
         The evaluation point in parameter order.
     fuel : int
         The maximum number of reference machine steps.
+    rule : RationalDerivativeDeclaration or None
+        If given, certify and execute the corresponding authored action.
+    max_rule_work : int
+        The symbolic work limit for certifying a supplied rule.
 
     Returns
     -------
@@ -792,6 +880,17 @@ def exact_gradient(
     parameters = declaration.parameters
     if len(arguments) != len(parameters):
         raise ValueError("arguments must match the computation's arity")
+    if rule is not None:
+        if rule.vjp is None:
+            raise JvpUnsupported("the declaration has no reverse action")
+        decision = _check_action(module, declaration, rule, max_rule_work, fuel)
+        assert decision.vjp is not None
+        value = _scalar_value(module, computation, arguments, fuel)
+        gradient = tuple(
+            _scalar_value(module, action.computation, (*arguments, 1), fuel)
+            for action in decision.vjp
+        )
+        return ExactGradient(value, gradient)
     evaluator = _ReverseEvaluator(module, fuel)
     result = evaluator.run(declaration, registry, arguments, record=True)
     return ExactGradient(result.value, evaluator.gradient(result, len(parameters)))
@@ -864,6 +963,8 @@ def exact_jvp(
     direction: tuple[int | Fraction, ...],
     *,
     fuel: int = 65_536,
+    rule: RationalDerivativeDeclaration | None = None,
+    max_rule_work: int = 65_536,
 ) -> ExactJvp:
     """Evaluate a named real computation and its exact forward derivative.
 
@@ -885,6 +986,10 @@ def exact_jvp(
         The input tangent, in the same parameter order.
     fuel : int
         The maximum number of reference machine steps.
+    rule : RationalDerivativeDeclaration or None
+        If given, certify and execute the corresponding authored action.
+    max_rule_work : int
+        The symbolic work limit for certifying a supplied rule.
 
     Returns
     -------
@@ -902,6 +1007,23 @@ def exact_jvp(
     ValueError
         If the supplied arguments, direction, or limit is malformed.
     """
+    if rule is not None:
+        _, declaration = _prepare_scalar(module, computation, fuel)
+        if len(arguments) != len(declaration.parameters) or len(direction) != len(
+            arguments
+        ):
+            raise ValueError(
+                "arguments and direction must each match the computation's arity"
+            )
+        if rule.jvp is None:
+            raise JvpUnsupported("the declaration has no forward action")
+        decision = _check_action(module, declaration, rule, max_rule_work, fuel)
+        assert decision.jvp is not None
+        value = _scalar_value(module, computation, arguments, fuel)
+        tangent = _scalar_value(
+            module, decision.jvp.computation, (*arguments, *direction), fuel
+        )
+        return ExactJvp(value, tangent)
     result = _evaluate_dual(module, computation, arguments, direction, None, fuel)
     return ExactJvp(result.value, result.tangent)
 

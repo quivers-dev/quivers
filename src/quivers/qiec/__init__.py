@@ -124,6 +124,7 @@ from quivers.qiec.declarations import (
     FamilyDecl,
     FieldDef,
 )
+from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.derivative_rules import (
     RationalDerivativeComponent,
     RationalDerivativeDecision,
@@ -1209,6 +1210,7 @@ __all__ += [
 ]
 __all__ += [
     "RationalDerivativeComponent",
+    "RationalDerivativeDeclaration",
     "RationalDerivativeDecision",
     "check_rational_derivative_rule",
 ]

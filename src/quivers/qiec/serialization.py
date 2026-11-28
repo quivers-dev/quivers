@@ -124,6 +124,7 @@ from quivers.qiec.effect_law_schema import (
     EffectLawBundle,
     EffectLawObligation,
 )
+from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
@@ -492,6 +493,7 @@ _NODE_CLASSES = (
     EffectLawObligation,
     EffectLawBundle,
     FiniteHandlerInterchange,
+    RationalDerivativeDeclaration,
     ProgramEntry,
     ProgramParameter,
     ProgramSite,
