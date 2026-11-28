@@ -72,3 +72,18 @@ query once and uses the live graph parameters on every invocation.
 ::: quivers.qiec.string_graph_runtime.tree_string_graph_handler
 
 ::: quivers.qiec.string_graph_runtime.TreeStringGraphRuntimeProvider
+
+QVR can name these queries as ordinary scalar computations.
+
+<!-- compile: qiec -->
+```qvr
+string_graph_score log_evidence : LogWeight [operation=tree_partition]
+string_graph_score reading : LogWeight [operation=tree_log_prob]
+```
+
+Bind each declaration with `TreeStringGraphRuntimeProvider.for_score`.
+A partition uses `Real` for a Markov graph or `LogWeight` for a LogProb
+graph. A word query has type `LogWeight` and sums out the other
+variables before normalizing. Attachments serve these computations on
+the checked reference machine, with foreign-handler diagnostics for
+targets that cannot lower them.

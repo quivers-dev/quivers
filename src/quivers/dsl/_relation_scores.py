@@ -1,11 +1,15 @@
-"""Elaborate source-declared fixed relation score computations."""
+"""Elaborate source-declared relation and string graph scores."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from quivers.dsl.ast_nodes import QiecHandlerDecl, QiecRelationScoreDecl
+from quivers.dsl.ast_nodes import (
+    QiecHandlerDecl,
+    QiecRelationScoreDecl,
+    QiecStringGraphScoreDecl,
+)
 from quivers.qiec.builtins import COMPUTE_APPLY, COMPUTE_EFFECT
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.checking import ComputationSignature
@@ -24,6 +28,10 @@ from quivers.qiec.relation_runtime import (
     _relation_score_handler_id,
     _relation_score_handler_name,
 )
+from quivers.qiec.string_graph_runtime import (
+    _string_graph_score_handler_name,
+    _tree_string_graph_handler,
+)
 from quivers.qiec.terms import Handle, LiteralValue, Local, Perform
 from quivers.qiec.types import REAL, UNIT
 
@@ -33,7 +41,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class _RelationScore:
-    declaration: QiecRelationScoreDecl
+    declaration: QiecRelationScoreDecl | QiecStringGraphScoreDecl
+    path: tuple[str, ...]
     signature: ComputationSignature
     instance: NamedEffectInstance
     handler: HandlerDef
@@ -48,30 +57,50 @@ def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ..
         if isinstance(statement, QiecHandlerDecl)
     }
     for declaration in elaborator.source.syntax.statements:
-        if not isinstance(declaration, QiecRelationScoreDecl):
+        if not isinstance(
+            declaration, QiecRelationScoreDecl | QiecStringGraphScoreDecl
+        ):
             continue
         name = declaration.name
-        path = ("relation_scores", name, declaration.operation)
+        is_graph = isinstance(declaration, QiecStringGraphScoreDecl)
+        path = (
+            "string_graph_scores" if is_graph else "relation_scores",
+            name,
+            declaration.operation,
+        )
+        description = "string graph score" if is_graph else "relation score"
+        diagnostic = "qiec-string-graph-score" if is_graph else "qiec-relation-score"
         if name in elaborator.computation_signatures:
             elaborator._fail(
                 declaration,
                 f"duplicate computation {name!r}",
-                code="qiec-relation-score",
+                code=diagnostic,
             )
         result = elaborator._lower_type(declaration.result_type, ())
         if result not in (REAL, LOG_WEIGHT):
             elaborator._fail(
                 declaration,
-                "a relation score requires a Real or LogWeight result",
-                code="qiec-relation-score",
+                f"a {description} requires a Real or LogWeight result",
+                code=diagnostic,
             )
-        if declaration.operation == "conditional_log_prob" and result != LOG_WEIGHT:
+        if (
+            declaration.operation in ("conditional_log_prob", "tree_log_prob")
+            and result != LOG_WEIGHT
+        ):
             elaborator._fail(
                 declaration,
-                "a conditional relation score requires a LogWeight result",
-                code="qiec-relation-score",
+                (
+                    "a tree word score requires a LogWeight result"
+                    if is_graph
+                    else "a conditional relation score requires a LogWeight result"
+                ),
+                code=diagnostic,
             )
-        handler_name = _relation_score_handler_name(name)
+        handler_name = (
+            _string_graph_score_handler_name(name)
+            if is_graph
+            else _relation_score_handler_name(name)
+        )
         instance_name = f"{handler_name}__compute"
         if (
             handler_name in declared_handlers
@@ -80,15 +109,15 @@ def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ..
         ):
             elaborator._fail(
                 declaration,
-                f"relation score {name!r} conflicts with an existing attachment",
-                code="qiec-relation-score",
+                f"{description} {name!r} conflicts with an existing attachment",
+                code=diagnostic,
             )
         effect = COMPUTE_EFFECT.apply((UNIT, result))
         if elaborator.effects.setdefault("Compute", COMPUTE_EFFECT) != COMPUTE_EFFECT:
             elaborator._fail(
                 declaration,
-                "relation scores require the prelude Compute interface",
-                code="qiec-relation-score",
+                f"{description}s require the prelude Compute interface",
+                code=diagnostic,
             )
         if COMPUTE_EFFECT.ref.id not in elaborator.registry.effects:
             elaborator.registry.register_effect(COMPUTE_EFFECT)
@@ -102,20 +131,28 @@ def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ..
                 declaration, (*path, "instance"), "effect-instance"
             ),
         )
-        handler = HandlerDef(
-            name=handler_name,
-            id=_relation_score_handler_id(module, name, declaration.operation),
-            effect=effect,
-            clauses=(
-                HandlerClauseDef(
-                    operation=COMPUTE_APPLY,
-                    grade=ResumptionGrade.LINEAR,
-                    parameters=(Local(name="argument", type=UNIT),),
+        if is_graph:
+            handler = _tree_string_graph_handler(
+                module,
+                handler_name,
+                declaration.operation.removeprefix("tree_"),
+                result,
+            )
+        else:
+            handler = HandlerDef(
+                name=handler_name,
+                id=_relation_score_handler_id(module, name, declaration.operation),
+                effect=effect,
+                clauses=(
+                    HandlerClauseDef(
+                        operation=COMPUTE_APPLY,
+                        grade=ResumptionGrade.LINEAR,
+                        parameters=(Local(name="argument", type=UNIT),),
+                    ),
                 ),
-            ),
-            input_type=result,
-            output_type=result,
-        )
+                input_type=result,
+                output_type=result,
+            )
         signature = ComputationSignature(
             id=ComputationId.derive(module, "computation", name),
             name=name,
@@ -128,7 +165,7 @@ def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ..
         elaborator.handlers[handler_name] = handler
         elaborator.registry.register_computation(signature)
         elaborator.computation_signatures[name] = signature
-        routes.append(_RelationScore(declaration, signature, instance, handler))
+        routes.append(_RelationScore(declaration, path, signature, instance, handler))
     return tuple(routes)
 
 
@@ -139,7 +176,7 @@ def lower_relation_scores(
     results: list[NamedComputation] = []
     for route in routes:
         declaration = route.declaration
-        path = ("relation_scores", declaration.name, declaration.operation)
+        path = route.path
         request = EffectRequest(
             instance=route.instance.entry.instance,
             effect=route.instance.entry.effect,

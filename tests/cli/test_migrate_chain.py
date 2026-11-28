@@ -100,6 +100,15 @@ def test_relation_score_keywords_are_contextual_for_old_source() -> None:
     assert compose_migration("v0.64.2", "HEAD")(source) == source
 
 
+def test_string_graph_score_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object string_graph_score : FinSet 2\n"
+        b"object tree_partition : FinSet 2\n"
+        b"object tree_log_prob : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_zero_hop_rejects_missing_recovery_vertices() -> None:
     with pytest.raises(MigrationError, match="missing .* token"):
         compose_migration("HEAD", "HEAD")(b"object A :\n")

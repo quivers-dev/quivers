@@ -88,6 +88,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecInterpretationDecl,
     QiecRelationScoreDecl,
+    QiecStringGraphScoreDecl,
     QiecEffectDecl,
     QiecHandlerDecl,
     QiecBinder,
@@ -1607,7 +1608,12 @@ class ReplSession:
                 return _resp(
                     f"effect {declaration.name}\n  operations: {{{operations}}}"
                 )
-            if isinstance(declaration, QiecInterpretationDecl | QiecRelationScoreDecl):
+            if isinstance(
+                declaration,
+                QiecInterpretationDecl
+                | QiecRelationScoreDecl
+                | QiecStringGraphScoreDecl,
+            ):
                 inferred = self._inferred_row(declaration.name)
                 if inferred is not None:
                     return _resp(

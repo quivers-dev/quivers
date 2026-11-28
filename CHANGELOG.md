@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Authored string graph scores.** QVR can name a checked graph partition or normalized word objective and call it from an ordinary computation.
 - **Candidate string messages.** A bounded candidate view retains the original unary LogProb message scale, sums omitted mass directly, and reports truncation and beam ties separately.
 - **Sampleable deduction outcomes.** A checked QVR program can turn weighted outcome rows into a typed finite law, draw a reading, and replay its score under the original grammar weights.
 - **Exact finite log expectations.** A single checked Random handler can sum scalar log scores across several dependent or structured finite draws with live gradients.

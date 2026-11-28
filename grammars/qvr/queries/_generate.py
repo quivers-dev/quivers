@@ -96,6 +96,8 @@ NODE_PATTERNS = """\
 (computation_decl name: (identifier) @function)
 (relation_score_decl name: (identifier) @function)
 (relation_score_operation) @keyword
+(string_graph_score_decl name: (identifier) @function)
+(string_graph_score_operation) @keyword
 (interpretation_decl name: (identifier) @function)
 (interpretation_decl deduction: (identifier) @function)
 (interpretation_clause constructor: (identifier) @constructor)
