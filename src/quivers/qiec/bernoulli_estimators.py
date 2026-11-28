@@ -48,7 +48,7 @@ from quivers.qiec.terms import (
 from quivers.qiec.types import BOOL, REAL, UNIT
 
 type _Address = tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
-type _Estimator = Literal["enumerate", "score"]
+type _Estimator = Literal["enumerate", "score", "measure"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +63,7 @@ class BernoulliVisit:
         The checked evaluator's request address.
     prefix : tuple[bool, ...]
         The source choices preceding this request in the trace.
-    estimator : {"enumerate", "score"}
+    estimator : {"enumerate", "score", "measure"}
         The policy declared for the static site of this occurrence.
     probability : Fraction
         The conditional probability of true.
@@ -96,6 +96,23 @@ class BernoulliScoreDraw:
 
 
 @dataclass(frozen=True, slots=True)
+class BernoulliWeakSelector:
+    """One primal branch selector for a weak derivative.
+
+    Parameters
+    ----------
+    visit : BernoulliVisit
+        The source occurrence and conditional law.
+    choice : bool
+        The selected primal branch. Both branches contribute to the
+        weak derivative, including the one this selector did not choose.
+    """
+
+    visit: BernoulliVisit
+    choice: bool
+
+
+@dataclass(frozen=True, slots=True)
 class BernoulliGradientSample:
     """One realization of the chosen per-site derivative estimator.
 
@@ -111,12 +128,19 @@ class BernoulliGradientSample:
     draws : tuple[BernoulliScoreDraw, ...]
         The stochastic choices in order. Enumeration may visit both
         conditional branches and a score choice visits only its own.
+    selectors : tuple[BernoulliWeakSelector, ...]
+        The primal selectors of weak derivative sites, in execution order.
+    virtual_branches : tuple[tuple[bool, ...], ...]
+        The actually launched weak derivative arms, as source prefixes.
+        Both arms of each weak derivative appear in execution order.
     """
 
     value: Fraction
     tangent: Fraction
     visits: tuple[BernoulliVisit, ...]
     draws: tuple[BernoulliScoreDraw, ...]
+    selectors: tuple[BernoulliWeakSelector, ...] = ()
+    virtual_branches: tuple[tuple[bool, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +161,22 @@ class BernoulliBranch:
 
 
 type _Tree = ExactJvp | BernoulliBranch
+
+
+@dataclass(frozen=True, slots=True)
+class _WeakArm:
+    """An individual weak branch to visit at its actual launch time.
+
+    Parameters
+    ----------
+    prefix : tuple[bool, ...]
+        The original choice history of the arm.
+    tree : _Tree
+        The conditional continuation to execute.
+    """
+
+    prefix: tuple[bool, ...]
+    tree: _Tree
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,13 +222,13 @@ class BernoulliGradientPlan:
         return self.paths + len(self.visits)
 
     def sample(self, *, seed: int | None = None) -> BernoulliGradientSample:
-        """Run the chosen mixture of enumeration and score estimation.
+        """Run the chosen mixture of enumeration, score and weak derivatives.
 
         The result estimates the same objective as `exact`. The draw list
-        records only the score choices, including distinct histories when
-        an enumeration visits each branch. The execution does not rerun
-        the original probabilistic program. Exact rational score weights
-        may be large near the boundary.
+        records only the score choices. The weak selector and virtual
+        branch lists report the effects of the weak derivative separately.
+        The execution does not rerun the original probabilistic program.
+        Exact rational score weights may be large near the boundary.
 
         Parameters
         ----------
@@ -227,7 +267,7 @@ def _combine(visit: BernoulliVisit, no: ExactJvp, yes: ExactJvp) -> ExactJvp:
 
 
 def _draw(tree: _Tree, random: Random) -> BernoulliGradientSample:
-    """Interpret enumeration and score policies on the same checked tree.
+    """Interpret the three estimator policies on one checked tree.
 
     Parameters
     ----------
@@ -241,14 +281,19 @@ def _draw(tree: _Tree, random: Random) -> BernoulliGradientSample:
     BernoulliGradientSample
         A realization of the mixed estimator.
     """
-    pending: list[_Tree | tuple[BernoulliVisit, bool | None]] = [tree]
+    pending: list[_Tree | _WeakArm | tuple[BernoulliVisit, bool | None]] = [tree]
     values: list[ExactJvp] = []
     visits: list[BernoulliVisit] = []
     draws: list[BernoulliScoreDraw] = []
+    selectors: list[BernoulliWeakSelector] = []
+    virtual_branches: list[tuple[bool, ...]] = []
     while pending:
         next_ = pending.pop()
         if isinstance(next_, ExactJvp):
             values.append(next_)
+        elif isinstance(next_, _WeakArm):
+            virtual_branches.append(next_.prefix)
+            pending.append(next_.tree)
         elif isinstance(next_, BernoulliBranch):
             visit = next_.visit
             visits.append(visit)
@@ -257,13 +302,24 @@ def _draw(tree: _Tree, random: Random) -> BernoulliGradientSample:
             else:
                 p = visit.probability
                 answer = random.randrange(p.denominator) < p.numerator
-                draws.append(BernoulliScoreDraw(visit, answer))
-                pending.extend(((visit, answer), next_.yes if answer else next_.no))
+                if visit.estimator == "measure":
+                    selectors.append(BernoulliWeakSelector(visit, answer))
+                    no = _WeakArm((*visit.prefix, False), next_.no)
+                    yes = _WeakArm((*visit.prefix, True), next_.yes)
+                    pending.extend(((visit, answer), yes, no))
+                else:
+                    draws.append(BernoulliScoreDraw(visit, answer))
+                    pending.extend(((visit, answer), next_.yes if answer else next_.no))
         else:
             visit, answer = next_
             result = values.pop()
             if answer is None:
                 values.append(_combine(visit, values.pop(), result))
+            elif visit.estimator == "measure":
+                no, yes = values.pop(), result
+                selected = yes if answer else no
+                weak = visit.tangent * (yes.value - no.value)
+                values.append(ExactJvp(selected.value, selected.tangent + weak))
             else:
                 probability = visit.probability if answer else 1 - visit.probability
                 tangent = visit.tangent if answer else -visit.tangent
@@ -271,7 +327,12 @@ def _draw(tree: _Tree, random: Random) -> BernoulliGradientSample:
                 values.append(ExactJvp(result.value, gradient))
     (result,) = values
     return BernoulliGradientSample(
-        result.value, result.tangent, tuple(visits), tuple(draws)
+        result.value,
+        result.tangent,
+        tuple(visits),
+        tuple(draws),
+        tuple(selectors),
+        tuple(virtual_branches),
     )
 
 
@@ -534,7 +595,7 @@ def plan_bernoulli_gradient(
     nominal Random instance in its row. The fragment admits ordinary
     sequencing, conditionals and calls and direct scalar Boolean draws
     from Bernoulli probabilities. Every reached site needs one explicit
-    `enumerate` or `score` policy. The conditional probabilities must
+    `enumerate`, `score` or `measure` policy. The conditional probabilities must
     be strictly interior, and comparisons must be locally stable under
     the exact scalar derivative rules.
 
@@ -599,7 +660,7 @@ def plan_bernoulli_gradient(
     for policy in policies:
         if policy.site in methods:
             raise ValueError(f"duplicate estimator for site {policy.site}")
-        if policy.estimator not in ("enumerate", "score"):
+        if policy.estimator not in ("enumerate", "score", "measure"):
             raise JvpUnsupported(
                 f"unsupported Bernoulli estimator {policy.estimator!r}"
             )
@@ -672,5 +733,6 @@ __all__ = [
     "BernoulliGradientSample",
     "BernoulliScoreDraw",
     "BernoulliVisit",
+    "BernoulliWeakSelector",
     "plan_bernoulli_gradient",
 ]

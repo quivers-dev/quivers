@@ -193,6 +193,7 @@ from quivers.qiec.bernoulli_estimators import (
     BernoulliGradientSample,
     BernoulliScoreDraw,
     BernoulliVisit,
+    BernoulliWeakSelector,
     plan_bernoulli_gradient,
 )
 from quivers.qiec.finite_elimination import (
@@ -1133,6 +1134,7 @@ __all__ += [
     "BernoulliGradientSample",
     "BernoulliScoreDraw",
     "BernoulliVisit",
+    "BernoulliWeakSelector",
     "plan_bernoulli_gradient",
 ]
 __all__ += [

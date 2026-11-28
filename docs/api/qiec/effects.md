@@ -548,8 +548,8 @@ assert answer.steps[0].positions == (0, 2)
 
 `plan_bernoulli_gradient` checks a named scalar computation that performs
 direct, unplated Boolean Bernoulli draws on one nominal `Random` instance.
-Each reached static site needs an explicit `enumerate` or `score`
-policy. Repeated calls to the same site share its policy and keep their
+Each reached static site needs an explicit `enumerate`, `score`, or
+`measure` policy. Repeated calls to the same site share its policy and keep their
 distinct request addresses. At an adaptive site, the report gives the
 conditional probability and its derivative for each preceding history.
 
@@ -558,13 +558,17 @@ exact result is the expected return and its directional derivative.
 Calling `sample` runs the chosen estimator over that tree. Enumeration
 evaluates both branches. The score estimator draws one branch and adds the
 return times the directional derivative of that branch's log probability.
-This estimate is unbiased in the checked local domain. The result records
-the branches visited and the stochastic choices separately.
+The weak derivative, selected by `measure`, draws one primal branch and
+evaluates both branches. It adds $p'(V_1 - V_0)$ to the selected
+branch's tangent. Both estimators are unbiased in the checked local domain.
+Here $p$ is the probability of true and $V_1$ and $V_0$ are the branch values.
+The result records visited requests, score draws, weak selectors, and
+the ordered launch of each weak branch.
 
 Conditional probabilities must lie strictly between zero and one. The
 exact scalar checker also requires comparisons to be stable at the
 supplied point. Construction checks a complete-path bound and a step
-bound for each replay. With (n) complete paths it needs (2n-1)
+bound for each replay. With $n$ complete paths it needs $2n - 1$
 reference replays and reports their total steps. The sampled estimator
 does not truncate rare large score weights.
 
@@ -592,6 +596,13 @@ policy = SiteEstimator(site=site, estimator="score")
 plan = plan_bernoulli_gradient(module, owner.id, (Fraction(1, 3),), (2,), (policy,))
 assert (plan.exact.value, plan.exact.tangent) == (Fraction(1, 3), 2)
 assert len(plan.sample(seed=42).draws) == 1
+
+weak_policy = SiteEstimator(site=site, estimator="measure")
+weak = plan_bernoulli_gradient(module, owner.id, (Fraction(1, 3),), (2,), (weak_policy,))
+estimate = weak.sample(seed=42)
+assert estimate.tangent == 2
+assert len(estimate.selectors) == 1
+assert estimate.virtual_branches == ((False,), (True,))
 ```
 
 ::: quivers.qiec.bernoulli_estimators

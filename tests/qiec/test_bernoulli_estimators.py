@@ -449,3 +449,128 @@ def _replace_body(module, owner, body):
             for item in module.computations
         )
     )
+
+
+def _weak_outcomes(p, q, outer, inner):
+    """Enumerate the estimator's own independent integer choices."""
+    gate_choices = (
+        ((None, Fraction(1)),)
+        if outer == "enumerate"
+        else tuple((choice, _probability(p, choice)) for choice in _BOOLEAN)
+    )
+    for gate_choice, root_mass in gate_choices:
+        if outer == "score":
+            assert gate_choice is not None
+            branches = (gate_choice,)
+        else:
+            branches = _BOOLEAN
+        probabilities = tuple(p * q if b else (1 - p) * q for b in branches)
+        options = tuple(
+            (((), Fraction(1)),)
+            if inner == "enumerate"
+            else tuple(((choice,), _probability(rate, choice)) for choice in _BOOLEAN)
+            for rate in probabilities
+        )
+        for combination in product(*options):
+            script = () if gate_choice is None else (gate_choice,)
+            mass = root_mass
+            for choices, weight in combination:
+                script += choices
+                mass *= weight
+            yield script, mass, branches
+
+
+@pytest.mark.parametrize(
+    ("outer", "inner"),
+    [
+        ("measure", "enumerate"),
+        ("measure", "score"),
+        ("measure", "measure"),
+        ("enumerate", "measure"),
+        ("score", "measure"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("p", "q", "dp", "dq"),
+    [
+        (Fraction(1, 4), Fraction(2, 3), 1, -2),
+        (Fraction(3, 5), Fraction(1, 7), -3, 2),
+    ],
+)
+def test_weak_mixtures_match_independent_randomized_outcome_expectation(
+    module,
+    outer,
+    inner,
+    p,
+    q,
+    dp,
+    dq,
+):
+    owner = _entry(module, "adaptive")
+    policies = _policies(module, "adaptive", outer=outer, left=inner, right=inner)
+    plan = plan_bernoulli_gradient(module, owner.id, (p, q), (dp, dq), policies)
+    direct = _closed_form(p, q, dp, dq)
+    assert (plan.exact.value, plan.exact.tangent) == direct
+    assert (plan.paths, plan.replays) == (4, 7)
+
+    primal = tangent = mass = Fraction()
+    for script, weight, reached in _weak_outcomes(p, q, outer, inner):
+        result = _draw(plan.tree, _ScriptedRandom(script))
+        prefixes = ((), *((branch,) for branch in reached))
+        assert tuple(item.prefix for item in result.visits) == prefixes
+        methods = (outer, *((inner,) * len(reached)))
+        draw_prefixes = tuple(
+            prefix
+            for prefix, method in zip(prefixes, methods, strict=True)
+            if method == "score"
+        )
+        selector_prefixes = tuple(
+            prefix
+            for prefix, method in zip(prefixes, methods, strict=True)
+            if method == "measure"
+        )
+        assert tuple(item.visit.prefix for item in result.draws) == draw_prefixes
+        assert (
+            tuple(item.visit.prefix for item in result.selectors) == selector_prefixes
+        )
+        observed = {
+            item.visit.prefix: item.choice
+            for item in (*result.draws, *result.selectors)
+        }
+        assert (
+            tuple(observed[prefix] for prefix in prefixes if prefix in observed)
+            == script
+        )
+        expected_virtual = []
+        for branch in reached:
+            if outer == "measure":
+                expected_virtual.append((branch,))
+            if inner == "measure":
+                expected_virtual.extend(((branch, False), (branch, True)))
+        assert result.virtual_branches == tuple(expected_virtual)
+        assert len(result.virtual_branches) == 2 * len(result.selectors)
+
+        mass += weight
+        primal += weight * result.value
+        tangent += weight * result.tangent
+    assert mass == 1
+    assert (primal, tangent) == direct
+
+
+def test_weak_pair_of_a_single_indicator_has_no_derivative_noise(module):
+    rate = 2**10_000
+    owner = _entry(module, "single")
+    plan = plan_bernoulli_gradient(
+        module,
+        owner.id,
+        (Fraction(1, rate),),
+        (rate,),
+        _policies(module, "single", single="measure"),
+    )
+    for choice in _BOOLEAN:
+        realized = _draw(plan.tree, _ScriptedRandom((choice,)))
+        assert (realized.value, realized.tangent) == (int(choice), rate)
+        assert realized.draws == ()
+        assert tuple(item.choice for item in realized.selectors) == (choice,)
+        assert realized.virtual_branches == ((False,), (True,))
+    assert plan.exact.tangent == rate
