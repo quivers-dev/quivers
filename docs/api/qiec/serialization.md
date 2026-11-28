@@ -168,6 +168,29 @@ can replay a trace by site name with the same checked result type.
 
 ::: quivers.qiec.relation_path_law.RelationPathLaw
 
+## Checked unary relation transformations
+
+A `UnaryRelationTransformSpec` stores the original typed topology,
+parameter identities, and one supported operation. Projection sums
+over erased tapes. Conditioning fixes one tape word. Inversion
+exchanges the input and output groups, trim retains only structurally
+productive records, and closure permits all finite repetitions.
+
+A `FixedTransformedRelationRequest` provides the retained word tuple
+and explicit query limits. Conditioning also uses those limits for
+its intermediate topology. The reference provider builds and reuses
+the transformed topology and query. Each evaluation reads the
+original live parameters. A productive cycle needs a declared
+closure bound up to the limit supported by the scalar algebra.
+
+This request supports a linear Compute pair weight, including an
+unbound QVR `relation_score` declaration. Native targets identify
+the foreign handler as a required runtime capability.
+
+::: quivers.qiec.relation_transforms.UnaryRelationTransformSpec
+
+::: quivers.qiec.relation_transforms.FixedTransformedRelationRequest
+
 ## String factor graphs
 
 `StringFactorGraphSpec` records the nominal alphabet and optional
