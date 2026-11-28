@@ -431,6 +431,64 @@ assert rechecked == decision
 
 ::: quivers.qiec.effect_law_schema
 
+### Checked effect plans
+
+`Compiler.effect_plan` reports the carrier shapes of handlers in a selected
+entry's checked call graph, including calls made from authored clauses.
+It also reports ordinary discharge and its obstacles. An
+`EffectLawBundle` can be inspected directly with `checked_effect_plan`.
+
+The report gives every requested law its own result. A checked law carries
+the evidence for its actual named handler. A refuted law carries the
+checker’s separating assignment. An unsupported comparison, exhausted
+limit, or unproved named condition leaves that obligation unresolved.
+Ordinary discharge applies its own checked rules independently of these
+reports.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import EffectEquation, EffectLawObligation
+
+source = """
+effect Reader
+    read_value : Unit -> Bool
+
+instance reader : Reader
+
+handler fixed for Reader : Bool -> Bool with (value : Bool) [coverage=total, forwards=none, implementation=authored]
+    read_value resumes 1 =>
+        resume(value)
+
+define read_once() : Bool !{reader} =
+    perform reader.read_value()
+
+define read_twice() : Bool !{reader} =
+    let ignored <- perform reader.read_value()
+    perform reader.read_value()
+
+define example(value : Bool) : Bool !{} =
+    handle reader with fixed(value) in
+        read_once()
+"""
+compiler = Compiler(parse(source), module_name="planned-reader")
+module = compiler.qiec_module
+assert module is not None
+effect = next(item for item in module.effects if item.ref.name == "Reader")
+instance = next(item.entry for item in module.instances if item.name == "reader")
+handler = next(item for item in module.handlers if item.name == "fixed")
+roots = {item.name: item.id for item in module.computations}
+equation = EffectEquation(
+    effect.ref.id, "repeated-read", instance.instance,
+    tuple(item.id for item in effect.operations), roots["read_once"], roots["read_twice"],
+)
+obligation = EffectLawObligation(equation=equation, handler=handler.id, method="finite")
+plan = compiler.effect_plan("example", obligations=(obligation,))
+assert plan.carriers[0].kind == "tail-state"
+assert plan.laws[0].status == "checked"
+```
+
+::: quivers.qiec.effect_plan
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

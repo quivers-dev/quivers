@@ -186,6 +186,7 @@ from quivers.qiec.effect_laws import (
     check_finite_effect_law,
     check_scalar_effect_law,
 )
+from quivers.qiec.effect_plan import EffectLawReport, EffectPlan, checked_effect_plan
 from quivers.qiec.effects import (
     ArgumentDef,
     ComputationType,
@@ -1107,6 +1108,7 @@ __all__ += [
     "check_scalar_effect_law",
 ]
 __all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carrier"]
+__all__ += ["EffectLawReport", "EffectPlan", "checked_effect_plan"]
 __all__ += [
     "StateSpecializationLimit",
     "StateSpecializationUnsupported",

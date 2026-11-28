@@ -1,0 +1,295 @@
+"""Reported effect plans preserve independent law evidence and ordinary dispatch."""
+
+import pytest
+
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    ComputationId,
+    Condition,
+    EffectEquation,
+    EffectLawBundle,
+    EffectLawObligation,
+    ExecutionFailure,
+    FiniteEffectLawDecision,
+    Handle,
+    checked_effect_plan,
+    discharge_module,
+    dumps,
+    loads,
+)
+
+_SOURCE = """
+effect Reader
+    read_value : Unit -> Bool
+
+effect Gate
+    pass_value : Bool -> Bool
+
+instance reader : Reader
+instance gate : Gate
+
+handler stable for Reader : Bool -> Bool with (current : Bool) [coverage=total, forwards=none, implementation=authored]
+    return value =>
+        return value
+    read_value resumes 1 =>
+        resume(current)
+
+handler toggle for Reader : Bool -> Bool with (current : Bool) [coverage=total, forwards=none, implementation=authored]
+    return value =>
+        return value
+    read_value resumes 1 =>
+        if current then
+            resume(true) with (false)
+        else
+            resume(false) with (true)
+
+handler stateless for Reader : Bool -> Bool [coverage=total, forwards=none, implementation=authored]
+    return value =>
+        return value
+    read_value resumes 1 =>
+        resume(false)
+
+define first_read() : Bool !{reader} =
+    perform reader.read_value()
+
+define second_read() : Bool !{reader} =
+    let ignored <- perform reader.read_value()
+    perform reader.read_value()
+
+define at_reader(initial : Bool) : Bool !{} =
+    handle reader with stable(initial) in
+        first_read()
+
+handler relay for Gate : Bool -> Bool [coverage=total, forwards=none, implementation=authored]
+    return value =>
+        return value
+    pass_value(v : Bool) resumes 1 =>
+        let observed <- at_reader(v)
+        resume(observed)
+
+handler unattached for Gate : Bool -> Bool [coverage=total, implementation=foreign]
+    pass_value(v : Bool) resumes 1
+
+define gate_once(v : Bool) : Bool !{gate} =
+    perform gate.pass_value(v)
+
+define gate_twice(v : Bool) : Bool !{gate} =
+    let first <- perform gate.pass_value(v)
+    perform gate.pass_value(first)
+
+define through_clause(v : Bool) : Bool !{} =
+    handle gate with relay in
+        perform gate.pass_value(v)
+
+define retained(v : Bool) : Bool !{} =
+    handle gate with unattached in
+        let observed <- perform gate.pass_value(v)
+        at_reader(observed)
+"""
+
+
+@pytest.fixture(scope="module")
+def compiler() -> Compiler:
+    return Compiler(parse(_SOURCE), module_name="effect-plan-test")
+
+
+@pytest.fixture(scope="module")
+def bundle(compiler):
+    module = compiler.qiec_module
+    assert module is not None
+    owner = next(item.entry for item in module.instances if item.name == "reader")
+    effect = next(item for item in module.effects if item.ref.id == owner.effect.id)
+    computations = {item.name: item.id for item in module.computations}
+    equation = EffectEquation(
+        effect.ref.id,
+        "repeated-read",
+        owner.instance,
+        tuple(item.id for item in effect.operations),
+        computations["first_read"],
+        computations["second_read"],
+    )
+    handlers = {item.name: item.id for item in module.handlers}
+    gate = next(item.entry for item in module.instances if item.name == "gate")
+    gate_effect = next(item for item in module.effects if item.ref.id == gate.effect.id)
+    gate_equation = EffectEquation(
+        gate_effect.ref.id,
+        "repeated-gate",
+        gate.instance,
+        tuple(item.id for item in gate_effect.operations),
+        computations["gate_once"],
+        computations["gate_twice"],
+    )
+    obligations = (
+        EffectLawObligation(
+            equation=equation, handler=handlers["stable"], method="finite"
+        ),
+        EffectLawObligation(
+            equation=equation, handler=handlers["toggle"], method="finite"
+        ),
+        EffectLawObligation(
+            equation=equation, handler=handlers["stateless"], method="finite"
+        ),
+        EffectLawObligation(
+            equation=equation, handler=handlers["stable"], method="polynomial"
+        ),
+        EffectLawObligation(
+            equation=equation,
+            handler=handlers["toggle"],
+            method="rational",
+            guards=(
+                Condition(
+                    name="proof-claimed", statement="The reads may be interchanged."
+                ),
+            ),
+        ),
+        EffectLawObligation(
+            equation=gate_equation,
+            handler=handlers["unattached"],
+            method="finite",
+            guards=(
+                Condition(name="idempotence", statement="The gate is idempotent."),
+            ),
+        ),
+    )
+    return EffectLawBundle(module=module, obligations=obligations)
+
+
+def _answers(plan):
+    names = {item.id: item.name for item in plan.bundle.module.handlers}
+    return {
+        (names[item.obligation.handler], item.obligation.method): item
+        for item in plan.laws
+    }
+
+
+def _root(bundle, name):
+    return next(item for item in bundle.module.computations if item.name == name)
+
+
+def test_compiler_report_uses_actual_graph_and_checks_every_obligation(
+    compiler, bundle
+):
+    reported = compiler.effect_plan("through_clause", obligations=bundle.obligations)
+    names = {item.id: item.name for item in bundle.module.handlers}
+    assert {names[shape.handler]: shape.kind for shape in reported.carriers} == {
+        "relay": "continuation",
+        "stable": "tail-state",
+    }
+    assert reported.computation == _root(bundle, "through_clause").id
+
+    answers = _answers(reported)
+    assert {subject: item.status for subject, item in answers.items()} == {
+        ("stable", "finite"): "checked",
+        ("toggle", "finite"): "refuted",
+        ("stateless", "finite"): "checked",
+        ("stable", "polynomial"): "unresolved",
+        ("toggle", "rational"): "unresolved",
+        ("unattached", "finite"): "unresolved",
+    }
+    assert answers["stable", "polynomial"].reason
+    reason = answers["toggle", "rational"].reason
+    assert reason is not None and "proof-claimed" in reason
+    checked = answers["stable", "finite"].decision
+    assert isinstance(checked, FiniteEffectLawDecision)
+    assert checked.result.checked == 2
+    rejected = answers["toggle", "finite"].decision
+    assert isinstance(rejected, FiniteEffectLawDecision)
+    witness = rejected.result.counterexample
+    assert witness is not None
+    alternatives = [(current, not current) for current in (False, True)]
+    assert (witness.left, witness.right) == alternatives[0]
+    assert witness.arguments == (alternatives[0][0],)
+
+
+def test_unresolved_guards_provide_no_rewrite_permission(compiler, bundle):
+    before = dumps(bundle.module)
+    direct = discharge_module(bundle.module)
+    reported = compiler.effect_plan("retained", obligations=bundle.obligations)
+    assert reported.discharge == direct
+    assert direct.obstacle("retained") is not None
+    original = _root(bundle, "retained")
+    root = next(item for item in direct.module.computations if item.id == original.id)
+    assert isinstance(root.body, Handle)
+    assert root is original
+    guard = _answers(reported)["unattached", "finite"]
+    assert guard.status == "unresolved" and guard.decision is None
+    assert guard.obligation.handler == root.body.handler
+    assert guard.obligation.equation.instance == root.body.instance
+    assert guard.reason is not None and "idempotence" in guard.reason
+    assert dumps(bundle.module) == before
+
+
+def test_assignment_exhaustion_does_not_hide_other_obligations(bundle):
+    root = _root(bundle, "retained")
+    plan = checked_effect_plan(bundle, root.id, max_assignments=1)
+    reports = _answers(plan)
+    assert reports["stateless", "finite"].status == "checked"
+    for name in ("stable", "toggle"):
+        item = reports[name, "finite"]
+        assert item.status == "unresolved"
+        assert item.reason is not None and "assignments" in item.reason
+    assert len(reports) == 6
+
+
+def test_report_rechecks_changed_source_even_with_the_same_ids(bundle):
+    stable = next(item for item in bundle.module.handlers if item.name == "stable")
+    toggle = next(item for item in bundle.module.handlers if item.name == "toggle")
+    changed = bundle.module.with_(
+        handlers=tuple(
+            item.with_(clauses=toggle.clauses) if item.id == stable.id else item
+            for item in bundle.module.handlers
+        )
+    )
+    changed_bundle = bundle.with_(module=changed)
+    root = _root(bundle, "through_clause")
+    old = checked_effect_plan(bundle, root.id)
+    new = checked_effect_plan(changed_bundle, root.id)
+    assert _answers(old)["stable", "finite"].status == "checked"
+    assert _answers(new)["stable", "finite"].status == "refuted"
+    assert (
+        next(item for item in old.carriers if item.handler == stable.id).kind
+        == "tail-state"
+    )
+    assert (
+        next(item for item in new.carriers if item.handler == stable.id).kind
+        == "tail-state"
+    )
+
+
+def test_wire_roundtrip_reproduces_the_report(bundle):
+    restored = loads(dumps(bundle))
+    assert isinstance(restored, EffectLawBundle)
+    root = _root(bundle, "through_clause")
+    assert checked_effect_plan(bundle, root.id) == checked_effect_plan(
+        restored, root.id
+    )
+
+
+def test_planner_errors_on_invalid_limits_or_unknown_named_entries(compiler, bundle):
+    with pytest.raises(ValueError, match="fuel must be a positive integer"):
+        checked_effect_plan(bundle, _root(bundle, "retained").id, fuel=True)
+    with pytest.raises(ValueError, match="unknown computation"):
+        checked_effect_plan(bundle, ComputationId.derive("absent"))
+    with pytest.raises(ExecutionFailure, match="unknown entry point"):
+        compiler.effect_plan("absent")
+
+
+def test_compiler_reports_the_elaborated_program_identity():
+    compiler = Compiler(
+        parse("""
+object Obs : FinSet 4
+
+program sampled : Obs -> Obs
+    sample x <- Normal(loc=0.0, scale=1.0)
+    return x
+
+export sampled
+"""),
+        module_name="effect-plan-program",
+    )
+    module = compiler.qiec_module
+    assert module is not None
+    (program,) = module.entries
+    plan = compiler.effect_plan("sampled")
+    assert plan.computation == program.computation
+    assert plan.laws == ()

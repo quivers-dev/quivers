@@ -66,6 +66,8 @@ from quivers.qiec import (
     PackedBooleanInterpretationBinding,
     QiecModule,
 )
+from quivers.qiec.effect_law_schema import EffectLawBundle, EffectLawObligation
+from quivers.qiec.effect_plan import EffectPlan, checked_effect_plan
 from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.terms import PlateAxis
@@ -495,6 +497,60 @@ class Compiler(
                 )
             )
         return entry_point(module, name)
+
+    def effect_plan(
+        self,
+        name: str,
+        *,
+        obligations: tuple[EffectLawObligation, ...] = (),
+        max_assignments: int = 65_536,
+        max_work: int = 65_536,
+        fuel: int = 65_536,
+    ) -> EffectPlan:
+        """Report checked effect analysis for one of the source's entry points.
+
+        Parameters
+        ----------
+        name : str
+            The program or computation entry point's name.
+        obligations : tuple[EffectLawObligation, ...]
+            The nominal equations to check against this compiler's module.
+        max_assignments : int
+            The domain size limit per finite obligation.
+        max_work : int
+            The work limit per scalar obligation.
+        fuel : int
+            The step limit per side and assignment in an exact interpreter.
+
+        Returns
+        -------
+        EffectPlan
+            The entry's carrier reports, the separately checked obligations,
+            and the ordinary discharge result.
+
+        Raises
+        ------
+        ExecutionFailure
+            If the source does not have the named checked entry point.
+        ValueError
+            If a requested resource limit is invalid.
+        """
+        entry = self.entry(name)
+        module = self.qiec_module
+        assert module is not None
+        if entry.kind == "program":
+            root = next(
+                item.computation for item in module.entries if item.name == name
+            )
+        else:
+            root = next(item.id for item in module.computations if item.name == name)
+        return checked_effect_plan(
+            EffectLawBundle(module=module, obligations=obligations),
+            root,
+            max_assignments=max_assignments,
+            max_work=max_work,
+            fuel=fuel,
+        )
 
     def _lower_qiec(self, module: Module) -> QiecModule:
         """Lower the source's QIEC surface to a checked module.

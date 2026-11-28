@@ -1,0 +1,220 @@
+"""Report the actual checked handler shapes and nominal law checks for a plan."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+from quivers.qiec.discharge import DischargedModule, discharge_module
+from quivers.qiec.effect_law_schema import EffectLawBundle, EffectLawObligation
+from quivers.qiec.effect_laws import (
+    FiniteEffectLawDecision,
+    ScalarEffectLawDecision,
+    check_finite_effect_law,
+    check_scalar_effect_law,
+)
+from quivers.qiec.handler_carriers import HandlerCarrierShape, classify_handler_carrier
+from quivers.qiec.identifiers import ComputationId
+from quivers.qiec.laws import FiniteLawLimit, FiniteLawUnsupported
+from quivers.qiec.module import QiecModule, reached_handlers, validate_module
+from quivers.qiec.polynomial_laws import PolynomialLawLimit, PolynomialLawUnsupported
+from quivers.qiec.rational_laws import RationalLawLimit, RationalLawUnsupported
+
+type _Decision = FiniteEffectLawDecision | ScalarEffectLawDecision
+type _Status = Literal["checked", "refuted", "unresolved"]
+
+
+@dataclass(frozen=True, slots=True)
+class EffectLawReport:
+    """The result of checking one declared obligation against its source.
+
+    Parameters
+    ----------
+    obligation : EffectLawObligation
+        The exact requested equation, handler, method, and guard conditions.
+    decision : FiniteEffectLawDecision or ScalarEffectLawDecision or None
+        The freshly checked result, including a witness when the law fails.
+    reason : str or None
+        Why the checker could not decide the obligation, if it could not.
+    """
+
+    obligation: EffectLawObligation
+    decision: _Decision | None
+    reason: str | None
+
+    @property
+    def status(self) -> _Status:
+        """The result of the check.
+
+        Returns
+        -------
+        _Status
+            Whether the law was checked, refuted, or left unresolved.
+        """
+        if self.decision is None:
+            return "unresolved"
+        return "checked" if self.decision.certified else "refuted"
+
+
+@dataclass(frozen=True, slots=True)
+class EffectPlan:
+    """A view of the source, carrier analysis, law results, and discharge.
+
+    Parameters
+    ----------
+    bundle : EffectLawBundle
+        The checked source and all the law obligations requested for it.
+    computation : ComputationId
+        The selected source computation.
+    carriers : tuple[HandlerCarrierShape, ...]
+        Carrier shapes for handlers in the computation's checked call graph.
+    laws : tuple[EffectLawReport, ...]
+        One result per requested obligation, regardless of reachability
+        from the selected computation.
+    discharge : DischargedModule
+        The result of ordinary checked discharge, including its obstacles.
+        Ordinary discharge applies its own checked rules.
+    """
+
+    bundle: EffectLawBundle
+    computation: ComputationId
+    carriers: tuple[HandlerCarrierShape, ...]
+    laws: tuple[EffectLawReport, ...]
+    discharge: DischargedModule
+
+
+def _law_report(
+    module: QiecModule,
+    obligation: EffectLawObligation,
+    *,
+    max_assignments: int,
+    max_work: int,
+    fuel: int,
+) -> EffectLawReport:
+    """Independently decide a supported obligation and keep its refusal.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The source supplying the actual handler and equation.
+    obligation : EffectLawObligation
+        The requested method and scope.
+    max_assignments : int
+        The finite check's assignment bound.
+    max_work : int
+        The scalar check's normalization budget.
+    fuel : int
+        The exact interpreter's step bound per probe.
+
+    Returns
+    -------
+    EffectLawReport
+        The freshly checked evidence or a specific unresolved reason.
+    """
+    if obligation.guards:
+        names = ", ".join(guard.name for guard in obligation.guards)
+        return EffectLawReport(
+            obligation, None, f"declared guard conditions remain unproved: {names}"
+        )
+    try:
+        decision: _Decision
+        if obligation.method == "finite":
+            decision = check_finite_effect_law(
+                module,
+                obligation.equation,
+                obligation.handler,
+                max_assignments=max_assignments,
+                fuel=fuel,
+            )
+        else:
+            decision = check_scalar_effect_law(
+                module,
+                obligation.equation,
+                obligation.handler,
+                method=obligation.method,
+                max_work=max_work,
+                fuel=fuel,
+            )
+    except (
+        FiniteLawLimit,
+        FiniteLawUnsupported,
+        PolynomialLawLimit,
+        PolynomialLawUnsupported,
+        RationalLawLimit,
+        RationalLawUnsupported,
+    ) as error:
+        return EffectLawReport(obligation, None, str(error))
+    return EffectLawReport(obligation, decision, None)
+
+
+def checked_effect_plan(
+    bundle: EffectLawBundle,
+    computation: ComputationId,
+    *,
+    max_assignments: int = 65_536,
+    max_work: int = 65_536,
+    fuel: int = 65_536,
+) -> EffectPlan:
+    """Report actual carrier shapes, exact law evidence, and ordinary discharge.
+
+    Each law is checked against the source in the bundle. An unsupported
+    method or exhausted limit stays visible beside decisions for other
+    obligations. A named guard condition is an open hypothesis. Existing
+    discharge uses its own checks and does not consume law reports.
+
+    Parameters
+    ----------
+    bundle : EffectLawBundle
+        The source module and the nominal obligations to inspect.
+    computation : ComputationId
+        The source declaration whose reachable handlers to classify.
+    max_assignments : int
+        The maximum number of assignments per finite obligation.
+    max_work : int
+        The maximum symbolic work per scalar obligation.
+    fuel : int
+        The interpreter step limit per side and assignment when used by a
+        finite or rational check.
+
+    Returns
+    -------
+    EffectPlan
+        A report over the actual checked source, including every
+        independently unresolved obligation.
+
+    Raises
+    ------
+    ValueError
+        If the computation is absent or any requested limit is invalid.
+    """
+    for name, limit in (
+        ("max_assignments", max_assignments),
+        ("max_work", max_work),
+        ("fuel", fuel),
+    ):
+        if type(limit) is not int or limit < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    module = bundle.module
+    validate_module(module)
+    if not any(item.id == computation for item in module.computations):
+        raise ValueError(f"unknown computation for effect plan `{computation}`")
+    reach = reached_handlers(module, computation)
+    carriers = tuple(
+        classify_handler_carrier(module, handler.id)
+        for handler in module.handlers
+        if handler.id in reach
+    )
+    laws = tuple(
+        _law_report(
+            module,
+            obligation,
+            max_assignments=max_assignments,
+            max_work=max_work,
+            fuel=fuel,
+        )
+        for obligation in bundle.obligations
+    )
+    return EffectPlan(bundle, computation, carriers, laws, discharge_module(module))
+
+
+__all__ = ["EffectLawReport", "EffectPlan", "checked_effect_plan"]
