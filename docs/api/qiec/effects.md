@@ -557,6 +557,13 @@ limit, or unproved named condition leaves that obligation unresolved.
 Ordinary discharge applies its own checked rules independently of these
 reports.
 
+For a scalar real entry, `plan.check_jvp(arguments, direction)` runs
+the exact reference derivative on both the source graph and its
+staged graph. It records their values and tangents at the supplied
+point. A comparison boundary or an exhausted evaluation reports its
+actual obstacle. A checked equality certifies those two observations
+at that point and direction.
+
 <!-- python: run -->
 ```python
 from quivers.dsl import Compiler, parse

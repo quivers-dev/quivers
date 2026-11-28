@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from typing import Literal
 
+from quivers.qiec.differentiation import ExactJvp, JvpLimit, JvpUnsupported, exact_jvp
 from quivers.qiec.discharge import (
     DischargeObstacle,
     DischargedModule,
@@ -135,6 +137,50 @@ class EffectExecutionStage:
 
 
 @dataclass(frozen=True, slots=True)
+class EffectJvpCheck:
+    """A pointwise comparison of exact source and staged derivatives.
+
+    Parameters
+    ----------
+    computation : ComputationId
+        The checked source identity selected for both evaluations.
+    arguments : tuple[int or Fraction, ...]
+        The source coordinates in parameter order.
+    direction : tuple[int or Fraction, ...]
+        The supplied tangent in that order.
+    source : ExactJvp or None
+        The source machine's result when it admits the calculation.
+    staged : ExactJvp or None
+        The selected staged graph's result under the same calculation.
+    source_obstacle : str or None
+        The actual derivative refusal in the source graph, if any.
+    staged_obstacle : str or None
+        The actual derivative refusal in the staged graph, if any.
+    """
+
+    computation: ComputationId
+    arguments: tuple[int | Fraction, ...]
+    direction: tuple[int | Fraction, ...]
+    source: ExactJvp | None
+    staged: ExactJvp | None
+    source_obstacle: str | None
+    staged_obstacle: str | None
+
+    @property
+    def status(self) -> _Status:
+        """Report whether the two actual observations agree.
+
+        Returns
+        -------
+        _Status
+            Whether both results agree, differ, or a result is unavailable.
+        """
+        if self.source is None or self.staged is None:
+            return "unresolved"
+        return "checked" if self.source == self.staged else "refuted"
+
+
+@dataclass(frozen=True, slots=True)
 class EffectPlan:
     """A view of the source, carrier analysis, law results, and discharge.
 
@@ -166,6 +212,70 @@ class EffectPlan:
     discharge: DischargedModule
     interchanges: tuple[EffectInterchangeReport, ...] = ()
     stages: tuple[EffectExecutionStage, ...] = ()
+
+    def check_jvp(
+        self,
+        arguments: tuple[int | Fraction, ...],
+        direction: tuple[int | Fraction, ...],
+        *,
+        fuel: int = 65_536,
+    ) -> EffectJvpCheck:
+        """Compare exact scalar JVPs in the source and staged QIEC graphs.
+
+        Both evaluations use the selected source identity. The reported
+        equality concerns the exact supplied point and direction in the
+        regular scalar fragment.
+
+        Parameters
+        ----------
+        arguments : tuple[int or Fraction, ...]
+            Exact input coordinates in source order.
+        direction : tuple[int or Fraction, ...]
+            Exact tangent coordinates in the same order.
+        fuel : int
+            Reference steps allowed independently in each graph.
+
+        Returns
+        -------
+        EffectJvpCheck
+            Both results or the specified refusals at the point.
+
+        Raises
+        ------
+        ValueError
+            If the computation identity, inputs, or fuel are invalid.
+        """
+        source = self.bundle.module
+        staged = self.discharge.module
+        owner = next(
+            (entry for entry in source.computations if entry.id == self.computation),
+            None,
+        )
+        if owner is None:
+            raise ValueError("the effect plan does not name a source computation")
+        if not any(
+            entry.id == owner.id and entry.name == owner.name
+            for entry in staged.computations
+        ):
+            raise ValueError("the staged graph does not preserve the source identity")
+        observations: list[tuple[ExactJvp | None, str | None]] = []
+        for graph in (source, staged):
+            try:
+                answer = exact_jvp(graph, owner.name, arguments, direction, fuel=fuel)
+            except (JvpUnsupported, JvpLimit) as error:
+                observations.append((None, str(error)))
+            else:
+                observations.append((answer, None))
+        (left, left_obstacle), (right, right_obstacle) = observations
+        return EffectJvpCheck(
+            self.computation,
+            arguments,
+            direction,
+            left,
+            right,
+            left_obstacle,
+            right_obstacle,
+        )
 
 
 def _law_report(
@@ -364,6 +474,7 @@ def checked_effect_plan(
 __all__ = [
     "EffectExecutionStage",
     "EffectInterchangeReport",
+    "EffectJvpCheck",
     "EffectLawReport",
     "EffectPlan",
     "checked_effect_plan",

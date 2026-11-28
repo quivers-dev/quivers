@@ -202,6 +202,7 @@ from quivers.qiec.handler_interchange import (
 from quivers.qiec.effect_plan import (
     EffectExecutionStage,
     EffectInterchangeReport,
+    EffectJvpCheck,
     EffectLawReport,
     EffectPlan,
     checked_effect_plan,
@@ -1218,6 +1219,7 @@ __all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carri
 __all__ += [
     "EffectExecutionStage",
     "EffectInterchangeReport",
+    "EffectJvpCheck",
     "EffectLawReport",
     "EffectPlan",
     "checked_effect_plan",

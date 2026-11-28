@@ -1,5 +1,8 @@
 """Reported effect plans preserve independent law evidence and ordinary dispatch."""
 
+from dataclasses import replace
+from fractions import Fraction
+
 import pytest
 
 from quivers.core.laws import Assumed
@@ -12,6 +15,7 @@ from quivers.qiec import (
     EffectLawBundle,
     EffectLawEvidence,
     EffectLawObligation,
+    ExactJvp,
     ExecutionFailure,
     FiniteEffectLawDecision,
     Handle,
@@ -237,6 +241,63 @@ def test_stage_reports_a_retained_transitive_callee(compiler, bundle):
     assert stages["at_reader"].stage == "handler-discharge"
     assert stages["at_reader"].rewrite.computation == _root(bundle, "at_reader").id
     assert "through_clause" not in stages
+
+
+def test_comparison_checks_the_derivative_even_when_primal_values_agree():
+    source = """
+effect Echo
+    echo : Real -> Real
+
+instance feedback : Echo
+
+handler identity for Echo : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    echo(v : Real) resumes 1 =>
+        resume(v)
+
+define feedback_square(x : Real) : Real !{} =
+    handle feedback with identity in
+        let a <- perform feedback.echo(x)
+        return a * a
+"""
+    name = "feedback-effect-plan"
+    plan = Compiler(parse(source), module_name=name).effect_plan("feedback_square")
+    point = (2,)
+    direction = (Fraction(3, 2),)
+    result = plan.check_jvp(point, direction)
+    assert result.source == result.staged == ExactJvp(Fraction(4), Fraction(6))
+    assert result.status == "checked" and result.computation == plan.computation
+    assert result.arguments == point and result.direction == direction
+    assert result.source_obstacle is None and result.staged_obstacle is None
+    bounded = plan.check_jvp(point, direction, fuel=1)
+    assert bounded.status == "unresolved" and bounded.source_obstacle
+
+    changed = Compiler(
+        parse(source.replace("return a * a", "return a + a")), module_name=name
+    ).qiec_module
+    assert changed is not None
+    wrong_stage = replace(plan, discharge=discharge_module(changed))
+    discrepancy = wrong_stage.check_jvp(point, direction)
+    assert discrepancy.source.value == discrepancy.staged.value == 4
+    assert discrepancy.source.tangent == 6 and discrepancy.staged.tangent == 3
+    assert discrepancy.status == "refuted"
+
+
+def test_comparison_reports_a_regular_point_refusal():
+    source = """
+define boundary(x : Real) : Real !{} =
+    if x < 0.0 then
+        return -x
+    else
+        return x
+"""
+    plan = Compiler(parse(source), module_name="comparison-boundary").effect_plan(
+        "boundary"
+    )
+    result = plan.check_jvp((0,), (1,))
+    assert result.status == "unresolved"
+    assert result.source is None and result.staged is None
+    assert result.source_obstacle and result.staged_obstacle
+    assert "comparison" in result.source_obstacle
 
 
 def test_assignment_exhaustion_does_not_hide_other_obligations(bundle):
