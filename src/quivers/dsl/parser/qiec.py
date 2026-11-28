@@ -16,6 +16,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecInterpretationClause,
     QiecInterpretationDecl,
     QiecRelationArc,
+    QiecRelationComposeDecl,
     QiecRelationDecl,
     QiecRelationMark,
     QiecRelationTape,
@@ -86,6 +87,7 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "computation_decl",
         "interpretation_decl",
         "relation_decl",
+        "relation_compose_decl",
         "relation_score_decl",
         "string_graph_score_decl",
     }
@@ -199,6 +201,15 @@ def _walk_qiec_statement(t: _Tree, vid: str):
         )
     if kind == "relation_decl":
         return _walk_relation_decl(t, vid, docs, line, col)
+    if kind == "relation_compose_decl":
+        return QiecRelationComposeDecl(
+            name=_field_text(t, vid, "name"),
+            left=_field_text(t, vid, "left"),
+            right=_field_text(t, vid, "right"),
+            docs=docs,
+            line=line,
+            col=col,
+        )
     if kind == "relation_score_decl":
         relation = t.field(vid, "relation")
         return QiecRelationScoreDecl(

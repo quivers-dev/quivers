@@ -96,6 +96,10 @@ NODE_PATTERNS = """\
 (computation_decl name: (identifier) @function)
 (relation_decl "relation" @keyword)
 (relation_decl name: (identifier) @type)
+(relation_compose_decl ["relation" "compose"] @keyword)
+(relation_compose_decl name: (identifier) @type)
+(relation_compose_decl left: (identifier) @type)
+(relation_compose_decl right: (identifier) @type)
 (relation_algebra) @type.builtin
 (relation_tape_direction) @keyword
 (relation_tape_decl alphabet: (identifier) @type)

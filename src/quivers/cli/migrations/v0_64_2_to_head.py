@@ -21,6 +21,7 @@ Ground deduction rules and literal application arguments are additive
 too, so existing deduction rules need no rewrite at this hop. The authored
 proof interpretation, sparse relations, and fixed relation and string
 graph score declarations likewise leave prior declarations unchanged.
+Authored binary relation composition is also additive at this hop.
 
 This is a directed migration, not a target-source formatter. Reapplying it to a
 new static telescope fails the historical source gate rather than guessing at

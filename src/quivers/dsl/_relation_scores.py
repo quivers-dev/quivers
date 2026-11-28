@@ -34,6 +34,7 @@ from quivers.qiec.string_graph_runtime import (
     _string_graph_score_handler_name,
     _tree_string_graph_handler,
 )
+from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.terms import Handle, LiteralValue, Local, Perform
 from quivers.qiec.types import REAL, UNIT, TypeExpr
@@ -54,9 +55,9 @@ class _RelationScore:
 def _score_specification(
     elaborator: _Elaborator,
     declaration: QiecRelationScoreDecl,
-    specs: dict[str, RationalRelationSpec],
+    specs: dict[str, RationalRelationSpec | ComposedRelationSpec],
     result: TypeExpr,
-) -> RationalRelationSpec | None:
+) -> RationalRelationSpec | ComposedRelationSpec | None:
     operation = declaration.operation
     if operation in ("path_entropy", "expected_path_cost") and result != REAL:
         elaborator._fail(
@@ -73,16 +74,26 @@ def _score_specification(
             f"unknown authored relation {declaration.relation!r}",
             code="qiec-relation-score",
         )
-    if operation == "conditional_log_prob" and not 0 < relation.input_tapes < len(
-        relation.tapes
-    ):
-        elaborator._fail(
-            declaration,
-            "an authored conditional score requires input and output tapes",
-            code="qiec-relation-score",
-        )
+    if isinstance(relation, ComposedRelationSpec):
+        if operation != "pair_weight":
+            elaborator._fail(
+                declaration,
+                "authored compositions currently support pair_weight scores",
+                code="qiec-relation-score",
+            )
+        algebra = relation.left.algebra
+    else:
+        algebra = relation.algebra
+        if operation == "conditional_log_prob" and not 0 < relation.input_tapes < len(
+            relation.tapes
+        ):
+            elaborator._fail(
+                declaration,
+                "an authored conditional score requires input and output tapes",
+                code="qiec-relation-score",
+            )
     if operation == "pair_weight":
-        expected = LOG_WEIGHT if relation.algebra == LOG_PROB.subject else REAL
+        expected = LOG_WEIGHT if algebra == LOG_PROB.subject else REAL
         if result != expected:
             elaborator._fail(
                 declaration,

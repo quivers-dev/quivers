@@ -109,6 +109,11 @@ def test_string_graph_score_keywords_are_contextual_for_old_source() -> None:
     assert compose_migration("v0.64.2", "HEAD")(source) == source
 
 
+def test_authored_relation_compose_remains_an_old_identifier() -> None:
+    source = b"object compose, relation : FinSet 2\n"
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_authored_relation_keywords_are_contextual_for_old_source() -> None:
     source = (
         b"object relation, algebra, states, input, output : FinSet 2\n"

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import didactic.api as dx
+
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.objects import FinSet, StringSet
 from quivers.core.relations import Arc, Boundary, RelationTopology
-from quivers.dsl.ast_nodes import Module, QiecRelationDecl
+from quivers.dsl.ast_nodes import Module, QiecRelationComposeDecl, QiecRelationDecl
 from quivers.dsl.ast_nodes.declarations import ObjectDecl, TypeFromExpr
 from quivers.dsl.ast_nodes.objects import DiscreteConstructor, TypeName
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec.contracts import ParameterId
+from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relations import RationalRelationSpec
 
 
@@ -87,28 +90,60 @@ def _specification(
 
 def authored_relation_specs(
     syntax: Module, module_name: str, file_path: str
-) -> dict[str, RationalRelationSpec]:
-    """Build checked stable relation specifications from one source module."""
+) -> dict[str, RationalRelationSpec | ComposedRelationSpec]:
+    """Build checked primitive and binary relation specifications from source."""
     objects = {
         name: statement
         for statement in syntax.statements
         if isinstance(statement, ObjectDecl)
         for name in statement.names
     }
-    result: dict[str, RationalRelationSpec] = {}
+
+    def diagnostic(
+        declaration: QiecRelationDecl | QiecRelationComposeDecl, message: str
+    ) -> QiecDiagnosticError:
+        return QiecDiagnosticError(
+            message,
+            code="qiec-relation-declaration",
+            file=file_path,
+            line=declaration.line,
+            column=declaration.col,
+        )
+
+    declarations: dict[str, QiecRelationDecl | QiecRelationComposeDecl] = {}
+    primitive: dict[str, RationalRelationSpec] = {}
     for declaration in syntax.statements:
-        if not isinstance(declaration, QiecRelationDecl):
+        if isinstance(declaration, QiecRelationDecl | QiecRelationComposeDecl):
+            if declaration.name in declarations:
+                raise diagnostic(
+                    declaration, f"duplicate authored relation {declaration.name!r}"
+                )
+            declarations[declaration.name] = declaration
+        if isinstance(declaration, QiecRelationDecl):
+            try:
+                primitive[declaration.name] = _specification(
+                    declaration, objects, module_name
+                )
+            except (TypeError, ValueError, dx.ValidationError) as error:
+                raise diagnostic(declaration, str(error)) from error
+
+    result: dict[str, RationalRelationSpec | ComposedRelationSpec] = {}
+    for name, declaration in declarations.items():
+        if isinstance(declaration, QiecRelationDecl):
+            result[name] = primitive[name]
             continue
+        for operand in (declaration.left, declaration.right):
+            if operand not in declarations:
+                raise diagnostic(declaration, f"unknown authored relation {operand!r}")
+            if operand not in primitive:
+                raise diagnostic(
+                    declaration,
+                    f"composition requires primitive relation operands, got {operand!r}",
+                )
         try:
-            if declaration.name in result:
-                raise ValueError(f"duplicate authored relation {declaration.name!r}")
-            result[declaration.name] = _specification(declaration, objects, module_name)
-        except (TypeError, ValueError) as error:
-            raise QiecDiagnosticError(
-                str(error),
-                code="qiec-relation-declaration",
-                file=file_path,
-                line=declaration.line,
-                column=declaration.col,
-            ) from error
+            result[name] = ComposedRelationSpec(
+                left=primitive[declaration.left], right=primitive[declaration.right]
+            )
+        except (TypeError, ValueError, dx.ValidationError) as error:
+            raise diagnostic(declaration, str(error)) from error
     return result
