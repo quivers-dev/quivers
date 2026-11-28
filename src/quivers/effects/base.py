@@ -45,7 +45,12 @@ from quivers.continuous.program_steps import RunConditions
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.program_module import ProgramKernel
 from quivers.qiec.effects import HandlerDef
-from quivers.qiec.evaluator import RuntimeHandler, RuntimeRequest, RuntimeValidator
+from quivers.qiec.evaluator import (
+    RuntimeConstructor,
+    RuntimeHandler,
+    RuntimeRequest,
+    RuntimeValidator,
+)
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import NamedEffectInstance
 from quivers.qiec.terms import Computation, Handle
@@ -208,7 +213,8 @@ class RunContext(QiecModel):
         The learned parameters of the program's morphisms by qualified
         name, as the parameter store answers them.
     observations
-        The run's observations at declared sites, by site label.
+        The run's observations at declared sites, by site label. A checked
+        finite law may observe a typed structured value.
     supplied
         Values standing in for let bindings, by name, which their steps
         read rather than compute.
@@ -263,7 +269,7 @@ class RunContext(QiecModel):
     parameters: dict[str, torch.Tensor] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    observations: dict[str, torch.Tensor] = dx.field(
+    observations: dict[str, torch.Tensor | RuntimeConstructor | str | None] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     supplied: dict[str, torch.Tensor] = dx.field(

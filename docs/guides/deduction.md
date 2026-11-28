@@ -920,8 +920,28 @@ program assess_neural(first : String, last : String, response : Bool) : Word -> 
     observe response <- Bernoulli(probs=probability)
     return probability
 
+instance random : Random
+
+define sample_response(law : Sampleable[Reading__Item], yes : Real, no : Real) : Real !{random} =
+    let form <- perform random.sample[Reading__Item](site("reading"), law)
+    let claim <- to_claim(form)
+    let proved <- Prover__run[1]([claim], [true])
+    if proved then
+        return yes
+    else
+        return no
+
+program assess_drawn(first : String, last : String, response : Bool, yes : Real, no : Real) : Word -> Weight
+    let sentence <- pack_tokens(first, last)
+    let readings = parse_outcomes(Reading, sentence, "form")
+    let law = outcome_law(readings)
+    let probability <- sample_response(law, yes, no)
+    observe response <- Bernoulli(probs=probability)
+    return probability
+
 export assess
 export assess_neural
+export assess_drawn
 ```
 
 The likelihood sums the reading probabilities weighted by `yes` when the
@@ -953,6 +973,14 @@ mixture of the network's predictions over readings. Differentiating its
 log joint reaches both the lexical weights and the network parameters.
 Supply the parameter values by name to
 [`run_program`][quivers.qiec.program_runtime.run_program].
+
+`assess_drawn` uses the same weighted readings as a latent distribution.
+`outcome_law` preserves their nominal type and normalizes the log masses.
+It accepts weighted item rows and rows grouped by a pure typed outcome
+key. Construction is deterministic and requires positive total mass.
+The program's `Random` operation draws one form and replay scores the
+same form under the current grammar weights. Summing the joint scores
+of all supported forms recovers the exact response likelihood above.
 
 ## Schema export
 

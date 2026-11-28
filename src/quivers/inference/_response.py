@@ -10,6 +10,7 @@ from quivers._rng import seeded_rng
 from quivers.continuous._ordinal import OrdinalDistribution
 from quivers.continuous.measure import Mixture
 from quivers.inference.trace import Trace
+from quivers.qiec.structured_sampleables import FiniteSampleable
 
 
 def response_sample(recorded: Trace, response: str) -> torch.Tensor:
@@ -35,6 +36,8 @@ def response_sample(recorded: Trace, response: str) -> torch.Tensor:
     sampleable = recorded.sites[response].sampleable
     if sampleable is None:
         raise TypeError("the response has no native sampling operation")
+    if isinstance(sampleable, FiniteSampleable):
+        raise TypeError(f"structured response {response!r} has no tensor sample layout")
     morphism = getattr(sampleable, "raw_morphism", sampleable.morphism)
     return morphism.rsample(sampleable.input)
 
@@ -62,6 +65,8 @@ def response_distribution(recorded: Trace, response: str) -> Distribution:
     sampleable = recorded.sites[response].sampleable
     if sampleable is None:
         raise TypeError("the response has no native conditional distribution")
+    if isinstance(sampleable, FiniteSampleable):
+        raise TypeError(f"structured response {response!r} has no tensor distribution")
     morphism = getattr(sampleable, "raw_morphism", sampleable.morphism)
     sampling = getattr(morphism, "sampling_distribution", None)
     if sampling is None:
@@ -72,22 +77,30 @@ def response_distribution(recorded: Trace, response: str) -> Distribution:
 
 
 @contextmanager
-def response_rng(seed: int, tensors: Iterable[torch.Tensor]) -> Iterator[None]:
+def response_rng(seed: int, tensors: Iterable[object]) -> Iterator[None]:
     """Isolate response randomness on the CPU and all participating devices.
 
     Parameters
     ----------
     seed : int
         Independent response stream seed.
-    tensors : Iterable[torch.Tensor]
-        Native posterior/data tensors identifying participating devices.
+    tensors : Iterable[object]
+        Native posterior and data tensors, or structured laws whose weight
+        tensors identify participating devices.
 
     Yields
     ------
     None
         Seeded context restoring each caller RNG on exit.
     """
-    with seeded_rng(seed, devices=(tensor.device for tensor in tensors)):
+    devices = (
+        value.log_weights.device
+        if isinstance(value, FiniteSampleable)
+        else value.device
+        for value in tensors
+        if isinstance(value, torch.Tensor | FiniteSampleable)
+    )
+    with seeded_rng(seed, devices=devices):
         yield
 
 

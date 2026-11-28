@@ -388,6 +388,7 @@ from quivers.qiec.serialization import (
     loads,
     to_data,
 )
+from quivers.qiec.structured_sampleables import FiniteSampleable
 from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_operation,
@@ -489,6 +490,7 @@ from quivers.qiec.types import (
     validate_static_argument,
 )
 from quivers.qiec.structural_runtime import (
+    FiniteDecoderSupport,
     StructuralRuntimeProvider,
     run_structural,
     structural_handler_definition,
@@ -548,6 +550,8 @@ __all__ = [
     "DischargeObstacle",
     "DischargedModule",
     "DistributionBackend",
+    "FiniteDecoderSupport",
+    "FiniteSampleable",
     "DistributionError",
     "DistributionFamily",
     "DistributionId",

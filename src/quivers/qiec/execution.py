@@ -62,6 +62,7 @@ from quivers.qiec.contracts import ContractNotMet, FailurePolicy
 from quivers.qiec.effects import HandlerDef, ResumptionGrade
 from quivers.qiec.foreign import (
     DeductionOutcomeGrouping,
+    DeductionOutcomeLaw,
     DeductionOutcomes,
     DeductionProofs,
     Enumeration,
@@ -577,7 +578,7 @@ class CoreRuntimeProvider(QiecModel):
                     "Random",
                 )
             elif kind == "declared":
-                runtime = self._declared(definition, raw_options, numbers)
+                runtime = self._declared(definition, raw_options, numbers, module)
             elif kind == "param":
                 runtime = self._param(definition, raw_options, numbers)
             elif kind == "score":
@@ -606,6 +607,7 @@ class CoreRuntimeProvider(QiecModel):
         definition: HandlerDef,
         options: Mapping[str, object],
         numbers: NumberDomain,
+        module: QiecModule,
     ) -> RuntimeHandler:
         """Serve a foreign handler by the semantics its declaration states.
 
@@ -620,6 +622,8 @@ class CoreRuntimeProvider(QiecModel):
             list an unestablished stop's report goes to).
         numbers
             The invocation's numbers, which hold a collector's unit.
+        module
+            The checked module that supplies the nominal types for a finite law.
 
         Returns
         -------
@@ -691,6 +695,15 @@ class CoreRuntimeProvider(QiecModel):
                 definition,
                 self._single_clause(definition, ResumptionGrade.LINEAR),
                 semantics,
+            )
+        if isinstance(semantics, DeductionOutcomeLaw):
+            from quivers.qiec.deduction_outcomes import outcome_law_handler
+
+            return outcome_law_handler(
+                definition,
+                self._single_clause(definition, ResumptionGrade.LINEAR),
+                semantics,
+                _registry_of(module),
             )
         if isinstance(semantics, DeductionProofs):
             from quivers.qiec.deduction_outcomes import deduction_proofs_handler
@@ -2481,8 +2494,12 @@ def _core_validator(type_: TypeExpr) -> RuntimeValidator | None:
         return lambda value: isinstance(value, str)
     if isinstance(type_, TypeApplication):
         if type_.constructor == SAMPLEABLE_CONSTRUCTOR:
+            from quivers.qiec.structured_sampleables import FiniteSampleable
+
             return lambda value: (
-                callable(getattr(value, "log_prob", None))
+                value.element == type_.arguments[0]
+                if isinstance(value, FiniteSampleable)
+                else callable(getattr(value, "log_prob", None))
                 and (
                     callable(getattr(value, "sample", None))
                     or callable(getattr(value, "rsample", None))

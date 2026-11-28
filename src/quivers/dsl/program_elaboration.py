@@ -35,6 +35,7 @@ from quivers.dsl._deduction_outcomes import (
     OUTCOME_CODE,
     PROOF_CALLS,
     PROOF_KEY_CALLS,
+    elaborate_outcome_law,
 )
 from quivers.qiec.foreign import DEDUCTION_OUTCOME_KEYS
 from quivers.dsl.ast_nodes import (
@@ -4291,6 +4292,25 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     code="qiec-program",
                 )
             self._lambda_macros[step.name] = step.value
+            return
+        if (
+            isinstance(step.value, LetExprCall)
+            and step.value.func == "outcome_law"
+            and step.value.func not in self.computation_signatures
+        ):
+            if len(step.value.args) != 1:
+                self._fail(
+                    step.value,
+                    "outcome_law takes one weighted row list",
+                    code=OUTCOME_CODE,
+                )
+            (argument,) = step.value.args
+            rows = self._let_value(argument, scope, state, step)
+            rows_type = self._value_type(rows, scope.context(), argument)
+            result, computation = elaborate_outcome_law(
+                self, step.value, rows, rows_type
+            )
+            self._bind_step(scope, step.name, result, computation, step)
             return
         deduction = self._parse_call(step.value, step)
         if deduction is not None:

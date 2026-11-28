@@ -17,6 +17,7 @@ from quivers.effects.units import SiteUnits
 from quivers.inference._posterior import collect_site_draws
 from quivers.inference.trace import SampleSite, Trace
 from quivers.inference.units import UnitLogLikelihood
+from quivers.qiec.structured_sampleables import FiniteSampleable
 
 
 def selected_name(label: str, names: set[str]) -> str:
@@ -87,6 +88,9 @@ def _site_log_likelihood(site: SampleSite) -> torch.Tensor:
     """
     sampleable = site.sampleable
     assert sampleable is not None
+    if isinstance(sampleable, FiniteSampleable):
+        return sampleable.log_prob(site.value).reshape(1)
+    assert isinstance(site.value, torch.Tensor)
     density = sampleable.raw_log_prob_pointwise(site.value)
     return density.reshape(1) if density.ndim == 0 else density
 

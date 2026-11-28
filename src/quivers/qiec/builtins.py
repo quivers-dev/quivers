@@ -58,7 +58,7 @@ from quivers.qiec.contracts import (
     settle,
     unmet_fields,
 )
-from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.distributions import DistributionBackend, RuntimeDistribution
 from quivers.qiec.families import family
 from quivers.core.algebras import LOG_PROB
 from quivers.qiec.foreign import SemiringSum, Settlement
@@ -698,13 +698,15 @@ def _require(
         raise RuntimeTypeMismatch(f"{subject} does not inhabit {type!r}: {value!r}")
 
 
-def _default_draw(sampleable: object) -> object:
+def _default_draw(sampleable: object, backend: DistributionBackend) -> object:
     """Draw from a sampleable using whichever interface it offers.
 
     Parameters
     ----------
     sampleable
         The host distribution.
+    backend
+        The invocation's default distribution backend for structured laws.
 
     Returns
     -------
@@ -718,6 +720,10 @@ def _default_draw(sampleable: object) -> object:
     InvalidHandlerError
         If the object offers neither drawing interface.
     """
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
+    if isinstance(sampleable, FiniteSampleable):
+        return sampleable.sample(backend=backend)
     rsample = getattr(sampleable, "rsample", None)
     if callable(rsample):
         return rsample()
@@ -778,7 +784,7 @@ def draw_handler(
     def sample(
         request: RuntimeRequest,
         resume: Resumption,
-        _context: ClauseContext,
+        context: ClauseContext,
     ) -> object:
         """Answer a `Random.sample` request.
 
@@ -788,8 +794,8 @@ def draw_handler(
             The request being answered and its arguments.
         resume
             The continuation, invoked within the clause's declared grade.
-        _context
-            Runtime services, unused by this clause.
+        context
+            Runtime services providing the invocation's distribution backend.
 
         Returns
         -------
@@ -802,11 +808,11 @@ def draw_handler(
             If the request does not carry a site and a sampleable, or the
             default draw finds no sampling interface on the sampleable.
         """
-        site, sampleable = _expect_arguments(request, 2, definition.name)
+        site, sampleable = _site_and_sampleable(request, definition.name)
         value = (
             draw(site, sampleable, request)
             if draw is not None
-            else _default_draw(sampleable)
+            else _default_draw(sampleable, context.attachments.distributions)
         )
         return TailResume(value=value)
 
@@ -914,6 +920,76 @@ def _support(sampleable: object) -> tuple[object, ...]:
     )
 
 
+def _weighted_support(sampleable: object) -> Iterable[tuple[object, torch.Tensor]]:
+    """Read the live finite support and log probabilities for enumeration.
+
+    Parameters
+    ----------
+    sampleable
+        A machine distribution with finite support or a checked finite law.
+
+    Yields
+    ------
+    tuple
+        A value in the machine's runtime layout and its log probability,
+        with the density's batch positions preserved for numeric laws.
+    """
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
+    if isinstance(sampleable, FiniteSampleable):
+        yield from sampleable.weighted_support()
+        return
+    support = _support(sampleable)
+    distribution = cast(RuntimeDistribution, sampleable)
+    shape = (*distribution.batch, *distribution.event)
+    element = family(distribution.family).element
+    for choice in support:
+        point = machine_value(element, choice, distribution.numbers)
+        assert isinstance(point, torch.Tensor)
+        value = point.expand(shape).clone() if shape else point
+        yield value, distribution.log_prob(value, keep_batch=True)
+
+
+def _enumerate_log_expectation(sampleable: object, resume: Resumption) -> torch.Tensor:
+    """Sum the weighted scalar answers of the positive support values.
+
+    Parameters
+    ----------
+    sampleable
+        The scalar finite law at the current request.
+    resume
+        The continuation with a scalar LogWeight answer.
+
+    Returns
+    -------
+    torch.Tensor
+        The log of the weighted sum of the continuation's scores.
+
+    Raises
+    ------
+    InvalidHandlerError
+        If the support is batched, empty, or the continuation answers a
+        non-scalar weight.
+    """
+    weights = []
+    for value, prior in _weighted_support(sampleable):
+        if prior.ndim != 0:
+            raise InvalidHandlerError(
+                "log expectation requires an unbatched finite draw"
+            )
+        if bool(torch.isneginf(prior)):
+            continue
+        weight = add_weights(prior, resume(value))
+        if weight.ndim != 0:
+            raise InvalidHandlerError(
+                "log expectation requires each shot to answer a scalar"
+            )
+        weights.append(weight)
+    if not weights:
+        raise InvalidHandlerError("log expectation requires positive finite support")
+    return LOG_PROB.join(torch.stack(weights), dim=0)
+
+
 def enumerate_handler(
     result_validator: RuntimeValidator,
     *,
@@ -938,6 +1014,11 @@ def enumerate_handler(
     value in support order, which is the row of a marginalized chain's
     transition weights that the forward algorithm reduces.
 
+    For ``log_expectation``, the continuation answers a scalar log
+    score. Each nested request and its handler return the same
+    ``LogWeight`` type. The clause sums over each draw's positive
+    support with the live log probabilities as weights.
+
     Parameters
     ----------
     result_validator
@@ -953,7 +1034,7 @@ def enumerate_handler(
     reduction
         How the shots aggregate: ``"logsumexp"``, ``"sum"``, or
         ``"mean"``; or ``"table"``, which keeps them one per support
-        value.
+        value. ``"log_expectation"`` sums scalar log scores.
     key
         Distinguishes this handler from others of the same name.
 
@@ -965,12 +1046,19 @@ def enumerate_handler(
     Raises
     ------
     ValueError
-        If the reduction is not one of the four.
+        If the reduction is unsupported or the log expectation handler
+        does not have a scalar answer on both sides.
     """
-    if reduction not in ("logsumexp", "sum", "mean", "table"):
+    if reduction not in ("logsumexp", "sum", "mean", "table", "log_expectation"):
         raise ValueError(
-            "enumeration reduces by logsumexp, sum, or mean, or keeps a table, "
-            f"not {reduction!r}"
+            "enumeration reduces by logsumexp, sum, mean, or log_expectation, "
+            f"or keeps a table, not {reduction!r}"
+        )
+    if reduction == "log_expectation" and (
+        answer_type != LOG_WEIGHT or weight_type is not None
+    ):
+        raise ValueError(
+            "log expectation enumeration requires a LogWeight -> LogWeight handler"
         )
     definition = _handler_def(
         "Random.enumerate",
@@ -1013,17 +1101,11 @@ def enumerate_handler(
             other than a value paired with its weight, or the shots'
             weights do not fill the weight type's positions.
         """
-        _site, sampleable = _expect_arguments(request, 2, definition.name)
-        support = _support(sampleable)
-        distribution = cast(RuntimeDistribution, sampleable)
-        shape = (*distribution.batch, *distribution.event)
-        element = family(distribution.family).element
+        _site, sampleable = _site_and_sampleable(request, definition.name)
+        if reduction == "log_expectation":
+            return _enumerate_log_expectation(sampleable, resume)
         weights: list[torch.Tensor] = []
-        for choice in support:
-            point = machine_value(element, choice, distribution.numbers)
-            assert isinstance(point, torch.Tensor)
-            value = point.expand(shape).clone() if shape else point
-            prior = distribution.log_prob(value, keep_batch=True)
+        for value, prior in _weighted_support(sampleable):
             answer = resume(value)
             if not isinstance(answer, tuple) or len(answer) != 2:
                 raise InvalidHandlerError(
@@ -1302,7 +1384,16 @@ def _site_and_sampleable(
         if the site is not hashable and so cannot key an observation
         or replay table.
     """
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
     site, sampleable = _expect_arguments(request, 2, handler)
+    if (
+        isinstance(sampleable, FiniteSampleable)
+        and sampleable.element != request.core.result_type
+    ):
+        raise RuntimeTypeMismatch(
+            "the finite sampleable's element type differs from its Random request"
+        )
     try:
         hash(site)
     except TypeError as error:
@@ -1357,7 +1448,9 @@ def _zero_weight(sampleable: object) -> object:
         If the distribution is not one the machine constructed, whose
         numbers are known.
     """
-    if not isinstance(sampleable, RuntimeDistribution):
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
+    if not isinstance(sampleable, RuntimeDistribution | FiniteSampleable):
         raise InvalidHandlerError(
             "an unscored observation needs a distribution of the machine's numbers"
         )
@@ -3284,7 +3377,7 @@ def draw_scoring_handler(
         value = (
             draw(site, sampleable, request)
             if draw is not None
-            else _default_draw(sampleable)
+            else _default_draw(sampleable, context.attachments.distributions)
         )
         _emit_score(
             context,
@@ -3616,7 +3709,7 @@ def block_handler(
         value = (
             draw(site, sampleable, request)
             if draw is not None
-            else _default_draw(sampleable)
+            else _default_draw(sampleable, context.attachments.distributions)
         )
         _emit_score(
             context,

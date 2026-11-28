@@ -1057,8 +1057,12 @@ MUTATIONS: tuple[Mutation, ...] = (
                 new='    shared = {}\n    definition = _handler_def(\n        "Random.draw-scoring",',
             ),
             Rewrite(
-                old="            else _default_draw(sampleable)\n",
-                new="            else shared.setdefault(site, _default_draw(sampleable))\n",
+                old="            else _default_draw(sampleable, context.attachments.distributions)\n",
+                new=(
+                    "            else shared.setdefault(\n"
+                    "                site, _default_draw(sampleable, context.attachments.distributions)\n"
+                    "            )\n"
+                ),
             ),
         ),
         also_in=("quivers.effects.checked_program",),

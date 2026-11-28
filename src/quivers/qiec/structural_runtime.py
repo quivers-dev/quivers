@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from functools import cached_property, lru_cache
+from graphlib import TopologicalSorter
+from itertools import product
+from types import MappingProxyType
+from typing import cast
 import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
-from quivers.qiec.canonical import LOG_WEIGHT, tensor_shape
+from quivers.qiec.canonical import (
+    LOG_WEIGHT,
+    sampleable_type,
+    sampled_element,
+    tensor_shape,
+)
+from quivers.qiec.deduction_outcomes import validate_outcome_key
 from quivers.qiec.effects import EffectRef, HandlerDef
 from quivers.qiec.evaluator import (
     ClauseContext,
+    Evaluator,
     RuntimeAttachments,
+    RuntimeConstructor,
     RuntimeHandler,
 )
 from quivers.qiec.execution import (
@@ -22,10 +36,658 @@ from quivers.qiec.execution import (
     RuntimeValidator,
     run_named,
 )
-from quivers.qiec.identifiers import TypeId
+from quivers.qiec.identifiers import ConstructorId, TypeId
 from quivers.qiec.module import NamedEffectInstance, QiecModule
+from quivers.qiec.numbers import host_index
+from quivers.qiec.rules import (
+    Derivation,
+    RulePresentation,
+    closed_derivation_value,
+    presentation_of,
+    term_derivation,
+)
+from quivers.qiec.structured_sampleables import FiniteSampleable, _check_finite_point
+from quivers.qiec.terms import Return
 from quivers.qiec.types import REAL, TypeApplication, TypeExpr
-from quivers.structural import Term
+from quivers.structural import (
+    EMPTY_CONTEXT,
+    Decoder,
+    Encoder,
+    Signature,
+    Term,
+    TermArg,
+    make_term,
+)
+
+
+type _DecoderLayout = tuple[
+    Signature, int, tuple[tuple[str, tuple[tuple[type, TermArg], ...]], ...]
+]
+
+
+def _finite_term_name(signature: str, sort: str) -> str:
+    """Name the complete decoder's nominal value family.
+
+    Parameters
+    ----------
+    signature, sort
+        The structural signature and object sort.
+
+    Returns
+    -------
+    str
+        A qualified name distinct from the opaque structural term family.
+    """
+    return f"{signature}__{sort}Value"
+
+
+def _decoder_layout(decoder: Decoder) -> _DecoderLayout:
+    """Snapshot the declarations that determine the decoder's support.
+
+    Parameters
+    ----------
+    decoder
+        The decoder, whose learnable tensors are deliberately omitted.
+
+    Returns
+    -------
+    tuple
+        The signature, depth and finite vocabularies in stable order.
+    """
+    vocabularies = tuple(
+        (sort, tuple((type(value), value) for value in vocabulary))
+        for sort, vocabulary in sorted(decoder.data_vocab.items())
+    )
+    return decoder.signature, decoder.depth, vocabularies
+
+
+@lru_cache(maxsize=128)
+def _qualified_structural_presentation(signature: Signature) -> RulePresentation:
+    """Qualify a shared term presentation's source names by its signature.
+
+    Parameters
+    ----------
+    signature
+        The structural signature whose families the source module imports.
+
+    Returns
+    -------
+    RulePresentation
+        The original rule and family identities with qualified names.
+    """
+    original = presentation_of(signature)
+    prefix = f"{signature.name}__"
+    return original.with_(
+        judgments=tuple(
+            item.with_(name=_finite_term_name(signature.name, item.name))
+            for item in original.judgments
+        ),
+        rules=tuple(item.with_(name=prefix + item.name) for item in original.rules),
+    )
+
+
+def _decoder_presentation(
+    signature: Signature, sort: str, *, qualified: bool
+) -> RulePresentation:
+    """Require a first-order structural presentation at the chosen sort.
+
+    Parameters
+    ----------
+    signature, sort
+        The decoder's structural signature and root object sort.
+    qualified
+        Whether the source names carry the signature's prefix.
+
+    Returns
+    -------
+    RulePresentation
+        The structural signature's shared checked declaration.
+
+    Raises
+    ------
+    ValueError
+        If the decoder uses a binding signature or names a non-object sort.
+    """
+    if signature.binders:
+        raise ValueError("finite decoder support requires a first-order signature")
+    root = signature.sorts.get(sort)
+    if root is None or root.kind != "object":
+        raise ValueError(f"decoder support sort {sort!r} is not an object sort")
+    return (
+        _qualified_structural_presentation(signature)
+        if qualified
+        else presentation_of(signature)
+    )
+
+
+@dataclass(frozen=True)
+class _PreparedDecoderSupport:
+    """Static candidates, kept independently of a live neural decoder.
+
+    Parameters
+    ----------
+    sort, element
+        The structural sort and its nominal checked type.
+    max_candidates
+        The bound used to prepare this support.
+    presentation
+        The shared checked term declarations.
+    candidates
+        Pairs of typed run-time values and their source structural terms.
+    layout
+        The support-defining decoder declarations.
+    """
+
+    sort: str
+    element: TypeApplication
+    max_candidates: int
+    presentation: RulePresentation
+    candidates: tuple[tuple[RuntimeConstructor, Term], ...]
+    layout: _DecoderLayout
+
+    def distribution(self, decoder: Decoder, code: torch.Tensor) -> FiniteSampleable:
+        """Score this support with the decoder at the current invocation.
+
+        Parameters
+        ----------
+        decoder, code
+            The same structural decoder configuration and a floating code of
+            the declared width, with any live parameters.
+
+        Returns
+        -------
+        FiniteSampleable
+            The fixed typed points with fresh differentiable log weights.
+
+        Raises
+        ------
+        ValueError
+            If the code or decoder configuration does not match the support.
+        """
+        width = decoder.sort_dims.get(self.sort)
+        if width is None:
+            raise ValueError(
+                f"the decoder has no embedding width for sort {self.sort!r}"
+            )
+        if (
+            not isinstance(code, torch.Tensor)
+            or code.shape != (width,)
+            or not code.is_floating_point()
+        ):
+            raise ValueError(
+                f"decoder support expects one code of shape ({width},) with floating dtype"
+            )
+        if _decoder_layout(decoder) != self.layout:
+            raise ValueError(
+                "the finite decoder support's signature, depth or vocabulary changed"
+            )
+        values, terms = zip(*self.candidates, strict=True)
+        masses = torch.stack(
+            [decoder.log_prob(term, code, sort=self.sort) for term in terms]
+        )
+        return FiniteSampleable(
+            element=self.element,
+            values=values,
+            log_weights=masses,
+            registry=self.presentation.registry,
+        )
+
+
+class FiniteDecoderSupport(QiecModel):
+    """A decoder restricted to an explicit finite set of closed terms.
+
+    The candidates are checked once against the decoder's structural signature
+    and represented by constructors of its ordinary QIEC rule presentation.
+    Repeated identical candidates name the same term. Only first-order term
+    signatures with a closed discrete QIEC carrier are supported.
+
+    Parameters
+    ----------
+    decoder
+        The decoder whose log probability determines the conditional law.
+    sort
+        The object sort of the candidates.
+    candidates
+        The supplied finite support. Every term must be in the decoder's
+        domain, including its depth and data-vocabulary restrictions.
+    max_candidates
+        A positive bound on the number of supplied entries, checked before
+        validating terms. Exceeding the bound refuses the entire support.
+    qualified
+        Use the signature-qualified names of the source-level term carrier.
+    """
+
+    decoder: Decoder = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    sort: str
+    candidates: tuple[Term, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_candidates: int
+    qualified: bool = False
+
+    @dx.model_validator()
+    def _validate_support(self) -> None:
+        """Ensure the candidate set fits the bound and the checked carrier.
+
+        Raises
+        ------
+        ValueError
+            If the set is empty or the bound does not admit all entries.
+        KernelError
+            If the selected carrier is outside the finite sampleable domain.
+        RuleError
+            If one term does not inhabit the declared structural signature.
+        """
+        if type(self.max_candidates) is not int or self.max_candidates < 1:
+            raise ValueError(
+                "a finite decoder support needs a positive candidate bound"
+            )
+        if not self.candidates or len(self.candidates) > self.max_candidates:
+            raise ValueError(
+                f"decoder support must have from 1 to {self.max_candidates} candidate entries"
+            )
+        _ = self._prepared
+
+    @cached_property
+    def _prepared(self) -> _PreparedDecoderSupport:
+        """The checked topology, code-independent and reusable between fits.
+
+        Returns
+        -------
+        _PreparedDecoderSupport
+            Typed points and their static declaration, holding no live decoder.
+        """
+        return _PreparedDecoderSupport(
+            sort=self.sort,
+            element=self.element,
+            max_candidates=self.max_candidates,
+            presentation=self.presentation,
+            candidates=self._checked_candidates,
+            layout=_decoder_layout(self.decoder),
+        )
+
+    @cached_property
+    def presentation(self) -> RulePresentation:
+        """The shared typed rule presentation, for the consuming module.
+
+        Returns
+        -------
+        RulePresentation
+            The declaration of the candidate terms' nominal families.
+
+        Raises
+        ------
+        ValueError
+            If the decoder uses a binding signature or the sort is not an
+            object sort in its signature.
+        """
+        return _decoder_presentation(
+            self.decoder.signature, self.sort, qualified=self.qualified
+        )
+
+    @classmethod
+    def complete(
+        cls,
+        decoder: Decoder,
+        *,
+        sort: str,
+        max_candidates: int,
+        qualified: bool = False,
+    ) -> FiniteDecoderSupport:
+        """Prepare the complete support of a productive depth-bounded decoder.
+
+            Every constructor the decoder can choose at a reachable sort and
+            depth must be productive. Data leaves range over their decoder
+            vocabulary, which must be finite, nonempty and free of duplicates.
+            The support is counted up to the declared limit before making terms.
+
+            Parameters
+            ----------
+            decoder
+                The first-order decoder and its depth bound.
+            sort
+                The root object sort to expand.
+            max_candidates
+                The most terms to materialize. It must be positive.
+        qualified
+            Whether to qualify the names of the shared term declarations.
+
+            Returns
+            -------
+            FiniteDecoderSupport
+                Every term admitted by the given structural decoder at this root.
+                When its local distributions are valid, its normalized law
+                agrees with the original decoder.
+
+            Raises
+            ------
+            ValueError
+                If a reachable branch is unproductive, the domain is unsupported,
+                or the number of terms exceeds the bound.
+        """
+        _decoder_presentation(decoder.signature, sort, qualified=qualified)
+        if type(max_candidates) is not int or max_candidates < 1:
+            raise ValueError(
+                "a finite decoder support needs a positive candidate bound"
+            )
+        return cls(
+            decoder=decoder,
+            candidates=_complete_decoder_terms(decoder, sort, max_candidates),
+            sort=sort,
+            max_candidates=max_candidates,
+            qualified=qualified,
+        )
+
+    @cached_property
+    def element(self) -> TypeApplication:
+        """The nominal QIEC type of a point of this support.
+
+        Returns
+        -------
+        TypeApplication
+            The closed family for the selected structural sort.
+        """
+        families, _ = self.presentation.declarations()
+        name = (
+            _finite_term_name(self.decoder.signature.name, self.sort)
+            if self.qualified
+            else self.sort
+        )
+        family = next(item for item in families if item.name == name)
+        return TypeApplication(constructor=family.type_constructor)
+
+    @cached_property
+    def _checked_candidates(self) -> tuple[tuple[RuntimeConstructor, Term], ...]:
+        """Check and retain each distinct term with its typed representation.
+
+        Returns
+        -------
+        tuple
+            Constructor and structural term pairs in first appearance order.
+
+        Raises
+        ------
+        ValueError
+            If a candidate has a different sort.
+        """
+        validate_outcome_key(self.element, self.presentation.registry)
+        evaluator = Evaluator()
+        candidates: dict[RuntimeConstructor, Term] = {}
+        for term in self.candidates:
+            derivation = term_derivation(self.decoder.signature, term).body
+            if not isinstance(derivation, Derivation):
+                raise ValueError("a finite decoder candidate must be a closed term")
+            value = closed_derivation_value(self.presentation, derivation)
+            if value.result_type != self.element:
+                raise ValueError(
+                    f"a decoder candidate does not inhabit sort {self.sort!r}"
+                )
+            runtime = evaluator.evaluate(Return(value=value))
+            assert isinstance(runtime, RuntimeConstructor)
+            candidates.setdefault(runtime, term)
+        return tuple(candidates.items())
+
+    def distribution(self, code: torch.Tensor) -> FiniteSampleable:
+        """Build the conditional decoder law at one unbatched code.
+
+        Parameters
+        ----------
+        code
+            One embedding of the selected object sort.
+
+        Returns
+        -------
+        FiniteSampleable
+            The same supplied terms with freshly evaluated log masses,
+            normalized over this set by the finite sampleable.
+
+        Raises
+        ------
+        ValueError
+            If the code has the wrong shape or the decoder's signature,
+            depth or vocabularies have changed.
+        RuntimeError
+            If a supplied term violates the decoder's depth or vocabulary
+            restriction, or the decoder lacks a required component.
+        DistributionError
+            If the finite law has no positive mass or invalid log masses.
+        """
+        return self._prepared.distribution(self.decoder, code)
+
+
+type _DecoderState = tuple[str, int]
+
+
+def _complete_decoder_terms(
+    decoder: Decoder, sort: str, limit: int
+) -> tuple[Term, ...]:
+    """Count all reachable structural alternatives before materializing terms.
+
+    Parameters
+    ----------
+    decoder
+        The first-order decoder with closed vocabularies.
+    sort
+        The root sort.
+    limit
+        The most terms the caller is willing to materialize.
+
+    Returns
+    -------
+    tuple of Term
+        The full root support, in constructor and vocabulary order.
+
+    Raises
+    ------
+    ValueError
+        If a reachable branch can get stuck or the complete support is too large.
+    """
+    signature = decoder.signature
+    root = (sort, decoder.depth)
+    dependencies: TopologicalSorter[_DecoderState] = TopologicalSorter()
+    productions: dict[
+        _DecoderState, tuple[tuple[str, tuple[_DecoderState, ...]], ...]
+    ] = {}
+    leaves: dict[_DecoderState, tuple[TermArg, ...]] = {}
+    pending = [root]
+    while pending:
+        state = pending.pop()
+        if state in productions or state in leaves:
+            continue
+        current, depth = state
+        kind = signature.sorts[current].kind
+        if kind == "data":
+            words = tuple(decoder.data_vocab.get(current, ()))
+            if not words or len(set(words)) != len(words):
+                raise ValueError(
+                    f"reachable decoder data sort {current!r} needs a nonempty vocabulary "
+                    "without duplicates"
+                )
+            leaves[state] = words
+            dependencies.add(state)
+            continue
+        if kind != "object":
+            raise ValueError(
+                f"reachable decoder sort {current!r} needs a variable in an empty context"
+            )
+        try:
+            choices = decoder._object_candidates(EMPTY_CONTEXT, current, depth)
+        except RuntimeError as error:
+            raise ValueError(
+                f"decoder sort {current!r} at depth {depth}: {error}"
+            ) from error
+        rules = tuple(
+            (
+                name,
+                tuple(
+                    (child, -1 if signature.sorts[child].kind == "data" else depth - 1)
+                    for child in signature.constructors[name].domain
+                ),
+            )
+            for name in choices
+        )
+        children = tuple(child for _, child_states in rules for child in child_states)
+        productions[state] = rules
+        dependencies.add(state, *children)
+        pending.extend(children)
+
+    order = tuple(dependencies.static_order())
+    counts: dict[_DecoderState, int] = {}
+    overflow = limit + 1
+    for state in order:
+        if state in leaves:
+            counts[state] = min(overflow, len(leaves[state]))
+            continue
+        total = 0
+        for _, child_states in productions[state]:
+            ways = 1
+            for child in child_states:
+                ways = min(overflow, ways * counts[child])
+            total = min(overflow, total + ways)
+        counts[state] = total
+    if counts[root] > limit:
+        raise ValueError(
+            f"complete decoder support exceeds the {limit} candidate limit"
+        )
+
+    terms = dict(leaves)
+    for state in order:
+        if state in productions:
+            terms[state] = tuple(
+                make_term(name, *arguments)
+                for name, child_states in productions[state]
+                for arguments in product(*(terms[child] for child in child_states))
+            )
+    # Every production of the checked object sort above constructs a Term.
+    return cast(tuple[Term, ...], terms[root])
+
+
+@dataclass(frozen=True)
+class _StructuralTermLayout:
+    """The inverse of the shared presentation's first-order value encoding.
+
+    Parameters
+    ----------
+    element, presentation
+        The exact root carrier and the checked structural declarations.
+    constructors
+        The original constructor names and positional sorts, keyed by the
+        same nominal identities used by the qualified presentation.
+    """
+
+    element: TypeApplication
+    presentation: RulePresentation
+    constructors: Mapping[ConstructorId, tuple[str, tuple[str, ...]]]
+
+    def term(self, value: object) -> Term:
+        """Restore the source order of the two checked field partitions.
+
+        QIEC places the object premises before the scalar payload fields.
+        The signature fixes which source positions each partition occupies.
+        Both orders within a partition are preserved, so interleaving by
+        that signature is the inverse of value encoding. The argument for a
+        whole term follows by induction on its finite tree.
+
+        Parameters
+        ----------
+        value
+            A closed nominal QIEC value from this signature's root carrier.
+
+        Returns
+        -------
+        Term
+            The structural term consumed by the existing encoder.
+
+        Raises
+        ------
+        DistributionError
+            If a root or child constructor, static argument, or scalar
+            payload violates the checked declaration.
+        ValueError
+            If an index payload is negative.
+        """
+        _check_finite_point(value, self.element, self.presentation.registry)
+        assert isinstance(value, RuntimeConstructor)
+        pending = [(value, False)]
+        results: list[Term] = []
+        while pending:
+            current, entered = pending.pop()
+            name, layout = self.constructors[current.constructor]
+            premise_count = layout.count("object")
+            if not entered:
+                pending.append((current, True))
+                for child in reversed(current.fields[:premise_count]):
+                    assert isinstance(child, RuntimeConstructor)
+                    pending.append((child, False))
+                continue
+            children = iter(results[-premise_count:] if premise_count else ())
+            if premise_count:
+                del results[-premise_count:]
+            payload = iter(current.fields[premise_count:])
+            arguments: list[TermArg] = []
+            for kind in layout:
+                if kind == "object":
+                    arguments.append(next(children))
+                    continue
+                leaf = next(payload)
+                if isinstance(leaf, str):
+                    arguments.append(leaf)
+                else:
+                    literal = host_index(leaf, "a structural encoder's integer payload")
+                    if kind == "index" and literal < 0:
+                        raise ValueError(
+                            "a structural encoder's index payload cannot be negative"
+                        )
+                    arguments.append(literal)
+            results.append(Term(op=name, args=tuple(arguments)))
+        (result,) = results
+        return result
+
+
+@lru_cache(maxsize=128)
+def _structural_term_layout(
+    signature: Signature, element: TypeApplication
+) -> _StructuralTermLayout:
+    """Resolve a structural encoder's nominal term carrier once per signature.
+
+    Parameters
+    ----------
+    signature, element
+        The compiled source signature and the checked encoder argument type.
+
+    Returns
+    -------
+    _StructuralTermLayout
+        The checked inverse, independent of the live encoder weights.
+
+    Raises
+    ------
+    ValueError
+        If this carrier does not belong to the signature's first-order terms.
+    KernelError
+        If a reachable payload lacks the supported discrete representation.
+    """
+    if signature.binders:
+        raise ValueError("a typed structural encoder requires a first-order signature")
+    presentation = _qualified_structural_presentation(signature)
+    families, _ = presentation.declarations()
+    if not any(
+        element == TypeApplication(constructor=family.type_constructor)
+        for family in families
+    ):
+        raise ValueError(
+            "structural encoder term carrier differs from its checked signature"
+        )
+    validate_outcome_key(element, presentation.registry)
+    declarations = presentation_of(signature).rules
+    constructors = {
+        rule.id: (
+            rule.name,
+            tuple(
+                signature.sorts[sort].kind for sort in signature.domain_of(rule.name)
+            ),
+        )
+        for rule in declarations
+    }
+    return _StructuralTermLayout(element, presentation, MappingProxyType(constructors))
 
 
 def _tensor_value(type_: TypeExpr, value: object) -> bool:
@@ -184,6 +846,8 @@ def _is_term_type(type_: TypeExpr, identities: frozenset[TypeId]) -> bool:
 def _validator_for(
     type_: TypeExpr,
     term_types: frozenset[TypeId],
+    *,
+    decoder_law: bool = False,
 ) -> RuntimeValidator | None:
     """Return the structural validator for one closed runtime type.
 
@@ -193,6 +857,8 @@ def _validator_for(
         The closed QIEC type to validate at the host boundary.
     term_types
         Type identities whose host values are structural terms.
+    decoder_law
+        Whether the requested operation returns a checked finite decoder law.
 
     Returns
     -------
@@ -201,6 +867,12 @@ def _validator_for(
         not cover ``type_``.
     """
 
+    if decoder_law:
+        element = sampled_element(type_)
+        if element is not None:
+            return lambda value: (
+                isinstance(value, FiniteSampleable) and value.element == element
+            )
     provider = StructuralRuntimeProvider(runtimes=(), term_types=term_types)
     return provider.validator_for(type_)
 
@@ -309,12 +981,85 @@ def _component_function(
         raise ValueError(f"instance {instance.name!r} is not structural")
     role = str(path[1])
     name = str(path[2])
-    if role == "encoder":
-        encoder = program.encoders[name]
-        return lambda argument, _context: encoder(argument)
+    if role in {"encoder", "encoder-value"}:
+        encoder_name = (
+            name if role == "encoder" else name.removesuffix("__encode_value")
+        )
+        encoders = cast(Mapping[str, Callable[[object], object]], program.encoders)
+        encoder = encoders[encoder_name]
+        if role == "encoder":
+            return lambda argument, _context: encoder(argument)
+        signatures = getattr(program, "signatures", {})
+        carrier = instance.entry.effect.arguments[0]
+        signature = signatures.get(path[4]) if len(path) == 5 else None
+        if not isinstance(signature, Signature) or not isinstance(
+            carrier, TypeApplication
+        ):
+            raise TypeError("a typed structural encoder needs its checked signature")
+        if isinstance(encoder, Encoder) and encoder.signature != signature:
+            raise TypeError("the live structural encoder has a different signature")
+        layout = _structural_term_layout(signature, carrier)
+        return lambda argument, _context: encoder(layout.term(argument))
     if role == "decoder":
         decoder = program.decoders[name]
         return lambda argument, _context: decoder(argument)
+    if role == "decoder-law":
+        decoder = program.decoders[name.removesuffix("__law")]
+        support = getattr(decoder, "_qiec_finite_support", None)
+        expected = sampled_element(instance.entry.effect.arguments[1])
+        if (
+            not isinstance(support, _PreparedDecoderSupport)
+            or support.element != expected
+        ):
+            raise TypeError(
+                f"decoder {decoder.name!r} has no complete support of the checked type"
+            )
+
+        def law(argument: object, context: ClauseContext) -> FiniteSampleable:
+            """Evaluate the prepared support at one checked embedding.
+
+            Parameters
+            ----------
+            argument
+                The embedding and the limit recorded in the checked module.
+            context
+                The invocation holding the producer’s exact ownership assertion.
+
+            Returns
+            -------
+            FiniteSampleable
+                A freshly scored law with the checked nominal carrier.
+
+            Raises
+            ------
+            TypeError
+                If the surviving runtime argument has the wrong shape or a
+                limit different from the prepared support.
+            """
+            if (
+                not isinstance(argument, tuple)
+                or len(argument) != 2
+                or not isinstance(argument[0], torch.Tensor)
+                or host_index(argument[1], "decoder support limit")
+                != support.max_candidates
+            ):
+                raise TypeError(
+                    f"decoder {decoder.name!r} does not match the checked support limit"
+                )
+            result = support.distribution(decoder, argument[0])
+            # This producer owns the fresh log-mass tensor and the law only
+            # reads it. The validated candidate terms are immutable machine
+            # values. Native Random owns the draw effect and this result
+            # carries no mutable backend override.
+            context.attach(
+                result,
+                sampleable_type(support.element),
+                role="finite-decoder-law",
+                duplicable=True,
+            )
+            return result
+
+        return law
     if role == "decoder-nll":
         decoder_name = name.removesuffix("__nll")
         decoder = program.decoders[decoder_name]
@@ -389,7 +1134,11 @@ def structural_runtime_provider(
         result_type = instance.entry.effect.arguments[1]
         assert isinstance(result_type, TypeApplication)
         component_name = str(instance.origin.structural_path[2])
-        validator = _validator_for(result_type, term_types)
+        validator = _validator_for(
+            result_type,
+            term_types,
+            decoder_law=instance.origin.structural_path[1] == "decoder-law",
+        )
         if validator is None:
             raise TypeError(
                 f"structural component {component_name!r} has no validator for "
@@ -498,6 +1247,7 @@ def run_structural(
 
 
 __all__ = [
+    "FiniteDecoderSupport",
     "StructuralRuntimeProvider",
     "run_structural",
     "structural_handler_definition",

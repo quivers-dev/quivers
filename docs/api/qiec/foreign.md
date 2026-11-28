@@ -20,6 +20,9 @@ from that statement and from nothing else, in particular never from the handler'
 - [`DeductionOutcomeGrouping`][quivers.qiec.foreign.DeductionOutcomeGrouping] groups weighted rows
   whose checked keys admit exact structural equality. Ordinary QIEC calls compute the keys before
   this handler runs.
+- [`DeductionOutcomeLaw`][quivers.qiec.foreign.DeductionOutcomeLaw] turns nominal weighted rows
+  into a normalized `Sampleable` over their key type. The checked `outcome_law` binding uses this
+  adapter.
 
 A [`KernelSemiring`][quivers.qiec.foreign.KernelSemiring] names a member of the
 [algebra hierarchy](../core/algebras.md) by the subject of its [law claims](contracts.md#law-claims)
@@ -31,6 +34,28 @@ kernel values to `float64` tensors, apply the member's own `join` and `tensor_op
 back. The conversion is exact or refused: a count is exact below
 [`EXACT_COUNT`][quivers.qiec.foreign.EXACT_COUNT], the bound at which the counting algebra also
 refuses its closure.
+
+## Finite log expectations
+
+`Enumeration(reduction="log_expectation")` serves an ungrouped
+`Random` handler with signature `LogWeight -> LogWeight`. Each
+request resumes its continuation once for each positive-weight value
+of the unbatched finite draw. If the draw has mass $p(z)$ and the
+continuation returns $\ell(z)$ for the value $z$, its answer is
+
+$$
+\operatorname{logsumexp}_{z : p(z)>0}
+\bigl(\log p(z) + \ell(z)\bigr).
+$$
+
+A later request inside the continuation returns the same answer type.
+Induction on the finite tree of draws therefore gives the log of the
+sum over complete assignments, with each conditional draw mass
+appearing once along its branch. Work scales with that tree. An
+execution budget can cap it through the usual reference-machine fuel.
+The tensor backend preserves score and parameter derivatives on
+fixed positive support. A subtree whose scores all have zero weight
+returns $-\infty$ through the masked LogProb sum.
 
 ## Settled stops
 

@@ -650,16 +650,28 @@ def _trace_latent_values(
     -------
     dict[str, torch.Tensor]
         Detached values at their declared constrained shape.
+
+    Raises
+    ------
+    ValueError
+        If the requested values include a structured site with no tensor layout.
     """
     values: dict[str, torch.Tensor] = {}
     for label, record in recorded.sites.items():
         if (
-            record.morphism is None
-            or record.is_deterministic
+            record.is_deterministic
             and not (include_observed and selected is not None)
             or record.is_observed
             and not include_observed
         ):
+            continue
+        if record.is_structured:
+            if selected is None or label in selected:
+                raise ValueError(
+                    f"tensor draws cannot retain structured site {label!r}"
+                )
+            continue
+        if record.morphism is None:
             continue
         names = label.split(",")
         if selected is not None and not selected.intersection(names):
@@ -670,11 +682,9 @@ def _trace_latent_values(
         shape = _constrained_shape(
             support, dimension, plate or ((size,) if size else ()), event
         )
-        parts = (
-            record.value.chunk(len(names), dim=-1)
-            if len(names) > 1
-            else (record.value,)
-        )
+        value = record.value
+        assert isinstance(value, torch.Tensor)
+        parts = value.chunk(len(names), dim=-1) if len(names) > 1 else (value,)
         for name, value in zip(names, parts, strict=True):
             values[name] = value.detach().reshape(shape)
     return values
@@ -993,15 +1003,33 @@ class LatentRegistry:
         Returns
         -------
         LatentRegistry
-            Fully populated registry with each latent's morphism,
+            Fully populated registry with each admitted latent's morphism,
             support, bijector, dims, and flat-vector offsets.
+
+        Raises
+        ------
+        ValueError
+            If a structured latent is neither observed nor explicitly
+            excluded. A finite term has no Euclidean coordinates for this
+            registry's continuous estimators.
         """
         reached = _reaching_steps(model)
         sites: dict[str, LatentSite] = {}
         observed: set[str] = set()
         flat_cursor = 0
         for label, record in recorded.sites.items():
-            if record.morphism is None or record.is_deterministic:
+            if record.is_deterministic:
+                continue
+            if record.is_structured:
+                if record.is_observed:
+                    observed.add(label)
+                elif label not in exclude:
+                    raise ValueError(
+                        f"structured latent {label!r} cannot enter a continuous latent registry; "
+                        "condition or exactly enumerate the site, or exclude it explicitly"
+                    )
+                continue
+            if record.morphism is None:
                 continue
             if record.is_observed:
                 observed.update(label.split(","))

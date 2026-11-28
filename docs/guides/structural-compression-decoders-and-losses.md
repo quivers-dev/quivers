@@ -160,8 +160,139 @@ program score_term : Code -> Out
 ```
 
 Here `x` is the program's input vector and `t` a term given with the observations.
-A decoder cannot appear on the right of `sample`, `observe`, or `marginalize` in a
-program, so a program cannot draw a latent term from it or sum over its terms.
+The right side of a checked `sample` or `observe` needs a typed law. For a
+first-order decoder with a discrete carrier,
+[`FiniteDecoderSupport`][quivers.qiec.structural_runtime.FiniteDecoderSupport]
+builds such a law over an explicit, bounded set of supplied terms. For distinct
+terms in the supplied set $S$, its probability is
+
+$$
+p_S(t\mid z) = \frac{p_D(t\mid z)}{\sum_{u\in S} p_D(u\mid z)},
+\qquad t\in S.
+$$
+
+The denominator conditions the decoder on the supplied set. Duplicate entries
+are a single term in this set. The prepared support checks the structural term
+types once, and each call to `distribution` scores them at the new code and
+parameters, retaining gradients through the normalizer. The consuming module
+uses the support's rule-presentation declarations, and its
+[`FiniteSampleable`][quivers.qiec.structured_sampleables.FiniteSampleable]
+accepts draws, scores, and exact enumeration on that finite set.
+The supplied candidates and their tensor weights enter as typed runtime
+values. A source decoder name on its own remains a structural computation.
+
+### Complete depth-bounded support
+
+`FiniteDecoderSupport.complete(decoder, sort=..., max_candidates=...)`
+starts from the declared root sort at the decoder's depth. It follows
+every constructor that the decoder can choose at each reachable sort
+and remaining depth. At depth zero the decoder admits only terminating
+constructors. Each data position is filled from its reachable finite
+vocabulary, with one alternative per distinct payload. Every reachable
+sort and depth must have a productive expansion. A missing vocabulary
+or a reachable choice that can exhaust the depth budget is refused.
+
+Let $N(s,d)$ count the terms at object sort $s$ and depth $d$. For each
+admitted constructor, multiply the counts of its ordered children,
+using their object counts at depth $d-1$ or the sizes of their data
+vocabularies. Sum those products over the constructors. The product
+of no child counts is one. A constructor and its ordered children
+identify one structural term, so the recurrence counts each term once.
+Counting saturates at one above the candidate limit. The check visits
+the reachable sort and depth pairs and their ordered constructor
+positions before it builds any terms. If it accepts, every reachable
+state also fits the limit, since its terms extend to distinct root
+terms along a chosen path with productive siblings.
+
+With maximum constructor arity $a$ and root depth $d$, a term has at
+most $\sum_{j=0}^{d+1} a^j$ object and data nodes. Each data payload is
+one of the stored vocabulary values, so its size is bounded by the
+largest corresponding vocabulary entry. Preparing the support can
+still require exponential work in depth, and the caller supplies the
+candidate limit. Scoring the resulting law visits every prepared term.
+
+If all reachable decoder heads produce valid local probabilities and
+child embeddings, the complete support has original decoder mass one.
+Inductively, each constructor's ordered product of complete child
+laws has mass one, so summing over the locally normalized constructor
+choices also has mass one. The finite law then agrees with the original
+depth-bounded decoder. A supplied candidate set has the conditional
+semantics above. The signature, depth and vocabulary stay fixed between
+calls on a prepared support, while code and learned parameters can change.
+
+### Drawing from a declared decoder
+
+An authored decoder can declare `max_candidates` to prepare its complete
+support before execution. This exposes the checked computation
+`D__law(code)` for decoder `D`. Its term type uses the signature name
+and the root object sort, for instance `Colors__TermValue`. Its
+constructors use the signature's prefix. The checked law uses the
+same neural heads as the decoder and keeps their gradients.
+
+<!-- compile: qiec -->
+```qvr
+signature Colors
+    sorts
+        Term : object [dim=2]
+    constructors
+        Red : -> Term
+        Blue : -> Term
+
+decoder D : Colors [depth=1, max_candidates=2]
+    body |-> recursive
+
+instance random : Random
+
+define draw_color(code : Tensor[Real]([2])) : Colors__TermValue !{random} =
+    let law <- D__law(code)
+    perform random.sample[Colors__TermValue](site("color"), law)
+
+define read_color(color : Colors__TermValue) : Real !{} =
+    case color motive => Real
+        Colors__Red =>
+            return 2.0
+        Colors__Blue =>
+            return 4.0
+
+object Input : FinSet 1
+object Out : Real 1
+
+program measure(code : Tensor[Real]([2])) : Input -> Out
+    let color <- draw_color(code)
+    let center <- read_color(color)
+    observe response <- Normal(loc=center, scale=1.0)
+    return center
+
+export measure
+```
+
+An encoder `E` over the same signature can consume the sampled value through
+`E__encode_value(color)`. The argument has the decoder’s nominal checked term
+type, and the result has the ordinary encoder’s code type. The attachment checks
+each constructor and puts object and scalar fields back in the order declared
+by the signature before invoking the existing encoder. Validation and
+conversion take time linear in the term’s nodes and fields. The trace
+retains the original typed term.
+The tensor distribution backend differentiates a downstream observation through
+both the encoder computation and the decoder’s log probability.
+
+The call takes one code and returns a `Sampleable[Colors__TermValue]`,
+which also admits `log_prob(law, color)` and replay at the same site.
+The bound is carried in the checked request. Running serialized QIEC
+requires the compiled decoder attachment with the same carrier and
+bound. The namespaced values coexist with the opaque term type used
+by the original structural decoder and encoder computations.
+
+Within the invocation that prepares a decoder law, the native attachment
+registers that specific law as duplicable. It has fresh log masses and shares
+its checked immutable candidate terms. An unrestricted finite enumeration
+uses the same masses in each resumption and runs the encoder at that shot’s
+term. A law passed in from a different invocation needs its own provider
+assertion before a multi-shot handler can capture it. For $q$ preparations
+at support size $s$, the invocation retains $q$ law records and $qs$ log
+masses. It also retains the autograd graphs that computed those masses,
+whose size depends on the decoder and the terms. The candidate term trees
+are shared across preparations of the same support.
 
 ## Stdlib decoders
 
