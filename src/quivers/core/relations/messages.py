@@ -40,10 +40,22 @@ class StringCandidateMessage:
     boundary_tie: bool
 
     def normalized_log_weights(self) -> torch.Tensor:
-        """Normalize the retained candidates, requiring positive retained mass."""
-        scale = LOG_PROB.join(self.log_weights, dim=0)
-        _require_normalizer(scale, LOG_PROB)
-        return self.log_weights - scale
+        """Normalize the retained candidates in their centered log gauge.
+
+        A zero candidate stays at log zero. A finite candidate whose
+        normalized log weight overflows raises `OverflowError`.
+        """
+        weights = self.log_weights
+        maximum = (
+            weights.amax(dim=0) if weights.numel() else weights.new_full((), -torch.inf)
+        )
+        _require_normalizer(maximum, LOG_PROB)
+        normalized = torch.log_softmax(weights, dim=0)
+        if bool((torch.isfinite(weights) & ~torch.isfinite(normalized)).any()):
+            raise OverflowError(
+                "a centered string candidate log weight is outside the evaluation precision"
+            )
+        return normalized
 
 
 def _complement(

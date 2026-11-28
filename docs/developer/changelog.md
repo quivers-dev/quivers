@@ -110,6 +110,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Pruned string message normalization.** Center candidate weights before damping so a large common log offset preserves the normalized message and its convergence residual.
 - **String log-ratio overflow.** Conditional and exact tree queries report a precision error when normalizing a finite log score would overflow. Impossible words retain log zero.
 - **Scalar parsing of computed tokens.** Ordinary QVR deduction can consume checked rank-one string tensors within lexical scopes, with live grammar weights.
 - **Finite n-gram EP near convergence.** Newton backtracking compares the centered objective change, preserving improvements smaller than one ulp of the absolute objective.

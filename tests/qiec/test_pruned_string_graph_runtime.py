@@ -1,6 +1,7 @@
 """An authored graph through the typed approximate Compute boundary."""
 
 from fractions import Fraction
+from math import exp, inf, log1p
 
 import didactic.api as dx
 import pytest
@@ -353,3 +354,114 @@ def test_exact_tree_and_pruned_modes_keep_the_same_authored_graph_and_report_ref
                 )
             )
         )
+
+
+_GAUGE_SOURCE = """object Letters : FinSet 2
+
+relation weights [algebra=logprob, states=2]
+    output Letters
+    initial 0 [weight=unit]
+    arc 0 -> 1 [labels=(0), weight=w0]
+    arc 0 -> 1 [labels=(1), weight=w1]
+    final 1 [weight=unit]
+
+string_graph centered
+    variable x : Letters
+    factor weights(x)
+"""
+
+
+def _pruned_gauge_fixture():
+    compiler, _ = _compile(_GAUGE_SOURCE)
+    config = PrunedStringBPConfig(
+        supports=(("x", ((0,), (1,))),),
+        beam=2,
+        max_sweeps=1,
+        tolerance=1e-9,
+        damping=0.5,
+        max_entries=2,
+        max_states=10,
+        max_work=20,
+    )
+    request = PrunedStringGraphRequest(
+        graph=compiler.string_graph_specs["centered"], config=config, variable="x"
+    )
+    report = "(String * String * Int * Real * Bool * Tensor[LogWeight]([2]) * Bool * Tensor[LogWeight]([1, 3]))"
+    name = request.handler_name
+    _, parsed = _compile(
+        _GAUGE_SOURCE
+        + f"""
+instance gauge : Compute[Unit, {report}]
+handler {name} for Compute[Unit, {report}] : {report} -> {report} [coverage=total, forwards=none, implementation=foreign]
+    apply resumes 1
+
+define pruned_belief : {report} !{{}} =
+    handle gauge with {name} in
+        let result <- perform gauge.apply(unit)
+        return result
+"""
+    )
+    module = loads(dumps(parsed))
+    assert isinstance(module, QiecModule)
+    owners = tuple(
+        nn.Parameter(torch.tensor(0.0, dtype=torch.float64)) for _ in range(2)
+    )
+    weights = {_owner("unit"): owners[0].new_zeros(())}
+    weights.update(zip((_owner("w0"), _owner("w1")), owners, strict=True))
+    return request, module, weights, owners
+
+
+def test_checked_damped_pruning_normalizes_in_the_candidate_gauge():
+    request, module, weights, owners = _pruned_gauge_fixture()
+    provider = PrunedStringGraphRuntimeProvider(request, weights)
+    fixtures = ((0, 0), (-1e20, -1e20), (1e20, 1e20), (0, 2), (1e6, 1e6 + 2))
+    for left, right in fixtures:
+        with torch.no_grad():
+            owners[0].fill_(left)
+            owners[1].fill_(right)
+        status, reason, sweeps, residual, truncated, belief, present, masses = _run(
+            module, request, weights, provider=provider
+        )
+        candidate = 1 / (1 + exp(right - left))
+        # One unary factor has unit cavities. The starting message is
+        # uniform, so one damped update mixes it with the exact candidate.
+        fitted = 0.25 + 0.5 * candidate
+        distance = abs(fitted - candidate)
+        assert status == ("converged" if distance == 0 else "limit")
+        assert (reason, sweeps.item(), truncated.item(), present.item()) == (
+            "",
+            1,
+            False,
+            True,
+        )
+        assert residual.item() == pytest.approx(distance, abs=1e-15)
+        assert belief.exp().tolist() == pytest.approx([fitted, 1 - fitted], abs=1e-15)
+        expected_derivative = 0.5 * candidate * (1 - candidate)
+        derivative = torch.autograd.grad(belief[0].exp(), owners)
+        assert [grad.item() for grad in derivative] == pytest.approx(
+            [expected_derivative, -expected_derivative], abs=1e-15
+        )
+        raw_mass = max(left, right) + log1p(exp(-abs(left - right)))
+        assert masses.tolist() == [[raw_mass, raw_mass, -inf]]
+
+
+def test_checked_damped_pruning_keeps_log_zero_and_refuses_range_overflow():
+    request, module, weights, owners = _pruned_gauge_fixture()
+    provider = PrunedStringGraphRuntimeProvider(request, weights)
+    with torch.no_grad():
+        owners[1].fill_(-inf)
+    status, _, _, residual, _, belief, *_ = _run(
+        module, request, weights, provider=provider
+    )
+    assert status == "converged" and residual.item() == 0
+    assert belief.tolist() == [0.0, -inf]
+
+    limit = torch.finfo(torch.float64).max
+    with torch.no_grad():
+        owners[0].fill_(-limit)
+        owners[1].fill_(limit)
+    with pytest.raises(
+        ExecutionFailure, match="candidate.*outside the evaluation precision"
+    ) as rejected:
+        _run(module, request, weights, provider=provider)
+    assert rejected.value.diagnostic.code == "qiec-run-evaluation"

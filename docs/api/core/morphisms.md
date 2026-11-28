@@ -602,7 +602,10 @@ too small to recover by subtracting the retained mass from the total.
 An optional beam retains the highest-scoring candidates, breaking ties
 lexicographically and reporting a tie across the boundary. The full
 message scale and the weights of the selected words stay differentiable
-on the selected support. Construction limits raise a distinct error.
+on the selected support. The normalized message uses centered log
+weights, while proposal reports retain the raw scale. A finite
+normalized candidate that overflows raises `OverflowError`. Construction
+limits raise a distinct error.
 
 ## Batched contextual edits
 
