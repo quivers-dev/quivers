@@ -57,6 +57,7 @@ from quivers.qiec.terms import (
     Call,
     CallAddress,
     Case,
+    CaseBranch,
     Computation,
     ConstructorValue,
     DistributionValue,
@@ -119,6 +120,7 @@ from quivers.qiec.numbers import (
 )
 from quivers.qiec.primitives import IMPLEMENTATIONS
 from quivers.qiec.substitution import (
+    StaticSubstitution,
     instantiate_telescope,
     substitute_computation,
     substitute_effect,
@@ -127,7 +129,56 @@ from quivers.qiec.substitution import (
 )
 from quivers.qiec.checking import CheckContext, KernelRegistry, infer_computation
 from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
-from quivers.qiec.types import IndexLiteral, StaticArgument, TypeExpr
+from quivers.qiec.types import (
+    EffectVariable,
+    IndexLiteral,
+    IndexVariable,
+    StaticArgument,
+    TypeApplication,
+    TypeExpr,
+    TypeVariable,
+)
+
+
+@lru_cache(maxsize=256)
+def _instantiate_branch(
+    branch: CaseBranch, arguments: tuple[StaticArgument, ...]
+) -> tuple[tuple[Local, ...], Computation]:
+    """Specialize a selected branch at its constructor's local arguments.
+
+    Parameters
+    ----------
+    branch
+        The branch whose constructor matched.
+    arguments
+        The actual constructor arguments after the family's parameters.
+
+    Returns
+    -------
+    tuple of tuple of Local and Computation
+        The field binders and body with the same static substitution.
+
+    Raises
+    ------
+    EvaluationError
+        If an unchecked branch does not bind rigid static variables.
+    """
+    bindings = []
+    for variable, argument in zip(branch.static_arguments, arguments, strict=True):
+        if (
+            not isinstance(variable, TypeVariable | IndexVariable | EffectVariable)
+            or variable.identity is None
+        ):
+            raise EvaluationError(
+                "a checked case branch must bind rigid static variables"
+            )
+        bindings.append((variable.identity, argument))
+    substitution = StaticSubstitution(rigid=tuple(bindings))
+    fields = tuple(
+        field.with_(type=substitute_type(field.type, substitution))
+        for field in branch.fields
+    )
+    return fields, substitute_computation(branch.body, substitution)
 
 
 @lru_cache(maxsize=256)
@@ -3301,8 +3352,26 @@ class Evaluator:
                     raise EvaluationError(
                         "checked case branch/runtime constructor arity mismatch"
                     )
-                env = env.extend(zip(branch.fields, scrutinee.fields, strict=True))
-                current = branch.body
+                fields, body = branch.fields, branch.body
+                if branch.static_arguments:
+                    # The stored constructor arguments begin with the
+                    # family's parameters, which the branch does not bind.
+                    result = scrutinee.result_type
+                    if not isinstance(result, TypeApplication):
+                        raise EvaluationError(
+                            "a case constructor must inhabit an indexed family"
+                        )
+                    parameters = len(result.arguments) - len(current.motive.indices)
+                    actual = scrutinee.static_arguments
+                    if parameters < 0 or len(actual) != parameters + len(
+                        branch.static_arguments
+                    ):
+                        raise EvaluationError(
+                            "checked case branch/runtime constructor static arity mismatch"
+                        )
+                    fields, body = _instantiate_branch(branch, actual[parameters:])
+                env = env.extend(zip(fields, scrutinee.fields, strict=True))
+                current = body
                 continue
             if isinstance(current, CallAddress):
                 callee = self._computations[current.callee]
