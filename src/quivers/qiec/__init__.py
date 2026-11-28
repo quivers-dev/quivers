@@ -357,6 +357,10 @@ from quivers.qiec.reference_support import (
     DistributionError,
 )
 from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
+from quivers.qiec.relation_composition import (
+    ComposedRelationSpec,
+    FixedComposedRelationRequest,
+)
 from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -669,6 +673,8 @@ __all__ = [
     "RANDOM_SAMPLE",
     "REAL",
     "ROW",
+    "ComposedRelationSpec",
+    "FixedComposedRelationRequest",
     "FixedRelationCostRequest",
     "FixedRelationRequest",
     "FixedRelationRuntimeProvider",
