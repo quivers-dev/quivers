@@ -90,6 +90,16 @@ def test_authored_interpretation_keywords_are_contextual_for_old_source() -> Non
     assert compose_migration("v0.64.2", "HEAD")(source) == source
 
 
+def test_relation_score_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object relation_score : FinSet 2\n"
+        b"object operation : FinSet 2\n"
+        b"object pair_weight : FinSet 2\n"
+        b"object conditional_log_prob : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_zero_hop_rejects_missing_recovery_vertices() -> None:
     with pytest.raises(MigrationError, match="missing .* token"):
         compose_migration("HEAD", "HEAD")(b"object A :\n")
