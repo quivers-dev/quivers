@@ -187,6 +187,14 @@ from quivers.qiec.effect_laws import (
     check_scalar_effect_law,
 )
 from quivers.qiec.effect_plan import EffectLawReport, EffectPlan, checked_effect_plan
+from quivers.qiec.bernoulli_estimators import (
+    BernoulliBranch,
+    BernoulliGradientPlan,
+    BernoulliGradientSample,
+    BernoulliScoreDraw,
+    BernoulliVisit,
+    plan_bernoulli_gradient,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1119,6 +1127,14 @@ __all__ += [
 ]
 __all__ += ["ClauseCarrierShape", "HandlerCarrierShape", "classify_handler_carrier"]
 __all__ += ["EffectLawReport", "EffectPlan", "checked_effect_plan"]
+__all__ += [
+    "BernoulliBranch",
+    "BernoulliGradientPlan",
+    "BernoulliGradientSample",
+    "BernoulliScoreDraw",
+    "BernoulliVisit",
+    "plan_bernoulli_gradient",
+]
 __all__ += [
     "FiniteAlgebra",
     "FiniteAlgebraLawError",

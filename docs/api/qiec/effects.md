@@ -544,6 +544,58 @@ assert answer.steps[0].positions == (0, 2)
 
 ::: quivers.qiec.finite_elimination
 
+## Finite Bernoulli estimators
+
+`plan_bernoulli_gradient` checks a named scalar computation that performs
+direct, unplated Boolean Bernoulli draws on one nominal `Random` instance.
+Each reached static site needs an explicit `enumerate` or `score`
+policy. Repeated calls to the same site share its policy and keep their
+distinct request addresses. At an adaptive site, the report gives the
+conditional probability and its derivative for each preceding history.
+
+The plan enumerates the finite source traces at the supplied point. Its
+exact result is the expected return and its directional derivative.
+Calling `sample` runs the chosen estimator over that tree. Enumeration
+evaluates both branches. The score estimator draws one branch and adds the
+return times the directional derivative of that branch's log probability.
+This estimate is unbiased in the checked local domain. The result records
+the branches visited and the stochastic choices separately.
+
+Conditional probabilities must lie strictly between zero and one. The
+exact scalar checker also requires comparisons to be stable at the
+supplied point. Construction checks a complete-path bound and a step
+bound for each replay. With (n) complete paths it needs (2n-1)
+reference replays and reports their total steps. The sampled estimator
+does not truncate rare large score weights.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import Bind, Perform, SiteEstimator, plan_bernoulli_gradient
+
+source = """
+instance random : Random
+
+define reward(p : Real) : Real !{random} =
+    let chosen <- perform random.sample[Bool](site("chosen"), Bernoulli(p))
+    if chosen then
+        return 1.0
+    else
+        return 0.0
+"""
+module = Compiler(parse(source), module_name="bernoulli-gradient").qiec_module
+assert module is not None
+owner = next(item for item in module.computations if item.name == "reward")
+assert isinstance(owner.body, Bind) and isinstance(owner.body.first, Perform)
+site = owner.body.first.request.origin.static_site
+policy = SiteEstimator(site=site, estimator="score")
+plan = plan_bernoulli_gradient(module, owner.id, (Fraction(1, 3),), (2,), (policy,))
+assert (plan.exact.value, plan.exact.tangent) == (Fraction(1, 3), 2)
+assert len(plan.sample(seed=42).draws) == 1
+```
+
+::: quivers.qiec.bernoulli_estimators
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging
