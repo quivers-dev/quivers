@@ -839,54 +839,6 @@ comparison at equality or on a nonfinite primal fails with
 Pyro routes implement that behavior. The other targets report a missing
 `strict-scalar-comparison` capability for the partial guard.
 
-```python
-from quivers.dsl import Compiler, parse
-from quivers.qiec import ForwardDiffInstance, elaborate_forward_diff, run_named
-
-source = """
-family Number : Type
-    constructor Jet : Real * Real -> Number
-
-effect Diff
-    seed : Real * Real -> Number
-    add : Number * Number -> Number
-    mul : Number * Number -> Number
-    less : Number * Number -> Bool
-    stop_primal : Number -> Real
-    stop_tangent : Number -> Real
-
-instance d : Diff
-
-handler forward for Diff : Real -> Real [coverage=total, forwards=none, implementation=foreign]
-    seed resumes 1
-    add resumes 1
-    mul resumes 1
-    less resumes 1
-    stop_primal resumes 1
-    stop_tangent resumes 1
-
-define positive_square(x : Real, direction : Real) : Real !{} =
-    handle d with forward in
-        let seeded <- perform d.seed(x, direction)
-        let zero <- perform d.seed(0.0, 0.0)
-        let positive <- perform d.less(zero, seeded)
-        if positive then
-            let product <- perform d.mul(seeded, seeded)
-            perform d.stop_tangent(product)
-        else
-            return 0.0
-"""
-module = Compiler(parse(source), module_name="forward-square").qiec_module
-assert module is not None
-instance, = module.instances
-handler, = module.handlers
-constructor, = module.constructors
-scope = ForwardDiffInstance(instance.entry.instance, handler.id, constructor.id)
-lowered = elaborate_forward_diff(module, (scope,))
-assert run_named(lowered, "positive_square", (3.0, 5.0)).value == 30.0
-assert run_named(lowered, "positive_square", (-3.0, 5.0)).value == 0.0
-```
-
 An instance can declare `div : Number * Number -> Number` and
 `div resumes 1`. The generated clause solves the quotient in the
 parent coefficient algebra. Each ground quotient uses the same
@@ -900,17 +852,72 @@ arithmetic in the invocation's numeric representation. Pyro implements
 the same checks. The other targets report `strict-scalar-division` for
 this extension.
 
-With that operation in the example declaration, this computation
-returns the directional derivative of $x/y$. At $(x,y)=(2,4)$ in
-direction $(3,2)$, it returns $3/4 - 2\cdot2/4^2=1/2$.
+The ratio example returns the directional derivative of $x/y$.
+At $(x,y)=(2,4)$ in direction $(3,2)$, it returns $3/4 - 2\cdot2/4^2=1/2$.
 
-```qvr
+<!-- python: run -->
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import ForwardDiffInstance, elaborate_forward_diff, run_named
+
+declarations = """
+family Number : Type
+    constructor Jet : Real * Real -> Number
+
+effect Diff
+    seed : Real * Real -> Number
+    add : Number * Number -> Number
+    mul : Number * Number -> Number
+    div : Number * Number -> Number
+    less : Number * Number -> Bool
+    stop_primal : Number -> Real
+    stop_tangent : Number -> Real
+
+instance d : Diff
+
+handler forward for Diff : Real -> Real [coverage=total, forwards=none, implementation=foreign]
+    seed resumes 1
+    add resumes 1
+    mul resumes 1
+    div resumes 1
+    less resumes 1
+    stop_primal resumes 1
+    stop_tangent resumes 1
+"""
+
+def lower_forward(name, definition):
+    module = Compiler(parse(declarations + definition), module_name=name).qiec_module
+    assert module is not None
+    instance, = module.instances
+    handler, = module.handlers
+    constructor, = module.constructors
+    scope = ForwardDiffInstance(instance.entry.instance, handler.id, constructor.id)
+    return elaborate_forward_diff(module, (scope,))
+
+square = lower_forward("forward-square", """
+define positive_square(x : Real, direction : Real) : Real !{} =
+    handle d with forward in
+        let seeded <- perform d.seed(x, direction)
+        let zero <- perform d.seed(0.0, 0.0)
+        let positive <- perform d.less(zero, seeded)
+        if positive then
+            let product <- perform d.mul(seeded, seeded)
+            perform d.stop_tangent(product)
+        else
+            return 0.0
+""")
+assert run_named(square, "positive_square", (3.0, 5.0)).value == 30.0
+assert run_named(square, "positive_square", (-3.0, 5.0)).value == 0.0
+
+ratio = lower_forward("forward-ratio", """
 define ratio(x : Real, y : Real, dx : Real, dy : Real) : Real !{} =
     handle d with forward in
         let numerator <- perform d.seed(x, dx)
         let divisor <- perform d.seed(y, dy)
         let quotient <- perform d.div(numerator, divisor)
         perform d.stop_tangent(quotient)
+""")
+assert run_named(ratio, "ratio", (2.0, 4.0, 3.0, 2.0)).value == 0.5
 ```
 
 ::: quivers.qiec.forward_diff
