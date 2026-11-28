@@ -115,6 +115,7 @@ Execution by the reference evaluator and translation to a backend require differ
 - [Schema-Bundled Chart Parser](schema-chart-parser.md): pattern-polymorphic rule schemas bundled into a differentiable CKY chart parser.
 - [A Noisy Deletion Channel](noisy-deletion-channel.md) infers an unbounded source length from the surviving symbols of a deletion channel.
 - [Name Phylogeny](name-phylogeny.md) fits a transducer by summing over directed trees of observed name types.
+- [A Contextual Edit Channel](contextual-edit-channel.md) learns edit probabilities from the input context by summing the alignments of observed word pairs.
 - [Term Autoencoder](term-autoencoder.md): a signature, encoder, decoder, and loss compressing typed lambda terms.
 - [Multimodal Type-Logical Grammar](multimodal-tlg.md): the Lambek calculus with residuated diamond and box modalities and one controlled structural postulate.
 - [Custom Sequent Rules](custom-rules.md): an AB grammar with harmonic composition declared as sequents in the DSL.

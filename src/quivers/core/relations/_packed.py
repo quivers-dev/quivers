@@ -41,11 +41,11 @@ class _Incoming:
 
 
 def _pack_incoming(rows: list[list[int]], n_values: int) -> _Incoming:
-    # Each row has at least one summand. Padding to the next power of two
-    # puts fewer than twice the actual number of summands into the buckets.
+    # Padding nonempty rows to powers of two uses fewer than twice
+    # their summands. An empty acceptance group uses one zero.
     by_width: dict[int, list[tuple[int, list[int]]]] = {}
     for state, row in enumerate(rows):
-        width = 1 << (len(row) - 1).bit_length()
+        width = 1 << (max(1, len(row)) - 1).bit_length()
         by_width.setdefault(width, []).append((state, row))
     indices: list[int] = []
     buckets: list[tuple[int, int]] = []
@@ -89,9 +89,15 @@ class _PackedPaths:
         algebra: Semiring,
         *,
         visits: list[torch.Tensor] | None = None,
+        final_groups: _Incoming | None = None,
     ) -> torch.Tensor:
         if not self.layers:
-            return algebra.join(weights[:0], dim=0)
+            empty = weights[:0]
+            return (
+                algebra.join(empty, dim=0)
+                if final_groups is None
+                else final_groups.join(empty, algebra)
+            )
         slots = _take(weights, self.slots)
         chunks = slots.split(tuple(sum(layer.weight_sizes) for layer in self.layers))
         pending: list[list[torch.Tensor]] = [[] for _ in self.layers]
@@ -128,7 +134,10 @@ class _PackedPaths:
                 accepted.append(
                     algebra.tensor_op(_take(prefixes, layer.final_sources), final)
                 )
-        return algebra.join(torch.cat(accepted), dim=0)
+        totals = torch.cat(accepted) if accepted else weights[:0]
+        if final_groups is not None:
+            return final_groups.join(totals, algebra)
+        return algebra.join(totals, dim=0)
 
 
 def _pack_paths(
@@ -138,6 +147,7 @@ def _pack_paths(
     final: list[tuple[int, int]],
     *,
     visit_order: list[int] | None = None,
+    accept_order: list[int] | None = None,
 ) -> _PackedPaths:
     level_of = dict.fromkeys(order, 0)
     levels: list[list[int]] = []
@@ -169,6 +179,8 @@ def _pack_paths(
                 start.append(initial_slots[state])
             if state in final_slots:
                 finish.append((local_id, final_slots[state]))
+                if accept_order is not None:
+                    accept_order.append(state)
             for target, slot in arcs[state]:
                 destination = level_of[target]
                 rows[target].append(incoming_sizes[destination])

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Batched contextual edit channels.** A trainable whole-input scorer supplies local edit probabilities before the packed executor sums compatible alignments. The insertion bound defines a proper conditional distribution, with explicit budgets for action cells and observation graphs.
 - **Sparse relations over strings.** `StringSet` describes an unbounded tape and `RationalRelation` sums the weights of accepting walks for fixed words using a sparse index. Arc occurrences can share weight slots, and reused queries read the live weights on every evaluation. An explicit size-checked restriction provides a `FiniteMorphism` for callers that need a tensor.
 - **Serializable sparse relation specifications.** `RationalRelationSpec` stores ordered tapes, arcs, boundary marks, and stable weight identities in the QIEC codec. Runtime binding resolves those identities to the original tensors, preserving shared parameters and derivatives.
 - **Fixed-word composition of sparse relations.** `ComposedRelation` matches two bivariate relations on their shared tape. Its epsilon filter counts each compatible pair of paths once, and reusable queries score the live operand weights with explicit construction limits.
