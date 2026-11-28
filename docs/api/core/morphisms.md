@@ -186,6 +186,9 @@ compares the score of a supplied output to that normalizer. The
 denominator includes every alignment and output permitted by the
 relation. A productive insertion cycle uses the usual closure check
 and size bound. Each call uses the same live weights in both sums.
+A finite LogProb score whose normalized log ratio overflows the
+evaluation dtype raises `OverflowError`. An impossible output retains
+log zero. Exact tree marginals apply the same precision check.
 
 `union` adds relations with identical tape types by taking the disjoint
 union of their topologies. `concatenate` uses a connecting state, so

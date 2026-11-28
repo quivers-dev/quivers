@@ -108,6 +108,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **String log-ratio overflow.** Conditional and exact tree queries report a precision error when normalizing a finite log score would overflow. Impossible words retain log zero.
 - **Scalar parsing of computed tokens.** Ordinary QVR deduction can consume checked rank-one string tensors within lexical scopes, with live grammar weights.
 - **Finite n-gram EP near convergence.** Newton backtracking compares the centered objective change, preserving improvements smaller than one ulp of the absolute objective.
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.
