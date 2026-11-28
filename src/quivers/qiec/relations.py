@@ -310,6 +310,22 @@ class FixedRelationRequest(QiecModel):
     topology's input split separates conditioning words from scored
     words. The wire contains only the request and stable relation
     specification. The provider binds its live scalar parameters.
+
+    Parameters
+    ----------
+    relation : RationalRelationSpec
+        The typed sparse topology and original weight identities.
+    operation : str
+        The fixed-pair weight or conditional log-probability objective.
+    words : Words
+        One observed word per tape, in the topology's order.
+    max_states : int
+        The budget for fixed-word state exploration.
+    max_work : int
+        The budget for fixed-word arc exploration.
+    max_closure_size : int or None
+        The largest permitted productive closure component, or `None`
+        to require an acyclic query.
     """
 
     relation: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -321,6 +337,14 @@ class FixedRelationRequest(QiecModel):
 
     @dx.model_validator()
     def _validate_request(self) -> None:
+        """Check the budgets, tape observations, algebra, and objective.
+
+        Raises
+        ------
+        ValueError
+            An observation or resource limit is invalid, the algebra is
+            unsupported, or a conditional request lacks input or output tapes.
+        """
         _validate_limits(self.max_states, self.max_work, self.max_closure_size)
         topology = self.relation.topology
         topology._validate_words(self.words)
@@ -335,7 +359,14 @@ class FixedRelationRequest(QiecModel):
 
     @property
     def result_type(self) -> TypeExpr:
-        """The checked scalar type of the request result."""
+        """The checked scalar type of the request result.
+
+        Returns
+        -------
+        TypeExpr
+            `LogWeight` for a conditional or log-domain score, or `Real`
+            for a Markov pair score.
+        """
         if (
             self.operation == "conditional_log_prob"
             or self.relation.algebra == LOG_PROB.subject
