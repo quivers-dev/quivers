@@ -177,6 +177,22 @@ class FiniteEliminationStep:
 
 
 @dataclass(frozen=True, slots=True)
+class FiniteEliminationWork:
+    """The executed operations on cells of the checked answer algebra.
+
+    Parameters
+    ----------
+    additions : int
+        Sum-table lookups during contraction.
+    multiplications : int
+        Product-table lookups during contraction.
+    """
+
+    additions: int
+    multiplications: int
+
+
+@dataclass(frozen=True, slots=True)
 class FiniteEliminationResult:
     """The contracted factor, its exact algebra, and the chosen elimination.
 
@@ -193,6 +209,8 @@ class FiniteEliminationResult:
         or output.
     base_change : FiniteBaseChangeProof or None
         The proved map when the input was contracted in a different algebra.
+    work : FiniteEliminationWork
+        The counted table lookups performed by the contractions.
     """
 
     factor: FiniteFactor
@@ -200,6 +218,7 @@ class FiniteEliminationResult:
     steps: tuple[FiniteEliminationStep, ...]
     largest: int
     base_change: FiniteBaseChangeProof | None = None
+    work: FiniteEliminationWork = FiniteEliminationWork(0, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -786,7 +805,7 @@ def _contract(
     output: tuple[str, ...],
     summed: tuple[str, ...],
     extents: Mapping[str, int],
-) -> _IndexedFactor:
+) -> tuple[_IndexedFactor, FiniteEliminationWork]:
     """Evaluate one ordered factor product under a finite sum.
 
     Parameters
@@ -804,12 +823,13 @@ def _contract(
 
     Returns
     -------
-    _IndexedFactor
-        The exact output table, with cells in output order.
+    tuple of _IndexedFactor and FiniteEliminationWork
+        The exact output table in output order and the table lookups performed.
     """
     if any(extents[axis] == 0 for axis in output):
-        return _IndexedFactor(output, ())
+        return _IndexedFactor(output, ()), FiniteEliminationWork(0, 0)
     cells = []
+    additions = multiplications = 0
     for selected in product(*(range(extents[axis]) for axis in output)):
         coordinates = dict(zip(output, selected, strict=True))
         total = tables.zero
@@ -818,9 +838,13 @@ def _contract(
             term = tables.one
             for factor in factors:
                 term = tables.multiply[term][factor.at(coordinates, extents)]
+                multiplications += 1
             total = tables.add[total][term]
+            additions += 1
         cells.append(total)
-    return _IndexedFactor(output, tuple(cells))
+    return _IndexedFactor(output, tuple(cells)), FiniteEliminationWork(
+        additions, multiplications
+    )
 
 
 def eliminate_finite(
@@ -957,14 +981,20 @@ def eliminate_finite(
         )
         for factor in factors
     ]
+    additions = multiplications = 0
     for step in steps:
         selected = tuple(active[index] for index in step.positions)
         kept = tuple(axis for axis in step.bag if axis != step.variable)
-        value = _contract(tables, selected, kept, (step.variable,), extents)
+        value, work = _contract(tables, selected, kept, (step.variable,), extents)
+        additions += work.additions
+        multiplications += work.multiplications
         _replace_factors(active, step.positions, value)
-    result = _contract(tables, tuple(active), output, (), extents)
+    result, work = _contract(tables, tuple(active), output, (), extents)
     factor = FiniteFactor(output, tuple(tables.values[index] for index in result.cells))
-    return FiniteEliminationResult(factor, tables.proof, steps, largest, proof)
+    total = FiniteEliminationWork(
+        additions + work.additions, multiplications + work.multiplications
+    )
+    return FiniteEliminationResult(factor, tables.proof, steps, largest, proof, total)
 
 
 __all__ = [
@@ -975,6 +1005,7 @@ __all__ = [
     "FiniteBaseChangeProof",
     "FiniteEliminationResult",
     "FiniteEliminationStep",
+    "FiniteEliminationWork",
     "FiniteFactor",
     "check_finite_algebra",
     "eliminate_finite",

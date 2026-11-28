@@ -820,9 +820,13 @@ from its first to last participating factor, including intervening
 factors. Each resulting factor occupies the original interval's position.
 With a commutative product, the planner may join a smaller bucket by
 leaving those intervening factors in place. The report records each
-step's factor positions and the largest table cardinality. This contract
-starts from explicit factors. Deriving those factors from an effectful
-program requires a separate justification.
+step's factor positions and the largest table cardinality. For a bag
+with $s$ assignments and $f$ selected factors, contraction executes $s$
+sum-table lookups and $sf$ product-table lookups. The total counters
+include the final product on the output axes. Reading each factor cell
+also takes work proportional to its arity to form its index. This
+contract starts from explicit factors. Deriving those factors from an
+effectful program requires a separate justification.
 
 ```python
 from quivers.dsl import Compiler, parse
@@ -853,6 +857,8 @@ factors = (
 answer = eliminate_finite(module, algebra, factors, ("y",), {"x": 2, "y": 2})
 assert answer.factor.cells == (False, True)
 assert answer.steps[0].positions == (0, 2)
+assert answer.work.additions == 4
+assert answer.work.multiplications == 8
 ```
 
 ### Change of base

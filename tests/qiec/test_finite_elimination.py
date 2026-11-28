@@ -6,7 +6,13 @@ from typing import cast
 import pytest
 
 from quivers.dsl import Compiler, parse
-from quivers.qiec import FiniteBaseChange, QiecModule, dumps, loads
+from quivers.qiec import (
+    FiniteBaseChange,
+    FiniteEliminationWork,
+    QiecModule,
+    dumps,
+    loads,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -132,6 +138,54 @@ def test_commutative_chain_matches_complete_dense_assignment_table(boolean, leng
     )
     assert result.largest <= 8
     assert len(result.steps) == length - 1
+    _assert_counted_work(result, len(factors), 4)
+
+
+def _assert_counted_work(result, input_factors, output_cells):
+    steps = result.steps
+    final_factors = input_factors - sum(len(step.positions) - 1 for step in steps)
+    assert result.work == FiniteEliminationWork(
+        sum(step.cells for step in steps) + output_cells,
+        sum(step.cells * len(step.positions) for step in steps)
+        + final_factors * output_cells,
+    )
+
+
+@pytest.mark.parametrize(
+    ("height", "width", "max_cells"), ((2, 2, 8), (2, 3, 8), (3, 3, 16))
+)
+def test_counted_grid_elimination_matches_a_dense_enumeration(
+    boolean, height, width, max_cells
+):
+    module, algebra = boolean
+    variables = tuple(tuple(f"r{i}c{j}" for j in range(width)) for i in range(height))
+    edges = tuple(
+        (variables[i][j], variables[row][col])
+        for i, j in product(range(height), range(width))
+        for row, col in ((i + 1, j), (i, j + 1))
+        if row < height and col < width
+    )
+    factors = tuple(
+        FiniteFactor(
+            edge, (True, False, False, True) if index % 3 else (True, True, False, True)
+        )
+        for index, edge in enumerate(edges)
+    )
+    # A singleton factor fixes a corner's Boolean value.
+    factors += (FiniteFactor((variables[0][0],), (False, True)),)
+    output = (variables[-1][-1],)
+    extents = {name: 2 for row in variables for name in row}
+    result = eliminate_finite(
+        module, algebra, factors, output, extents, max_cells=max_cells
+    )
+    dense = _dense(
+        factors, output, extents, lambda a, b: a or b, lambda a, b: a and b, False, True
+    )
+    assert result.factor == FiniteFactor(output, dense)
+    assert result.largest <= max_cells
+    _assert_counted_work(result, len(factors), 2)
+    dense_products = len(factors) * 2 ** len(extents)
+    assert result.work.multiplications < dense_products
 
 
 _MATRIX = "(Bool * Bool * Bool * Bool)"
@@ -368,6 +422,7 @@ def test_empty_sums_and_empty_outputs_do_not_evade_the_cell_bound(boolean):
         max_cells=1,
     )
     assert empty_output.factor == FiniteFactor(("row", "empty"), ())
+    assert empty_output.work == FiniteEliminationWork(0, 0)
 
 
 def test_factors_and_identities_are_type_checked_without_coercing_booleans(boolean):
