@@ -6,4 +6,9 @@ through registered Python implementations
 A run needs a provider for each requested operation, and a transpile target must support those
 operations to run the translated computation.
 
+[`FiniteDecoderSupport`][quivers.qiec.structural_runtime.FiniteDecoderSupport]
+checks a supplied set of closed structural terms against one object sort of
+the decoder's shared rule presentation. Its `distribution(code)` produces
+a finite law on those terms in the presentation's nominal QIEC family.
+
 ::: quivers.qiec.structural_runtime
