@@ -1249,6 +1249,50 @@ assert law[1] == ExactJvp(Fraction(11, 64), Fraction(5, 8))
 
 ::: quivers.qiec.finite_metropolis
 
+## Bias of finite gradient clipping
+
+`audit_clipped_bernoulli_gradient` checks a finite Bernoulli source
+with explicit estimator policies, then caps each realized final
+directional estimate at the supplied magnitude. It enumerates the
+estimator's own score choices and weak selectors, including choices
+made in both branches of a weak estimator. Each outcome retains its
+source addresses, selector choices, and exact probability.
+
+The signed bias is the mean clipped tangent minus the exact source
+tangent. The report belongs to the checked source, parameter point,
+direction, policies, and clipping limit. A different point or direction
+requires its own calculation.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import Bind, Perform, SiteEstimator, audit_clipped_bernoulli_gradient
+
+source = """
+instance random : Random
+
+define reward(p : Real) : Real !{random} =
+    let chosen <- perform random.sample[Bool](site("chosen"), Bernoulli(p))
+    if chosen then
+        return 1.0
+    else
+        return 0.0
+"""
+module = Compiler(parse(source), module_name="clipped-gradient").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "reward")
+assert isinstance(entry.body, Bind) and isinstance(entry.body.first, Perform)
+policy = SiteEstimator(site=entry.body.first.request.origin.static_site, estimator="score")
+audit = audit_clipped_bernoulli_gradient(
+    module, entry.id, (Fraction(1, 4),), (1,), (policy,), clip_limit=2,
+)
+assert audit.source.exact.tangent == 1
+assert audit.mean.tangent == Fraction(1, 2)
+assert audit.signed_bias == Fraction(-1, 2)
+```
+
+::: quivers.qiec.finite_clipping
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

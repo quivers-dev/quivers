@@ -250,6 +250,12 @@ from quivers.qiec.finite_subsampling import (
     UnitSubset,
     plan_unit_subsampling,
 )
+from quivers.qiec.finite_clipping import (
+    ClippedEstimatorDecision,
+    ClippedEstimatorOutcome,
+    FiniteClippedEstimatorAudit,
+    audit_clipped_bernoulli_gradient,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1233,6 +1239,12 @@ __all__ += [
     "UnitSubsampleEstimate",
     "UnitSubset",
     "plan_unit_subsampling",
+]
+__all__ += [
+    "ClippedEstimatorDecision",
+    "ClippedEstimatorOutcome",
+    "FiniteClippedEstimatorAudit",
+    "audit_clipped_bernoulli_gradient",
 ]
 __all__ += [
     "FiniteAlgebra",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from random import Random
@@ -310,6 +310,43 @@ def _draw(tree: _Tree, random: Random) -> BernoulliGradientSample:
     BernoulliGradientSample
         A realization of the mixed estimator.
     """
+
+    def choose(visit: BernoulliVisit) -> bool:
+        """Draw the Boolean outcome at one stochastic policy visit.
+
+        Parameters
+        ----------
+        visit : BernoulliVisit
+            The reached score or measure occurrence.
+
+        Returns
+        -------
+        bool
+            An exact Bernoulli choice under its conditional probability.
+        """
+        p = visit.probability
+        return random.randrange(p.denominator) < p.numerator
+
+    return _interpret(tree, choose)
+
+
+def _interpret(
+    tree: _Tree, choose: Callable[[BernoulliVisit], bool]
+) -> BernoulliGradientSample:
+    """Interpret the finite policies using the supplied selector outcomes.
+
+    Parameters
+    ----------
+    tree : _Tree
+        The checked conditional tree.
+    choose : Callable
+        The action for the next actual score draw or weak selector.
+
+    Returns
+    -------
+    BernoulliGradientSample
+        The mixed estimator driven by exactly those selector outcomes.
+    """
     pending: list[_Tree | _WeakArm | tuple[BernoulliVisit, bool | None]] = [tree]
     values: list[ExactJvp] = []
     visits: list[BernoulliVisit] = []
@@ -329,8 +366,7 @@ def _draw(tree: _Tree, random: Random) -> BernoulliGradientSample:
             if visit.estimator == "enumerate":
                 pending.extend(((visit, None), next_.yes, next_.no))
             else:
-                p = visit.probability
-                answer = random.randrange(p.denominator) < p.numerator
+                answer = choose(visit)
                 if visit.estimator == "measure":
                     selectors.append(BernoulliWeakSelector(visit, answer))
                     no = _WeakArm((*visit.prefix, False), next_.no)
