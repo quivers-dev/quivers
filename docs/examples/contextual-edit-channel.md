@@ -11,6 +11,8 @@ each step, the normalization includes all legal edits, including
 edits incompatible with the observed output. The likelihood then
 sums just the alignments of the observed pair.
 
+## Try it
+
 <!-- python: run -->
 ```python
 import torch

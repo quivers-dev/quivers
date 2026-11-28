@@ -24,6 +24,8 @@ relation messages give the exact evidence and suffix posterior. We
 train $\theta$ on that evidence and compare both quantities and the
 training gradient to enumeration over all sixteen lexicons.
 
+## Try it
+
 <!-- python: run -->
 ```python
 from itertools import product
