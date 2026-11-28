@@ -252,10 +252,11 @@ number and size of proofs the program subsequently interprets.
 A companion has a standalone codec. Validation reconstructs the indexed
 case and compares the whole fold declaration, including its ordered rule
 calls and specialized result type. If the executable also has a packed
-query for the same presentation, validation compares the checked proof
-declarations after qualifying their names. A normalized query may read
-production-table weights through different addresses while keeping the
-same typed proof constructors. A program that folds
+query for the same presentation, validation compares the whole qualified
+presentation. A normalized lexical query may replace source rule weights
+with its own ordered production addresses. Validation checks each address
+against the owning presentation and rule position, and checks that any
+source parameter belongs to its own rule. A program that folds
 an explicitly supplied proof may have no such query. Its checked proof
 constructors and fold then establish the shape of the interpretation, while
 the interpretation makes no claim about weighted search or theory equations.

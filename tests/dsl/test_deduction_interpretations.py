@@ -26,7 +26,7 @@ from quivers.qiec import (
     validate_module,
 )
 from quivers.qiec.execution import ExecutionFailure, run_named
-from quivers.qiec.foreign import DeductionOutcomes
+from quivers.qiec.foreign import DeductionOutcomes, DeductionProofs
 from quivers.qiec.rules import RulePresentation
 from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.module import QiecModule
@@ -687,19 +687,68 @@ define is_x(word : String) : Bool !{} =
         load_source(masked)
 
 
-def test_ordinary_proof_companion_accepts_normalized_production_weights() -> None:
-    source = (
+def _normalized_lexical_source() -> str:
+    return (
         GRAMMAR.replace("start=S]", "start=S, normalize=lhs]")
         .replace(", lex)", ")")
         .replace(", same)", ")")
         .replace("[i, j, category, form]", "[i, j, category]")
     )
+
+
+@pytest.mark.parametrize("learnable", (False, True))
+def test_ordinary_proof_companion_accepts_normalized_production_weights(
+    learnable,
+) -> None:
+    source = _normalized_lexical_source()
+    if learnable:
+        source = source.replace(
+            "span(I, J, S)\n    rule second",
+            "span(I, J, S) #[learnable]\n    rule second",
+            1,
+        )
     model = Model(source, entry="assess")
     assert len(model.schema.closed_interpretations) == 2
     for binding in model.schema.closed_interpretations:
         restored = loads(dumps(binding))
         assert isinstance(restored, ClosedInterpretationBinding)
         restored.validate(model.checked_module)
+
+
+def test_normalized_companion_checks_both_sources_of_weight_identity() -> None:
+    model = Model(_normalized_lexical_source(), entry="assess")
+    module = model.checked_module
+    original = model.schema.closed_interpretations[0]
+    first, second = original.presentation.rules
+    forged = original.with_(
+        presentation=original.presentation.with_(
+            rules=(
+                first.with_(weight=ParameterId.derive("unrelated", "rule", "first")),
+                second,
+            )
+        )
+    )
+    with pytest.raises(RuleError, match="differs from its packed query"):
+        forged.validate(module)
+
+    (handler,) = [
+        item for item in module.handlers if isinstance(item.foreign, DeductionProofs)
+    ]
+    assert isinstance(handler.foreign, DeductionProofs)
+    chart = handler.foreign.chart
+    assert len(chart.parameters) == 2
+    forged_chart = chart.with_(parameters=chart.parameters[::-1])
+    changed = module.with_(
+        handlers=tuple(
+            item.with_(foreign=handler.foreign.with_(chart=forged_chart))
+            if item.id == handler.id
+            else item
+            for item in module.handlers
+        )
+    )
+    validate_module(changed)
+    with pytest.raises(RuleError, match="differs from its packed query"):
+        original.validate(changed)
 
 
 def test_companion_refuses_a_different_checked_chart_proof_shape() -> None:

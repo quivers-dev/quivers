@@ -11,7 +11,7 @@ from quivers.qiec._lexical_proof_types import export_lexical_proofs
 from quivers.qiec._models import QiecModel
 from quivers.qiec._proof_interpretation import prepare_closed_interpretation
 from quivers.qiec.checking import KernelError, KernelRegistry
-from quivers.qiec.contracts import InterpretationId, PresentationId
+from quivers.qiec.contracts import InterpretationId, ParameterId, PresentationId
 from quivers.qiec.effects import EffectRow
 from quivers.qiec.foreign import DeductionOutcomes, DeductionProofs
 from quivers.qiec.identifiers import ComputationId, EffectInstanceId
@@ -23,6 +23,60 @@ from quivers.qiec.module import (
 )
 from quivers.qiec.rules import ORDERED, InterpretationDecl, RuleError, RulePresentation
 from quivers.qiec.types import TypeExpr
+
+
+def _matches_lexical_chart(
+    presentation: RulePresentation, chart: DeductionOutcomes
+) -> bool:
+    """Match proof structure and the lexical chart's owned weight addresses.
+
+    Parameters
+    ----------
+    presentation
+        The qualified proof presentation kept by the interpretation.
+    chart
+        The checked lexical query, with its ordered input weight addresses.
+
+    Returns
+    -------
+    bool
+        True for the original presentation or its canonical production
+        addressing. The fixed-production lexical fragment has one rule
+        instance per source rule, so its ordinal is its production index.
+    """
+    source = chart.presentation
+    assert isinstance(source, RulePresentation)
+    qualified = export_lexical_proofs(source, presentation.name)
+    if qualified == presentation:
+        return True
+    if source.id != presentation.id or len(source.rules) != len(presentation.rules):
+        return False
+    productions = tuple(
+        ParameterId.derive(source.id, "production", index)
+        for index in range(len(source.rules))
+    )
+    if (
+        chart.parameters != productions
+        or tuple(rule.weight for rule in source.rules) != productions
+    ):
+        return False
+    if any(
+        proof.weight is not None
+        and proof.weight != ParameterId.derive(source.name, "rule", rule.name)
+        for proof, rule in zip(presentation.rules, source.rules, strict=True)
+    ):
+        return False
+    return (
+        qualified.with_(
+            rules=tuple(
+                chart_rule.with_(weight=proof_rule.weight)
+                for chart_rule, proof_rule in zip(
+                    qualified.rules, presentation.rules, strict=True
+                )
+            )
+        )
+        == presentation
+    )
 
 
 class ClosedInterpretationBinding(QiecModel):
@@ -89,10 +143,7 @@ class ClosedInterpretationBinding(QiecModel):
                 isinstance(query, DeductionOutcomes)
                 and isinstance(query.presentation, RulePresentation)
                 and query.presentation.id == presentation.id
-                and export_lexical_proofs(
-                    query.presentation, presentation.name
-                ).declarations()
-                != presentation.declarations()
+                and not _matches_lexical_chart(presentation, query)
             ):
                 raise RuleError("closed interpretation differs from its packed query")
 

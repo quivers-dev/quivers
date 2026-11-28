@@ -8,8 +8,10 @@ from itertools import product
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_VALUE
-from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
-from quivers.qiec._lexical_proof_types import export_lexical_proofs
+from quivers.qiec._closed_interpretation_binding import (
+    ClosedInterpretationBinding,
+    _matches_lexical_chart,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec._proof_interpretation import bind_operands
 from quivers.qiec.canonical import tensor_shape, tensor_type
@@ -369,13 +371,7 @@ def check_packed_boolean_bindings(
         ):
             raise RuleError("packed Boolean interpretation has a stale nominal use")
         chart = _forwarded_table(query, handlers)
-        presentation = chart.chart.presentation
-        assert isinstance(presentation, RulePresentation)
-        # Weight addresses can change when a normalized chart reads a
-        # production table. The proof constructors preserve their nominal
-        # identities, ordered types, and static arguments across that change.
-        proof = export_lexical_proofs(presentation, binding.presentation.name)
-        if proof.declarations() != binding.presentation.declarations():
+        if not _matches_lexical_chart(binding.presentation, chart.chart):
             raise RuleError(
                 "packed Boolean interpretation uses another proof presentation"
             )
