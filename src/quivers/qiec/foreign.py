@@ -53,7 +53,7 @@ from quivers.core.laws import (
 )
 from quivers._positions import demand
 from quivers.qiec._models import QiecModel
-from quivers.qiec.contracts import ParameterId
+from quivers.qiec.contracts import ParameterId, PresentationId
 from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.numbers import NumberDomain, machine_value
 from quivers.qiec.canonical import LOG_WEIGHT
@@ -70,6 +70,7 @@ from quivers.qiec.types import (
 if TYPE_CHECKING:
     from quivers.qiec._span_finiteness import SpanOrder
     from quivers.qiec.rules import RulePresentation
+    from quivers.stochastic.planning import Plan
 
 
 KERNEL_ALGEBRAS: Mapping[str, Semiring] = MappingProxyType(
@@ -552,6 +553,98 @@ class Settlement(QiecModel):
 DEDUCTION_OUTCOME_KEYS = frozenset({"item", "category", "form"})
 
 
+class DeductionLinearGoal(QiecModel):
+    """Solve the full-span weight of one checked lexical linear system.
+
+    Parameters
+    ----------
+    presentation
+        The nominal span rules. The native adapter admits unary cycles
+        and binary rules whose two spans concatenate. Lexical spans
+        have width one and the presentation has no other axiom widths.
+    lexicon
+        The ordered pairs of token and atomic category. Their live log
+        weights occupy the first slots of the operation's weight vector.
+    parameters
+        The distinct nominal rule-weight slots, in their vector order.
+    start
+        The requested final category, or None to sum all full-span items.
+    """
+
+    presentation: QiecModel = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    lexicon: tuple[tuple[str, str], ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    parameters: tuple[ParameterId, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    start: str | None
+    tag: Literal["deduction-linear-goal"] = "deduction-linear-goal"
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Check the lexical metadata and its exact plan before attachment.
+
+        Raises
+        ------
+        ValueError
+            If the checked recurrence, weight addresses, or lexical inputs
+            do not admit the native span plan.
+        """
+        from quivers.qiec.rules import RulePresentation
+
+        presentation = self.presentation
+        if not isinstance(presentation, RulePresentation) or (
+            presentation.id != PresentationId.derive(presentation.name)
+        ):
+            raise ValueError(
+                "a linear deduction goal needs its nominal rule presentation"
+            )
+        expected = tuple(
+            dict.fromkeys(
+                rule.weight for rule in presentation.rules if rule.weight is not None
+            )
+        )
+        if expected != self.parameters:
+            raise ValueError(
+                "linear deduction rule-weight addresses do not match its rules"
+            )
+        prepared = self.plan
+        assert prepared.span is not None
+        categories = set(prepared.span.categories)
+        if (
+            not isinstance(self.lexicon, tuple)
+            or not self.lexicon
+            or any(
+                not isinstance(entry, tuple)
+                or len(entry) != 2
+                or not all(isinstance(field, str) for field in entry)
+                or (entry[1],) not in categories
+                for entry in self.lexicon
+            )
+            or (self.start is not None and (self.start,) not in categories)
+        ):
+            raise ValueError(
+                "linear deduction lexical categories do not match its rules"
+            )
+
+    @cached_property
+    def plan(self) -> Plan:
+        """Select the existing exact span executor for the checked recurrence.
+
+        Returns
+        -------
+        Plan
+            The rule and accuracy contract shared by successive runs.
+
+        Raises
+        ------
+        ValueError
+            If the presentation cannot use the checked linear span closure.
+        """
+        from quivers.qiec.linear_deduction import prepare_linear_goal
+        from quivers.qiec.rules import RulePresentation
+
+        assert isinstance(self.presentation, RulePresentation)
+        return prepare_linear_goal(self.presentation)
+
+
 class DeductionOutcomes(QiecModel):
     """A finite lexical LogProb chart returning typed weighted outcomes.
 
@@ -768,6 +861,7 @@ type ForeignSemantics = (
     | SemiringProduct
     | Enumeration
     | Settlement
+    | DeductionLinearGoal
     | DeductionOutcomes
     | DeductionProofs
     | DeductionOutcomeGrouping
@@ -777,6 +871,7 @@ type ForeignSemantics = (
 
 
 __all__ = [
+    "DeductionLinearGoal",
     "DeductionOutcomeGrouping",
     "DeductionOutcomeLaw",
     "DeductionOutcomes",

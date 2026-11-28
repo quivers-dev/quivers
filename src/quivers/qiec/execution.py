@@ -61,6 +61,7 @@ from quivers.qiec.canonical import (
 from quivers.qiec.contracts import ContractNotMet, FailurePolicy
 from quivers.qiec.effects import HandlerDef, ResumptionGrade
 from quivers.qiec.foreign import (
+    DeductionLinearGoal,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -679,6 +680,14 @@ class CoreRuntimeProvider(QiecModel):
                     reduction=semantics.reduction,
                 ),
                 "Random",
+            )
+        if isinstance(semantics, DeductionLinearGoal):
+            from quivers.qiec.linear_deduction import linear_goal_handler
+
+            return linear_goal_handler(
+                definition,
+                self._single_clause(definition, ResumptionGrade.LINEAR),
+                semantics,
             )
         if isinstance(semantics, DeductionOutcomes):
             from quivers.qiec.deduction_outcomes import deduction_outcomes_handler

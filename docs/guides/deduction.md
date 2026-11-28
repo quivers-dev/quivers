@@ -489,6 +489,48 @@ $r/(1-r)$ with respect to $\log a$ and $\log r$. For $r=1$ and $a>0$ the
 closure refuses divergence even though the checked log residual can become
 small as the mass grows.
 
+In a checked program, `let mass = parse_linear(Linear, sentence, 16)` selects
+the same span executor and returns a scalar `LogWeight`. With the weights
+above it gives $\log 0.5$. Its sentence is a rank-one token tensor that can
+come from program data or a checked local binding. If the deduction names
+a start category, the result is the mass of that category over the full
+sentence. With no start category, it sums all full-span categories.
+
+This entry admits `LogProb` lexical systems with atomic categories, unary
+rules that preserve both endpoints, and binary rules that concatenate
+adjacent spans. Each lexical occurrence has width one, so both premises
+of a binary rule have smaller width than its conclusion. Thus by induction
+on width, the lexical terms and binary contributions to a cell give a
+known vector $b$ before that cell's unary rules run. The unary closure
+computes the least sum $\sum_{k\geq 0} bU^k$, where $U$ contains the
+total weight of the unary steps between each pair of categories.
+Duplicate lexical alternatives and rule applications are added in
+`LogProb`. An absent full-span goal has zero mass.
+
+The final argument is a positive `Int` bound on the order of the unary
+closure matrix. An extra parallel step occupies an auxiliary state, so
+the limit includes those states. The call refuses a larger matrix before
+allocating it. This bound covers the matrix order and leaves the number
+of chart cells and the rest of the run's work unconstrained. The run records
+the cap as a control alongside the selected algorithm and arithmetic.
+
+Each rule uses its fixed weight or one learned parameter independent
+of the rule's bindings. The entry refuses nullable axioms, logical forms,
+binding-keyed and inherited rule weights, and left-hand-side production
+normalization. Native execution uses `float64` or `float32` log weights.
+The closure checks that its unary series converges for the supplied
+weights whenever it evaluates a chart with lexical occurrences. It
+distinguishes divergence from a case where the available arithmetic
+cannot establish convergence or evaluate a usable pivot. For positive
+goal mass in the open convergence domain, differentiating the finite
+elimination computes the
+derivative of the least solution in the run's precision. Indeed, for
+$v=b+vU$, the differential is $dv=(db+v\,dU)U^*$. Logarithmic differentiation
+then divides the relevant mass differential by the mass. Structural zero
+cells use the `LogProb` zero-gradient convention. The ordinary `parse`
+and `run_deduction` entries retain their iteration and settlement
+contracts.
+
 `MonotonePolynomial` selects the certified Newton plan for the branching
 rule. For $a,r>0$ and $4ar<1$, the smaller quadratic root is
 $x=2a/(1+\sqrt{1-4ar})$. The iterates from zero stay below that root by

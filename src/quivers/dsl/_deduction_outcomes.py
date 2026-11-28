@@ -16,7 +16,7 @@ from quivers.dsl.ast_nodes import (
     QiecInterpretationDecl,
 )
 from quivers.qiec._lexical_proof_types import export_lexical_proofs
-from quivers.qiec.canonical import sampleable_type, tensor_type
+from quivers.qiec.canonical import LOG_WEIGHT, sampleable_type, tensor_type
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.coverage import constructor_skolems
@@ -35,6 +35,7 @@ from quivers.qiec.effects import (
     instantiate_effect,
 )
 from quivers.qiec.foreign import (
+    DeductionLinearGoal,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -96,6 +97,9 @@ PROOF_KEY_CALLS = frozenset({"parse_proof_outcomes", "parse_normalized_proof_out
 PROOF_CALLS = frozenset({"parse_proofs", "parse_normalized_proofs"}) | PROOF_KEY_CALLS
 OUTCOME_CALLS = frozenset({"parse_outcomes", "parse_normalized_outcomes"}) | PROOF_CALLS
 OUTCOME_CODE = "qiec-deduction-outcomes"
+LINEAR_PARSE = "parse_linear"
+LINEAR_CODE = "qiec-deduction-linear-goal"
+NATIVE_DEDUCTION_CALLS = OUTCOME_CALLS | {LINEAR_PARSE}
 _SPAN = "span"
 _QUERY = "query"
 _GROUP = "group"
@@ -113,6 +117,16 @@ class OutcomeQuery:
 
 
 @dataclass(frozen=True)
+class LinearGoalQuery:
+    """The closed scalar operation and the source rules supplying its weights."""
+
+    instance: NamedEffectInstance
+    handler: HandlerDef
+    weights: TypeApplication
+    rule_indices: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class OutcomeKey:
     """A named projection's checked result family and native grouping operation."""
 
@@ -127,14 +141,14 @@ class OutcomeKey:
 
 
 def outcome_call_sites(elaborator: _Elaborator) -> tuple[LetExprCall, ...]:
-    """Find the direct program bindings that can introduce an outcome family."""
+    """Find direct program bindings using a checked native deduction query."""
     return tuple(
         value
         for statement in elaborator.source.syntax.statements
         if isinstance(statement, ProgramDecl)
         for step in statement.draws
         if isinstance(value := getattr(step, "value", None), LetExprCall)
-        and value.func in OUTCOME_CALLS
+        and value.func in NATIVE_DEDUCTION_CALLS
         and value.args
         and isinstance(value.args[0], LetExprVar)
     )
@@ -651,6 +665,44 @@ def declare_outcomes(
     return OutcomeQuery(instance, handler, terms, weights, production_indices)
 
 
+def register_linear_goal(
+    elaborator: _Elaborator,
+    system: _System,
+    semantics: DeductionLinearGoal,
+    rule_indices: tuple[int, ...],
+) -> LinearGoalQuery:
+    """Give this nominal lexical recurrence its closed query operation."""
+    module = elaborator.source.module_name
+    weights = tensor_type(
+        REAL,
+        (IndexLiteral(value=len(semantics.lexicon) + len(rule_indices), sort=NAT),),
+    )
+    effect_name = system.name("LinearGoal")
+    effect_id = EffectId.derive(module, "effect", effect_name)
+    extent = IndexVariable(name="n", sort=NAT)
+    operation = OperationDef(
+        id=OperationId.derive(effect_id, "operation", _QUERY),
+        name=_QUERY,
+        telescope=(IndexBinder(name=extent.name, sort=NAT),),
+        arguments=(
+            ArgumentDef(name="tokens", type=tensor_type(STRING, (extent,))),
+            ArgumentDef(name="weights", type=weights),
+            ArgumentDef(name="max_closure_size", type=INT),
+        ),
+        result_type=LOG_WEIGHT,
+    )
+    instance, handler = _register_query_handler(
+        elaborator,
+        system.decl,
+        EffectRef(id=effect_id, name=effect_name),
+        operation,
+        system.name("linear_goal_query"),
+        system.name("query_linear_goal"),
+        semantics,
+    )
+    return LinearGoalQuery(instance, handler, weights, rule_indices)
+
+
 def elaborate_outcome_law(
     elaborator: _Elaborator, node: LetExprCall, rows: Value, row_type: TypeExpr
 ) -> tuple[TypeApplication, Handle]:
@@ -741,7 +793,8 @@ def _register_query_handler(
     operation: OperationDef,
     instance_name: str,
     handler_name: str,
-    semantics: DeductionOutcomes
+    semantics: DeductionLinearGoal
+    | DeductionOutcomes
     | DeductionProofs
     | DeductionOutcomeGrouping
     | DeductionOutcomeLaw,
@@ -869,3 +922,46 @@ def elaborate_outcomes(
     for local, reading in reversed(tuple(zip(values, readings, strict=True))):
         body = Bind(binder=local, first=reading, then=body)
     return context.computation(signature, (tokens, selector, normalize), body)
+
+
+def elaborate_linear_goal(
+    context: _Context, query: LinearGoalQuery, signature: ComputationSignature
+) -> NamedComputation:
+    """Read the existing lexical and rule parameters without grounding proofs."""
+    system = context.system
+    tokens_type, limit_type = context.inputs(signature)
+    tokens = Local(name="tokens", type=tokens_type)
+    limit = Local(name="max_closure_size", type=limit_type)
+    readings = [
+        context.entry_weight(index, entry, lambda weight: Return(value=weight))
+        for index, entry in enumerate(system.entries)
+    ] + [
+        context.rule_weight(
+            system.rules[index], index, {}, lambda weight: Return(value=weight)
+        )
+        for index in query.rule_indices
+    ]
+    values = tuple(system.local("weight", system.carrier) for _ in readings)
+    body: Computation = Handle(
+        instance=query.instance.entry.instance,
+        handler=query.handler.id,
+        computation=context.request(
+            query.instance,
+            _QUERY,
+            (context.extent,),
+            (
+                Var(local=tokens),
+                TensorValue(
+                    items=tuple(context.real_of(Var(local=local)) for local in values),
+                    result_type=query.weights,
+                ),
+                Var(local=limit),
+            ),
+            signature.result,
+            "linear_goal",
+        ),
+        static_arguments=(),
+    )
+    for local, reading in reversed(tuple(zip(values, readings, strict=True))):
+        body = Bind(binder=local, first=reading, then=body)
+    return context.computation(signature, (tokens, limit), body)

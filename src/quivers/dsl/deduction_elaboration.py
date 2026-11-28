@@ -65,15 +65,20 @@ from quivers.qiec._models import QiecModel
 
 from quivers.dsl._deduction_chart import declare_chart, elaborate_chart
 from quivers.dsl._deduction_outcomes import (
+    LINEAR_CODE,
+    LINEAR_PARSE,
     OUTCOME_CALLS,
     PROOF_CALLS,
+    LinearGoalQuery,
     OutcomeKey,
     OutcomeQuery,
     declare_lexical_proofs,
     declare_outcome_key_types,
     declare_outcomes,
+    elaborate_linear_goal,
     elaborate_outcomes,
     outcome_call_sites,
+    register_linear_goal,
 )
 
 from quivers.dsl.ast_nodes import (
@@ -153,6 +158,7 @@ from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
 from quivers.qiec.foreign import (
     PRODUCT_LAWS,
     SUM_LAWS,
+    DeductionLinearGoal,
     KernelSemiring,
     KernelValue,
     MissingLaw,
@@ -1368,6 +1374,7 @@ class _DeductionElaboration:
         """
         self._deductions: dict[str, _System] = {}
         self._outcome_queries: dict[str, OutcomeQuery] = {}
+        self._linear_goal_queries: dict[str, LinearGoalQuery] = {}
         self._proof_queries: dict[str, OutcomeQuery] = {}
         self._lexical_proofs: dict[str, RulePresentation] = {}
         self._outcome_keys: dict[tuple[str, str], OutcomeKey] = {}
@@ -1382,10 +1389,16 @@ class _DeductionElaboration:
         if not declarations:
             return
         calls = outcome_call_sites(self)
+        linear_calls = {
+            call.args[0].name: call
+            for call in calls
+            if call.func == LINEAR_PARSE and isinstance(call.args[0], LetExprVar)
+        }
         outcome_calls = {
             call.args[0].name: call
             for call in calls
-            if call.func not in PROOF_CALLS and isinstance(call.args[0], LetExprVar)
+            if call.func in OUTCOME_CALLS - PROOF_CALLS
+            and isinstance(call.args[0], LetExprVar)
         }
         proof_calls = {
             call.args[0].name: call
@@ -1428,6 +1441,10 @@ class _DeductionElaboration:
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
+            if (linear := linear_calls.get(declaration.name)) is not None:
+                self._linear_goal_queries[declaration.name] = self._declare_linear_goal(
+                    system, linear
+                )
             query = outcome_calls.get(declaration.name)
             if query is not None:
                 self._outcome_queries[declaration.name] = declare_outcomes(
@@ -1449,7 +1466,64 @@ class _DeductionElaboration:
                 self._declare_chain_family(system)
             self._declare_deduction_instances(system)
             self._deductions[declaration.name] = system
-        self._outcome_keys = declare_outcome_key_types(self, calls)
+        self._outcome_keys = declare_outcome_key_types(
+            self, tuple(call for call in calls if call.func in OUTCOME_CALLS)
+        )
+
+    def _declare_linear_goal(
+        self: _Elaborator, system: _System, node: LetExprCall
+    ) -> LinearGoalQuery:
+        """Check a source query's binding-independent lexical weights."""
+        if (
+            system.semiring.algebra != LOG_PROB.subject
+            or not system.entries
+            or system.uses_forms_cell[0]
+            or system.depth_cell[0] is not None
+            or system.normalized_cell[0]
+        ):
+            self._fail(
+                node,
+                "parse_linear requires an unnormalized lexical LogProb deduction "
+                "without logical forms or a category depth bound",
+                code=LINEAR_CODE,
+            )
+        lexicon: list[tuple[str, str]] = []
+        for entry in system.entries:
+            if not isinstance(entry.category, _Atom):
+                self._fail(
+                    node,
+                    "parse_linear requires atomic lexical categories",
+                    code=LINEAR_CODE,
+                )
+            lexicon.append((entry.word, entry.category.name))
+        parameters = {}
+        for index, rule in enumerate(system.rules):
+            presented = rule.presented.rule
+            if presented.weight is None:
+                continue
+            if rule.parent is not None or any(
+                not isinstance(binder, IndexBinder) or binder.sort != NAT
+                for binder in presented.telescope
+            ):
+                self._fail(
+                    node,
+                    "parse_linear requires one binding-independent weight per rule "
+                    "and does not accept inherited weights",
+                    code=LINEAR_CODE,
+                )
+            parameters.setdefault(presented.weight, index)
+        presented = system.presentation_cell[0]
+        assert presented is not None
+        try:
+            semantics = DeductionLinearGoal(
+                presentation=presented.presentation,
+                lexicon=tuple(lexicon),
+                parameters=tuple(parameters),
+                start=system.start,
+            )
+        except (ValueError, dx.ValidationError) as error:
+            self._fail_kernel(node, error, fallback=LINEAR_CODE)
+        return register_linear_goal(self, system, semantics, tuple(parameters.values()))
 
     def _schema_parser_declarations(
         self: _Elaborator,
@@ -2994,6 +3068,18 @@ class _DeductionElaboration:
             for suffix, query, control in queries
             if query is not None
         )
+        linear = None if weighted else self._linear_goal_queries.get(system.decl.name)
+        linear_entry = (
+            None
+            if linear is None
+            else declare(
+                system.name("linear_goal"),
+                (extent,),
+                (tokens_type, INT),
+                LOG_WEIGHT,
+                outer,
+            )
+        )
         if system.normalized_cell[0] and not weighted:
             for index, group in enumerate(system.groups_cell[0]):
                 if len(group.productions) > 1 and any(
@@ -3019,6 +3105,8 @@ class _DeductionElaboration:
             elaborate_outcomes(context, query, signature)
             for query, signature in query_entries
         )
+        if linear is not None and linear_entry is not None:
+            computations.append(elaborate_linear_goal(context, linear, linear_entry))
         if not weighted:
             computations.extend(
                 (

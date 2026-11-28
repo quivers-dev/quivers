@@ -190,6 +190,7 @@ from quivers.qiec.effects import (
 )
 from quivers.qiec.evidence import BranchGiven, Reflexivity
 from quivers.qiec.foreign import (
+    DeductionLinearGoal,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -444,6 +445,7 @@ _NODE_CLASSES = (
     SemiringProduct,
     Enumeration,
     Settlement,
+    DeductionLinearGoal,
     DeductionOutcomes,
     DeductionProofs,
     DeductionOutcomeGrouping,

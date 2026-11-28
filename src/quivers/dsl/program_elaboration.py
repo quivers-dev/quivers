@@ -31,6 +31,9 @@ from typing import TYPE_CHECKING, Literal, cast
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.dsl._deduction_outcomes import (
+    LINEAR_CODE,
+    LINEAR_PARSE,
+    NATIVE_DEDUCTION_CALLS,
     OUTCOME_CALLS,
     OUTCOME_CODE,
     PROOF_CALLS,
@@ -4379,9 +4382,35 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             optional plate is not a pair of a string label and a value.
         """
         if not isinstance(expr, LetExprCall) or (
-            expr.func != "parse" and expr.func not in OUTCOME_CALLS
+            expr.func != "parse" and expr.func not in NATIVE_DEDUCTION_CALLS
         ):
             return None
+        if expr.func == LINEAR_PARSE:
+            if len(expr.args) != 3 or not all(
+                isinstance(argument, LetExprVar) for argument in expr.args[:2]
+            ):
+                self._fail(
+                    node,
+                    "parse_linear requires a deduction name, a token tensor binding, "
+                    "and a maximum closure size of type Int",
+                    code=LINEAR_CODE,
+                )
+            target, source, closure_limit = expr.args
+            assert isinstance(target, LetExprVar) and isinstance(source, LetExprVar)
+            if target.name not in self._linear_goal_queries:
+                self._fail(
+                    node,
+                    f"parse_linear requires a declared lexical deduction in a direct "
+                    f"program let binding (found {target.name!r})",
+                    code=LINEAR_CODE,
+                )
+            return _ParseCall(
+                deduction=target.name,
+                source=source.name,
+                plate=None,
+                bindings=(),
+                linear_goal=closure_limit,
+            )
         outcomes = expr.func in OUTCOME_CALLS
         proofs = expr.func in PROOF_CALLS
         proof_key = expr.func in PROOF_KEY_CALLS
@@ -4572,7 +4601,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         tokens = scope.lookup(source)
-        if tokens is not None and not parse.observes_rows:
+        if tokens is not None and not (
+            parse.observes_rows or parse.linear_goal is not None
+        ):
             self._fail(
                 node,
                 f"parse reads {source!r}, which a step binds; the sentence a "
@@ -4581,7 +4612,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         suffix = "run"
         extra: tuple[Value, ...] = ()
-        if parse.proof_budget is not None:
+        if parse.linear_goal is not None:
+            suffix = "linear_goal"
+            authored = parse.linear_goal
+            limit = self._let_value(authored, scope, state, node)
+            if self._value_type(limit, scope.context(), authored) != INT:
+                self._fail(
+                    authored,
+                    "linear deduction maximum closure size must have type Int",
+                    code=LINEAR_CODE,
+                )
+            extra = (limit,)
+        elif parse.proof_budget is not None:
             suffix = "proofs"
             authored = parse.proof_budget
             budget = self._let_value(authored, scope, state, node)
@@ -4651,10 +4693,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if layout is None or layout[0] != STRING or len(layout[1]) != 1:
                 self._fail(
                     node,
-                    f"deduction outcome input {source!r} must be a rank-one "
+                    f"deduction {'linear goal' if parse.linear_goal is not None else 'outcome'} "
+                    f"input {source!r} must be a rank-one "
                     "Tensor[String] with a checked extent "
                     f"(found {render_static(tokens.type)})",
-                    code=OUTCOME_CODE,
+                    code=LINEAR_CODE if parse.linear_goal is not None else OUTCOME_CODE,
                 )
             (extent,) = layout[1]
         return Call(
@@ -11216,6 +11259,8 @@ class _ParseCall(dx.Model):
         The checked integer budget of a proof query.
     normalize_outcomes : bool
         Whether to normalize the outcome weights by the total goal mass.
+    linear_goal : LetExprNode or None
+        The checked closure size cap for a certified linear query.
     """
 
     deduction: str
@@ -11226,6 +11271,7 @@ class _ParseCall(dx.Model):
     typed_outcome_key: bool = False
     proof_budget: LetExprNode | None = None
     normalize_outcomes: bool = False
+    linear_goal: LetExprNode | None = None
 
     @property
     def observes_rows(self) -> bool:

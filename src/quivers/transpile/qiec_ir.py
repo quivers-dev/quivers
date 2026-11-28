@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from enum import Enum
+from types import UnionType
 from typing import Literal, cast
 
 import didactic.api as dx
@@ -2898,6 +2899,7 @@ type QiecFeature = Literal[
     "neural-attachment",
     "search",
     "deduction-outcomes",
+    "deduction-linear-goal",
     "reduction",
     "rowwise",
     "cholesky-factor",
@@ -3685,18 +3687,22 @@ def _core_host_runtime_root_ids(module: QiecModule) -> frozenset[StableId]:
     )
 
 
-def _outcome_dependents(module: QiecModule) -> frozenset[StableId]:
-    """Find every computation or handler that needs the native chart."""
+_OUTCOME_SEMANTICS = (
+    fo.DeductionOutcomes
+    | fo.DeductionOutcomeGrouping
+    | fo.DeductionOutcomeLaw
+    | fo.DeductionProofs
+)
+
+
+def _outcome_dependents(
+    module: QiecModule, semantics: type | UnionType
+) -> frozenset[StableId]:
+    """Find every computation or handler that needs one of the native queries."""
     pending: list[StableId] = [
         handler.id
         for handler in module.handlers
-        if isinstance(
-            handler.foreign,
-            fo.DeductionOutcomes
-            | fo.DeductionOutcomeGrouping
-            | fo.DeductionOutcomeLaw
-            | fo.DeductionProofs,
-        )
+        if isinstance(handler.foreign, semantics)
     ]
     if not pending:
         return frozenset()
@@ -3725,7 +3731,7 @@ def _outcome_dependents(module: QiecModule) -> frozenset[StableId]:
 
 def outcome_target_scope(module: QiecModule, selected: str | None = None) -> QiecModule:
     """Omit native-only declarations when the selected program cannot use them."""
-    affected = _outcome_dependents(module)
+    affected = _outcome_dependents(module, _OUTCOME_SEMANTICS | fo.DeductionLinearGoal)
     if not affected or any(
         entry.computation in affected
         for entry in module.entries
@@ -3750,12 +3756,12 @@ def outcome_target_scope(module: QiecModule, selected: str | None = None) -> Qie
 def outcome_capability_diagnostics(
     module: QiecModule, target: str
 ) -> tuple[QiecCapabilityDiagnostic, ...]:
-    """Locate programs that call native-only packed chart queries."""
-    affected = _outcome_dependents(module)
-    roots = {entry.computation for entry in module.entries} & affected
+    """Locate programs reaching native-only deduction queries."""
 
-    def origin(computation: m.NamedComputation) -> SourceOrigin:
-        """Find the first source call that leads to the native chart."""
+    def origin(
+        computation: m.NamedComputation, affected: frozenset[StableId]
+    ) -> SourceOrigin:
+        """Find the first source call that leads to this native query."""
         pending: list[object] = [computation.body]
         visited: set[int] = set()
         while pending:
@@ -3768,17 +3774,37 @@ def outcome_capability_diagnostics(
             pending.extend(reversed(m._children(node)))
         return computation.origin
 
-    return tuple(
-        QiecCapabilityDiagnostic(
-            target=target,
-            feature="deduction-outcomes",
-            computation=computation.name,
-            origin=cast(IRQiecSourceOrigin, _convert(origin(computation))),
-            detail="has no checked runtime for packed deduction outcomes",
-        )
-        for computation in module.computations
-        if computation.id in roots
+    entries = {entry.computation for entry in module.entries}
+    queries: tuple[tuple[type | UnionType, QiecFeature, str], ...] = (
+        (
+            _OUTCOME_SEMANTICS,
+            "deduction-outcomes",
+            "has no checked runtime for packed deduction outcomes",
+        ),
+        (
+            fo.DeductionLinearGoal,
+            "deduction-linear-goal",
+            "has no checked runtime for certified linear deduction goals",
+        ),
     )
+    diagnostics: list[QiecCapabilityDiagnostic] = []
+    for semantics, feature, detail in queries:
+        affected = _outcome_dependents(module, semantics)
+        roots = entries & affected
+        diagnostics.extend(
+            QiecCapabilityDiagnostic(
+                target=target,
+                feature=feature,
+                computation=computation.name,
+                origin=cast(
+                    IRQiecSourceOrigin, _convert(origin(computation, affected))
+                ),
+                detail=detail,
+            )
+            for computation in module.computations
+            if computation.id in roots
+        )
+    return tuple(diagnostics)
 
 
 def _refuse_outcome_projection(module: QiecModule, target: str) -> None:

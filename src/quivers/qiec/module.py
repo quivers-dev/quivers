@@ -24,6 +24,7 @@ from quivers.qiec.checking import (
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec.foreign import (
+    DeductionLinearGoal,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -668,7 +669,11 @@ def validate_module(module: QiecModule) -> KernelRegistry:
         registry.register_handler(handler)
     if not rechecked:
         for handler in module.handlers:
-            if isinstance(handler.foreign, DeductionOutcomes | DeductionProofs):
+            if isinstance(handler.foreign, DeductionLinearGoal):
+                from quivers.qiec.linear_deduction import validate_linear_goal
+
+                validate_linear_goal(handler, handler.foreign, registry, module.module)
+            elif isinstance(handler.foreign, DeductionOutcomes | DeductionProofs):
                 from quivers.qiec.deduction_outcomes import validate_outcome_adapter
 
                 validate_outcome_adapter(handler, handler.foreign, registry)
@@ -1027,6 +1032,10 @@ def _validate_index_sorts(module: QiecModule) -> None:
     ]
     while pending:
         node = pending.pop()
+        if isinstance(node, DeductionLinearGoal):
+            # The nested presentation has its own checked lexical index
+            # sorts. The operation exchanges only ordinary outer types.
+            continue
         if isinstance(node, DeductionOutcomes):
             # Its rule presentation validates a separate module of index
             # sorts and can have nominal sorts named by another scope.
