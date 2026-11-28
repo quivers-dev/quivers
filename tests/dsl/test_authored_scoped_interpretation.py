@@ -10,11 +10,23 @@ from quivers.dsl import loads, parse
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.qiec_tooling import call_sites
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.modeling import Model
 from quivers.qiec import (
+    BOOL,
+    Bind,
+    CARTESIAN,
+    ComputationId,
+    EffectRow,
     ExecutionResult,
+    LiteralValue,
+    Local,
+    REAL,
+    Return,
     QiecModule,
     RuntimeConfiguration,
     RuntimeSelection,
+    RuleError,
+    ScopedInterpretationBinding,
     SCORE_ADD,
     dumps as dumps_qiec,
     loads as loads_qiec,
@@ -283,3 +295,118 @@ define value[G : Type]() : Real !{} =
         QiecDiagnosticError, match="effect row requires a single object sort"
     ):
         loads(source)
+
+
+_SCHEMA_SOURCE = (
+    _SCORE_SOURCE
+    + """
+effect Demand
+    value : Unit -> Real
+
+instance demand : Demand
+
+handler supply for Demand : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    value resumes 1 =>
+        let result <- collected()
+        resume(1.0)
+
+define served() : Real !{} =
+    handle demand with supply in
+        perform demand.value()
+
+object Tokens : FinSet 1
+object Response : Real 1
+
+program interpreted : Tokens -> Response
+    let value <- served()
+    return value
+
+program unrelated : Tokens -> Response
+    let zero = 0.0
+    return zero
+"""
+)
+
+
+def test_model_schema_extracts_only_the_reached_scoped_contract() -> None:
+    model = Model(_SCHEMA_SOURCE, entry="interpreted")
+    (binding,) = model.schema.scoped_interpretations
+    assert isinstance(binding, ScopedInterpretationBinding)
+    assert binding.presentation.name == "Binders"
+    assert binding.presentation.structure == CARTESIAN
+    assert tuple(rule.name for rule in binding.presentation.rules) == (
+        "Pair",
+        "Outer",
+        "Inner",
+    )
+    assert binding.carriers == ((binding.judgment, REAL),)
+    (scope_score,) = binding.instances
+    assert scope_score.name == "score"
+    assert dict(binding.rows)[binding.judgment] == EffectRow(
+        entries=(scope_score.entry,)
+    )
+    assert model.bind({}).schema.scoped_interpretations == (binding,)
+    assert Model(_SCHEMA_SOURCE, entry="unrelated").schema.scoped_interpretations == ()
+
+    executable = model.checked_module
+    wire = dumps_qiec(executable)
+    restored = loads_qiec(dumps_qiec(binding))
+    assert restored == binding and isinstance(restored, ScopedInterpretationBinding)
+    copied_executable = loads_qiec(wire)
+    assert isinstance(copied_executable, QiecModule)
+    restored.validate(copied_executable)
+    assert dumps_qiec(copied_executable) == wire
+
+
+def test_scoped_companion_rejects_stale_metadata() -> None:
+    model = Model(_SCHEMA_SOURCE, entry="interpreted")
+    (binding,) = model.schema.scoped_interpretations
+    module = model.checked_module
+    pair, outer, inner = binding.presentation.rules
+    (premise,) = inner.premises
+    changed = inner.with_(premises=(premise.with_(after=()),))
+    wrong_presentation = binding.presentation.with_(rules=(pair, outer, changed))
+    ((_, pair_op), (_, outer_op), (_, inner_op)) = binding.interpretation.operations
+    swapped = binding.interpretation.with_(
+        operations=((pair.id, pair_op), (outer.id, inner_op), (inner.id, outer_op))
+    )
+    variants = (
+        (binding.with_(presentation=wrong_presentation), "presentation differs"),
+        (
+            binding.with_(computation=ComputationId.derive("unavailable")),
+            "unknown scoped interpretation root",
+        ),
+        (binding.with_(carriers=((binding.judgment, BOOL),)), "carrier does not match"),
+        (
+            binding.with_(rows=((binding.judgment, EffectRow()),)),
+            "effect row does not match",
+        ),
+        (binding.with_(instances=()), "lexical effect requirements are stale"),
+        (
+            binding.with_(interpretation=swapped),
+            "assignments differ from checked fold bodies",
+        ),
+    )
+    for variant, message in variants:
+        restored = loads_qiec(dumps_qiec(variant))
+        assert isinstance(restored, ScopedInterpretationBinding)
+        with pytest.raises(RuleError, match=message):
+            restored.validate(module)
+
+    root = next(item for item in module.computations if item.id == binding.computation)
+    changed = root.with_(
+        body=Bind(
+            binder=Local(name="discard", type=REAL),
+            first=root.body,
+            then=Return(value=LiteralValue(value=0.0, type=REAL)),
+        )
+    )
+    changed_module = module.with_(
+        computations=tuple(
+            changed if item.id == root.id else item for item in module.computations
+        )
+    )
+    with pytest.raises(RuleError, match="entry does not match the checked root"):
+        binding.validate(changed_module)

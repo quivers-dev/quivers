@@ -159,14 +159,7 @@ class ScopedProofFold:
             If an operation, fold result, declared row, or call fails checking.
         """
         signatures = {
-            source: ComputationSignature(
-                id=operation.id,
-                name=operation.name,
-                telescope=operation.telescope,
-                parameters=tuple(local.type for local in operation.parameters),
-                result=operation.type.result,
-                effects=operation.type.effects,
-            )
+            source: _operation_signature(operation)
             for source, operation in operations.items()
         }
         generated, folds = _scoped_definitions(self, signatures)
@@ -180,6 +173,68 @@ class ScopedProofFold:
         )
         validate_module(checked)
         return checked, folds
+
+
+def _operation_signature(operation: NamedComputation) -> ComputationSignature:
+    """Retain the nominal signature needed to generate a fold call.
+
+    Parameters
+    ----------
+    operation
+        The complete checked operation declaration.
+
+    Returns
+    -------
+    ComputationSignature
+        Its ordinary static and value parameters, result, and row.
+    """
+    return ComputationSignature(
+        id=operation.id,
+        name=operation.name,
+        telescope=operation.telescope,
+        parameters=tuple(local.type for local in operation.parameters),
+        result=operation.type.result,
+        effects=operation.type.effects,
+    )
+
+
+def _scoped_entry(
+    fold: ScopedProofFold, root: FamilyId, origin: SourceOrigin
+) -> NamedComputation:
+    """Export one judgment's fold with an empty initial environment.
+
+    Parameters
+    ----------
+    fold, root, origin
+        The scoped interpretation, root judgment, and declaration site.
+
+    Returns
+    -------
+    NamedComputation
+        The closed named call taking a proof at its exact empty context.
+    """
+    syntax = fold.syntax
+    empty_type = _at(syntax.empty)
+    proof_type = _at(
+        syntax.proofs[root], *syntax.carrier_types(fold.carriers), empty_type
+    )
+    proof = Local(name="proof", type=proof_type)
+    empty = ConstructorValue(
+        constructor=syntax.empty.constructors[0],
+        static_arguments=(),
+        fields=(),
+        result_type=empty_type,
+    )
+    call = _fold_call(fold, root, empty_type, Var(local=proof), empty, origin)
+    return NamedComputation(
+        id=ComputationId.derive(origin.module, fold.name, "scoped-interpretation"),
+        name=fold.name,
+        telescope=(),
+        parameters=(proof,),
+        type=ComputationType(effects=call.effects, result=call.result_type),
+        origin=origin,
+        body=call,
+    )
 
 
 def _scoped_definitions(

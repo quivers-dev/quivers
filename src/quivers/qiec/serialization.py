@@ -137,6 +137,7 @@ from quivers.qiec.relations import (
 )
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
 from quivers.qiec.string_solvers import JointAlignmentMapConfig, RegularStringEPConfig
+from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
@@ -586,6 +587,7 @@ _NODE_CLASSES = (
     FamilyComponent,
     PresentationAnalysis,
     InterpretationDecl,
+    ScopedInterpretationBinding,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}

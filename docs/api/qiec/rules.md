@@ -183,6 +183,17 @@ operation uses its supplied arguments finitely and terminates apart from these c
 The adapter checks scope and effect types. Ordered and left-scoped presentations,
 term-dependent judgments, and preservation of proof equations require a separate contract.
 
+A `ModelSchema` exposes the selected program’s checked
+[`ScopedInterpretationBinding`][quivers.qiec.ScopedInterpretationBinding] records through
+`scoped_interpretations`. Reachability follows ordinary calls and calls made in installed
+authored handler clauses. Each binding retains the original rule presentation, the
+assignment of rules to operation identities, the root computation, the carriers, and the
+named instances required by its effect rows. The binding can be serialized alongside the
+executable QIEC module. Its [`validate`][quivers.qiec.ScopedInterpretationBinding.validate]
+method rechecks the executable declarations before using a restored binding. The
+companion has its own wire record and describes the scope and effect contract.
+Preservation of equations requires separate evidence.
+
 For $J$ judgment forms, the membership declarations contain $J(J+1)$ constructors, each with
 $J$ uniform carrier types. Each concrete hypothesis reference at depth $d$ adds $d+1$
 membership nodes. Lowering also visits all rule nodes and their ordered premise fields once,
