@@ -124,9 +124,13 @@ applications interpret it at 2 and at 5, so `binding_example()` returns 7.
 A frame type records the previous environment and the carrier of its
 newest hypothesis. The proof's bracketed arguments record the semantic
 carrier and the precise environment type. With several object sorts, the
-authored interpretation uses the declared carrier for each sort. Rule
-operations in this source form have a pure effect row. The
-[checked Python adapter](../api/qiec/rules.md#checked-right-scoped-folds)
+authored interpretation uses the declared carrier for each sort. Rule operations
+are pure by default. With one object sort, an interpretation can declare a closed
+row by naming lexical effect instances, as in
+`interpret evaluate [structure=cartesian, effects=[score]] : Scope -> Real`.
+A caller handles the row in the usual QVR scope. Each application runs its
+body’s effects once, and an application that the rule skips emits no requests.
+The [checked Python adapter](../api/qiec/rules.md#checked-right-scoped-folds)
 also accepts distinct carriers and closed effect rows by judgment.
 
 ## Encoder blocks

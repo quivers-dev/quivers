@@ -13,7 +13,7 @@ from quivers.qiec import scoped_proof_fold, scoped_proof_types
 from quivers.qiec._scoped_proof_fold import _scoped_definitions
 from quivers.qiec._scoped_proof_types import ScopedProofTypes, _at
 from quivers.qiec.checking import ComputationSignature, KernelError
-from quivers.qiec.effects import ComputationType, EffectRow
+from quivers.qiec.effects import ComputationType, EffectRow, RowEntry
 from quivers.qiec.identifiers import ComputationId, ConstructorId, FamilyId
 from quivers.qiec.kinds import TYPE, TypeBinder
 from quivers.qiec.module import NamedComputation
@@ -50,18 +50,26 @@ def declare_scoped_types(elaborator: _Elaborator) -> dict[str, ScopedSource]:
                     code="qiec-interpretation",
                 )
             continue
-        options = declaration.options
+        permissions = [
+            option.value for option in declaration.options if option.key == "structure"
+        ]
         if (
-            len(options) != 1
-            or options[0].key != "structure"
-            or not isinstance(options[0].value, surface.OptionName)
-            or options[0].value.value != "cartesian"
+            len(permissions) != 1
+            or not isinstance(permissions[0], surface.OptionName)
+            or permissions[0].value != "cartesian"
         ):
             elaborator._fail(
                 declaration,
                 "a structural interpretation requires explicit [structure=cartesian]",
                 code="qiec-interpretation",
             )
+        for option in declaration.options:
+            if option.key not in {"structure", "effects"}:
+                elaborator._fail(
+                    option,
+                    f"unknown scoped interpretation option {option.key!r}",
+                    code="qiec-interpretation",
+                )
         if name in made:
             continue
         try:
@@ -110,14 +118,63 @@ def declare_scoped_types(elaborator: _Elaborator) -> dict[str, ScopedSource]:
     return made
 
 
+def _scoped_effect_row(
+    elaborator: _Elaborator,
+    declaration: surface.QiecInterpretationDecl,
+    source: ScopedSource,
+) -> EffectRow:
+    """Resolve an explicit closed source row to its lexical effect instances."""
+    effect_options = [
+        option for option in declaration.options if option.key == "effects"
+    ]
+    if not effect_options:
+        return EffectRow()
+    option = effect_options[0]
+    if len(effect_options) != 1 or not isinstance(option.value, surface.OptionList):
+        elaborator._fail(
+            option,
+            "scoped effects require one effects=[instance, ...] option",
+            code="qiec-interpretation",
+        )
+    entries: dict[str, RowEntry] = {}
+    for item in option.value.items:
+        if not isinstance(item, surface.OptionName):
+            elaborator._fail(
+                option,
+                "scoped effects must name lexical effect instances",
+                code="qiec-interpretation",
+            )
+        instance = elaborator.instances.get(item.value)
+        if instance is None:
+            elaborator._fail(
+                option,
+                f"unknown scoped effect instance {item.value!r}",
+                code="qiec-interpretation",
+            )
+        if item.value in entries:
+            elaborator._fail(
+                option,
+                f"duplicate scoped effect instance {item.value!r}",
+                code="qiec-interpretation",
+            )
+        entries[item.value] = instance.entry
+    if entries and len(source.syntax.proofs) != 1:
+        elaborator._fail(
+            option,
+            "an authored scoped effect row requires a single object sort",
+            code="qiec-interpretation",
+        )
+    return EffectRow(entries=tuple(entries.values()))
+
+
 def lower_scoped_interpretation(
     elaborator: _Elaborator,
     declaration: surface.QiecInterpretationDecl,
     source: ScopedSource,
 ) -> tuple[NamedComputation, ...]:
-    """Make ordinary pure named computations at the source's chosen carrier."""
+    """Make ordinary named computations at the declared carrier and row."""
     syntax = source.syntax
-    row = EffectRow()
+    row = _scoped_effect_row(elaborator, declaration, source)
     semantic = elaborator._lower_type(declaration.carrier, ())
     carriers = {family: semantic for family in syntax.proofs}
     plan = scoped_proof_fold(
@@ -167,12 +224,21 @@ def lower_scoped_interpretation(
         if (
             parameters != plan.operation_parameters(identity, ambient)
             or result != semantic
-            or operation.effects != row
         ):
             elaborator._fail(
                 clause,
-                f"scoped operation {operation.name!r} needs the rule's typed arguments, "
-                "the declared carrier, and a pure effect row",
+                f"scoped operation {operation.name!r} needs the rule's typed arguments "
+                "and the declared carrier",
+                code="qiec-interpretation",
+            )
+        if operation.effects.tail is not None or any(
+            row.lookup(entry.instance) != entry.effect
+            for entry in operation.effects.entries
+        ):
+            elaborator._fail(
+                clause,
+                f"scoped operation {operation.name!r} declares effects outside "
+                "the interpretation's closed effects row",
                 code="qiec-interpretation",
             )
         selected[identity] = operation
