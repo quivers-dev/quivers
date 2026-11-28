@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - **Certified acyclic LogProb path accuracy.** A fixed-word query can bound its float64 score's absolute log error using a sparse directed verifier, including for inputs near log weight −1000. The checked native provider returns the log score and exact rational evidence from one live snapshot.
+- **Certified cyclic LogProb path accuracy.** Bounded productive epsilon components can use exact rational endpoint stars to certify the ordinary log score, including when a path mass underflows in binary64.
 - **Checked Markov path certificate reports.** Native QVR can request a value-only forward-error certificate with exact rational evidence or a typed unavailable outcome.
 - **Certified Markov path accuracy.** A bounded fixed-word query can establish an exact absolute or relative forward-error bound for its float64 score, using rational sparse verification and the existing local closure.
 - **Checked deduction guards.** QVR rules can use a pure Boolean guard over matched natural coordinates. Checked search and eligible indexed item outcomes evaluate the guard before accepting a grounded rule.

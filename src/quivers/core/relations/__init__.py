@@ -103,6 +103,7 @@ __all__ = [
     "backoff_total_weight",
     "best_marginal_output",
     "certify_markov_path_weight",
+    "certify_cyclic_logprob_path_weight",
     "certify_logprob_path_weight",
     "closure",
     "compile_ranked_ot",
@@ -854,5 +855,6 @@ from quivers.core.relations.accuracy import (  # noqa: E402
 )
 from quivers.core.relations.log_accuracy import (  # noqa: E402
     LogPathWeightCertificate,
+    certify_cyclic_logprob_path_weight,
     certify_logprob_path_weight,
 )

@@ -341,6 +341,61 @@ range bound the stored operand sizes. The verifier checks the integer
 bit bound before converting a Decimal endpoint to a rational and
 charges the exact operations in the final error test separately.
 
+### Certifying numerical accuracy of cyclic LogProb path weights
+
+`certify_cyclic_logprob_path_weight` admits productive epsilon cycles
+under explicit local star order and aggregate cell limits. The
+ordinary score and verifier read one evaluated float64 snapshot.
+The result remains the ordinary LogProb tensor and the certificate
+covers its value in log units.
+
+For each productive strongly connected component, let
+$A_{ij}=\sum_{e:i\to j} \exp(\ell_e)$ sum the weights of its internal
+arc occurrences. The right side $b$ contains final weights and
+weighted suffixes from downstream components. Directed exponential
+endpoints bound every arc weight, so the lower and upper systems
+preserve the ordering of each finite partial path sum. Within each
+local system the endpoint coefficients are exact rationals, with
+every parallel occurrence included.
+
+Eliminating state $k$ replaces its contribution by
+
+$$
+x_k=\frac{b_k+\sum_{j>k} A_{kj}x_j}{1-A_{kk}}.
+$$
+
+At this step $A_{kk}$ sums the nonempty return walks through
+previously eliminated states. Every segment through $k$ consists of
+an entrance, zero or more such return walks, and an exit. Thus a
+strictly positive pivot $1-A_{kk}$ permits the exact geometric
+sum and the corresponding nonnegative substitution into the
+remaining equations. Positive pivots at all upper-system steps
+establish a finite upper star for the component because these checks
+apply to every unit right side. Back substitution then gives its upper
+suffix sums. Coefficientwise comparison of finite partial walk sums
+and their increasing limits justifies the lower and upper results.
+
+The verifier transfers the two exact rational solutions outward into
+Decimal. Directed sparse updates connect the components and the
+terminal logarithm yields the log endpoints. The verifier preserves
+masses such as $\exp(-1000)$ when they fall below the binary64 range.
+Any upper pivot at or below zero yields an unverified accuracy outcome.
+A coarse enclosure can cause this refusal on a relation with finite
+true mass. The verifier checks every structurally productive component,
+including those with zero current boundary mass. It also refuses when
+the usual LogProb score cannot meet the requested tolerance or the
+numerical star evaluator cannot establish its own closure.
+
+The rational elimination uses $O(n^2)$ cells and $O(n^3)$ exact
+operations per component of $n$ original observation states, in
+addition to processing its arc occurrences. The order and aggregate
+cell limits include auxiliary states used by the ordinary closure for
+parallel arcs. Lower and upper rational systems are solved in sequence.
+The exact integer bit and operation budgets apply throughout the proof,
+and the Decimal range and work budgets also cover the directed
+transfers. The acyclic core entry point and checked native certificate
+retain their acyclic domains.
+
 ## Exact string factor trees
 
 A `StringVariable` names a string type and may specify an observed word.
@@ -1173,6 +1228,7 @@ choices held fixed.
         - backoff_total_weight
         - best_marginal_output
         - certify_markov_path_weight
+        - certify_cyclic_logprob_path_weight
         - certify_logprob_path_weight
         - closure
         - compile_ranked_ot

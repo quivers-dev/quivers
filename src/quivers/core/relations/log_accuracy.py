@@ -45,6 +45,7 @@ type _Bounds = tuple[Decimal, Decimal]
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
 _ZERO_BOUNDS = (_ZERO, _ZERO)
+_LOG_ZERO = -float("inf")
 _RANGE_SIGNALS = (Clamped, Overflow, Subnormal, Underflow)
 _TRAPS = [*_RANGE_SIGNALS, DivisionByZero, FloatOperation, InvalidOperation]
 
@@ -141,6 +142,28 @@ class _DirectedDecimal:
             ),
         )
 
+    def from_rational(self, value: Fraction, *, lower: bool) -> Decimal:
+        if not value:
+            return _ZERO
+        try:
+            self._charge()
+            numerator = Decimal(value.numerator, context=self.nearest)
+            self._charge()
+            denominator = Decimal(value.denominator, context=self.nearest)
+        except DecimalException as error:
+            raise RelationLimitError(
+                "exact integer conversion exceeds the Decimal implementation range"
+            ) from error
+        context = self.down if lower else self.up
+        bound = self._run(
+            "rational endpoint", lambda: context.divide(numerator, denominator)
+        )
+        if bound.is_zero():
+            raise RelationLimitError(
+                "Decimal rational endpoint exceeds max_decimal_exponent"
+            )
+        return bound
+
     def ln(self, mass: Decimal, *, lower: bool) -> Decimal:
         if mass == _ONE:
             return _ZERO
@@ -148,38 +171,52 @@ class _DirectedDecimal:
         return self._neighbor(center, lower=lower, name="logarithm")
 
 
+def _mass_slots(
+    weights: list[float], decimal: _DirectedDecimal
+) -> Callable[[int], _Bounds]:
+    slots: dict[int, _Bounds] = {}
+
+    def mass(slot: int) -> _Bounds:
+        if slot not in slots:
+            log_weight = weights[slot]
+            slots[slot] = (
+                _ZERO_BOUNDS if log_weight == _LOG_ZERO else decimal.exp(log_weight)
+            )
+        return slots[slot]
+
+    return mass
+
+
 def _mass_bounds(
     graph: _ActiveObservation, weights: list[float], decimal: _DirectedDecimal
 ) -> _Bounds:
     # Discard paths that already contain a log-zero boundary or edge.
     # A finite weight on such a path needs no exponential enclosure.
-    absent = -float("inf")
-    reachable = {state for state, slot in graph.initial if weights[slot] != absent}
+    reachable = {state for state, slot in graph.initial if weights[slot] != _LOG_ZERO}
     for (state,) in graph.components:
         if state in reachable:
             reachable.update(
-                target for target, slot in graph.arcs[state] if weights[slot] != absent
+                target
+                for target, slot in graph.arcs[state]
+                if weights[slot] != _LOG_ZERO
             )
-    final = {state: slot for state, slot in graph.final if weights[slot] != absent}
-    slots: dict[int, _Bounds] = {}
-
-    def mass(slot: int) -> _Bounds:
-        if slot not in slots:
-            slots[slot] = decimal.exp(weights[slot])
-        return slots[slot]
-
+    final = {state: slot for state, slot in graph.final if weights[slot] != _LOG_ZERO}
+    mass = _mass_slots(weights, decimal)
     suffixes: dict[int, _Bounds] = {}
     for (state,) in reversed(graph.components):
         if state not in reachable:
             continue
         total = mass(final[state]) if state in final else _ZERO_BOUNDS
         for target, slot in graph.arcs[state]:
-            if weights[slot] != absent and (suffix := suffixes[target]) != _ZERO_BOUNDS:
+            if (
+                weights[slot] != _LOG_ZERO
+                and (suffix := suffixes[target]) != _ZERO_BOUNDS
+            ):
                 total = decimal.accumulate(total, mass(slot), suffix)
         suffixes[state] = total
     total = _ZERO_BOUNDS
     for state, slot in graph.initial:
-        if weights[slot] != absent and (suffix := suffixes[state]) != _ZERO_BOUNDS:
+        if weights[slot] != _LOG_ZERO and (suffix := suffixes[state]) != _ZERO_BOUNDS:
             total = decimal.accumulate(total, mass(slot), suffix)
     return total
 
@@ -193,6 +230,108 @@ def _rational(decimal: Decimal, budget: _RationalBudget) -> Fraction:
     # An integer with d decimal digits needs at most 4*d binary bits.
     budget._charge(4 * (len(digits) + max(0, exponent)), 1 + 4 * max(0, -exponent))
     return Fraction(*decimal.as_integer_ratio())
+
+
+def _eliminate_walks(
+    matrix: list[list[Fraction]],
+    suffix: list[Fraction],
+    budget: _RationalBudget,
+) -> list[Fraction]:
+    size = len(matrix)
+    for state, row in enumerate(matrix):
+        # The diagonal sums the nonempty return walks through previously
+        # eliminated states. Its star exists exactly below one.
+        pivot = budget.add(Fraction(1), row[state], subtract=True)
+        if pivot <= 0:
+            raise RelationAccuracyError(
+                "LogProb path certificate could not establish a finite upper star"
+            )
+        suffix[state] = budget.divide(suffix[state], pivot)
+        for target in range(state + 1, size):
+            if row[target]:
+                row[target] = budget.divide(row[target], pivot)
+        for source in range(state + 1, size):
+            incoming = matrix[source][state]
+            if not incoming:
+                continue
+            suffix[source] = budget.add(
+                suffix[source], budget.multiply(incoming, suffix[state])
+            )
+            for target in range(state + 1, size):
+                if row[target]:
+                    matrix[source][target] = budget.add(
+                        matrix[source][target], budget.multiply(incoming, row[target])
+                    )
+    for state in reversed(range(size)):
+        for target in range(state + 1, size):
+            weight = matrix[state][target]
+            if weight and suffix[target]:
+                suffix[state] = budget.add(
+                    suffix[state], budget.multiply(weight, suffix[target])
+                )
+    return suffix
+
+
+def _component_endpoint(
+    edges: list[tuple[int, int, int]],
+    rhs: list[_Bounds],
+    mass: Callable[[int], _Bounds],
+    decimal: _DirectedDecimal,
+    budget: _RationalBudget,
+    *,
+    lower: bool,
+) -> tuple[Decimal, ...]:
+    column = 0 if lower else 1
+    order = len(rhs)
+    zero = Fraction(0)
+    matrix = [[zero] * order for _ in rhs]
+    used: dict[int, Fraction] = {}
+    for source, target, slot in edges:
+        if slot not in used:
+            used[slot] = _rational(mass(slot)[column], budget)
+        if weight := used[slot]:
+            matrix[source][target] = budget.add(matrix[source][target], weight)
+    suffix = [_rational(bound[column], budget) for bound in rhs]
+    result = _eliminate_walks(matrix, suffix, budget)
+    return tuple(decimal.from_rational(value, lower=lower) for value in result)
+
+
+def _cyclic_mass_bounds(
+    graph: _ActiveObservation,
+    weights: list[float],
+    decimal: _DirectedDecimal,
+    budget: _RationalBudget,
+) -> _Bounds:
+    final = dict(graph.final)
+    suffixes: dict[int, _Bounds] = {}
+    mass = _mass_slots(weights, decimal)
+    for members in reversed(graph.components):
+        local = {state: index for index, state in enumerate(members)}
+        rhs = []
+        edges = []
+        for source, state in enumerate(members):
+            total = mass(final[state]) if state in final else _ZERO_BOUNDS
+            for target, slot in graph.arcs[state]:
+                if (index := local.get(target)) is not None:
+                    edges.append((source, index, slot))
+                elif (suffix := suffixes[target]) != _ZERO_BOUNDS:
+                    weight = mass(slot)
+                    if weight != _ZERO_BOUNDS:
+                        total = decimal.accumulate(total, weight, suffix)
+            rhs.append(total)
+        if edges:
+            # Certify finiteness before computing the lower endpoint.
+            high = _component_endpoint(edges, rhs, mass, decimal, budget, lower=False)
+            low = _component_endpoint(edges, rhs, mass, decimal, budget, lower=True)
+            rhs = list(zip(low, high, strict=True))
+        suffixes.update(zip(members, rhs, strict=True))
+    result = _ZERO_BOUNDS
+    for state, slot in graph.initial:
+        if (suffix := suffixes[state]) != _ZERO_BOUNDS:
+            weight = mass(slot)
+            if weight != _ZERO_BOUNDS:
+                result = decimal.accumulate(result, weight, suffix)
+    return result
 
 
 def certify_logprob_path_weight(
@@ -262,6 +401,87 @@ def certify_logprob_path_weight(
     )()
 
 
+def certify_cyclic_logprob_path_weight(
+    relation: RationalRelation,
+    words: Words,
+    *,
+    absolute_log_tolerance: Fraction | int,
+    max_states: int,
+    max_work: int,
+    max_closure_size: int,
+    max_closure_cells: int,
+    decimal_precision: int,
+    max_decimal_exponent: int,
+    max_decimal_work: int,
+    max_exact_bits: int,
+    max_exact_work: int,
+) -> LogPathWeightCertificate:
+    """Certify absolute log error with explicitly bounded productive epsilon stars.
+
+    Each structurally productive cyclic component must admit a finite
+    upper-enclosure star under exact rational elimination. The resulting
+    enclosure concerns the evaluated binary64 slots. The returned tensor
+    has the ordinary LogProb derivative. The certificate covers its value.
+
+    Parameters
+    ----------
+    relation : RationalRelation
+        A LogProb relation with float64 weights.
+    words : Words
+        One observed word per original tape.
+    absolute_log_tolerance : Fraction or int
+        The required nonnegative absolute error in log units.
+    max_states, max_work : int
+        Observation state and candidate arc limits.
+    max_closure_size, max_closure_cells : int
+        Local star order and aggregate cell limits, including auxiliaries.
+    decimal_precision, max_decimal_exponent, max_decimal_work : int
+        Decimal significant digits, symmetric adjusted exponent bound,
+        and maximum primitive calls and exact input conversions.
+    max_exact_bits, max_exact_work : int
+        Bit and operation limits for the exact cyclic solves and error test.
+
+    Returns
+    -------
+    LogPathWeightCertificate
+        The usual score and exact log endpoints or verified zero mass.
+
+    Raises
+    ------
+    TypeError
+        The algebra or evaluated dtype is outside the supported domain.
+    ValueError
+        The words, tolerance, or resource declaration is invalid.
+    RelationLimitError
+        A structural, range, work, or exact bit limit is exhausted.
+    RelationAccuracyError
+        The directed upper star cannot be proved finite or the score's
+        error cannot be certified at the requested tolerance.
+    UndecidedClosureError
+        The ordinary numerical LogProb evaluator cannot establish closure.
+    """
+    for name, limit in (
+        ("max_closure_size", max_closure_size),
+        ("max_closure_cells", max_closure_cells),
+    ):
+        if type(limit) is not int or limit < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+    return _logprob_accuracy_plan(
+        relation,
+        words,
+        absolute_log_tolerance=absolute_log_tolerance,
+        max_states=max_states,
+        max_work=max_work,
+        decimal_precision=decimal_precision,
+        max_decimal_exponent=max_decimal_exponent,
+        max_decimal_work=max_decimal_work,
+        max_exact_bits=max_exact_bits,
+        max_exact_work=max_exact_work,
+        max_closure_size=max_closure_size,
+        max_closure_cells=max_closure_cells,
+    )()
+
+
 def _validate_decimal_settings(precision: int, max_exponent: int) -> None:
     if type(precision) is not int or not 1 <= precision <= MAX_PREC:
         raise ValueError("decimal_precision is outside the Decimal context range")
@@ -283,6 +503,8 @@ def _logprob_accuracy_plan(
     max_decimal_work: int,
     max_exact_bits: int,
     max_exact_work: int,
+    max_closure_size: int | None = None,
+    max_closure_cells: int | None = None,
 ) -> Callable[[], LogPathWeightCertificate]:
     if relation.algebra is not LOG_PROB:
         raise TypeError("directed path accuracy requires LogProb weights")
@@ -308,6 +530,8 @@ def _logprob_accuracy_plan(
         words,
         max_states=max_states,
         max_work=max_work,
+        max_closure_size=max_closure_size,
+        max_closure_cells=max_closure_cells,
         retain_observation=True,
     )
     graph = plan.observation
@@ -325,11 +549,16 @@ def _logprob_accuracy_plan(
         decimal = _DirectedDecimal(
             decimal_precision, max_decimal_exponent, max_decimal_work
         )
-        low, high = _mass_bounds(graph, weights.detach().tolist(), decimal)
-        score = plan.packed.evaluate(weights, LOG_PROB)
+        slots = weights.detach().tolist()
+        low, high = (
+            _cyclic_mass_bounds(graph, slots, decimal, budget)
+            if plan.closures
+            else _mass_bounds(graph, slots, decimal)
+        )
+        score = plan.evaluate(weights, LOG_PROB)
         observed = score.item()
         if high.is_zero() and low.is_zero():
-            if observed != -float("inf"):
+            if observed != _LOG_ZERO:
                 raise RelationAccuracyError(
                     "packed LogProb score disagrees with exact zero mass"
                 )
@@ -358,4 +587,8 @@ def _logprob_accuracy_plan(
     return certify
 
 
-__all__ = ["LogPathWeightCertificate", "certify_logprob_path_weight"]
+__all__ = [
+    "LogPathWeightCertificate",
+    "certify_cyclic_logprob_path_weight",
+    "certify_logprob_path_weight",
+]
