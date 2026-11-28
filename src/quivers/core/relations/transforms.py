@@ -121,7 +121,21 @@ def condition(
     slice. At least one other tape must remain. The limits bound visits
     to state and position configurations and examinations of matching arcs.
     """
-    topology = relation.topology
+    conditioned = _condition_topology(
+        relation.topology, tape, word, max_states=max_states, max_work=max_work
+    )
+    return RationalRelation(conditioned, relation.module(), algebra=relation.algebra)
+
+
+def _condition_topology(
+    topology: RelationTopology,
+    tape: int,
+    word: tuple[int, ...],
+    *,
+    max_states: int,
+    max_work: int,
+    origins: list[int] | None = None,
+) -> RelationTopology:
     if type(tape) is not int or not 0 <= tape < len(topology.tapes):
         raise ValueError("conditioning requires a valid tape position")
     if len(topology.tapes) == 1:
@@ -135,9 +149,9 @@ def condition(
 
     if len(topology.initial) > max_states:
         raise RelationLimitError("conditioned relation exceeds max_states")
-    groups: dict[tuple[int, Label], list[Arc]] = defaultdict(list)
-    for arc in topology.arcs:
-        groups[arc.source, arc.labels[tape]].append(arc)
+    groups: dict[tuple[int, Label], list[int]] = defaultdict(list)
+    for index, arc in enumerate(topology.arcs):
+        groups[arc.source, arc.labels[tape]].append(index)
     configurations = [(mark.state, 0) for mark in topology.initial]
     state_ids = {config: index for index, config in enumerate(configurations)}
     initial = tuple(
@@ -154,7 +168,8 @@ def condition(
         labels = (EPSILON, word[position]) if position < len(word) else (EPSILON,)
         for label in labels:
             next_position = position + (label is not EPSILON)
-            for arc in groups.get((state, label), ()):
+            for index in groups.get((state, label), ()):
+                arc = topology.arcs[index]
                 if len(arcs) == max_work:
                     raise RelationLimitError("conditioned relation exceeds max_work")
                 config = arc.target, next_position
@@ -175,7 +190,9 @@ def condition(
                         arc.weight,
                     )
                 )
-    conditioned = RelationTopology(
+                if origins is not None:
+                    origins.append(index)
+    return RelationTopology(
         topology.tapes[:tape] + topology.tapes[tape + 1 :],
         topology.input_tapes - (tape < topology.input_tapes),
         len(configurations),
@@ -184,7 +201,6 @@ def condition(
         tuple(final),
         topology.weight_names,
     )
-    return RationalRelation(conditioned, relation.module(), algebra=relation.algebra)
 
 
 def intersect(

@@ -635,6 +635,37 @@ on coefficient bit lengths. Coefficients in the result must be exactly
 representable in the input floating-point dtype. Trainable weights
 are refused because changing them can change the equivalence classes.
 
+### Ranked constraints for a fixed input
+
+`ranked_output_candidates` restricts a candidate generator to one
+input word. Each original arc occurrence carries a vector of nonnegative
+integer violations. Each path sums its vectors and the highest-ranked
+coordinate on which two candidates differ determines their order.
+The returned acceptor keeps every globally optimal path and retains
+the original sources of its semiring weights. Ranking considers
+structural paths even when their current semiring weight is zero.
+
+For each state $q$ in the fixed-input graph, a reverse Dijkstra pass
+computes its least lexicographic suffix rank $d_q$. Lexicographic order
+is translation-invariant and every arc rank is nonnegative in that
+order. An arc $q \to t$ with rank $v$ belongs to an optimal suffix
+exactly when $d_q = v + d_t$. The construction keeps these tight arcs
+and the least-ranked initial marks, then trims inaccessible arcs.
+Summing the equality along any retained accepting path gives the
+global optimum. Conversely, a globally optimal path has no positive
+rank slack at any step. A retained cycle can contain only zero
+violation vectors. Finite-state weight queries use their ordinary
+closure contract if such a cycle emits no output.
+
+For $Q$ reached configurations, $E$ examined compatible transitions,
+and $r$ coordinates, the ranking pass takes $O(Q + E + (Q + E)r
+\log(Q + E + 1))$ operations counting each integer operation as one.
+Building the fixed-input graph obeys its explicit state and work
+budgets and also scans the original topology and rank table. The
+acceptor describes candidates for this input alone. Compiling one
+transducer for arbitrary ranked inputs requires additional
+regularity hypotheses.
+
 ::: quivers.core.relations
     options:
       members:
@@ -698,5 +729,6 @@ are refused because changing them can change the equivalence classes.
         - minimize_static_acceptor
         - project
         - regular_string_ep
+        - ranked_output_candidates
         - trim
         - union
