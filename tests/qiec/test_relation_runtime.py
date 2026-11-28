@@ -1,6 +1,8 @@
 """Checked fixed-word request and live provider tests."""
 
 from fractions import Fraction
+from hashlib import sha256
+from math import log
 from typing import cast
 
 import didactic.api as dx
@@ -16,6 +18,7 @@ from quivers.qiec import (
     REAL,
     CoreRuntimeProvider,
     ExecutionFailure,
+    FixedRelationCostRequest,
     FixedRelationRequest,
     FixedRelationRuntimeProvider,
     ParameterId,
@@ -169,3 +172,168 @@ def test_fixed_relation_request_checks_word_types_and_limits_before_binding():
     depleted = request.with_(max_states=0)
     with pytest.raises(ValueError, match="max_states"):
         FixedRelationRuntimeProvider(depleted, parameters, handler_name="channel")
+
+
+def _ambiguous_request(algebra):
+    request, parameters, ids = _request("pair_weight", algebra)
+    old = request.relation
+    relation = old.with_(arcs=(*old.arcs[:2], (0, 1, (0, 0), 2)))
+    return request.with_(relation=relation), parameters, ids
+
+
+@pytest.mark.parametrize(
+    "operation, algebra, original_sha",
+    (
+        (
+            "pair_weight",
+            MARKOV,
+            "f539f1d825bce9d348daad5d06ae30ad2699fffed41ae6d0fdca7972743e231f",
+        ),
+        (
+            "pair_weight",
+            LOG_PROB,
+            "58b4dff5098f8ed0650ea073953008d5be5b7b7b8bdf9939fd8f9be104f0968a",
+        ),
+        (
+            "conditional_log_prob",
+            MARKOV,
+            "1e185248bcc86239b5f15feb83cd479eac3934b70e3c1f48672da1621068c46c",
+        ),
+        (
+            "conditional_log_prob",
+            LOG_PROB,
+            "bc0a1302bd4fac3d9b71d639e8fad1204ce64e13f9e31cfbf80ed3906197dd46",
+        ),
+    ),
+)
+def test_pair_and_conditional_requests_keep_their_original_wire_bytes(
+    operation, algebra, original_sha
+):
+    request, _, _ = _request(operation, algebra)
+    text = dumps(request)
+    assert sha256(text.encode("utf-8")).hexdigest() == original_sha
+    assert loads(text) == request
+
+
+@pytest.mark.parametrize("algebra", [MARKOV, LOG_PROB])
+def test_checked_path_entropy_is_real_and_preserves_tied_gradients(algebra):
+    request, parameters, (a_id, b_id, _) = _ambiguous_request(algebra)
+    request = request.with_(operation="path_entropy")
+    decoded = loads(dumps(request))
+    assert isinstance(decoded, FixedRelationRequest) and decoded == request
+    assert decoded.result_type == REAL
+    runtime = RuntimeConfiguration(
+        selections=(),
+        providers=(
+            CoreRuntimeProvider(),
+            FixedRelationRuntimeProvider(decoded, parameters, handler_name="channel"),
+        ),
+    )
+    module = _module("Real")
+    outcome = run_named(module, "evaluate", (None,), runtime=runtime)
+    assert outcome.result_type == REAL
+    assert isinstance(outcome.value, torch.Tensor)
+    assert outcome.value.item() == pytest.approx(1.5 * log(2))
+    actual = torch.autograd.grad(outcome.value, (parameters[a_id], parameters[b_id]))
+    expected = (2 * log(2), -log(2)) if algebra is MARKOV else (log(2) / 4, -log(2) / 4)
+    assert tuple(derivative.item() for derivative in actual) == pytest.approx(expected)
+    with torch.no_grad():
+        parameters[b_id].copy_(parameters[a_id])
+    updated = run_named(module, "evaluate", (None,), runtime=runtime)
+    assert isinstance(updated.value, torch.Tensor)
+    assert updated.value.item() == pytest.approx(log(3))
+    with pytest.raises(ExecutionFailure, match="incompatible fixed relation handler"):
+        run_named(_module("LogWeight"), "evaluate", (None,), runtime=runtime)
+
+
+@pytest.mark.parametrize("algebra", [MARKOV, LOG_PROB])
+def test_signed_additive_path_cost_round_trip_and_original_gradients(algebra):
+    base, parameters, (a_id, b_id, _) = _ambiguous_request(algebra)
+    request = FixedRelationCostRequest(
+        relation=base.relation,
+        words=base.words,
+        max_states=base.max_states,
+        max_work=base.max_work,
+        initial_costs=(-1.0,),
+        arc_costs=(-7.0, 1.0, -2.0),
+        final_costs=(0.5,),
+    )
+    decoded = loads(dumps(request))
+    assert isinstance(decoded, FixedRelationCostRequest) and decoded == request
+    assert decoded.operation == "expected_path_cost"
+    assert decoded.result_type == REAL
+    runtime = RuntimeConfiguration(
+        selections=(),
+        providers=(
+            CoreRuntimeProvider(),
+            FixedRelationRuntimeProvider(decoded, parameters, handler_name="channel"),
+        ),
+    )
+    module = _module("Real")
+    result = run_named(module, "evaluate", (None,), runtime=runtime)
+    assert result.result_type == REAL
+    assert isinstance(result.value, torch.Tensor)
+    assert result.value.item() == pytest.approx(-3.0)
+    gradients = torch.autograd.grad(result.value, (parameters[a_id], parameters[b_id]))
+    expected = [-2.0, 1.0] if algebra is MARKOV else [-0.25, 0.25]
+    assert [grad.item() for grad in gradients] == pytest.approx(expected)
+    with torch.no_grad():
+        parameters[b_id].copy_(parameters[a_id])
+    updated = run_named(module, "evaluate", (None,), runtime=runtime)
+    assert isinstance(updated.value, torch.Tensor)
+    assert updated.value.item() == pytest.approx(-8 / 3 - 0.5)
+
+
+@pytest.mark.parametrize(
+    "arc_costs, final_costs, diagnostic",
+    (
+        (None, None, "at least one cost group"),
+        ((0.0, 1.0), None, "one finite value"),
+        (None, (float("inf"),), "one finite value"),
+    ),
+)
+def test_expected_cost_validates_each_original_occurrence_group(
+    arc_costs, final_costs, diagnostic
+):
+    base, _, _ = _request("pair_weight")
+    with pytest.raises(dx.ValidationError, match=diagnostic):
+        FixedRelationCostRequest(
+            relation=base.relation,
+            words=base.words,
+            max_states=base.max_states,
+            max_work=base.max_work,
+            arc_costs=arc_costs,
+            final_costs=final_costs,
+        )
+
+
+def test_serialized_shared_cyclic_cost_reuses_checked_closure():
+    base, parameters, (loop_id, _, _) = _request("pair_weight")
+    relation = base.relation.with_(
+        n_states=1,
+        arcs=((0, 0, (None, None), 0), (0, 0, (None, None), 1)),
+        final=((0, 3),),
+    )
+    request = FixedRelationCostRequest(
+        relation=relation,
+        words=((), ()),
+        max_states=16,
+        max_work=16,
+        max_closure_size=2,
+        arc_costs=(-2.0, -4.0),
+    )
+    decoded = loads(dumps(request))
+    assert isinstance(decoded, FixedRelationCostRequest)
+    provider = FixedRelationRuntimeProvider(decoded, parameters, handler_name="channel")
+    runtime = RuntimeConfiguration(
+        selections=(), providers=(CoreRuntimeProvider(), provider)
+    )
+    result = run_named(_module("Real"), "evaluate", (None,), runtime=runtime)
+    assert isinstance(result.value, torch.Tensor)
+    assert result.value.item() == pytest.approx(-1.0)
+    (gradient,) = torch.autograd.grad(result.value, parameters[loop_id])
+    assert gradient.item() == pytest.approx(-32 / 3)
+    with pytest.raises(ValueError, match="max_closure_size"):
+        FixedRelationRuntimeProvider(
+            decoded.with_(max_closure_size=1), parameters, handler_name="channel"
+        )

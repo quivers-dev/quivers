@@ -379,7 +379,11 @@ from quivers.qiec.reference_support import (
     DistributionError,
 )
 from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
-from quivers.qiec.relations import FixedRelationRequest, RationalRelationSpec
+from quivers.qiec.relations import (
+    FixedRelationCostRequest,
+    FixedRelationRequest,
+    RationalRelationSpec,
+)
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
 from quivers.qiec.string_graph_runtime import (
     TreeStringGraphRuntimeProvider,
@@ -687,6 +691,7 @@ __all__ = [
     "RANDOM_SAMPLE",
     "REAL",
     "ROW",
+    "FixedRelationCostRequest",
     "FixedRelationRequest",
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
