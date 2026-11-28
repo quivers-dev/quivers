@@ -762,6 +762,25 @@ outside its construction counters. When trace recording and the observer
 are both disabled, the runtime skips constructing the event and counting
 the forest records for it.
 
+An unguarded raw `parse_outcomes(D, sentence, "item")` query also emits
+`deduction.outcomes.plan`. Decode the `plan` field with
+`quivers.qiec.loads(event.detail["plan"])` to read its `PlanRecord`. The
+record identifies the checked presentation, the log weight algebra, the
+acyclic schedule, the selected rule joins, and the assumptions and cost
+bounds of the fold. The exactness claim concerns which finite proof sum
+the fold computes. Arithmetic uses the reported number type, with no
+certified rounding error bound or host compute or memory budget.
+
+The plan's `NoRetention` policy applies to returned proof provenance.
+The query still builds a temporary packed forest, and the returned
+weights can keep an autograd tape over finite log weights at fixed
+support. The reverse bound includes dense adjoints for indexed reads
+from the weight tensor. The ordinary `deduction.outcomes` event continues
+to report its measured construction counters. The plan covers the raw
+item fold only. When a custom key consumes those rows, its grouping is a
+separate operation. Guarded, normalized, and built-in projection folds
+continue to emit their ordinary event.
+
 #### Ground rules and empty spans
 
 This deduction supplies one empty left boundary and uses it to complete

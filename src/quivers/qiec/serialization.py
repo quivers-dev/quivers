@@ -339,6 +339,13 @@ from quivers.qiec.types import (
     TypeConstructorRef,
     TypeVariable,
 )
+from quivers.stochastic.planning import (
+    Alternative,
+    MeasureCertificate,
+    MeasureComponent,
+    PlanRecord,
+    RuleJoin,
+)
 
 
 QIEC_WIRE_FORMAT = "qiec-json/v2"
@@ -676,6 +683,11 @@ _NODE_CLASSES = (
     ScopedInterpretationBinding,
     ClosedInterpretationBinding,
     PackedBooleanInterpretationBinding,
+    Alternative,
+    MeasureCertificate,
+    MeasureComponent,
+    PlanRecord,
+    RuleJoin,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}

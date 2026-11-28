@@ -10,6 +10,7 @@ import torch
 from quivers._positions import demand
 from quivers._values import HeldValue
 from quivers.core.algebras import LOG_PROB
+from quivers.qiec._lexical_outcome_plan import OUTCOME_ALGORITHM, raw_item_plan_trace
 from quivers.qiec.canonical import sampleable_type, tensor_type
 from quivers.qiec.checking import KernelError, KernelRegistry
 from quivers.qiec.contracts import OccurrenceId, ParameterId
@@ -694,7 +695,7 @@ def _outcome_trace(
         **_packed_trace(forest, normalized, goals, rows),
         "observer": "weighted-outcome-rows",
         "key": key,
-        "algorithm": "indexed-packed-forest-topological-fold",
+        "algorithm": OUTCOME_ALGORITHM,
         "unmeasured": (
             "fold_arithmetic",
             "backward_arithmetic",
@@ -1155,28 +1156,37 @@ def deduction_outcomes_handler(
             and isinstance(key, str)
         ):
             raise InvalidHandlerError("malformed deduction outcome query")
+        normalized = decide(normalize, "outcome normalization")
         rows = _chart_outcomes(
             semantics,
             tokens,
             terms,
             weights,
             key,
-            decide(normalize, "outcome normalization"),
+            normalized,
             context=context,
         )
         numbers = context.attachments.numbers
         constructors = dict(semantics.item_constructors)
-        return TailResume(
-            value=_materialize_rows(
-                definition.output_type,
-                semantics.empty,
-                semantics.entry,
-                (
-                    (_item(outcome, constructors, semantics, numbers), weight)
-                    for outcome, weight in rows.items()
+        result = _materialize_rows(
+            definition.output_type,
+            semantics.empty,
+            semantics.entry,
+            (
+                (_item(outcome, constructors, semantics, numbers), weight)
+                for outcome, weight in rows.items()
+            ),
+        )
+        presentation = semantics.presentation
+        assert isinstance(presentation, RulePresentation)
+        if key == "item" and not normalized and not presentation.conditions:
+            context.emit_trace(
+                "deduction.outcomes.plan",
+                lambda: raw_item_plan_trace(
+                    semantics, definition, operation, len(tokens), len(terms), weights
                 ),
             )
-        )
+        return TailResume(value=result)
 
     return RuntimeHandler(
         definition=definition,
