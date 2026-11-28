@@ -232,22 +232,18 @@ def _rational(decimal: Decimal, budget: _RationalBudget) -> Fraction:
     return Fraction(*decimal.as_integer_ratio())
 
 
-class _NonpositivePivot(ArithmeticError):
-    """A return mass in an exact endpoint system reaches or exceeds one."""
-
-
 def _eliminate_walks(
     matrix: list[list[Fraction]],
     suffix: list[Fraction],
     budget: _RationalBudget,
-) -> list[Fraction]:
+) -> list[Fraction] | None:
     size = len(matrix)
     for state, row in enumerate(matrix):
         # The diagonal sums the nonempty return walks through previously
         # eliminated states. Its star exists exactly below one.
         pivot = budget.add(Fraction(1), row[state], subtract=True)
         if pivot <= 0:
-            raise _NonpositivePivot
+            return None
         suffix[state] = budget.divide(suffix[state], pivot)
         for target in range(state + 1, size):
             if row[target]:
@@ -282,7 +278,7 @@ def _component_endpoint(
     budget: _RationalBudget,
     *,
     lower: bool,
-) -> tuple[Decimal, ...]:
+) -> tuple[Decimal, ...] | None:
     column = 0 if lower else 1
     order = len(rhs)
     zero = Fraction(0)
@@ -295,6 +291,8 @@ def _component_endpoint(
             matrix[source][target] = budget.add(matrix[source][target], weight)
     suffix = [_rational(bound[column], budget) for bound in rhs]
     result = _eliminate_walks(matrix, suffix, budget)
+    if result is None:
+        return None
     return tuple(decimal.from_rational(value, lower=lower) for value in result)
 
 
@@ -305,23 +303,22 @@ def _component_bounds(
     decimal: _DirectedDecimal,
     budget: _RationalBudget,
 ) -> list[_Bounds]:
-    try:
-        high = _component_endpoint(edges, rhs, mass, decimal, budget, lower=False)
-    except _NonpositivePivot as upper:
+    high = _component_endpoint(edges, rhs, mass, decimal, budget, lower=False)
+    if high is None:
         # Star finiteness is independent of exits. Test lower pivots with
         # a zero right side, which needs no rational-to-Decimal transfer.
-        try:
-            _component_endpoint(
-                edges, [_ZERO_BOUNDS] * len(rhs), mass, decimal, budget, lower=True
-            )
-        except _NonpositivePivot as lower:
+        low = _component_endpoint(
+            edges, [_ZERO_BOUNDS] * len(rhs), mass, decimal, budget, lower=True
+        )
+        if low is None:
             raise DivergentClosureError(
                 "a lower return mass is at least one in a productive epsilon component"
-            ) from lower
+            )
         raise RelationAccuracyError(
             "LogProb path certificate could not establish a finite upper star"
-        ) from upper
+        )
     low = _component_endpoint(edges, rhs, mass, decimal, budget, lower=True)
+    assert low is not None  # A certified upper star bounds the lower star.
     return list(zip(low, high, strict=True))
 
 
