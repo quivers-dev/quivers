@@ -1146,6 +1146,53 @@ assert len(plan.sample(seed=13).positions) == 2
 
 ::: quivers.qiec.finite_resampling
 
+## Finite unit subsampling
+
+`plan_unit_subsampling` checks a fixed design for an additive
+finite population total. The design lists complete subsets of
+whole unit positions and their exact probabilities. Every unit
+needs positive inclusion probability. The estimator divides
+each selected unit's value and directional derivative by that
+unit's inclusion probability, then sums the selected contributions.
+Its expectation gives the full total and its derivative.
+
+Use `UnitSubset.from_plate_rows` for the existing plate index format
+when each row is a whole unit. Uniform samples of a fixed size
+recover the existing size-over-sample-size coefficient. A design
+with unequal inclusion probabilities uses a separate coefficient
+for each unit.
+
+The log likelihood of positive observation factors $L_i$ has an
+additive directional score $\sum_i L_i' / L_i$. Applying the
+inclusion weights to those scores estimates that separate sum.
+The log of a sampled raw total instead depends on the distribution
+of that whole estimate.
+
+```python
+from fractions import Fraction
+import torch
+from quivers.dsl import Compiler, parse
+from quivers.qiec import UnitSubset, exact_jvp, plan_unit_subsampling
+
+source = """
+define unit(x : Real, theta : Real) : Real !{} =
+    return x * theta
+"""
+module = Compiler(parse(source), module_name="unit-subsampling").qiec_module
+assert module is not None
+units = tuple(exact_jvp(module, "unit", (x, 2), (0, 1)) for x in (1, 3))
+design = tuple(
+    UnitSubset.from_plate_rows("Units", torch.tensor([i]), Fraction(1, 2))
+    for i in range(2)
+)
+plan = plan_unit_subsampling(units, design)
+assert plan.inclusion_probabilities == (Fraction(1, 2), Fraction(1, 2))
+assert (plan.exact.value, plan.exact.tangent) == (8, 4)
+assert [action.estimate.value for action in plan.outcomes] == [4, 12]
+```
+
+::: quivers.qiec.finite_subsampling
+
 ## Finite-step Metropolis derivatives
 
 `finite_metropolis_jvp` takes an initial law, positive target weights,

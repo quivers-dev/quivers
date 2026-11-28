@@ -7,6 +7,7 @@ from fractions import Fraction
 from itertools import product
 from random import Random
 
+from quivers.qiec._finite_choices import _choose_position, _selector_probabilities
 from quivers.qiec.differentiation import (
     ExactJvp,
     JvpLimit,
@@ -140,11 +141,7 @@ class MultinomialResamplingPlan:
         count = len(self.ancestors)
         index = 0
         for _ in range(self.draws):
-            for position, p in enumerate(self.selector_probabilities):
-                if random.randrange(p.denominator) < p.numerator:
-                    break
-            else:
-                position = count - 1
+            position = _choose_position(self.selector_probabilities, random)
             index = index * count + position
         return self.outcomes[index]
 
@@ -191,8 +188,6 @@ def _ancestor_table(
         _bound(value, tangent)
     total = ExactJvp(value, tangent)
     ancestors: list[ResamplingAncestor] = []
-    selectors: list[Fraction] = []
-    remaining = Fraction(1)
     for index, entry in enumerate(entries):
         weight = entry.weight
         p = weight.value / value
@@ -201,13 +196,10 @@ def _ancestor_table(
         _bound(p, dp, score)
         assert p * score == dp
         ancestors.append(ResamplingAncestor(index, entry.value, ExactJvp(p, dp), score))
-        if index < len(entries) - 1:
-            selector = p / remaining
-            _bound(selector)
-            selectors.append(selector)
-            remaining -= p
-    assert remaining == ancestors[-1].probability.value
-    return tuple(ancestors), total, tuple(selectors)
+    selectors = _selector_probabilities(
+        tuple(ancestor.probability.value for ancestor in ancestors)
+    )
+    return tuple(ancestors), total, selectors
 
 
 def plan_multinomial_resampling(

@@ -244,6 +244,12 @@ from quivers.qiec.finite_resampling import (
     ResamplingParticle,
     plan_multinomial_resampling,
 )
+from quivers.qiec.finite_subsampling import (
+    FiniteUnitSubsamplingPlan,
+    UnitSubsampleEstimate,
+    UnitSubset,
+    plan_unit_subsampling,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1221,6 +1227,12 @@ __all__ += [
     "ResamplingOutcome",
     "ResamplingParticle",
     "plan_multinomial_resampling",
+]
+__all__ += [
+    "FiniteUnitSubsamplingPlan",
+    "UnitSubsampleEstimate",
+    "UnitSubset",
+    "plan_unit_subsampling",
 ]
 __all__ += [
     "FiniteAlgebra",
