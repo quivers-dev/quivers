@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Finite n-gram EP near convergence.** Newton backtracking compares the centered objective change, preserving improvements smaller than one ulp of the absolute objective.
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.
 - **Checked handler trace scopes.** Discharge preserves call, local instance, and return activations and the order of shot paths in the supported fragment. Raw dynamic keys can change where earlier executions merged activations.
 

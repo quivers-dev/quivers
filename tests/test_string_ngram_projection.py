@@ -83,3 +83,28 @@ def test_iteration_limit_and_unsupported_boundary_are_visible():
         family.project(source)
     with pytest.raises(TypeError, match="float64"):
         family.project(torch.zeros(4))
+
+
+def test_newton_keeps_a_resolvable_step_below_one_absolute_objective_ulp():
+    family = NgramFamily(_SUPPORT, order=1)
+    cavity = torch.tensor([1.2, -0.3, 0.9, 1.3], dtype=torch.float64)
+    logits = torch.tensor([2e-9, -3e-9], dtype=torch.float64, requires_grad=True)
+    left, right = logits.unbind()
+    tilt = cavity + torch.stack((left * 0, left, right, left + right))
+    projected = family.project(
+        tilt,
+        base_log_weights=cavity,
+        tolerance=5e-14,
+        max_iterations=1,
+        max_backtracks=0,
+    )
+    assert projected.status == "converged" and projected.iterations == 1
+    assert projected.moment_residual <= 5e-14
+    actual = projected.log_probabilities.exp()
+    expected = tilt.softmax(dim=0)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=5e-14)
+    (projected_gradient,) = torch.autograd.grad(actual[-1], logits, retain_graph=True)
+    (reference_gradient,) = torch.autograd.grad(expected[-1], logits)
+    torch.testing.assert_close(
+        projected_gradient, reference_gradient, rtol=0, atol=2e-8
+    )

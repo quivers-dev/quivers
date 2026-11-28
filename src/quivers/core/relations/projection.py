@@ -73,6 +73,31 @@ def _projection_inputs(
     return base, target_log_prob, target
 
 
+def _centered_log_moment(
+    log_probabilities: torch.Tensor, shifts: torch.Tensor
+) -> torch.Tensor:
+    # E[shifts] = 0, so log E[exp(shifts)] = log(1 + E[exp(shifts) - 1 - shifts]).
+    # Compute the nonnegative remainder in log space to retain small
+    # improvements and avoid overflow when a rare word has a large shift.
+    large = shifts >= 1
+    ordinary = torch.where(large, 0, shifts)
+    small = ordinary.abs() < 1e-3
+    near_zero = torch.where(small, ordinary, 0)
+    # The relative truncation error through degree six is below 4.1e-19 here.
+    polynomial = 0.5 + near_zero * (
+        1 / 6 + near_zero * (1 / 24 + near_zero * (1 / 120 + near_zero / 720))
+    )
+    log_small = 2 * near_zero.abs().log() + polynomial.log()
+    log_ordinary = (ordinary.expm1() - ordinary).log()
+    upper = torch.where(large, shifts, 1)
+    log_large = upper + torch.log1p(-(1 + upper) * (-upper).exp())
+    log_remainder = torch.where(
+        large, log_large, torch.where(small, log_small, log_ordinary)
+    )
+    log_mean = (log_probabilities + log_remainder).logsumexp(dim=0)
+    return torch.logaddexp(log_mean.new_zeros(()), log_mean)
+
+
 @dataclass(frozen=True, slots=True)
 class NgramProjection:
     """An inclusive KL projection and its local optimizer diagnostics."""
@@ -219,16 +244,20 @@ class NgramFamily:
             if info.item() != 0 or not 0 < decrement < float("inf"):
                 status = "stalled"
                 break
-            objective = logits.logsumexp(dim=0) - coefficients @ mean
             for backtrack in range(max_backtracks + 1):
                 step = 2.0**-backtrack
                 proposed = coefficients - step * direction
                 update = base + features @ proposed
-                new_objective = update.logsumexp(dim=0) - proposed @ mean
-                if bool(
-                    torch.isfinite(new_objective)
-                    & (new_objective <= objective - 1e-4 * step * decrement)
-                ):
+                with torch.no_grad():
+                    offset = proposed - coefficients
+                    descent = -(difference @ offset).item()
+                    curvature = _centered_log_moment(log_prob, centered @ offset)
+                    accepted = (
+                        0 < descent < float("inf")
+                        and bool(torch.isfinite(update).all())
+                        and curvature.item() <= (1 - 1e-4) * descent
+                    )
+                if accepted:
                     coefficients, logits = proposed, update
                     break
             else:

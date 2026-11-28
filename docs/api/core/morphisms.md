@@ -304,7 +304,19 @@ infinity norm of the feature residual at convergence. It does not
 bound a graph posterior error. For a support of size $m$ and basis
 of size $r$, each Newton direction takes $O(mr^2+r^3)$ arithmetic
 work. Each line-search trial takes $O(mr)$. Gradients follow the
-accepted sequence of operations.
+accepted sequence of operations. The line search evaluates the change in the objective
+from the current probabilities. For a coefficient displacement $d$ and
+current mean $\hat{\mu}$, that change is
+
+$$
+(\hat{\mu}-\mu)^\mathsf{T}d
++\log\!\left(1+\mathbb{E}\left[e^U-1-U\right]\right),
+\qquad U=(\phi(w)-\hat{\mu})^\mathsf{T}d.
+$$
+
+The centered change has zero expectation under the current probabilities.
+Evaluating the nonnegative exponential remainder preserves small changes
+near the optimum. Convergence still uses the requested moment tolerance.
 
 
 ## Finite string belief propagation
