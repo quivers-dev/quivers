@@ -33,6 +33,7 @@ from quivers.qiec.terms import (
     ConstructorValue,
     Handle,
     If,
+    LetBinding,
     LiteralValue,
     Local,
     Perform,
@@ -155,6 +156,8 @@ def _scope(
     }
     if "less" in operations:
         expected["less"] = ((number, number), BOOL)
+    if "div" in operations:
+        expected["div"] = ((number, number), number)
     actual = {
         op.name: (tuple(arg.type for arg in op.arguments), op.result_type)
         for op in interface.operations
@@ -566,6 +569,41 @@ class _ForwardOperation:
         right = self.multiply(x[:half], y[half:])
         return (*primal, *self.add(left, right))
 
+    def divide(
+        self, x: tuple[Value, ...], y: tuple[Value, ...], bindings: list[LetBinding]
+    ) -> tuple[Value, ...]:
+        """Solve the quotient equation one coefficient algebra at a time.
+
+        Parameters
+        ----------
+        x, y : tuple[Value, ...]
+            Numerator and divisor in the same flattened carrier order.
+        bindings : list[LetBinding]
+            The ground quotients in dependency order, initially empty.
+            The first quotient checks the common ground divisor's domain.
+
+        Returns
+        -------
+        tuple[Value, ...]
+            The references to the quotient's shared coefficients.
+        """
+        if len(x) == 1:
+            name = "strict_div" if not bindings else "div"
+            binder = Local(name=f"quotient_{len(bindings)}", type=REAL)
+            bindings.append(
+                LetBinding(binder=binder, value=self.primitive(name, x[0], y[0]))
+            )
+            return (Var(local=binder),)
+        half = len(x) // 2
+        divisor = y[:half]
+        primal = self.divide(x[:half], divisor, bindings)
+        correction = self.multiply(primal, y[half:])
+        numerator = tuple(
+            self.primitive("sub", coefficient, product)
+            for coefficient, product in zip(x[half:], correction, strict=True)
+        )
+        return (*primal, *self.divide(numerator, divisor, bindings))
+
     def clause(self) -> HandlerClauseDef:
         """Generate the pure prefix and single tail resumption of a clause.
 
@@ -580,6 +618,7 @@ class _ForwardOperation:
             for i, arg in enumerate(self.operation.arguments)
         )
         operands = tuple(Var(local=parameter) for parameter in parameters)
+        quotients: list[LetBinding] = []
         if name == "seed":
             x, dx = operands
             result = self.pair(self.scope, x, dx)
@@ -595,13 +634,18 @@ class _ForwardOperation:
         else:
             x_values = self.coefficients(operands[0], self.scope)
             y_values = self.coefficients(operands[1], self.scope)
-            values = (
-                self.add(x_values, y_values)
-                if name == "add"
-                else self.multiply(x_values, y_values)
-            )
+            if name == "div":
+                values = self.divide(x_values, y_values, quotients)
+            elif name == "add":
+                values = self.add(x_values, y_values)
+            else:
+                values = self.multiply(x_values, y_values)
             result = self.pack(values, self.scope)
         body: Computation = Resume(value=result, origin=self.origin("resume"))
+        for binding in reversed(quotients):
+            body = Bind(
+                binder=binding.binder, first=Return(value=binding.value), then=body
+            )
         for index, (source, scope, fields) in reversed(tuple(enumerate(self.matches))):
             body = Case(
                 scrutinee=source,
@@ -641,6 +685,9 @@ def elaborate_forward_diff(
     total. An optional named `less` compares only the two ground primals
     and immediately guards a lazy branch. Equality and nonfinite primals
     refuse the comparison at runtime.
+    An optional `div` solves the quotient in the parent coefficient
+    algebra. Its first ground quotient checks for a finite nonzero
+    divisor, and the remaining coefficients use that same divisor.
     The two explicit stop operations project the primal or tangent into
     the coefficient algebra, retaining the parent perturbation when
     nested. Those original requests remain visible in ordinary traces.

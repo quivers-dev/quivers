@@ -887,6 +887,28 @@ assert run_named(lowered, "positive_square", (3.0, 5.0)).value == 30.0
 assert run_named(lowered, "positive_square", (-3.0, 5.0)).value == 0.0
 ```
 
+An instance can declare `div : Number * Number -> Number` and
+`div resumes 1`. The generated clause solves the quotient in the
+parent coefficient algebra. It checks the divisor's ground primal
+once, then uses that same divisor for the remaining ground quotients.
+A reached zero or nonfinite divisor raises `qiec-forward-division-domain`,
+including when the program discards the quotient. Pyro implements the
+same check. The other targets report `strict-scalar-division` for this
+extension. Each quotient uses the current numeric representation.
+
+With that operation in the example declaration, this computation
+returns the directional derivative of $x/y$. At $(x,y)=(2,4)$ in
+direction $(3,2)$, it returns $3/4 - 2\cdot2/4^2=1/2$.
+
+```qvr
+define ratio(x : Real, y : Real, dx : Real, dy : Real) : Real !{} =
+    handle d with forward in
+        let numerator <- perform d.seed(x, dx)
+        let divisor <- perform d.seed(y, dy)
+        let quotient <- perform d.div(numerator, divisor)
+        perform d.stop_tangent(quotient)
+```
+
 ::: quivers.qiec.forward_diff
 
 ## Nominal reverse differentiation

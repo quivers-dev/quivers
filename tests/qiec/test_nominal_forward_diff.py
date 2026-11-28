@@ -775,3 +775,210 @@ def test_branch_budget_and_precise_unavailable_target_capability():
         with pytest.raises(UnsupportedConstruct) as missing:
             _emitted_forward(lowered, target, backend)
         assert "qiec:capability:strict-scalar-comparison:mixed" in missing.value.kinds
+
+
+def _with_division(declarations):
+    for scope in ("Outer", "Inner"):
+        arithmetic = f"    mul : {scope}Real * {scope}Real -> {scope}Real"
+        declarations = declarations.replace(
+            arithmetic,
+            arithmetic + f"\n    div : {scope}Real * {scope}Real -> {scope}Real",
+        )
+    return declarations.replace(
+        "    mul resumes 1", "    mul resumes 1\n    div resumes 1"
+    )
+
+
+_DIVISION_DECLARATIONS = _with_division(_DECLARATIONS)
+_DIVISION = (
+    _MIXED.replace("u : Real, v : Real", "u : Real, v : Real, s : Real, t : Real")
+    .replace("outer.seed(b, 0.0)", "outer.seed(b, s)")
+    .replace("outer.seed(v, 0.0)", "outer.seed(v, t)")
+    .replace("inner.mul(ax, by)", "inner.div(ax, by)")
+)
+_DIVISION_DOMAIN = "qiec-forward-division-domain"
+
+
+def _nilpotent_product(left, right):
+    # Index bits denote the two different infinitesimals. A repeated bit
+    # annihilates the term, including the square of a mixed coefficient.
+    result = [Fraction(0) for _ in range(4)]
+    for i, j in product(range(4), repeat=2):
+        if not i & j:
+            result[i | j] += left[i] * right[j]
+    return tuple(result)
+
+
+def _rational_quotient(a, b, u, v, s, t):
+    # The denominator is b + n where n^3=0. The finite geometric series
+    # is independent of the implemented recursive coefficient equations.
+    numerator = (a, u, Fraction(0), Fraction(0))
+    nilpotent = (Fraction(0), s, v, t)
+    n_squared = _nilpotent_product(nilpotent, nilpotent)
+    inverse = (1 / b, *(n_squared[i] / b**3 - nilpotent[i] / b**2 for i in range(1, 4)))
+    quotient = _nilpotent_product(numerator, inverse)
+    assert _nilpotent_product((b, s, v, t), quotient) == numerator
+    return quotient
+
+
+@pytest.mark.parametrize(
+    "outer_tangent,inner_tangent", product((False, True), repeat=2)
+)
+def test_nested_division_matches_all_exact_rational_projections(
+    outer_tangent, inner_tangent
+):
+    body = _DIVISION
+    if not outer_tangent:
+        body = body.replace("outer.stop_tangent", "outer.stop_primal")
+    if not inner_tangent:
+        body = body.replace("inner.stop_tangent", "inner.stop_primal")
+    source = _module(body, _DIVISION_DECLARATIONS)
+    native, discharged, exported = _comparison_forms(source)
+    position = int(outer_tangent) + 2 * int(inner_tangent)
+    records = tuple(_request_sites(source.computations[0].body))
+    points = product(
+        (Fraction(-3, 2), Fraction(0), Fraction(5, 2)),
+        (Fraction(-2), Fraction(1, 2), Fraction(4)),
+        (Fraction(-3), Fraction(2)),
+        (Fraction(-2), Fraction(1)),
+        (Fraction(-1, 2), Fraction(3, 2)),
+        (Fraction(-1), Fraction(2)),
+    )
+    for point in points:
+        expected = _rational_quotient(*point)[position]
+        machine_point = tuple(map(float, point))
+        raw = run_named(native, "mixed", machine_point)
+        assert (
+            host_value(raw.value)
+            == _value(discharged, machine_point)
+            == exported(*machine_point)
+            == expected
+        )
+        assert tuple(
+            (event.detail["operation"], event.detail["address"])
+            for event in raw.trace
+            if event.event == "operation.requested"
+        ) == tuple(
+            (str(request.operation), request.origin.dynamic_key())
+            for request in records
+        )
+
+
+def test_division_dominates_its_three_tangents_with_the_ground_primal_check():
+    source = _module(_DIVISION, _DIVISION_DECLARATIONS)
+    lowered = elaborate_forward_diff(source, _scopes(source))
+    operation = next(
+        op.id
+        for effect in lowered.effects
+        if effect.ref.name == "InnerDiff"
+        for op in effect.operations
+        if op.name == "div"
+    )
+    handler = next(item for item in lowered.handlers if item.name == "forward_inner")
+    clause = next(item for item in handler.clauses if item.operation == operation)
+    body = clause.body
+    fields = []
+    while isinstance(body, Case):
+        (part,) = body.branches
+        fields.append(part.fields)
+        body = part.body
+    assert len(fields) == 6
+    ground = Var(local=fields[4][0])
+    for expected in ("strict_div_real", "div_real", "div_real", "div_real"):
+        assert isinstance(body, Bind) and isinstance(body.first, Return)
+        value = body.first.value
+        assert isinstance(value, PrimitiveApplication)
+        assert value.name == expected and value.arguments[1] == ground
+        body = body.then
+    assert isinstance(body, Resume)
+    assert not PRIMITIVES["strict_div_real"].total
+
+
+@pytest.mark.parametrize("divisor", [0.0, -0.0, float("inf"), float("nan")])
+def test_divisor_ground_domain_ignores_nonzero_tangents(divisor):
+    source = _module(_DIVISION, _DIVISION_DECLARATIONS)
+    native, discharged, exported = _comparison_forms(source)
+    point = (2.0, divisor, 5.0, 7.0, 2.0, 3.0)
+    for module in (native, discharged):
+        with pytest.raises(ExecutionFailure, match=_DIVISION_DOMAIN):
+            _value(module, point)
+    with pytest.raises(ValueError, match=_DIVISION_DOMAIN):
+        exported(*point)
+
+
+def test_unused_division_retains_the_domain_check_in_discharge():
+    body = _SINGLE.replace("outer.mul(x, y)", "outer.div(x, y)").replace(
+        "perform outer.stop_tangent(xy)", "return a"
+    )
+    source = _module(body, _DIVISION_DECLARATIONS)
+    native, discharged, exported = _comparison_forms(source, ("outer",))
+    assert _value(native) == _value(discharged) == exported(*_POINT) == 2.0
+    zero = (2.0, 0.0, 5.0, 7.0)
+    for module in (native, discharged):
+        with pytest.raises(ExecutionFailure, match=_DIVISION_DOMAIN):
+            _value(module, zero)
+    with pytest.raises(ValueError, match=_DIVISION_DOMAIN):
+        exported(*zero)
+
+
+def test_untaken_zero_divisor_remains_lazy_under_strict_comparison():
+    body = """
+define mixed(a : Real, b : Real, u : Real, v : Real) : Real !{} =
+    handle outer with forward_outer in
+        let x <- perform outer.seed(a, u)
+        let y <- perform outer.seed(b, v)
+        let zero <- perform outer.seed(0.0, 1.0)
+        let first <- perform outer.less(x, y)
+        if first then
+            let quotient <- perform outer.div(x, y)
+            perform outer.stop_tangent(quotient)
+        else
+            let quotient <- perform outer.div(x, zero)
+            perform outer.stop_tangent(quotient)
+"""
+    source = _module(body, _with_division(_COMPARISON_DECLARATIONS))
+    native, discharged, exported = _comparison_forms(source, ("outer",))
+    valid, refused = (2.0, 4.0, 3.0, 2.0), (4.0, 2.0, 3.0, 2.0)
+    assert _value(native, valid) == _value(discharged, valid) == exported(*valid) == 0.5
+    for module in (native, discharged):
+        with pytest.raises(ExecutionFailure, match=_DIVISION_DOMAIN):
+            _value(module, refused)
+    with pytest.raises(ValueError, match=_DIVISION_DOMAIN):
+        exported(*refused)
+
+
+def test_direct_division_stays_defined_when_reciprocal_would_overflow():
+    tiny = 2.0**-1070
+    body = _SINGLE.replace("outer.mul(x, y)", "outer.div(x, y)").replace(
+        "perform outer.stop_tangent(xy)", "perform outer.stop_primal(xy)"
+    )
+    source = _module(body, _DIVISION_DECLARATIONS)
+    native, discharged, exported = _comparison_forms(source, ("outer",))
+    point = (tiny, tiny, 0.0, 0.0)
+    assert _value(native, point) == _value(discharged, point) == exported(*point) == 1.0
+    as_tensors = tuple(torch.tensor(arg, dtype=torch.float64) for arg in point)
+    assert host_value(exported(*as_tensors)) == 1.0
+
+
+def test_nested_division_works_at_the_public_source_budget_and_names_other_targets():
+    marker = "    handle outer with forward_outer in"
+    padding = tuple(
+        f"        let pad_{i} <- perform outer.seed(0.0, 0.0)" for i in range(6)
+    )
+    source = _module(
+        _DIVISION.replace(marker, "\n".join((marker, *padding))), _DIVISION_DECLARATIONS
+    )
+    lowered = elaborate_forward_diff(source, _scopes(source))
+    target = discharge_module(lowered)
+    assert target.obstacles == ()
+    point = (2.0, 4.0, 5.0, 7.0, 2.0, 3.0)
+    assert (
+        _value(lowered, point)
+        == _value(target.module, point)
+        == _emitted_forward(lowered, target)(*point)
+        == -27.0 / 16.0
+    )
+    for backend in ("stan", "numpyro"):
+        with pytest.raises(UnsupportedConstruct) as missing:
+            _emitted_forward(lowered, target, backend)
+        assert "qiec:capability:strict-scalar-division:mixed" in missing.value.kinds

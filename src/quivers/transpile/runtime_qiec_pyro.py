@@ -127,6 +127,17 @@ def _qvr_qiec_strict_lt_real(left, right):
 _qvr_qiec_primitives["strict_lt_real"] = _qvr_qiec_strict_lt_real
 
 
+def _qvr_qiec_strict_div_real(dividend, divisor):
+    if not _qvr_qiec_finite_primal(divisor) or divisor == 0:
+        raise ValueError(
+            "qiec-forward-division-domain: division requires a finite nonzero primal divisor"
+        )
+    return dividend / divisor
+
+
+_qvr_qiec_primitives["strict_div_real"] = _qvr_qiec_strict_div_real
+
+
 def _qvr_qiec_torch_observation_weight(value):
     tensor = _qvr_qiec_torch_module.as_tensor(value)
     if not tensor.is_floating_point() or not bool(

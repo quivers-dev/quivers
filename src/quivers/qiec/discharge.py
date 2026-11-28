@@ -759,24 +759,25 @@ def _computation_reads(term: Computation) -> frozenset[str]:
 
 
 def _checks_strict_primal(term: Computation) -> bool:
-    """Recognize an atomized comparison whose domain check must run.
+    """Recognize an atomized primitive whose primal domain check must run.
 
     Parameters
     ----------
     term : Computation
-        The rewritten statement, with strict comparisons bound by `atom`.
+        The rewritten statement, with checked primal operations bound by `atom`.
 
     Returns
     -------
     bool
-        Whether the statement checks the domain of a partial Diff guard.
+        Whether the statement checks a partial nominal operation's domain.
     """
     if not isinstance(term, Return) or not isinstance(term.value, PrimitiveApplication):
         return False
     signature = PRIMITIVES.get(term.value.name)
     return (
         signature is not None
-        and signature.capability == "strict-scalar-comparison"
+        and signature.capability
+        in {"strict-scalar-comparison", "strict-scalar-division"}
         and not signature.total
     )
 
@@ -793,7 +794,7 @@ def _pure(term: Computation) -> bool:
     -------
     bool
         True when nothing in it requests, advances a trace ordinal, or
-        checks a strict comparison domain.
+        checks a strict primal domain.
     """
     return not any(
         isinstance(
@@ -823,7 +824,7 @@ def _size(term: Computation) -> int:
 def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
     """The statements a rewritten term keeps.
 
-    Unread values can be dropped. Calls, requests and strict comparison
+    Unread values can be dropped. Calls, requests and strict primal
     domain checks are kept even when their results are unused.
 
     Parameters

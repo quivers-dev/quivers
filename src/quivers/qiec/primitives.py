@@ -41,6 +41,7 @@ type PrimitiveCapability = Literal[
     "arithmetic",
     "comparison",
     "strict-scalar-comparison",
+    "strict-scalar-division",
     "boolean",
     "string",
     "conversion",
@@ -507,6 +508,37 @@ def _quotient(
         If the divisor is zero.
     """
     _refuse_zero_divisor("div_real", divisor)
+    return dividend / divisor
+
+
+def _strict_quotient(
+    _domain: NumberDomain, dividend: torch.Tensor, divisor: torch.Tensor
+) -> torch.Tensor:
+    """Compute the nominal forward primal quotient on its checked domain.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The machine's numeric representation, already used by the inputs.
+    dividend, divisor : torch.Tensor
+        The two ground primal operands.
+
+    Returns
+    -------
+    torch.Tensor
+        Their quotient in the machine's Real representation.
+
+    Raises
+    ------
+    ValueError
+        If the ground divisor is zero or nonfinite.
+    """
+    demand(
+        torch.isfinite(divisor) & (divisor != 0),
+        lambda: ValueError(
+            "qiec-forward-division-domain: division requires a finite nonzero primal divisor"
+        ),
+    )
     return dividend / divisor
 
 
@@ -1145,6 +1177,13 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
         "mul_real", (REAL, REAL), REAL, "arithmetic", _total(torch.mul), total=True
     ),
     _signature("div_real", (REAL, REAL), REAL, "arithmetic", _quotient),
+    _signature(
+        "strict_div_real",
+        (REAL, REAL),
+        REAL,
+        "strict-scalar-division",
+        _strict_quotient,
+    ),
     _signature("neg_real", (REAL,), REAL, "arithmetic", _total(torch.neg), total=True),
     _signature("abs_real", (REAL,), REAL, "arithmetic", _total(torch.abs), total=True),
     _signature(
