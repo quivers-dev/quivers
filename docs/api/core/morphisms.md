@@ -113,6 +113,10 @@ used in a cascade, queried with bounded cyclic closure, or projected onto select
 tapes. The limits cover reachable product and intermediate states, shared-label
 probes and constructed arc occurrences.
 
+Each composed relation retains its latest materialized topology and
+weight-slot mapping. Repeating the same two construction limits reuses
+that structure. Every result reads the original live operand weights.
+
 Each matched pair becomes two consecutive arcs. The first writes the two outer
 labels and takes the left weight. The other advances with epsilon labels and takes
 the right weight. The intermediate state has that one continuation, so expansion

@@ -428,6 +428,9 @@ class ComposedRelation(Morphism):
         self._right = right
         self._left_index = _arc_index(left.topology, 0, 1)
         self._right_index = _arc_index(right.topology, 1, 0)
+        self._materialized: (
+            tuple[tuple[int, int], RelationTopology, tuple[_WeightPair, ...]] | None
+        ) = None
         left_module, right_module = left.module(), right.module()
         self._module = nn.ModuleList(
             (left_module,)
@@ -452,8 +455,9 @@ class ComposedRelation(Morphism):
 
         The limits bound the states and the sum of shared-label probes
         and arcs. They include intermediate states and arcs that retain
-        the primitive factors of a matched pair. The result reads both
-        original weight sources on each evaluation.
+        the primitive factors of a matched pair. The last topology and
+        weight-slot mapping can be reused for identical budgets.
+        Each result reads both original weight sources on evaluation.
         """
         if max_states is None or max_work is None:
             raise ValueError(
@@ -461,12 +465,18 @@ class ComposedRelation(Morphism):
             )
         _validate_limits(max_states, max_work)
         left, right = self._left, self._right
-        layout = _JoinLayout.build(
-            left.topology, right.topology, 1, 0, keep_shared=False
-        )
-        topology, pairs = _materialize_product(
-            left.topology, right.topology, layout, max_states, max_work
-        )
+        budgets = max_states, max_work
+        materialized = self._materialized
+        if materialized is None or materialized[0] != budgets:
+            layout = _JoinLayout.build(
+                left.topology, right.topology, 1, 0, keep_shared=False
+            )
+            topology, pairs = _materialize_product(
+                left.topology, right.topology, layout, max_states, max_work
+            )
+            materialized = budgets, topology, pairs
+            self._materialized = materialized
+        _, topology, pairs = materialized
         return RationalRelation(
             topology, _MaterializedWeights(left, right, pairs), algebra=self.algebra
         )
