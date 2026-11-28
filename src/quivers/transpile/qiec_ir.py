@@ -2879,6 +2879,7 @@ type QiecFeature = Literal[
     "authored-handler",
     "arithmetic",
     "comparison",
+    "strict-scalar-comparison",
     "boolean",
     "string",
     "conversion",
@@ -3079,6 +3080,9 @@ _GENERIC_RUNTIME = QiecTargetCapabilities(
         }
     )
 )
+_PYRO_RUNTIME = _GENERIC_RUNTIME.with_(
+    features=_GENERIC_RUNTIME.features | {"strict-scalar-comparison"}
+)
 _STAN_STATIC = QiecTargetCapabilities(
     features=frozenset(
         {
@@ -3108,8 +3112,9 @@ _GRAPH_STATIC = QiecTargetCapabilities(
 def capabilities_for_target(target: str) -> QiecTargetCapabilities:
     """Return the registered QIEC capability set for ``target``.
 
-    The eight host-language backends lower the full stable core through the
-    QIEC runtime ABI. Stan admits closed, monomorphic, effect-free scalar
+    The eight host-language backends lower the shared core through the
+    QIEC runtime ABI. Pyro additionally supports partial scalar comparison.
+    Stan admits closed, monomorphic, effect-free scalar
     computations as user-defined functions: binds, shared value bindings,
     scalar primitives, conditionals, calls, and recursion. BUGS and JAGS admit only
     ``return``/``bind`` computations, which they inline. Unknown targets
@@ -3126,8 +3131,9 @@ def capabilities_for_target(target: str) -> QiecTargetCapabilities:
         The features the target preserves.
     """
     normalized = target.removeprefix("qvr-").lower()
+    if normalized == "pyro":
+        return _PYRO_RUNTIME
     if normalized in {
-        "pyro",
         "numpyro",
         "pymc",
         "edward2",

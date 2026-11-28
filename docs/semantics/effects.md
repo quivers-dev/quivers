@@ -449,6 +449,16 @@ portable rational derivative declaration names its primal and actions.
 The checked interpreter verifies those actions throughout the primal
 rational domain before running them. [Scalar reference and checked rules](../api/qiec/effects.md#rational-derivative-rules)
 
+The nominal forward handler compares the ground primals of its two
+operands. On a reached strict
+inequality, their difference is a continuous polynomial on the
+preceding branch. The sign is constant on an open neighborhood of the
+input. Intersecting those neighborhoods for the finite executed path
+leaves an open neighborhood on which the selected polynomial applies.
+The handler's dual coefficients give the appropriate derivatives of
+that polynomial. Equality lies outside the comparison's domain, and
+an untaken branch imposes no domain condition. [Nominal forward differentiation](../api/qiec/effects.md#nominal-forward-differentiation)
+
 For a finite adaptive computation, let $h$ range over its complete
 addressed histories. Write $m_h(\theta)$ for the product of the reached
 conditional probabilities, and $L_h(\theta)$ for the returned scalar

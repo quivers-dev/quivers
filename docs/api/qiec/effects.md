@@ -826,8 +826,18 @@ perturbation. Each stop is recorded at its original request address.
 The source check seals the carrier in the selected entry and
 requires each named handler installation to occur once. This fragment
 accepts up to two simultaneously active instances and sixteen source
-binds and handler installations. Larger inputs raise
+binds, handler installations and conditionals. Larger inputs raise
 `qiec-forward-limit` before target rendering.
+
+An instance can also declare `less : Number * Number -> Bool`. The
+comparison reads each operand's ground primal, through any enclosing
+coefficient carriers. Bind its answer and use it as the immediately
+following `if` guard. The comparison is defined for distinct finite
+primals, and evaluation follows only the chosen branch. A reached
+comparison at equality or on a nonfinite primal fails with
+`qiec-forward-comparison-boundary`. The checked native, discharged and
+Pyro routes implement that behavior. The other targets report a missing
+`strict-scalar-comparison` capability for the partial guard.
 
 ```python
 from quivers.dsl import Compiler, parse
@@ -841,6 +851,7 @@ effect Diff
     seed : Real * Real -> Number
     add : Number * Number -> Number
     mul : Number * Number -> Number
+    less : Number * Number -> Bool
     stop_primal : Number -> Real
     stop_tangent : Number -> Real
 
@@ -850,14 +861,20 @@ handler forward for Diff : Real -> Real [coverage=total, forwards=none, implemen
     seed resumes 1
     add resumes 1
     mul resumes 1
+    less resumes 1
     stop_primal resumes 1
     stop_tangent resumes 1
 
-define squared(x : Real, direction : Real) : Real !{} =
+define positive_square(x : Real, direction : Real) : Real !{} =
     handle d with forward in
         let seeded <- perform d.seed(x, direction)
-        let product <- perform d.mul(seeded, seeded)
-        perform d.stop_tangent(product)
+        let zero <- perform d.seed(0.0, 0.0)
+        let positive <- perform d.less(zero, seeded)
+        if positive then
+            let product <- perform d.mul(seeded, seeded)
+            perform d.stop_tangent(product)
+        else
+            return 0.0
 """
 module = Compiler(parse(source), module_name="forward-square").qiec_module
 assert module is not None
@@ -866,7 +883,8 @@ handler, = module.handlers
 constructor, = module.constructors
 scope = ForwardDiffInstance(instance.entry.instance, handler.id, constructor.id)
 lowered = elaborate_forward_diff(module, (scope,))
-assert run_named(lowered, "squared", (3.0, 5.0)).value == 30.0
+assert run_named(lowered, "positive_square", (3.0, 5.0)).value == 30.0
+assert run_named(lowered, "positive_square", (-3.0, 5.0)).value == 0.0
 ```
 
 ::: quivers.qiec.forward_diff

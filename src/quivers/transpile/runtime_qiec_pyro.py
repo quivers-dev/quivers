@@ -106,6 +106,27 @@ def _qvr_qiec_torch(function):
     )
 
 
+def _qvr_qiec_finite_primal(value):
+    if isinstance(value, _qvr_qiec_torch_module.Tensor):
+        return bool(_qvr_qiec_torch_module.isfinite(value).all())
+    return _qvr_qiec_math.isfinite(value)
+
+
+def _qvr_qiec_strict_lt_real(left, right):
+    if (
+        not _qvr_qiec_finite_primal(left)
+        or not _qvr_qiec_finite_primal(right)
+        or left == right
+    ):
+        raise ValueError(
+            "qiec-forward-comparison-boundary: strict comparison requires finite distinct primals"
+        )
+    return left < right
+
+
+_qvr_qiec_primitives["strict_lt_real"] = _qvr_qiec_strict_lt_real
+
+
 def _qvr_qiec_torch_observation_weight(value):
     tensor = _qvr_qiec_torch_module.as_tensor(value)
     if not tensor.is_floating_point() or not bool(

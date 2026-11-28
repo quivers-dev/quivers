@@ -40,6 +40,7 @@ from quivers.qiec.types import BOOL, INT, REAL, STRING, TypeExpr
 type PrimitiveCapability = Literal[
     "arithmetic",
     "comparison",
+    "strict-scalar-comparison",
     "boolean",
     "string",
     "conversion",
@@ -392,6 +393,37 @@ def _total(function: Callable[..., torch.Tensor]) -> Implementation:
         return function(*arguments)
 
     return apply
+
+
+def _strict_less(
+    _domain: NumberDomain, left: torch.Tensor, right: torch.Tensor
+) -> torch.Tensor:
+    """Compare two finite real primals off the equality boundary.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The numeric representation already used for both arguments.
+    left, right : torch.Tensor
+        The Real arguments to compare.
+
+    Returns
+    -------
+    torch.Tensor
+        Whether the left primal is strictly below the right one.
+
+    Raises
+    ------
+    ValueError
+        If the two primals are equal or either is nonfinite.
+    """
+    demand(
+        torch.isfinite(left) & torch.isfinite(right) & (left != right),
+        lambda: ValueError(
+            "qiec-forward-comparison-boundary: strict comparison requires finite distinct primals"
+        ),
+    )
+    return left < right
 
 
 def _truncating_division(
@@ -1148,6 +1180,9 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
     _signature("eq_real", (REAL, REAL), BOOL, "comparison", _total(torch.eq)),
     _signature("ne_real", (REAL, REAL), BOOL, "comparison", _total(torch.ne)),
     _signature("lt_real", (REAL, REAL), BOOL, "comparison", _total(torch.lt)),
+    _signature(
+        "strict_lt_real", (REAL, REAL), BOOL, "strict-scalar-comparison", _strict_less
+    ),
     _signature("le_real", (REAL, REAL), BOOL, "comparison", _total(torch.le)),
     _signature("gt_real", (REAL, REAL), BOOL, "comparison", _total(torch.gt)),
     _signature("ge_real", (REAL, REAL), BOOL, "comparison", _total(torch.ge)),

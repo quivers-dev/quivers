@@ -61,6 +61,7 @@ from quivers.qiec.identifiers import (
     _clause_address,
 )
 from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
+from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.state_specialization import (
     StateSpecializationUnsupported,
     specialize_recursive_state,
@@ -95,6 +96,7 @@ from quivers.qiec.terms import (
     Local,
     NewInstance,
     Perform,
+    PrimitiveApplication,
     Projection,
     Resume,
     Return,
@@ -756,6 +758,29 @@ def _computation_reads(term: Computation) -> frozenset[str]:
     return frozenset(found)
 
 
+def _checks_strict_primal(term: Computation) -> bool:
+    """Recognize an atomized comparison whose domain check must run.
+
+    Parameters
+    ----------
+    term : Computation
+        The rewritten statement, with strict comparisons bound by `atom`.
+
+    Returns
+    -------
+    bool
+        Whether the statement checks the domain of a partial Diff guard.
+    """
+    if not isinstance(term, Return) or not isinstance(term.value, PrimitiveApplication):
+        return False
+    signature = PRIMITIVES.get(term.value.name)
+    return (
+        signature is not None
+        and signature.capability == "strict-scalar-comparison"
+        and not signature.total
+    )
+
+
 def _pure(term: Computation) -> bool:
     """Whether a rewritten computation has no requests or trace allocations.
 
@@ -767,12 +792,14 @@ def _pure(term: Computation) -> bool:
     Returns
     -------
     bool
-        True when nothing in it requests or advances a trace ordinal.
+        True when nothing in it requests, advances a trace ordinal, or
+        checks a strict comparison domain.
     """
     return not any(
         isinstance(
             item, Perform | Call | CallAddress | InstanceAddress | HandlerReturnAddress
         )
+        or _checks_strict_primal(item)
         for item in _subterms(term)
     )
 
@@ -796,8 +823,8 @@ def _size(term: Computation) -> int:
 def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
     """The statements a rewritten term keeps.
 
-    A value nothing reads is not computed, while a call or a request is
-    made whether or not its result is read.
+    Unread values can be dropped. Calls, requests and strict comparison
+    domain checks are kept even when their results are unused.
 
     Parameters
     ----------
@@ -814,7 +841,11 @@ def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
     needed = set(reads)
     kept: list[tuple[Local, Computation]] = []
     for binder, first in reversed(statements):
-        if isinstance(first, Return) and binder.name not in needed:
+        if (
+            isinstance(first, Return)
+            and binder.name not in needed
+            and not _checks_strict_primal(first)
+        ):
             continue
         kept.append((binder, first))
         needed |= _computation_reads(first)
