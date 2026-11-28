@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from quivers.core.algebras import LOG_PROB
+from quivers.dsl._relation_specs import authored_relation_specs
 from quivers.dsl.ast_nodes import (
     QiecHandlerDecl,
     QiecRelationScoreDecl,
@@ -32,8 +34,9 @@ from quivers.qiec.string_graph_runtime import (
     _string_graph_score_handler_name,
     _tree_string_graph_handler,
 )
+from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.terms import Handle, LiteralValue, Local, Perform
-from quivers.qiec.types import REAL, UNIT
+from quivers.qiec.types import REAL, UNIT, TypeExpr
 
 if TYPE_CHECKING:
     from quivers.dsl.qiec_lowering import _Elaborator
@@ -48,9 +51,55 @@ class _RelationScore:
     handler: HandlerDef
 
 
+def _score_specification(
+    elaborator: _Elaborator,
+    declaration: QiecRelationScoreDecl,
+    specs: dict[str, RationalRelationSpec],
+    result: TypeExpr,
+) -> RationalRelationSpec | None:
+    operation = declaration.operation
+    if operation in ("path_entropy", "expected_path_cost") and result != REAL:
+        elaborator._fail(
+            declaration,
+            "path statistics require a Real result",
+            code="qiec-relation-score",
+        )
+    if declaration.relation is None:
+        return None
+    relation = specs.get(declaration.relation)
+    if relation is None:
+        elaborator._fail(
+            declaration,
+            f"unknown authored relation {declaration.relation!r}",
+            code="qiec-relation-score",
+        )
+    if operation == "conditional_log_prob" and not 0 < relation.input_tapes < len(
+        relation.tapes
+    ):
+        elaborator._fail(
+            declaration,
+            "an authored conditional score requires input and output tapes",
+            code="qiec-relation-score",
+        )
+    if operation == "pair_weight":
+        expected = LOG_WEIGHT if relation.algebra == LOG_PROB.subject else REAL
+        if result != expected:
+            elaborator._fail(
+                declaration,
+                f"the authored relation's pair weight requires {expected.constructor.name}",
+                code="qiec-relation-score",
+            )
+    return relation
+
+
 def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ...]:
     """Register score signatures and their checked foreign declarations."""
     routes: list[_RelationScore] = []
+    specs = authored_relation_specs(
+        elaborator.source.syntax,
+        elaborator.source.module_name,
+        elaborator.source.file_path,
+    )
     declared_handlers = {
         statement.name
         for statement in elaborator.source.syntax.statements
@@ -139,9 +188,13 @@ def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ..
                 result,
             )
         else:
+            assert isinstance(declaration, QiecRelationScoreDecl)
+            relation = _score_specification(elaborator, declaration, specs, result)
             handler = HandlerDef(
                 name=handler_name,
-                id=_relation_score_handler_id(module, name, declaration.operation),
+                id=_relation_score_handler_id(
+                    module, name, declaration.operation, relation
+                ),
                 effect=effect,
                 clauses=(
                     HandlerClauseDef(

@@ -68,6 +68,7 @@ from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
 from quivers.qiec.program_runtime import passed_data_notes
+from quivers.qiec.relations import RationalRelationSpec
 
 
 def _plate_axes(
@@ -329,6 +330,23 @@ class Compiler(
         if self._qiec_source is not None and self._qiec_module is None:
             self._qiec_module = self._lower_qiec(self._qiec_source)
         return self._qiec_module
+
+    @property
+    def relation_specs(self) -> dict[str, RationalRelationSpec]:
+        """Return the checked authored relation specifications in this source.
+
+        Returns
+        -------
+        dict[str, RationalRelationSpec]
+            Topologies and live weight identities keyed by source name.
+        """
+        from quivers.dsl._relation_specs import authored_relation_specs
+
+        if self._qiec_source is None:
+            return {}
+        return authored_relation_specs(
+            self._qiec_source, self._qiec_module_name, self._qiec_file_path
+        )
 
     def entry_points(self) -> tuple[EntryPoint, ...]:
         """The executable entry points of the checked module.
