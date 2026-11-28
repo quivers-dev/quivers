@@ -351,6 +351,16 @@ over erased tapes. Conditioning fixes one tape word. Inversion
 exchanges the input and output groups, trim retains only structurally
 productive records, and closure permits all finite repetitions.
 
+The `auto_intersect` recipe constrains two distinct positions with the
+same nominal tape type to emit equal words, retaining both tapes in
+their original positions. It uses the checked signed-delay construction.
+Every accepted source path contributes once with its original weights.
+A cascade may project away either or both constrained tapes afterward.
+The compiler charges signed-cycle relaxations and residual product arc
+visits to `max_work`, after the linear structural trim. Productive paths
+with opposite-sign cycles fail the applicability check. The budget
+applies to the exact transformation and carries no approximation claim.
+
 A `BinaryRelationTransformSpec` keeps both original operands in order.
 Union adds their weights. Concatenation sums over the possible splits
 of each observed word. A join synchronizes one common typed tape and

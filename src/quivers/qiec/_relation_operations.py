@@ -11,6 +11,7 @@ from quivers.core.objects import StringSet
 from quivers.core.relations import (
     ComposedRelation,
     RationalRelation,
+    auto_intersect,
     closure,
     concatenate,
     condition,
@@ -25,9 +26,18 @@ from quivers.core.relations.calculus import _JoinLayout
 from quivers.core.relations.topology import _validate_tape_words
 from quivers.qiec.relations import RationalRelationSpec
 
-type _UnaryOperation = Literal["project", "condition", "invert", "trim", "closure"]
+type _UnaryOperation = Literal[
+    "project", "condition", "invert", "trim", "closure", "auto_intersect"
+]
 type _BinaryOperation = Literal["compose", "union", "concatenate", "intersect", "join"]
-_UNARY_OPERATIONS = ("project", "condition", "invert", "trim", "closure")
+_UNARY_OPERATIONS = (
+    "project",
+    "condition",
+    "invert",
+    "trim",
+    "closure",
+    "auto_intersect",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +111,7 @@ def _unary_layout(
     operation : str
         The unary sparse operation.
     positions : tuple of int
-        The retained positions or the fixed tape.
+        Retained, fixed, or equal tape positions, as specified by the operation.
     word : tuple of int or None
         The fixed word of a conditioning operation.
 
@@ -114,6 +124,8 @@ def _unary_layout(
     ------
     ValueError
         The operation arguments or fixed tape word are invalid.
+    TypeError
+        The tapes selected for equality have different nominal types.
     """
     count = len(source.tapes)
     if not isinstance(positions, tuple) or any(
@@ -136,6 +148,13 @@ def _unary_layout(
         if not positions or any(b <= a for a, b in zip(positions, positions[1:])):
             raise ValueError("projection requires increasing distinct tape positions")
         return source.select(positions)
+    if operation == "auto_intersect":
+        if len(positions) != 2 or positions[0] == positions[1]:
+            raise ValueError("auto-intersection requires two distinct tape positions")
+        first, second = positions
+        if source.tapes[first] != source.tapes[second]:
+            raise TypeError("auto-intersection requires the same nominal tape type")
+        return source
     if positions:
         raise ValueError("this transformed relation operation takes no tape positions")
     if operation == "invert":
@@ -257,11 +276,11 @@ def _apply_unary(
     operation : str
         The unary sparse operation.
     positions : tuple of int
-        The retained positions or the fixed tape.
+        Retained, fixed, or equal tape positions, as specified by the operation.
     word : tuple of int or None
         The fixed word of a conditioning operation.
     max_states, max_work : int
-        The native sparse conditioning limits.
+        Bounds for sparse conditioning or signed-delay tape equality.
 
     Returns
     -------
@@ -282,6 +301,11 @@ def _apply_unary(
             return trim(source)
         case "closure":
             return closure(source)
+        case "auto_intersect":
+            first, second = positions
+            return auto_intersect(
+                source, first, second, max_states=max_states, max_work=max_work
+            )
 
 
 def _apply_binary(
