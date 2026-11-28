@@ -72,6 +72,10 @@ def export_lexical_proofs(
     def index(term: IndexTerm) -> IndexTerm:
         """Transport a constructor tree or a variable into its renamed sort.
 
+        Build each parent with its transported children so the constructor
+        check sees one sort throughout the tree. Child order and occurrence
+        multiplicity come from the original argument tuple.
+
         Parameters
         ----------
         term
@@ -87,12 +91,13 @@ def export_lexical_proofs(
             and isinstance(term.sort, UserIndexSort)
             and term.sort in sorts
         ):
-            renamed = term.with_(sort=sorts[term.sort])
-            if isinstance(renamed, IndexConstructor):
-                return renamed.with_(
-                    arguments=tuple(index(child) for child in renamed.arguments)
+            sort = sorts[term.sort]
+            if isinstance(term, IndexConstructor):
+                return term.with_(
+                    sort=sort,
+                    arguments=tuple(index(child) for child in term.arguments),
                 )
-            return renamed
+            return term.with_(sort=sort)
         return term
 
     def judgment(source: Judgment) -> Judgment:
