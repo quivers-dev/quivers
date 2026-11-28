@@ -178,7 +178,9 @@ call sites in outer-to-inner order, including the lexical sites of tail calls. A
 call contributes its reference-machine activation ordinal. The discharger allocates each inlined
 call and local instance at its original execution point, and resumption restores the captured
 continuation's address scope. A retained call inherits its enclosing relative shot and clause path
-until it returns. The pass retains reference execution when an open residual row or a possible
+until it returns. An observable handler return uses the activation allocated at installation.
+An outer clause that captures a return or a local instance includes that activation in its own
+clause address. The pass retains reference execution when an open residual row or a possible
 interleaved multi-shot resumption prevents it from preserving the trace address.
 
 The built-in prelude declares the following interfaces, each with reference handlers:

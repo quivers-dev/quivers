@@ -344,11 +344,17 @@ once, including an inlined scope that makes no observable request. Discharge ret
 immutable address value for that scope. Capture removes the live frames of the captured
 continuation while the operation clause runs. Each resumption reinstates the corresponding
 frames in order, reusing their allocations, and appends the ordinal for an unrestricted shot.
+A handler whose return can make an observable request allocates a return activation ordinal
+at installation. A resumption reuses that activation. A capture through a return or local
+instance includes its allocated value in the clause address, in the same order as lexical
+call sites. Discharged code resolves the deferred clause address from those original values.
 A retained call extends the live path for the duration of its body. If that call carries a
 discharged shot or clause path, the discharger requires a closed residual effect row and rules
 out an outer multi-shot clause that could interleave its own shot with the restored path.
-The scope exit restores the preceding paths. These steps preserve $(o,d,s)$ at each residual
-request and give the same address sequence by induction along the execution.
+Scope exit restores the preceding paths. These steps preserve $(o,d,s)$ at each residual request
+and give the same address sequence by induction along the execution. The reference machine
+handles cases where an external unrestricted clause can reenter a live resumption after another
+shot has changed its counter.
 
 Discharge terminates. A callee is entered only when it is not being entered already, so a body unrolls to a
 finite tree of returns, requests, and conditionals. A deep handler is the fold of §6 over that tree: it
