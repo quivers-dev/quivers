@@ -156,12 +156,22 @@ _RUNTIME = RuntimeConfiguration(
 )
 
 
-def _module() -> QiecModule:
-    module = load_source(SOURCE).qiec
+def _module(*, table: bool = False) -> QiecModule:
+    source = SOURCE
+    if table:
+        source = source.replace(
+            "-> LogWeight [coverage=total, implementation=foreign]",
+            "-> Tensor[LogWeight]([2]) [coverage=total, implementation=foreign]",
+        ).replace(
+            "define integrate(law : Sampleable[Meaning], response : Real) : LogWeight",
+            "define integrate(law : Sampleable[Meaning], response : Real) : Tensor[LogWeight]([2])",
+        )
+    module = load_source(source).qiec
     assert isinstance(module, QiecModule)
+    semantics = Enumeration(grouped=True, reduction="table") if table else Enumeration()
     module = module.with_(
         handlers=tuple(
-            handler.with_(foreign=Enumeration()) if handler.name == "exact" else handler
+            handler.with_(foreign=semantics) if handler.name == "exact" else handler
             for handler in module.handlers
         )
     )
@@ -532,3 +542,69 @@ def test_structured_observation_likelihood_is_raw_and_tensor_outputs_refuse() ->
         TypeError, match="structured response 'meaning'.*no tensor distribution"
     ):
         response_distribution(recorded, "meaning")
+
+
+def test_exact_posterior_reuses_typed_support_and_keeps_observation_gradients() -> None:
+    module = _module(table=True)
+    weights = torch.tensor(
+        [0.2, -0.3, 1.2, -torch.inf], dtype=torch.float64, requires_grad=True
+    )
+    y = weights.new_tensor(1.7, requires_grad=True)
+    law, nested, zero = _law(module, weights)
+    (left, right) = tuple(point for point, _ in law.weighted_support())
+    assert right == nested and zero not in (left, right)
+    runtime = _RUNTIME.with_(providers=(_LawProvider(law),))
+    scored = run_named(
+        module,
+        "integrate",
+        arguments=(law, y),
+        runtime=runtime,
+        distributions=TensorBackend(),
+    )
+    assert isinstance(scored.value, torch.Tensor)
+    assert scored.value.shape == (2,)
+    means = weights.new_tensor([0.0, 2.0, 2.0])
+    log_likelihoods = -(y - means).square() / 2 - math.log(2 * math.pi) / 2
+    occurrences = weights[:3] + log_likelihoods
+    table = torch.stack((occurrences[0], occurrences[1:].logsumexp(0))) - weights[
+        :3
+    ].logsumexp(0)
+    torch.testing.assert_close(scored.value, table, atol=1e-12, rtol=1e-12)
+    posterior = law.with_(values=(left, right), log_weights=scored.value)
+    expected = table.log_softmax(0)
+    torch.testing.assert_close(
+        torch.stack([weight for _, weight in posterior.weighted_support()]),
+        expected,
+        atol=1e-12,
+        rtol=1e-12,
+    )
+    actual_grad = torch.autograd.grad(
+        posterior.log_prob(nested), (weights, y), retain_graph=True
+    )
+    expected_grad = torch.autograd.grad(expected[1], (weights, y))
+    for actual, analytic in zip(actual_grad, expected_grad, strict=True):
+        torch.testing.assert_close(actual, analytic, atol=1e-12, rtol=1e-12)
+
+    # This is a new observation using the posterior law as its prior.
+    predicted = run_program(
+        module,
+        "inspect",
+        data={"law": posterior, "response": 1.0},
+        sites={"meaning": nested},
+    )
+    expected_predictive_joint = expected[1] - 0.5 - math.log(2 * math.pi) / 2
+    torch.testing.assert_close(
+        predicted.log_joint, expected_predictive_joint, atol=1e-12, rtol=1e-12
+    )
+
+    single = law.with_(
+        log_weights=weights.new_tensor([0.0, -torch.inf, -torch.inf, -torch.inf])
+    )
+    with pytest.raises(ExecutionFailure, match="result|return"):
+        run_named(
+            module,
+            "integrate",
+            arguments=(single, y),
+            runtime=_RUNTIME.with_(providers=(_LawProvider(single),)),
+            distributions=TensorBackend(),
+        )
