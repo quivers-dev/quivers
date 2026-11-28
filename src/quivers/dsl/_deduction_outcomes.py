@@ -18,7 +18,7 @@ from quivers.qiec.canonical import tensor_type
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
-from quivers.qiec.deduction_outcomes import validate_outcome_key
+from quivers.qiec.deduction_outcomes import proof_entry_type, validate_outcome_key
 from quivers.qiec.effects import (
     ArgumentDef,
     EffectDef,
@@ -31,7 +31,11 @@ from quivers.qiec.effects import (
     ResumptionGrade,
     instantiate_effect,
 )
-from quivers.qiec.foreign import DeductionOutcomeGrouping, DeductionOutcomes
+from quivers.qiec.foreign import (
+    DeductionOutcomeGrouping,
+    DeductionOutcomes,
+    DeductionProofs,
+)
 from quivers.qiec.identifiers import (
     ComputationId,
     ConstructorId,
@@ -67,6 +71,7 @@ from quivers.qiec.terms import (
 )
 from quivers.qiec.types import (
     BOOL,
+    INT,
     REAL,
     STRING,
     IndexLiteral,
@@ -80,7 +85,8 @@ if TYPE_CHECKING:
     from quivers.dsl.qiec_lowering import _Elaborator
 
 
-OUTCOME_CALLS = frozenset({"parse_outcomes", "parse_normalized_outcomes"})
+PROOF_CALLS = frozenset({"parse_proofs", "parse_normalized_proofs"})
+OUTCOME_CALLS = frozenset({"parse_outcomes", "parse_normalized_outcomes"}) | PROOF_CALLS
 OUTCOME_CODE = "qiec-deduction-outcomes"
 _SPAN = "span"
 _QUERY = "query"
@@ -136,7 +142,7 @@ def declare_outcome_key_types(
     }
     keys = {}
     for call in calls:
-        if len(call.args) < 3:
+        if call.func in PROOF_CALLS or len(call.args) < 3:
             continue
         deduction, _, selector, *_ = call.args
         if not isinstance(deduction, LetExprVar) or not isinstance(
@@ -400,7 +406,7 @@ class _KeyProjection:
 
 
 def declare_outcomes(
-    elaborator: _Elaborator, system: _System, node: object
+    elaborator: _Elaborator, system: _System, node: object, *, proofs: bool = False
 ) -> OutcomeQuery:
     """Declare the result family and one operation fixed to this presentation."""
     if system.semiring.algebra != LOG_PROB.subject or not system.entries:
@@ -443,7 +449,7 @@ def declare_outcomes(
                 for rule in presented.rules
             )
         )
-    family_name = system.name("Outcomes")
+    family_name = system.name("Proofs" if proofs else "Outcomes")
     family_id = FamilyId.derive(module, "family", family_name)
     empty_id = ConstructorId.derive(family_id, "empty")
     entry_id = ConstructorId.derive(family_id, "entry")
@@ -455,8 +461,9 @@ def declare_outcomes(
         constructors=(empty_id, entry_id),
     )
     result = TypeApplication(constructor=family.type_constructor, arguments=())
+    named_proofs = None
     try:
-        semantics = DeductionOutcomes(
+        chart = DeductionOutcomes(
             presentation=presentation,
             words=tuple(entry.word for entry in system.entries),
             parameters=tuple(parameters.values()),
@@ -470,9 +477,38 @@ def declare_outcomes(
             empty=empty_id,
             entry=entry_id,
         )
+        semantics: DeductionOutcomes | DeductionProofs = chart
+        if proofs:
+            semantics = DeductionProofs(chart=chart)
+            named_proofs = semantics.proof_presentation
     except (ValueError, dx.ValidationError) as error:
         elaborator._fail_kernel(node, error, fallback=OUTCOME_CODE)
-    _register_rows(elaborator, family, result, system.item, system.name("outcome"))
+    key_binders: tuple[IndexBinder, ...] = ()
+    key_type = system.item
+    if named_proofs is not None:
+        for sort in named_proofs.index_sorts:
+            if sort.name in elaborator.index_sorts:
+                elaborator._fail(
+                    node,
+                    f"generated proof sort {sort.name!r} already exists",
+                    code=OUTCOME_CODE,
+                )
+            elaborator.index_sorts[sort.name] = sort
+        (proof_family,), constructors = named_proofs.declarations()
+        elaborator.families[proof_family.name] = proof_family
+        elaborator.registry.register_family(proof_family)
+        for constructor in constructors:
+            elaborator.constructors[constructor.name] = constructor
+            elaborator.registry.register_constructor(constructor)
+        key_binders, key_type = proof_entry_type(proof_family)
+    _register_rows(
+        elaborator,
+        family,
+        result,
+        key_type,
+        system.name("proof" if proofs else "outcome"),
+        key_binders=key_binders,
+    )
 
     arity = 2 if presented.uses_forms else 1
     terms = tensor_type(
@@ -481,7 +517,7 @@ def declare_outcomes(
     weights = tensor_type(
         REAL, (IndexLiteral(value=len(system.entries) + len(parameters), sort=NAT),)
     )
-    effect_name = system.name("OutcomeQuery")
+    effect_name = system.name("ProofQuery" if proofs else "OutcomeQuery")
     effect_id = EffectId.derive(module, "effect", effect_name)
     extent = IndexVariable(name="n", sort=NAT)
     operation = OperationDef(
@@ -492,7 +528,9 @@ def declare_outcomes(
             ArgumentDef(name="tokens", type=tensor_type(STRING, (extent,))),
             ArgumentDef(name="terms", type=terms),
             ArgumentDef(name="weights", type=weights),
-            ArgumentDef(name="key", type=STRING),
+            ArgumentDef(name="limit", type=INT)
+            if proofs
+            else ArgumentDef(name="key", type=STRING),
             ArgumentDef(name="normalize", type=BOOL),
         ),
         result_type=result,
@@ -502,8 +540,8 @@ def declare_outcomes(
         system.decl,
         EffectRef(id=effect_id, name=effect_name),
         operation,
-        system.name("outcome_query"),
-        system.name("query_outcomes"),
+        system.name("proof_query" if proofs else "outcome_query"),
+        system.name("query_proofs" if proofs else "query_outcomes"),
         semantics,
     )
     return OutcomeQuery(instance, handler, terms, weights, production_indices)
@@ -516,7 +554,7 @@ def _register_query_handler(
     operation: OperationDef,
     instance_name: str,
     handler_name: str,
-    semantics: DeductionOutcomes | DeductionOutcomeGrouping,
+    semantics: DeductionOutcomes | DeductionProofs | DeductionOutcomeGrouping,
 ) -> tuple[NamedEffectInstance, HandlerDef]:
     """Register a closed linear query with one private effect instance."""
     module = elaborator.source.module_name
@@ -556,6 +594,8 @@ def _register_rows(
     result: TypeApplication,
     key_type: TypeExpr,
     constructor_stem: str,
+    *,
+    key_binders: tuple[IndexBinder, ...] = (),
 ) -> tuple[ConstructorDecl, ConstructorDecl]:
     """Register a nominal typed list of weighted outcome keys."""
     elaborator.families[family.name] = family
@@ -573,7 +613,7 @@ def _register_rows(
         id=entry_id,
         name=f"{constructor_stem}_entry",
         family=family.id,
-        telescope=(),
+        telescope=key_binders,
         fields=(
             FieldDef(name="key", type=key_type),
             FieldDef(name="weight", type=REAL),
@@ -592,10 +632,13 @@ def elaborate_outcomes(
 ) -> NamedComputation:
     """Read weights through the grammar's checked readers and run the query."""
     system = context.system
-    tokens, key, normalize = tuple(
+    proofs = isinstance(query.handler.foreign, DeductionProofs)
+    tokens, selector, normalize = tuple(
         Local(name=name, type=type_)
         for name, type_ in zip(
-            ("tokens", "key", "normalize"), context.inputs(signature), strict=True
+            ("tokens", "limit" if proofs else "key", "normalize"),
+            context.inputs(signature),
+            strict=True,
         )
     )
     terms: list[Value] = []
@@ -625,14 +668,14 @@ def elaborate_outcomes(
                     items=tuple(context.real_of(Var(local=local)) for local in values),
                     result_type=query.weights,
                 ),
-                Var(local=key),
+                Var(local=selector),
                 Var(local=normalize),
             ),
             signature.result,
-            "outcomes",
+            "proofs" if proofs else "outcomes",
         ),
         static_arguments=(),
     )
     for local, reading in reversed(tuple(zip(values, readings, strict=True))):
         body = Bind(binder=local, first=reading, then=body)
-    return context.computation(signature, (tokens, key, normalize), body)
+    return context.computation(signature, (tokens, selector, normalize), body)
