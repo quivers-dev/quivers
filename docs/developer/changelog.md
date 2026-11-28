@@ -10,11 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **Checked Markov path certificate reports.** Native QVR can request a value-only forward-error certificate with exact rational evidence or a typed unavailable outcome.
 - **Certified Markov path accuracy.** A bounded fixed-word query can establish an exact absolute or relative forward-error bound for its float64 score, using rational sparse verification and the existing local closure.
+- **Checked deduction guards.** QVR rules can use a pure Boolean guard over matched natural coordinates. Checked search and eligible indexed item outcomes evaluate the guard before accepting a grounded rule.
 - **Checked target stage reports.** Named computations and probabilistic programs report their actual selected target stages and named refusals. Native derivative checks and checked rules retain their evidence scope.
 - **Checked signed-delay tape equality.** QVR can author unary and cascade recipes that enforce equal words on two nominally identical tapes with live original weights and explicit construction limits.
 - **Checked deterministic sparse path ranking.** A native fixed-word query returns complete best or k-best original traces with exact tie order, live selected scores, and an explicit result capacity.
 - **Checked source factors for finite elimination.** Contract bounded tables of named QIEC computations after checking nominal axis types and refusing draws even under a closed handler. Report source evaluation and contraction work separately.
-- **Nominal forward and reverse differentiation.** Checked forward handlers distinguish two live perturbations. A checked reverse handler resumes once, then adds predecessor cotangents to an immutable result.
+- **Nominal forward and reverse differentiation.** Checked forward handlers distinguish two live perturbations and retain reached domain checks for strict comparisons and division. A checked reverse handler resumes once, then adds predecessor cotangents to an immutable result.
 - **Checked base change for finite elimination.** A named QIEC map can move factor tables to another finite answer algebra after exhaustive checks of both binary operations and units.
 - **Signed logarithmic weight derivatives.** A packed dual carrier preserves an explicit tangent at zero primal weight and evaluates finite sums and products without decoding extreme magnitudes into linear floats.
 - **Explicit regular EP policies.** Choose a proved fixed-Lipschitz or adaptive-backtracking proximal step, provide checked initial sites, and inspect actual sparse moment work. Unsupported derivative or global error guarantees refuse.
