@@ -4,6 +4,7 @@ from dataclasses import replace
 from fractions import Fraction
 from itertools import product
 from random import Random
+from struct import pack
 
 import pytest
 import torch
@@ -86,6 +87,16 @@ def test_proportional_residuals_reduce_even_with_nondyadic_ratios():
     source, weights = _machine(first=0.375, second=0.625)
     reduced = minimize_static_acceptor(source)
     assert reduced.topology.n_states == 3
+    assert reduced.topology.initial == (Boundary(2, 0),)
+    assert reduced.topology.final == (Boundary(0, 1), Boundary(1, 1))
+    assert reduced.topology.arcs == (
+        Arc(1, 0, (2,), 1),
+        Arc(2, 1, (0,), 2),
+        Arc(2, 1, (1,), 3),
+    )
+    assert bytes(reduced.module()().view(torch.uint8).tolist()) == pack(
+        "=4d", 1 / 32, 1, 3, 10
+    )
     expected = {
         (0,): Fraction(3, 32),
         (1,): Fraction(5, 16),

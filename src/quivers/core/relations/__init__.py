@@ -76,6 +76,7 @@ __all__ = [
     "RelationLimitError",
     "RelationPath",
     "RelationTopology",
+    "StaticMinimizationWork",
     "StringAlignment",
     "StringAlignmentCertificate",
     "StringAlignmentMapResult",
@@ -107,6 +108,7 @@ __all__ = [
     "join",
     "penalized_regular_ngram_projection",
     "minimize_static_acceptor",
+    "minimize_static_acceptor_with_work",
     "project",
     "regular_string_ep",
     "ranked_output_candidates",
@@ -819,7 +821,11 @@ from quivers.core.relations.backoff import (  # noqa: E402
     backoff_query,
     backoff_total_weight,
 )
-from quivers.core.relations.minimization import minimize_static_acceptor  # noqa: E402
+from quivers.core.relations.minimization import (  # noqa: E402
+    StaticMinimizationWork,
+    minimize_static_acceptor,
+    minimize_static_acceptor_with_work,
+)
 from quivers.core.relations.ranked import (  # noqa: E402
     compile_ranked_ot,
     ranked_output_candidates,

@@ -770,6 +770,61 @@ on coefficient bit lengths. Coefficients in the result must be exactly
 representable in the input floating-point dtype. Trainable weights
 are refused because changing them can change the equivalence classes.
 
+`minimize_static_acceptor_with_work` also accepts cyclic positive
+support. For each productive state $q$, let $u_q$ be its least accepted
+suffix in length-then-symbol order and let $p_q=R_q(u_q)>0$. A reverse
+breadth-first traversal finds the distance to a final mark. A pass in
+increasing distance uses the least first symbol that decreases the
+distance, multiplying its weight by the already computed scale of its
+target. This is finite-suffix weight pushing over exact rationals.
+[Eisner (2003), §6](https://www.cs.jhu.edu/~jason/papers/eisner.hlt03.pdf).
+
+The quotient construction scales an initial coefficient at $q$ by
+$p_q$, divides a final coefficient at $q$ by $p_q$, and replaces an arc
+coefficient $w(q,a,t)$ by $w(q,a,t)p_t/p_q$. These factors telescope on
+every finite word. The argument applies even if the sum of the weights
+of all words diverges. Two nonzero residuals are positively proportional
+if and only if their normalized series agree, since proportional series
+have the same support and hence the same least suffix. Equality of
+normalized series forces equal final coefficients and equal support
+after every symbol. The normalized target series assign weight one to
+the same least suffix, so evaluating this suffix also forces the two
+pushed arc weights to agree. The resulting partition is thus exactly
+the stable partition of the deterministic partial automaton with final
+weights as state observations and `(symbol, pushed weight)` as labels.
+Each class represents a nonzero residual of a reachable prefix, up to
+its positive prefix scale. An equivalent deterministic epsilon-free
+one-initial acceptor must reach a different state for each such class,
+since two prefixes reaching one state have proportional residuals. This
+gives the state lower bound for the class in which minimization is claimed.
+
+Refinement initially queues all final-weight blocks. Each popped block
+only examines its own states and their incoming arcs, grouped by label.
+If two states remain in the same source block but a label takes them to
+distinct target blocks, at least one of the defined target blocks remains
+queued. Processing that block separates the sources. Splitting a queued
+block retains both children in the queue. Splitting any other block adds
+its smaller child, which suffices for this invariant when targets first
+separate. A state returns to the queue after processing only in a block of
+at most half its previous processed size. With $V$ productive states and
+$E$ productive arcs, the measured state and predecessor visits are thus
+bounded by $V(1+\lfloor\log_2 V\rfloor)$ and $E(1+\lfloor\log_2 V\rfloor)$
+respectively for $V>0$. Grouping and splitting use expected constant-time
+hash operations per record at fixed key size. Preprocessing is linear in
+the input records, and rational arithmetic and coefficient storage depend
+separately on bit length. This uses sparse partial-automaton refinement.
+[Hopcroft (1971)](https://www.cs.cmu.edu/~cdm/resources/Hopcroft1971.pdf),
+[Valmari and Lehtinen (2008), §§2–5](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.STACS.2008.1328).
+
+`StaticMinimizationWork` reports input records, productive states and
+arcs, and the two refinement counts. `max_states` bounds the productive
+states, and `max_work` bounds the input records plus the two refinement
+counts. The returned snapshot uses the input dtype and device. The
+shortest-suffix gauge can produce coefficients outside the original
+floating-point dtype, even from exactly represented source weights. The
+routine raises in that case. The acyclic gcd entry point retains its
+own gauge and coefficient ordering.
+
 ### Ranked constraints for a fixed input
 
 `ranked_output_candidates` restricts a candidate generator to one
@@ -930,7 +985,9 @@ choices held fixed.
         - invert
         - join
         - penalized_regular_ngram_projection
+        - StaticMinimizationWork
         - minimize_static_acceptor
+        - minimize_static_acceptor_with_work
         - project
         - regular_string_ep
         - ranked_output_candidates
