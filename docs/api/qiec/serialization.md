@@ -259,6 +259,17 @@ to be discharged report the observation's handler as the obstacle.
 
 ::: quivers.qiec.relation_feature_moments.FixedRelationFeatureMomentRequest
 
+`FixedCyclicRelationFeatureMomentRequest` adds an explicit per-component
+closure order to the same observation and chart budgets. It uses the
+same handler identity and returns the same unnormalized log-space
+observable. Its marked-occurrence calculation combines certified scalar
+prefix and suffix closures, including repeated visits. The component
+order includes auxiliary states needed to preserve parallel occurrences.
+Insufficient order, divergence, and an uncertifiable closure are reported
+by the scalar evaluator.
+
+::: quivers.qiec.relation_feature_moments.FixedCyclicRelationFeatureMomentRequest
+
 ## String factor graphs
 
 `StringFactorGraphSpec` records the nominal alphabet and optional

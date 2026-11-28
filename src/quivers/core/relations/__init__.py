@@ -601,12 +601,15 @@ class FixedStringQuery:
         *,
         initial_logs: torch.Tensor | None = None,
         final_logs: torch.Tensor | None = None,
+        allow_cyclic: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the log total mass and unnormalized log feature moments.
 
         For each feature, the moment sums the path weight times the sum
-        of its nonnegative feature increments. The productive observation
-        must be acyclic and use Markov or LogProb probability weights.
+        of its nonnegative feature increments. Observations use Markov or
+        LogProb probability weights. Acyclic observations use the packed
+        expectation carrier. The cyclic form uses the certified scalar
+        component closures on both sides of each marked occurrence.
 
         Parameters
         ----------
@@ -615,6 +618,9 @@ class FixedStringQuery:
             same nonempty feature axis, dtype, and device. A value of
             minus infinity contributes zero. Omitted boundary tables
             contribute zero increments.
+        allow_cyclic : bool
+            Use the marked-occurrence evaluator for a productive cycle.
+            The query must also have an explicit closure size limit.
 
         Returns
         -------
@@ -627,7 +633,9 @@ class FixedStringQuery:
         Raises
         ------
         ProductiveEpsilonCycleError
-            The productive observation needs a closure capability.
+            The productive observation needs explicit cyclic moments.
+        DivergentClosureError, UndecidedClosureError
+            A required scalar closure diverges or cannot be certified.
         TypeError
             The relation does not have floating-point probability weights.
         ValueError
@@ -641,6 +649,7 @@ class FixedStringQuery:
             arc_logs,
             initial_logs,
             final_logs,
+            allow_cyclic=allow_cyclic,
         )
 
 

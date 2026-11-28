@@ -656,8 +656,10 @@ class _PathWalks:
         arc_logs: torch.Tensor,
         initial_logs: torch.Tensor | None,
         final_logs: torch.Tensor | None,
+        *,
+        allow_cyclic: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        plan = self._feature_plan
+        plan = None if self._cyclic and allow_cyclic else self._feature_plan
         algebra = _probability_algebra(weights, algebra)
         if algebra is MARKOV:
             weights = _markov_log_weights(weights)
@@ -694,6 +696,8 @@ class _PathWalks:
                     "on the weight dtype and device"
                 )
             features.append(values)
+        if plan is None:
+            return self._closed_log_feature_moments(weights, features)
         carrier = ExpectationSemiring(FreeSemimodule(LOG_PROB, width))
         local_weights = _take(weights, tuple(slots))
         local_moments = carrier.module.act(local_weights, torch.cat(features))
@@ -703,6 +707,32 @@ class _PathWalks:
                 "log feature moments are outside the evaluation precision"
             )
         return carrier.parts(result)
+
+    def _closed_log_feature_moments(
+        self, weights: torch.Tensor, features: list[torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        total, prefix = self._forward.evaluate(weights, LOG_PROB)
+        _, suffix = self._backward.evaluate(weights, LOG_PROB)
+        events = self._events
+        unit = weights.new_zeros(1)
+        # The marked occurrence splits each walk into an arbitrary prefix,
+        # one original occurrence, and an arbitrary suffix. In a component
+        # this is A* B A*, with one term for every possible mark of a walk.
+        left = _take(torch.cat((prefix, unit)), events.prefix)
+        right = _take(torch.cat((suffix, unit)), events.suffix)
+        marked = left + _take(weights, events.slots) + right
+        rows = torch.cat(
+            tuple(
+                _take(group, indices)
+                for group, indices in zip(features, events.original_ids, strict=True)
+            )
+        )
+        moments = LOG_PROB.join(marked.unsqueeze(-1) + rows, dim=0)
+        if not bool(LOG_PROB.contains(total) & LOG_PROB.contains(moments).all()):
+            raise OverflowError(
+                "log feature moments are outside the evaluation precision"
+            )
+        return total, moments
 
 
 __all__ = ["ArcCounts", "PathStatistics", "RelationPath"]

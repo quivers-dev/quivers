@@ -23,7 +23,10 @@ from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
 )
-from quivers.qiec.relation_feature_moments import FixedRelationFeatureMomentRequest
+from quivers.qiec.relation_feature_moments import (
+    FixedCyclicRelationFeatureMomentRequest,
+    FixedRelationFeatureMomentRequest,
+)
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
@@ -165,7 +168,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The live scalar tensors supplying the request's weight identities.
@@ -183,7 +186,8 @@ class FixedRelationRuntimeProvider:
         | FixedComposedRelationRequest
         | FixedRelationMarginalMapRequest
         | FixedTransformedRelationRequest
-        | FixedRelationFeatureMomentRequest,
+        | FixedRelationFeatureMomentRequest
+        | FixedCyclicRelationFeatureMomentRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
         handler_name: str,
@@ -199,7 +203,10 @@ class FixedRelationRuntimeProvider:
         )
         self._score: Callable[[], torch.Tensor]
         self._feature_size: int | None = None
-        if isinstance(request, FixedRelationFeatureMomentRequest):
+        if isinstance(
+            request,
+            FixedRelationFeatureMomentRequest | FixedCyclicRelationFeatureMomentRequest,
+        ):
             if handler_name != request.handler_name:
                 raise ValueError(
                     "fixed feature moments require their exact observation handler"

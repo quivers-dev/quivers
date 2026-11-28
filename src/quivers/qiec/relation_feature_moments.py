@@ -1,4 +1,4 @@
-"""Checked fixed-word requests for packed sparse log feature moments."""
+"""Checked fixed-word requests for sparse log feature moments."""
 
 from __future__ import annotations
 
@@ -160,6 +160,8 @@ def _moment_vector(
     arcs: torch.Tensor,
     initial: torch.Tensor | None,
     final: torch.Tensor | None,
+    *,
+    allow_cyclic: bool,
 ) -> torch.Tensor:
     """Evaluate a bounded feature query with live original weights.
 
@@ -169,6 +171,8 @@ def _moment_vector(
         The checked reusable observation.
     arcs, initial, final : torch.Tensor or None
         Constant log features of the original occurrences.
+    allow_cyclic : bool
+        Whether the request permits certified scalar component closure.
 
     Returns
     -------
@@ -176,7 +180,7 @@ def _moment_vector(
         The log total followed by the ordered log weighted sums.
     """
     total, moments = query.log_feature_moments(
-        arcs, initial_logs=initial, final_logs=final
+        arcs, initial_logs=initial, final_logs=final, allow_cyclic=allow_cyclic
     )
     return torch.cat((total.reshape(1), moments))
 
@@ -264,6 +268,33 @@ class FixedRelationFeatureMomentRequest(QiecModel):
         RelationLimitError
             The fixed observation exceeds a declared resource budget.
         """
+        return self._plan(parameters, max_closure_size=None)
+
+    def _plan(
+        self,
+        parameters: Mapping[ParameterId, torch.Tensor],
+        *,
+        max_closure_size: int | None,
+    ) -> Callable[[], torch.Tensor]:
+        """Compile the fixed query under the requested closure capability.
+
+        Parameters
+        ----------
+        parameters : Mapping of ParameterId to torch.Tensor
+            The original live scalar weights.
+        max_closure_size : int or None
+            The per-component order limit for a cyclic request.
+
+        Returns
+        -------
+        callable
+            The reusable vector of log total and unnormalized feature moments.
+
+        Raises
+        ------
+        RelationLimitError
+            The typed feature table or active chart exceeds its cell budget.
+        """
         observation = self.observation
         columns = observation.feature_extent + 1
         original_cells = columns * observation._occurrences
@@ -271,7 +302,10 @@ class FixedRelationFeatureMomentRequest(QiecModel):
             raise RelationLimitError("original feature cells exceed max_feature_cells")
         relation = observation.relation.bind(parameters)
         query = relation.query(
-            observation.words, max_states=self.max_states, max_work=self.max_work
+            observation.words,
+            max_states=self.max_states,
+            max_work=self.max_work,
+            max_closure_size=max_closure_size,
         )
         work = query.work
         if (
@@ -290,7 +324,102 @@ class FixedRelationFeatureMomentRequest(QiecModel):
         )
         arcs, initial, final = converted
         assert arcs is not None
-        return partial(_moment_vector, query, arcs, initial, final)
+        return partial(
+            _moment_vector,
+            query,
+            arcs,
+            initial,
+            final,
+            allow_cyclic=max_closure_size is not None,
+        )
 
 
-__all__ = ["FixedRelationFeatureMomentRequest", "FixedRelationFeatureObservation"]
+class FixedCyclicRelationFeatureMomentRequest(QiecModel):
+    """Collect unnormalized nonnegative moments with certified scalar closure.
+
+    The original observation owns the same foreign name and result type
+    in either execution mode. This request supplies the extra operation
+    that a productive cyclic component requires.
+
+    Parameters
+    ----------
+    request : FixedRelationFeatureMomentRequest
+        The observation and its fixed state, arc and feature-cell bounds.
+    max_closure_size : int
+        The maximum order of each productive scalar component closure.
+    """
+
+    request: FixedRelationFeatureMomentRequest = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    max_closure_size: int
+
+    @dx.model_validator()
+    def _validate_closure_size(self) -> None:
+        """Require the explicit additional scalar closure budget.
+
+        Raises
+        ------
+        ValueError
+            The per-component order is negative or is not an integer.
+        """
+        if type(self.max_closure_size) is not int or self.max_closure_size < 0:
+            raise ValueError("max_closure_size must be a nonnegative integer")
+
+    @property
+    def observation(self) -> FixedRelationFeatureObservation:
+        """Return the unchanged typed observation.
+
+        Returns
+        -------
+        FixedRelationFeatureObservation
+            The original topology, words and fixed feature increments.
+        """
+        return self.request.observation
+
+    @property
+    def handler_name(self) -> str:
+        """Return the canonical foreign handler of the original observation.
+
+        Returns
+        -------
+        str
+            The checked handler name, independent of closure limits.
+        """
+        return self.request.handler_name
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Return the unchanged closed log tensor result type.
+
+        Returns
+        -------
+        TypeExpr
+            One log total followed by one unnormalized log moment per feature.
+        """
+        return self.request.result_type
+
+    def plan(
+        self, parameters: Mapping[ParameterId, torch.Tensor]
+    ) -> Callable[[], torch.Tensor]:
+        """Bind live weights and prepare the certified cyclic feature query.
+
+        Parameters
+        ----------
+        parameters : Mapping of ParameterId to torch.Tensor
+            The original live scalar weights.
+
+        Returns
+        -------
+        callable
+            The reusable result evaluator. Divergent or uncertifiable
+            scalar closures report their failure at evaluation.
+        """
+        return self.request._plan(parameters, max_closure_size=self.max_closure_size)
+
+
+__all__ = [
+    "FixedCyclicRelationFeatureMomentRequest",
+    "FixedRelationFeatureMomentRequest",
+    "FixedRelationFeatureObservation",
+]

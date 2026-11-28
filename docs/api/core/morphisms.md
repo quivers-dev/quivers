@@ -496,9 +496,19 @@ path with a log weight of $-1000$. Feature rows follow original
 occurrences even when weights are tied or an arc is traversed at
 multiple offsets. `path_statistics` computes entropy and signed
 additive costs, including on observations with a supported cyclic
-closure. The feature pass requires an
-acyclic productive observation and stores a fixed-width carrier at each
-active chart entry.
+closure. The packed expectation pass uses a fixed-width carrier at each
+active entry of an acyclic observation chart.
+
+For a productive cyclic observation, pass `allow_cyclic=True` to a
+query with a scalar closure budget. For each arc occurrence $e:s\to t$,
+the unnormalized moment adds $\alpha(s)w(e)f(e)\beta(t)$, with
+corresponding terms for initial and final marks. Choosing one marked
+visit gives a unique prefix, occurrence, and suffix. Since the summands
+are nonnegative, their order can change under a certified finite scalar
+closure. Inside one component this computes $A^* B_f A^*$, where $B_f$
+sums the feature-weighted original arcs of that component. Repeated visits
+and distinct parallel occurrences both contribute. Divergence and an
+uncertifiable scalar closure produce the corresponding scalar errors.
 
 ### Alignment-marginal output ranking
 
