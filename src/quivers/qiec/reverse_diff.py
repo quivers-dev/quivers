@@ -1,8 +1,11 @@
-"""Compile a bounded nominal reverse handler with immutable cotangents."""
+"""Elaborate or compile a nominal reverse graph with immutable cotangents."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from itertools import count
 from math import isfinite
+from typing import Literal
 
 from quivers.qiec.checking import KernelError
 from quivers.qiec.effects import (
@@ -46,8 +49,48 @@ from quivers.qiec.terms import (
 from quivers.qiec.types import INT, REAL, TypeApplication, product_type
 
 _MAX_VERTICES = 6
+_MAX_COMPILED_VERTICES = 256
 _ZERO = LiteralValue(value=0.0, type=REAL)
 _ONE = LiteralValue(value=1.0, type=REAL)
+
+
+@dataclass(frozen=True)
+class _SeedVertex:
+    """One checked input or literal and the source request that binds it.
+
+    Parameters
+    ----------
+    value : Value
+        The checked parameter reference or Real literal.
+    origin : SourceOrigin
+        The source seed request's origin.
+    """
+
+    value: Value
+    origin: SourceOrigin
+
+
+@dataclass(frozen=True)
+class _BinaryVertex:
+    """The ordered operand occurrences of an arithmetic vertex.
+
+    Parameters
+    ----------
+    operation : {"add", "mul"}
+        The arithmetic used at this vertex.
+    left, right : int
+        The two operand slots in source order, possibly equal.
+    origin : SourceOrigin
+        The source arithmetic request's origin.
+    """
+
+    operation: Literal["add", "mul"]
+    left: int
+    right: int
+    origin: SourceOrigin
+
+
+type _ReverseVertex = _SeedVertex | _BinaryVertex
 
 
 def _source_vertices(
@@ -55,29 +98,36 @@ def _source_vertices(
     instance: EffectInstanceId,
     handler: HandlerDef,
     operations: dict[str, OperationDef],
-) -> int:
-    """Validate sequential allocation and the terminal stop of the actual source.
+    *,
+    maximum: int,
+    limit_code: str,
+) -> tuple[tuple[_ReverseVertex, ...], int]:
+    """Check sequential allocation and collect the ordered operand slots.
 
     Parameters
     ----------
     entry : NamedComputation
-        The single source entry with the original nominal requests.
+        The source entry with its original requests.
     instance : EffectInstanceId
-        The sole lexical reverse scope.
+        The one lexical reverse instance.
     handler : HandlerDef
         Its linear handler signature.
     operations : dict[str, OperationDef]
-        The checked seed, binary operators and stopping operation.
+        The checked seed, arithmetic and stop operations.
+    maximum : int
+        The largest graph supported by the selected elaboration.
+    limit_code : str
+        The diagnostic code for exceeding that maximum.
 
     Returns
     -------
-    int
-        The vertex count, in allocation order.
+    tuple[tuple[_ReverseVertex, ...], int]
+        The vertices in allocation order and the selected output slot.
 
     Raises
     ------
     KernelError
-        If source control, inputs, aliases, allocation or stopping fails.
+        If the source control, scope, inputs, size, allocation or stop fails.
     """
     term = entry.body
     if (
@@ -92,12 +142,11 @@ def _source_vertices(
     ):
         raise KernelError("reverse differentiation needs one closed named handler")
     term = term.computation
-    seen: set[Local] = set()
+    positions: dict[Local, int] = {}
+    vertices: list[_ReverseVertex] = []
     while isinstance(term, Bind):
-        if len(seen) == _MAX_VERTICES:
-            raise KernelError(
-                f"reverse source exceeds {_MAX_VERTICES} vertices", "qiec-reverse-limit"
-            )
+        if len(vertices) == maximum:
+            raise KernelError(f"reverse source exceeds {maximum} vertices", limit_code)
         node = term.first
         if not isinstance(node, Perform) or node.request.instance != instance:
             raise KernelError("a reverse vertex must use the active named instance")
@@ -110,7 +159,7 @@ def _source_vertices(
         ):
             raise KernelError("a reverse vertex must be seeded, added or multiplied")
         slot, *operands = request.arguments
-        position = len(seen)
+        position = len(vertices)
         if (
             not isinstance(slot, LiteralValue)
             or slot.type != INT
@@ -118,6 +167,7 @@ def _source_vertices(
             or slot.value != position
         ):
             raise KernelError("reverse vertex slots must be fresh and consecutive")
+        origin = request.origin.origin
         if position < len(entry.parameters):
             if name != operations["seed"].id or operands != [
                 Var(local=entry.parameters[position])
@@ -125,6 +175,7 @@ def _source_vertices(
                 raise KernelError(
                     "reverse source must seed each input once in parameter order"
                 )
+            vertices.append(_SeedVertex(operands[0], origin))
         elif name == operations["seed"].id:
             (constant,) = operands
             if (
@@ -137,24 +188,38 @@ def _source_vertices(
                 raise KernelError(
                     "a reverse seed after the inputs must be a Real constant"
                 )
-        elif not all(
-            isinstance(operand, Var) and operand.local in seen for operand in operands
-        ):
-            raise KernelError(
-                "reverse operands must be earlier vertices of the same instance"
+            vertices.append(_SeedVertex(constant, origin))
+        else:
+            left, right = operands
+            if (
+                not isinstance(left, Var)
+                or left.local not in positions
+                or not isinstance(right, Var)
+                or right.local not in positions
+            ):
+                raise KernelError(
+                    "reverse operands must be earlier vertices of the same instance"
+                )
+            vertices.append(
+                _BinaryVertex(
+                    "add" if name == operations["add"].id else "mul",
+                    positions[left.local],
+                    positions[right.local],
+                    origin,
+                )
             )
-        seen.add(term.binder)
+        positions[term.binder] = position
         term = term.then
     if (
-        len(seen) < max(1, len(entry.parameters))
+        len(vertices) < max(1, len(entry.parameters))
         or not isinstance(term, Perform)
         or term.request.instance != instance
         or term.request.operation != operations["stop"].id
         or not isinstance(chosen := term.request.arguments[0], Var)
-        or chosen.local not in seen
+        or chosen.local not in positions
     ):
         raise KernelError("reverse source must stop on a vertex of its own instance")
-    return len(seen)
+    return tuple(vertices), positions[chosen.local]
 
 
 class _ReverseHandler:
@@ -472,43 +537,41 @@ class _ReverseHandler:
         )
 
 
-def elaborate_reverse_diff(
+def _checked_reverse_graph(
     module: QiecModule,
     instance: EffectInstanceId,
     handler: HandlerId,
     constructor: ConstructorId,
-) -> QiecModule:
-    """Fill a named reverse handler with a bounded immutable cotangent sweep.
-
-    The source seeds its Real parameters in order, can seed Real constants
-    thereafter, and adds or multiplies earlier vertices. The explicit
-    final stop chooses the output vertex. Arithmetic clauses first resume
-    once and update both operand slots in the returned answer. The answer
-    consists of the primal followed by one cotangent per vertex in source
-    order. The parameter cotangents form the first part of that vector.
+    *,
+    maximum: int,
+    limit_code: str,
+) -> tuple[HandlerDef, tuple[OperationDef, ...], tuple[_ReverseVertex, ...], int]:
+    """Check the source and its nominal linear handler signature together.
 
     Parameters
     ----------
     module : QiecModule
-        One checked source entry with a straight-line named reverse graph.
+        The module containing the selected graph and its declarations.
     instance : EffectInstanceId
         The actual declared lexical reverse instance.
     handler : HandlerId
-        Its total grade-one handler signature.
+        Its total grade-one handler.
     constructor : ConstructorId
-        Its one nominal constructor with Real and Int fields.
+        Its nominal constructor with Real and Int fields.
+    maximum : int
+        The largest graph supported by the selected elaboration.
+    limit_code : str
+        The diagnostic code for exceeding that maximum.
 
     Returns
     -------
-    QiecModule
-        The ordinary revalidated module with an authored reverse handler.
+    tuple
+        The handler, its operations, the vertices and the selected slot.
 
     Raises
     ------
     KernelError
-        If the numeric carrier, signature or source violates the exact
-        forward graph shape. The code `qiec-reverse-limit` identifies a
-        graph with more than six vertices.
+        If module validation or the nominal graph contract fails.
     """
     if len(module.computations) != 1:
         raise KernelError("reverse differentiation needs one selected source entry")
@@ -566,18 +629,72 @@ def elaborate_reverse_diff(
         raise KernelError(
             "reverse differentiation needs its total linear handler signature"
         )
-    vertices = _source_vertices(
-        module.computations[0], instance, declaration, operations
+    vertices, chosen = _source_vertices(
+        module.computations[0],
+        instance,
+        declaration,
+        operations,
+        maximum=maximum,
+        limit_code=limit_code,
     )
-    if declaration.output_type != product_type(*((REAL,) * (vertices + 1))):
+    if declaration.output_type != product_type(*((REAL,) * (len(vertices) + 1))):
         raise KernelError(
             "reverse answer needs the primal and one Real cotangent per vertex"
         )
-    builder = _ReverseHandler(module, declaration, constructor, vertices)
+    return declaration, tuple(operations.values()), vertices, chosen
+
+
+def elaborate_reverse_diff(
+    module: QiecModule,
+    instance: EffectInstanceId,
+    handler: HandlerId,
+    constructor: ConstructorId,
+) -> QiecModule:
+    """Fill a named reverse handler with a bounded immutable cotangent sweep.
+
+    The source seeds its Real parameters in order, can seed Real constants
+    thereafter, and adds or multiplies earlier vertices. The explicit
+    final stop chooses the output vertex. Arithmetic clauses first resume
+    once and update both operand slots in the returned answer. The answer
+    consists of the primal followed by one cotangent per vertex in source
+    order. The parameter cotangents form the first part of that vector.
+
+    Parameters
+    ----------
+    module : QiecModule
+        One checked source entry with a straight-line named reverse graph.
+    instance : EffectInstanceId
+        The actual declared lexical reverse instance.
+    handler : HandlerId
+        Its total grade-one handler signature.
+    constructor : ConstructorId
+        Its one nominal constructor with Real and Int fields.
+
+    Returns
+    -------
+    QiecModule
+        The ordinary revalidated module with an authored reverse handler.
+
+    Raises
+    ------
+    KernelError
+        If the numeric carrier, signature or source violates the exact
+        forward graph shape. The code `qiec-reverse-limit` identifies a
+        graph with more than six vertices.
+    """
+    declaration, operations, vertices, _ = _checked_reverse_graph(
+        module,
+        instance,
+        handler,
+        constructor,
+        maximum=_MAX_VERTICES,
+        limit_code="qiec-reverse-limit",
+    )
+    builder = _ReverseHandler(module, declaration, constructor, len(vertices))
     authored = declaration.with_(
         implementation="authored",
         return_clause=builder.return_clause(),
-        clauses=tuple(builder.clause(operation) for operation in operations.values()),
+        clauses=tuple(builder.clause(operation) for operation in operations),
     )
     lowered = module.with_(
         handlers=tuple(
@@ -588,4 +705,194 @@ def elaborate_reverse_diff(
     return lowered
 
 
-__all__ = ["elaborate_reverse_diff"]
+def _real_operation(
+    name: Literal["add", "mul"], left: Value, right: Value, origin: SourceOrigin
+) -> PrimitiveApplication:
+    """Create a primitive for one source vertex or its reverse contribution.
+
+    Parameters
+    ----------
+    name : {"add", "mul"}
+        The scalar operation's name before its type suffix.
+    left, right : Value
+        Its Real operands in order.
+    origin : SourceOrigin
+        The source request associated with the primitive.
+
+    Returns
+    -------
+    PrimitiveApplication
+        The pure Real arithmetic term.
+    """
+    primitive = PRIMITIVES[f"{name}_real"]
+    return PrimitiveApplication(
+        primitive=primitive.id,
+        name=primitive.name,
+        arguments=(left, right),
+        result_type=REAL,
+        origin=origin,
+    )
+
+
+def _compiled_body(
+    entry: NamedComputation, vertices: tuple[_ReverseVertex, ...], chosen: int
+) -> Return:
+    """Bind every primal and adjoint in dependency order.
+
+    Parameters
+    ----------
+    entry : NamedComputation
+        The source entry providing parameters and the result type.
+    vertices : tuple[_ReverseVertex, ...]
+        The checked vertices in allocation order.
+    chosen : int
+        The source slot selected by the terminal stop.
+
+    Returns
+    -------
+    Return
+        One flat value binding sequence producing the primal and adjoints.
+    """
+    used = {parameter.name for parameter in entry.parameters}
+    bindings: list[LetBinding] = []
+    supply = count()
+
+    def bind(value: Value) -> Var:
+        """Append one Real binding and return its reference.
+
+        Parameters
+        ----------
+        value : Value
+            The Real value to bind in the generated sequence.
+
+        Returns
+        -------
+        Var
+            The fresh Real reference.
+        """
+        # Target name sanitization cannot turn a different source name into
+        # one of these ASCII alphanumeric names.
+        name = next(
+            f"reverseValue{i}" for i in supply if f"reverseValue{i}" not in used
+        )
+        binder = Local(name=name, type=REAL)
+        bindings.append(LetBinding(binder=binder, value=value))
+        return Var(local=binder)
+
+    primals: list[Var] = []
+    for vertex in vertices:
+        value = (
+            vertex.value
+            if isinstance(vertex, _SeedVertex)
+            else _real_operation(
+                vertex.operation,
+                primals[vertex.left],
+                primals[vertex.right],
+                vertex.origin,
+            )
+        )
+        primals.append(bind(value))
+
+    pending: list[list[Value]] = [[] for _ in vertices]
+    pending[chosen].append(_ONE)
+    adjoints: list[Var] = []
+    for slot in reversed(range(len(vertices))):
+        vertex = vertices[slot]
+        terms = iter(pending[slot])
+        total = next(terms, _ZERO)
+        for term in terms:
+            total = bind(_real_operation("add", total, term, vertex.origin))
+        cotangent = bind(total)
+        adjoints.append(cotangent)
+        if isinstance(vertex, _BinaryVertex):
+            # The two positions are separate edges even when their slots agree.
+            for predecessor, other in (
+                (vertex.left, vertex.right),
+                (vertex.right, vertex.left),
+            ):
+                contribution = (
+                    cotangent
+                    if vertex.operation == "add"
+                    else _real_operation(
+                        "mul", cotangent, primals[other], vertex.origin
+                    )
+                )
+                pending[predecessor].append(contribution)
+
+    result_type = entry.type.result
+    result = TupleValue(
+        items=(primals[chosen], *reversed(adjoints)), result_type=result_type
+    )
+    return Return(
+        value=LetValue(bindings=tuple(bindings), body=result, result_type=result_type)
+    )
+
+
+def compile_reverse_diff(
+    module: QiecModule,
+    instance: EffectInstanceId,
+    handler: HandlerId,
+    constructor: ConstructorId,
+) -> QiecModule:
+    """Compile a checked nominal reverse graph to an immutable pure computation.
+
+    The compiled module contains the specialized computation and its entry
+    points. Its arithmetic retains source vertex origins and emits no
+    original operation events. Use `elaborate_reverse_diff` to run the
+    named handler and observe those events.
+
+    Each binary vertex adds one primal operation and sends a contribution
+    along each ordered operand edge, including two uses of the same
+    operand. All contributions to a vertex are added before its adjoint is
+    passed down. With B binary vertices the computation executes at most
+    5B scalar arithmetic operations. The bound counts checked arithmetic
+    and excludes parsing and validation. The recurrence gives the exact
+    polynomial derivative over the reals. Runtime Real values can round
+    or overflow.
+
+    Parameters
+    ----------
+    module : QiecModule
+        One checked source entry with a straight-line named reverse graph.
+    instance : EffectInstanceId
+        The actual declared lexical reverse instance.
+    handler : HandlerId
+        Its total grade-one handler signature.
+    constructor : ConstructorId
+        Its one nominal constructor with Real and Int fields.
+
+    Returns
+    -------
+    QiecModule
+        The revalidated pure computation and its entry points. The result
+        is the selected primal followed by all vertex cotangents in the
+        original allocation order.
+
+    Raises
+    ------
+    KernelError
+        If the carrier, handler or source violates the nominal graph
+        contract. The code `qiec-reverse-compile-limit` identifies a graph
+        with more than 256 vertices.
+    """
+    _, _, vertices, chosen = _checked_reverse_graph(
+        module,
+        instance,
+        handler,
+        constructor,
+        maximum=_MAX_COMPILED_VERTICES,
+        limit_code="qiec-reverse-compile-limit",
+    )
+    (entry,) = module.computations
+    compiled = QiecModule(
+        module=module.module,
+        source_protocol=module.source_protocol,
+        computations=(entry.with_(body=_compiled_body(entry, vertices, chosen)),),
+        entries=module.entries,
+        gap=module.gap,
+    )
+    validate_module(compiled)
+    return compiled
+
+
+__all__ = ["compile_reverse_diff", "elaborate_reverse_diff"]

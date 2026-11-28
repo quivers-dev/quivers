@@ -819,7 +819,7 @@ vertices and rejects larger inputs with `qiec-reverse-limit`.
 
 ```python
 from quivers.dsl import Compiler, parse
-from quivers.qiec import elaborate_reverse_diff, run_named
+from quivers.qiec import compile_reverse_diff, elaborate_reverse_diff, run_named
 from quivers.qiec.numbers import host_value
 
 source = """
@@ -853,7 +853,31 @@ handler, = module.handlers
 constructor, = module.constructors
 lowered = elaborate_reverse_diff(module, instance.entry.instance, handler.id, constructor.id)
 assert host_value(run_named(lowered, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
+compiled = compile_reverse_diff(module, instance.entry.instance, handler.id, constructor.id)
+assert host_value(run_named(compiled, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
 ```
+
+`compile_reverse_diff` produces a standalone pure QIEC module for the
+same checked graph and supports up to 256 vertices. It retains the entry's
+identity and result type. The source vertex at slot $i$ supplies primal
+binding $i$ and cotangent $i+1$ in the returned tuple. The selected stop
+supplies the first tuple element. Forward arithmetic retains the origin of
+its source request. A multiplication's edge contribution uses the origin
+of the consumer, and an adjoint sum uses the origin of its vertex. The
+pure module emits no named-operation events. The bounded elaboration
+retains those operations and their addresses.
+
+The compiler binds primals in allocation order and completes cotangents
+in reverse order. Each operand occurrence contributes once to its
+predecessor. If the graph has $B$ binary vertices, of which $M$ multiply,
+evaluation performs $B$ primal operations, $2M$ reverse multiplications
+and at most $2B$ adjoint additions. This gives a bound of $5B$ scalar
+operations. The cost counts evaluation of the checked graph. Source
+parsing, module validation and target rendering have their own costs.
+In particular, the QVR text parser can reach its nesting limit for a
+long written result product before the compiler's graph limit. The
+derivative recurrence is exact over the reals. Machine arithmetic uses
+the invocation's numeric representation and may round or overflow.
 
 ::: quivers.qiec.reverse_diff
 

@@ -284,7 +284,7 @@ from quivers.qiec.scoped_elaboration import (
 )
 from quivers.qiec.scoped_catch import elaborate_static_catch
 from quivers.qiec.forward_diff import ForwardDiffInstance, elaborate_forward_diff
-from quivers.qiec.reverse_diff import elaborate_reverse_diff
+from quivers.qiec.reverse_diff import compile_reverse_diff, elaborate_reverse_diff
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1300,6 +1300,7 @@ __all__ += [
     "elaborate_static_catch",
     "ForwardDiffInstance",
     "elaborate_forward_diff",
+    "compile_reverse_diff",
     "elaborate_reverse_diff",
 ]
 __all__ += [
