@@ -130,6 +130,12 @@ row by naming lexical effect instances, as in
 `interpret evaluate [structure=cartesian, effects=[score]] : Scope -> Real`.
 A caller handles the row in the usual QVR scope. Each application runs its
 body’s effects once, and an application that the rule skips emits no requests.
+Eager premises run in the order written, including those of ordinary rules
+such as a binary constructor. If a binder applies its body twice and each
+application flips a fair coin, the results agree with probability $1/2$.
+If the binder applies its body once and uses that result twice, they agree
+with probability $1$. Reusing the captured proof and environment leaves
+the choice between these two computations to the authored operation.
 The [checked Python adapter](../api/qiec/rules.md#checked-right-scoped-folds)
 also accepts distinct carriers and closed effect rows by judgment.
 

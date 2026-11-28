@@ -192,7 +192,21 @@ named instances required by its effect rows. The binding can be serialized along
 executable QIEC module. Its [`validate`][quivers.qiec.ScopedInterpretationBinding.validate]
 method rechecks the executable declarations before using a restored binding. The
 companion has its own wire record and describes the scope and effect contract.
-Preservation of equations requires separate evidence.
+It carries no claims about preservation of proof equations. Its reconstruction
+checks the generated environment and fold against the checked computations,
+including premise order and the named effect instances.
+
+For the scope comparison, let $\rho$ map hypothesis positions in a context
+$\Gamma$ to positions of the same judgment in $\Delta$. Each renamed
+hypothesis reads the same value at a valuation $v$ of $\Delta$ as the
+original reads at $v\circ\rho$. Lookup follows the membership witness, and
+crossing a binder extends $\rho$ by the identity on the newly introduced
+positions. The same argument covers substituting a hypothesis by a reference
+to another position. It extends to result equality for total pure rule
+operations that consume scoped arguments through application. An operation
+that inspects proof syntax may distinguish the proofs. This comparison
+does not license precomputing a replacement with effects or erasing,
+duplicating, or permuting its requests.
 
 For $J$ judgment forms, the membership declarations contain $J(J+1)$ constructors, each with
 $J$ uniform carrier types. Each concrete hypothesis reference at depth $d$ adds $d+1$
