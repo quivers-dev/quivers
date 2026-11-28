@@ -157,6 +157,7 @@ from quivers.qiec.effects import (
 )
 from quivers.qiec.evidence import BranchGiven, Reflexivity
 from quivers.qiec.foreign import (
+    DeductionOutcomeGrouping,
     DeductionOutcomes,
     Enumeration,
     KernelSemiring,
@@ -381,6 +382,7 @@ _NODE_CLASSES = (
     Enumeration,
     Settlement,
     DeductionOutcomes,
+    DeductionOutcomeGrouping,
     EffectRequest,
     NamedEffectInstance,
     NamedComputation,

@@ -14,6 +14,9 @@ from that statement and from nothing else, in particular never from the handler'
   only when the stop certifies it.
 - [`DeductionOutcomes`][quivers.qiec.foreign.DeductionOutcomes] folds a finite packed lexical
   chart in `LogProb` and groups full-span goal masses by a structural key.
+- [`DeductionOutcomeGrouping`][quivers.qiec.foreign.DeductionOutcomeGrouping] groups weighted rows
+  whose checked keys admit exact structural equality. Ordinary QIEC calls compute the keys before
+  this handler runs.
 
 A [`KernelSemiring`][quivers.qiec.foreign.KernelSemiring] names a member of the
 [algebra hierarchy](../core/algebras.md) by the subject of its [law claims](contracts.md#law-claims)

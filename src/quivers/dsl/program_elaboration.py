@@ -4290,6 +4290,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         deduction = self._parse_call(step.value, step)
         if deduction is not None:
             call = self._deduction_call(deduction, scope, state, step)
+            if deduction.typed_outcome_key:
+                rows = self._bind_step(scope, None, call.result_type, call, step)
+                name = f"{deduction.deduction}__{deduction.outcome_key}__key_outcomes"
+                signature = self.computation_signatures[name]
+                call = Call(
+                    callee=signature.id,
+                    name=signature.name,
+                    static_arguments=(),
+                    arguments=(
+                        Var(local=rows),
+                        LiteralValue(value=deduction.normalize_outcomes, type=BOOL),
+                    ),
+                    result_type=signature.result,
+                    effects=signature.effects,
+                    origin=call.origin,
+                )
             self._bind_step(scope, step.name, call.result_type, call, step)
             return
         scan = scan_let_call(step.value)
@@ -4376,6 +4392,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         rest = list(expr.args[2:])
         plate: str | None = None
         key: str | None = None
+        typed_key = False
         if outcomes:
             if target.name not in self._outcome_queries:
                 self._fail(
@@ -4383,20 +4400,28 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"{expr.func} requires a direct program let binding",
                     code=OUTCOME_CODE,
                 )
+            selector = rest.pop(0) if rest else None
             if (
-                not rest
-                or not isinstance(rest[0], LetExprString)
-                or rest[0].value not in DEDUCTION_OUTCOME_KEYS
+                isinstance(selector, LetExprVar)
+                and (target.name, selector.name) in self._outcome_keys
             ):
+                key, typed_key = selector.name, True
+            elif (
+                isinstance(selector, LetExprString)
+                and selector.value in DEDUCTION_OUTCOME_KEYS
+            ):
+                key = selector.value
+            else:
                 self._fail(
                     node,
-                    f'{expr.func} requires one of "item", "category", or "form" as the outcome key',
+                    f'{expr.func} requires "item", "category", "form", or a named pure outcome key',
                     code=OUTCOME_CODE,
                 )
-            selector, *rest = rest
-            assert isinstance(selector, LetExprString)
-            key = selector.value
-            if key == "form" and not self._deductions[target.name].uses_forms_cell[0]:
+            if (
+                not typed_key
+                and key == "form"
+                and not self._deductions[target.name].uses_forms_cell[0]
+            ):
                 self._fail(
                     node,
                     f"deduction {target.name!r} has no logical form field",
@@ -4435,6 +4460,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             plate=plate,
             bindings=tuple(bindings),
             outcome_key=key,
+            typed_outcome_key=typed_key,
             normalize_outcomes=expr.func == "parse_normalized_outcomes",
         )
 
@@ -4506,8 +4532,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if parse.outcome_key is not None:
             suffix = "outcomes"
             extra = (
-                LiteralValue(value=parse.outcome_key, type=STRING),
-                LiteralValue(value=parse.normalize_outcomes, type=BOOL),
+                LiteralValue(
+                    value="item" if parse.typed_outcome_key else parse.outcome_key,
+                    type=STRING,
+                ),
+                LiteralValue(
+                    value=parse.normalize_outcomes and not parse.typed_outcome_key,
+                    type=BOOL,
+                ),
             )
         if parse.bindings:
             extra = (*extra, self._production_table(parse, scope, state, node))
@@ -11108,7 +11140,9 @@ class _ParseCall(dx.Model):
     bindings : tuple[_ParseBinding, ...]
         The production probabilities, by left-hand side.
     outcome_key : str or None
-        One of the structural projections of a full-span goal for an outcome query.
+        The structural selector or the name of a checked key computation.
+    typed_outcome_key : bool
+        Whether the selector names a checked key computation.
     normalize_outcomes : bool
         Whether to normalize the outcome weights by the total goal mass.
     """
@@ -11118,6 +11152,7 @@ class _ParseCall(dx.Model):
     plate: str | None
     bindings: tuple[_ParseBinding, ...]
     outcome_key: str | None = None
+    typed_outcome_key: bool = False
     normalize_outcomes: bool = False
 
 
