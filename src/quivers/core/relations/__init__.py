@@ -45,6 +45,9 @@ __all__ = [
     "RelationLimitError",
     "RelationTopology",
     "Words",
+    "invert",
+    "project",
+    "trim",
 ]
 
 
@@ -397,3 +400,4 @@ from quivers.core.relations.calculus import (  # noqa: E402
     ComposedRelation,
     ComposedStringQuery,
 )
+from quivers.core.relations.transforms import invert, project, trim  # noqa: E402

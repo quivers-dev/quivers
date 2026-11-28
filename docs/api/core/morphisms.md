@@ -105,6 +105,26 @@ is linear in the operand slot counts and the productive graph, apart from comput
 operand weights. A productive cycle on the fixed outer words requires closure, even
 when it emits symbols on the shared tape or its current weight is zero.
 
+### Reusable topologies and tape operations
+
+`ComposedRelation.materialize(max_states=..., max_work=...)` builds a sparse product
+topology with the same epsilon filter. The result is a `RationalRelation` that can be
+used in a cascade, queried with bounded cyclic closure, or projected onto selected
+tapes. The limits cover reachable product and intermediate states, shared-label
+probes and constructed arc occurrences.
+
+Each matched pair becomes two consecutive arcs. The first writes the two outer
+labels and takes the left weight. The other advances with epsilon labels and takes
+the right weight. The intermediate state has that one continuation, so expansion
+preserves each path and its weight. With cyclic composition the local star receives
+the two primitive factors as separate matrix entries, preserving the information
+needed to check convergence. Both operands' original parameter sources are live.
+
+`invert` exchanges input and output tapes. `project` retains the supplied original
+tape positions in increasing order, summing over the words on erased tapes.
+`trim` keeps the arcs and boundary marks on structurally accepting walks, including
+zero-weight occurrences. These operations reuse the relation's weight source.
+
 ::: quivers.core.relations
     options:
       members:
@@ -122,3 +142,6 @@ when it emits symbols on the shared tape or its current weight is zero.
         - FiniteRelationRestriction
         - ProductiveEpsilonCycleError
         - RelationLimitError
+        - invert
+        - project
+        - trim
