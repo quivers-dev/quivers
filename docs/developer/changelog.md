@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Portable signed-delay tape equality.** Checked unary and cascade recipes can enforce equal words on two nominally identical tapes with live original weights and explicit construction limits.
 - **Explicit regular EP policies.** Choose a proved fixed-Lipschitz or adaptive-backtracking proximal step, provide checked initial sites, and inspect actual sparse moment work. Unsupported derivative or global error guarantees refuse.
 - **Packed Boolean proof outcomes.** A checked lexical interpretation can sum raw or normalized proof mass into Boolean outcomes by evaluating one finite truth table per cited rule and folding the reachable packed graph.
 - **Checked regular EP reports.** A named QVR computation can query normalized word scores, projection outcomes, and sweep diagnostics on its authored graph through the existing regular EP runtime. An evaluated log-zero normalizer reports an unavailable belief.
