@@ -13,6 +13,16 @@ occurrences of J, including distinct occurrences of the same judgment.
 For a rule with a right-scoped premise at J_1,...,J_n, its proof field
 has the index obtained by pushing those frames in that order. Induction on
 rule applications then gives the exact ambient context of every proof field.
+
+For J judgments there are J(J+1) membership constructors. Each written
+membership type has J uniform carrier arguments and one context argument.
+The other generated constructors follow the source rules, premises, and
+right extensions. Open proof conversion visits every node once and emits
+one membership constructor per skipped position plus one for selection
+at each hole. The context spine is shared in memory. Validation and wire
+encoding additionally process the type annotations, including nested
+frame applications. Encoding concrete proofs does not replace a packed
+parser when the requested observable admits aggregation.
 """
 
 from __future__ import annotations
