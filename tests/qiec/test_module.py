@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import didactic.api as dx
 import pytest
 
+from quivers.dsl import lower_qvr_to_qiec, parse
 from quivers.qiec import (
     ComputationId,
     EMPTY_ROW,
@@ -509,3 +512,21 @@ def test_a_module_that_fails_its_recheck_fails_it_every_time() -> None:
         with pytest.raises(KernelError, match="not declared type"):
             validate_module(wrong)
     validate_module(module)
+
+
+def test_selected_reachability_follows_authored_handler_clause_calls() -> None:
+    path = (
+        Path(__file__).parents[1] / "fixtures" / "qiec" / "authored_state_handler.qvr"
+    )
+    module = lower_qvr_to_qiec(parse(path.read_text()))
+    named = {computation.name: computation for computation in module.computations}
+    counted, bump, nested = (named[name] for name in ("counted", "bump", "nested"))
+    (state,) = module.handlers
+    assert kernel_module.called_computations(counted.body) == frozenset()
+    assert kernel_module._execution_reachability(module, counted.id) == (
+        {counted.id, bump.id},
+        {state.id},
+    )
+    assert kernel_module.reached_handlers(module, counted.id) == frozenset({state.id})
+    assert kernel_module._execution_reachability(module, bump.id) == ({bump.id}, set())
+    assert nested.id not in kernel_module._execution_reachability(module, counted.id)[0]

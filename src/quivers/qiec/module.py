@@ -461,6 +461,26 @@ def reached_handlers(module: QiecModule, root: ComputationId) -> frozenset[Handl
     frozenset[HandlerId]
         The identity of every handler installed along the way.
     """
+    _, handlers = _execution_reachability(module, root)
+    return frozenset(handlers)
+
+
+def _execution_reachability(
+    module: QiecModule, root: ComputationId
+) -> tuple[set[ComputationId], set[HandlerId]]:
+    """Walk the computations and handler clauses reachable from one root.
+
+    Parameters
+    ----------
+    module, root
+        The checked module and the selected computation.
+
+    Returns
+    -------
+    tuple
+        The reached computations and installed handlers, respectively.
+        Reachability is conservative across branches and handler clauses.
+    """
     computations = {computation.id: computation for computation in module.computations}
     handlers = {handler.id: handler for handler in module.handlers}
     seen_computations: set[ComputationId] = set()
@@ -490,7 +510,7 @@ def reached_handlers(module: QiecModule, root: ComputationId) -> frozenset[Handl
             )
             if declaration.return_clause is not None:
                 bodies.append(declaration.return_clause.body)
-    return frozenset(found)
+    return seen_computations, found
 
 
 def program_computations(module: QiecModule) -> frozenset[ComputationId]:
