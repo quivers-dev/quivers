@@ -186,6 +186,10 @@ expected number of traversals of each original arc. This takes linear
 arithmetic work and storage in the active graph, in addition to the source
 weight evaluation and construction of the graph. Queries reuse the graph
 structure across evaluations.
+For a differentiable weight, `weight(recompute_backward=True)` lets PyTorch
+discard the intermediate tensors of the path pass and compute them again
+during backward. The source weight evaluation and its saved tensors are
+outside the path checkpoint.
 
 ::: quivers.core.relations
     options:

@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Fixed-word path sums can recompute path intermediates during backward. The weight source is evaluated once.
 - Fixed-word path sums evaluate arcs in batches by topological level. Incoming terms use linear space even when states have very different numbers of incoming arcs.
 
 ## [0.70.0] - 2026-11-27
