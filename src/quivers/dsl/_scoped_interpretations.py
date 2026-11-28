@@ -9,17 +9,24 @@ import didactic.api as dx
 
 from quivers.dsl import ast_nodes as surface
 from quivers.dsl.compiler.structural import _signature_from_declaration
+from quivers.dsl.structural_elaboration import _root_sort
 from quivers.qiec import scoped_proof_fold, scoped_proof_types
-from quivers.qiec._scoped_proof_fold import _scoped_definitions
-from quivers.qiec._scoped_proof_types import ScopedProofTypes, _at
+from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
+from quivers.qiec._scoped_proof_fold import _scoped_definitions, _scoped_entry
+from quivers.qiec._scoped_proof_types import ScopedProofTypes
 from quivers.qiec.checking import ComputationSignature, KernelError
-from quivers.qiec.effects import ComputationType, EffectRow, RowEntry
+from quivers.qiec.contracts import InterpretationId
+from quivers.qiec.effects import EffectRow, RowEntry
 from quivers.qiec.identifiers import ComputationId, ConstructorId, FamilyId
 from quivers.qiec.kinds import TYPE, TypeBinder
-from quivers.qiec.module import NamedComputation
-from quivers.qiec.rules import CARTESIAN, presentation_of
+from quivers.qiec.module import NamedComputation, QiecModule, _execution_reachability
+from quivers.qiec.rules import (
+    CARTESIAN,
+    InterpretationDecl,
+    RulePresentation,
+    presentation_of,
+)
 from quivers.qiec.substitution import instantiate_telescope, substitute_type
-from quivers.qiec.terms import Call, ConstructorValue, Local, Var
 from quivers.qiec.types import TypeVariable
 
 if TYPE_CHECKING:
@@ -32,6 +39,13 @@ class ScopedSource:
 
     syntax: ScopedProofTypes
     root: FamilyId
+
+
+def _scoped_presentation(source: surface.SignatureDecl) -> RulePresentation:
+    """Apply the explicit Cartesian contract to a structural source signature."""
+    return presentation_of(_signature_from_declaration(source)).with_(
+        structure=CARTESIAN
+    )
 
 
 def declare_scoped_types(elaborator: _Elaborator) -> dict[str, ScopedSource]:
@@ -73,8 +87,7 @@ def declare_scoped_types(elaborator: _Elaborator) -> dict[str, ScopedSource]:
         if name in made:
             continue
         try:
-            signature = _signature_from_declaration(structural.declaration)
-            presentation = presentation_of(signature).with_(structure=CARTESIAN)
+            presentation = _scoped_presentation(structural.declaration)
             syntax = scoped_proof_types(presentation)
         except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             elaborator._fail_kernel(declaration, error, fallback="qiec-interpretation")
@@ -249,43 +262,72 @@ def lower_scoped_interpretation(
             f"missing scoped interpretation for {', '.join(missing)}",
             code="qiec-interpretation",
         )
-    generated, folds = _scoped_definitions(plan, selected)
-    chosen = folds[source.root]
-    empty_type = _at(syntax.empty)
-    proof_type = _at(
-        syntax.proofs[source.root], *syntax.carrier_types(carriers), empty_type
-    )
-    proof = Local(name="proof", type=proof_type)
+    generated, _ = _scoped_definitions(plan, selected)
     origin = elaborator._origin(
         declaration, ("scoped_interpretations", "entry"), "computation"
     )
-    return (
-        *generated,
-        NamedComputation(
-            id=ComputationId.derive(
-                origin.module, declaration.name, "scoped-interpretation"
-            ),
-            name=declaration.name,
-            telescope=(),
-            parameters=(proof,),
-            type=ComputationType(effects=row, result=semantic),
-            origin=origin,
-            body=Call(
-                callee=chosen.id,
-                name=chosen.name,
-                static_arguments=(empty_type,),
-                arguments=(
-                    Var(local=proof),
-                    ConstructorValue(
-                        constructor=syntax.empty.constructors[0],
-                        static_arguments=(),
-                        fields=(),
-                        result_type=empty_type,
-                    ),
+    return (*generated, _scoped_entry(plan, source.root, origin))
+
+
+def selected_scoped_interpretations(
+    source: surface.Module, module: QiecModule, selected: ComputationId
+) -> tuple[ScopedInterpretationBinding, ...]:
+    """Extract and check the scoped contracts reached from one program."""
+    declarations = [
+        declaration
+        for declaration in source.statements
+        if isinstance(declaration, surface.QiecInterpretationDecl)
+        and declaration.options
+    ]
+    if not declarations:
+        return ()
+    scopes = {
+        declaration.name: declaration
+        for declaration in source.statements
+        if isinstance(declaration, surface.SignatureDecl)
+    }
+    reached, _ = _execution_reachability(module, selected)
+    compiled = {computation.name: computation for computation in module.computations}
+    prepared: dict[str, RulePresentation] = {}
+    bindings = []
+    for declaration in declarations:
+        root = compiled[declaration.name]
+        if root.id not in reached:
+            continue
+        scope = scopes[declaration.deduction]
+        presentation = prepared.get(scope.name)
+        if presentation is None:
+            presentation = _scoped_presentation(scope)
+            prepared[scope.name] = presentation
+        root_sort = _root_sort(scope)
+        judgment = next(
+            item.id for item in presentation.judgments if item.name == root_sort
+        )
+        rules = {rule.name: rule.id for rule in presentation.rules}
+        operations = tuple(
+            (rules[clause.constructor], compiled[clause.operation].id)
+            for clause in declaration.clauses
+        )
+        identities = {entry.instance for entry in root.type.effects.entries}
+        binding = ScopedInterpretationBinding(
+            presentation=presentation,
+            interpretation=InterpretationDecl(
+                id=InterpretationId.derive(
+                    module.module, declaration.name, "scoped-interpretation"
                 ),
-                result_type=semantic,
-                effects=row,
-                origin=origin,
+                presentation=presentation.id,
+                operations=operations,
             ),
-        ),
-    )
+            computation=root.id,
+            judgment=judgment,
+            carriers=tuple(
+                (item.id, root.type.result) for item in presentation.judgments
+            ),
+            rows=tuple((item.id, root.type.effects) for item in presentation.judgments),
+            instances=tuple(
+                item for item in module.instances if item.entry.instance in identities
+            ),
+        )
+        binding.validate(module)
+        bindings.append(binding)
+    return tuple(bindings)

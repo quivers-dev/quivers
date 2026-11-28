@@ -11,6 +11,7 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous import ContinuousSpace, MonadicProgram
 from quivers.dsl import Compiler, CompileError, Module, parse, lower_qvr_to_qiec
+from quivers.dsl._scoped_interpretations import selected_scoped_interpretations
 from quivers.family_catalog import FamilyCatalog
 from quivers.dsl.ast_nodes import (
     ExportDecl,
@@ -39,6 +40,7 @@ from quivers.qiec import (
     IndexLiteral,
     ProgramEntry,
     ProgramParameter,
+    ScopedInterpretationBinding,
     TypeExpr,
     render_static,
     tensor_shape,
@@ -68,9 +70,15 @@ class ModelSchema(ValueModel):
     entry : ProgramEntry
         Typed parameters, site roles, plates, and static binders. The entry
         is immutable and compared by value, without rendering away its types.
+    scoped_interpretations : tuple of ScopedInterpretationBinding
+        The checked scoped contracts reachable from this entry, including
+        calls from installed authored handler clauses.
     """
 
     entry: ProgramEntry = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    scoped_interpretations: tuple[ScopedInterpretationBinding, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @property
     def inputs(self) -> tuple[ProgramParameter, ...]:
@@ -199,7 +207,12 @@ class Model:
         typed_entry = next((e for e in checked.entries if e.name == entry), None)
         if typed_entry is None:
             raise CompileError(f"entry {entry!r} has no checked input contract")
-        self.schema = ModelSchema(entry=typed_entry)
+        self.schema = ModelSchema(
+            entry=typed_entry,
+            scoped_interpretations=selected_scoped_interpretations(
+                self.syntax, checked, typed_entry.computation
+            ),
+        )
 
     @classmethod
     def from_file(
@@ -390,7 +403,12 @@ class Model:
             raise TypeError(f"entry {self.entry!r} is not a probabilistic program")
         if program.input_contract is not None:
             entry = program.input_contract
-        schema = ModelSchema(entry=entry)
+        schema = ModelSchema(
+            entry=entry,
+            scoped_interpretations=selected_scoped_interpretations(
+                self.syntax, qiec, entry.computation
+            ),
+        )
         expected = set(schema.types)
         required = (
             expected if require_observations else expected - set(schema.observations)
