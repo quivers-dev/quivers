@@ -26,6 +26,8 @@ from quivers.qiec import (
     validate_module,
 )
 from quivers.qiec.execution import ExecutionFailure, run_named
+from quivers.qiec.foreign import DeductionOutcomes
+from quivers.qiec.rules import RulePresentation
 from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import run_program
@@ -683,3 +685,55 @@ define is_x(word : String) : Bool !{} =
         QiecDiagnosticError, match="must be deterministic.*installs an effect handler"
     ):
         load_source(masked)
+
+
+def test_ordinary_proof_companion_accepts_normalized_production_weights() -> None:
+    source = (
+        GRAMMAR.replace("start=S]", "start=S, normalize=lhs]")
+        .replace(", lex)", ")")
+        .replace(", same)", ")")
+        .replace("[i, j, category, form]", "[i, j, category]")
+    )
+    model = Model(source, entry="assess")
+    assert len(model.schema.closed_interpretations) == 2
+    for binding in model.schema.closed_interpretations:
+        restored = loads(dumps(binding))
+        assert isinstance(restored, ClosedInterpretationBinding)
+        restored.validate(model.checked_module)
+
+
+def test_companion_refuses_a_different_checked_chart_proof_shape() -> None:
+    source = GRAMMAR.replace(
+        "    let proofs = parse_normalized_proofs",
+        '    let items = parse_outcomes(Mix, sentence, "item")\n'
+        "    let proofs = parse_normalized_proofs",
+        1,
+    )
+    model = Model(source, entry="assess")
+    module = model.checked_module
+    (handler,) = [
+        item for item in module.handlers if isinstance(item.foreign, DeductionOutcomes)
+    ]
+    chart = handler.foreign
+    assert isinstance(chart, DeductionOutcomes)
+    presentation = chart.presentation
+    assert isinstance(presentation, RulePresentation)
+    rule, *others = presentation.rules
+    first, *rest = rule.premises
+    i, k, category, form = first.judgment.arguments
+    assert isinstance(category, IndexLiteral) and category.value == "A"
+    different = first.judgment.with_(arguments=(i, k, category.with_(value="B"), form))
+    changed = presentation.with_(
+        rules=(rule.with_(premises=(first.with_(judgment=different), *rest)), *others)
+    )
+    forged = module.with_(
+        handlers=tuple(
+            item.with_(foreign=chart.with_(presentation=changed))
+            if item.id == handler.id
+            else item
+            for item in module.handlers
+        )
+    )
+    validate_module(forged)
+    with pytest.raises(RuleError, match="differs from its packed query"):
+        model.schema.closed_interpretations[0].validate(forged)

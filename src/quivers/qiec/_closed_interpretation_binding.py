@@ -89,8 +89,10 @@ class ClosedInterpretationBinding(QiecModel):
                 isinstance(query, DeductionOutcomes)
                 and isinstance(query.presentation, RulePresentation)
                 and query.presentation.id == presentation.id
-                and export_lexical_proofs(query.presentation, presentation.name)
-                != presentation
+                and export_lexical_proofs(
+                    query.presentation, presentation.name
+                ).declarations()
+                != presentation.declarations()
             ):
                 raise RuleError("closed interpretation differs from its packed query")
 
