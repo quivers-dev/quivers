@@ -183,32 +183,43 @@ class StringCandidatePlan:
                 if self._scores
                 else outside.new_empty((0,))
             )
-        log_total = LOG_PROB.join(torch.cat((outside.reshape(1), scores)), dim=0)
-        _require_normalizer(log_total, LOG_PROB)
-        selected = list(range(len(self._words)))
-        boundary_tie = False
-        omitted = outside
-        if beam is not None and beam < len(self._words):
-            values: list[float] = scores.detach().tolist()
-            order = sorted(selected, key=lambda i: (-values[i], self._words[i]))
-            used = sorted(order[:beam])
-            excluded = order[beam:]
-            omitted = LOG_PROB.join(
-                torch.cat((outside.reshape(1), scores[excluded])), dim=0
-            )
-            if beam:
-                last = values[order[beam - 1]]
-                boundary_tie = isfinite(last) and last == values[order[beam]]
-            selected = used
-        return StringCandidateMessage(
-            tape=self._tape,
-            words=tuple(self._words[i] for i in selected),
-            log_weights=scores[selected],
-            log_total_mass=log_total,
-            log_omitted_mass=omitted,
-            status="exact" if bool(torch.isneginf(omitted)) else "truncated",
-            boundary_tie=boundary_tie,
+        return _restrict_candidates(self._tape, self._words, scores, outside, beam)[1]
+
+
+def _restrict_candidates(
+    tape: StringSet,
+    words: tuple[_Word, ...],
+    scores: torch.Tensor,
+    outside: torch.Tensor,
+    beam: int | None,
+) -> tuple[list[int], StringCandidateMessage]:
+    # The complement and within-candidate discards have disjoint support.
+    log_total = LOG_PROB.join(torch.cat((outside.reshape(1), scores)), dim=0)
+    _require_normalizer(log_total, LOG_PROB)
+    selected = list(range(len(words)))
+    boundary_tie = False
+    omitted = outside
+    if beam is not None and beam < len(words):
+        values: list[float] = scores.detach().tolist()
+        order = sorted(selected, key=lambda i: (-values[i], words[i]))
+        used = sorted(order[:beam])
+        excluded = order[beam:]
+        omitted = LOG_PROB.join(
+            torch.cat((outside.reshape(1), scores[excluded])), dim=0
         )
+        if beam:
+            last = values[order[beam - 1]]
+            boundary_tie = isfinite(last) and last == values[order[beam]]
+        selected = used
+    return selected, StringCandidateMessage(
+        tape=tape,
+        words=tuple(words[i] for i in selected),
+        log_weights=scores[selected],
+        log_total_mass=log_total,
+        log_omitted_mass=omitted,
+        status="exact" if bool(torch.isneginf(omitted)) else "truncated",
+        boundary_tie=boundary_tie,
+    )
 
 
 __all__ = ["StringCandidateMessage", "StringCandidatePlan"]

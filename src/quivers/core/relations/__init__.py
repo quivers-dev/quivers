@@ -80,6 +80,7 @@ __all__ = [
     "StringAlignmentCertificate",
     "StringAlignmentMapResult",
     "StringBeliefResult",
+    "PrunedStringBeliefResult",
     "StringEPResult",
     "StringSiteProjection",
     "StringFactor",
@@ -720,6 +721,7 @@ from quivers.core.relations.projection import (  # noqa: E402
 )
 from quivers.core.relations.beliefs import (  # noqa: E402
     FiniteStringBeliefPlan,
+    PrunedStringBeliefResult,
     StringBeliefResult,
     StringEPResult,
     StringSiteProjection,
