@@ -121,3 +121,4 @@ Execution by the reference evaluator and translation to a backend require differ
 - [Custom Sequent Rules](custom-rules.md): an AB grammar with harmonic composition declared as sequents in the DSL.
 - [Quantifier Scope](quantifier-scope.md): surface and inverse readings from the continuation monad's two applicative orders.
 - [Montague NLI](montague-nli.md): Montague-style lambda-term logical forms plus a syllogistic entailment prover.
+- [Latent Morphs and Phonology](latent-morph-phonology.md) learns a phonological transducer from words with shared latent stems and suffixes.
