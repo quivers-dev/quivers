@@ -2688,7 +2688,6 @@ def check_derivation(
         If a node names another presentation's rule, a hole assumes an
         item other than its context's, or the checker refuses it.
     """
-    registry = presentation.registry
     hypotheses: list[Local] = []
 
     def local(item: Item) -> Local:
@@ -2720,17 +2719,95 @@ def check_derivation(
         value = _lower_value(
             presentation, body, scope, pending, local, hypotheses, placeholders
         )
-        context = CheckContext()
-        for entry in (*scope, *placeholders):
-            context = context.extend(entry)
-        try:
-            found = infer_value(value, registry, context)
-        except KernelError as error:
-            raise RuleError(
-                f"the QIEC checker refuses the derivation: {error}"
-            ) from error
-        if found != _item_type(presentation, item):
-            raise RuleError("a derivation does not have its item's type")
+        _check_lowered_proof(presentation, value, item, (*scope, *placeholders))
+
+
+def closed_derivation_value(
+    presentation: RulePresentation, derivation: Derivation
+) -> ConstructorValue:
+    """Give a closed derivation's checked proof value to an ordinary QIEC call.
+
+    The value has exactly the source rule constructors, index arguments,
+    ordered premises, and data fields. Axiom occurrence identities and
+    weights remain in the derivation or forest that supplied the value.
+    Encoding several derivations does not combine their weights.
+
+    Parameters
+    ----------
+    presentation
+        The unconditional rule presentation containing the proof declarations.
+    derivation
+        A closed proof in that presentation.
+
+    Returns
+    -------
+    ConstructorValue
+        A value of the proved judgment's exact indexed family type. Its
+        consuming module needs the declarations of the same presentation.
+
+    Raises
+    ------
+    RuleError
+        If the presentation requires side conditions or proof equations,
+        the proof uses holes or scoped premises, or a proof field is ill typed.
+    """
+    if presentation.conditions or presentation.equations:
+        raise RuleError(
+            "closed proof values require unconditional syntax without equations"
+        )
+
+    def refuse_scope(item: Item) -> Local:
+        """Refuse to replace a scoped proof argument with a local placeholder.
+
+        Parameters
+        ----------
+        item
+            The item a scoped premise would bind.
+
+        Raises
+        ------
+        RuleError
+            Always, since a scoped premise has a function type of meanings.
+        """
+        del item
+        raise RuleError("a closed proof value cannot encode a premise under hypotheses")
+
+    value = _lower_value(presentation, derivation, (), [], refuse_scope, [], [])
+    assert isinstance(value, ConstructorValue)
+    _check_lowered_proof(presentation, value, derivation.item, ())
+    return value
+
+
+def _check_lowered_proof(
+    presentation: RulePresentation, value: Value, item: Item, locals_: tuple[Local, ...]
+) -> None:
+    """Check the ordinary constructor value against the claimed judgment.
+
+    Parameters
+    ----------
+    presentation
+        The rule declarations against which to check the value.
+    value
+        The proof or hypothesis as a QIEC value.
+    item
+        The item's claimed judgment family and indices.
+    locals_
+        The hypotheses and checked placeholders in scope.
+
+    Raises
+    ------
+    RuleError
+        If the kernel refuses the value or it has a different judgment type.
+    """
+    context = CheckContext()
+    for entry in locals_:
+        context = context.extend(entry)
+    try:
+        found = infer_value(value, presentation.registry, context)
+    except KernelError as error:
+        raise RuleError(f"the QIEC checker refuses the derivation: {error}") from error
+    if found != _item_type(presentation, item):
+        raise RuleError("a derivation does not have its item's type")
 
 
 def _lower_value(
@@ -3777,6 +3854,7 @@ __all__ = [
     "SideCondition",
     "StructureError",
     "check_derivation",
+    "closed_derivation_value",
     "closed_values",
     "check_equation",
     "check_structure",
