@@ -632,6 +632,27 @@ symbols in the alphabet does not determine either cost. The ordinary
 fixed-string evaluator reads the original weights when it scores
 the resulting path.
 
+`backoff_total_weight` sums over every word when the reachable union of
+ordinary and failure edges is acyclic. In reverse topological order,
+the suffix total at a state is the sum of its own final weight and its
+first-symbol contributions. Each explicit symbol contributes its arc
+weight times the target's suffix total. A missing symbol can inherit its
+contribution from the failure target, left-multiplied by the failure
+weight. This recurrence follows from partitioning nonempty words by
+their first symbol. Its empty-word contribution uses the state's own
+final weight.
+
+A persistent sum tree stores the contributions across the distinct
+symbols present on reachable arcs. A failure edge scales a shared tree,
+and an explicit symbol overrides a single leaf, even at zero weight.
+This uses distributivity and requires only semiring operations.
+Following a linear scan of the declared topology and weight source,
+each reached fallback needs at most one tree update, and each reached
+ordinary edge needs logarithmically many in the number of distinct
+reached symbols. State and work limits apply to the reachable graph and
+tree updates. The calculation keeps derivatives through the original
+weights for differentiable semirings.
+
 ### Static deterministic minimization
 
 `minimize_static_acceptor` snapshots a one-tape Markov acceptor, removes
@@ -775,6 +796,7 @@ model, and the limits bound construction.
         - TreeStringMarginal
         - auto_intersect
         - backoff_query
+        - backoff_total_weight
         - best_marginal_output
         - closure
         - compile_ranked_ot
