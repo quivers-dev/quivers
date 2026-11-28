@@ -68,6 +68,7 @@ from quivers.qiec.terms import (
     AffineMap,
     Bind,
     Call,
+    CallAddress,
     Comprehension,
     Computation,
     DistributionValue,
@@ -91,6 +92,7 @@ from quivers.qiec.terms import (
     TensorValue,
     TupleValue,
     Value,
+    WithCallAddresses,
     Var,
     WeightSum,
 )
@@ -475,6 +477,11 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
+            if isinstance(first, CallAddress):
+                node = node.then
+                continue
+            while isinstance(first, WithCallAddresses):
+                first = first.body
             if isinstance(first, Bind):
                 # ``traverse`` and other finite sequencing forms elaborate to
                 # a computation in the first position of the source binding.
@@ -1297,6 +1304,11 @@ class _ProgramWalk:
         emitted: list[IRNode] = []
         while isinstance(node, Bind):
             first = node.first
+            if isinstance(first, CallAddress):
+                node = node.then
+                continue
+            while isinstance(first, WithCallAddresses):
+                first = first.body
             if isinstance(first, Bind):
                 node = Bind(
                     binder=first.binder,

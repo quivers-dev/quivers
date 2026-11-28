@@ -70,6 +70,7 @@ from quivers.qiec.terms import (
     AttachmentRef,
     Bind,
     Call,
+    CallAddress,
     Case,
     CaseBranch,
     CaseMotive,
@@ -94,6 +95,8 @@ from quivers.qiec.terms import (
     TupleValue,
     Value,
     Var,
+    WithCallAddresses,
+    _CALL_ADDRESS,
 )
 from quivers.qiec.types import (
     UNIT,
@@ -391,11 +394,17 @@ class _CallFrame(_Frame):
         The call's result type.
     origin
         The static site of the call.
+    address
+        The binding holding the runtime call address.
+    previous_address
+        The address of the caller this tail call replaced, if any.
     """
 
     callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    address: Var = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    previous_address: Var | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _JoinFrame(_Frame):
@@ -580,7 +589,7 @@ def _subterms(term: Computation) -> tuple[Computation, ...]:
             pending.extend((item.otherwise, item.then))
         elif isinstance(item, Case):
             pending.extend(branch.body for branch in item.branches)
-        elif isinstance(item, NewInstance):
+        elif isinstance(item, NewInstance | WithCallAddresses):
             pending.append(item.body)
     return tuple(found)
 
@@ -671,11 +680,17 @@ def _computation_reads(term: Computation) -> frozenset[str]:
                 found |= _read(argument)
         elif isinstance(item, Case):
             found |= _read(item.scrutinee)
+        elif isinstance(item, CallAddress) and item.previous is not None:
+            found |= _read(item.previous)
+        elif isinstance(item, WithCallAddresses):
+            found |= frozenset(call.local.name for call in item.calls)
+            if item.previous is not None:
+                found |= _read(item.previous)
     return frozenset(found)
 
 
 def _pure(term: Computation) -> bool:
-    """Whether a rewritten computation makes no request.
+    """Whether a rewritten computation has no requests or address allocations.
 
     Parameters
     ----------
@@ -685,16 +700,10 @@ def _pure(term: Computation) -> bool:
     Returns
     -------
     bool
-        True when every call in it has the empty closed row and nothing in
-        it requests.
+        True when nothing in it requests or advances the call ordinal.
     """
-    return all(
-        not isinstance(item, Perform)
-        and not (
-            isinstance(item, Call)
-            and (item.effects.entries or item.effects.tail is not None)
-        )
-        for item in _subterms(term)
+    return not any(
+        isinstance(item, Perform | Call | CallAddress) for item in _subterms(term)
     )
 
 
@@ -1240,6 +1249,11 @@ class _Discharger:
                 state = term.computation
             elif isinstance(term, Call):
                 entered = self.enter(term, stack)
+                caller = next(
+                    (frame for frame in stack if not isinstance(frame, _JoinFrame)),
+                    None,
+                )
+                previous = caller.address if isinstance(caller, _CallFrame) else None
                 if entered is None:
                     if (term.effects.entries or term.effects.tail is not None) and (
                         _clause_path(stack)
@@ -1254,13 +1268,22 @@ class _Discharger:
                         name=self.fresh(_awaiting(stack, "called")),
                         type=term.result_type,
                     )
-                    call = term.with_(
+                    call: Computation = term.with_(
                         arguments=tuple(
                             self.value(item, environment) for item in term.arguments
                         )
                     )
+                    if caller is not None:
+                        addresses = tuple(
+                            address
+                            for address in _active_call_addresses(stack)
+                            if address != previous
+                        )
+                        call = WithCallAddresses(
+                            calls=addresses, previous=previous, body=call
+                        )
                     made.append((binder, call))
-                    self.count(1)
+                    self.count(1 + (caller is not None))
                     state = Var(local=binder)
                     continue
                 parameters, body = entered
@@ -1273,11 +1296,23 @@ class _Discharger:
                     )
                     made.extend(bound)
                     scope[parameter.name] = read
+                address = Local(name=self.fresh("call_address"), type=_CALL_ADDRESS)
+                made.append(
+                    (
+                        address,
+                        CallAddress(
+                            callee=term.callee, origin=term.origin, previous=previous
+                        ),
+                    )
+                )
+                self.count(1)
                 stack = (
                     _CallFrame(
                         callee=term.callee,
                         result=term.result_type,
                         origin=term.origin,
+                        address=Var(local=address),
+                        previous_address=previous,
                     ),
                     *stack,
                 )
@@ -1325,8 +1360,12 @@ class _Discharger:
                         name=self.fresh(_awaiting(stack, "answer")),
                         type=request.result_type,
                     )
-                    made.append((binder, Perform(request=request)))
-                    self.count(1)
+                    residual: Computation = Perform(request=request)
+                    addresses = _active_call_addresses(stack)
+                    if addresses:
+                        residual = WithCallAddresses(calls=addresses, body=residual)
+                    made.append((binder, residual))
+                    self.count(1 + bool(addresses))
                     state = Var(local=binder)
                     continue
                 answering = cast(_HandlerFrame, stack[position])
@@ -1415,6 +1454,13 @@ class _Discharger:
                 stack = path.stack
                 resumptions = path.resumptions
                 state = path.value
+            elif isinstance(term, CallAddress | WithCallAddresses):
+                raise _Undischarged(
+                    "address",
+                    "enters an already discharged region whose restored addresses "
+                    "would cross a new handler boundary",
+                    self.owner.origin,
+                )
             else:  # pragma: no cover - closed union
                 raise TypeError(f"unknown computation term {term!r}")
 
@@ -2426,6 +2472,31 @@ def _awaiting(stack: tuple[_Frame, ...], default: str) -> str:
     """
     frame = stack[0] if stack else None
     return frame.binder.name if isinstance(frame, _BindFrame) else default
+
+
+def _active_call_addresses(stack: tuple[_Frame, ...]) -> tuple[Var, ...]:
+    """Read the inlined call frames that still contribute to the address.
+
+    Parameters
+    ----------
+    stack : tuple[_Frame, ...]
+        The symbolic continuation, innermost first.
+
+    Returns
+    -------
+    tuple[Var, ...]
+        The surviving call allocations, outermost first.
+    """
+    retired = {
+        frame.previous_address
+        for frame in stack
+        if isinstance(frame, _CallFrame) and frame.previous_address is not None
+    }
+    return tuple(
+        frame.address
+        for frame in reversed(stack)
+        if isinstance(frame, _CallFrame) and frame.address not in retired
+    )
 
 
 def _entered(stack: tuple[_Frame, ...]) -> frozenset[ComputationId]:

@@ -52,6 +52,7 @@ from quivers.qiec.kinds import (
 from quivers.qiec.terms import (
     Bind,
     Call,
+    CallAddress,
     Case,
     CaseMotive,
     Computation,
@@ -59,6 +60,7 @@ from quivers.qiec.terms import (
     If,
     Local,
     NewInstance,
+    WithCallAddresses,
 )
 from quivers.qiec.types import (
     EffectRef,
@@ -368,7 +370,7 @@ def called_computations(body: Computation) -> frozenset[ComputationId]:
         elif isinstance(term, If):
             pending.append(term.otherwise)
             pending.append(term.then)
-        elif isinstance(term, NewInstance):
+        elif isinstance(term, NewInstance | WithCallAddresses):
             pending.append(term.body)
     return frozenset(found)
 
@@ -401,7 +403,7 @@ def installed_handlers(body: Computation) -> frozenset[HandlerId]:
         elif isinstance(term, If):
             pending.append(term.otherwise)
             pending.append(term.then)
-        elif isinstance(term, NewInstance):
+        elif isinstance(term, NewInstance | WithCallAddresses):
             pending.append(term.body)
     return frozenset(found)
 
@@ -893,6 +895,12 @@ def _validate_effect_instances(
                 )
         elif isinstance(node, Handle):
             require(node.instance, scope)
+        elif isinstance(node, CallAddress):
+            if (
+                node.origin.module != module
+                or node.origin.source_protocol != source_protocol
+            ):
+                raise KernelError(f"{subject} has incompatible call address provenance")
         for child in reversed(_children(node)):
             pending.append((child, scope))
 

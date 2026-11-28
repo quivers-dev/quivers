@@ -26,7 +26,14 @@ from quivers.qiec.identifiers import (
     StaticScopeId,
 )
 from quivers.qiec.kinds import Telescope
-from quivers.qiec.types import EffectRef, IndexTerm, StaticArgument, TypeExpr
+from quivers.qiec.types import (
+    EffectRef,
+    IndexTerm,
+    StaticArgument,
+    TypeApplication,
+    TypeConstructorRef,
+    TypeExpr,
+)
 
 
 class Local(QiecModel):
@@ -1018,6 +1025,55 @@ class Resume(QiecModel):
     tag: Literal["resume"] = "resume"
 
 
+_CALL_ADDRESS = TypeApplication(constructor=TypeConstructorRef.builtin("CallAddress"))
+
+
+class CallAddress(QiecModel):
+    """Allocate the address of a call that discharge has inlined.
+
+    Allocation takes place at the original call entry. The address can
+    be restored around several parts of the rewritten continuation.
+
+    Parameters
+    ----------
+    callee
+        The called computation's identity.
+    origin
+        The original call site.
+    previous
+        The replaced call's allocation when this was a tail call.
+    tag
+        The serialization discriminator.
+    """
+
+    callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    previous: Var | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["call_address"] = "call_address"
+
+
+class WithCallAddresses(QiecModel):
+    """Run a residual computation under previously allocated call addresses.
+
+    Parameters
+    ----------
+    calls
+        The live inlined calls, in outer-to-inner order.
+    body
+        The computation that observes the restored addresses.
+    previous
+        A replaced inlined caller whose lexical path a residual tail
+        call inherits.
+    tag
+        The serialization discriminator.
+    """
+
+    calls: tuple[Var, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    previous: Var | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["with_call_addresses"] = "with_call_addresses"
+
+
 class NewInstance(QiecModel):
     """Lexically scoped allocation of an effect instance.
 
@@ -1074,7 +1130,17 @@ class If(QiecModel):
 
 
 type Computation = (
-    Return | Bind | Perform | Handle | Case | If | Call | Resume | NewInstance
+    Return
+    | Bind
+    | Perform
+    | Handle
+    | Case
+    | If
+    | Call
+    | CallAddress
+    | WithCallAddresses
+    | Resume
+    | NewInstance
 )
 """A computation term: every term that may perform effects or control flow."""
 
@@ -1084,6 +1150,7 @@ __all__ = [
     "AttachmentRef",
     "Bind",
     "Call",
+    "CallAddress",
     "Case",
     "CaseBranch",
     "CaseMotive",
@@ -1125,4 +1192,5 @@ __all__ = [
     "Value",
     "Var",
     "WeightSum",
+    "WithCallAddresses",
 ]

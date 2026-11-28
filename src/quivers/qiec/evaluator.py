@@ -54,6 +54,7 @@ from quivers.qiec.terms import (
     AttachmentRef,
     Bind,
     Call,
+    CallAddress,
     Case,
     Computation,
     ConstructorValue,
@@ -73,6 +74,7 @@ from quivers.qiec.terms import (
     Resume,
     Return,
     SiteValue,
+    WithCallAddresses,
     TransportValue,
     TensorValue,
     TupleValue,
@@ -1075,8 +1077,8 @@ class _HostUnwind(BaseException):
         self.value = value
 
 
-class _CallFrame(ContinuationFrame):
-    """A stack frame marking an entered named computation.
+class _CallActivation(QiecModel):
+    """The address data allocated on entering a named computation.
 
     Parameters
     ----------
@@ -1090,8 +1092,6 @@ class _CallFrame(ContinuationFrame):
     call_history
         Source sites in this frame's tail-call chain. A repeated callee
         discards the history, so tail recursion uses bounded storage.
-    environment
-        The caller's bindings, restored when the call returns.
     """
 
     callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -1099,9 +1099,6 @@ class _CallFrame(ContinuationFrame):
     serial: int
     call_history: tuple[tuple[ComputationId, SourceOrigin], ...] | None = dx.field(
         opaque=True, extras=OPAQUE_BY_VALUE
-    )
-    environment: Mapping[Local, HeldValue] = dx.field(
-        opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @cached_property
@@ -1114,6 +1111,63 @@ class _CallFrame(ContinuationFrame):
             The callee's name and the call's ordinal, under ``"call"``.
         """
         return DynamicAddressFrame(scope="call", key=f"{self.name}#{self.serial}")
+
+
+class _CallFrame(ContinuationFrame):
+    """A stack frame marking an entered named computation.
+
+    Parameters
+    ----------
+    activation
+        The call's address.
+    environment
+        The caller's bindings, restored when the call returns.
+    """
+
+    activation: _CallActivation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    environment: Mapping[Local, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+
+def _replaced_call_history(
+    previous: _CallActivation, callee: ComputationId, origin: SourceOrigin
+) -> tuple[tuple[ComputationId, SourceOrigin], ...] | None:
+    """Extend a tail chain while its callee identities remain distinct.
+
+    Parameters
+    ----------
+    previous : _CallActivation
+        The replaced caller.
+    callee : ComputationId
+        The entered computation.
+    origin : SourceOrigin
+        The call site.
+
+    Returns
+    -------
+    tuple[tuple[ComputationId, SourceOrigin], ...] or None
+        The new history, or no history when a call recurs.
+    """
+    prior = previous.call_history
+    if prior is None or any(entered == callee for entered, _ in prior):
+        return None
+    return (*prior, (callee, origin))
+
+
+class _RestoredCallAddresses(ContinuationFrame):
+    """The live call addresses around a residual computation.
+
+    Parameters
+    ----------
+    calls
+        The saved calls in outer-to-inner order.
+    previous
+        The retired caller when the residual computation is a tail call.
+    """
+
+    calls: tuple[_CallActivation, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    previous: _CallActivation | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 class _InstanceFrame(ContinuationFrame):
@@ -1249,6 +1303,7 @@ type _Frame = (
     | _ResponseHookFrame
     | _DelimiterFrame
     | _CallFrame
+    | _RestoredCallAddresses
     | _InstanceFrame
     | _ClauseFrame
     | _AnswerFrame
@@ -1261,6 +1316,7 @@ _FRAME_CLASSES = (
     _ResponseHookFrame,
     _DelimiterFrame,
     _CallFrame,
+    _RestoredCallAddresses,
     _InstanceFrame,
     _ClauseFrame,
     _AnswerFrame,
@@ -2850,7 +2906,9 @@ class Evaluator:
         path: list[DynamicAddressFrame] = []
         for frame in stack:
             if isinstance(frame, _CallFrame):
-                path.append(frame.address)
+                path.append(frame.activation.address)
+            elif isinstance(frame, _RestoredCallAddresses):
+                path.extend(call.address for call in frame.calls)
             elif isinstance(frame, _InstanceFrame):
                 path.append(frame.address)
         return (*path, *Evaluator._clause_path(stack))
@@ -2999,9 +3057,14 @@ class Evaluator:
                     if self.trace_hook is not None:
                         self._emit_trace(
                             "call.returned",
-                            {"computation": frame.name, "serial": frame.serial},
+                            {
+                                "computation": frame.activation.name,
+                                "serial": frame.activation.serial,
+                            },
                         )
                     env = Scope.of(frame.environment)
+                    continue
+                if isinstance(frame, _RestoredCallAddresses):
                     continue
                 if isinstance(frame, _InstanceFrame):
                     if self.trace_hook is not None:
@@ -3157,6 +3220,49 @@ class Evaluator:
                 env = env.extend(zip(branch.fields, scrutinee.fields, strict=True))
                 current = branch.body
                 continue
+            if isinstance(current, CallAddress):
+                callee = self._computations[current.callee]
+                history: tuple[tuple[ComputationId, SourceOrigin], ...] | None = (
+                    (callee.id, current.origin),
+                )
+                if current.previous is not None:
+                    previous = self._value(current.previous, env)
+                    if not isinstance(previous, _CallActivation):
+                        raise EvaluationError("invalid previous call address")
+                    history = _replaced_call_history(
+                        previous, callee.id, current.origin
+                    )
+                self._call_serial += 1
+                current = _Returned(
+                    value=_CallActivation(
+                        callee=callee.id,
+                        name=callee.name,
+                        serial=self._call_serial,
+                        call_history=history,
+                    )
+                )
+                continue
+            if isinstance(current, WithCallAddresses):
+                calls = tuple(self._value(call, env) for call in current.calls)
+                previous = (
+                    None
+                    if current.previous is None
+                    else self._value(current.previous, env)
+                )
+                if (
+                    not all(isinstance(call, _CallActivation) for call in calls)
+                    or previous is not None
+                    and not isinstance(previous, _CallActivation)
+                ):
+                    raise EvaluationError("invalid restored call addresses")
+                stack.append(
+                    _RestoredCallAddresses(
+                        calls=cast(tuple[_CallActivation, ...], calls),
+                        previous=previous,
+                    )
+                )
+                current = current.body
+                continue
             if isinstance(current, Call):
                 callee = self._computations.get(current.callee)
                 if callee is None:
@@ -3192,25 +3298,29 @@ class Evaluator:
                 )
                 if stack and isinstance(finished := stack[-1], _CallFrame):
                     stack.pop()
-                    prior = finished.call_history
-                    if prior is None or any(
-                        entered == callee.id for entered, _ in prior
-                    ):
-                        call_history = None
-                    else:
-                        call_history = (*prior, (callee.id, current.origin))
+                    call_history = _replaced_call_history(
+                        finished.activation, callee.id, current.origin
+                    )
                     if self.trace_hook is not None:
                         self._emit_trace(
                             "call.returned",
                             {
-                                "computation": finished.name,
-                                "serial": finished.serial,
+                                "computation": finished.activation.name,
+                                "serial": finished.activation.serial,
                                 "tail": True,
                             },
                         )
                     caller_environment = Scope.of(finished.environment)
                 else:
                     caller_environment = env
+                    if (
+                        stack
+                        and isinstance(restored := stack[-1], _RestoredCallAddresses)
+                        and restored.previous is not None
+                    ):
+                        call_history = _replaced_call_history(
+                            restored.previous, callee.id, current.origin
+                        )
                 if self.trace_hook is not None:
                     self._emit_trace(
                         "call.entered",
@@ -3223,10 +3333,12 @@ class Evaluator:
                     )
                 stack.append(
                     _CallFrame(
-                        callee=callee.id,
-                        name=callee.name,
-                        serial=serial,
-                        call_history=call_history,
+                        activation=_CallActivation(
+                            callee=callee.id,
+                            name=callee.name,
+                            serial=serial,
+                            call_history=call_history,
+                        ),
                         environment=caller_environment,
                     )
                 )
@@ -3576,16 +3688,19 @@ class Evaluator:
                 if structural_clause.grade is ResumptionGrade.LINEAR:
                     call_path: list[SiteId | int] = []
                     for captured in captured_stack:
-                        if not isinstance(captured, _CallFrame):
-                            continue
-                        if captured.call_history is None:
-                            # The recurrent tail chain keeps only its active
-                            # frame. The run ordinal names that activation.
-                            call_path.append(captured.serial)
+                        if isinstance(captured, _CallFrame):
+                            calls = (captured.activation,)
+                        elif isinstance(captured, _RestoredCallAddresses):
+                            calls = captured.calls
                         else:
-                            call_path.extend(
-                                origin.site_id() for _, origin in captured.call_history
-                            )
+                            continue
+                        for call in calls:
+                            if call.call_history is None:
+                                call_path.append(call.serial)
+                            else:
+                                call_path.extend(
+                                    origin.site_id() for _, origin in call.call_history
+                                )
                     clause_path = (
                         *clause_path,
                         _clause_address(
@@ -3866,7 +3981,7 @@ class Evaluator:
             `copy.copy` succeeding says nothing about whether copying is sound.
         """
         if value is None or isinstance(
-            value, (bool, int, float, str, bytes, torch.Tensor)
+            value, (bool, int, float, str, bytes, torch.Tensor, _CallActivation)
         ):
             return True
         if isinstance(value, tuple):

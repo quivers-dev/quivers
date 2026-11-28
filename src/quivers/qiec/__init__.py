@@ -386,6 +386,7 @@ from quivers.qiec.terms import (
     AttachmentRef,
     Bind,
     Call,
+    CallAddress,
     Case,
     CaseBranch,
     CaseMotive,
@@ -429,6 +430,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
     WeightSum,
+    WithCallAddresses,
 )
 from quivers.qiec.index_arithmetic import infer_index_extents, solve_index_equation
 from quivers.qiec.types import (
@@ -495,6 +497,7 @@ __all__ = [
     "COMPUTE_APPLY",
     "COMPUTE_EFFECT",
     "Call",
+    "CallAddress",
     "Case",
     "CaseBranch",
     "CaseMotive",
@@ -744,6 +747,7 @@ __all__ = [
     "WEIGHT_EFFECT",
     "WeightAccumulator",
     "WeightSum",
+    "WithCallAddresses",
     "abort_effect",
     "abort_handler",
     "add_weights",

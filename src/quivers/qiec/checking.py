@@ -75,6 +75,9 @@ from quivers.qiec.kinds import (
     UserIndexSort,
 )
 from quivers.qiec.terms import (
+    CallAddress,
+    WithCallAddresses,
+    _CALL_ADDRESS,
     Resume,
     NewInstance,
     Call,
@@ -1753,9 +1756,9 @@ def _computation_static_scopes(computation: Computation) -> tuple[StaticScopeId,
     pending: list[Computation] = [computation]
     while pending:
         term = pending.pop()
-        if isinstance(term, Return | Perform | Call | Resume):
+        if isinstance(term, Return | Perform | Call | CallAddress | Resume):
             continue
-        if isinstance(term, NewInstance):
+        if isinstance(term, NewInstance | WithCallAddresses):
             pending.append(term.body)
         elif isinstance(term, Bind):
             pending.append(term.then)
@@ -3124,6 +3127,24 @@ def _infer_computation(
             registry,
             context,
         )
+    if isinstance(computation, CallAddress):
+        registry.computation(computation.callee)
+        if (
+            computation.previous is not None
+            and infer_value(computation.previous, registry, context) != _CALL_ADDRESS
+        ):
+            raise KernelError("a tail call address must replace a call address")
+        return _checked_computation_type(EMPTY_ROW, _CALL_ADDRESS, registry, context)
+    if isinstance(computation, WithCallAddresses):
+        for call in computation.calls:
+            if infer_value(call, registry, context) != _CALL_ADDRESS:
+                raise KernelError("a restored call address must be a call address")
+        if computation.previous is not None and (
+            not isinstance(computation.body, Call)
+            or infer_value(computation.previous, registry, context) != _CALL_ADDRESS
+        ):
+            raise KernelError("a replaced call address requires a residual tail call")
+        return _infer_computation(computation.body, registry, context)
     if isinstance(computation, Perform):
         effect, result = check_request(computation.request, registry, context)
         return _checked_computation_type(
@@ -3781,11 +3802,11 @@ def resumption_use(computation: Computation) -> ResumptionUse:
     """
     if isinstance(computation, Resume):
         return ONCE
-    if isinstance(computation, Return | Perform | Call):
+    if isinstance(computation, Return | Perform | Call | CallAddress):
         return NEVER
     if isinstance(computation, Bind):
         return resumption_use(computation.first).then(resumption_use(computation.then))
-    if isinstance(computation, NewInstance):
+    if isinstance(computation, NewInstance | WithCallAddresses):
         return resumption_use(computation.body)
     if isinstance(computation, Handle):
         # A `resume` inside a handled computation still names this

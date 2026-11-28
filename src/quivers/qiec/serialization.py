@@ -206,6 +206,8 @@ from quivers.qiec.module import NamedComputation, NamedEffectInstance, QiecModul
 from quivers.qiec.programs import ProgramEntry, ProgramParameter, ProgramSite
 from quivers.qiec.substitution import StaticSubstitution
 from quivers.qiec.terms import (
+    CallAddress,
+    WithCallAddresses,
     NewInstance,
     Resume,
     AttachmentRef,
@@ -439,6 +441,8 @@ _NODE_CLASSES = (
     Case,
     If,
     Call,
+    CallAddress,
+    WithCallAddresses,
     Resume,
     NewInstance,
     # contract records

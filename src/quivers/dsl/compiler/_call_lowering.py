@@ -61,6 +61,7 @@ from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.terms import (
     Bind,
     Call,
+    CallAddress,
     Case,
     Comprehension,
     Computation,
@@ -80,6 +81,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
     WeightSum,
+    WithCallAddresses,
 )
 from quivers.qiec.types import INT, REAL, IndexLiteral, TypeExpr
 from quivers.transpile._api import UnsupportedConstruct
@@ -403,6 +405,9 @@ class _Lowering:
         node: Computation = callee.body
         while isinstance(node, Bind):
             first = node.first
+            if isinstance(first, CallAddress):
+                node = node.then
+                continue
             if isinstance(first, Bind):
                 # A nested sequence associates into the enclosing one; its
                 # binder is fresh to the continuation.
@@ -456,6 +461,8 @@ class _Lowering:
         CallNotLowered
             If the computation cannot run as steps of the program.
         """
+        while isinstance(term, WithCallAddresses):
+            term = term.body
         if isinstance(term, Return):
             value = replace_locals(term.value, env)
             return self.bound(binder.name, value, binder.type)
@@ -859,7 +866,7 @@ def _checked_bindings(body: Computation | None) -> dict[str, tuple[Local, Comput
         elif isinstance(node, If):
             pending.append(node.then)
             pending.append(node.otherwise)
-        elif isinstance(node, Handle | NewInstance):
+        elif isinstance(node, Handle | NewInstance | WithCallAddresses):
             pending.append(node.computation if isinstance(node, Handle) else node.body)
     return bindings
 
