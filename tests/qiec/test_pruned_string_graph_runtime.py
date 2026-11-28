@@ -1,7 +1,8 @@
 """An authored graph through the typed approximate Compute boundary."""
 
 from fractions import Fraction
-from math import exp, inf, log1p
+from hashlib import sha256
+from math import exp, inf, log, log1p
 
 import didactic.api as dx
 import pytest
@@ -356,40 +357,40 @@ def test_exact_tree_and_pruned_modes_keep_the_same_authored_graph_and_report_ref
         )
 
 
-_GAUGE_SOURCE = """object Letters : FinSet 2
+def _pruned_gauge_fixture(size=2):
+    arcs = "".join(
+        f"    arc 0 -> 1 [labels=({symbol}), weight=w{symbol}]\n"
+        for symbol in range(size)
+    )
+    source = f"""object Letters : FinSet {size}
 
 relation weights [algebra=logprob, states=2]
     output Letters
     initial 0 [weight=unit]
-    arc 0 -> 1 [labels=(0), weight=w0]
-    arc 0 -> 1 [labels=(1), weight=w1]
-    final 1 [weight=unit]
+{arcs}    final 1 [weight=unit]
 
 string_graph centered
     variable x : Letters
     factor weights(x)
 """
-
-
-def _pruned_gauge_fixture():
-    compiler, _ = _compile(_GAUGE_SOURCE)
+    compiler, _ = _compile(source)
     config = PrunedStringBPConfig(
-        supports=(("x", ((0,), (1,))),),
+        supports=(("x", tuple((symbol,) for symbol in range(size))),),
         beam=2,
         max_sweeps=1,
         tolerance=1e-9,
         damping=0.5,
-        max_entries=2,
+        max_entries=size,
         max_states=10,
         max_work=20,
     )
     request = PrunedStringGraphRequest(
         graph=compiler.string_graph_specs["centered"], config=config, variable="x"
     )
-    report = "(String * String * Int * Real * Bool * Tensor[LogWeight]([2]) * Bool * Tensor[LogWeight]([1, 3]))"
+    report = f"(String * String * Int * Real * Bool * Tensor[LogWeight]([{size}]) * Bool * Tensor[LogWeight]([1, 3]))"
     name = request.handler_name
     _, parsed = _compile(
-        _GAUGE_SOURCE
+        source
         + f"""
 instance gauge : Compute[Unit, {report}]
 handler {name} for Compute[Unit, {report}] : {report} -> {report} [coverage=total, forwards=none, implementation=foreign]
@@ -404,10 +405,10 @@ define pruned_belief : {report} !{{}} =
     module = loads(dumps(parsed))
     assert isinstance(module, QiecModule)
     owners = tuple(
-        nn.Parameter(torch.tensor(0.0, dtype=torch.float64)) for _ in range(2)
+        nn.Parameter(torch.tensor(0.0, dtype=torch.float64)) for _ in range(size)
     )
     weights = {_owner("unit"): owners[0].new_zeros(())}
-    weights.update(zip((_owner("w0"), _owner("w1")), owners, strict=True))
+    weights.update(zip((_owner(f"w{i}") for i in range(size)), owners, strict=True))
     return request, module, weights, owners
 
 
@@ -465,3 +466,70 @@ def test_checked_damped_pruning_keeps_log_zero_and_refuses_range_overflow():
     ) as rejected:
         _run(module, request, weights, provider=provider)
     assert rejected.value.diagnostic.code == "qiec-run-evaluation"
+
+
+def test_native_raw_candidate_scale_keeps_gauge_and_local_gradients():
+    request, module, weights, owners = _pruned_gauge_fixture(4)
+    wire = dumps(request)
+    assert (
+        sha256(wire.encode()).hexdigest()
+        == "92e6f6be4600f5535ca4bd7fdde6f838bf666b51c41e94f32a7c8bac62b213f8"
+    )
+    assert (
+        request.handler_name
+        == "__string_graph_pruned_41adf6bfd803a2029ed529931649b9f340da0a8cae1edbfc895c24703ae4bf00"
+    )
+    decoded = loads(wire)
+    assert decoded == request and dumps(decoded) == wire
+    provider = PrunedStringGraphRuntimeProvider(decoded, weights)
+    expected_gradients = (
+        (0.25, 0.25, 0.25, 0.25),
+        (0.5, 0.5, 0.0, 0.0),
+        (0.0, 0.0, 0.5, 0.5),
+        (0.125, -0.125, 0.0, 0.0),
+    )
+    for offset in (0, -1e20, 1e20):
+        with torch.no_grad():
+            for owner in owners:
+                owner.fill_(offset)
+        status, reason, sweeps, residual, truncated, belief, present, masses = _run(
+            module, request, weights, provider=provider
+        )
+        assert (status, reason, sweeps.item(), residual.item()) == (
+            "converged",
+            "",
+            1,
+            0,
+        )
+        assert truncated.item() and present.item()
+        assert masses.tolist() == [[offset + log(4), offset + log(2), offset + log(2)]]
+        assert belief.exp().tolist() == [0.5, 0.5, 0.0, 0.0]
+        objectives = (*masses[0].unbind(), belief[0].exp())
+        for objective, expected in zip(objectives, expected_gradients, strict=True):
+            observed = torch.autograd.grad(objective, owners, retain_graph=True)
+            assert tuple(grad.item() for grad in observed) == expected
+
+    with torch.no_grad():
+        owners[2].fill_(-inf)
+        owners[3].fill_(-inf)
+    _, _, _, _, truncated, _, present, masses = _run(
+        module, request, weights, provider=provider
+    )
+    assert not truncated.item() and present.item()
+    assert masses.tolist() == [[1e20, 1e20, -inf]]
+    assert tuple(grad.item() for grad in torch.autograd.grad(masses[0, 2], owners)) == (
+        0,
+        0,
+        0,
+        0,
+    )
+
+    with torch.no_grad():
+        owners[0].fill_(-inf)
+        owners[1].fill_(-inf)
+    status, _, _, _, _, belief, present, masses = _run(
+        module, request, weights, provider=provider
+    )
+    assert status == "empty_support" and not present.item()
+    assert belief.tolist() == [-inf] * 4
+    assert masses.tolist() == [[-inf] * 3]

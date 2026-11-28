@@ -603,9 +603,11 @@ An optional beam retains the highest-scoring candidates, breaking ties
 lexicographically and reporting a tie across the boundary. The full
 message scale and the weights of the selected words stay differentiable
 on the selected support. The normalized message uses centered log
-weights, while proposal reports retain the raw scale. A finite
-normalized candidate that overflows raises `OverflowError`. Construction
-limits raise a distinct error.
+weights. Finite full, retained, and omitted candidate reductions
+restore their original log scale after summing centered weights.
+Their gradients use the relative weights within each reduction.
+A finite normalized candidate that overflows raises `OverflowError`.
+Construction limits raise a distinct error.
 
 ## Batched contextual edits
 

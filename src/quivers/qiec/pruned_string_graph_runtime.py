@@ -8,8 +8,8 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE
-from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import PrunedStringBeliefResult, RelationLimitError
+from quivers.core.relations.messages import _candidate_log_mass
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
@@ -267,7 +267,7 @@ class PrunedStringGraphRuntimeProvider:
                     torch.stack(
                         (
                             row.log_total_mass,
-                            LOG_PROB.join(row.log_weights, dim=0),
+                            _candidate_log_mass(row.log_weights),
                             row.log_omitted_mass,
                         )
                     )
