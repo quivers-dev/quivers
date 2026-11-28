@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Sampleable deduction outcomes.** A checked QVR program can turn weighted outcome rows into a typed finite law, draw a reading, and replay its score under the original grammar weights.
 - **Exact finite log expectations.** A single checked Random handler can sum scalar log scores across several dependent or structured finite draws with live gradients.
 - **Checked proof queries and interpretations.** QVR can return weighted proof occurrences under an explicit structural budget, interpret rule and axiom applications with checked computations, and sum proof weights by the resulting discrete meaning.
 - **Signed-delay tape equality.** A wider bounded-delay certificate permits productive cycles of a common sign along each accepting path, with exact refusals for mixed cyclic drift and unchanged original path weights.
