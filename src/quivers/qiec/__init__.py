@@ -367,6 +367,7 @@ from quivers.qiec.relations import (
     RationalRelationSpec,
 )
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
+from quivers.qiec.string_solvers import JointAlignmentMapConfig, RegularStringEPConfig
 from quivers.qiec.string_graph_runtime import (
     TreeStringGraphRuntimeProvider,
     tree_string_graph_handler,
@@ -680,6 +681,8 @@ __all__ = [
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
     "StringFactorGraphSpec",
+    "JointAlignmentMapConfig",
+    "RegularStringEPConfig",
     "TreeStringGraphRequest",
     "TreeStringGraphRuntimeProvider",
     "tree_string_graph_handler",
