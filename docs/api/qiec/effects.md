@@ -23,6 +23,16 @@ clause activations. Discharge keeps the reference handler when the call's
 residual row is open or could invoke an outer multi-shot clause inside
 that path.
 
+A resumption can revisit a runtime constructor case. Discharge can copy
+a case whose motive has no indices and whose patterns bind no static
+arguments. Each new copy has fresh pattern scopes and retains the
+original request sites. Execution still selects one branch per shot.
+An enclosing join keeps each case together when several result
+components are needed. The existing statement limit counts the copies.
+A repeated case with static pattern arguments or an indexed motive
+keeps reference execution with a `case` obstacle, as does a case whose
+branches cannot meet an outer continuation.
+
 An effectful return clause uses the address of its handler installation.
 Different installations of the same declaration have different return
 addresses. Multiple shots through one installation share its return

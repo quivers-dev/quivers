@@ -785,8 +785,8 @@ def _checks_strict_scalar(term: Computation) -> bool:
     )
 
 
-def _pure(term: Computation) -> bool:
-    """Whether a rewritten computation has no requests or trace allocations.
+def _can_duplicate(term: Computation) -> bool:
+    """Whether a rewritten computation can be stated once per projection.
 
     Parameters
     ----------
@@ -796,12 +796,18 @@ def _pure(term: Computation) -> bool:
     Returns
     -------
     bool
-        True when nothing in it requests, advances a trace ordinal, or
-        checks a strict scalar operation.
+        True when nothing in it introduces a case scope, makes a request,
+        advances a trace ordinal, or makes a strict scalar check.
     """
     return not any(
         isinstance(
-            item, Perform | Call | CallAddress | InstanceAddress | HandlerReturnAddress
+            item,
+            Case
+            | Perform
+            | Call
+            | CallAddress
+            | InstanceAddress
+            | HandlerReturnAddress,
         )
         or _checks_strict_scalar(item)
         for item in _subterms(term)
@@ -2240,9 +2246,9 @@ class _Discharger:
     ) -> _Statements:
         """The statements binding what a conditional's branches differ in.
 
-        Branches that make no request are stated once per part they differ
-        in, each with the values the part reads. Branches that make requests
-        are stated once, their parts as one tuple.
+        Branches that can be duplicated are stated once per part they differ
+        in, each with the values the part reads. Other branches are stated
+        once, their parts as one tuple.
 
         Parameters
         ----------
@@ -2260,9 +2266,6 @@ class _Discharger:
         tuple[tuple[Local, Computation], ...]
             The statements.
         """
-        pure = all(
-            _pure(statement[1]) for item in arrivals for statement in item.statements
-        )
         if not differing:
             if not any(_live(item.statements, frozenset()) for item in arrivals):
                 return ()
@@ -2272,7 +2275,14 @@ class _Discharger:
                 _sequence(item.statements, Return(value=unit)) for item in arrivals
             )
             return ((binder, rebuild(branches, UNIT)),)
-        if len(differing) == 1 or (pure and duplicable):
+        if len(differing) == 1 or (
+            duplicable
+            and all(
+                _can_duplicate(statement[1])
+                for item in arrivals
+                for statement in item.statements
+            )
+        ):
             return tuple(
                 (
                     part.local,
@@ -2399,9 +2409,21 @@ class _Discharger:
         Raises
         ------
         _Undischarged
-            If the branches do not meet, or the case analysis is reached
-            more than once, so its static scopes would be entered twice.
+        If the branches cannot meet, or a repeated case would have to
+        copy branch-local static arguments or an indexed motive.
         """
+        repeated = any(branch.scope in self.scopes for branch in term.branches)
+        if repeated and (
+            term.motive.indices
+            or any(branch.static_arguments for branch in term.branches)
+        ):
+            raise _Undischarged(
+                "case",
+                "branches with `case` on a value known only at run time, and "
+                "copying the case would require freshening static constructor "
+                "arguments or an indexed motive",
+                self.owner.origin,
+            )
         branches: list[tuple[Computation, _Environment]] = []
         patterns: list[CaseBranch] = []
         for branch in term.branches:
@@ -2421,9 +2443,15 @@ class _Discharger:
                     },
                 )
             )
-            patterns.append(branch.with_(fields=fields))
-        repeated = any(branch.scope in self.scopes for branch in term.branches)
-        self.scopes.update(branch.scope for branch in term.branches)
+            scope = branch.scope
+            if repeated:
+                # A non-indexed pattern without static arguments introduces
+                # no skolems or refinement evidence under this identity.
+                scope = StaticScopeId.derive(
+                    "discharged-case", str(self.owner.id), str(scope), self.ordinal()
+                )
+            patterns.append(branch.with_(fields=fields, scope=scope))
+        self.scopes.update(branch.scope for branch in patterns)
 
         def rebuild(bodies: tuple[Computation, ...], type_: TypeExpr) -> Computation:
             """The case analysis over its rewritten branches.
@@ -2452,12 +2480,11 @@ class _Discharger:
         path = self.branch(
             made, rebuild, tuple(branches), stack, resumptions, duplicable=False
         )
-        if repeated or (isinstance(path, _Fork) and stack):
+        if isinstance(path, _Fork) and stack:
             raise _Undischarged(
                 "case",
                 "branches with `case` on a value known only at run time, and the "
-                "handled requests of its branches, or a clause that resumes more "
-                "than once, would need the rest of the computation in every branch",
+                "branches do not meet before an outer continuation",
                 self.owner.origin,
             )
         return path
