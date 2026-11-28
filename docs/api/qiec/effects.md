@@ -48,3 +48,24 @@ results. A positive decision follows only after every assignment completes.
 An unsupported term or an exhausted limit raises an error.
 
 ::: quivers.qiec.laws
+
+## Polynomial laws
+
+The polynomial checker compares scalar real computations after discharging
+their authored handlers. It interprets the admitted arithmetic over rational
+coefficients. A real literal contributes the exact rational value it represents,
+and a quotient of two constants can supply an exact coefficient such as
+`1.0 / 3.0`.
+
+The checker supports addition, subtraction, multiplication, division by a
+closed nonzero constant, and nonnegative integral constant powers. It checks
+divisors in the source before using the discharged result, including divisors
+in bindings whose results are unused. A runtime branch condition leaves the
+polynomial fragment.
+
+Each normal form lists monomial exponents in parameter order and their
+coefficients. Equal forms certify equality on the scalar polynomial domain.
+When the forms differ, the checker gives integer arguments and the two exact
+rational results.
+
+::: quivers.qiec.polynomial_laws
