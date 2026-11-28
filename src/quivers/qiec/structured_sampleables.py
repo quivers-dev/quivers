@@ -48,15 +48,16 @@ class FiniteSampleable(ValueModel):
     registry
         The checked declaration registry for the nominal types and constructors.
     backend
-        The ordinary distribution backend used to draw a categorical index.
+        An explicit backend override. A request otherwise uses the backend
+        of its invocation to draw the categorical index.
     """
 
     element: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     values: tuple[object, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     log_weights: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     registry: KernelRegistry = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    backend: DistributionBackend = dx.field(
-        default_factory=distribution_backend, opaque=True, extras=OPAQUE_BY_IDENTITY
+    backend: DistributionBackend | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @dx.model_validator()
@@ -274,8 +275,15 @@ class FiniteSampleable(ValueModel):
                 result.append((self.values[indices[0]], mass - normalizer))
         return tuple(result)
 
-    def sample(self) -> object:
+    def sample(self, *, backend: DistributionBackend | None = None) -> object:
         """Draw one value with the ordinary categorical distribution backend.
+
+        Parameters
+        ----------
+        backend
+            The invocation's backend. An explicit override on the law
+            takes precedence, and the installed backend serves a draw
+            outside an invocation.
 
         Returns
         -------
@@ -285,7 +293,7 @@ class FiniteSampleable(ValueModel):
         with torch.no_grad():
             support = self.weighted_support()
             distribution = RuntimeDistribution(
-                backend=self.backend,
+                backend=self.backend or backend or distribution_backend(),
                 numbers=self.numbers,
                 family="Categorical",
                 arguments={"logits": torch.stack([weight for _, weight in support])},
