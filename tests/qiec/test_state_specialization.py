@@ -1,6 +1,10 @@
 """Recursive state specialization against independent values and call orders."""
 
+from collections import Counter
+from fractions import Fraction
+
 import pytest
+import torch
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
@@ -11,10 +15,13 @@ from quivers.qiec import (
     AttachmentRef,
     Bind,
     Call,
+    Case,
     DischargeObstacle,
     ExecutionFailure,
     Handle,
     HandlerReturnAddress,
+    JvpBoundaryError,
+    JvpUnsupported,
     LetBinding,
     LetValue,
     If,
@@ -33,12 +40,17 @@ from quivers.qiec import (
     discharge_computation,
     discharge_module,
     dumps,
+    exact_gradient,
+    exact_jvp,
     loads,
     run_named,
     specialize_recursive_state,
     validate_module,
 )
+from quivers.qiec.differentiation import _ScalarDerivativeEvaluator
 from quivers.qiec.terms import _RETURN_ADDRESS
+from quivers.transpile import transpile
+from quivers.transpile._entry import _emit_target
 from quivers.transpile._pipeline import parser_registry
 from quivers.transpile.ir import IRProgram
 from quivers.transpile.qiec_ir import capabilities_for_target, project_for_target
@@ -298,6 +310,9 @@ def _terms(body):
     if isinstance(body, If):
         yield from _terms(body.then)
         yield from _terms(body.otherwise)
+    if isinstance(body, Case):
+        for branch in body.branches:
+            yield from _terms(branch.body)
 
 
 def test_return_action_occurs_only_at_installation_boundary(module):
@@ -529,6 +544,342 @@ def test_companions_execute_through_the_generated_python_runtime(module):
     for n in (0, 1, 7):
         expected, _ = _oracle(n, 2, 3)
         assert _triple(namespace["qiec_execute"](n, 2, 3)) == expected
+
+
+_CONSTRUCTOR_STATE = """
+family Path : Type
+    constructor End : Path
+    constructor Step : Real * Real * Path -> Path
+
+effect Cell
+    read : Unit -> Real
+    write : Real -> Unit
+
+instance cell : Cell
+instance score : Score
+
+handler state for Cell : Real -> Real with (current : Real) [coverage=total, forwards=none, implementation=authored]
+    return value =>
+        return 2.0 * value + current
+    read resumes 1 =>
+        resume(current)
+    write(value : Real) resumes 1 =>
+        resume() with (value)
+
+define schedule(p : Real, q : Real) : Path !{} =
+    if p > 0.0 then
+        let end = construct End() as Path
+        let rest = construct Step(2.0 * p, q + 1.0, end) as Path
+        return construct Step(p, q, rest) as Path
+    else
+        return construct End() as Path
+
+define prepend(amount : Real, scale : Real, rest : Path) : Path !{} =
+    return construct Step(amount, scale, rest) as Path
+
+define walk(path : Path) : Real !{cell} =
+    case path motive => Real
+        End =>
+            perform cell.read()
+        Step(amount, scale, rest) =>
+            let prior <- perform cell.read()
+            perform cell.write(scale * prior + amount)
+            let inner <- walk(rest)
+            let late <- perform cell.read()
+            return inner + prior + late
+
+define solve(initial : Real, p : Real, q : Real) : Real !{} =
+    handle cell with state(initial) in
+        let path <- schedule(p, q)
+        walk(path)
+
+define from_path(path : Path, initial : Real) : Real !{} =
+    handle cell with state(initial) in
+        walk(path)
+
+handler accumulate for Score : Real -> (Real * LogWeight) [coverage=total, implementation=foreign]
+    add resumes 1
+
+define mark(value : Real) : Real !{score} =
+    perform score.add(weight(value))
+    return value
+
+define scored(initial : Real, p : Real, q : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let value <- solve(initial, p, q)
+        mark(value)
+"""
+_CASE_INPUTS = (
+    (Fraction(1), Fraction(-2), Fraction(2)),
+    (Fraction(1), Fraction(2), Fraction(2)),
+    (Fraction(-3, 2), Fraction(1, 2), Fraction(3, 4)),
+)
+
+
+def _constructor_polynomial(initial, p, q):
+    if p < 0:
+        return 0, 3 * initial, (Fraction(3), Fraction(), Fraction())
+    assert p > 0
+    # The two Step values have distinct amount and scale fields. The
+    # terminal value and both post-call reads use the final state.
+    value = 7 * ((q + 1) * (q * initial + p) + 2 * p) + 2 * (initial + q * initial + p)
+    gradient = (
+        7 * q * (q + 1) + 2 + 2 * q,
+        7 * q + 23,
+        7 * ((2 * q + 1) * initial + p) + 2 * initial,
+    )
+    return 2, value, gradient
+
+
+@pytest.fixture(scope="module")
+def constructor_state():
+    compiler = Compiler(parse(_CONSTRUCTOR_STATE), module_name="recursive-case-state")
+    source = compiler.qiec_module
+    assert source is not None
+    direct = _specialize(source, "solve")
+    selected = discharge_module(source)
+    assert selected.obstacle("solve") is None
+    rewrite = next(
+        item
+        for item in selected.rewrites
+        if item.computation == _entry(source, "solve").id
+    )
+    assert rewrite.method == "recursive-state" and len(rewrite.companions) == 1
+    staged = selected.module
+    restored = loads(dumps(staged))
+    assert isinstance(restored, QiecModule) and restored == staged
+    return compiler, source, direct, staged, restored
+
+
+def _constructor_trace(source, observed, point, runtime):
+    mark = _entry(source, "mark").body
+    assert isinstance(mark, Bind) and isinstance(mark.first, Perform)
+    score_site = str(mark.first.request.origin.static_site)
+    run = run_named(observed, "scored", tuple(map(float, point)), runtime=runtime)
+    aliases = _aliases(source, observed)
+    calls = []
+    scores = []
+    operations = []
+    cell = next(effect for effect in source.effects if effect.ref.name == "Cell")
+    names = {str(operation.id): operation.name for operation in cell.operations}
+    for event in run.trace:
+        if event.event == "call.entered":
+            name = str(event.detail["computation"])
+            calls.append(aliases.get(name, name))
+        if event.event == "operation.requested":
+            operation = str(event.detail["operation"])
+            if operation == str(SCORE_ADD):
+                scores.append(event.detail["address"])
+            elif operation in names:
+                operations.append(names[operation])
+    return _triple(run.value), calls, scores, operations, score_site
+
+
+def _scoring_runtime():
+    return RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core", options={"handlers": {"accumulate": {"kind": "score"}}}
+            ),
+        )
+    )
+
+
+def test_constructor_state_preserves_selected_count_value_and_derivatives(
+    constructor_state, monkeypatch
+):
+    _, source, direct, staged, restored = constructor_state
+    primitive = _ScalarDerivativeEvaluator.primitive
+    operations = Counter()
+
+    def counted(self, term, environment):
+        operations[term.name] += 1
+        return primitive(self, term, environment)
+
+    monkeypatch.setattr(_ScalarDerivativeEvaluator, "primitive", counted)
+    for point in _CASE_INPUTS:
+        count, value, gradient = _constructor_polynomial(*point)
+        expected_arithmetic = (
+            {"gt_real": 1, "mul_real": 4, "add_real": 8}
+            if count
+            else {"gt_real": 1, "mul_real": 1, "add_real": 1}
+        )
+        for graph in (source, direct, staged, restored):
+            operations.clear()
+            result = exact_gradient(graph, "solve", point)
+            assert (result.value, result.gradient) == (value, gradient)
+            assert operations == expected_arithmetic
+            for index, basis in enumerate(((1, 0, 0), (0, 1, 0), (0, 0, 1))):
+                jvp = exact_jvp(graph, "solve", point, basis)
+                assert (jvp.value, jvp.tangent) == (value, gradient[index])
+            observed, calls, scores, active, site = _constructor_trace(
+                source, graph, point, _scoring_runtime()
+            )
+            assert observed == (value, value)
+            assert calls == ["solve", "schedule", *(["walk"] * (count + 1)), "mark"]
+            assert scores == [(site, (("call", f"mark#{count + 4}"),), ())]
+            assert active == (
+                ["read", "write"] * count + ["read"] * (count + 1)
+                if graph is source
+                else []
+            )
+
+
+def test_constructor_state_boundary_is_refused_only_by_the_derivative(
+    constructor_state,
+):
+    _, *graphs = constructor_state
+    for graph in graphs:
+        value = run_named(graph, "solve", (1.0, 0.0, 2.0)).value
+        assert isinstance(value, torch.Tensor) and value.item() == 3.0
+        with pytest.raises(JvpBoundaryError, match="input-dependent equality"):
+            exact_jvp(graph, "solve", (1, 0, 2), (0, 1, 0))
+        with pytest.raises(JvpBoundaryError, match="input-dependent equality"):
+            exact_gradient(graph, "solve", (1, 0, 2))
+
+
+def test_constructor_state_oracle_rejects_the_wrong_transferred_state(
+    constructor_state,
+):
+    _, source, direct, _, _ = constructor_state
+    (companion,) = [
+        item
+        for item in direct.computations
+        if item.id not in {entry.id for entry in source.computations}
+    ]
+    assert isinstance(companion.body, Case)
+    hits = 0
+
+    def transfer(body):
+        nonlocal hits
+        if isinstance(body, Bind):
+            return body.with_(first=transfer(body.first), then=transfer(body.then))
+        if isinstance(body, Call) and body.callee == companion.id:
+            hits += 1
+            return body.with_(
+                arguments=(*body.arguments[:-1], Var(local=companion.parameters[-1]))
+            )
+        return body
+
+    mutated = _replace_body(
+        direct,
+        companion,
+        companion.body.with_(
+            branches=tuple(
+                branch.with_(body=transfer(branch.body))
+                for branch in companion.body.branches
+            )
+        ),
+    )
+    assert hits == 1
+    validate_module(mutated)
+    point = _CASE_INPUTS[1]
+    live, calls, scores, _, _ = _constructor_trace(
+        source, direct, point, _scoring_runtime()
+    )
+    changed, changed_calls, changed_scores, _, _ = _constructor_trace(
+        source, mutated, point, _scoring_runtime()
+    )
+    assert changed_calls == calls and changed_scores == scores
+    assert changed == (11.0, 11.0) != live
+    gradient = exact_gradient(mutated, "solve", point)
+    assert (gradient.value, gradient.gradient) == (11, (11, 0, 0))
+    assert gradient.gradient != _constructor_polynomial(*point)[2]
+
+
+def test_constructor_state_companion_size_is_independent_of_the_runtime_spine(
+    constructor_state,
+):
+    _, source, _, _, _ = constructor_state
+    entry = _entry(source, "from_path")
+    direct = _specialize(source, "from_path")
+    prior = {item.id for item in source.computations}
+    (companion,) = [item for item in direct.computations if item.id not in prior]
+    terms = sum(
+        sum(1 for _ in _terms(item.body))
+        for item in (_entry(direct, "from_path"), companion)
+    )
+    with pytest.raises(StateSpecializationLimit, match=f"bound of {terms - 1}"):
+        specialize_recursive_state(source, entry.id, max_terms=terms - 1)
+    assert specialize_recursive_state(source, entry.id, max_terms=terms) == direct
+
+    path = run_named(source, "schedule", (-1.0, 2.0)).value
+    for n in range(41):
+        if n in (0, 1, 40):
+            values = tuple(2 ** (i + 1) - 1 for i in range(n + 1))
+            expected = (2 * n + 3) * values[-1] + 2 * sum(values[:-1])
+            for graph in (source, direct):
+                obtained = run_named(graph, "from_path", (path, 1.0)).value
+                assert isinstance(obtained, torch.Tensor)
+                assert obtained.item() == expected
+        if n < 40:
+            path = run_named(source, "prepend", (1.0, 2.0, path)).value
+    for graph in (source, direct):
+        with pytest.raises(ExecutionFailure) as error:
+            run_named(graph, "from_path", (path, 1.0), fuel=16, record_trace=False)
+        assert error.value.diagnostic.code == "qiec-run-fuel"
+
+
+def test_constructor_state_runs_through_both_emitted_pyro_forms(constructor_state):
+    compiler, _, _, staged, _ = constructor_state
+    report = compiler.effect_plan("solve").check_target(
+        "pyro", arguments=_CASE_INPUTS[1], direction=(1, 2, -1)
+    )
+    assert report.projection == "source" and report.refusals == ()
+    assert report.external_derivative.missing == ("external derivative unverified",)
+    projection = project_for_target(staged, discharge_module(staged), "pyro")
+    plan = IRProgram(name=projection.module, inputs=(), body=(), module=projection)
+    code = (
+        transpile(parse(_CONSTRUCTOR_STATE), target="pyro"),
+        _emit_target(plan, "pyro"),
+    )
+    for emitted in code:
+        namespace = {}
+        exec(emitted, namespace)
+        for point in _CASE_INPUTS:
+            _, expected, gradient = _constructor_polynomial(*point)
+            arguments = tuple(
+                torch.tensor(float(value), dtype=torch.float64, requires_grad=True)
+                for value in point
+            )
+            value = namespace["qiec_solve"](*arguments)
+            assert isinstance(value, torch.Tensor) and value.item() == expected
+            measured = torch.autograd.grad(value, arguments, allow_unused=True)
+            assert (
+                tuple(0 if item is None else item.item() for item in measured)
+                == gradient
+            )
+
+
+@pytest.mark.parametrize("static_dependency", ("pattern", "motive"))
+def test_state_constructor_static_dependencies_still_refuse(static_dependency):
+    source = _CONSTRUCTOR_STATE
+    if static_dependency == "pattern":
+        source = (
+            source.replace("constructor Step :", "constructor Step[tag : Nat] :")
+            .replace("construct Step(", "construct Step[1](")
+            .replace(
+                "Step(amount, scale, rest) =>", "Step[tag](amount, scale, rest) =>"
+            )
+        )
+    else:
+        source = (
+            source.replace("Path", "Path(0)")
+            .replace("family Path(0) : Type", "family Path(position : Nat) : Type")
+            .replace("case path motive =>", "case path motive (position : Nat) =>")
+        )
+    module = Compiler(parse(source), module_name="static-state-case").qiec_module
+    assert module is not None
+    value = run_named(module, "solve", (1.0, 2.0, 2.0)).value
+    assert isinstance(value, torch.Tensor) and value.item() == 122
+    with pytest.raises(StateSpecializationUnsupported, match="monomorphic family"):
+        _specialize(module, "solve")
+    ordinary = discharge_module(module)
+    obstacle = ordinary.obstacle("solve")
+    assert obstacle is not None and obstacle.kind == "recursion"
+    assert _entry(ordinary.module, "solve") == _entry(module, "solve")
+    with pytest.raises(JvpUnsupported, match="ConstructorValue"):
+        exact_gradient(module, "solve", (1, 2, 2))
 
 
 def test_nested_installation_and_unrestricted_grade_are_refused(module):

@@ -46,7 +46,10 @@ alongside any captured local instance addresses.
 Jacobian-vector product as rational numbers. It follows the reference
 machine through authored clauses, parameter updates, resumptions, and
 recursive calls. Its arithmetic includes division by nonzero values and
-powers with fixed integral exponents.
+powers with fixed integral exponents. A constructor from a closed
+monomorphic family carries exact scalar fields into the selected case
+arm when its application has no static arguments. Each field is
+evaluated in declaration order.
 
 Every comparison reached by the run must either have unequal operands
 or be independent of the input. This gives a neighborhood where the
@@ -330,6 +333,11 @@ reply and all updated state coordinates in the old state, in declaration
 order. Recursive calls reuse the same companion definitions, so the size
 of the rewritten module does not depend on how many calls a run takes.
 Only the original installation applies the handler's return action.
+
+A case in a stateful body can match a closed monomorphic family without
+indices or static pattern arguments. The companion keeps the scrutinee
+and field bindings. Its selected arm receives the incoming state and
+returns the original result paired with the outgoing state.
 
 Module-level discharge uses the specialization when it reaches a
 recursive handled call within this fragment. The original and specialized
