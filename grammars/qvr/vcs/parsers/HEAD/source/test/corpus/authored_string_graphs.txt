@@ -1,0 +1,42 @@
+========================
+Authored string factor graphs
+========================
+
+#! One fixed word and one hidden word.
+string_graph chain
+    variable hidden : Letters
+    variable empty : Letters [observed=()]
+    variable pair : Letters [observed=(0, 1)]
+    factor edit(hidden, pair)
+
+string_graph_score full : Real [operation=tree_partition, graph=chain]
+
+---
+
+(source_file
+  (string_graph_decl
+    (doc_comment_group
+      (doc_comment))
+    (identifier)
+    (string_graph_variable
+      (identifier)
+      (identifier))
+    (string_graph_variable
+      (identifier)
+      (identifier)
+      (string_graph_observation))
+    (string_graph_variable
+      (identifier)
+      (identifier)
+      (string_graph_observation
+        (integer)
+        (integer)))
+    (string_graph_factor
+      (identifier)
+      (identifier)
+      (identifier)))
+  (string_graph_score_decl
+    (identifier)
+    (qiec_type_name (identifier))
+    (string_graph_score_operation)
+    (identifier)))

@@ -26,6 +26,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecRelationComposeDecl,
     QiecRelationDecl,
     QiecRelationScoreDecl,
+    QiecStringGraphDecl,
     QiecStringGraphScoreDecl,
     QiecSequenceComputation,
     QiecPureBinding,
@@ -70,6 +71,7 @@ type QiecBindingKind = Literal[
     "handler",
     "computation",
     "relation",
+    "string-graph",
     "local",
     "parameter",
     "scoped-instance",
@@ -101,6 +103,8 @@ QIEC_DIAGNOSTIC_CODES = frozenset(
         "qiec-interpretation",
         "qiec-relation-score",
         "qiec-relation-declaration",
+        "qiec-string-graph-declaration",
+        "qiec-string-graph-score",
     }
 )
 
@@ -199,7 +203,7 @@ class QiecBinding(QiecModel):
             colours by role, and an index, a family, and an effect all
             read as types at a use site.
         """
-        if self.kind in {"index", "family", "effect", "relation"}:
+        if self.kind in {"index", "family", "effect", "relation", "string-graph"}:
             return "type"
         if self.kind == "instance":
             return "variable"
@@ -550,6 +554,15 @@ def qiec_bindings(module: Module) -> tuple[QiecBinding, ...]:
                 QiecBinding(
                     name=statement.name,
                     kind="relation",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
+        elif isinstance(statement, QiecStringGraphDecl):
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="string-graph",
                     declaration=statement,
                     owner=statement,
                 )

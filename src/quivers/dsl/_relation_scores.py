@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from quivers.core.algebras import LOG_PROB
 from quivers.dsl._relation_specs import authored_relation_specs
+from quivers.dsl._string_graph_specs import authored_string_graph_specs
 from quivers.dsl.ast_nodes import (
     QiecHandlerDecl,
     QiecRelationScoreDecl,
@@ -111,6 +112,9 @@ def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ..
         elaborator.source.module_name,
         elaborator.source.file_path,
     )
+    graphs = authored_string_graph_specs(
+        elaborator.source.syntax, specs, elaborator.source.file_path
+    )
     declared_handlers = {
         statement.name
         for statement in elaborator.source.syntax.statements
@@ -192,11 +196,30 @@ def declare_relation_scores(elaborator: _Elaborator) -> tuple[_RelationScore, ..
             ),
         )
         if is_graph:
+            assert isinstance(declaration, QiecStringGraphScoreDecl)
+            graph = None
+            if declaration.graph is not None:
+                graph = graphs.get(declaration.graph)
+                if graph is None:
+                    elaborator._fail(
+                        declaration,
+                        f"unknown authored string graph {declaration.graph!r}",
+                        code=diagnostic,
+                    )
+                if declaration.operation == "tree_partition":
+                    expected = LOG_WEIGHT if graph.algebra == LOG_PROB.subject else REAL
+                    if result != expected:
+                        elaborator._fail(
+                            declaration,
+                            f"the authored string graph partition requires {expected.constructor.name}",
+                            code=diagnostic,
+                        )
             handler = _tree_string_graph_handler(
                 module,
                 handler_name,
                 declaration.operation.removeprefix("tree_"),
                 result,
+                graph=graph,
             )
         else:
             assert isinstance(declaration, QiecRelationScoreDecl)

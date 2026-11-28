@@ -1399,12 +1399,56 @@ class QiecRelationScoreDecl(Statement):
     kind: Literal["relation_score_decl"] = "relation_score_decl"
 
 
+class QiecStringGraphVariable(dx.Model):
+    """One nominal string variable with an optional observed word."""
+
+    name: str
+    alphabet: str
+    observed: tuple[int, ...] | None = None
+
+
+class QiecStringGraphFactor(dx.Model):
+    """One ordered occurrence of an existing authored sparse relation."""
+
+    relation: str
+    scope: tuple[str, ...]
+
+
+class QiecStringGraphDecl(Statement):
+    """An ordered declaration of variables and sparse factor occurrences.
+
+    Parameters
+    ----------
+    name
+        The authored graph name.
+    variables
+        Nominally typed variables and their observed words.
+    factors
+        Ordered relation references and their variable scopes.
+    docs
+        Attached documentation comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    variables: tuple[QiecStringGraphVariable, ...]
+    factors: tuple[QiecStringGraphFactor, ...]
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["string_graph_decl"] = "string_graph_decl"
+
+
 class QiecStringGraphScoreDecl(Statement):
     """A named partition or normalized word score on a runtime string graph."""
 
     name: str
     result_type: QiecTypeExpr
     operation: Literal["tree_partition", "tree_log_prob"]
+    graph: str | None = None
     docs: tuple[str, ...] = ()
     line: int = 0
     col: int = 0
@@ -1480,5 +1524,8 @@ __all__ = [
     "QiecRelationMark",
     "QiecRelationTape",
     "QiecRelationScoreDecl",
+    "QiecStringGraphDecl",
+    "QiecStringGraphFactor",
+    "QiecStringGraphVariable",
     "QiecStringGraphScoreDecl",
 ]

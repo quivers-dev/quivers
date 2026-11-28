@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from hashlib import sha256
 
 import torch
 
@@ -15,7 +16,7 @@ from quivers.qiec.evaluator import ClauseContext, RuntimeAttachments
 from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
-from quivers.qiec.string_graphs import TreeStringGraphRequest
+from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
 from quivers.qiec.terms import Local
 from quivers.qiec.types import UNIT, TypeExpr
 
@@ -37,7 +38,12 @@ def _string_graph_score_handler_name(name: str) -> str:
 
 
 def _tree_string_graph_handler(
-    module: str, name: str, operation: str, result: TypeExpr
+    module: str,
+    name: str,
+    operation: str,
+    result: TypeExpr,
+    *,
+    graph: StringFactorGraphSpec | None = None,
 ) -> HandlerDef:
     """Build the shared checked handler declaration.
 
@@ -51,16 +57,24 @@ def _tree_string_graph_handler(
         The exact graph objective that the handler serves.
     result : TypeExpr
         The validated closed scalar result type.
+    graph : StringFactorGraphSpec or None
+        The exact authored graph if the declaration binds one.
 
     Returns
     -------
     HandlerDef
         The linear foreign Compute handler.
     """
+    identity = ("string_graph", name, operation)
+    if graph is not None:
+        from quivers.qiec.serialization import dumps
+
+        fingerprint = sha256(dumps(graph).encode("utf-8")).hexdigest()
+        identity = (*identity, "authored_graph", fingerprint)
     effect = COMPUTE.with_(arguments=(UNIT, result))
     return HandlerDef(
         name=name,
-        id=HandlerId.derive(module, "string_graph", name, operation),
+        id=HandlerId.derive(module, *identity),
         effect=effect,
         clauses=(
             HandlerClauseDef(
@@ -226,9 +240,18 @@ class TreeStringGraphRuntimeProvider:
             module.module, self._handler_name, self._request
         )
         if expected not in module.handlers:
-            raise TypeError(
-                f"incompatible tree string graph handler {self._handler_name!r}"
+            expected = _tree_string_graph_handler(
+                module.module,
+                self._handler_name,
+                self._request.operation,
+                self._request.result_type,
+                graph=self._request.graph,
             )
+            if expected not in module.handlers:
+                raise TypeError(
+                    f"incompatible tree string graph handler {self._handler_name!r} "
+                    "for the supplied objective, result type, or authored graph"
+                )
         validator = self.validator_for(self._request.result_type)
         assert validator is not None
         runtime = compute_handler(

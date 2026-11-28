@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Checked best-path weight.** Serialized fixed-relation requests can score the highest-weight alignment of observed words with exact acyclic ranking and a deterministic tie derivative.
 - **Authored sparse relation composition.** QVR authors can compose two typed primitive relations and request a checked pair weight over the outer tape words.
 - **Authored sparse relation topologies.** QVR declares typed tapes, ordered epsilon and parallel arcs, and shared scalar identities. A checked source score can bind that exact topology and evaluate path entropy or signed expected cost.
+- **Authored string factor graphs.** QVR declares nominal variables, observed words, and ordered scopes over named sparse relations. Checked tree scores can bind the exact authored graph.
 - **Authored string graph scores.** QVR can name a checked graph partition or normalized word objective and call it from an ordinary computation.
 - **Candidate string messages.** A bounded candidate view retains the original unary LogProb message scale, sums omitted mass directly, and reports truncation and beam ties separately.
 - **Sampleable deduction outcomes.** A checked QVR program can turn weighted outcome rows into a typed finite law, draw a reading, and replay its score under the original grammar weights.

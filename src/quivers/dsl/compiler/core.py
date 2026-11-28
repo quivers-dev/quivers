@@ -71,6 +71,7 @@ from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
 from quivers.qiec.program_runtime import passed_data_notes
 from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.string_graphs import StringFactorGraphSpec
 
 
 def _plate_axes(
@@ -362,6 +363,23 @@ class Compiler(
             for name, relation in self._authored_relation_specs().items()
             if isinstance(relation, ComposedRelationSpec)
         }
+
+    @property
+    def string_graph_specs(self) -> dict[str, StringFactorGraphSpec]:
+        """Return checked string graphs by their authored names.
+
+        Returns
+        -------
+        dict[str, StringFactorGraphSpec]
+            Ordered observations and factor scopes with original relation identities.
+        """
+        from quivers.dsl._string_graph_specs import authored_string_graph_specs
+
+        if self._qiec_source is None:
+            return {}
+        return authored_string_graph_specs(
+            self._qiec_source, self._authored_relation_specs(), self._qiec_file_path
+        )
 
     def _authored_relation_specs(
         self,

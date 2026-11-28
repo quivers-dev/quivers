@@ -163,6 +163,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecRelationComposeDecl,
     QiecRelationDecl,
     QiecRelationScoreDecl,
+    QiecStringGraphDecl,
     QiecStringGraphScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
@@ -1056,6 +1057,23 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
     if isinstance(stmt, QiecRelationComposeDecl):
         text = f"relation {stmt.name} = compose({stmt.left}, {stmt.right})"
         return _with_docs(stmt.docs, indent, text)
+    if isinstance(stmt, QiecStringGraphDecl):
+        lines = _doc_lines(stmt.docs, indent)
+        lines.append(f"{_pad(indent)}string_graph {stmt.name}")
+        pad = _pad(indent + 1)
+        for variable in stmt.variables:
+            observed = ""
+            if variable.observed is not None:
+                word = ", ".join(map(str, variable.observed))
+                observed = f" [observed=({word})]"
+            lines.append(
+                f"{pad}variable {variable.name} : {variable.alphabet}{observed}"
+            )
+        lines.extend(
+            f"{pad}factor {factor.relation}({', '.join(factor.scope)})"
+            for factor in stmt.factors
+        )
+        return "\n".join(lines)
     if isinstance(stmt, QiecRelationScoreDecl | QiecStringGraphScoreDecl):
         result = _emit_qiec_type(stmt.result_type)
         keyword = (
@@ -1068,9 +1086,12 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
             if isinstance(stmt, QiecRelationScoreDecl) and stmt.relation is not None
             else ""
         )
-        text = (
-            f"{keyword} {stmt.name} : {result} [operation={stmt.operation}{relation}]"
+        graph = (
+            f", graph={stmt.graph}"
+            if isinstance(stmt, QiecStringGraphScoreDecl) and stmt.graph is not None
+            else ""
         )
+        text = f"{keyword} {stmt.name} : {result} [operation={stmt.operation}{relation}{graph}]"
         return _with_docs(stmt.docs, indent, text)
     if isinstance(stmt, QiecComputationDecl):
         return _emit_qiec_computation_decl(stmt, indent)

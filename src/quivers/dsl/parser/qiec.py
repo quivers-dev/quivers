@@ -21,6 +21,9 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecRelationMark,
     QiecRelationTape,
     QiecRelationScoreDecl,
+    QiecStringGraphDecl,
+    QiecStringGraphFactor,
+    QiecStringGraphVariable,
     QiecStringGraphScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
@@ -90,6 +93,7 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "relation_decl",
         "relation_compose_decl",
         "relation_score_decl",
+        "string_graph_decl",
         "string_graph_score_decl",
     }
 )
@@ -232,7 +236,37 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             line=line,
             col=col,
         )
+    if kind == "string_graph_decl":
+        variables = []
+        for child in t.fields(vid, "variables"):
+            observed = t.field(child, "observed")
+            variables.append(
+                QiecStringGraphVariable(
+                    name=_field_text(t, child, "name"),
+                    alphabet=_field_text(t, child, "alphabet"),
+                    observed=None
+                    if observed is None
+                    else tuple(
+                        int(t.text(word)) for word in t.fields(observed, "symbols")
+                    ),
+                )
+            )
+        return QiecStringGraphDecl(
+            name=_field_text(t, vid, "name"),
+            variables=tuple(variables),
+            factors=tuple(
+                QiecStringGraphFactor(
+                    relation=_field_text(t, child, "relation"),
+                    scope=tuple(t.text(name) for name in t.fields(child, "scope")),
+                )
+                for child in t.fields(vid, "factors")
+            ),
+            docs=docs,
+            line=line,
+            col=col,
+        )
     if kind == "string_graph_score_decl":
+        graph = t.field(vid, "graph")
         return QiecStringGraphScoreDecl(
             name=_field_text(t, vid, "name"),
             result_type=_walk_type(t, _required_field(t, vid, "result")),
@@ -240,6 +274,7 @@ def _walk_qiec_statement(t: _Tree, vid: str):
                 Literal["tree_partition", "tree_log_prob"],
                 _field_text(t, vid, "operation"),
             ),
+            graph=None if graph is None else t.text(graph),
             docs=docs,
             line=line,
             col=col,
