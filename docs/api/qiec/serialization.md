@@ -24,3 +24,29 @@ score reads and checks them again. The wire record contains the identities and t
 Tensor values and runtime providers belong to the binding.
 
 ::: quivers.qiec.relations.RationalRelationSpec
+
+
+## Fixed-word relation requests
+
+A `FixedRelationRequest` pairs a sparse relation specification with
+observed words in tape order, one of two scoring operations, and
+explicit query limits. `pair_weight` returns the scalar weight of
+all accepting paths at those words. `conditional_log_prob` uses the
+declared input-tape split and returns the log probability of the
+output under the closure-checked conditional normalizer.
+
+A `FixedRelationRuntimeProvider` checks the declared foreign
+`Compute[Unit, A]` handler before attaching to a reference-machine
+invocation. Its scalar result type follows the request. The
+provider binds the stable weight identities to the original live
+tensors and preserves derivatives through the score. The wire
+record carries the structural request. A run supplies the provider
+and parameter objects as host attachments.
+
+The Stan, BUGS, and JAGS projections report the checked foreign
+handler as an obstacle. Hosted targets that preserve the handler
+declaration require an implementation in the target runtime.
+
+::: quivers.qiec.relations.FixedRelationRequest
+
+::: quivers.qiec.relation_runtime.FixedRelationRuntimeProvider
