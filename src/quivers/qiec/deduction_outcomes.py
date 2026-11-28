@@ -10,7 +10,12 @@ import torch
 from quivers._positions import demand
 from quivers._values import HeldValue
 from quivers.core.algebras import LOG_PROB
-from quivers.qiec._lexical_outcome_plan import OUTCOME_ALGORITHM, raw_item_plan_trace
+from quivers.qiec._lexical_outcome_plan import (
+    OUTCOME_ALGORITHM,
+    PROOF_ALGORITHM,
+    proof_rows_plan_trace,
+    raw_item_plan_trace,
+)
 from quivers.qiec.canonical import sampleable_type, tensor_type
 from quivers.qiec.checking import KernelError, KernelRegistry
 from quivers.qiec.contracts import OccurrenceId, ParameterId
@@ -1330,7 +1335,7 @@ def deduction_proofs_handler(
             lambda: {
                 **_packed_trace(forest, normalized, len(goals), len(masses)),
                 "observer": "weighted-proof-rows",
-                "algorithm": "indexed-packed-forest-budgeted-enumeration",
+                "algorithm": PROOF_ALGORITHM,
                 "proof_budget": limit,
                 **({"proof_node_budget": node_limit} if node_limit is not None else {}),
                 "structural_goal_proofs": len(listed),
@@ -1342,6 +1347,20 @@ def deduction_proofs_handler(
                     "peak_bytes",
                 ),
             },
+        )
+        context.emit_trace(
+            "deduction.proofs.plan",
+            lambda: proof_rows_plan_trace(
+                semantics,
+                definition,
+                operation,
+                len(tokens),
+                len(terms),
+                weights,
+                limit,
+                node_limit,
+                normalized,
+            ),
         )
         return TailResume(value=result)
 

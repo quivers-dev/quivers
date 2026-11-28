@@ -323,6 +323,7 @@ def _examples() -> list[dx.Model]:
         c.Best(),
         c.KBest(k=3),
         c.Outcome(key=ComputationId.derive("key")),
+        c.WeightedProofRows(normalized=True),
         c.Statistic(statistic=ComputationId.derive("stat")),
         c.Marginal(normalized=True),
         c.Sample(n=4),

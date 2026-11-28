@@ -115,6 +115,7 @@ from quivers.qiec.contracts import (
     Unresolved,
     Unrolled,
     Weight,
+    WeightedProofRows,
     WorkReport,
 )
 from quivers.qiec.contextual_edit_runtime import FixedContextualEditRequest
@@ -634,6 +635,7 @@ _NODE_CLASSES = (
     PackedForest,
     Support,
     Weight,
+    WeightedProofRows,
     Best,
     KBest,
     Outcome,

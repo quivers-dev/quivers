@@ -896,6 +896,23 @@ budget is exceeded, `deduction.proofs.refused` records the budget and the
 reason. With only a proof-count limit, the check saturates counts at the
 limit plus one. A refusal can report a lower bound on the total.
 
+A successful run also emits `deduction.proofs.plan`. As with the item
+query, decode its `plan` field with `quivers.qiec.loads`. Its
+`WeightedProofRows` observable records whether the actual result was
+normalized. Its controls give the structural proof cap and, when
+present, the unfolded-node cap. These limits bound which lists may be
+returned. They leave the chart size and the tape's peak memory open.
+
+The proof rows are the result values. The provider keeps no additional
+provenance after returning them, though it builds a temporary packed
+forest and shares intermediate derivations during enumeration. Each
+useful subderivation can be placed at a fixed position in a complete
+goal proof. Distinct subderivations then map to distinct pairs of a
+complete proof and a position in it. This bounds the size of the shared
+list by the unfolded structural output. The report also accounts for
+prefix copying when a rule enumerates all combinations of its premises,
+and for checking and reifying the typed proof values.
+
 With a node limit, the same packed traversal counts proofs and their
 total unfolded size. For a partial combination with proof count $p$ and
 node sum $q$, adding a premise occurrence with count $c$ and node sum $s$
