@@ -1276,13 +1276,19 @@ class _Discharger:
                 )
                 previous = caller.address if isinstance(caller, _CallFrame) else None
                 if entered is None:
-                    if (term.effects.entries or term.effects.tail is not None) and (
-                        _clause_path(stack)
+                    clauses = _clause_path(stack)
+                    if (resumptions or clauses) and (
+                        term.effects.tail is not None
+                        or any(
+                            entry.effect.id in self.tables.multi_shot_effects
+                            for entry in term.effects.entries
+                        )
                     ):
                         raise _Undischarged(
                             "address",
-                            f"calls `{term.name}` with residual effects from a "
-                            "discharged operation clause",
+                            f"calls `{term.name}` within a discharged handler path, "
+                            "where its residual row can leave the path and resume "
+                            "its continuation more than once",
                             term.origin,
                         )
                     binder = Local(
@@ -1301,7 +1307,11 @@ class _Discharger:
                             if address != previous
                         )
                         call = WithTraceAddresses(
-                            addresses=addresses, previous=previous, body=call
+                            addresses=addresses,
+                            previous=previous,
+                            body=call,
+                            resumptions=resumptions,
+                            clauses=clauses,
                         )
                     made.append((binder, call))
                     self.count(1 + (caller is not None))
@@ -2374,6 +2384,10 @@ class _Tables:
             item.id: item for item in module.computations
         }
         self.operations = _operations(module)
+        self.multi_shot_effects = frozenset(
+            self.operations[operation][0].ref.id
+            for operation in self.multi_shot_operations
+        )
         self.constructors: dict[ConstructorId, ConstructorDecl] = {
             item.id: item for item in module.constructors
         }

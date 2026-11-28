@@ -538,16 +538,15 @@ def test_linear_clauses_address_repeated_effects_by_trigger_site(
         assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
 
 
-def test_an_effectful_call_inside_a_linear_clause_keeps_the_reference_path(
+def test_an_effectful_call_inside_a_linear_clause_restores_its_path(
     clause_address_module: tuple[QiecModule, DischargedModule],
 ) -> None:
     module, discharged = clause_address_module
     name = "report_through_call"
-    obstacle = discharged.obstacle(name)
-    assert obstacle is not None and obstacle.kind == "address"
-    assert "`report_twice`" in obstacle.reason
+    assert discharged.obstacle(name) is None
     original = _computation(module, name)
-    assert _computation(discharged.module, name) is original
+    rewritten = _computation(discharged.module, name)
+    assert not any(isinstance(term, Handle) for term in _terms(rewritten.body))
     assert discharged.obstacle("report_twice") is None
     callee = _computation(module, "report_twice").body
     nested = _effect_sites(callee, "Relay")
@@ -564,7 +563,9 @@ def test_an_effectful_call_inside_a_linear_clause_keeps_the_reference_path(
             (score, (*path, ("handler-clause", site)), ()) for site in nested
         )
         expected.append((after_resume, path, ()))
-    for checked in (module, discharged.module):
+    round_trip = loads(dumps(discharged.module))
+    assert isinstance(round_trip, QiecModule)
+    for checked in (module, discharged.module, round_trip):
         assert _request_addresses(checked, name + "_run", 1.0) == tuple(expected)
 
 
@@ -930,6 +931,42 @@ define retained_local_parent(x : Real) : Real !{score} =
 define retained_local_run(x : Real) : Real * LogWeight !{} =
     handle score with accumulate in
         retained_local_parent(x)
+
+define residual_draw(x : Real) : Real !{random} =
+    let value <- perform random.sample[Real](site("residual"), Normal(x, 1.0))
+    return value
+
+define residual_shot_subject(x : Real) : Real !{random} =
+    handle branch with twice in
+        let y <- perform branch.split(x)
+        let inside <- residual_draw(y)
+        let after <- perform random.sample[Real](site("after-call"), Normal(inside, 1.0))
+        return after
+
+define residual_shot_run(x : Real) : Real !{} =
+    handle random with draw in
+        residual_shot_subject(x)
+
+define residual_nested_run(x : Real) : Real !{} =
+    handle random with draw in
+        handle outside_branch with twice in
+            let y <- perform outside_branch.split(x)
+            residual_shot_subject(y)
+
+define residual_omega_leaf(x : Real) : Real !{outside_branch, random} =
+    let y <- perform outside_branch.split(x)
+    let z <- perform random.sample[Real](site("inner"), Normal(y, 1.0))
+    return z
+
+define residual_omega_subject(x : Real) : Real !{outside_branch, random} =
+    handle branch with guarded_shots in
+        let y <- perform branch.split(x)
+        residual_omega_leaf(y)
+
+define residual_omega_call_run(x : Real) : Real !{} =
+    handle random with draw in
+        handle outside_branch with twice in
+            residual_omega_subject(x)
 """
 
 
@@ -1102,6 +1139,47 @@ def test_a_local_instance_blocks_tail_replacement_of_its_caller(
     expected = ((score, path, ()),)
     for checked in (module, discharged.module, round_trip):
         assert _request_addresses(checked, "retained_local_run", 1.0) == expected
+
+
+@pytest.mark.parametrize("outer_omega", (False, True))
+def test_a_retained_call_keeps_its_scoped_shots(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+    outer_omega: bool,
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    assert discharged.obstacle("residual_shot_subject") is None
+    sample = _address_site(module, "residual_draw", str(RANDOM_SAMPLE))
+    after = _address_site(module, "residual_shot_subject", str(RANDOM_SAMPLE))
+    expected = []
+    for outer in range(2 if outer_omega else 1):
+        parent, first_child = 3 * outer + 1, 3 * outer + 2
+        for inner in range(2):
+            path = (
+                ("call", f"residual_shot_subject#{parent}"),
+                ("call", f"residual_draw#{first_child + inner}"),
+            )
+            shots = (outer, inner) if outer_omega else (inner,)
+            expected.append((sample, path, shots))
+            expected.append((after, path[:-1], shots))
+    name = "residual_nested_run" if outer_omega else "residual_shot_run"
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, name, 1.0) == tuple(expected)
+
+
+def test_a_retained_call_with_an_interleaved_omega_request_uses_the_reference(
+    inlined_address_module: tuple[QiecModule, DischargedModule, QiecModule],
+) -> None:
+    module, discharged, round_trip = inlined_address_module
+    name = "residual_omega_subject"
+    obstacle = discharged.obstacle(name)
+    assert obstacle is not None and obstacle.kind == "address"
+    assert "`residual_omega_leaf`" in obstacle.reason
+    assert _computation(module, name) is _computation(discharged.module, name)
+    sample = _address_site(module, "residual_omega_leaf", str(RANDOM_SAMPLE))
+    path = (("call", f"{name}#1"), ("call", "residual_omega_leaf#2"))
+    expected = tuple((sample, path, (0, shot)) for shot in range(2))
+    for checked in (module, discharged.module, round_trip):
+        assert _request_addresses(checked, "residual_omega_call_run", -1.0) == expected
 
 
 # ---------------------------------------------------------------------------

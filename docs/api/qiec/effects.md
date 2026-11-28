@@ -14,4 +14,9 @@ addresses in their original order. Resumptions restore the same
 allocations for each shot, which has its own resumption path. Effects in
 an intervening clause use the scope outside the captured continuation.
 
+A retained call also inherits its enclosing discharged shots and
+clause activations. Discharge keeps the reference handler when the call's
+residual row is open or could invoke an outer multi-shot clause inside
+that path.
+
 ::: quivers.qiec.effects

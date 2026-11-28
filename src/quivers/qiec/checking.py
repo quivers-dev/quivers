@@ -50,6 +50,7 @@ from quivers.qiec.identifiers import (
     StaticScopeId,
     StaticVariableId,
     TypeId,
+    _CLAUSE_SCOPE,
 )
 from quivers.qiec.substitution import (
     StaticSubstitution,
@@ -3157,6 +3158,14 @@ def _infer_computation(
             or infer_value(computation.previous, registry, context) != _CALL_ADDRESS
         ):
             raise KernelError("a replaced call address requires a residual tail call")
+        if (computation.resumptions or computation.clauses) and not isinstance(
+            computation.body, Call
+        ):
+            raise KernelError("restored handler paths require a residual call")
+        if any(shot < 0 for shot in computation.resumptions) or any(
+            address.scope != _CLAUSE_SCOPE for address in computation.clauses
+        ):
+            raise KernelError("invalid restored handler address paths")
         return _infer_computation(computation.body, registry, context)
     if isinstance(computation, Perform):
         effect, result = check_request(computation.request, registry, context)

@@ -19,6 +19,7 @@ from quivers.qiec.identifiers import (
     ComputationId,
     ConstructorId,
     DistributionId,
+    DynamicAddressFrame,
     EffectInstanceId,
     HandlerId,
     PrimitiveId,
@@ -1082,6 +1083,10 @@ class WithTraceAddresses(QiecModel):
     previous
         A replaced inlined caller whose lexical path a residual tail
         call inherits.
+    resumptions
+        The discharged shots enclosing a residual call, in order.
+    clauses
+        The discharged clause activations enclosing a residual call.
     tag
         The serialization discriminator.
     """
@@ -1089,6 +1094,12 @@ class WithTraceAddresses(QiecModel):
     addresses: tuple[Var, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     previous: Var | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
+    resumptions: tuple[int, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    clauses: tuple[DynamicAddressFrame, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["with_trace_addresses"] = "with_trace_addresses"
 
 

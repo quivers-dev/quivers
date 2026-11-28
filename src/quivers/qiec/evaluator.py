@@ -3276,6 +3276,16 @@ class Evaluator:
                     and not isinstance(previous, _CallActivation)
                 ):
                     raise EvaluationError("invalid restored trace addresses")
+                if current.resumptions or current.clauses:
+                    clauses = (
+                        (*self._clause_path(stack), *current.clauses)
+                        if current.clauses
+                        else None
+                    )
+                    stack.append(
+                        _PathFrame(resumption_path=resumption_path, clause_path=clauses)
+                    )
+                    resumption_path = (*resumption_path, *current.resumptions)
                 stack.append(
                     _RestoredTraceAddresses(
                         addresses=cast(
