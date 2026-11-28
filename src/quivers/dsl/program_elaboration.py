@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
-from quivers.dsl._deduction_outcomes import OUTCOME_CALLS, OUTCOME_CODE
+from quivers.dsl._deduction_outcomes import OUTCOME_CALLS, OUTCOME_CODE, PROOF_CALLS
 from quivers.qiec.foreign import DEDUCTION_OUTCOME_KEYS
 from quivers.dsl.ast_nodes import (
     CallStep,
@@ -4358,11 +4358,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         ):
             return None
         outcomes = expr.func in OUTCOME_CALLS
+        proofs = expr.func in PROOF_CALLS
         if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
             if outcomes:
                 self._fail(
                     node,
-                    f"{expr.func} needs a deduction, a sentence and an outcome key",
+                    f"{expr.func} needs a deduction, a sentence and "
+                    f"{'a proof limit' if proofs else 'an outcome key'}",
                     code=OUTCOME_CODE,
                 )
             return None
@@ -4393,7 +4395,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         plate: str | None = None
         key: str | None = None
         typed_key = False
-        if outcomes:
+        proof_budget = None
+        if proofs:
+            if target.name not in self._proof_queries:
+                self._fail(
+                    node,
+                    f"{expr.func} requires a direct program let binding",
+                    code=OUTCOME_CODE,
+                )
+            if not rest:
+                self._fail(
+                    node,
+                    f"{expr.func} requires a positive Int proof budget",
+                    code=OUTCOME_CODE,
+                )
+            proof_budget = rest.pop(0)
+        elif outcomes:
             if target.name not in self._outcome_queries:
                 self._fail(
                     node,
@@ -4461,7 +4478,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             bindings=tuple(bindings),
             outcome_key=key,
             typed_outcome_key=typed_key,
-            normalize_outcomes=expr.func == "parse_normalized_outcomes",
+            proof_budget=proof_budget,
+            normalize_outcomes=expr.func
+            in ("parse_normalized_outcomes", "parse_normalized_proofs"),
         )
 
     def _deduction_call(
@@ -4520,7 +4539,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         tokens = scope.lookup(source)
-        if tokens is not None and parse.outcome_key is None:
+        if tokens is not None and not parse.observes_rows:
             self._fail(
                 node,
                 f"parse reads {source!r}, which a step binds; the sentence a "
@@ -4529,7 +4548,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         suffix = "run"
         extra: tuple[Value, ...] = ()
-        if parse.outcome_key is not None:
+        if parse.proof_budget is not None:
+            suffix = "proofs"
+            authored = parse.proof_budget
+            budget = self._let_value(authored, scope, state, node)
+            if self._value_type(budget, scope.context(), authored) != INT:
+                self._fail(
+                    authored,
+                    "deduction proof budgets must have type Int",
+                    code=OUTCOME_CODE,
+                )
+            extra = (budget, LiteralValue(value=parse.normalize_outcomes, type=BOOL))
+        elif parse.outcome_key is not None:
             suffix = "outcomes"
             extra = (
                 LiteralValue(
@@ -4729,7 +4759,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 total = self._primitive(
                     "add_real", (total, item), node, (*path, "table", label, "total")
                 )
-            if parse.outcome_key is not None:
+            if parse.observes_rows:
                 total = self._primitive(
                     "positive_parameter",
                     (total,),
@@ -4739,7 +4769,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             normalizer = self._primitive(
                 "log", (total,), node, (*path, "table", label, "normalizer")
             )
-            logarithm = "log" if parse.outcome_key is None else "log_probability"
+            logarithm = "log_probability" if parse.observes_rows else "log"
             for position, item in enumerate(probabilities):
                 entries.append(
                     self._primitive(
@@ -11143,6 +11173,8 @@ class _ParseCall(dx.Model):
         The structural selector or the name of a checked key computation.
     typed_outcome_key : bool
         Whether the selector names a checked key computation.
+    proof_budget : LetExprNode or None
+        The checked integer budget of a proof query.
     normalize_outcomes : bool
         Whether to normalize the outcome weights by the total goal mass.
     """
@@ -11153,7 +11185,13 @@ class _ParseCall(dx.Model):
     bindings: tuple[_ParseBinding, ...]
     outcome_key: str | None = None
     typed_outcome_key: bool = False
+    proof_budget: LetExprNode | None = None
     normalize_outcomes: bool = False
+
+    @property
+    def observes_rows(self) -> bool:
+        """Whether the query observes weighted keys or explicit proofs."""
+        return self.outcome_key is not None or self.proof_budget is not None
 
 
 def _sampled_support(

@@ -42,6 +42,7 @@ from quivers.continuous.morphisms import (
 )
 from quivers.core.algebras import CompositionRule
 from quivers.core.morphisms import Morphism, ObservedMorphism
+from quivers.dsl._deduction_outcomes import OUTCOME_CALLS
 
 from quivers.continuous.inline import (
     UnsizedParameterError,
@@ -714,7 +715,7 @@ def _fresh_name(base: str, occupied: set[str]) -> str:
 
 
 def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
-    """Whether a program body calls a named computation anywhere.
+    """Whether a program body calls a checked computation anywhere.
 
     Parameters
     ----------
@@ -724,10 +725,16 @@ def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
     Returns
     -------
     bool
-        ``True`` if a `CallStep` appears at any depth.
+        ``True`` for a named computation or a typed deduction query.
     """
     for step in steps:
         if isinstance(step, CallStep):
+            return True
+        if (
+            isinstance(step, LetStep)
+            and isinstance(step.value, LetExprCall)
+            and step.value.func in OUTCOME_CALLS
+        ):
             return True
         if isinstance(step, MarginalizeStep) and _calls_a_computation(step.scope):
             return True
@@ -4276,7 +4283,7 @@ class _ProgramsMixin:
             )
         )
         if not step_program and _calls_a_computation(decl.draws):
-            # A program calling a named computation runs as its checked
+            # A program calling a checked computation runs as its core
             # computation: the callee's body is a term of the module,
             # which only the reference machine runs.
             self._bind_checked_program(decl, domain, codomain)

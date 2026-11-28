@@ -597,6 +597,65 @@ in a hash table. Its extra work depends on the number of goal items and
 the cost of computing and comparing their keys, even when the proof count
 is much larger. The masses and their normalizer retain their gradients.
 
+#### Returning weighted proofs
+
+Use `parse_proofs(D, sentence, limit)` when a later computation needs to
+inspect the rule applications of each proof. `limit` is a positive `Int`.
+The runtime counts the structural proofs of all selected goals against
+this limit before constructing any proof values. The count includes
+zero-weight proofs. An exceeded limit raises an error, and a successful
+query returns each positive-weight proof with its log weight.
+
+`parse_normalized_proofs` normalizes over these same proofs and requires
+positive total mass. A raw query returns an empty list when no proof has
+positive mass. Two proofs of the same goal keep separate entries. The
+rule and lexical weight bindings of `parse_outcomes` are available here
+as well.
+
+The result family is `D__Proofs`. Its `D__proof_end` constructor is empty.
+`D__proof_entry[i, j, c, f](proof, weight, tail)` binds the endpoints,
+category, and form indices of a proof of type `D__SpanProof(i, j, c, f)`.
+For a deduction without forms, the entry has three indices. The category
+and form indices inhabit `D__Term`. The proof's constructors include
+`D__rule_<name>` for each rule and `D__axiom_span` for a lexical occurrence.
+A QVR `case` can bind these indices and pass the proof to another checked
+computation. Enumeration makes no requests on behalf of that computation.
+The proof limit counts returned alternatives before zero-weight filtering.
+Reifying them also takes work proportional to their explicit proof sizes.
+
+For instance, two rules can prove the same full span. This program uses
+the packed chart to return their total weight by summing the two proof rows.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 2
+object Mass : Real 1
+
+deduction Reading : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, C, S, meaning, word
+    rule first : span(I, K, A, word), span(K, J, C, word) |- span(I, J, S, meaning)
+    rule second : span(I, K, B, word), span(K, J, C, word) |- span(I, J, S, meaning)
+    lexicon
+        "left" : A = word
+        "left" : B = word
+        "right" : C = word
+
+define total(rows : Reading__Proofs) : Real !{} =
+    case rows motive => Real
+        Reading__proof_end =>
+            return 0.0
+        Reading__proof_entry[i, j, c, f](proof, weight, tail) =>
+            let rest <- total(tail)
+            return exp(weight) + rest
+
+program proof_mass : Token -> Mass
+    let proofs = parse_proofs(Reading, sentence, 2)
+    let weight <- total(proofs)
+    return weight
+
+export proof_mass
+```
+
 #### Scoring a response with a prover
 
 The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules
