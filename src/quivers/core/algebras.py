@@ -4682,7 +4682,8 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, RealEmbedding, Semiring):
         DivergentClosureError
             If an effective return weight is at least one.
         UndecidedClosureError
-            If an effective return weight is within the rounding bound of one.
+            If convergence or a usable pivot cannot be established in the
+            working precision.
         ValueError
             If the matrix contains NaN or positive infinity.
         """
@@ -4727,7 +4728,17 @@ class LogProbAlgebra(Semifield, ZeroSumFree, Star, RealEmbedding, Semiring):
                 verdicts,
                 "an effective return weight is at least one",
             )
-            return -torch.log(-torch.expm1(loop))
+            denominator = -torch.expm1(loop)
+            # A float64 enclosure can establish convergence even when
+            # float32 elimination rounds this effective return weight to
+            # one. That certificate does not make the working pivot usable.
+            demand(
+                denominator > 0,
+                lambda: UndecidedClosureError(
+                    "the working precision cannot evaluate a convergent log closure pivot"
+                ),
+            )
+            return -torch.log(denominator)
 
         star, work = _eliminate(self, matrix, repeat)
         return star, work.with_(exact=verdicts.operations)

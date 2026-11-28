@@ -1,5 +1,6 @@
 """Independent closed forms for fixed words with productive self-loops."""
 
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from math import log, nextafter
 
@@ -350,6 +351,30 @@ def test_boundary_rounding_refuses_instead_of_returning_an_unusable_weight():
         RationalRelation(topology, log_weights, algebra=LOG_PROB).query(
             ((),), max_closure_size=2
         ).weight()
+
+
+def test_float32_star_refuses_a_certified_but_unusable_working_pivot():
+    topology = _self_cycles("first", "second")
+    weights = torch.tensor(
+        [-0.6931478977203369, -0.6931464672088623, 0.0], dtype=torch.float32
+    )
+    with localcontext() as context:
+        context.prec = 70
+        ratio = sum(
+            Decimal.from_float(log_weight).exp() for log_weight in weights[:2].tolist()
+        )
+        assert 0 < 1 - ratio < Decimal("2e-9")
+        expected = float(-(1 - ratio).ln())
+    with pytest.raises(UndecidedClosureError, match="working precision"):
+        RationalRelation(topology, weights, algebra=LOG_PROB).query(
+            ((),), max_closure_size=2
+        ).weight()
+    precise = (
+        RationalRelation(topology, weights.double(), algebra=LOG_PROB)
+        .query(((),), max_closure_size=2)
+        .weight()
+    )
+    torch.testing.assert_close(precise, precise.new_tensor(expected))
 
 
 def test_counting_keeps_structural_zero_loops_and_refuses_positive_ones():
