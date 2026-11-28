@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
-from quivers.dsl._deduction_outcomes import OUTCOME_CALLS, OUTCOME_CODE, PROOF_CALLS
+from quivers.dsl._deduction_outcomes import (
+    OUTCOME_CALLS,
+    OUTCOME_CODE,
+    PROOF_CALLS,
+    PROOF_KEY_CALLS,
+)
 from quivers.qiec.foreign import DEDUCTION_OUTCOME_KEYS
 from quivers.dsl.ast_nodes import (
     CallStep,
@@ -4359,6 +4364,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return None
         outcomes = expr.func in OUTCOME_CALLS
         proofs = expr.func in PROOF_CALLS
+        proof_key = expr.func in PROOF_KEY_CALLS
         if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
             if outcomes:
                 self._fail(
@@ -4410,8 +4416,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     code=OUTCOME_CODE,
                 )
             proof_budget = rest.pop(0)
-        elif outcomes:
-            if target.name not in self._outcome_queries:
+        if outcomes and (not proofs or proof_key):
+            if not proofs and target.name not in self._outcome_queries:
                 self._fail(
                     node,
                     f"{expr.func} requires a direct program let binding",
@@ -4424,14 +4430,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             ):
                 key, typed_key = selector.name, True
             elif (
-                isinstance(selector, LetExprString)
+                not proofs
+                and isinstance(selector, LetExprString)
                 and selector.value in DEDUCTION_OUTCOME_KEYS
             ):
                 key = selector.value
             else:
                 self._fail(
                     node,
-                    f'{expr.func} requires "item", "category", "form", or a named pure outcome key',
+                    f"{expr.func} requires a named pure proof outcome key"
+                    if proofs
+                    else f'{expr.func} requires "item", "category", "form", or a named pure outcome key',
                     code=OUTCOME_CODE,
                 )
             if (
@@ -4444,7 +4453,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"deduction {target.name!r} has no logical form field",
                     code=OUTCOME_CODE,
                 )
-        elif rest and isinstance(rest[0], LetExprVar):
+        elif not outcomes and rest and isinstance(rest[0], LetExprVar):
             plate = rest[0].name
             rest = rest[1:]
         bindings: list[_ParseBinding] = []
@@ -4480,7 +4489,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             typed_outcome_key=typed_key,
             proof_budget=proof_budget,
             normalize_outcomes=expr.func
-            in ("parse_normalized_outcomes", "parse_normalized_proofs"),
+            in (
+                "parse_normalized_outcomes",
+                "parse_normalized_proofs",
+                "parse_normalized_proof_outcomes",
+            ),
         )
 
     def _deduction_call(
@@ -4558,7 +4571,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     "deduction proof budgets must have type Int",
                     code=OUTCOME_CODE,
                 )
-            extra = (budget, LiteralValue(value=parse.normalize_outcomes, type=BOOL))
+            extra = (
+                budget,
+                LiteralValue(
+                    value=parse.normalize_outcomes and not parse.typed_outcome_key,
+                    type=BOOL,
+                ),
+            )
         elif parse.outcome_key is not None:
             suffix = "outcomes"
             extra = (

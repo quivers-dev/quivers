@@ -718,6 +718,30 @@ executes once for each, with separate dynamic addresses. A finite proof can
 be interpreted even if the grammar admits infinitely many other proofs.
 Finding all proofs in a chart is a separate query with its own finiteness check.
 
+#### Grouping proof meanings
+
+Use `parse_proof_outcomes(D, sentence, limit, meaning)` if the outcome
+depends on the proof, including when different proofs give the same chart
+item. For each supported proof the query calls the named pure
+`meaning` computation at the proof's indices. A pure `interpret` declaration
+can supply that computation. Its result is a closed outcome key of the same
+kind supported by the named keys of `parse_outcomes`.
+
+The query adds the weights of proofs with equal keys. It returns a
+`D__meaning__Outcomes` list with one entry per key. An entry contains the
+meaning and its unnormalized log weight. The normalized form,
+`parse_normalized_proof_outcomes`, divides these masses by their total and
+requires positive total mass. Each key receives the sum of the mass
+assigned to its proofs, so grouping preserves the total mass and its
+derivative with respect to the grammar weights.
+
+This query performs the same structural budget check as `parse_proofs`
+before rendering any proofs or calling the key computation. It then calls
+the key once per returned proof and groups the result. The cost includes
+the explicit proof sizes, the key computations, and hashing the resulting
+key values. When the key depends only on the conclusion item, use
+`parse_outcomes` with an item key to sum the proofs first in the packed chart.
+
 #### Scoring a response with a prover
 
 The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules
