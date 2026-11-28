@@ -131,6 +131,52 @@ largest sum of one item. Neither pass drops a term because its value is zero at 
 weights: support is decided by the instances, not by numbers, so a derivative at an exact zero is
 kept.
 
+## Variable elimination for weights
+
+`plan(..., executor="eliminate")` selects variable elimination for a `Weight` query with
+`Acyclic()` and `NoRetention()`. Each rule must have closed premises whose patterns can be
+matched independently. Its premises must bind every index in its telescope. Side conditions
+and resource limits are refused. The plan checks the [elimination laws][quivers.core.elimination.ELIMINATION_LAWS]
+and orders the judgment families so that all premise families precede the conclusion family
+of each rule. A family cycle is a planning error. The default planner still handles acyclicity
+on the weaker condition that the grounded rule instances form an acyclic graph.
+
+**Theorem.** Over finite input occurrences satisfying the declared families, the selected
+plan computes the finite semiring sum of all derivations of each item.
+
+*Proof.* Proceed in family order. For each input item, add the weight of each occurrence.
+For a nonconstant rule, build one relation for each premise position by matching the already
+final items of its family. Each tuple of values for the premise's variables determines at
+most one item by evaluating its pattern. Thus the natural join contains one row per compatible
+binding. Its product contains one factor per premise occurrence. By induction each factor is
+the sum of that item's derivations. Distributivity expands the product into one term for every
+ordered choice of derivations, including independent choices when several premises use the
+same item. The rule weight multiplies each term. Summing the rows within each free binding
+and then adding the rule and input contributions gives the stated sum. A ground rule with
+no premises contributes its weight once.
+
+Each elimination step replaces only the factors containing the selected variable by their
+joined product summed over that variable. Since the other factors do not depend on it,
+distributivity preserves the result of summing the full join. The associative and commutative
+laws allow this change to the order of sums and products. The implementation keeps rows at
+the current numerical zero, so when a structurally present zero has a derivative in the
+chosen algebra it still contributes that derivative. QED
+
+The record gives each rule's greedy elimination order. For a fixed presentation, write
+$I$ for occurrences and relation scans, $J$ for the work of the selected joins including the
+final free output, $A$ for algebra operations, $V$ for result items, and $M$ for the largest
+live set of factor and trie rows. Execution uses $O(I+J+A)$ work and $O(V+M)$ carrier cells
+before accounting for the tape. If an algebra operation saves a bounded number of tensors
+of at most $P$ elements, the tape uses $O(PA)$ elements. Refitting reuses each rule's query
+and order and builds new weights, factor tables and tape. The record also accounts for
+presentation compilation and leaves optimal order selection open. See [Joins](joins.md) for
+the bag bounds and the scope of the InsideOut comparison.
+
+`Evaluation.join_work` counts the selected bag traversals and final outputs. These counters
+exclude relation construction and allocator memory. A three-way star with $N$ partners in
+each relation for a given free value has $N^3$ joined bindings. The three partner sums each
+take linear work before their product gives the value for that free binding.
+
 ## Acyclicity by a measure {#proof-measure}
 
 A presentation whose form graph has a cycle, like the span rules
