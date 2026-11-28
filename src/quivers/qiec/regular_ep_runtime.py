@@ -9,6 +9,7 @@ import torch
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.relations import RelationLimitError
+from quivers.core.relations.regular_projection import _RegularZeroMassError
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
@@ -171,8 +172,8 @@ class RegularStringEPRuntimeProvider:
         -------
         tuple
             The report in its declared coordinate order. A failed local
-            projection retains the last accepted belief. Resource failure
-            has no available result.
+            projection retains the last accepted belief. Resource failure or
+            an evaluated log-zero normalizer leaves the report unavailable.
 
         Raises
         ------
@@ -189,10 +190,15 @@ class RegularStringEPRuntimeProvider:
                 scores = torch.stack(
                     tuple(belief.log_prob(word) for word in request.words)
                 )
-        except RelationLimitError as error:
+        except (RelationLimitError, _RegularZeroMassError) as error:
+            status = (
+                "resource_limit"
+                if isinstance(error, RelationLimitError)
+                else "zero_mass"
+            )
             missing = torch.full((len(request.words),), -torch.inf, dtype=torch.float64)
             return (
-                "resource_limit",
+                status,
                 str(error),
                 missing.new_zeros((), dtype=torch.int64),
                 missing.new_tensor(False, dtype=torch.bool),

@@ -15,11 +15,11 @@ from quivers.core.relations import RationalRelation, _weight_snapshot
 from quivers.core.relations.beliefs import _validate_sweeps
 from quivers.core.relations.graph import StringFactor, StringFactorGraph, _TreeBounds
 from quivers.core.relations.ngram_message import NgramMessagePlan
-from quivers.core.relations.paths import _require_normalizer
 from quivers.core.relations.projection import _validate_projection_settings
 from quivers.core.relations.regular_projection import (
     RegularNgramProjection,
     _maximum_length,
+    _require_regular_normalizer,
     _snapshot,
     penalized_regular_ngram_projection,
 )
@@ -132,7 +132,7 @@ class _ReferenceLanguage:
         mass = relation.total_weight(
             max_states=bounds.max_states, max_work=bounds.max_work
         )
-        _require_normalizer(mass, LOG_PROB)
+        _require_regular_normalizer(mass, "regular belief or cavity")
         return RegularStringBelief(relation, mass, bounds.max_states, bounds.max_work)
 
 

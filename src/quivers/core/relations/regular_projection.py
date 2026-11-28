@@ -25,6 +25,21 @@ from quivers.core.relations.transforms import intersect, trim
 type _Feature = tuple[int, ...]
 
 
+class _RegularZeroMassError(ValueError):
+    """An evaluated regular distribution has a log-zero normalizer."""
+
+
+def _require_regular_normalizer(total: torch.Tensor, distribution: str) -> None:
+    try:
+        _require_normalizer(total, LOG_PROB)
+    except ValueError:
+        if total.isneginf().item():
+            raise _RegularZeroMassError(
+                f"the {distribution} has log-zero evaluated mass"
+            ) from None
+        raise
+
+
 @dataclass(frozen=True, slots=True)
 class RegularNgramProjection:
     """An inclusive projection and the compact message for its active features.
@@ -66,7 +81,10 @@ class _MomentPlan:
         max_states: int,
         max_work: int,
         max_closure_size: int | None,
+        *,
+        distribution: str,
     ) -> None:
+        self._distribution = distribution
         self._probe = nn.Parameter(anchor.new_zeros(len(plan.features)))
         self._query = plan.bind(self._probe)._total_query(
             max_states, max_work, max_closure_size
@@ -77,7 +95,7 @@ class _MomentPlan:
             self._probe.copy_(coefficients)
         with torch.enable_grad(), _weight_snapshot():
             normalizer = self._query.weight()
-            _require_normalizer(normalizer, LOG_PROB)
+            _require_regular_normalizer(normalizer, self._distribution)
             if len(self._probe) and normalizer.requires_grad:
                 (moment,) = torch.autograd.grad(
                     normalizer, self._probe, allow_unused=True
@@ -212,9 +230,16 @@ def penalized_regular_ngram_projection(
     tilt_plan = NgramMessagePlan(
         tilted, features, max_states=max_states, max_work=max_work
     )
-    evaluate_base = _MomentPlan(base_plan, anchor, max_states, max_work, None)
+    evaluate_base = _MomentPlan(
+        base_plan, anchor, max_states, max_work, None, distribution="regular reference"
+    )
     evaluate_tilt = _MomentPlan(
-        tilt_plan, anchor, max_states, max_work, max_closure_size
+        tilt_plan,
+        anchor,
+        max_states,
+        max_work,
+        max_closure_size,
+        distribution="tilted distribution",
     )
     coefficients = anchor.new_zeros(len(features))
     tilt_mass, target = evaluate_tilt(coefficients)

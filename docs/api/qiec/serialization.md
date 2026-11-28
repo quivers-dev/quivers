@@ -585,8 +585,12 @@ Boolean and a value for the measured residual, a Boolean and an ordered
 tensor of available log probabilities, and the number of local projections
 attempted on the last sweep. A failed local projection retains the belief
 from the last accepted update. A resource limit records why the query
-could not complete and marks the belief unavailable. An available belief
-assigns log zero to words outside its support.
+could not complete and marks the belief unavailable. An observed log-zero
+normalizer for a belief, cavity, or tilt produces `zero_mass` and also
+marks the belief unavailable. This status describes the evaluated
+normalizer at the runtime precision. It carries no global support or
+posterior certificate. An available belief assigns log zero to individual
+words outside its support.
 
 The solver snapshots the original weights on each invocation. The report
 does not differentiate through the projection or certify a global posterior

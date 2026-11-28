@@ -36,8 +36,8 @@ relation lexicon [algebra=logprob, states=2]
 relation reference [algebra=logprob, states=2]
     output Segments
     initial 0 [weight=one]
-    arc 0 -> 1 [labels=(0), weight=one]
-    arc 0 -> 1 [labels=(1), weight=one]
+    arc 0 -> 1 [labels=(0), weight=reference_mass]
+    arc 0 -> 1 [labels=(1), weight=reference_mass]
     final 1 [weight=one]
 
 relation wrong [algebra=logprob, states=2]
@@ -98,6 +98,7 @@ define belief : {result_type} !{{}} =
             ("zero_word", owner),
             ("one_word", owner.new_zeros(())),
             ("one", owner.new_zeros(())),
+            ("reference_mass", owner.new_zeros(())),
         )
     }
     return compiler, wire_module, request, parameters, owner
@@ -169,6 +170,42 @@ def test_checked_regular_belief_reports_distinct_outer_inner_and_resource_limits
         elif status == "projection_failed":
             assert reason == "limit" and sweeps.item() == 0 and attempted.item() == 1
             assert scores.exp().tolist() == [0.5, 0.0, 0.5]
+
+
+@pytest.mark.parametrize(
+    ("slots", "distribution"),
+    [
+        (("zero_word", "one_word"), "tilted distribution"),
+        (("reference_mass",), "regular belief or cavity"),
+    ],
+)
+def test_log_zero_normalizer_reports_unavailable_and_recovers(slots, distribution):
+    _, module, request, parameters, _ = _fixture()
+    provider = RegularStringEPRuntimeProvider(request, parameters)
+    with torch.no_grad():
+        for name in slots:
+            parameters[ParameterId.derive(_MODULE, "relation_weights", name)].fill_(
+                -torch.inf
+            )
+    report = _run(module, provider)
+    assert report.result_type == request.result_type
+    status, reason, sweeps, measured, _, available, scores, attempted = report.value
+    assert status == "zero_mass" and distribution in reason
+    assert sweeps.item() == attempted.item() == 0
+    assert not measured.item() and not available.item() and scores.isneginf().all()
+
+    with torch.no_grad():
+        for name in slots:
+            parameters[ParameterId.derive(_MODULE, "relation_weights", name)].zero_()
+    assert _run(module, provider).value[0] == "converged"
+
+
+def test_invalid_weights_are_not_reported_as_zero_normalizers():
+    _, module, request, parameters, owner = _fixture()
+    with torch.no_grad():
+        owner.fill_(torch.inf)
+    with pytest.raises(ExecutionFailure, match="carrier"):
+        _run(module, RegularStringEPRuntimeProvider(request, parameters))
 
 
 def test_regular_belief_refuses_same_shape_substitution_and_reports_foreign_target_boundary():
