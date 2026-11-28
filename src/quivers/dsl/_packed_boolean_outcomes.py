@@ -2,34 +2,25 @@
 
 from __future__ import annotations
 
-from itertools import product
 from typing import TYPE_CHECKING
 
 from quivers.dsl.ast_nodes import LetExprCall, LetExprVar
 from quivers.dsl._deduction_outcomes import (
     OUTCOME_CODE,
     PACKED_BOOLEAN_CALLS,
-    _first_handled_call,
     outcome_call_sites,
 )
-from quivers.qiec._proof_interpretation import bind_operands
+from quivers.qiec._packed_boolean_interpretation import (
+    PackedBooleanInterpretationBinding,
+    prepare_packed_boolean_computation,
+)
 from quivers.qiec.checking import ComputationSignature, KernelError
-from quivers.qiec.effects import EMPTY_ROW, ComputationType
+from quivers.qiec.effects import EMPTY_ROW
 from quivers.qiec.foreign import DeductionBooleanOutcomes
 from quivers.qiec.identifiers import ComputationId
-from quivers.qiec.kinds import IndexBinder
-from quivers.qiec.module import NamedComputation
-from quivers.qiec.rules import RulePresentation
-from quivers.qiec.terms import (
-    Call,
-    Computation,
-    LiteralValue,
-    Local,
-    TensorValue,
-    Value,
-    Var,
-)
-from quivers.qiec.types import BOOL, STRING, IndexVariable
+from quivers.qiec.module import NamedComputation, _first_handled_call
+from quivers.qiec.rules import RuleError
+from quivers.qiec.types import BOOL
 
 if TYPE_CHECKING:
     from quivers.dsl.qiec_lowering import _Elaborator
@@ -43,10 +34,6 @@ def declare_packed_boolean_computations(
     """Use the checked interpretation's exact operations at every truth tuple."""
     closed = {
         binding.computation: binding for binding in elaborator.closed_interpretations
-    }
-    signatures = {
-        signature.id: signature
-        for signature in elaborator.computation_signatures.values()
     }
     wrappers: dict[tuple[str, str], NamedComputation] = {}
     roots: list[tuple[LetExprCall, tuple[ComputationId, ...]]] = []
@@ -65,8 +52,6 @@ def declare_packed_boolean_computations(
             continue
         semantics = query.handler.foreign
         assert isinstance(semantics, DeductionBooleanOutcomes)
-        presentation = semantics.chart.presentation
-        assert isinstance(presentation, RulePresentation)
         source = elaborator.computation_signatures.get(selector.name)
         binding = closed.get(source.id) if source is not None else None
         if (
@@ -81,21 +66,6 @@ def declare_packed_boolean_computations(
                 f"of {deduction.name!r} with an empty effect row",
                 code=OUTCOME_CODE,
             )
-        assignments = dict(binding.interpretation.operations)
-        (slot,) = presentation.axioms
-        operations = tuple(
-            signatures[assignments[constructor.id]]
-            for constructor in (slot, *presentation.rules)
-        )
-        if any(op.telescope or op.effects != EMPTY_ROW for op in operations):
-            elaborator._fail(
-                selector,
-                "packed Boolean proof outcomes require rule and axiom operations "
-                "with no static parameters or effects",
-                code=OUTCOME_CODE,
-            )
-        table_type = query.boolean_table
-        assert table_type is not None
         low_level = elaborator.computation_signatures[
             f"{deduction.name}__boolean_outcomes"
         ]
@@ -106,89 +76,38 @@ def declare_packed_boolean_computations(
                 f"generated Boolean outcome computation {name!r} already exists",
                 code=OUTCOME_CODE,
             )
-        (extent,) = low_level.telescope
-        assert isinstance(extent, IndexBinder)
-        extent_term = IndexVariable(name=extent.name, sort=extent.sort)
-        token_type, _, mode_type = low_level.parameters
-        token_local = Local(name="tokens", type=token_type)
-        mode = Local(name="normalize", type=mode_type)
-        inputs: list[tuple[ComputationSignature, tuple[Value, ...]]] = [
-            (operations[0], (LiteralValue(value=word, type=STRING),))
-            for word in semantics.lexical_words
-        ]
-        inputs.extend(
-            (
-                operation,
-                tuple(LiteralValue(value=truth, type=BOOL) for truth in truths),
-            )
-            for rule, operation in zip(presentation.rules, operations[1:], strict=True)
-            for truths in product((False, True), repeat=rule.arity)
-        )
-        table = tuple(
-            Local(name=f"truth{index}", type=BOOL) for index in range(len(inputs))
-        )
-        path = ("deductions", deduction.name, "packed_boolean_outcomes", selector.name)
-        body: Computation = Call(
-            callee=low_level.id,
-            name=low_level.name,
-            static_arguments=(extent_term,),
-            arguments=(
-                Var(local=token_local),
-                TensorValue(
-                    items=tuple(Var(local=value) for value in table),
-                    result_type=table_type,
-                ),
-                Var(local=mode),
-            ),
-            result_type=low_level.result,
-            effects=low_level.effects,
-            origin=elaborator._origin(selector, (*path, "query"), "call"),
-        )
-        body = bind_operands(
-            tuple(
-                (
-                    local,
-                    Call(
-                        callee=operation.id,
-                        name=operation.name,
-                        static_arguments=(),
-                        arguments=arguments,
-                        result_type=BOOL,
-                        effects=EMPTY_ROW,
-                        origin=elaborator._origin(
-                            selector, (*path, "truth", index), "call"
-                        ),
-                    ),
-                )
-                for index, (local, (operation, arguments)) in enumerate(
-                    zip(table, inputs, strict=True)
-                )
-            ),
-            body,
-        )
+        token_type, _, mode = low_level.parameters
         signature = ComputationSignature(
             id=ComputationId.derive(elaborator.source.module_name, "computation", name),
             name=name,
             telescope=low_level.telescope,
-            parameters=(token_type, mode_type),
+            parameters=(token_type, mode),
             result=low_level.result,
             effects=low_level.effects,
         )
+        path = ("deductions", deduction.name, "packed_boolean_outcomes", selector.name)
         try:
+            wrapper = prepare_packed_boolean_computation(
+                elaborator.registry,
+                semantics,
+                binding,
+                signature,
+                low_level,
+                elaborator._origin(selector, path, "computation"),
+            )
             elaborator.registry.register_computation(signature)
-        except KernelError as error:
+        except (KernelError, RuleError) as error:
             elaborator._fail_kernel(selector, error, fallback=OUTCOME_CODE)
         elaborator.computation_signatures[name] = signature
-        wrappers[deduction.name, selector.name] = NamedComputation(
-            id=signature.id,
-            name=signature.name,
-            telescope=signature.telescope,
-            parameters=(token_local, mode),
-            body=body,
-            type=ComputationType(result=signature.result, effects=signature.effects),
-            origin=elaborator._origin(selector, path, "computation"),
+        wrappers[deduction.name, selector.name] = wrapper
+        elaborator.packed_interpretations.append(
+            PackedBooleanInterpretationBinding(
+                interpretation=binding.interpretation.id,
+                computation=wrapper.id,
+                query=low_level.id,
+            )
         )
-        roots.append((call, tuple(op.id for op in operations)))
+        roots.append((call, tuple(op for _, op in binding.interpretation.operations)))
     return tuple(wrappers.values()), tuple(roots)
 
 

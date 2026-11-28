@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.qiec._lexical_proof_types import export_lexical_proofs
 from quivers.qiec._models import QiecModel
 from quivers.qiec._proof_interpretation import prepare_closed_interpretation
-from quivers.qiec.checking import KernelError
+from quivers.qiec.checking import KernelError, KernelRegistry
 from quivers.qiec.contracts import InterpretationId, PresentationId
 from quivers.qiec.effects import EffectRow
 from quivers.qiec.foreign import DeductionOutcomes, DeductionProofs
-from quivers.qiec.identifiers import ComputationId
-from quivers.qiec.module import NamedEffectInstance, QiecModule, validate_module
+from quivers.qiec.identifiers import ComputationId, EffectInstanceId
+from quivers.qiec.module import (
+    NamedComputation,
+    NamedEffectInstance,
+    QiecModule,
+    validate_module,
+)
 from quivers.qiec.rules import ORDERED, InterpretationDecl, RuleError, RulePresentation
 from quivers.qiec.types import TypeExpr
 
@@ -64,6 +71,54 @@ class ClosedInterpretationBinding(QiecModel):
             If the executable module itself is ill typed.
         """
         registry = validate_module(module)
+        root = next(
+            (item for item in module.computations if item.id == self.computation), None
+        )
+        self._validate_root(
+            module.module,
+            registry,
+            root,
+            {item.entry.instance: item for item in module.instances},
+        )
+        presentation = self.presentation
+        for handler in module.handlers:
+            query = handler.foreign
+            if isinstance(query, DeductionProofs):
+                query = query.chart
+            if (
+                isinstance(query, DeductionOutcomes)
+                and isinstance(query.presentation, RulePresentation)
+                and query.presentation.id == presentation.id
+                and export_lexical_proofs(query.presentation, presentation.name)
+                != presentation
+            ):
+                raise RuleError("closed interpretation differs from its packed query")
+
+    def _validate_root(
+        self,
+        module_name: str,
+        registry: KernelRegistry,
+        root: NamedComputation | None,
+        known: Mapping[EffectInstanceId, NamedEffectInstance],
+    ) -> None:
+        """Check one ordinary interpretation against shared module indexes.
+
+        Parameters
+        ----------
+        module_name
+            The source module that owns the nominal interpretation.
+        registry
+            The resolved signature and type registry.
+        root
+            The independently supplied ordinary fold computation.
+        known
+            The module's lexical effect instances by identity.
+
+        Raises
+        ------
+        RuleError
+            If the nominal, type, effect, or executable binding is stale.
+        """
         presentation = self.presentation
         interpretation = self.interpretation
         if (
@@ -74,19 +129,15 @@ class ClosedInterpretationBinding(QiecModel):
         ):
             raise RuleError("nominal closed interpretation presentation is stale")
         (judgment,) = presentation.judgments
-        root = next(
-            (item for item in module.computations if item.id == self.computation), None
-        )
-        if root is None:
+        if root is None or root.id != self.computation:
             raise RuleError("unknown closed interpretation root")
         origin = root.origin.with_(structural_path=("proof_interpretations",))
         if interpretation.id != InterpretationId.derive(
-            module.module, *origin.structural_path, root.name
+            module_name, *origin.structural_path, root.name
         ):
             raise RuleError("nominal closed interpretation identity is stale")
         if root.type.effects != self.effects:
             raise RuleError("closed interpretation effect row does not match its root")
-        known = {item.entry.instance: item for item in module.instances}
         required = {entry.instance: entry for entry in self.effects.entries}
         supplied = {item.entry.instance: item for item in self.instances}
         if (
@@ -101,18 +152,6 @@ class ClosedInterpretationBinding(QiecModel):
                 "closed interpretation lexical effect requirements are stale"
             )
 
-        for handler in module.handlers:
-            query = handler.foreign
-            if isinstance(query, DeductionProofs):
-                query = query.chart
-            if (
-                isinstance(query, DeductionOutcomes)
-                and isinstance(query.presentation, RulePresentation)
-                and query.presentation.id == presentation.id
-                and export_lexical_proofs(query.presentation, presentation.name)
-                != presentation
-            ):
-                raise RuleError("closed interpretation differs from its packed query")
         try:
             (expected,) = prepare_closed_interpretation(
                 registry,

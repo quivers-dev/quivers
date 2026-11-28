@@ -61,7 +61,11 @@ from quivers.dsl.qiec_lowering import (
     non_qiec_projection,
     _module_name,
 )
-from quivers.qiec import ClosedInterpretationBinding, QiecModule
+from quivers.qiec import (
+    ClosedInterpretationBinding,
+    PackedBooleanInterpretationBinding,
+    QiecModule,
+)
 from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.terms import PlateAxis
@@ -152,6 +156,9 @@ class Compiler(
         self._distribution_families = families if families is not None else FAMILIES
         self._qiec_module: QiecModule | None = None
         self._closed_interpretations: tuple[ClosedInterpretationBinding, ...] = ()
+        self._packed_interpretations: tuple[
+            PackedBooleanInterpretationBinding, ...
+        ] = ()
         self._deferred_statements: tuple[Statement, ...] = ()
         # The QIEC projection is lowered on first use, after the
         # statements' own checks when `compile` drives it, so a source
@@ -341,6 +348,7 @@ class Compiler(
             checked = self._lower_qiec_with_companions(self._qiec_source)
             self._qiec_module = checked.module
             self._closed_interpretations = checked.closed_interpretations
+            self._packed_interpretations = checked.packed_interpretations
         return self._qiec_module
 
     @property
@@ -644,6 +652,7 @@ class Compiler(
             return
         self._qiec_module = None
         self._closed_interpretations = ()
+        self._packed_interpretations = ()
         if self._qiec_source is not None:
             self._qiec_source = resolved
             self._module = non_qiec_projection(resolved)
@@ -655,6 +664,7 @@ class Compiler(
         source: Module,
         checked: QiecModule,
         closed_interpretations: tuple[ClosedInterpretationBinding, ...] = (),
+        packed_interpretations: tuple[PackedBooleanInterpretationBinding, ...] = (),
     ) -> bool:
         """Seed the lazy checked cache only when source expansion kept its identity."""
         if self._qiec_source is not source:
@@ -666,6 +676,7 @@ class Compiler(
             return False
         self._qiec_module = checked
         self._closed_interpretations = closed_interpretations
+        self._packed_interpretations = packed_interpretations
         return True
 
     def _attach_host_data_types(self, module: QiecModule) -> None:

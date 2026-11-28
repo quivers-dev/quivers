@@ -39,6 +39,7 @@ from quivers.diagnostics import ConvergenceSummary, summary
 from quivers.program import Program
 from quivers.qiec import (
     ClosedInterpretationBinding,
+    PackedBooleanInterpretationBinding,
     ComputationId,
     IndexLiteral,
     ProgramEntry,
@@ -81,6 +82,8 @@ class ModelSchema(ValueModel):
     closed_interpretations : tuple of ClosedInterpretationBinding
         The reachable indexed lexical proof interpretations and their
         exact carrier and effect requirements.
+    packed_interpretations : tuple of PackedBooleanInterpretationBinding
+        The reachable checked truth-table invocations of those interpretations.
     """
 
     entry: ProgramEntry = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -88,6 +91,10 @@ class ModelSchema(ValueModel):
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     closed_interpretations: tuple[ClosedInterpretationBinding, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    packed_interpretations: tuple[PackedBooleanInterpretationBinding, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -152,9 +159,16 @@ def _model_schema(
     entry: ProgramEntry,
     root: ComputationId,
     closed: tuple[ClosedInterpretationBinding, ...],
+    packed: tuple[PackedBooleanInterpretationBinding, ...],
 ) -> ModelSchema:
     """Select interpretation companions by checked execution reachability."""
-    reached = _execution_reachability(module, root)[0] if closed else None
+    reached = _execution_reachability(module, root)[0] if closed or packed else None
+    selected = (
+        ()
+        if reached is None
+        else tuple(binding for binding in packed if binding.computation in reached)
+    )
+    packed_meanings = {binding.interpretation for binding in selected}
     return ModelSchema(
         entry=entry,
         scoped_interpretations=selected_scoped_interpretations(
@@ -163,8 +177,14 @@ def _model_schema(
         closed_interpretations=(
             ()
             if reached is None
-            else tuple(binding for binding in closed if binding.computation in reached)
+            else tuple(
+                binding
+                for binding in closed
+                if binding.computation in reached
+                or binding.interpretation.id in packed_meanings
+            )
         ),
+        packed_interpretations=selected,
     )
 
 
@@ -236,7 +256,12 @@ class Model:
         artifacts = _lower_qvr_with_companions(self.syntax, families=families)
         checked = artifacts.module
         self.checked_module = checked
-        self._checked_source = (self.syntax, checked, artifacts.closed_interpretations)
+        self._checked_source = (
+            self.syntax,
+            checked,
+            artifacts.closed_interpretations,
+            artifacts.packed_interpretations,
+        )
         self._checked_families = families
         typed_entry = next((e for e in checked.entries if e.name == entry), None)
         if typed_entry is None:
@@ -247,6 +272,7 @@ class Model:
             typed_entry,
             typed_entry.computation,
             artifacts.closed_interpretations,
+            artifacts.packed_interpretations,
         )
 
     @classmethod
@@ -440,7 +466,12 @@ class Model:
         if program.input_contract is not None:
             entry = program.input_contract
         schema = _model_schema(
-            self.syntax, qiec, entry, root, compiler._closed_interpretations
+            self.syntax,
+            qiec,
+            entry,
+            root,
+            compiler._closed_interpretations,
+            compiler._packed_interpretations,
         )
         expected = set(schema.types)
         required = (

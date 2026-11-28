@@ -56,8 +56,7 @@ from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.module import (
     NamedComputation,
     NamedEffectInstance,
-    called_computations,
-    installed_handlers,
+    _first_handled_call,
 )
 from quivers.qiec.rules import RulePresentation
 from quivers.qiec.substitution import instantiate_telescope, substitute_type
@@ -287,25 +286,6 @@ def declare_outcome_key_computations(
             elaborator, elaborator._deductions[deduction], selector, key
         ).computations()
     )
-
-
-def _first_handled_call(
-    root: ComputationId,
-    by_id: dict[ComputationId, NamedComputation],
-    visited: set[ComputationId],
-) -> NamedComputation | None:
-    """Find a reachable installed handler hidden from an empty result row."""
-    pending = [root]
-    while pending:
-        identity = pending.pop()
-        if identity in visited:
-            continue
-        visited.add(identity)
-        computation = by_id[identity]
-        if installed_handlers(computation.body):
-            return computation
-        pending.extend(called_computations(computation.body))
-    return None
 
 
 def check_outcome_key_bodies(

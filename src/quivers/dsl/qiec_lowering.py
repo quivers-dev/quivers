@@ -45,6 +45,10 @@ from quivers.qiec.builtins import BUILTIN_EFFECTS
 from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.family_catalog import FamilyCatalog
 from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
+from quivers.qiec._packed_boolean_interpretation import (
+    PackedBooleanInterpretationBinding,
+    check_packed_boolean_bindings,
+)
 from quivers.qiec._proof_interpretation import bind_operands
 from quivers.qiec.checking import _plated_sample_type
 from quivers.qiec.programs import ProgramEntry
@@ -298,10 +302,15 @@ class CheckedQvrQiec(QiecModel):
         The kernel module the stages produced.
     closed_interpretations : tuple of ClosedInterpretationBinding
         Source companions retained through checked model schema extraction.
+    packed_interpretations : tuple of PackedBooleanInterpretationBinding
+        Each verified invocation of a closed interpretation's packed form.
     """
 
     module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     closed_interpretations: tuple[ClosedInterpretationBinding, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    packed_interpretations: tuple[PackedBooleanInterpretationBinding, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -620,10 +629,14 @@ class QvrQiecLowerer:
         """
         elaborator = _Elaborator(source)
         module = elaborator.elaborate()
-        validate_module(module)
+        registry = validate_module(module)
+        closed = tuple(elaborator.closed_interpretations)
+        packed = tuple(elaborator.packed_interpretations)
+        check_packed_boolean_bindings(module, registry, closed, packed)
         return CheckedQvrQiec(
             module=module,
-            closed_interpretations=tuple(elaborator.closed_interpretations),
+            closed_interpretations=closed,
+            packed_interpretations=packed,
         )
 
     def lower(self, checked: CheckedQvrQiec, /) -> QiecModule:
@@ -1660,6 +1673,7 @@ class _Elaborator(
         self.computation_signatures: dict[str, ComputationSignature] = {}
         self.entries: list[ProgramEntry] = []
         self.closed_interpretations: list[ClosedInterpretationBinding] = []
+        self.packed_interpretations: list[PackedBooleanInterpretationBinding] = []
         self._lambda_macros: dict[str, surface.LetExprLambda] = {}
         # Numbers the locals a lowering introduces to share a value, so
         # each such binder is unique across the module.

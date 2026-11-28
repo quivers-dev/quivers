@@ -448,6 +448,9 @@ from quivers.qiec.serialization import (
 )
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
 from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
+from quivers.qiec._packed_boolean_interpretation import (
+    PackedBooleanInterpretationBinding,
+)
 from quivers.qiec._scoped_proof_fold import ScopedProofFold, scoped_proof_fold
 from quivers.qiec._scoped_proof_types import ScopedProofTypes, scoped_proof_types
 from quivers.qiec.structured_sampleables import FiniteSampleable
@@ -1016,6 +1019,7 @@ __all__ = [
 ]
 __all__ += [
     "ClosedInterpretationBinding",
+    "PackedBooleanInterpretationBinding",
     "ScopedInterpretationBinding",
     "ScopedProofFold",
     "ScopedProofTypes",

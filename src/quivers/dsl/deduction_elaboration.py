@@ -73,7 +73,6 @@ from quivers.dsl._deduction_outcomes import (
     LinearGoalQuery,
     OutcomeKey,
     OutcomeQuery,
-    _first_handled_call,
     declare_lexical_proofs,
     declare_outcome_key_types,
     declare_outcomes,
@@ -195,7 +194,11 @@ from quivers.qiec.identifiers import (
     StaticScopeId,
 )
 from quivers.qiec.kinds import NAT
-from quivers.qiec.module import NamedComputation, NamedEffectInstance
+from quivers.qiec.module import (
+    NamedComputation,
+    NamedEffectInstance,
+    _first_handled_call,
+)
 from quivers.qiec.checking import ComputationSignature
 from quivers.qiec.terms import (
     Bind,

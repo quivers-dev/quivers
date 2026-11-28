@@ -162,6 +162,9 @@ from quivers.qiec.string_solvers import (
 )
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
 from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
+from quivers.qiec._packed_boolean_interpretation import (
+    PackedBooleanInterpretationBinding,
+)
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
@@ -636,6 +639,7 @@ _NODE_CLASSES = (
     InterpretationDecl,
     ScopedInterpretationBinding,
     ClosedInterpretationBinding,
+    PackedBooleanInterpretationBinding,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}

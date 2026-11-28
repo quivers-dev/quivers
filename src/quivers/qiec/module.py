@@ -444,6 +444,41 @@ def installed_handlers(body: Computation) -> frozenset[HandlerId]:
     return frozenset(found)
 
 
+def _first_handled_call(
+    root: ComputationId,
+    by_id: dict[ComputationId, NamedComputation],
+    visited: set[ComputationId],
+) -> NamedComputation | None:
+    """Find a reachable installed handler hidden by an empty result row.
+
+    Parameters
+    ----------
+    root
+        The closed computation starting the search.
+    by_id
+        The checked computations in the module.
+    visited
+        Shared cache of traversed computations, filled in place. A
+        caller refuses on the first hit before reusing this cache.
+
+    Returns
+    -------
+    NamedComputation or None
+        The first computation that installs a handler, if any.
+    """
+    pending = [root]
+    while pending:
+        identity = pending.pop()
+        if identity in visited:
+            continue
+        visited.add(identity)
+        computation = by_id[identity]
+        if installed_handlers(computation.body):
+            return computation
+        pending.extend(called_computations(computation.body))
+    return None
+
+
 def reached_handlers(module: QiecModule, root: ComputationId) -> frozenset[HandlerId]:
     """The handlers a run of one computation may install.
 

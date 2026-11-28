@@ -258,6 +258,18 @@ an explicitly supplied proof may have no such query. Its checked proof
 constructors and fold then establish the shape of the interpretation, while
 the interpretation makes no claim about weighted search or theory equations.
 
+A packed Boolean query reaches the same ordinary interpretation through
+its truth table. The schema's `packed_interpretations` contains a
+[packed companion][quivers.qiec.PackedBooleanInterpretationBinding] for each
+reached invocation and retains the corresponding ordinary companion in
+`closed_interpretations`. The check reconstructs the ordered calls with
+their actual nominal operations and literal inputs. It checks that the
+native query uses the original table, sentence, and normalization mode
+from the wrapper. Compiler validation shares the executable indexes across
+companions, and inference runs use the already checked declarations.
+
+::: quivers.qiec._packed_boolean_interpretation.PackedBooleanInterpretationBinding
+
 ## Binding
 
 Terms of a structural signature use de Bruijn indices.
