@@ -72,6 +72,23 @@ a foreign linear `Compute[Unit, Real]` or
 `Compute[Unit, LogWeight]` handler can bind the request. Native score
 targets report that handler as an unsupported capability.
 
+### Checked alignment-marginal output ranking
+
+`FixedRelationMarginalMapRequest` maximizes the total alignment
+weight across an explicitly ordered set of output candidates. It
+holds all input tapes fixed. The `choose` method returns the selected
+words, their exact rational mass, and the differentiable log pair
+weight. The reference provider exposes that log weight through a
+linear `Compute[Unit, LogWeight]` attachment.
+
+Candidates require acyclic productive Markov observations and share
+the declared state and arc limits. The first exact maximum wins a tie.
+The derivative holds that output fixed. If every candidate has zero
+mass, the scalar score is negative infinity. Native targets identify
+the foreign handler that would require this capability.
+
+::: quivers.qiec.relation_marginal_map.FixedRelationMarginalMapRequest
+
 ::: quivers.qiec.relations.FixedRelationRequest
 
 ::: quivers.qiec.relations.FixedRelationCostRequest

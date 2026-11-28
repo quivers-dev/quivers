@@ -22,6 +22,7 @@ from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
 )
+from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -122,7 +123,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The live scalar tensors supplying the request's weight identities.
@@ -136,7 +137,8 @@ class FixedRelationRuntimeProvider:
         self,
         request: FixedRelationRequest
         | FixedRelationCostRequest
-        | FixedComposedRelationRequest,
+        | FixedComposedRelationRequest
+        | FixedRelationMarginalMapRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
         handler_name: str,
@@ -152,6 +154,22 @@ class FixedRelationRuntimeProvider:
             self._score = request.plan(parameters).weight
             return
         relation = request.relation.bind(parameters)
+        if isinstance(request, FixedRelationMarginalMapRequest):
+            zero = relation._weights().new_full((), -torch.inf)
+
+            def marginal_map_score() -> torch.Tensor:
+                """Read the live score of the current winning output.
+
+                Returns
+                -------
+                torch.Tensor
+                    The selected log pair weight or the LogProb zero.
+                """
+                choice = request._choose(relation)
+                return zero if choice is None else choice.log_pair_weight
+
+            self._score = marginal_map_score
+            return
         limits = dict(
             max_states=request.max_states,
             max_work=request.max_work,
@@ -192,7 +210,8 @@ class FixedRelationRuntimeProvider:
         name: str,
         request: FixedRelationRequest
         | FixedRelationCostRequest
-        | FixedComposedRelationRequest,
+        | FixedComposedRelationRequest
+        | FixedRelationMarginalMapRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
     ) -> FixedRelationRuntimeProvider:
         """Bind a fixed request to a source-declared relation score.

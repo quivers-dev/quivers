@@ -383,6 +383,7 @@ from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
 )
+from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -699,6 +700,7 @@ __all__ = [
     "ComposedRelationSpec",
     "FixedComposedRelationRequest",
     "FixedRelationCostRequest",
+    "FixedRelationMarginalMapRequest",
     "FixedRelationRequest",
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
