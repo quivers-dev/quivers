@@ -856,6 +856,65 @@ assert (action.value, action.tangent) == (25, 30)
 
 ::: quivers.qiec.normal_pathwise
 
+## Mixed Bernoulli and Normal estimators
+
+`plan_mixed_site_gradient` checks both kinds of request in the same
+scalar source computation. A Bernoulli site's probability may depend on
+earlier Boolean draws and on the inputs. It must stay strictly between
+zero and one and be independent of Normal noise. Each Normal site
+follows the scalar pathwise rules.
+
+The finite estimator combines the conditional returns and derivatives
+linearly, including negative returns. A Bernoulli action accounts for
+its own changing probability exactly once. A Normal action
+differentiates its location and scale at fixed base noise before taking
+the conditional moments. The plan uses finite enumeration to check all
+local hypotheses and compute the exact expectation and derivative.
+Calling `sample` estimates these quantities by the selected finite
+estimator with the Normal moments integrated at the leaves.
+
+`at_noise` instead fixes all Normal coordinates before applying the
+finite estimators. Coordinates follow `normal_visits`. Each occurrence
+is keyed by its canonical address and the finite choices made before
+it. Branches share the coordinates from their common history and use
+separate coordinates after they diverge.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import Bind, Perform, SiteEstimator, plan_mixed_site_gradient
+
+source = """
+instance random : Random
+
+define signed_reward(p : Real, s : Real) : Real !{random} =
+    let x <- perform random.sample[Real](site("x"), Normal(0.0, s))
+    let positive <- perform random.sample[Bool](site("positive"), Bernoulli(p))
+    if positive then
+        return x * x
+    else
+        return -x * x
+"""
+module = Compiler(parse(source), module_name="mixed-estimator").qiec_module
+assert module is not None
+owner = next(item for item in module.computations if item.name == "signed_reward")
+first = owner.body
+assert isinstance(first, Bind) and isinstance(first.first, Perform)
+second = first.then
+assert isinstance(second, Bind) and isinstance(second.first, Perform)
+normal = SiteEstimator(site=first.first.request.origin.static_site, estimator="reparam")
+finite = SiteEstimator(site=second.first.request.origin.static_site, estimator="score")
+plan = plan_mixed_site_gradient(
+    module, owner.id, (Fraction(3, 4), 2), (1, 1), (normal, finite),
+)
+assert (plan.exact.value, plan.exact.tangent) == (2, 10)
+assert len(plan.normal_visits) == 1
+assert plan.at_noise((2,)).exact.tangent == 40
+assert len(plan.sample(seed=42).draws) == 1
+```
+
+::: quivers.qiec.mixed_site_gradients
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging

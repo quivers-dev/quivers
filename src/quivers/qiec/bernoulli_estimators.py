@@ -264,6 +264,37 @@ def _combine(visit: BernoulliVisit, no: ExactJvp, yes: ExactJvp) -> ExactJvp:
     return ExactJvp(value, derivative)
 
 
+def _assemble_finite_tree(
+    records: dict[tuple[bool, ...], ExactJvp | BernoulliVisit],
+) -> tuple[_Tree, ExactJvp]:
+    """Assemble the checked finite tree and integrate its signed return.
+
+    Parameters
+    ----------
+    records : dict
+        Conditional requests and completed leaves, parents before children.
+
+    Returns
+    -------
+    tuple
+        The finite estimator tree and its exact expectation and derivative.
+    """
+    trees: dict[tuple[bool, ...], _Tree] = {}
+    exact: dict[tuple[bool, ...], ExactJvp] = {}
+    for prefix in reversed(records):
+        result = records[prefix]
+        if isinstance(result, ExactJvp):
+            trees[prefix] = exact[prefix] = result
+        else:
+            no, yes = (*prefix, False), (*prefix, True)
+            trees[prefix] = BernoulliBranch(result, trees.pop(no), trees.pop(yes))
+            expected = _combine(result, exact.pop(no), exact.pop(yes))
+            # Reject a plan during compilation, never a rare score outcome.
+            _bound(expected.value, expected.tangent)
+            exact[prefix] = expected
+    return trees[()], exact[()]
+
+
 def _draw(tree: _Tree, random: Random) -> BernoulliGradientSample:
     """Interpret the three estimator policies on one checked tree.
 
@@ -640,22 +671,10 @@ def plan_bernoulli_gradient(
             f"estimator policies name unreached sites: {', '.join(unused)}"
         )
 
-    trees: dict[tuple[bool, ...], _Tree] = {}
-    exact: dict[tuple[bool, ...], ExactJvp] = {}
-    for prefix in reversed(records):
-        result = records[prefix]
-        if isinstance(result, ExactJvp):
-            trees[prefix] = exact[prefix] = result
-        else:
-            no, yes = (*prefix, False), (*prefix, True)
-            trees[prefix] = BernoulliBranch(result, trees.pop(no), trees.pop(yes))
-            expected = _combine(result, exact.pop(no), exact.pop(yes))
-            # Reject a plan during compilation, never a rare score outcome.
-            _bound(expected.value, expected.tangent)
-            exact[prefix] = expected
+    tree, exact = _assemble_finite_tree(records)
     ordered = tuple(sorted(policies, key=lambda policy: str(policy.site)))
     return BernoulliGradientPlan(
-        computation, exact[()], ordered, tuple(visits), paths, source_steps, trees[()]
+        computation, exact, ordered, tuple(visits), paths, source_steps, tree
     )
 
 

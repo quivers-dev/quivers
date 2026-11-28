@@ -632,6 +632,50 @@ def _gaussian_expectation(polynomial: _Polynomial, ring: _PolynomialRing) -> Fra
     return exact
 
 
+def _normal_path(
+    computation: ComputationId,
+    evaluator: _NormalEvaluator,
+    result: _NoiseDual,
+    work: int,
+) -> NormalPathwisePlan:
+    """Integrate one completed path and retain its pointwise action.
+
+    Parameters
+    ----------
+    computation : ComputationId
+        The original source entry.
+    evaluator : _NormalEvaluator
+        The reference machine with its final step and visit counts.
+    result : _NoiseDual
+        The actual scalar return of that path.
+    work : int
+        The polynomial budget available before the replay began.
+
+    Returns
+    -------
+    NormalPathwisePlan
+        The visited request order, exact polynomials and their integrals.
+    """
+    exact = ExactJvp(
+        _gaussian_expectation(result.primal, evaluator.ring),
+        _gaussian_expectation(result.tangent, evaluator.ring),
+    )
+    width = len(evaluator.visits)
+    return NormalPathwisePlan(
+        computation,
+        exact,
+        tuple(evaluator.visits),
+        tuple(
+            (powers[:width], value) for powers, value in sorted(result.primal.items())
+        ),
+        tuple(
+            (powers[:width], value) for powers, value in sorted(result.tangent.items())
+        ),
+        evaluator._steps,
+        work - evaluator.ring.remaining,
+    )
+
+
 def plan_normal_pathwise(
     module: QiecModule,
     computation: ComputationId,
@@ -718,10 +762,7 @@ def plan_normal_pathwise(
     try:
         result = evaluator.evaluate_validated(owner.body, registry, environment)
         assert isinstance(result, _NoiseDual)
-        exact = ExactJvp(
-            _gaussian_expectation(result.primal, ring),
-            _gaussian_expectation(result.tangent, ring),
-        )
+        path = _normal_path(computation, evaluator, result, max_work)
     except FuelExhaustedError as error:
         raise JvpLimit(
             f"Normal pathwise run exceeded its step budget of {fuel}"
@@ -733,20 +774,7 @@ def plan_normal_pathwise(
         raise JvpUnsupported(
             f"estimator policies name unreached sites: {', '.join(sorted(map(str, unused)))}"
         )
-    width = len(evaluator.visits)
-    return NormalPathwisePlan(
-        computation,
-        exact,
-        tuple(evaluator.visits),
-        tuple(
-            (powers[:width], value) for powers, value in sorted(result.primal.items())
-        ),
-        tuple(
-            (powers[:width], value) for powers, value in sorted(result.tangent.items())
-        ),
-        evaluator._steps,
-        max_work - ring.remaining,
-    )
+    return path
 
 
 __all__ = ["NormalPathwisePlan", "NormalVisit", "plan_normal_pathwise"]

@@ -210,6 +210,12 @@ from quivers.qiec.normal_pathwise import (
     NormalVisit,
     plan_normal_pathwise,
 )
+from quivers.qiec.mixed_site_gradients import (
+    MixedNormalPath,
+    MixedNormalVisit,
+    MixedSiteGradientPlan,
+    plan_mixed_site_gradient,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1159,6 +1165,12 @@ __all__ += [
     "plan_bernoulli_gradient",
 ]
 __all__ += ["NormalPathwisePlan", "NormalVisit", "plan_normal_pathwise"]
+__all__ += [
+    "MixedNormalPath",
+    "MixedNormalVisit",
+    "MixedSiteGradientPlan",
+    "plan_mixed_site_gradient",
+]
 __all__ += [
     "FiniteAlgebra",
     "FiniteAlgebraLawError",
