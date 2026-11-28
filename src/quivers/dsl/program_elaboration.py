@@ -4387,27 +4387,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             expr.func != "parse" and expr.func not in NATIVE_DEDUCTION_CALLS
         ):
             return None
-        if expr.func in PACKED_BOOLEAN_CALLS:
-            if len(expr.args) != 3 or not all(
-                isinstance(argument, LetExprVar) for argument in expr.args
-            ):
-                self._fail(
-                    node,
-                    f"{expr.func} requires a deduction, a token tensor binding, "
-                    "and a named closed Boolean proof interpretation",
-                    code=OUTCOME_CODE,
-                )
-            target, source, interpretation = expr.args
-            assert isinstance(target, LetExprVar)
-            assert isinstance(source, LetExprVar)
-            assert isinstance(interpretation, LetExprVar)
-            return _ParseCall(
-                deduction=target.name,
-                source=source.name,
-                plate=None,
-                bindings=(),
-                packed_boolean=interpretation.name,
-                normalize_outcomes=expr.func == NORMALIZED_BOOLEAN_PARSE,
+        packed_boolean = expr.func in PACKED_BOOLEAN_CALLS
+        if packed_boolean and (
+            len(expr.args) < 3
+            or not all(isinstance(argument, LetExprVar) for argument in expr.args[:3])
+        ):
+            self._fail(
+                node,
+                f"{expr.func} requires a deduction, a token tensor binding, "
+                "and a named closed Boolean proof interpretation",
+                code=OUTCOME_CODE,
             )
         if expr.func == LINEAR_PARSE:
             if len(expr.args) != 3 or not all(
@@ -4435,7 +4424,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 bindings=(),
                 linear_goal=closure_limit,
             )
-        outcomes = expr.func in OUTCOME_CALLS
+        outcomes = expr.func in OUTCOME_CALLS or packed_boolean
         proofs = expr.func in PROOF_CALLS
         proof_key = expr.func in PROOF_KEY_CALLS
         if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
@@ -4475,6 +4464,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         key: str | None = None
         typed_key = False
         proof_budget = None
+        packed_interpretation: str | None = None
+        if packed_boolean:
+            interpretation = rest.pop(0)
+            assert isinstance(interpretation, LetExprVar)
+            packed_interpretation = interpretation.name
         if proofs:
             if target.name not in self._proof_queries:
                 self._fail(
@@ -4489,7 +4483,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     code=OUTCOME_CODE,
                 )
             proof_budget = rest.pop(0)
-        if outcomes and (not proofs or proof_key):
+        if outcomes and not packed_boolean and (not proofs or proof_key):
             if not proofs and target.name not in self._outcome_queries:
                 self._fail(
                     node,
@@ -4561,11 +4555,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             outcome_key=key,
             typed_outcome_key=typed_key,
             proof_budget=proof_budget,
+            packed_boolean=packed_interpretation,
             normalize_outcomes=expr.func
             in (
                 "parse_normalized_outcomes",
                 "parse_normalized_proofs",
                 "parse_normalized_proof_outcomes",
+                NORMALIZED_BOOLEAN_PARSE,
             ),
         )
 

@@ -1294,7 +1294,11 @@ def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
             value = getattr(step, "value", None)
             if (
                 isinstance(value, LetExprCall)
-                and (value.func == "parse" or value.func in OUTCOME_CALLS)
+                and (
+                    value.func == "parse"
+                    or value.func in OUTCOME_CALLS
+                    or value.func in PACKED_BOOLEAN_CALLS
+                )
                 and value.args
                 and isinstance(value.args[0], LetExprVar)
                 and any(isinstance(argument, LetExprTuple) for argument in value.args)
@@ -2948,7 +2952,7 @@ class _DeductionElaboration:
         threaded = (
             {
                 system.name(suffix): system.name(f"weighted_{suffix}")
-                for suffix in (*THREADED, "outcomes", "proofs")
+                for suffix in (*THREADED, "outcomes", "proofs", "boolean_outcomes")
             }
             if weighted
             else {}
@@ -3174,7 +3178,7 @@ class _DeductionElaboration:
             ("proofs", self._proof_queries.get(system.decl.name), INT),
         )
         boolean = self._boolean_outcome_queries.get(system.decl.name)
-        if boolean is not None and not weighted:
+        if boolean is not None:
             assert boolean.boolean_table is not None
             queries = (*queries, ("boolean_outcomes", boolean, boolean.boolean_table))
         query_entries = tuple(

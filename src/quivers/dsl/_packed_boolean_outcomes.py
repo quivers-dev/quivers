@@ -35,20 +35,22 @@ def declare_packed_boolean_computations(
     closed = {
         binding.computation: binding for binding in elaborator.closed_interpretations
     }
-    wrappers: dict[tuple[str, str], NamedComputation] = {}
+    wrappers: dict[tuple[str, str, bool], NamedComputation] = {}
     roots: list[tuple[LetExprCall, tuple[ComputationId, ...]]] = []
     for call in outcome_call_sites(elaborator):
-        if call.func not in PACKED_BOOLEAN_CALLS or len(call.args) != 3:
+        if call.func not in PACKED_BOOLEAN_CALLS or len(call.args) < 3:
             continue
-        deduction, tokens, selector = call.args
+        deduction, tokens, selector = call.args[:3]
         if (
             not isinstance(deduction, LetExprVar)
             or not isinstance(tokens, LetExprVar)
             or not isinstance(selector, LetExprVar)
         ):
             continue
+        weighted = len(call.args) > 3
+        key = (deduction.name, selector.name, weighted)
         query = elaborator._boolean_outcome_queries.get(deduction.name)
-        if query is None or (deduction.name, selector.name) in wrappers:
+        if query is None or key in wrappers:
             continue
         semantics = query.handler.foreign
         assert isinstance(semantics, DeductionBooleanOutcomes)
@@ -66,26 +68,37 @@ def declare_packed_boolean_computations(
                 f"of {deduction.name!r} with an empty effect row",
                 code=OUTCOME_CODE,
             )
-        low_level = elaborator.computation_signatures[
-            f"{deduction.name}__boolean_outcomes"
-        ]
-        name = f"{deduction.name}__{selector.name}__packed_boolean_outcomes"
+        prefix = "weighted_" if weighted else ""
+        low_level = elaborator.computation_signatures.get(
+            f"{deduction.name}__{prefix}boolean_outcomes"
+        )
+        if low_level is None:
+            # The program's production binding check diagnoses invalid pairs
+            # and grammars whose weights are free.
+            continue
+        name = f"{deduction.name}__{prefix}{selector.name}__packed_boolean_outcomes"
         if name in elaborator.computation_signatures:
             elaborator._fail(
                 selector,
                 f"generated Boolean outcome computation {name!r} already exists",
                 code=OUTCOME_CODE,
             )
-        token_type, _, mode = low_level.parameters
+        token_type, _, mode, *table = low_level.parameters
         signature = ComputationSignature(
             id=ComputationId.derive(elaborator.source.module_name, "computation", name),
             name=name,
             telescope=low_level.telescope,
-            parameters=(token_type, mode),
+            parameters=(token_type, mode, *table),
             result=low_level.result,
             effects=low_level.effects,
         )
-        path = ("deductions", deduction.name, "packed_boolean_outcomes", selector.name)
+        path = (
+            "deductions",
+            deduction.name,
+            "packed_boolean_outcomes",
+            selector.name,
+            *(("weighted",) if weighted else ()),
+        )
         try:
             wrapper = prepare_packed_boolean_computation(
                 elaborator.registry,
@@ -99,7 +112,7 @@ def declare_packed_boolean_computations(
         except (KernelError, RuleError) as error:
             elaborator._fail_kernel(selector, error, fallback=OUTCOME_CODE)
         elaborator.computation_signatures[name] = signature
-        wrappers[deduction.name, selector.name] = wrapper
+        wrappers[key] = wrapper
         elaborator.packed_interpretations.append(
             PackedBooleanInterpretationBinding(
                 interpretation=binding.interpretation.id,

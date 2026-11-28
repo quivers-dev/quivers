@@ -12,7 +12,7 @@ from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBind
 from quivers.qiec._lexical_proof_types import export_lexical_proofs
 from quivers.qiec._models import QiecModel
 from quivers.qiec._proof_interpretation import bind_operands
-from quivers.qiec.canonical import tensor_type
+from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.checking import ComputationSignature, KernelRegistry
 from quivers.qiec.contracts import InterpretationId
 from quivers.qiec.effects import EMPTY_ROW, ComputationType, HandlerDef
@@ -37,7 +37,7 @@ from quivers.qiec.terms import (
     Value,
     Var,
 )
-from quivers.qiec.types import BOOL, STRING, IndexLiteral, IndexVariable
+from quivers.qiec.types import BOOL, REAL, STRING, IndexLiteral, IndexVariable
 
 
 class PackedBooleanInterpretationBinding(QiecModel):
@@ -155,7 +155,7 @@ def prepare_packed_boolean_computation(
         raise RuleError(
             "packed Boolean proof operations have incompatible argument or result types"
         )
-    if len(query.telescope) != 1 or len(query.parameters) != 3:
+    if len(query.telescope) != 1 or len(query.parameters) not in (3, 4):
         raise RuleError("packed Boolean proof outcomes have the wrong query arity")
     (extent,) = query.telescope
     if not isinstance(extent, IndexBinder) or extent.sort != NAT:
@@ -165,9 +165,19 @@ def prepare_packed_boolean_computation(
     table_type = tensor_type(
         BOOL, (IndexLiteral(value=semantics.table_size, sort=NAT),)
     )
+    productions = query.parameters[3:]
+    if productions:
+        layout = tensor_shape(productions[0])
+        if (
+            layout is None
+            or layout[0] != REAL
+            or len(layout[1]) != 1
+            or not isinstance(layout[1][0], IndexLiteral)
+        ):
+            raise RuleError("packed Boolean query has an invalid production table")
     if (
-        query.parameters != (tokens_type, table_type, BOOL)
-        or signature.parameters != (tokens_type, BOOL)
+        query.parameters[:3] != (tokens_type, table_type, BOOL)
+        or signature.parameters != (tokens_type, BOOL, *productions)
         or signature.telescope != query.telescope
         or signature.result != query.result
         or signature.effects != query.effects
@@ -178,6 +188,9 @@ def prepare_packed_boolean_computation(
 
     tokens = Local(name="tokens", type=tokens_type)
     mode = Local(name="normalize", type=BOOL)
+    table_parameter = tuple(
+        Local(name="productions", type=type_) for type_ in productions
+    )
     inputs: list[tuple[ComputationSignature, tuple[Value, ...]]] = [
         (operations[0], (LiteralValue(value=word, type=STRING),))
         for word in semantics.lexical_words
@@ -225,6 +238,7 @@ def prepare_packed_boolean_computation(
                     result_type=table_type,
                 ),
                 Var(local=mode),
+                *(Var(local=value) for value in table_parameter),
             ),
             result_type=query.result,
             effects=query.effects,
@@ -235,7 +249,7 @@ def prepare_packed_boolean_computation(
         id=signature.id,
         name=signature.name,
         telescope=signature.telescope,
-        parameters=(tokens, mode),
+        parameters=(tokens, mode, *table_parameter),
         body=body,
         type=ComputationType(result=signature.result, effects=signature.effects),
         origin=origin,
@@ -264,10 +278,10 @@ def _forwarded_table(
     RuleError
         If the original checked arguments are shadowed or replaced.
     """
-    if len(query.parameters) != 3:
+    if len(query.parameters) not in (3, 4):
         raise RuleError("packed Boolean query has the wrong parameter layout")
-    tokens, table, normalizer = query.parameters
-    protected = {tokens.name, table.name, normalizer.name}
+    tokens, table, normalizer = query.parameters[:3]
+    protected = {parameter.name for parameter in query.parameters}
     tail = query.body
     while isinstance(tail, Bind):
         if tail.binder.name in protected:
@@ -333,8 +347,17 @@ def check_packed_boolean_bindings(
             checked.add(packed.interpretation)
         assert root is not None
         name = binding.presentation.name
-        wrapper_name = f"{name}__{root.name}__packed_boolean_outcomes"
-        query_name = f"{name}__boolean_outcomes"
+        weighted = len(query.parameters) == 4
+        prefix = "weighted_" if weighted else ""
+        wrapper_name = f"{name}__{prefix}{root.name}__packed_boolean_outcomes"
+        query_name = f"{name}__{prefix}boolean_outcomes"
+        path = (
+            "deductions",
+            name,
+            "packed_boolean_outcomes",
+            root.name,
+            *(("weighted",) if weighted else ()),
+        )
         if (
             wrapper.name != wrapper_name
             or wrapper.id
@@ -342,8 +365,7 @@ def check_packed_boolean_bindings(
             or query.name != query_name
             or query.id
             != ComputationId.derive(module.module, "computation", query_name)
-            or wrapper.origin.structural_path
-            != ("deductions", name, "packed_boolean_outcomes", root.name)
+            or wrapper.origin.structural_path != path
         ):
             raise RuleError("packed Boolean interpretation has a stale nominal use")
         chart = _forwarded_table(query, handlers)
@@ -367,7 +389,8 @@ def check_packed_boolean_bindings(
         )
         if expected != wrapper:
             raise RuleError(
-                "packed Boolean interpretation does not compute its checked truth table"
+                "packed Boolean interpretation does not compute its checked truth table "
+                "or forward the production table"
             )
         for _, operation in binding.interpretation.operations:
             owner = _first_handled_call(operation, computations, visited)

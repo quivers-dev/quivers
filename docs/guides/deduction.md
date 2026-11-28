@@ -950,6 +950,13 @@ It contains only positive-mass rows, in false-then-true order.
 refuses an empty or zero-mass result. Either list can serve as input to
 `outcome_law` when the total mass is positive.
 
+A `normalize=lhs` grammar can take program-supplied production probabilities
+in either packed query. Append the same `("left-hand side", probabilities)`
+pairs used by [ordinary parsing](#priors-on-production-probabilities)
+after the interpretation. These probabilities replace the grammar's local
+weights for that call. The choice to normalize the returned meaning masses
+still divides by the total mass of the current sentence.
+
 This query uses the finite acyclic lexical fragment of `parse_outcomes`.
 Rules have at most two ordered premises and carry no additional value
 fields. The interpretation's rule and axiom operations have empty effect
