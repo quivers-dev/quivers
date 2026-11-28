@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 
 import pytest
 import torch
@@ -13,11 +14,13 @@ from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.parser import parse
 from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.execution import ExecutionFailure, run_named
+from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.module import QiecModule
-from quivers.qiec.program_runtime import run_program
+from quivers.qiec.program_runtime import run_program, sample_program
 from quivers.qiec.serialization import dumps, loads
 from quivers.qiec.structural_runtime import structural_runtime_configuration
 from quivers.qiec.terms import Handle, LiteralValue, Perform, TupleValue
+from quivers.structural import make_term
 from quivers.transpile import UnsupportedConstruct, transpile
 
 
@@ -188,3 +191,156 @@ def test_serialized_decoder_law_checks_the_original_limit() -> None:
             (torch.zeros(2),),
             runtime=structural_runtime_configuration(restored, compiled),
         )
+
+
+_ENCODE_SOURCE = SOURCE.replace(
+    "decoder D : Tiny",
+    "encoder E : Tiny\n\ndecoder D : Tiny",
+).replace(
+    "    let response <- encode(term)",
+    "    let encoded <- E__encode_value(term)\n    let response = encoded[0]",
+)
+
+
+def test_sampled_structural_terms_feed_the_encoder_and_observation() -> None:
+    compiled = load_source(_ENCODE_SOURCE)
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    restored = loads(dumps(module))
+    assert isinstance(restored, QiecModule)
+    runtime = structural_runtime_configuration(restored, compiled)
+    decoder = compiled.decoders["D"].double()
+    encoder = compiled.encoders["E"].double()
+    head = decoder._dec_0
+    assert isinstance(head, torch.nn.Linear)
+    constants = dict(encoder.named_parameters())
+    red, blue = constants["_op_0.const_Red"], constants["_op_1.const_Blue"]
+    with torch.no_grad():
+        head.weight.copy_(
+            head.weight.new_tensor([[1.0, -0.5], [-0.25, 0.75], [20.0, 20.0]])
+        )
+        head.bias.copy_(head.bias.new_tensor([0.3, -0.1, 19.0]))
+        red.copy_(red.new_tensor([-0.4, 9.0]))
+        blue.copy_(blue.new_tensor([3.0, -8.0]))
+    code = head.weight.new_tensor([0.7, -0.2], requires_grad=True)
+    observed = 1.75
+    law = run_named(restored, "D__law", (code,), runtime=runtime).value
+    values = {point.constructor: point for point, _ in law.weighted_support()}
+    known = {
+        ConstructorId.derive("signature", "Tiny", name) for name in ("Red", "Blue")
+    }
+    assert values.keys() == known
+
+    with pytest.raises(ExecutionFailure, match="differentiable backend"):
+        compiled.run("measure", data={"code": code.detach(), "y": observed}, seed=0)
+    # The host-reference Normal accepts frozen numeric arguments. A view of
+    # a trainable encoding can retain requires_grad even under no_grad().
+    red.requires_grad_(False)
+    blue.requires_grad_(False)
+    try:
+        with torch.no_grad():
+            draw = compiled.run(
+                "measure", data={"code": code.detach(), "y": observed}, seed=0
+            )
+    finally:
+        red.requires_grad_(True)
+        blue.requires_grad_(True)
+    assert float(draw.value.detach()) in (-0.4, 3.0)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        forward = sample_program(
+            restored,
+            "measure",
+            data={"code": code, "y": observed},
+            providers=runtime.providers,
+            distributions=TensorBackend(),
+        )
+    assert float(forward.value.detach()) in (-0.4, 3.0)
+    assert forward.log_joint.requires_grad
+    # Enumerate the two nominal terms independently and use the declared
+    # two decoder logits and the actual encoder parameters, before executing
+    # either runtime conversion or the observation shortcut.
+    logits = (head.weight[:2] @ code + head.bias[:2]).log_softmax(dim=0)
+    means = torch.stack((red[0], blue[0]))
+    expected = logits - 0.5 * ((means - observed).square() + math.log(2.0 * math.pi))
+    replayed = []
+    for position, name in enumerate(("Red", "Blue")):
+        point = values[ConstructorId.derive("signature", "Tiny", name)]
+        encoded = run_named(
+            restored, "E__encode_value", (point,), runtime=runtime
+        ).value
+        torch.testing.assert_close(encoded, encoder(make_term(name)))
+        replay = run_program(
+            restored,
+            "measure",
+            data={"code": code, "y": observed},
+            sites={"decoded": point},
+            providers=runtime.providers,
+            distributions=TensorBackend(),
+        )
+        torch.testing.assert_close(replay.value, means[position])
+        torch.testing.assert_close(replay.log_joint, expected[position])
+        replayed.append(replay.log_joint)
+    with pytest.raises(
+        UnsupportedConstruct,
+        match=r"`E__encode_value` requires the `neural-attachment`",
+    ):
+        transpile(parse(_ENCODE_SOURCE), target="stan")
+    evidence = torch.stack(replayed).logsumexp(dim=0)
+    oracle = expected.logsumexp(dim=0)
+    parameters = (code, head.weight, head.bias, red, blue)
+    torch.testing.assert_close(evidence, oracle)
+    wanted = torch.autograd.grad(oracle, parameters)
+    found = torch.autograd.grad(evidence, parameters)
+    for gradient, target in zip(found, wanted, strict=True):
+        torch.testing.assert_close(gradient, target)
+        assert torch.count_nonzero(gradient)
+
+
+def test_nominal_encoder_inverse_restores_interleaved_fields_and_refuses_forgery() -> (
+    None
+):
+    source = """\
+signature Mixed
+    sorts
+        Term : object [dim=2]
+        Atom : object [dim=2]
+        Count : data [dim=2, vocab=[-1, 7]]
+        Word : data [dim=2, vocab=["tag"]]
+    constructors
+        Leaf : -> Atom
+        Tagged : Count, Atom, Word -> Term
+encoder E : Mixed
+decoder D : Mixed [depth=2, max_candidates=2]
+    body |-> recursive
+"""
+    compiled = load_source(source)
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    runtime = structural_runtime_configuration(module, compiled)
+    compiled.decoders["D"].double()
+    law = run_named(
+        module, "D__law", (torch.zeros(2, dtype=torch.float64),), runtime=runtime
+    ).value
+    (first, _), (second, _) = law.weighted_support()
+    assert isinstance(first, RuntimeConstructor)
+    assert isinstance(second, RuntimeConstructor)
+    assert (
+        first.constructor
+        == second.constructor
+        == ConstructorId.derive("signature", "Mixed", "Tagged")
+    )
+    child, count, word = first.fields
+    assert isinstance(child, RuntimeConstructor)
+    assert child.constructor == ConstructorId.derive("signature", "Mixed", "Leaf")
+    assert int(count) == -1 and word == "tag"
+    encoder = compiled.encoders["E"]
+    for point, scalar in ((first, -1), (second, 7)):
+        actual = run_named(module, "E__encode_value", (point,), runtime=runtime).value
+        expected = encoder(make_term("Tagged", scalar, make_term("Leaf"), "tag"))
+        torch.testing.assert_close(actual, expected)
+    wrong = first.with_(fields=(first, count, word))
+    with pytest.raises(
+        ExecutionFailure, match="invalid finite sampleable constructor point"
+    ):
+        run_named(module, "E__encode_value", (wrong,), runtime=runtime)

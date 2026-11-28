@@ -306,6 +306,40 @@ class _StructuralElaboration:
                 )
                 self._declare_decoder_law(components, declaration, structural, code)
 
+        finite_signatures = {
+            component.declaration.signature
+            for component in components.values()
+            if component.role == "decoder-law"
+            and isinstance(component.declaration, surface.DecoderDecl)
+        }
+        for component in tuple(components.values()):
+            declaration = component.declaration
+            if component.role != "encoder" or not isinstance(
+                declaration, surface.EncoderDecl
+            ):
+                continue
+            if declaration.signature not in finite_signatures:
+                continue
+            structural = signatures[declaration.signature]
+            family = self.families[
+                _finite_term_name(declaration.signature, structural.root)
+            ]
+            name = f"{component.name}__encode_value"
+            if name in components:
+                self._fail(
+                    declaration,
+                    f"duplicate structural computation {name!r}",
+                    code="qiec-kind",
+                )
+            self._structural_component(
+                components,
+                declaration,
+                name,
+                "encoder-value",
+                TypeApplication(constructor=family.type_constructor),
+                component.result,
+            )
+
         for declaration in self._items(surface.LossDecl):
             recognized = _reconstruction_loss(declaration)
             if recognized is not None and all(
@@ -393,17 +427,21 @@ class _StructuralElaboration:
         domain = product_type(argument, INT) if support_limit is not None else argument
         effect = COMPUTE_EFFECT.apply((domain, result))
         instance_name = f"{name}__compute"
+        path = ("structural", role, name, "instance")
+        if role == "encoder-value":
+            assert isinstance(declaration, surface.EncoderDecl)
+            path = (*path, declaration.signature)
         entry = instantiate_effect(
             effect,
             module=self.source.module_name,
-            lexical_path=("structural", role, name, "instance"),
+            lexical_path=path,
         )
         instance = NamedEffectInstance(
             name=instance_name,
             entry=entry,
             origin=self._origin(
                 declaration,
-                ("structural", role, name, "instance"),
+                path,
                 "effect-instance",
             ),
         )

@@ -266,6 +266,16 @@ program measure(code : Tensor[Real]([2])) : Input -> Out
 export measure
 ```
 
+An encoder `E` over the same signature can consume the sampled value through
+`E__encode_value(color)`. The argument has the decoder’s nominal checked term
+type, and the result has the ordinary encoder’s code type. The attachment checks
+each constructor and puts object and scalar fields back in the order declared
+by the signature before invoking the existing encoder. Validation and
+conversion take time linear in the term’s nodes and fields. The trace
+retains the original typed term.
+The tensor distribution backend differentiates a downstream observation through
+both the encoder computation and the decoder’s log probability.
+
 The call takes one code and returns a `Sampleable[Colors__TermValue]`,
 which also admits `log_prob(law, color)` and replay at the same site.
 The bound is carried in the checked request. Running serialized QIEC
