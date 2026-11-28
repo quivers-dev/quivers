@@ -63,6 +63,30 @@ Costs are fixed data in the serialized request.
 
 ::: quivers.qiec.relation_runtime.FixedRelationRuntimeProvider
 
+## Sparse relation composition requests
+
+A `ComposedRelationSpec` records the two original operands of a
+binary composition. Each has one input and one output tape. The
+contract checks the nominal shared tape and the common scalar
+algebra. The operands' parameter identities are resolved from one
+runtime map, so tied weights retain their original gradient owner.
+
+A `FixedComposedRelationRequest` scores the pair of outer words.
+With lazy execution it builds only the reachable fixed-word product.
+With materialized execution it builds a reusable sparse product
+and can close an explicitly permitted productive component. The
+three-state epsilon filter gives each compatible pair of original
+paths exactly one product contribution. The selected execution
+mode and its limits are part of the wire record.
+
+The existing pair-weight provider serves a composed request for
+an unbound source score. A score bound to a specific authored
+primitive relation checks that declaration's topology instead.
+
+::: quivers.qiec.relation_composition.ComposedRelationSpec
+
+::: quivers.qiec.relation_composition.FixedComposedRelationRequest
+
 ## String factor graphs
 
 `StringFactorGraphSpec` records the nominal alphabet and optional

@@ -18,6 +18,10 @@ from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
+from quivers.qiec.relation_composition import (
+    ComposedRelationSpec,
+    FixedComposedRelationRequest,
+)
 from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
@@ -33,7 +37,7 @@ def _relation_score_handler_id(
     module: str,
     name: str,
     operation: str,
-    relation: RationalRelationSpec | None = None,
+    relation: RationalRelationSpec | ComposedRelationSpec | None = None,
 ) -> HandlerId:
     """Derive the checked handler identity of a source score.
 
@@ -118,7 +122,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The live scalar tensors supplying the request's weight identities.
@@ -130,7 +134,9 @@ class FixedRelationRuntimeProvider:
 
     def __init__(
         self,
-        request: FixedRelationRequest | FixedRelationCostRequest,
+        request: FixedRelationRequest
+        | FixedRelationCostRequest
+        | FixedComposedRelationRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
         handler_name: str,
@@ -141,13 +147,16 @@ class FixedRelationRuntimeProvider:
         self._operation = request.operation
         self._relation_spec = request.relation
         self._result_type = request.result_type
+        self._score: Callable[[], torch.Tensor]
+        if isinstance(request, FixedComposedRelationRequest):
+            self._score = request.plan(parameters).weight
+            return
         relation = request.relation.bind(parameters)
         limits = dict(
             max_states=request.max_states,
             max_work=request.max_work,
             max_closure_size=request.max_closure_size,
         )
-        self._score: Callable[[], torch.Tensor]
         if isinstance(request, FixedRelationCostRequest):
             query = relation.query(request.words, **limits)
             anchor = relation._weights()
@@ -179,7 +188,9 @@ class FixedRelationRuntimeProvider:
     def for_score(
         cls,
         name: str,
-        request: FixedRelationRequest | FixedRelationCostRequest,
+        request: FixedRelationRequest
+        | FixedRelationCostRequest
+        | FixedComposedRelationRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
     ) -> FixedRelationRuntimeProvider:
         """Bind a fixed request to a source-declared relation score.
