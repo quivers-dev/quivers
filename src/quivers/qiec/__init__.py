@@ -555,6 +555,10 @@ from quivers.qiec.relation_composition import (
     FixedComposedRelationRequest,
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_capped_path_law import (
+    CappedRelationPathLaw,
+    FixedCappedCyclicRelationPathSampleRequest,
+)
 from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
@@ -959,7 +963,9 @@ __all__ = [
     "FixedMarkovPathCertificateRuntimeProvider",
     "FixedRelationPathRankRequest",
     "FixedRelationPathRankRuntimeProvider",
+    "FixedCappedCyclicRelationPathSampleRequest",
     "FixedCyclicRelationPathSampleRequest",
+    "CappedRelationPathLaw",
     "RelationPathLaw",
     "FixedRelationRequest",
     "RelationWeightBindings",

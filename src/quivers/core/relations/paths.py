@@ -137,6 +137,8 @@ class _Chart:
         final: list[tuple[int, int]],
         max_closure_size: int | None,
         weight_slots: int,
+        *,
+        max_closure_cells: int | None = None,
     ) -> _Chart:
         states: list[int] = []
         exits: dict[int, int] = {}
@@ -146,6 +148,7 @@ class _Chart:
             final,
             0,
             max_closure_size=max_closure_size,
+            max_closure_cells=max_closure_cells,
             weight_slots=weight_slots,
             visit_order=states,
             closed_exits=exits,
@@ -224,6 +227,8 @@ class _PathWalks:
         max_states: int | None,
         max_work: int | None,
         max_closure_size: int | None,
+        *,
+        max_closure_cells: int | None = None,
     ) -> None:
         observation = _observe(
             topology, words, max_states=max_states, max_work=max_work, arc_ids=True
@@ -233,6 +238,7 @@ class _PathWalks:
         )
         self._cyclic = len(graph.order) != len(graph.states)
         self._max_closure_size = max_closure_size
+        self._max_closure_cells = max_closure_cells
         self._topology = topology
         self._original = tuple(state for state, _ in observation.states)
         self._order = sorted(graph.states) if self._cyclic else graph.order
@@ -322,6 +328,7 @@ class _PathWalks:
             list(self._final.items()),
             self._max_closure_size,
             len(self._topology.weight_names),
+            max_closure_cells=self._max_closure_cells,
         )
 
     @cached_property
@@ -336,6 +343,7 @@ class _PathWalks:
             list(self._initial),
             self._max_closure_size,
             len(self._topology.weight_names),
+            max_closure_cells=self._max_closure_cells,
         )
 
     @cached_property
@@ -472,6 +480,19 @@ class _PathWalks:
         generator: torch.Generator | None,
         max_steps: int | None,
     ) -> RelationPath:
+        result = self._draw(weights, algebra, generator, max_steps)
+        assert result is not None  # The uncapped-outcome ABI raises on overflow.
+        return result
+
+    def _draw(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        generator: torch.Generator | None,
+        max_steps: int | None,
+        *,
+        overflow_to_tail: bool = False,
+    ) -> RelationPath | None:
         algebra = _probability_algebra(weights, algebra)
         if max_steps is not None and (type(max_steps) is not int or max_steps < 0):
             raise ValueError("max_steps must be a nonnegative integer")
@@ -516,6 +537,8 @@ class _PathWalks:
                     start, initial_slot, tuple(arcs), state, weights, algebra
                 )
             if max_steps is not None and len(arcs) == max_steps:
+                if overflow_to_tail:
+                    return None
                 raise RelationLimitError("sampled path exceeds max_steps")
             state, arc_id = edges[choice]
             arcs.append(arc_id)

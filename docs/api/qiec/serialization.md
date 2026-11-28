@@ -405,6 +405,65 @@ and serialized fields.
 
 ::: quivers.qiec.relation_path_law.RelationPathLaw
 
+### A tail outcome for capped cyclic paths
+
+`FixedCappedCyclicRelationPathSampleRequest` specifies a different
+checked law on the same original paths. At capacity $K$ it retains
+each accepting walk of at most $K$ traversals and maps every longer
+walk to one Tail outcome. The tagged element type is
+`(Bool * Int * Int * Tensor[Int]([K]))`. A false tag carries a complete
+original trace with trailing `-1` padding. A true tag carries `-1` in
+both state fields and every arc position. This distinguishes a
+genuine empty trace at capacity zero. Noncanonical typed records have
+zero probability.
+
+Write $\alpha_j(s)$ for the mass of prefixes that start at an
+initial mark, take exactly $j$ original arcs, and arrive at observation
+state $s$. Write $h(s)$ for its total accepting suffix mass and $Z$
+for the original fixed-word normalizer. Each longer accepting walk
+has exactly one prefix of length $K+1$. Thus
+
+$$
+P(\mathrm{Tail})=\frac{\sum_s \alpha_{K+1}(s)h(s)}{Z}.
+$$
+
+The prefix pass ignores stop choices and preserves parallel arc
+multiplicity. The suffix includes all accepting stops and longer
+continuations, using the same convergence-checked local stars as the
+ordinary path law. A retained trace has its original mass divided by
+$Z$. These outcomes partition the full posterior, so `log_mass` gives
+zero after checking the live $Z$. Evaluation computes Tail from the
+positive terms of its own sum. This preserves a finite log tail
+even when its probability is below the linear float64 range.
+
+For a draw, the sampler uses float64 suffix conditionals. After $K$
+traversals, stopping returns the retained trace and continuing returns
+Tail, with no further random choices. The checked Random and replay
+handlers use the same tagged value type. Probability and normalization
+statements describe the mathematical pushforward. Computed scores,
+their gradients, and random choice probabilities use float64
+arithmetic. Scores differentiate the fixed outcome through the live
+weights, suffix closure, and normalizer on positive support.
+The checked law supports `log_prob` and `log_mass` directly, and the
+implicit support is unavailable to the finite enumeration handler.
+
+For $V$ active states and $E$ active original arc occurrences, the
+packed prefix map has $O(V+E)$ stored entries and reuses its incoming
+groups across all $K+1$ layers. The work cap uses the conservative
+count $(K+1)(3E+2V)+|I|+2V$, including padded reductions and initial
+and final work for $|I|$ initial states. The depth grid has $(K+2)V$
+state cells, bounded by `max_prefix_cells`. Without autograd the
+prefix sweep needs $O(V+E)$ live tensor entries. Backward through it
+may retain $O((K+1)(V+E))$ entries, with the suffix chart and its held
+closure tensors accounted for separately. Observation, order,
+aggregate closure cells, and prefix limits are checked before a draw.
+The existing untagged path request retains its bounded-attempt
+execution contract.
+
+::: quivers.qiec.relation_capped_path_law.FixedCappedCyclicRelationPathSampleRequest
+
+::: quivers.qiec.relation_capped_path_law.CappedRelationPathLaw
+
 ## Checked deterministic path ranking
 
 `FixedRelationPathRankRequest` ranks up to $k$ positive complete paths

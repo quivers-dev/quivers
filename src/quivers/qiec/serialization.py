@@ -142,6 +142,9 @@ from quivers.qiec.relation_feature_moments import (
     FixedRelationFeatureObservation,
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_capped_path_law import (
+    FixedCappedCyclicRelationPathSampleRequest,
+)
 from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
@@ -429,6 +432,7 @@ _NODE_CLASSES = (
     FixedLogProbPathCertificateRequest,
     FixedMarkovPathCertificateRequest,
     FixedRelationPathRankRequest,
+    FixedCappedCyclicRelationPathSampleRequest,
     FixedCyclicRelationPathSampleRequest,
     FixedRelationRequest,
     RationalRelationSpec,
