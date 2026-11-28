@@ -118,6 +118,7 @@ from quivers.qiec.contracts import (
     WorkReport,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
@@ -386,6 +387,7 @@ _NODE_CLASSES = (
     RationalRelationSpec,
     StringFactorGraphSpec,
     JointAlignmentMapConfig,
+    PrunedStringGraphRequest,
     PrunedStringBPConfig,
     RegularStringEPConfig,
     TreeStringGraphRequest,

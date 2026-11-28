@@ -296,6 +296,42 @@ variables before normalizing. Attachments serve these computations on
 the checked reference machine, with foreign-handler diagnostics for
 targets that cannot lower them.
 
+### Checked pruned string beliefs
+
+`PrunedStringGraphRequest` uses that same graph with a
+`PrunedStringBPConfig` and selects one variable to report. The output
+coordinates are the variable's declared candidate words in order. An
+observed variable has one coordinate for its fixed word. The checked
+`pruned_string_graph_handler` binds the graph, the ordered candidate pools,
+and the variable. The same handler can run with a different beam,
+damping schedule, or resource limits. The provider retains the compiled
+factor queries and reads the original weights on every invocation.
+
+The foreign computation returns a checked product with these fields
+in order.
+
+1. Status and diagnostic text. Status is `converged`, `limit` for exhausted
+   sweeps, `empty_support` for a support conflict, or `resource_limit` for
+   a factor table or observation construction limit.
+2. Completed sweep count, message residual, and a Boolean truncation flag.
+   The residual is $-1$ when undefined.
+3. The selected variable's log belief tensor. An unavailable belief has
+   log zero in every coordinate.
+4. A Boolean indicating whether a complete proposal table is available,
+   and the table's log masses. Each row gives full, retained, and omitted
+   mass before renormalization. Rows follow the original factor and tape
+   order. Unavailable rows contain log zero.
+
+Convergence concerns the pruned update. The belief remains an approximation
+over the declared finite pool. Native targets that require foreign calls
+to be discharged report the checked pruned handler as an obstacle.
+
+::: quivers.qiec.pruned_string_graph_runtime.PrunedStringGraphRequest
+
+::: quivers.qiec.pruned_string_graph_runtime.PrunedStringGraphRuntimeProvider
+
+::: quivers.qiec.pruned_string_graph_runtime.pruned_string_graph_handler
+
 ## String solver configurations
 
 Encode a `StringFactorGraphSpec` and its solver settings separately. A

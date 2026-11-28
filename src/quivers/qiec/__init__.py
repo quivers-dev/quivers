@@ -379,6 +379,11 @@ from quivers.qiec.reference_support import (
     DistributionError,
 )
 from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
+from quivers.qiec.pruned_string_graph_runtime import (
+    PrunedStringGraphRequest,
+    PrunedStringGraphRuntimeProvider,
+    pruned_string_graph_handler,
+)
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
@@ -740,6 +745,9 @@ __all__ = [
     "StringFactorGraphSpec",
     "JointAlignmentMapConfig",
     "PrunedStringBPConfig",
+    "PrunedStringGraphRequest",
+    "PrunedStringGraphRuntimeProvider",
+    "pruned_string_graph_handler",
     "RegularStringEPConfig",
     "TreeStringGraphRequest",
     "TreeStringGraphRuntimeProvider",

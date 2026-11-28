@@ -377,17 +377,37 @@ class PrunedStringBPConfig(QiecModel):
         PrunedStringBeliefResult
             Derived approximate beliefs and measured diagnostics.
         """
-        plan = FiniteStringBeliefPlan(
+        return self._plan(model, parameters).run_pruned(
+            beam=self.beam,
+            max_sweeps=self.max_sweeps,
+            tolerance=self.tolerance,
+            damping=self.damping,
+        )
+
+    def _plan(
+        self,
+        model: StringFactorGraphSpec,
+        parameters: Mapping[ParameterId, torch.Tensor],
+    ) -> FiniteStringBeliefPlan:
+        """Compile the declared finite model and prepare live factor queries.
+
+        Parameters
+        ----------
+        model : StringFactorGraphSpec
+            The checked graph whose topology is retained.
+        parameters : Mapping of ParameterId to torch.Tensor
+            The caller's original parameter tensors.
+
+        Returns
+        -------
+        FiniteStringBeliefPlan
+            A reusable finite pruned schedule with the configured limits.
+        """
+        return FiniteStringBeliefPlan(
             model.bind(parameters),
             dict(self.supports),
             max_entries=self.max_entries,
             max_states=self.max_states,
             max_work=self.max_work,
             max_closure_size=self.max_closure_size,
-        )
-        return plan.run_pruned(
-            beam=self.beam,
-            max_sweeps=self.max_sweeps,
-            tolerance=self.tolerance,
-            damping=self.damping,
         )
