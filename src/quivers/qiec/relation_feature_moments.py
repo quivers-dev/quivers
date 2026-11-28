@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from functools import partial
 from hashlib import sha256
 from math import isfinite
@@ -16,8 +16,7 @@ from quivers.core.relations import FixedStringQuery, RelationLimitError, Words
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
-from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import RationalRelationSpec, RelationWeightBindings
 from quivers.qiec.kinds import NAT
 from quivers.qiec.relation_composition import FixedComposedRelationRequest
 from quivers.qiec.types import IndexLiteral, TypeExpr
@@ -270,14 +269,12 @@ class FixedRelationFeatureMomentRequest(QiecModel):
         """
         return self.observation.result_type
 
-    def plan(
-        self, parameters: Mapping[ParameterId, torch.Tensor]
-    ) -> Callable[[], torch.Tensor]:
+    def plan(self, parameters: RelationWeightBindings) -> Callable[[], torch.Tensor]:
         """Compile the bounded feature evaluator with original weight tensors.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The live primitive scalar weights by original identity.
 
         Returns
@@ -294,7 +291,7 @@ class FixedRelationFeatureMomentRequest(QiecModel):
 
     def _plan(
         self,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         max_closure_size: int | None,
     ) -> Callable[[], torch.Tensor]:
@@ -302,7 +299,7 @@ class FixedRelationFeatureMomentRequest(QiecModel):
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The original live scalar weights.
         max_closure_size : int or None
             The per-component order limit for a cyclic request.
@@ -421,14 +418,12 @@ class FixedCyclicRelationFeatureMomentRequest(QiecModel):
         """
         return self.request.result_type
 
-    def plan(
-        self, parameters: Mapping[ParameterId, torch.Tensor]
-    ) -> Callable[[], torch.Tensor]:
+    def plan(self, parameters: RelationWeightBindings) -> Callable[[], torch.Tensor]:
         """Bind live weights and prepare the certified cyclic feature query.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The original live scalar weights.
 
         Returns
@@ -534,14 +529,12 @@ class FixedComposedArcFeatureMomentRequest(QiecModel):
             LOG_WEIGHT, (IndexLiteral(value=self.feature_extent + 1, sort=NAT),)
         )
 
-    def plan(
-        self, parameters: Mapping[ParameterId, torch.Tensor]
-    ) -> Callable[[], torch.Tensor]:
+    def plan(self, parameters: RelationWeightBindings) -> Callable[[], torch.Tensor]:
         """Build an occurrence-tagged product and bind its original weights.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The caller's original scalar tensor owners across both operands.
 
         Returns

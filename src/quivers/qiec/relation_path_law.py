@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 
 import didactic.api as dx
 import torch
@@ -13,10 +12,13 @@ from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import FixedStringQuery, RelationTopology, Words
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import sampleable_type, tensor_type
-from quivers.qiec.contracts import ParameterId
 from quivers.qiec.kinds import NAT
 from quivers.qiec.numbers import PositionDependentControl, host_index
-from quivers.qiec.relations import RationalRelationSpec, _validate_fixed_observation
+from quivers.qiec.relations import (
+    RationalRelationSpec,
+    _validate_fixed_observation,
+    RelationWeightBindings,
+)
 from quivers.qiec.types import INT, IndexLiteral, TypeExpr, product_type
 
 
@@ -269,7 +271,7 @@ class FixedRelationPathSampleRequest(QiecModel):
 
     def bind(
         self,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         generator: torch.Generator,
     ) -> RelationPathLaw:
@@ -277,7 +279,7 @@ class FixedRelationPathSampleRequest(QiecModel):
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             Original live scalar parameter owners.
         generator : torch.Generator
             The CPU generator used for posterior path draws.

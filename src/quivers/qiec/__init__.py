@@ -412,6 +412,8 @@ from quivers.qiec.relations import (
     FixedRelationCostRequest,
     FixedRelationRequest,
     RationalRelationSpec,
+    RelationWeightBindings,
+    RelationWeightComplement,
 )
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
 from quivers.qiec.string_solvers import (
@@ -748,6 +750,8 @@ __all__ = [
     "FixedRelationPathSampleRequest",
     "RelationPathLaw",
     "FixedRelationRequest",
+    "RelationWeightBindings",
+    "RelationWeightComplement",
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
     "StringFactorGraphSpec",

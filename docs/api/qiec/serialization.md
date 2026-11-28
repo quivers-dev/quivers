@@ -25,6 +25,18 @@ Tensor values and runtime providers belong to the binding.
 
 ::: quivers.qiec.relations.RationalRelationSpec
 
+A `RelationWeightComplement` binds a Markov weight slot to one minus
+an original probability owner. The owner is a floating-point scalar
+leaf in the same binding mapping. A composed or derived relation
+computes the complement from that owner each time it evaluates its
+weights, so both uses contribute to the original gradient. Decoding
+the relation restores the weight identities. A new process supplies
+the bindings when attaching the checked request.
+
+::: quivers.qiec.relations.RelationWeightComplement
+
+::: quivers.qiec.relations.RelationWeightBindings
+
 
 ## Fixed-word relation requests
 

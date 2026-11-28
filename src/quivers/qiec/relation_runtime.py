@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from functools import partial
 from hashlib import sha256
 
@@ -15,7 +15,6 @@ from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.effects import EMPTY_ROW, ResumptionGrade
 from quivers.qiec.evaluator import ClauseContext, RuntimeAttachments
 from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
-from quivers.qiec.contracts import ParameterId
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
 from quivers.qiec.relation_backoff import (
@@ -39,6 +38,7 @@ from quivers.qiec.relation_transforms import (
     UnaryRelationTransformSpec,
 )
 from quivers.qiec.relations import (
+    RelationWeightBindings,
     FixedMinimizedRelationRequest,
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
@@ -176,7 +176,7 @@ class FixedRelationRuntimeProvider:
     ----------
     request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest or FixedMinimizedRelationRequest or FixedBackoffRelationRequest
         The checked fixed observation, objective, and resource limits.
-    parameters : Mapping[ParameterId, torch.Tensor]
+    parameters : RelationWeightBindings
         The original scalar tensors supplying the request's weight
         identities. A minimized request snapshots nontrainable values.
     handler_name : str
@@ -198,7 +198,7 @@ class FixedRelationRuntimeProvider:
         | FixedComposedArcFeatureMomentRequest
         | FixedBackoffRelationRequest
         | FixedMinimizedRelationRequest,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         handler_name: str,
     ) -> None:
@@ -323,7 +323,7 @@ class FixedRelationRuntimeProvider:
         | FixedRelationMarginalMapRequest
         | FixedTransformedRelationRequest
         | FixedMinimizedRelationRequest,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
     ) -> FixedRelationRuntimeProvider:
         """Bind a fixed request to a source-declared relation score.
 

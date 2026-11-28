@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from functools import cached_property
 from typing import Literal, cast
 
@@ -30,8 +29,11 @@ from quivers.qiec._relation_operations import (
     _binary_layout,
     _unary_layout,
 )
-from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import (
+    RationalRelationSpec,
+    RelationWeightBindings,
+    _weight_bindings,
+)
 
 
 class RelationCascadeStep(QiecModel):
@@ -370,7 +372,7 @@ class RelationCascadeSpec(QiecModel):
 
     def bind(
         self,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         max_states: int,
         max_work: int,
@@ -387,7 +389,7 @@ class RelationCascadeSpec(QiecModel):
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The live scalar tensors for original primitive parameter IDs.
         max_states : int
             The state limit for each sparse intermediate.
@@ -408,25 +410,15 @@ class RelationCascadeSpec(QiecModel):
             Different IDs alias a tensor or bindings disagree on tensor domain.
         """
         self._check_budgets(max_states, max_work)
-        machines: list[RationalRelation] = []
-        bindings: dict[ParameterId, torch.Tensor] = {}
-        for step in self.steps:
-            if step.primitive is None:
-                continue
-            machine = step.primitive.bind(parameters)
-            bindings.update(
-                (param, parameters[param])
-                for param in dict.fromkeys(step.primitive.weight_parameters)
-            )
-            machines.append(machine)
-        if len({id(value) for value in bindings.values()}) != len(bindings):
-            raise ValueError(
-                "shared cascade weights must use the same parameter identity"
-            )
-        if len({(value.dtype, value.device) for value in bindings.values()}) > 1:
-            raise ValueError("cascade parameters require a common dtype and device")
-
-        primitive_machines = iter(machines)
+        primitives = tuple(
+            step.primitive for step in self.steps if step.primitive is not None
+        )
+        _weight_bindings(
+            (identity for spec in primitives for identity in spec.weight_parameters),
+            parameters,
+            description="cascade",
+        )
+        primitive_machines = iter(tuple(spec.bind(parameters) for spec in primitives))
         results: list[RationalRelation] = []
         for step in self.steps:
             if step.primitive is not None:

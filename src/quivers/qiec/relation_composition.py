@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Literal
 
 import didactic.api as dx
-import torch
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB
@@ -20,8 +18,11 @@ from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
 from quivers.qiec._relation_operations import _RelationInterface, _binary_layout
 from quivers.qiec.canonical import LOG_WEIGHT
-from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec, _bind_relation_operands
+from quivers.qiec.relations import (
+    RationalRelationSpec,
+    _bind_relation_operands,
+    RelationWeightBindings,
+)
 from quivers.qiec.types import REAL, TypeExpr
 
 
@@ -60,12 +61,12 @@ class ComposedRelationSpec(QiecModel):
             False,
         )
 
-    def bind(self, parameters: Mapping[ParameterId, torch.Tensor]) -> ComposedRelation:
+    def bind(self, parameters: RelationWeightBindings) -> ComposedRelation:
         """Bind the original identities and construct a sparse composition.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             One explicit mapping for scalar weights of both operands.
 
         Returns
@@ -139,13 +140,13 @@ class FixedComposedRelationRequest(QiecModel):
             )
 
     def plan(
-        self, parameters: Mapping[ParameterId, torch.Tensor]
+        self, parameters: RelationWeightBindings
     ) -> ComposedStringQuery | FixedStringQuery:
         """Compile the requested sparse plan with its original weight owners.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The original scalar weights shared by the two operands.
 
         Returns

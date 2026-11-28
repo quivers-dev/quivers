@@ -26,6 +26,7 @@ from quivers.qiec import (
     Perform,
     QiecModule,
     RationalRelationSpec,
+    RelationWeightComplement,
     RuntimeConfiguration,
     SerializationError,
     SiteProvenance,
@@ -138,6 +139,23 @@ def test_round_trip_preserves_relation_reuse_parameter_sharing_and_observations(
         (actual_gradient,) = torch.autograd.grad(actual, parameter)
         (oracle_gradient,) = torch.autograd.grad(intended, parameter)
         torch.testing.assert_close(actual_gradient, oracle_gradient)
+
+
+def test_graph_complement_reaches_an_owner_used_only_through_the_binding():
+    spec = _graph(MARKOV)
+    p = nn.Parameter(torch.tensor(0.2, dtype=torch.float64))
+    values = {_TIED: RelationWeightComplement(_OTHER), _OTHER: p, _UNIT: p.new_ones(())}
+    graph = spec.bind(values)
+    query = graph.tree_marginal("x", max_states=512, max_work=2048)
+    actual = query.partition()
+    q = 1 - p
+    intended = (2 * q.square() + 1) * (q + 1)
+    torch.testing.assert_close(actual, intended)
+    (actual_gradient,) = torch.autograd.grad(actual, p)
+    (oracle_gradient,) = torch.autograd.grad(intended, p)
+    torch.testing.assert_close(actual_gradient, oracle_gradient)
+    with pytest.raises(ValueError, match="same parameter identity"):
+        spec.bind(values | {_UNIT: p})
 
 
 @pytest.mark.parametrize(

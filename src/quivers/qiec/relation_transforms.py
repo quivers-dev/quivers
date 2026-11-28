@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Literal
 
 import didactic.api as dx
-import torch
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB, MARKOV
@@ -23,9 +21,12 @@ from quivers.qiec._relation_operations import (
     _unary_layout,
 )
 from quivers.qiec.canonical import LOG_WEIGHT
-from quivers.qiec.contracts import ParameterId
 from quivers.qiec.relation_cascades import RelationCascadeSpec
-from quivers.qiec.relations import RationalRelationSpec, _bind_relation_operands
+from quivers.qiec.relations import (
+    RationalRelationSpec,
+    _bind_relation_operands,
+    RelationWeightBindings,
+)
 from quivers.qiec.types import REAL, TypeExpr
 
 
@@ -111,7 +112,7 @@ class UnaryRelationTransformSpec(QiecModel):
 
     def bind(
         self,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         max_states: int,
         max_work: int,
@@ -120,7 +121,7 @@ class UnaryRelationTransformSpec(QiecModel):
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The original scalar weight bindings.
         max_states : int
             State limit for a conditioned topology.
@@ -227,7 +228,7 @@ class BinaryRelationTransformSpec(QiecModel):
 
     def bind(
         self,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         max_states: int,
         max_work: int,
@@ -236,7 +237,7 @@ class BinaryRelationTransformSpec(QiecModel):
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The original shared scalar parameters of the two operands.
         max_states : int
             State limit for a sparse product.
@@ -357,12 +358,12 @@ class FixedTransformedRelationRequest(QiecModel):
             else relation.left.algebra
         )
 
-    def plan(self, parameters: Mapping[ParameterId, torch.Tensor]) -> FixedStringQuery:
+    def plan(self, parameters: RelationWeightBindings) -> FixedStringQuery:
         """Compile the bounded sparse query with original scalar weights.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The live original source weights.
 
         Returns

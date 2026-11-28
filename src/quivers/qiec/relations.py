@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from functools import cached_property
 from math import isfinite
 from typing import Literal, cast
@@ -35,6 +36,100 @@ from quivers.qiec.foreign import KERNEL_ALGEBRAS
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 
 
+@dataclass(frozen=True, slots=True)
+class RelationWeightComplement:
+    """Use one minus an original probability in a Markov weight slot.
+
+    Parameters
+    ----------
+    owner : ParameterId
+        The original scalar leaf in the same binding mapping.
+    """
+
+    owner: ParameterId
+
+
+type RelationWeightBindings = Mapping[
+    ParameterId, torch.Tensor | RelationWeightComplement
+]
+"""Process-local bindings of sparse relation weight identities."""
+
+
+def _weight_bindings(
+    identities: Iterable[ParameterId],
+    parameters: RelationWeightBindings,
+    *,
+    description: str,
+) -> tuple[dict[ParameterId, torch.Tensor], dict[ParameterId, ParameterId]]:
+    """Resolve original leaves and explicit unit probability complements.
+
+    Parameters
+    ----------
+    identities : Iterable of ParameterId
+        Weight identities used by the checked topology or collection.
+    parameters : RelationWeightBindings
+        The common store of original leaves and complement declarations.
+    description : str
+        The checked relation or collection named in refusal diagnostics.
+
+    Returns
+    -------
+    tuple
+        Original owner tensors and a map from dependent slots to owners.
+
+    Raises
+    ------
+    TypeError
+        If an original parameter lacks the checked tensor representation.
+    ValueError
+        If a binding is missing, an owner is itself a complement, or
+        original owners alias or disagree on dtype or device.
+    """
+    if not isinstance(parameters, Mapping):
+        raise TypeError(f"{description} weights require an explicit parameter mapping")
+    owners: dict[ParameterId, torch.Tensor] = {}
+    complements: dict[ParameterId, ParameterId] = {}
+    for identity in dict.fromkeys(identities):
+        if identity not in parameters:
+            raise ValueError(f"missing {description} parameter {identity}")
+        value = parameters[identity]
+        owner = identity
+        if isinstance(value, RelationWeightComplement):
+            owner = value.owner
+            if owner not in parameters or isinstance(
+                parameters[owner], RelationWeightComplement
+            ):
+                raise ValueError(
+                    f"complement {identity} requires an original relation owner {owner}"
+                )
+            complements[identity] = owner
+            value = parameters[owner]
+        if (
+            not isinstance(value, torch.Tensor)
+            or type(value) not in (torch.Tensor, nn.Parameter)
+            or value.ndim != 0
+            or not value.is_leaf
+            or value.layout != torch.strided
+            or value.device.type == "meta"
+            or value.is_quantized
+        ):
+            raise TypeError(
+                f"relation parameter {owner} requires a dense scalar leaf tensor"
+            )
+        if value.requires_grad and not isinstance(value, nn.Parameter):
+            raise TypeError(
+                f"trainable relation parameter {owner} requires torch.nn.Parameter"
+            )
+        owners[owner] = value
+    if len({id(value) for value in owners.values()}) != len(owners):
+        raise ValueError(
+            f"shared {description} weights must use the same parameter identity"
+        )
+    if len({(value.dtype, value.device) for value in owners.values()}) > 1:
+        raise ValueError(f"{description} parameters require a common dtype and device")
+    return owners, complements
+
+
 class _RelationWeights(nn.Module):
     """Expose live scalar tensors in the relation's weight-slot order.
 
@@ -44,15 +139,21 @@ class _RelationWeights(nn.Module):
         The parameter identity at each weight slot.
     values : Mapping of ParameterId to torch.Tensor
         The original tensor for each distinct identity.
+    complements : Mapping of ParameterId to ParameterId
+        Explicit dependent slots and their original owners.
     """
 
     def __init__(
         self,
         slots: tuple[ParameterId, ...],
         values: Mapping[ParameterId, torch.Tensor],
+        complements: Mapping[ParameterId, ParameterId],
     ) -> None:
         super().__init__()
-        self._slots = tuple(f"weight_{id_.digest}" for id_ in slots)
+        self._slots = tuple(
+            (f"weight_{complements.get(id_, id_).digest}", id_ in complements)
+            for id_ in slots
+        )
         for id_, value in values.items():
             name = f"weight_{id_.digest}"
             if isinstance(value, nn.Parameter):
@@ -67,12 +168,32 @@ class _RelationWeights(nn.Module):
         -------
         torch.Tensor
             One value per slot, including repeated uses of shared parameters.
+
+        Raises
+        ------
+        ValueError
+            If a complement's current owner falls outside the unit interval.
         """
         if not self._slots:
             return torch.empty(0)
-        return torch.stack(
-            [cast(torch.Tensor, getattr(self, name)) for name in self._slots]
-        )
+        derived: dict[str, torch.Tensor] = {}
+        values = []
+        for name, complement in self._slots:
+            value = cast(torch.Tensor, getattr(self, name))
+            if complement:
+                if name not in derived:
+                    if not value.is_floating_point():
+                        raise TypeError(
+                            "a relation weight complement requires a floating-point owner"
+                        )
+                    if not bool((0 <= value) & (value <= 1)):
+                        raise ValueError(
+                            "a relation weight complement requires an owner in [0, 1]"
+                        )
+                    derived[name] = 1 - value
+                value = derived[name]
+            values.append(value)
+        return torch.stack(values)
 
 
 class RationalRelationSpec(QiecModel):
@@ -244,7 +365,7 @@ class RationalRelationSpec(QiecModel):
             weight_names=self.weight_names,
         )
 
-    def bind(self, parameters: Mapping[ParameterId, torch.Tensor]) -> RationalRelation:
+    def bind(self, parameters: RelationWeightBindings) -> RationalRelation:
         """Bind original scalar leaves by stable identity and return a live relation.
 
         Values must be dense scalar leaf tensors in the algebra's
@@ -252,11 +373,13 @@ class RationalRelationSpec(QiecModel):
         be original torch.nn.Parameter objects. Each distinct identity
         binds one object, and shared slots must use the same identity.
         The mapping may also provide identities for other relations.
+        A Markov slot may explicitly use one minus an original unit
+        probability. Its weight is recomputed from that leaf on every read.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
-            The live scalar tensor for each stable identity.
+        parameters : RelationWeightBindings
+            Original leaves and explicit complements by stable identity.
 
         Returns
         -------
@@ -271,38 +394,14 @@ class RationalRelationSpec(QiecModel):
             If a required identity is missing, two different identities bind
             one object, or tensors disagree on dtype or device.
         """
-        if not isinstance(parameters, Mapping):
-            raise TypeError("relation weights require an explicit parameter mapping")
-        values: dict[ParameterId, torch.Tensor] = {}
-        for id_ in dict.fromkeys(self.weight_parameters):
-            if id_ not in parameters:
-                raise ValueError(f"missing relation parameter {id_}")
-            value = parameters[id_]
-            if (
-                type(value) not in (torch.Tensor, nn.Parameter)
-                or value.ndim != 0
-                or not value.is_leaf
-                or value.layout != torch.strided
-                or value.device.type == "meta"
-                or value.is_quantized
-            ):
-                raise TypeError(
-                    f"relation parameter {id_} requires a dense scalar leaf tensor"
-                )
-            if value.requires_grad and not isinstance(value, nn.Parameter):
-                raise TypeError(
-                    f"trainable relation parameter {id_} requires torch.nn.Parameter"
-                )
-            values[id_] = value
-        if len({id(value) for value in values.values()}) != len(values):
-            raise ValueError(
-                "shared relation weights must use the same parameter identity"
-            )
-        if len({(value.dtype, value.device) for value in values.values()}) > 1:
-            raise ValueError("relation parameters require a common dtype and device")
+        values, complements = _weight_bindings(
+            self.weight_parameters, parameters, description="relation"
+        )
         algebra = self._algebra
         assert algebra is not None  # Checked when constructing the specification.
-        weights = _RelationWeights(self.weight_parameters, values)
+        if complements and algebra is not MARKOV:
+            raise ValueError("relation weight complements require the Markov algebra")
+        weights = _RelationWeights(self.weight_parameters, values, complements)
         with torch.no_grad():
             algebra.validate(weights())
         return RationalRelation(self.topology, weights, algebra=algebra)
@@ -459,7 +558,7 @@ class FixedMinimizedRelationRequest(QiecModel):
         return self.observation.result_type
 
     def plan(
-        self, parameters: Mapping[ParameterId, torch.Tensor]
+        self, parameters: RelationWeightBindings
     ) -> tuple[FixedStringQuery, StaticMinimizationWork]:
         """Snapshot the source, minimize it, and plan the declared observation.
 
@@ -675,7 +774,7 @@ class FixedRelationArcCountsRequest(QiecModel):
 def _bind_relation_operands(
     left_spec: RationalRelationSpec,
     right_spec: RationalRelationSpec,
-    parameters: Mapping[ParameterId, torch.Tensor],
+    parameters: RelationWeightBindings,
     *,
     description: str,
 ) -> tuple[RationalRelation, RationalRelation]:
@@ -703,16 +802,11 @@ def _bind_relation_operands(
     """
     left = left_spec.bind(parameters)
     right = left if left_spec == right_spec else right_spec.bind(parameters)
-    identities = dict.fromkeys(
-        (*left_spec.weight_parameters, *right_spec.weight_parameters)
+    _weight_bindings(
+        (*left_spec.weight_parameters, *right_spec.weight_parameters),
+        parameters,
+        description=description,
     )
-    values = [parameters[identity] for identity in identities]
-    if len({id(value) for value in values}) != len(values):
-        raise ValueError(
-            f"shared {description} weights must use the same parameter identity"
-        )
-    if len({(value.dtype, value.device) for value in values}) > 1:
-        raise ValueError(f"{description} parameters require a common dtype and device")
     return left, right
 
 
@@ -755,4 +849,6 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationRequest",
     "RationalRelationSpec",
+    "RelationWeightBindings",
+    "RelationWeightComplement",
 ]

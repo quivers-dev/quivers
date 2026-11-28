@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from hashlib import sha256
 
 import torch
 
 from quivers.core.algebras import LOG_PROB, MARKOV
+from quivers.qiec.relations import RelationWeightBindings
 from quivers.qiec.builtins import COMPUTE, COMPUTE_APPLY, compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT
-from quivers.qiec.contracts import ParameterId
 from quivers.qiec.effects import HandlerClauseDef, HandlerDef, ResumptionGrade
 from quivers.qiec.evaluator import ClauseContext, RuntimeAttachments
 from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
@@ -132,7 +131,7 @@ class TreeStringGraphRuntimeProvider:
     ----------
     request : TreeStringGraphRequest
         The graph, query objective, and resource limits.
-    parameters : Mapping of ParameterId to torch.Tensor
+    parameters : RelationWeightBindings
         The caller's original scalar leaves supplying the graph weights.
     handler_name : str
         The name of the exact handler declared in the checked module.
@@ -143,7 +142,7 @@ class TreeStringGraphRuntimeProvider:
     def __init__(
         self,
         request: TreeStringGraphRequest,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         handler_name: str,
     ) -> None:
@@ -158,7 +157,7 @@ class TreeStringGraphRuntimeProvider:
         cls,
         name: str,
         request: TreeStringGraphRequest,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
     ) -> TreeStringGraphRuntimeProvider:
         """Bind the request to a named QVR string graph score.
 

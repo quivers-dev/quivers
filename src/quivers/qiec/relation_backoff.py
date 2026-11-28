@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from functools import cached_property
 from hashlib import sha256
 
 import didactic.api as dx
-import torch
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB
@@ -16,7 +14,11 @@ from quivers.core.relations.backoff import _failure_index, _ordinary_index
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec, _validate_fixed_observation
+from quivers.qiec.relations import (
+    RationalRelationSpec,
+    _validate_fixed_observation,
+    RelationWeightBindings,
+)
 from quivers.qiec.types import REAL, TypeExpr
 
 
@@ -138,12 +140,12 @@ class FixedBackoffRelationRequest(QiecModel):
         """
         return LOG_WEIGHT if self.relation.algebra == LOG_PROB.subject else REAL
 
-    def plan(self, parameters: Mapping[ParameterId, torch.Tensor]) -> FixedStringQuery:
+    def plan(self, parameters: RelationWeightBindings) -> FixedStringQuery:
         """Plan the selected compact path with the original live tensors.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             All the original scalar owners, including failure-only owners.
 
         Returns

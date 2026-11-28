@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Literal
 
 import didactic.api as dx
-import torch
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import MARKOV
@@ -19,8 +17,7 @@ from quivers.core.relations import (
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import LOG_WEIGHT
-from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import RationalRelationSpec, RelationWeightBindings
 from quivers.qiec.types import TypeExpr
 
 
@@ -97,14 +94,12 @@ class FixedRelationMarginalMapRequest(QiecModel):
         """
         return LOG_WEIGHT
 
-    def choose(
-        self, parameters: Mapping[ParameterId, torch.Tensor]
-    ) -> MarginalOutputChoice | None:
+    def choose(self, parameters: RelationWeightBindings) -> MarginalOutputChoice | None:
         """Return the selected output words and differentiable log pair weight.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             Live scalar weights owned by their original parameters.
 
         Returns

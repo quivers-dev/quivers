@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from functools import cached_property
 
 import didactic.api as dx
@@ -18,7 +18,11 @@ from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.relation_cascades import RelationCascadeSpec
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import (
+    RationalRelationSpec,
+    RelationWeightBindings,
+    _weight_bindings,
+)
 from quivers.qiec.types import REAL, TypeExpr
 
 
@@ -172,7 +176,7 @@ class StringFactorGraphSpec(QiecModel):
 
     def bind(
         self,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        parameters: RelationWeightBindings,
         *,
         max_states: int | None = None,
         max_work: int | None = None,
@@ -181,7 +185,7 @@ class StringFactorGraphSpec(QiecModel):
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The live scalar tensor for each used stable identity. All
             used tensors share one dtype and device, and distinct
             identities bind distinct tensor objects.
@@ -204,10 +208,6 @@ class StringFactorGraphSpec(QiecModel):
             algebra, or inconsistent in dtype or device, or a derived
             construction has no explicit limits.
         """
-        if not isinstance(parameters, Mapping):
-            raise TypeError(
-                "string graph weights require an explicit parameter mapping"
-            )
         relations = dict(self.relations)
         used = dict.fromkeys(name for name, _ in self.factors)
         identities = dict.fromkeys(
@@ -216,33 +216,20 @@ class StringFactorGraphSpec(QiecModel):
             for parameter in _factor_parameters(relations[name])
         )
         _validate_limits(max_states, max_work)
-        values_by_id = {}
-        for identity in identities:
-            if identity not in parameters:
-                raise ValueError(f"missing string graph parameter {identity}")
-            values_by_id[identity] = parameters[identity]
+        _weight_bindings(identities, parameters, description="string graph")
         bound = {}
         for name in used:
             spec = relations[name]
             if isinstance(spec, RationalRelationSpec):
-                bound[name] = spec.bind(values_by_id)
+                bound[name] = spec.bind(parameters)
             else:
                 if max_states is None or max_work is None:
                     raise ValueError(
                         "derived string graph factors require explicit construction limits"
                     )
                 bound[name] = spec.bind(
-                    values_by_id, max_states=max_states, max_work=max_work
+                    parameters, max_states=max_states, max_work=max_work
                 )
-        values = values_by_id.values()
-        if len({id(value) for value in values}) != len(values):
-            raise ValueError(
-                "shared graph weights must use the same parameter identity"
-            )
-        if len({(value.dtype, value.device) for value in values}) > 1:
-            raise ValueError(
-                "string graph parameters require a common dtype and device"
-            )
         return StringFactorGraph(
             self._variables,
             tuple(StringFactor(scope, bound[name]) for name, scope in self.factors),
@@ -363,14 +350,12 @@ class TreeStringGraphRequest(QiecModel):
             return LOG_WEIGHT
         return REAL
 
-    def bind(
-        self, parameters: Mapping[ParameterId, torch.Tensor]
-    ) -> Callable[[], torch.Tensor]:
+    def bind(self, parameters: RelationWeightBindings) -> Callable[[], torch.Tensor]:
         """Compile a reusable query over live parameters.
 
         Parameters
         ----------
-        parameters : Mapping of ParameterId to torch.Tensor
+        parameters : RelationWeightBindings
             The live scalar tensor for each parameter identity in the graph.
 
         Returns
