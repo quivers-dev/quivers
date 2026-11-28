@@ -52,28 +52,30 @@ weight slot. A bounded tensor restriction reads and validates the vector once fo
 table. It repeats construction for each entry, subject to the explicit tensor size limit and
 optional state and arc budgets.
 
-### Productive self-loops
+### Productive cyclic components
 
-`RationalRelation.query(words, max_closure_size=n)` admits productive self-loops when
-all strongly connected components in the observation graph are singletons. Deleting
-the self-loops leaves an acyclic graph. Each accepting walk consists of a path in that
-graph with a sequence of self-loops at each visited state. The evaluator replaces each
-such sequence by one local star before continuing or accepting. Empty loop sequences
-contribute the multiplicative unit.
+`RationalRelation.query(words, max_closure_size=n)` admits productive cyclic components.
+Every accepting walk visits a sequence of strongly connected components in topological
+order. For each visit, its first state, its last state and the walk between them determine
+its contribution within that component. A local star sums those internal walks for each
+entry and exit pair, including the empty walk at each state. The packed pass multiplies
+these weights with the weights of edges between components and of the boundary marks.
 
-A state with $m$ self-loop occurrences uses a star matrix of order $m$. One loop stays
-direct and each other loop passes through its own auxiliary vertex with a unit return.
-This keeps occurrence weights separate in the closure input so the solver can account
-for the rounding of their sum. `max_closure_size` bounds the order of every matrix, and
-`QueryWork.closure_sizes` reports the orders the plan will use. The shipped closures
-take $O(\sum_i m_i^3)$ algebra operations in addition to the packed pass and any exact
-or enclosed numerical decisions inside `Star`.
+Each component uses a matrix with one direct arc per ordered state pair. Each additional
+parallel occurrence passes through its own auxiliary vertex, with the original weight
+on the first edge and the unit on the second. This preserves the individual weights
+through the solver's convergence check. `max_closure_size` bounds the order of every
+matrix, including its auxiliary vertices, and `QueryWork.closure_sizes` reports the
+orders the plan will use. For component matrix orders $m_i$, splitting and packing
+adds at most $O(\sum_i m_i^2)$ work and storage to the observation graph. The shipped
+closures take $O(\sum_i m_i^3)$ algebra operations, plus any exact or enclosed
+numerical decisions made by `Star`.
 
 Scoring uses floating-point tensors and requires established semiring laws and the
-least-solution law of `Star`. Each local closure evaluates the live weights. Divergence and numerical uncertainty
-raise `DivergentClosureError` and `UndecidedClosureError`, respectively. A closure
-whose return weight is nonfinite also raises `UndecidedClosureError`. The structural
-plan includes zero-weight occurrences and is reusable across updates.
+least-solution law of `Star`. Divergence and numerical uncertainty in a local matrix
+raise `DivergentClosureError` and `UndecidedClosureError`, respectively. An unusable
+closure weight also raises `UndecidedClosureError`. The structural plan retains
+zero-weight occurrences and rechecks the current weights each time it scores a query.
 
 ### Binary composition at fixed words
 

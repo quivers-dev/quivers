@@ -27,7 +27,7 @@ from quivers.core.relations import (
 )
 from tests.evidence.compare import Accuracy, Mismatch, compare_gradients, compare_number
 from tests.evidence.mutations import Mutation, Rewrite, installed
-from tests.evidence.oracles.closed_forms import Divergent, geometric
+from tests.evidence.oracles.closed_forms import Divergent, geometric, two_state_star
 
 
 def _reference(tied, zero, other, *, emits):
@@ -66,6 +66,40 @@ def test_geometric_oracle_rejects_dropped_occurrences_and_finite_unrolling():
             compare_number(float(mass), expected, accuracy, "parallel loop mass")
     with pytest.raises(Divergent):
         _reference(Fraction(1, 2), zero, Fraction(0), emits=False)
+
+
+def _two_state_reference(tied, back, zero):
+    star = two_state_star(tied, 2 * tied, back, zero)
+    entry = (Fraction(1, 2), tied)
+    exit_ = (tied, Fraction(1))
+    left = tuple(sum(entry[i] * star[i][j] for i in range(2)) for j in range(2))
+    right = tuple(sum(star[i][j] * exit_[j] for j in range(2)) for i in range(2))
+    mass = sum(left[i] * exit_[i] for i in range(2))
+    # The derivative of (I−A)⁻¹ in one matrix entry is an outer product.
+    # The tied slot also occurs on one initial and one final mark.
+    return mass, {
+        "tied": left[0] * right[0] + 2 * left[0] * right[1] + right[1] + left[0],
+        "back": left[1] * right[0],
+        "zero": left[1] * right[1],
+    }
+
+
+def test_two_state_oracle_rejects_an_omitted_parallel_occurrence():
+    tied, back, zero = Fraction(1, 8), Fraction(1, 4), Fraction(0)
+    mass, _ = _two_state_reference(tied, back, zero)
+    compressed = two_state_star(tied, tied, back, zero)
+    entry = (Fraction(1, 2), tied)
+    exit_ = (tied, Fraction(1))
+    wrong = sum(
+        entry[i] * compressed[i][j] * exit_[j] for i in range(2) for j in range(2)
+    )
+    with pytest.raises(Mismatch):
+        compare_number(
+            float(wrong),
+            mass,
+            Accuracy(domain="linear", operations=32),
+            "multi-state path mass",
+        )
 
 
 _TAPE = StringSet(alphabet=FinSet(name="symbol", cardinality=1))
@@ -150,10 +184,10 @@ def test_runtime_oracle_rejects_deduplicated_parallel_loop_slots():
         torch.tensor([0.125, 0.0, 0.25, 1.0, 0.5], dtype=torch.float64),
         algebra=MARKOV,
     )
-    query = relation.query(((),), max_closure_size=3)
     expected, _ = _reference(Fraction(1, 8), Fraction(0), Fraction(1, 4), emits=False)
 
     def check():
+        query = relation.query(((),), max_closure_size=3)
         compare_number(
             query.weight().item(),
             expected,
@@ -166,11 +200,11 @@ def test_runtime_oracle_rejects_deduplicated_parallel_loop_slots():
         name="deduplicated-closure-occurrences",
         defect_class="M14",
         provenance="treat every occurrence of the same slot as one loop",
-        target="quivers.core.relations.queries:_close_loops",
+        target="quivers.core.relations.queries:_make_block",
         rewrites=(
             Rewrite(
-                old="auxiliary = len(slots) - 1",
-                new="slots = tuple(dict.fromkeys(slots))\n    auxiliary = len(slots) - 1",
+                old="for source, target, slot in edges:",
+                new="for source, target, slot in dict.fromkeys(edges):",
             ),
         ),
         rejected_by=("parallel-loop-slots",),
@@ -205,9 +239,71 @@ def test_query_refuses_unsupported_closures_and_checks_block_order():
         (Boundary(0, 1),),
         ("change", "unit"),
     )
-    with pytest.raises(ProductiveEpsilonCycleError, match="singleton"):
-        RationalRelation(mutual, torch.tensor([0.25, 1.0]), algebra=MARKOV).query(
-            ((),), max_closure_size=2
+    mutual_relation = RationalRelation(
+        mutual, torch.tensor([0.25, 1.0], dtype=torch.float64), algebra=MARKOV
+    )
+    with pytest.raises(RelationLimitError, match="max_closure_size"):
+        mutual_relation.query(((),), max_closure_size=1)
+    assert mutual_relation.query(
+        ((),), max_closure_size=2
+    ).weight().item() == pytest.approx(float(geometric(Fraction(1, 16))))
+
+
+@pytest.mark.parametrize("algebra", [MARKOV, LOG_PROB])
+def test_multistate_component_preserves_parallel_edges_and_exact_gradients(algebra):
+    topology = RelationTopology(
+        (_TAPE,),
+        1,
+        2,
+        (
+            Arc(0, 0, (None,), 0),
+            Arc(0, 1, (None,), 0),
+            Arc(0, 1, (None,), 0),
+            Arc(1, 0, (None,), 1),
+            Arc(1, 1, (None,), 2),
+        ),
+        (Boundary(0, 3), Boundary(1, 0)),
+        (Boundary(0, 0), Boundary(1, 4)),
+        ("tied", "back", "zero", "entry", "unit"),
+    )
+    slots = nn.Parameter(torch.zeros(5, dtype=torch.float64))
+    relation = RationalRelation(topology, slots, algebra=algebra)
+    with pytest.raises(RelationLimitError, match="max_closure_size"):
+        relation.query(((),), max_closure_size=2)
+    query = relation.query(((),), max_closure_size=3)
+    assert query.work == QueryWork(2, 5, 2, 5, (3,))
+
+    is_log = algebra is LOG_PROB
+    accuracy = Accuracy(domain="linear", operations=280)
+    for tied, back, zero in (
+        (Fraction(1, 8), Fraction(0), Fraction(0)),
+        (Fraction(1, 8), Fraction(1, 4), Fraction(1, 8)),
+    ):
+        masses = (tied, back, zero, Fraction(1, 2), Fraction(1))
+        values = torch.tensor(tuple(map(float, masses)), dtype=slots.dtype)
+        with torch.no_grad():
+            slots.copy_(values.log() if is_log else values)
+        value = query.weight()
+        (gradient,) = torch.autograd.grad(value, slots)
+        expected, derivatives = _two_state_reference(tied, back, zero)
+        if is_log:
+            derivatives = {
+                name: derivative * input_mass / expected
+                for (name, derivative), input_mass in zip(
+                    derivatives.items(), masses[:3], strict=True
+                )
+            }
+        compare_number(
+            (value.exp() if is_log else value).item(),
+            expected,
+            accuracy,
+            "multi-state closed mass",
+        )
+        compare_gradients(
+            dict(zip(derivatives, gradient[:3], strict=True)),
+            derivatives,
+            accuracy,
+            "multi-state closed derivatives",
         )
 
 
