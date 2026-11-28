@@ -802,6 +802,12 @@ The relation sums the weights of all accepting paths realizing a
 word tuple. Multiple identically labeled arcs contribute as separate
 occurrences even when their weight names resolve to one parameter.
 
+A declaration of the form `relation target = compose(left, right)`
+names a binary composition of two primitive authored relations. The
+operand order specifies the tape to synchronize. The two shared tape
+types and the scalar algebras must agree. The composed relation
+exposes a `pair_weight` score.
+
 A closed `relation_score` may specify the authored relation it uses.
 Its identity then binds the ordered topology, scalar algebra, and
 weight identities. The host supplies the observation and a checked

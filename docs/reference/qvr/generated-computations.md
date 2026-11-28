@@ -282,3 +282,44 @@ A partition may also use `LogWeight` when its graph uses LogProb.
 `TreeStringGraphRuntimeProvider.for_score` and the original graph's
 parameter store. The reference machine checks both the operation and its
 result type before it runs the request. [String graph serialization](../../api/qiec/serialization.md#string-factor-graphs)
+
+## Authored relation composition
+
+Two primitive declarations can be composed on a shared tape. An
+operand may appear later in the module.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+relation channel = compose(typo, normalize)
+relation_score pair : Real [operation=pair_weight, relation=channel]
+
+relation typo [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0, 1), weight=error]
+    final 1 [weight=one]
+
+relation normalize [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(1, 0), weight=normalize_weight]
+    final 1 [weight=one]
+```
+
+Each operand must have one input tape and one output tape. The first
+operand's output and the second operand's input must have the same
+nominal alphabet. The operands must share the Markov or LogProb
+algebra. The composed relation sums over the shared word, including
+all distinct compatible pairs of accepting paths. It keeps the
+original parameters, including weight names shared by both operands.
+
+`Compiler.composed_relation_specs["channel"]` returns the ordered
+specification for a `FixedComposedRelationRequest`. The runtime
+request supplies the two outer words, the original scalar parameter
+bindings, and the product and query limits. Markov pair scores return
+`Real`. LogProb pair scores return `LogWeight`. This declaration
+accepts two primitive operands and exposes pair weights.

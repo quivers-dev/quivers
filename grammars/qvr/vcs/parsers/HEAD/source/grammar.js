@@ -104,6 +104,7 @@ module.exports = grammar({
       $.computation_decl,
       $.interpretation_decl,
       $.relation_decl,
+      $.relation_compose_decl,
       $.relation_score_decl,
       $.string_graph_score_decl,
       $.composition_decl,
@@ -406,6 +407,15 @@ module.exports = grammar({
       $._indent,
       repeat1(choice(field('entries', $._relation_entry), $._newline)),
       $._dedent,
+    ),
+
+    relation_compose_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation',
+      field('name', $.identifier),
+      '=', 'compose', '(', field('left', $.identifier),
+      ',', field('right', $.identifier), ')',
+      $._newline,
     ),
 
     relation_algebra: _ => choice('markov', 'logprob'),
