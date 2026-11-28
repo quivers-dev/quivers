@@ -106,6 +106,7 @@ module.exports = grammar({
       $.relation_decl,
       $.relation_compose_decl,
       $.relation_score_decl,
+      $.string_graph_decl,
       $.string_graph_score_decl,
       $.composition_decl,
       $.category_decl,
@@ -472,6 +473,34 @@ module.exports = grammar({
       'pair_weight', 'conditional_log_prob', 'path_entropy', 'expected_path_cost',
     ),
 
+    string_graph_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'string_graph', field('name', $.identifier),
+      $._newline,
+      $._indent,
+      repeat1(choice(
+        field('variables', $.string_graph_variable),
+        field('factors', $.string_graph_factor),
+        $._newline,
+      )),
+      $._dedent,
+    ),
+
+    string_graph_variable: $ => seq(
+      'variable', field('name', $.identifier),
+      ':', field('alphabet', $.identifier),
+      optional(seq('[', 'observed', '=', field('observed', $.string_graph_observation), ']')),
+      $._newline,
+    ),
+
+    string_graph_observation: $ => parenthesizedList($, field('symbols', $.integer)),
+
+    string_graph_factor: $ => seq(
+      'factor', field('relation', $.identifier),
+      parenthesizedList($, field('scope', $.identifier)),
+      $._newline,
+    ),
+
     string_graph_score_decl: $ => seq(
       optional(field('docs', $.doc_comment_group)),
       'string_graph_score',
@@ -480,6 +509,7 @@ module.exports = grammar({
       field('result', $.qiec_type_name),
       '[', 'operation', '=',
       field('operation', $.string_graph_score_operation),
+      optional(seq(',', 'graph', '=', field('graph', $.identifier))),
       ']',
       $._newline,
     ),

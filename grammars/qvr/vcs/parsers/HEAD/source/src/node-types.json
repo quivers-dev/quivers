@@ -11289,6 +11289,10 @@
           "named": true
         },
         {
+          "type": "string_graph_decl",
+          "named": true
+        },
+        {
           "type": "string_graph_score_decl",
           "named": true
         }
@@ -11386,6 +11390,94 @@
     }
   },
   {
+    "type": "string_graph_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "factors": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "string_graph_factor",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "variables": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "string_graph_variable",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_factor",
+    "named": true,
+    "fields": {
+      "relation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "scope": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_observation",
+    "named": true,
+    "fields": {
+      "symbols": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "string_graph_score_decl",
     "named": true,
     "fields": {
@@ -11395,6 +11487,16 @@
         "types": [
           {
             "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "graph": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
             "named": true
           }
         ]
@@ -11435,6 +11537,42 @@
     "type": "string_graph_score_operation",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "string_graph_variable",
+    "named": true,
+    "fields": {
+      "alphabet": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "observed": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "string_graph_observation",
+            "named": true
+          }
+        ]
+      }
+    }
   },
   {
     "type": "tensor_expr",
@@ -12275,6 +12413,10 @@
     "named": false
   },
   {
+    "type": "graph",
+    "named": false
+  },
+  {
     "type": "handle",
     "named": false
   },
@@ -12417,6 +12559,10 @@
   },
   {
     "type": "observe",
+    "named": false
+  },
+  {
+    "type": "observed",
     "named": false
   },
   {
@@ -12596,6 +12742,10 @@
     "named": true
   },
   {
+    "type": "string_graph",
+    "named": false
+  },
+  {
     "type": "string_graph_score",
     "named": false
   },
@@ -12645,6 +12795,10 @@
   },
   {
     "type": "var_init",
+    "named": false
+  },
+  {
+    "type": "variable",
     "named": false
   },
   {

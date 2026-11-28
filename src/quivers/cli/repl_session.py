@@ -1764,6 +1764,7 @@ class ReplSession:
             "handlers": [],
             "computations": [],
             "relations": [],
+            "string_graphs": [],
         }
         compiler = self._compiler
         if compiler is None:
@@ -1812,6 +1813,7 @@ class ReplSession:
             "handler": "handlers",
             "computation": "computations",
             "relation": "relations",
+            "string-graph": "string_graphs",
         }
         for binding in qiec_bindings(self._module):
             namespace_name = qiec_groups[binding.kind]
