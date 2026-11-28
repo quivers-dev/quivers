@@ -934,6 +934,72 @@ the explicit proof sizes, the key computations, and hashing the resulting
 key values. When the key depends only on the conclusion item, use
 `parse_outcomes` with an item key to sum the proofs first in the packed chart.
 
+#### Packing Boolean proof meanings
+
+Use `parse_packed_boolean_outcomes(D, sentence, meaning)` for an
+`interpret meaning : D -> Bool` whose operations can be tabulated. The
+[parity example](../examples/qiec/packed-boolean-proof-outcomes.qvr) assigns
+each word one of two readings and computes the parity of a proof's readings.
+Its checked likelihood sums the probabilities of every odd-parity proof.
+
+The result is a `D__BooleanOutcomes` list. A
+`D__boolean_outcome_entry` contains a Boolean key, its log mass, and
+the remaining rows. The list ends with `D__boolean_outcome_end`.
+It contains only positive-mass rows, in false-then-true order.
+`parse_normalized_packed_boolean_outcomes` divides by the total goal mass and
+refuses an empty or zero-mass result. Either list can serve as input to
+`outcome_law` when the total mass is positive.
+
+This query uses the finite acyclic lexical fragment of `parse_outcomes`.
+Rules have at most two ordered premises and carry no additional value
+fields. The interpretation's rule and axiom operations have empty effect
+rows, take no static parameters, and install no handlers in any reachable
+call. QIEC calls the actual operations once for each declared lexical
+word and each ordered tuple of premise truth values. Thus those calls must
+succeed at all entries, including tuples and words the current sentence
+cannot reach. If a call fails, the packed query fails. Use the budgeted
+proof query for computations that need a proof's indices or are defined
+only on the reachable proofs.
+
+For an item $v$, let $m_v(b)$ be the mass of proofs with meaning $b$.
+An edge $e$ with ordered premises $u_1,\ldots,u_k$ has weight $w_e$ and
+an operation $f_e$. In probability scale the fold computes
+
+$$
+m_v(b) = \sum_{e 	o v} w_e
+    \sum_{\substack{(b_1,\ldots,b_k) \\ f_e(b_1,\ldots,b_k)=b}}
+       \prod_{j=1}^{k} m_{u_j}(b_j).
+$$
+
+An axiom contributes its own weight at the value of its lexical operation.
+For each rule, the Cartesian product of its premise proof occurrences
+partitions by the tuple of their meanings. Distributivity factors the
+sum within each tuple into the product of its premise masses. Induction
+in topological order gives the same mass as interpreting and grouping
+the individual proofs. Repeated premises contribute one factor per
+premise position, including when both positions refer to the same item.
+
+The `deduction.boolean_outcomes` trace records the indexed
+forest construction separately from the folded portion that reaches a
+goal. Each rule edge in that portion contributes at most four meaning
+tuples, each with at most two LogProb products. Thus after grounding, the
+fold has linear scalar arithmetic and graph storage in the number of
+items and edges. The retained differentiation graph has the same scalar
+size bound. The key table has one entry per distinct declared lexical
+word and at most four entries per rule. Each run builds the table,
+grounds the forest, and differentiates the current numerical weights
+at fixed truth tables. Those costs include the authored operation
+evaluations, and the trace leaves actual allocator and backward
+measurements unspecified.
+
+For $n\ge 1$ copies of the ambiguous word in the example, there are $2^n$
+proofs and $10n-2$ meaning tuples in the fold over goal ancestors.
+The forest construction still records edges for shorter spans that
+the goal never uses, so its provenance grows quadratically on this
+grammar. QIEC's step budget applies to the interpreted computation
+and its truth calls. The packed host fold uses its separate finite
+grounding contract.
+
 #### Encoding two proofs of one logical form
 
 The [shared proof encoder](../examples/qiec/shared-proof-encoder.qvr)

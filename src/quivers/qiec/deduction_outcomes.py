@@ -28,6 +28,7 @@ from quivers.qiec.evaluator import (
 )
 from quivers.qiec.foreign import (
     DEDUCTION_OUTCOME_KEYS,
+    DeductionBooleanOutcomes,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -100,7 +101,7 @@ def proof_entry_type(
 
 def validate_outcome_adapter(
     definition: HandlerDef,
-    semantics: DeductionOutcomes | DeductionProofs,
+    semantics: DeductionOutcomes | DeductionProofs | DeductionBooleanOutcomes,
     registry: KernelRegistry,
 ) -> None:
     """Check how a lexical span presentation exchanges typed values with QIEC.
@@ -120,7 +121,11 @@ def validate_outcome_adapter(
         If a type or constructor disagrees with the presented vocabulary
         or the operation cannot carry the query's inputs and answer.
     """
-    lexical = semantics.chart if isinstance(semantics, DeductionProofs) else semantics
+    lexical = (
+        semantics.chart
+        if isinstance(semantics, (DeductionProofs, DeductionBooleanOutcomes))
+        else semantics
+    )
     presentation = lexical.presentation
     assert isinstance(presentation, RulePresentation)
     (form,) = presentation.judgments
@@ -138,6 +143,11 @@ def validate_outcome_adapter(
             )
         result_binders, key_type = proof_entry_type(family)
         control = INT
+    elif isinstance(semantics, DeductionBooleanOutcomes):
+        key_type = BOOL
+        control = tensor_type(
+            BOOL, (IndexLiteral(value=semantics.table_size, sort=NAT),)
+        )
     output = definition.output_type
     empty = registry.constructors.get(lexical.empty)
     entry = registry.constructors.get(lexical.entry)

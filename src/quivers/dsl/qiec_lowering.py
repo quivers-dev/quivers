@@ -72,6 +72,10 @@ from quivers.dsl.deduction_elaboration import _DeductionElaboration
 from quivers.dsl._deduction_interpretations import declare_interpretations
 from quivers.dsl._scoped_interpretations import declare_scoped_types
 from quivers.dsl._relation_scores import declare_relation_scores, lower_relation_scores
+from quivers.dsl._packed_boolean_outcomes import (
+    check_packed_boolean_bodies,
+    declare_packed_boolean_computations,
+)
 from quivers.dsl._deduction_outcomes import (
     check_outcome_key_bodies,
     declare_outcome_key_computations,
@@ -1728,6 +1732,7 @@ class _Elaborator(
         self._register_handlers()
         deductions = self._declare_deductions()
         outcome_keys = declare_outcome_key_computations(self)
+        boolean_outcomes, boolean_operations = declare_packed_boolean_computations(self)
         structural = self._declare_structural_computations()
         relation_scores = lower_relation_scores(self, relation_routes)
         programs = self._declare_programs()
@@ -1735,6 +1740,7 @@ class _Elaborator(
         bodies = (
             *deductions,
             *outcome_keys,
+            *boolean_outcomes,
             *structural,
             *relation_scores,
             *interpretations,
@@ -1742,6 +1748,7 @@ class _Elaborator(
             *computations,
         )
         check_outcome_key_bodies(self, bodies)
+        check_packed_boolean_bodies(self, bodies, boolean_operations)
         self._check_computed_rule_weight_bodies(bodies)
         return QiecModule(
             module=self.source.module_name,

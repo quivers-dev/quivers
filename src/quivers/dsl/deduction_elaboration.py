@@ -68,6 +68,7 @@ from quivers.dsl._deduction_outcomes import (
     LINEAR_CODE,
     LINEAR_PARSE,
     OUTCOME_CALLS,
+    PACKED_BOOLEAN_CALLS,
     PROOF_CALLS,
     LinearGoalQuery,
     OutcomeKey,
@@ -1378,6 +1379,7 @@ class _DeductionElaboration:
         """
         self._deductions: dict[str, _System] = {}
         self._outcome_queries: dict[str, OutcomeQuery] = {}
+        self._boolean_outcome_queries: dict[str, OutcomeQuery] = {}
         self._linear_goal_queries: dict[str, LinearGoalQuery] = {}
         self._proof_queries: dict[str, OutcomeQuery] = {}
         self._lexical_proofs: dict[str, RulePresentation] = {}
@@ -1408,6 +1410,12 @@ class _DeductionElaboration:
             call.args[0].name: call
             for call in calls
             if call.func in PROOF_CALLS and isinstance(call.args[0], LetExprVar)
+        }
+        boolean_calls = {
+            call.args[0].name: call
+            for call in calls
+            if call.func in PACKED_BOOLEAN_CALLS
+            and isinstance(call.args[0], LetExprVar)
         }
         interpretations = {
             statement.deduction: statement
@@ -1453,6 +1461,11 @@ class _DeductionElaboration:
             if query is not None:
                 self._outcome_queries[declaration.name] = declare_outcomes(
                     self, system, query
+                )
+            boolean = boolean_calls.get(declaration.name)
+            if boolean is not None:
+                self._boolean_outcome_queries[declaration.name] = declare_outcomes(
+                    self, system, boolean, boolean=True
                 )
             proof = proof_calls.get(declaration.name)
             proof_declaration = interpretations.get(declaration.name, proof)
@@ -3153,10 +3166,14 @@ class _DeductionElaboration:
         if system.depth_cell[0] is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
         normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
-        queries = (
+        queries: tuple[tuple[str, OutcomeQuery | None, TypeExpr], ...] = (
             ("outcomes", self._outcome_queries.get(system.decl.name), STRING),
             ("proofs", self._proof_queries.get(system.decl.name), INT),
         )
+        boolean = self._boolean_outcome_queries.get(system.decl.name)
+        if boolean is not None and not weighted:
+            assert boolean.boolean_table is not None
+            queries = (*queries, ("boolean_outcomes", boolean, boolean.boolean_table))
         query_entries = tuple(
             (
                 query,

@@ -3693,6 +3693,7 @@ _OUTCOME_SEMANTICS = (
     | fo.DeductionOutcomeGrouping
     | fo.DeductionOutcomeLaw
     | fo.DeductionProofs
+    | fo.DeductionBooleanOutcomes
 )
 
 

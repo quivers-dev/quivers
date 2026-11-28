@@ -834,6 +834,76 @@ class DeductionProofs(QiecModel):
         return export_lexical_proofs(presentation, presentation.name)
 
 
+class DeductionBooleanOutcomes(QiecModel):
+    """Push finite lexical proof mass to a Boolean interpretation.
+
+    An input truth table contains one axiom result per distinct lexical word
+    in first occurrence order, followed by each rule's truth table in
+    presentation order. Each rule table enumerates premise outcomes left to
+    right, with false before true. An arity bound of two keeps every rule
+    table at most four entries.
+
+    Parameters
+    ----------
+    chart : DeductionOutcomes
+        The shared weighted span presentation and its Boolean result row
+        constructors.
+    """
+
+    chart: DeductionOutcomes = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["deduction-boolean-outcomes"] = "deduction-boolean-outcomes"
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Require ordinary nullary, unary or binary proof constructors.
+
+        Raises
+        ------
+        ValueError
+            If an operation needs rule data fields or more than two premises.
+        """
+        from quivers.qiec.rules import RulePresentation
+
+        chart = self.chart
+        if not isinstance(chart, DeductionOutcomes):
+            raise ValueError("Boolean proof outcomes require a checked lexical chart")
+        presentation = chart.presentation
+        assert isinstance(presentation, RulePresentation)
+        if any(rule.arity > 2 or rule.values for rule in presentation.rules):
+            raise ValueError(
+                "packed Boolean proof outcomes require rules of arity at most "
+                "two without value fields"
+            )
+
+    @cached_property
+    def lexical_words(self) -> tuple[str, ...]:
+        """Count one axiom evaluation for every distinct lexical word.
+
+        Returns
+        -------
+        tuple of str
+            The words in first lexical occurrence order.
+        """
+        return tuple(dict.fromkeys(self.chart.words))
+
+    @cached_property
+    def table_size(self) -> int:
+        """Count entries of the axiom and ordered rule tables.
+
+        Returns
+        -------
+        int
+            The length of the input truth vector.
+        """
+        presentation = self.chart.presentation
+        from quivers.qiec.rules import RulePresentation
+
+        assert isinstance(presentation, RulePresentation)
+        return len(self.lexical_words) + sum(
+            1 << rule.arity for rule in presentation.rules
+        )
+
+
 class DeductionOutcomeGrouping(QiecModel):
     """Group a typed list of finite log masses by exact structural equality.
 
@@ -874,6 +944,7 @@ type ForeignSemantics = (
     | DeductionLinearGoal
     | DeductionOutcomes
     | DeductionProofs
+    | DeductionBooleanOutcomes
     | DeductionOutcomeGrouping
     | DeductionOutcomeLaw
 )
@@ -881,6 +952,7 @@ type ForeignSemantics = (
 
 
 __all__ = [
+    "DeductionBooleanOutcomes",
     "DeductionLinearGoal",
     "DeductionOutcomeGrouping",
     "DeductionOutcomeLaw",

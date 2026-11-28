@@ -25,6 +25,7 @@ from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec.foreign import (
     DeductionLinearGoal,
+    DeductionBooleanOutcomes,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -673,7 +674,10 @@ def validate_module(module: QiecModule) -> KernelRegistry:
                 from quivers.qiec.linear_deduction import validate_linear_goal
 
                 validate_linear_goal(handler, handler.foreign, registry, module.module)
-            elif isinstance(handler.foreign, DeductionOutcomes | DeductionProofs):
+            elif isinstance(
+                handler.foreign,
+                DeductionOutcomes | DeductionProofs | DeductionBooleanOutcomes,
+            ):
                 from quivers.qiec.deduction_outcomes import validate_outcome_adapter
 
                 validate_outcome_adapter(handler, handler.foreign, registry)

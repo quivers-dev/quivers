@@ -1,0 +1,55 @@
+object Token : FinSet 64
+object Result : Real 1
+
+deduction Parity : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, T, S, word
+    rule no : span(I, J, A, word) |- span(I, J, T, word)
+    rule yes : span(I, J, B, word) |- span(I, J, T, word)
+    rule base : span(I, J, T, word) |- span(I, J, S, word)
+    rule join : span(I, K, S, word), span(K, J, T, word) |- span(I, J, S, word)
+    lexicon
+        "x" : A = word #[learnable]
+        "x" : B = word #[learnable]
+
+interpret parity : Parity -> Bool
+    axiom span = lexical
+    rule no = reject
+    rule yes = accept
+    rule base = copy
+    rule join = xor
+
+define lexical(word : String) : Bool !{} =
+    return false
+
+define reject(child : Bool) : Bool !{} =
+    return false
+
+define accept(child : Bool) : Bool !{} =
+    return true
+
+define copy(child : Bool) : Bool !{} =
+    return child
+
+define xor(left : Bool, right : Bool) : Bool !{} =
+    if left == right then
+        return false
+    else
+        return true
+
+define truth_mass(rows : Parity__BooleanOutcomes) : Real !{} =
+    case rows motive => Real
+        Parity__boolean_outcome_end =>
+            return 0.0
+        Parity__boolean_outcome_entry(key, weight, tail) =>
+            if key then
+                return exp(weight)
+            else
+                truth_mass(tail)
+
+program fit : Token -> Result
+    let rows = parse_normalized_packed_boolean_outcomes(Parity, sentence, parity)
+    let mass <- truth_mass(rows)
+    score observed = log(mass)
+    return observed
+
+export fit

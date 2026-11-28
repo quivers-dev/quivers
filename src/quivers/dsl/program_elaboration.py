@@ -34,8 +34,10 @@ from quivers.dsl._deduction_outcomes import (
     LINEAR_CODE,
     LINEAR_PARSE,
     NATIVE_DEDUCTION_CALLS,
+    NORMALIZED_BOOLEAN_PARSE,
     OUTCOME_CALLS,
     OUTCOME_CODE,
+    PACKED_BOOLEAN_CALLS,
     PROOF_CALLS,
     PROOF_KEY_CALLS,
     elaborate_outcome_law,
@@ -4385,6 +4387,28 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             expr.func != "parse" and expr.func not in NATIVE_DEDUCTION_CALLS
         ):
             return None
+        if expr.func in PACKED_BOOLEAN_CALLS:
+            if len(expr.args) != 3 or not all(
+                isinstance(argument, LetExprVar) for argument in expr.args
+            ):
+                self._fail(
+                    node,
+                    f"{expr.func} requires a deduction, a token tensor binding, "
+                    "and a named closed Boolean proof interpretation",
+                    code=OUTCOME_CODE,
+                )
+            target, source, interpretation = expr.args
+            assert isinstance(target, LetExprVar)
+            assert isinstance(source, LetExprVar)
+            assert isinstance(interpretation, LetExprVar)
+            return _ParseCall(
+                deduction=target.name,
+                source=source.name,
+                plate=None,
+                bindings=(),
+                packed_boolean=interpretation.name,
+                normalize_outcomes=expr.func == NORMALIZED_BOOLEAN_PARSE,
+            )
         if expr.func == LINEAR_PARSE:
             if len(expr.args) != 3 or not all(
                 isinstance(argument, LetExprVar) for argument in expr.args[:2]
@@ -4592,6 +4616,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             deduction (see `_production_table`).
         """
         name, source = parse.deduction, parse.source
+        if (
+            parse.packed_boolean is not None
+            and name not in self._boolean_outcome_queries
+        ):
+            self._fail(
+                node,
+                f"packed Boolean proof outcomes require a lexical deduction in a "
+                f"direct program let binding (found {name!r})",
+                code=OUTCOME_CODE,
+            )
         signature = self.computation_signatures[f"{name}__run"]
         if len(signature.parameters) != 1:
             self._fail(
@@ -4623,6 +4657,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     code=LINEAR_CODE,
                 )
             extra = (limit,)
+        elif parse.packed_boolean is not None:
+            suffix = f"{parse.packed_boolean}__packed_boolean_outcomes"
+            extra = (LiteralValue(value=parse.normalize_outcomes, type=BOOL),)
         elif parse.proof_budget is not None:
             suffix = "proofs"
             authored = parse.proof_budget
@@ -11261,6 +11298,8 @@ class _ParseCall(dx.Model):
         Whether to normalize the outcome weights by the total goal mass.
     linear_goal : LetExprNode or None
         The checked closure size cap for a certified linear query.
+    packed_boolean : str or None
+        The closed Boolean interpretation of a packed query.
     """
 
     deduction: str
@@ -11272,11 +11311,16 @@ class _ParseCall(dx.Model):
     proof_budget: LetExprNode | None = None
     normalize_outcomes: bool = False
     linear_goal: LetExprNode | None = None
+    packed_boolean: str | None = None
 
     @property
     def observes_rows(self) -> bool:
         """Whether the query observes weighted keys or explicit proofs."""
-        return self.outcome_key is not None or self.proof_budget is not None
+        return (
+            self.outcome_key is not None
+            or self.proof_budget is not None
+            or self.packed_boolean is not None
+        )
 
 
 def _sampled_support(

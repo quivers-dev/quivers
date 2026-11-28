@@ -35,6 +35,7 @@ from quivers.qiec.effects import (
     instantiate_effect,
 )
 from quivers.qiec.foreign import (
+    DeductionBooleanOutcomes,
     DeductionLinearGoal,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
@@ -99,7 +100,10 @@ OUTCOME_CALLS = frozenset({"parse_outcomes", "parse_normalized_outcomes"}) | PRO
 OUTCOME_CODE = "qiec-deduction-outcomes"
 LINEAR_PARSE = "parse_linear"
 LINEAR_CODE = "qiec-deduction-linear-goal"
-NATIVE_DEDUCTION_CALLS = OUTCOME_CALLS | {LINEAR_PARSE}
+PACKED_BOOLEAN_PARSE = "parse_packed_boolean_outcomes"
+NORMALIZED_BOOLEAN_PARSE = "parse_normalized_packed_boolean_outcomes"
+PACKED_BOOLEAN_CALLS = frozenset({PACKED_BOOLEAN_PARSE, NORMALIZED_BOOLEAN_PARSE})
+NATIVE_DEDUCTION_CALLS = OUTCOME_CALLS | PACKED_BOOLEAN_CALLS | {LINEAR_PARSE}
 _SPAN = "span"
 _QUERY = "query"
 _GROUP = "group"
@@ -114,6 +118,7 @@ class OutcomeQuery:
     terms: TypeApplication
     weights: TypeApplication
     production_indices: tuple[int, ...]
+    boolean_table: TypeApplication | None = None
 
 
 @dataclass(frozen=True)
@@ -551,7 +556,12 @@ def declare_lexical_proofs(
 
 
 def declare_outcomes(
-    elaborator: _Elaborator, system: _System, node: object, *, proofs: bool = False
+    elaborator: _Elaborator,
+    system: _System,
+    node: object,
+    *,
+    proofs: bool = False,
+    boolean: bool = False,
 ) -> OutcomeQuery:
     """Declare the result family and one operation fixed to this presentation."""
     if system.semiring.algebra != LOG_PROB.subject or not system.entries:
@@ -600,7 +610,10 @@ def declare_outcomes(
                 for rule in presented.rules
             )
         )
-    family_name = system.name("Proofs" if proofs else "Outcomes")
+    family_name = system.name(
+        "BooleanOutcomes" if boolean else "Proofs" if proofs else "Outcomes"
+    )
+    stem = "boolean_outcome" if boolean else "proof" if proofs else "outcome"
     family_id = FamilyId.derive(module, "family", family_name)
     empty_id = ConstructorId.derive(family_id, "empty")
     entry_id = ConstructorId.derive(family_id, "entry")
@@ -612,6 +625,7 @@ def declare_outcomes(
         constructors=(empty_id, entry_id),
     )
     result = TypeApplication(constructor=family.type_constructor, arguments=())
+    boolean_table: TypeApplication | None = None
     try:
         chart = DeductionOutcomes(
             presentation=presentation,
@@ -627,13 +641,20 @@ def declare_outcomes(
             empty=empty_id,
             entry=entry_id,
         )
-        semantics: DeductionOutcomes | DeductionProofs = chart
-        if proofs:
+        semantics: DeductionOutcomes | DeductionProofs | DeductionBooleanOutcomes = (
+            chart
+        )
+        if boolean:
+            semantics = DeductionBooleanOutcomes(chart=chart)
+            boolean_table = tensor_type(
+                BOOL, (IndexLiteral(value=semantics.table_size, sort=NAT),)
+            )
+        elif proofs:
             semantics = DeductionProofs(chart=chart)
     except (ValueError, dx.ValidationError) as error:
         elaborator._fail_kernel(node, error, fallback=OUTCOME_CODE)
     key_binders: tuple[IndexBinder, ...] = ()
-    key_type = system.item
+    key_type: TypeExpr = BOOL if boolean else system.item
     if proofs:
         (proof_family,), _ = elaborator._lexical_proofs[system.decl.name].declarations()
         key_binders, key_type = proof_entry_type(proof_family)
@@ -642,7 +663,7 @@ def declare_outcomes(
         family,
         result,
         key_type,
-        system.name("proof" if proofs else "outcome"),
+        system.name(stem),
         key_binders=key_binders,
     )
 
@@ -653,7 +674,9 @@ def declare_outcomes(
     weights = tensor_type(
         REAL, (IndexLiteral(value=len(system.entries) + len(parameters), sort=NAT),)
     )
-    effect_name = system.name("ProofQuery" if proofs else "OutcomeQuery")
+    effect_name = system.name(
+        "BooleanOutcomeQuery" if boolean else "ProofQuery" if proofs else "OutcomeQuery"
+    )
     effect_id = EffectId.derive(module, "effect", effect_name)
     extent = IndexVariable(name="n", sort=NAT)
     operation = OperationDef(
@@ -664,7 +687,9 @@ def declare_outcomes(
             ArgumentDef(name="tokens", type=tensor_type(STRING, (extent,))),
             ArgumentDef(name="terms", type=terms),
             ArgumentDef(name="weights", type=weights),
-            ArgumentDef(name="limit", type=INT)
+            ArgumentDef(name="truths", type=boolean_table)
+            if boolean_table is not None
+            else ArgumentDef(name="limit", type=INT)
             if proofs
             else ArgumentDef(name="key", type=STRING),
             ArgumentDef(name="normalize", type=BOOL),
@@ -676,11 +701,19 @@ def declare_outcomes(
         system.decl,
         EffectRef(id=effect_id, name=effect_name),
         operation,
-        system.name("proof_query" if proofs else "outcome_query"),
-        system.name("query_proofs" if proofs else "query_outcomes"),
+        system.name(f"{stem}_query"),
+        system.name(
+            "query_outcomes"
+            if not boolean and not proofs
+            else "query_proofs"
+            if proofs
+            else "query_boolean_outcomes"
+        ),
         semantics,
     )
-    return OutcomeQuery(instance, handler, terms, weights, production_indices)
+    return OutcomeQuery(
+        instance, handler, terms, weights, production_indices, boolean_table
+    )
 
 
 def register_linear_goal(
@@ -731,6 +764,11 @@ def elaborate_outcome_law(
         semantics = known.foreign
         if isinstance(semantics, DeductionOutcomeGrouping):
             layout = semantics
+            break
+        if isinstance(semantics, DeductionBooleanOutcomes):
+            layout = DeductionOutcomeGrouping(
+                key_type=BOOL, empty=semantics.chart.empty, entry=semantics.chart.entry
+            )
             break
         if isinstance(semantics, DeductionOutcomes):
             layout = DeductionOutcomeGrouping(
@@ -814,6 +852,7 @@ def _register_query_handler(
     semantics: DeductionLinearGoal
     | DeductionOutcomes
     | DeductionProofs
+    | DeductionBooleanOutcomes
     | DeductionOutcomeGrouping
     | DeductionOutcomeLaw,
 ) -> tuple[NamedEffectInstance, HandlerDef]:
@@ -894,10 +933,13 @@ def elaborate_outcomes(
     """Read weights through the grammar's checked readers and run the query."""
     system = context.system
     proofs = isinstance(query.handler.foreign, DeductionProofs)
+    selector_name = (
+        "truths" if query.boolean_table is not None else "limit" if proofs else "key"
+    )
     tokens, selector, normalize = tuple(
         Local(name=name, type=type_)
         for name, type_ in zip(
-            ("tokens", "limit" if proofs else "key", "normalize"),
+            ("tokens", selector_name, "normalize"),
             context.inputs(signature),
             strict=True,
         )
@@ -933,7 +975,11 @@ def elaborate_outcomes(
                 Var(local=normalize),
             ),
             signature.result,
-            "proofs" if proofs else "outcomes",
+            "boolean_outcomes"
+            if query.boolean_table is not None
+            else "proofs"
+            if proofs
+            else "outcomes",
         ),
         static_arguments=(),
     )
