@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked sparse posterior path laws.** Fixed-word requests bind typed path posteriors for Random draws, replay, and differentiable trace scoring with original arc identities.
 - **Checked alignment-marginal ranking requests.** Serialize an explicit candidate set and sparse query limits for the exact alignment-sum objective, with a live selected log score.
 - **Serializable string solver configurations.** The same typed graph can be solved with exact acyclic local decoders for alignment MAP or approximate regular expectation propagation. Solver records preserve their distinct objectives, limits, and reference-language settings.
 - **Checked QIEC composition requests.** A wire record preserves both original sparse operand topologies and their shared weight identities, with explicit lazy or materialized execution.
