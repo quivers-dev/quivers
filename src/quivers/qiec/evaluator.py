@@ -23,7 +23,7 @@ from __future__ import annotations
 from functools import cached_property, lru_cache
 from types import MappingProxyType
 import weakref
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from typing import cast
 
 import didactic.api as dx
@@ -2662,12 +2662,7 @@ class Evaluator:
         if isinstance(value, LiteralValue):
             return self._literal(value)
         if isinstance(value, ConstructorValue):
-            return RuntimeConstructor(
-                constructor=value.constructor,
-                static_arguments=value.static_arguments,
-                fields=tuple(self._value(field, environment) for field in value.fields),
-                result_type=value.result_type,
-            )
+            return self._constructor_value(value, environment)
         if isinstance(value, EvidenceValue):
             return value.evidence
         if isinstance(value, AttachmentRef):
@@ -2764,13 +2759,17 @@ class Evaluator:
                 natural=natural,
             )
         if isinstance(value, LogMass):
+            from quivers.qiec.relation_capped_path_law import CappedRelationPathLaw
             from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             sampleable = self._value(value.sampleable, environment)
             if not isinstance(
                 sampleable,
-                RuntimeDistribution | FiniteSampleable | RelationPathLaw,
+                RuntimeDistribution
+                | FiniteSampleable
+                | RelationPathLaw
+                | CappedRelationPathLaw,
             ):
                 raise EvaluationError(
                     "log_mass was given a runtime value with no measure mass"
@@ -2780,13 +2779,17 @@ class Evaluator:
             except (ArithmeticError, ValueError) as error:
                 raise EvaluationError(f"log_mass failed: {error}") from error
         if isinstance(value, LogDensity):
+            from quivers.qiec.relation_capped_path_law import CappedRelationPathLaw
             from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             sampleable = self._value(value.sampleable, environment)
             if not isinstance(
                 sampleable,
-                RuntimeDistribution | FiniteSampleable | RelationPathLaw,
+                RuntimeDistribution
+                | FiniteSampleable
+                | RelationPathLaw
+                | CappedRelationPathLaw,
             ):
                 raise EvaluationError(
                     "log_prob was given a runtime value with no log density"
@@ -2871,6 +2874,47 @@ class Evaluator:
                 scope = scope.bind(binding.binder, self._value(binding.value, scope))
             return self._value(value.body, scope)
         raise TypeError(f"unsupported QIEC value {type(value).__name__}")
+
+    def _constructor_value(
+        self, value: ConstructorValue, environment: Mapping[Local, object]
+    ) -> RuntimeConstructor:
+        """Materialize a constructor tree in its ordinary field order.
+
+        Parameters
+        ----------
+        value
+            The checked constructor occurrence.
+        environment
+            The local bindings shared by its field values.
+
+        Returns
+        -------
+        RuntimeConstructor
+            The materialized value, with one node per constructor occurrence.
+        """
+        frames: list[tuple[ConstructorValue, Iterator[Value], list[HeldValue]]] = [
+            (value, iter(value.fields), [])
+        ]
+        while True:
+            constructor, pending, fields = frames[-1]
+            try:
+                field = next(pending)
+            except StopIteration:
+                result = RuntimeConstructor(
+                    constructor=constructor.constructor,
+                    static_arguments=constructor.static_arguments,
+                    fields=tuple(fields),
+                    result_type=constructor.result_type,
+                )
+                frames.pop()
+                if not frames:
+                    return result
+                frames[-1][2].append(result)
+                continue
+            if isinstance(field, ConstructorValue):
+                frames.append((field, iter(field.fields), []))
+            else:
+                fields.append(self._value(field, environment))
 
     def _literal(self, value: LiteralValue) -> object:
         """A literal as the machine holds it.
@@ -3874,6 +3918,16 @@ class Evaluator:
                 )
             outer_stack = tuple(stack[:index])
             captured_stack = tuple(stack[index:])
+            # Captured frames unwind from the top. The lowest path
+            # boundary in the capture is the last one crossed on exit.
+            outside_path = next(
+                (
+                    captured.resumption_path
+                    for captured in captured_stack
+                    if isinstance(captured, _PathFrame | _ClauseFrame)
+                ),
+                request.resumption_path,
+            )
             if runtime_clause.invoke is _authored_clause:
                 body = structural_clause.body
                 if body is None:
@@ -3945,7 +3999,7 @@ class Evaluator:
                         definition=definition,
                         handler=handler,
                         environment=frame.environment,
-                        resumption_path=request.resumption_path,
+                        resumption_path=outside_path,
                         clause_path=clause_path,
                     )
                 )
@@ -4000,7 +4054,7 @@ class Evaluator:
                     answer.value, answer.arguments
                 )
                 del stack[index:]
-                stack.append(_PathFrame(resumption_path=request.resumption_path))
+                stack.append(_PathFrame(resumption_path=outside_path))
                 stack.extend(shot_frames)
                 return _Continue(
                     current=_Returned(value=answer.value),
@@ -4050,7 +4104,7 @@ class Evaluator:
             return _Continue(
                 current=_Returned(value=answer),
                 environment=Scope.of(frame.environment),
-                resumption_path=request.resumption_path,
+                resumption_path=outside_path,
             )
         if self.trace_hook is not None:
             self._emit_trace(

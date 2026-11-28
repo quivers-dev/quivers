@@ -224,6 +224,7 @@ def _walk_qiec_statement(t: _Tree, vid: str):
         name = {
             "relation_projection_recipe": "project",
             "relation_conditioning_recipe": "condition",
+            "relation_auto_intersection_recipe": "auto_intersect",
             "relation_join_recipe": "join",
         }.get(t.kind(recipe))
         operation = _field_text(t, recipe, "operation") if name is None else name
@@ -239,6 +240,7 @@ def _walk_qiec_statement(t: _Tree, vid: str):
                     "closure",
                     "project",
                     "condition",
+                    "auto_intersect",
                     "union",
                     "concatenate",
                     "intersect",

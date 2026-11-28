@@ -43,6 +43,7 @@ from quivers.continuous.morphisms import (
 from quivers.core.algebras import CompositionRule
 from quivers.core.morphisms import Morphism, ObservedMorphism
 from quivers.dsl._deduction_outcomes import NATIVE_DEDUCTION_CALLS
+from quivers.dsl.program_elaboration import _bound_names
 
 from quivers.continuous.inline import (
     UnsizedParameterError,
@@ -714,7 +715,10 @@ def _fresh_name(base: str, occupied: set[str]) -> str:
     return candidate
 
 
-def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
+def _calls_a_computation(
+    steps: tuple[ProgramStep, ...],
+    deductions: Mapping[str, DeductionSystem] | None = None,
+) -> bool:
     """Whether a program body calls a checked computation anywhere.
 
     Parameters
@@ -722,23 +726,55 @@ def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
     steps : tuple[ProgramStep, ...]
         The body, whose marginalization scopes are searched too.
 
+    deductions : Mapping of str to DeductionSystem or None
+        The declared deductions whose checked guards select native execution.
+
     Returns
     -------
     bool
-        ``True`` for a named computation or a typed deduction query.
+        ``True`` for a named computation, typed deduction query, or scalar
+        parse with checked rule guards or a computed token binding.
     """
-    for step in steps:
-        if isinstance(step, CallStep):
-            return True
-        if (
-            isinstance(step, LetStep)
-            and isinstance(step.value, LetExprCall)
-            and step.value.func in NATIVE_DEDUCTION_CALLS
-        ):
-            return True
-        if isinstance(step, MarginalizeStep) and _calls_a_computation(step.scope):
-            return True
-    return False
+    local: set[str] = set()
+
+    def visit(body: tuple[ProgramStep, ...], latent: str | None = None) -> bool:
+        """Track lexical names without copying the enclosing scope."""
+        introduced: set[str] = set()
+        if latent is not None and latent not in local:
+            introduced.add(latent)
+            local.add(latent)
+        try:
+            for step in body:
+                if isinstance(step, CallStep):
+                    return True
+                if isinstance(step, LetStep) and isinstance(step.value, LetExprCall):
+                    value = step.value
+                    if value.func in NATIVE_DEDUCTION_CALLS:
+                        return True
+                    if value.func == "parse" and len(value.args) >= 2:
+                        target, tokens = value.args[:2]
+                        if isinstance(tokens, LetExprVar) and tokens.name in local:
+                            return True
+                        if deductions is not None and isinstance(target, LetExprVar):
+                            system = deductions.get(target.name)
+                            if (
+                                system is not None
+                                and system.presentation is not None
+                                and system.presentation.conditions
+                            ):
+                                return True
+                if isinstance(step, MarginalizeStep):
+                    if visit(step.scope, step.var):
+                        return True
+                else:
+                    names = _bound_names(step) - local
+                    local.update(names)
+                    introduced.update(names)
+            return False
+        finally:
+            local.difference_update(introduced)
+
+    return visit(steps)
 
 
 def _scanned_step_programs(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
@@ -3012,7 +3048,9 @@ class _ProgramsMixin:
         tuple[ProgramStep, ...]
             The steps with every lowerable call lowered.
         """
-        if not _calls_a_computation(steps) and not has_structural_lets(steps):
+        if not _calls_a_computation(
+            steps, getattr(self, "_deductions", None)
+        ) and not has_structural_lets(steps):
             return steps
         module = self._available_qiec_module()
         if module is None or module.gap:
@@ -4282,7 +4320,9 @@ class _ProgramsMixin:
                 set(decl.params or ()) | {p.name for p in decl.value_parameters},
             )
         )
-        if not step_program and _calls_a_computation(decl.draws):
+        if not step_program and _calls_a_computation(
+            decl.draws, getattr(self, "_deductions", None)
+        ):
             # A program calling a checked computation runs as its core
             # computation: the callee's body is a term of the module,
             # which only the reference machine runs.

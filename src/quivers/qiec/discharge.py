@@ -61,6 +61,7 @@ from quivers.qiec.identifiers import (
     _clause_address,
 )
 from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
+from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.state_specialization import (
     StateSpecializationUnsupported,
     specialize_recursive_state,
@@ -95,6 +96,7 @@ from quivers.qiec.terms import (
     Local,
     NewInstance,
     Perform,
+    PrimitiveApplication,
     Projection,
     Resume,
     Return,
@@ -386,6 +388,8 @@ class _ClauseFrame(_Frame):
         The clause's declared resumption grade.
     resumptions
         The shot path at the handled request.
+    outside_resumptions
+        The shot path outside the captured continuation.
     next_shot
         The ordinal of the next shot of this invocation.
     clause_path
@@ -399,6 +403,7 @@ class _ClauseFrame(_Frame):
     serial: int
     grade: ResumptionGrade = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    outside_resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     next_shot: int = 0
     clause_path: _ClausePath = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     captured_clauses: _ClausePath = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -756,8 +761,32 @@ def _computation_reads(term: Computation) -> frozenset[str]:
     return frozenset(found)
 
 
-def _pure(term: Computation) -> bool:
-    """Whether a rewritten computation has no requests or trace allocations.
+def _checks_strict_scalar(term: Computation) -> bool:
+    """Recognize an atomized primitive whose scalar checks must run.
+
+    Parameters
+    ----------
+    term : Computation
+        The rewritten statement, with checked scalar operations bound by `atom`.
+
+    Returns
+    -------
+    bool
+        Whether the statement checks a partial nominal scalar operation.
+    """
+    if not isinstance(term, Return) or not isinstance(term.value, PrimitiveApplication):
+        return False
+    signature = PRIMITIVES.get(term.value.name)
+    return (
+        signature is not None
+        and signature.capability
+        in {"strict-scalar-comparison", "strict-scalar-division"}
+        and not signature.total
+    )
+
+
+def _can_duplicate(term: Computation) -> bool:
+    """Whether a rewritten computation can be stated once per projection.
 
     Parameters
     ----------
@@ -767,12 +796,20 @@ def _pure(term: Computation) -> bool:
     Returns
     -------
     bool
-        True when nothing in it requests or advances a trace ordinal.
+        True when nothing in it introduces a case scope, makes a request,
+        advances a trace ordinal, or makes a strict scalar check.
     """
     return not any(
         isinstance(
-            item, Perform | Call | CallAddress | InstanceAddress | HandlerReturnAddress
+            item,
+            Case
+            | Perform
+            | Call
+            | CallAddress
+            | InstanceAddress
+            | HandlerReturnAddress,
         )
+        or _checks_strict_scalar(item)
         for item in _subterms(term)
     )
 
@@ -796,8 +833,8 @@ def _size(term: Computation) -> int:
 def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
     """The statements a rewritten term keeps.
 
-    A value nothing reads is not computed, while a call or a request is
-    made whether or not its result is read.
+    Unread values can be dropped. Calls, requests and strict scalar
+    checks are kept even when their results are unused.
 
     Parameters
     ----------
@@ -814,7 +851,11 @@ def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
     needed = set(reads)
     kept: list[tuple[Local, Computation]] = []
     for binder, first in reversed(statements):
-        if isinstance(first, Return) and binder.name not in needed:
+        if (
+            isinstance(first, Return)
+            and binder.name not in needed
+            and not _checks_strict_scalar(first)
+        ):
             continue
         kept.append((binder, first))
         needed |= _computation_reads(first)
@@ -1293,7 +1334,9 @@ class _Discharger:
                                 *stack,
                             )
                         state = substitute_computation(answer.body, frame.statics)
-                elif isinstance(frame, _ClauseFrame | _ShotFrame):
+                elif isinstance(frame, _ClauseFrame):
+                    resumptions = frame.outside_resumptions
+                elif isinstance(frame, _ShotFrame):
                     resumptions = frame.resumptions
                 elif isinstance(frame, _JoinFrame) and frame.serial in self.awaited:
                     return _Arrival(
@@ -1492,15 +1535,27 @@ class _Discharger:
                         )
                 bound, environment, state = self.clause(request, answering, clause)
                 made.extend(bound)
+                captured = stack[: position + 1]
+                # Unwinding the captured frames ends at their outermost
+                # path boundary. Frames outside the handler remain live.
+                outside_resumptions = resumptions
+                for boundary in reversed(captured):
+                    if isinstance(boundary, _ShotFrame):
+                        outside_resumptions = boundary.resumptions
+                        break
+                    if isinstance(boundary, _ClauseFrame):
+                        outside_resumptions = boundary.outside_resumptions
+                        break
                 stack = (
                     _ClauseFrame(
-                        captured=stack[: position + 1],
+                        captured=captured,
                         answer=substitute_type(
                             answering.handler.output_type, answering.statics
                         ),
                         serial=self.ordinal(),
                         grade=clause.grade,
                         resumptions=resumptions,
+                        outside_resumptions=outside_resumptions,
                         clause_path=clause_path,
                         captured_clauses=_clause_path(stack[position + 1 :]),
                     ),
@@ -1782,7 +1837,7 @@ class _Discharger:
             made.extend(bound)
             arguments.append(read)
         joins, beyond = self.clause_end(stack)
-        restored = frame.resumptions
+        restored = frame.outside_resumptions
         shot_path = frame.resumptions
         multiple = self.track_shots and frame.grade is ResumptionGrade.UNRESTRICTED
         if multiple:
@@ -2191,9 +2246,9 @@ class _Discharger:
     ) -> _Statements:
         """The statements binding what a conditional's branches differ in.
 
-        Branches that make no request are stated once per part they differ
-        in, each with the values the part reads. Branches that make requests
-        are stated once, their parts as one tuple.
+        Branches that can be duplicated are stated once per part they differ
+        in, each with the values the part reads. Other branches are stated
+        once, their parts as one tuple.
 
         Parameters
         ----------
@@ -2211,9 +2266,6 @@ class _Discharger:
         tuple[tuple[Local, Computation], ...]
             The statements.
         """
-        pure = all(
-            _pure(statement[1]) for item in arrivals for statement in item.statements
-        )
         if not differing:
             if not any(_live(item.statements, frozenset()) for item in arrivals):
                 return ()
@@ -2223,7 +2275,14 @@ class _Discharger:
                 _sequence(item.statements, Return(value=unit)) for item in arrivals
             )
             return ((binder, rebuild(branches, UNIT)),)
-        if len(differing) == 1 or (pure and duplicable):
+        if len(differing) == 1 or (
+            duplicable
+            and all(
+                _can_duplicate(statement[1])
+                for item in arrivals
+                for statement in item.statements
+            )
+        ):
             return tuple(
                 (
                     part.local,
@@ -2350,9 +2409,21 @@ class _Discharger:
         Raises
         ------
         _Undischarged
-            If the branches do not meet, or the case analysis is reached
-            more than once, so its static scopes would be entered twice.
+        If the branches cannot meet, or a repeated case would have to
+        copy branch-local static arguments or an indexed motive.
         """
+        repeated = any(branch.scope in self.scopes for branch in term.branches)
+        if repeated and (
+            term.motive.indices
+            or any(branch.static_arguments for branch in term.branches)
+        ):
+            raise _Undischarged(
+                "case",
+                "branches with `case` on a value known only at run time, and "
+                "copying the case would require freshening static constructor "
+                "arguments or an indexed motive",
+                self.owner.origin,
+            )
         branches: list[tuple[Computation, _Environment]] = []
         patterns: list[CaseBranch] = []
         for branch in term.branches:
@@ -2372,9 +2443,15 @@ class _Discharger:
                     },
                 )
             )
-            patterns.append(branch.with_(fields=fields))
-        repeated = any(branch.scope in self.scopes for branch in term.branches)
-        self.scopes.update(branch.scope for branch in term.branches)
+            scope = branch.scope
+            if repeated:
+                # A non-indexed pattern without static arguments introduces
+                # no skolems or refinement evidence under this identity.
+                scope = StaticScopeId.derive(
+                    "discharged-case", str(self.owner.id), str(scope), self.ordinal()
+                )
+            patterns.append(branch.with_(fields=fields, scope=scope))
+        self.scopes.update(branch.scope for branch in patterns)
 
         def rebuild(bodies: tuple[Computation, ...], type_: TypeExpr) -> Computation:
             """The case analysis over its rewritten branches.
@@ -2403,12 +2480,11 @@ class _Discharger:
         path = self.branch(
             made, rebuild, tuple(branches), stack, resumptions, duplicable=False
         )
-        if repeated or (isinstance(path, _Fork) and stack):
+        if isinstance(path, _Fork) and stack:
             raise _Undischarged(
                 "case",
                 "branches with `case` on a value known only at run time, and the "
-                "handled requests of its branches, or a clause that resumes more "
-                "than once, would need the rest of the computation in every branch",
+                "branches do not meet before an outer continuation",
                 self.owner.origin,
             )
         return path

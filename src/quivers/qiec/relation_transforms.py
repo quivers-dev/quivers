@@ -15,6 +15,7 @@ from quivers.core.relations.topology import _validate_tape_words
 from quivers.qiec._models import QiecModel
 from quivers.qiec._relation_operations import (
     _RelationInterface,
+    _UnaryOperation,
     _apply_binary,
     _apply_unary,
     _binary_layout,
@@ -37,6 +38,7 @@ class UnaryRelationTransformSpec(QiecModel):
     match one fixed tape. Inversion exchanges input and output tape
     order; trimming removes structurally unproductive records.
     Closure adds all finite repetitions of the original paths.
+    Auto-intersection requires two tapes to realize the same word.
 
     Parameters
     ----------
@@ -46,13 +48,14 @@ class UnaryRelationTransformSpec(QiecModel):
         The specific supported topology transformation.
     positions : tuple of int
         For projection, the increasing retained tape positions. For
-        conditioning, the single fixed tape. Other operations omit it.
+        conditioning, the single fixed tape. For auto-intersection,
+        the two distinct tapes with the same nominal type.
     word : tuple of int or None
         The fixed word for conditioning, including an empty tuple.
     """
 
     source: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    operation: Literal["project", "condition", "invert", "trim", "closure"]
+    operation: _UnaryOperation
     positions: tuple[int, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -68,6 +71,8 @@ class UnaryRelationTransformSpec(QiecModel):
         ------
         ValueError
             The recipe, tape positions, or conditioning word are invalid.
+        TypeError
+            The source or two tapes selected for equality have the wrong type.
         """
         if not isinstance(self.source, RationalRelationSpec):
             raise TypeError(
@@ -124,9 +129,9 @@ class UnaryRelationTransformSpec(QiecModel):
         parameters : RelationWeightBindings
             The original scalar weight bindings.
         max_states : int
-            State limit for a conditioned topology.
+            State limit for conditioning or tape-equality configurations.
         max_work : int
-            Arc examination limit for a conditioned topology.
+            Arc examination and signed-delay analysis limit.
 
         Returns
         -------
@@ -278,9 +283,9 @@ class FixedTransformedRelationRequest(QiecModel):
     words : Words
         One observed word per transformed tape.
     max_states : int
-        State budget for conditioning and each fixed observation.
+        State budget for sparse transforms and each fixed observation.
     max_work : int
-        Work budget for conditioning and each fixed observation. A cascade
+        Work budget for sparse transforms and each fixed observation. A cascade
         also limits the number of steps and the records in each topology.
     max_closure_size : int or None
         Optional bound for productive cyclic closure components.

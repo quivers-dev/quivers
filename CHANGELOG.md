@@ -8,8 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Certified acyclic LogProb path accuracy.** A fixed-word query can bound its float64 score's absolute log error using a sparse directed verifier, including for inputs near log weight −1000. The checked native provider returns the log score and exact rational evidence from one live snapshot.
+- **Certified cyclic LogProb path accuracy.** Bounded productive epsilon components can use exact rational endpoint stars to certify the ordinary log score, including when a path mass underflows in binary64. The checked native report distinguishes proven local divergence from an unverified upper star.
+- **A tail outcome for capped cyclic paths.** Checked QVR can draw or score the normalized law that retains short original traces and groups every longer walk into one tagged tail.
+- **Checked finite-unrolled string EP.** A fixed native unigram schedule can return live differentiable word scores with warm sites, local trial counts, and explicit construction limits.
+- **Checked Markov path certificate reports.** Native QVR can request a value-only forward-error certificate with exact rational evidence or a typed unavailable outcome.
+- **Certified Markov path accuracy.** A bounded fixed-word query can establish an exact absolute or relative forward-error bound for its float64 score, using rational sparse verification and the existing local closure.
+- **Checked deduction guards.** QVR rules can use a pure Boolean guard over matched natural coordinates. Checked search and eligible indexed item outcomes evaluate the guard before accepting a grounded rule.
+- **Checked target stage reports.** Named computations and probabilistic programs report their actual selected target stages and named refusals. Native derivative checks and checked rules retain their evidence scope.
+- **Checked signed-delay tape equality.** QVR can author unary and cascade recipes that enforce equal words on two nominally identical tapes with live original weights and explicit construction limits.
+- **Checked deterministic sparse path ranking.** A native fixed-word query returns complete best or k-best original traces with exact tie order, live selected scores, and an explicit result capacity.
 - **Checked source factors for finite elimination.** Contract bounded tables of named QIEC computations after checking nominal axis types and refusing draws even under a closed handler. Report source evaluation and contraction work separately.
-- **Nominal forward and reverse differentiation.** Checked forward handlers distinguish two live perturbations. A checked reverse handler resumes once, then adds predecessor cotangents to an immutable result.
+- **Nominal forward and reverse differentiation.** Checked forward handlers distinguish two live perturbations and retain reached domain checks for strict comparisons and division. A checked reverse handler resumes once, then adds predecessor cotangents to an immutable result.
 - **Checked base change for finite elimination.** A named QIEC map can move factor tables to another finite answer algebra after exhaustive checks of both binary operations and units.
 - **Signed logarithmic weight derivatives.** A packed dual carrier preserves an explicit tangent at zero primal weight and evaluates finite sums and products without decoding extreme magnitudes into linear floats.
 - **Explicit regular EP policies.** Choose a proved fixed-Lipschitz or adaptive-backtracking proximal step, provide checked initial sites, and inspect actual sparse moment work. Unsupported derivative or global error guarantees refuse.
@@ -20,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Source-authored pruned graph queries.** A native QVR foreign computation can call a checked graph belief provider with its exact graph and candidate identity.
 - **Computed deduction rule weights.** A checked rule can name a pure `LogWeight` computation over its matched fields. Native lexical search and chart execution use the grounded weight with live derivatives.
 - **Checked cyclic posterior path draws.** Native Random uses certified suffix closure with a per-draw arc ceiling and full posterior scores for returned original traces.
-- **Proved objective gap targets for joint alignment MAP.** Exact feasible and dual scores can establish a serialized absolute or relative tolerance. Gap-based stops retain a status distinct from agreement certification.
+- **Proved objective gap targets for joint alignment MAP.** Exact feasible and dual scores can establish a serialized absolute or relative tolerance. Gap-based stops retain a status distinct from agreement certification. Configure harmonic or constant rational steps with the same certificate checks.
 - **Checked packed contextual edit likelihoods.** Typed native scores reuse one packed alignment plan with the caller's original live contextual network.
 - **Checked capped ranked relation scores.** Serialized requests compile finite capped profiles for a typed transducer and sum live weights over the winning original paths at an observed pair.
 - **Checked compact backoff relations.** Serialized fixed-word requests keep ordinary transition priority, original scalar weight identities, and a bounded sparse plan. A named QVR computation can call the checked native provider.
@@ -96,6 +106,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Scalar parsing of computed tokens.** Ordinary QVR deduction can consume checked rank-one string tensors within lexical scopes, with live grammar weights.
 - **Finite n-gram EP near convergence.** Newton backtracking compares the centered objective change, preserving improvements smaller than one ulp of the absolute objective.
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.
 - **Checked handler trace scopes.** Discharge preserves call, local instance, and return activations and the order of shot paths in the supported fragment. Raw dynamic keys can change where earlier executions merged activations.

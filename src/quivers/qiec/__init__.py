@@ -205,6 +205,7 @@ from quivers.qiec.effect_plan import (
     EffectJvpCheck,
     EffectLawReport,
     EffectPlan,
+    EffectTargetReport,
     checked_effect_plan,
 )
 from quivers.qiec.bernoulli_estimators import (
@@ -539,6 +540,10 @@ from quivers.qiec.pruned_string_graph_runtime import (
     PrunedStringGraphRuntimeProvider,
     pruned_string_graph_handler,
 )
+from quivers.qiec.finite_ep_runtime import (
+    FiniteStringEPRequest,
+    FiniteStringEPRuntimeProvider,
+)
 from quivers.qiec.regular_ep_runtime import (
     RegularStringEPRequest,
     RegularStringEPRuntimeProvider,
@@ -554,10 +559,28 @@ from quivers.qiec.relation_composition import (
     FixedComposedRelationRequest,
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_capped_path_law import (
+    CappedRelationPathLaw,
+    FixedCappedCyclicRelationPathSampleRequest,
+)
 from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
     RelationPathLaw,
+)
+from quivers.qiec.relation_log_path_certificate import (
+    FixedCyclicLogProbPathCertificateRequest,
+    FixedCyclicLogProbPathCertificateRuntimeProvider,
+    FixedLogProbPathCertificateRequest,
+    FixedLogProbPathCertificateRuntimeProvider,
+)
+from quivers.qiec.relation_path_certificate import (
+    FixedMarkovPathCertificateRequest,
+    FixedMarkovPathCertificateRuntimeProvider,
+)
+from quivers.qiec.relation_path_rank import (
+    FixedRelationPathRankRequest,
+    FixedRelationPathRankRuntimeProvider,
 )
 from quivers.qiec.relation_feature_moments import (
     FixedComposedArcFeatureMomentRequest,
@@ -936,7 +959,17 @@ __all__ = [
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
+    "FixedCyclicLogProbPathCertificateRequest",
+    "FixedCyclicLogProbPathCertificateRuntimeProvider",
+    "FixedLogProbPathCertificateRequest",
+    "FixedLogProbPathCertificateRuntimeProvider",
+    "FixedMarkovPathCertificateRequest",
+    "FixedMarkovPathCertificateRuntimeProvider",
+    "FixedRelationPathRankRequest",
+    "FixedRelationPathRankRuntimeProvider",
+    "FixedCappedCyclicRelationPathSampleRequest",
     "FixedCyclicRelationPathSampleRequest",
+    "CappedRelationPathLaw",
     "RelationPathLaw",
     "FixedRelationRequest",
     "RelationWeightBindings",
@@ -951,6 +984,8 @@ __all__ = [
     "PrunedStringGraphRequest",
     "PrunedStringGraphRuntimeProvider",
     "pruned_string_graph_handler",
+    "FiniteStringEPRequest",
+    "FiniteStringEPRuntimeProvider",
     "RegularStringEPConfig",
     "RegularStringEPPolicy",
     "RegularStringEPRequest",
@@ -1236,6 +1271,7 @@ __all__ += [
     "EffectJvpCheck",
     "EffectLawReport",
     "EffectPlan",
+    "EffectTargetReport",
     "checked_effect_plan",
 ]
 __all__ += [

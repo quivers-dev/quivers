@@ -40,6 +40,9 @@ import didactic.api as dx
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
+    LetExprCall,
+    LetExprNode,
+    LetExprVar,
     LexiconCategoryFixed,
     ObjectEffectApply,
     OptionName,
@@ -62,11 +65,19 @@ from quivers.dsl.compiler._deduction_positions import (
 from quivers.dsl.compiler._deduction_terms import atom_term
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
 from quivers.dsl.compiler._options import find_option, get_option_flag
+from quivers.qiec._deduction_guards import (
+    _TermGuard,
+    _check_guard_body,
+    _guard_in_scope,
+    _matched_arguments,
+    _term_guard_in_scope,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import ParameterId, PresentationId
-from quivers.qiec.declarations import FieldDef
+from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.kinds import NAT, IndexBinder, IndexSort, UserIndexSort
+from quivers.qiec.module import NamedComputation
 from quivers.qiec.rules import (
     AxiomSlot,
     ComputedRuleWeight,
@@ -74,10 +85,14 @@ from quivers.qiec.rules import (
     JudgmentDecl,
     Premise,
     Rule,
+    RuleError,
     RulePresentation,
+    SideCondition,
 )
 from quivers.qiec.types import (
+    INT,
     STRING,
+    TypeApplication,
     IndexConstructor,
     IndexLiteral,
     IndexTerm,
@@ -200,6 +215,8 @@ class DeductionPresentation(QiecModel):
         Whether span items carry a logical form slot.
     atoms : frozenset of str
         The declared atoms; every other identifier is a variable.
+    lexical_arities : Mapping of str to int
+        The checked arities supplied by closed lexical forms.
     """
 
     presentation: RulePresentation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -208,6 +225,9 @@ class DeductionPresentation(QiecModel):
     slots: PositionSlots = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     uses_forms: bool
     atoms: frozenset[str] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    lexical_arities: Mapping[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     @property
     def families(self) -> Mapping[FamilyId, JudgmentDecl]:
@@ -316,6 +336,7 @@ class _Reader:
         self.slots = position_slots(decl)
         self.forms: dict[str, TermForm] = {}
         self.term_arities: dict[str, int] = {}
+        self.lexical_arities: dict[str, int] = {}
         self.families: dict[str, list[bool]] = {}
         self.uses_forms = bool(decl.binders) or any(
             isinstance(pattern, ObjectEffectApply)
@@ -368,6 +389,42 @@ class _Reader:
         if known != form:
             self.fail(f"{head!r} is written both as {known.kind} and {form.kind}", node)
 
+    def _arity(
+        self, symbol: str, arity: int, node: SequentRule | DeductionDecl
+    ) -> None:
+        """Register the exact rank of one actually used term constructor."""
+        known = self.term_arities.setdefault(symbol, arity)
+        if known != arity:
+            self.fail(
+                f"term constructor {symbol!r} has conflicting arities {known} and {arity}",
+                node,
+            )
+
+    def lexical_form(self, form: LetExprNode | None) -> None:
+        """Include the constructor ranks of one entirely closed lexical form."""
+        if not self.uses_forms or form is None:
+            return
+        ranks: list[tuple[str, int]] = []
+        pending = [form]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, LetExprVar) and node.name in self.atoms:
+                ranks.append((node.name, 0))
+            elif isinstance(node, LetExprCall) and node.func not in self.decl.binders:
+                ranks.append((node.func, len(node.args)))
+                pending.extend(reversed(node.args))
+            else:
+                # Explicit binders and integer fields use their existing value
+                # representation. They do not inhabit the homogeneous Term sort.
+                return
+        for symbol, arity in ranks:
+            self._arity(symbol, arity, self.decl)
+            self.lexical_arities[symbol] = arity
+            self.forms.setdefault(
+                symbol,
+                TermForm(kind="application" if arity else "atom", text=symbol),
+            )
+
     def term(
         self,
         expr: ObjectExpr,
@@ -414,7 +471,7 @@ class _Reader:
                 return _Read(kind="numeral", name=expr.name, position=True)
             kind: FormKind = "numeral" if expr.name.isdigit() else "atom"
             self.form(expr.name, TermForm(kind=kind, text=expr.name), node)
-            self.term_arities[expr.name] = 0
+            self._arity(expr.name, 0, node)
             return _Read(kind="constant", name=expr.name)
         symbol = pattern_symbol(expr)
         if symbol is None:
@@ -426,7 +483,7 @@ class _Reader:
         assert symbol is not None
         self.form(symbol, _form_of(expr), node)
         arguments = self.arguments(symbol, expr, variables, node)
-        self.term_arities[symbol] = len(arguments)
+        self._arity(symbol, len(arguments), node)
         return _Read(kind="application", name=symbol, arguments=arguments)
 
     def arguments(
@@ -498,7 +555,7 @@ class _Reader:
             if expr.name.isdigit():
                 self.families.setdefault(TERM_ITEM, [False])
                 self.form(expr.name, TermForm(kind="numeral", text=expr.name), node)
-                self.term_arities[expr.name] = 0
+                self._arity(expr.name, 0, node)
                 return BARE, (_Read(kind="numeral", name=expr.name, position=True),)
         symbol = expr.name if isinstance(expr, TypeName) else pattern_symbol(expr)
         if symbol is not None and not any(self.slots.get(symbol, [])):
@@ -735,13 +792,35 @@ def _instantiated(
     return form, tuple(fresh)
 
 
-def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
+def deduction_guard_names(decl: DeductionDecl) -> frozenset[str]:
+    """Read the names used by a deduction's authored rule guards."""
+    return frozenset(
+        option.value.value
+        for rule in decl.rules
+        for option in rule.options
+        if option.key == "guard" and isinstance(option.value, OptionName)
+    )
+
+
+def deduction_presentation(
+    decl: DeductionDecl,
+    guards: Mapping[str, NamedComputation] | None = None,
+    *,
+    item_declarations: tuple[FamilyDecl, tuple[ConstructorDecl, ...]] | None = None,
+    defer_guards: bool = False,
+) -> DeductionPresentation:
     """Read a deduction into its rule presentation.
 
     Parameters
     ----------
     decl : DeductionDecl
         The declaration.
+    guards : Mapping of str to NamedComputation or None
+        The module's checked rule guards, if any.
+    item_declarations
+        The owning generated item family and its constructors, when visible.
+    defer_guards
+        Read the matched patterns while their item declarations are being prepared.
 
     Returns
     -------
@@ -807,9 +886,11 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
     for entry in decl.lexicon:
         if isinstance(entry.category, LexiconCategoryFixed):
             reader.term(entry.category.category, False, {}, decl)
+        reader.lexical_form(entry.lf)
     if decl.lexicon_from_file is not None:
-        for _word, category, _form in load_lexicon_tsv(decl.lexicon_from_file, decl):
+        for _word, category, form in load_lexicon_tsv(decl.lexicon_from_file, decl):
             reader.term(category, False, {}, decl)
+            reader.lexical_form(form)
     for atom in decl.atoms:
         reader.forms.setdefault(atom, TermForm(kind="atom", text=atom))
         reader.term_arities.setdefault(atom, 0)
@@ -1001,13 +1082,134 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
         rules=tuple(item.rule for item in rules),
         axioms=tuple(axioms),
     )
-    return DeductionPresentation(
+    prepared = DeductionPresentation(
         presentation=presentation,
         rules=tuple(rules),
         forms=dict(reader.forms),
         slots=reader.slots,
         uses_forms=reader.uses_forms,
         atoms=reader.atoms,
+        lexical_arities=reader.lexical_arities,
+    )
+
+    return (
+        prepared
+        if defer_guards
+        else bind_deduction_guards(prepared, guards or {}, item_declarations)
+    )
+
+
+def bind_deduction_guards(
+    prepared: DeductionPresentation,
+    guards: Mapping[str, NamedComputation],
+    item_declarations: tuple[FamilyDecl, tuple[ConstructorDecl, ...]] | None,
+) -> DeductionPresentation:
+    """Attach checked guards to the rule telescopes that already bind their fields.
+
+    Parameters
+    ----------
+    prepared
+        The rule presentation and patterns read once from the deduction.
+    guards
+        Named QIEC operations checked in the owning source module.
+    item_declarations
+        The owner's closed item declarations where term guards are permitted.
+
+    Returns
+    -------
+    DeductionPresentation
+        The same rule patterns and identities carrying their checked guards.
+
+    Raises
+    ------
+    DeductionPresentationError
+        If a guard name, ordered signature, or portable body fails checking.
+    """
+    used: dict[str, NamedComputation] = {}
+    rules: list[DeductionRule] = []
+    owner = prepared.presentation.name
+    item_type = (
+        TypeApplication(constructor=item_declarations[0].type_constructor, arguments=())
+        if item_declarations is not None
+        else None
+    )
+    for item in prepared.rules:
+        source = item.source
+        options = tuple(entry for entry in source.options if entry.key == "guard")
+        if not options:
+            rules.append(item)
+            continue
+        option = options[0].value
+        if len(options) != 1 or not isinstance(option, OptionName):
+            raise DeductionPresentationError(
+                f"rule {source.name!r} guard must name one checked Bool computation",
+                source.line,
+                source.col,
+            )
+        body = guards.get(option.value)
+        if body is None:
+            raise DeductionPresentationError(
+                f"rule {source.name!r} guard names no checked computation {option.value!r}",
+                source.line,
+                source.col,
+            )
+        checked = used.get(body.name)
+        if checked is None:
+            try:
+                if item_declarations is not None and any(
+                    parameter.type == item_type for parameter in body.parameters
+                ):
+                    checked = _term_guard_in_scope(body, owner, *item_declarations)
+                else:
+                    if item_type is not None and any(
+                        isinstance(parameter.type, TypeApplication)
+                        and parameter.type.constructor.name.endswith("__Item")
+                        for parameter in body.parameters
+                    ):
+                        raise RuleError(
+                            "a term guard requires its own deduction's Item type"
+                        )
+                    _check_guard_body(body)
+                    checked = _guard_in_scope(body, owner)
+            except (RuleError, dx.ValidationError) as error:
+                raise DeductionPresentationError(
+                    str(error), source.line, source.col
+                ) from error
+            used[body.name] = checked
+        arguments = _matched_arguments(item.rule, checked)
+        required = tuple(
+            INT if isinstance(binder, IndexBinder) and binder.sort == NAT else item_type
+            for binder in item.rule.telescope
+            if binder.name in arguments
+        )
+        if tuple(parameter.type for parameter in body.parameters) != required:
+            fields = (
+                "matched Int coordinates"
+                if not isinstance(checked, _TermGuard)
+                else "matched Int and owned Item fields"
+            )
+            raise DeductionPresentationError(
+                f"rule {source.name!r} guard {body.name!r} expects its "
+                f"{fields} in telescope order {arguments!r}",
+                source.line,
+                source.col,
+            )
+        rules.append(
+            item.with_(
+                rule=item.rule.with_(
+                    side_condition=SideCondition(
+                        computation=checked.id, arguments=arguments
+                    )
+                )
+            )
+        )
+    if not used:
+        return prepared
+    return prepared.with_(
+        presentation=prepared.presentation.with_(
+            rules=tuple(item.rule for item in rules), conditions=tuple(used.values())
+        ),
+        rules=tuple(rules),
     )
 
 

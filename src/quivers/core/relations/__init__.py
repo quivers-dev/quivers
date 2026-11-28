@@ -65,6 +65,8 @@ __all__ = [
     "NgramProjection",
     "PenalizedNgramProjection",
     "PathStatistics",
+    "PathWeightCertificate",
+    "LogPathWeightCertificate",
     "PairedAlignmentMapResult",
     "ProductiveEpsilonCycleError",
     "QueryWork",
@@ -75,6 +77,7 @@ __all__ = [
     "RegularStringSite",
     "RegularStringSiteUpdate",
     "RelationLimitError",
+    "RelationAccuracyError",
     "RelationPath",
     "RelationTopology",
     "StaticMinimizationWork",
@@ -99,6 +102,9 @@ __all__ = [
     "backoff_query",
     "backoff_total_weight",
     "best_marginal_output",
+    "certify_markov_path_weight",
+    "certify_cyclic_logprob_path_weight",
+    "certify_logprob_path_weight",
     "closure",
     "compile_ranked_ot",
     "concatenate",
@@ -841,4 +847,14 @@ from quivers.core.relations.ranked import (  # noqa: E402
 from quivers.core.relations.messages import (  # noqa: E402
     StringCandidateMessage,
     StringCandidatePlan,
+)
+from quivers.core.relations.accuracy import (  # noqa: E402
+    PathWeightCertificate,
+    RelationAccuracyError,
+    certify_markov_path_weight,
+)
+from quivers.core.relations.log_accuracy import (  # noqa: E402
+    LogPathWeightCertificate,
+    certify_cyclic_logprob_path_weight,
+    certify_logprob_path_weight,
 )

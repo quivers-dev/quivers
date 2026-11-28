@@ -96,6 +96,7 @@ from quivers.dsl.ast_nodes import (
     LexiconCategoryFixed,
     LexiconCategoryRestricted,
     LexiconCategoryWildcard,
+    MarginalizeStep,
     ObjectDecl,
     ObjectEffectApply,
     ObjectExpr,
@@ -130,6 +131,7 @@ from quivers.dsl.compiler._deduction_productions import (
 )
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
 from quivers.dsl.compiler._deduction_presentation import (
+    bind_deduction_guards,
     TERM_ITEM,
     DeductionPresentation,
     DeductionPresentationError,
@@ -910,6 +912,28 @@ def _is_span(pattern: Pattern) -> bool:
     )
 
 
+def _attach_deduction_guards(elaborator: _Elaborator, system: _System) -> None:
+    """Finish conditions on an existing checked pattern system."""
+    prepared = system.presentation_cell[0]
+    family = system.family_cell[0]
+    assert prepared is not None and family is not None
+    try:
+        bound = bind_deduction_guards(
+            prepared,
+            elaborator._deduction_guard_bodies,
+            (family, tuple(system.constructors.values())),
+        )
+    except DeductionPresentationError as refusal:
+        elaborator._fail(refusal, str(refusal), code="qiec-program")
+    if bound is prepared:
+        return
+    system.presentation_cell[0] = bound
+    system.rules[:] = [
+        rule.with_(presented=item)
+        for rule, item in zip(system.rules, bound.rules, strict=True)
+    ]
+
+
 def _rule_positions(system: _System, rule: _Rule) -> list[str]:
     """The variables a rule uses in integer slots, in first-occurrence order.
 
@@ -1284,13 +1308,18 @@ def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
     -------
     frozenset[str]
         The name of every deduction some program's
-        ``let x = parse(D, input, ..., ("A", p), ...)`` names.
+        ``let x = parse(D, input, ..., ("A", p), ...)`` names, including
+        bindings inside marginalization scopes.
     """
     names: set[str] = set()
     for statement in statements:
         if not isinstance(statement, ProgramDecl):
             continue
-        for step in statement.draws:
+        pending = list(statement.draws)
+        while pending:
+            step = pending.pop()
+            if isinstance(step, MarginalizeStep):
+                pending.extend(step.scope)
             value = getattr(step, "value", None)
             if (
                 isinstance(value, LetExprCall)
@@ -1374,8 +1403,16 @@ class _DeductionElaboration:
     elaborated, so a program body can call a deduction's entry.
     """
 
-    def _declare_deduction_declarations(self: _Elaborator) -> None:
+    def _declare_deduction_declarations(
+        self: _Elaborator, *, defer_guards: bool = False
+    ) -> None:
         """Declare each deduction's item family, effect, and instances.
+
+        Parameters
+        ----------
+        defer_guards
+            Declare the generated item families before checking guards
+            that reference their constructor values.
 
         Raises
         ------
@@ -1431,8 +1468,40 @@ class _DeductionElaboration:
         }
         self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
+        prepared = {}
+        if defer_guards:
+            # The existing pattern reader determines the exact nominal Item
+            # family. Complete those declarations before checking guard code.
+            for declaration in declarations:
+                system = self._read_deduction(declaration, defer_guards=True)
+                self._declare_item_family(system)
+                prepared[declaration.name] = system
+            self._declare_deduction_guard_operations(
+                item_types=frozenset(system.item for system in prepared.values())
+            )
         for declaration in declarations:
-            system = self._read_deduction(declaration)
+            if defer_guards:
+                system = prepared[declaration.name]
+                _attach_deduction_guards(self, system)
+            else:
+                system = self._read_deduction(declaration)
+            presented = system.presentation_cell[0]
+            assert presented is not None
+            if presented.presentation.conditions:
+                guarded_queries = (
+                    linear_calls.get(declaration.name),
+                    boolean_calls.get(declaration.name),
+                    proof_calls.get(declaration.name),
+                    interpretations.get(declaration.name),
+                )
+                for guarded in guarded_queries:
+                    if guarded is not None:
+                        self._fail(
+                            guarded,
+                            "this deduction query requires unconditional rules; "
+                            "use checked scalar parse or item outcomes with guards",
+                            code="qiec-deduction-rule-guard",
+                        )
             if any(item[0] is declaration for item in schema_parsers):
                 # A schema parser's ``depth`` bounds its category algebra,
                 # not its derivation. A root-to-leaf path of a tree over a
@@ -1459,7 +1528,8 @@ class _DeductionElaboration:
                 system.schema_words_cell[0] = tuple(
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
-            self._declare_item_family(system)
+            if not defer_guards:
+                self._declare_item_family(system)
             if (linear := linear_calls.get(declaration.name)) is not None:
                 self._linear_goal_queries[declaration.name] = self._declare_linear_goal(
                     system, linear
@@ -1935,13 +2005,18 @@ class _DeductionElaboration:
         self.effects[SEARCH_EFFECT] = effect
         self.registry.register_effect(effect)
 
-    def _read_deduction(self: _Elaborator, declaration: DeductionDecl) -> _System:
+    def _read_deduction(
+        self: _Elaborator, declaration: DeductionDecl, *, defer_guards: bool = False
+    ) -> _System:
         """Read a declaration's options, rules, and lexicon into patterns.
 
         Parameters
         ----------
         declaration : DeductionDecl
             The declaration.
+        defer_guards
+            Finish the matched patterns before checking and attaching
+            guards that use the generated item declarations.
 
         Returns
         -------
@@ -2005,7 +2080,9 @@ class _DeductionElaboration:
                 rule_node, misplaced.message(declaration.name), code="qiec-program"
             )
         try:
-            presented = deduction_presentation(declaration)
+            presented = deduction_presentation(
+                declaration, self._deduction_guard_bodies, defer_guards=defer_guards
+            )
         except DeductionPresentationError as refusal:
             self._fail(refusal, str(refusal), code="qiec-program")
         system.presentation_cell[0] = presented
@@ -2482,6 +2559,9 @@ class _DeductionElaboration:
             application, an atom, a bound variable, or an integer.
         """
         counter = [0]
+        presented = system.presentation_cell[0]
+        assert presented is not None
+        lexical_arities = presented.lexical_arities
 
         def visit(node: LetExprNode, scope: dict[str, int]) -> Pattern:
             """Convert one subterm.
@@ -2539,7 +2619,15 @@ class _DeductionElaboration:
                     )
                 else:
                     args = tuple(visit(item, scope) for item in node.args)
-                self._note_symbol(system, node.func, len(args))
+                arity = lexical_arities.get(node.func, len(args))
+                if len(args) != arity:
+                    self._fail(
+                        declaration,
+                        f"term constructor {node.func!r} has conflicting "
+                        f"arities {arity} and {len(args)}",
+                        code="qiec-program",
+                    )
+                self._note_symbol(system, node.func, arity)
                 return _App(symbol=node.func, args=args)
             self._fail(
                 declaration,
@@ -5124,6 +5212,43 @@ class _Context:
             )
         return self.weighted_conclusion(index, rule, bindings, conclusion, then)
 
+    def guard_application(
+        self,
+        rule: _Rule,
+        bindings: dict[str, Local],
+        admitted: Computation,
+        rejected: Callable[[], Computation],
+    ) -> Computation:
+        """Decide the presentation's guard on the complete matching bindings."""
+        condition = rule.presented.rule.side_condition
+        if condition is None:
+            return admitted
+        presentation = self.system.presentation_cell[0]
+        assert presentation is not None
+        guard = presentation.presentation.conditions_by_id[condition.computation]
+        return self.bind(
+            "rule_guard",
+            BOOL,
+            Call(
+                callee=guard.id,
+                name=guard.name,
+                static_arguments=(),
+                arguments=tuple(
+                    Var(local=bindings[name]) for name in condition.arguments
+                ),
+                result_type=BOOL,
+                effects=EMPTY_ROW,
+                origin=self.elaborator._origin(
+                    rule.presented.source,
+                    (*self.path, "rules", rule.presented.index, "guard"),
+                    "deduction-rule-guard",
+                ),
+            ),
+            lambda decision: If(
+                condition=Var(local=decision), then=admitted, otherwise=rejected()
+            ),
+        )
+
     def weighted_conclusion(
         self,
         index: int,
@@ -5173,7 +5298,12 @@ class _Context:
                 then=then(conclusion),
             )
 
-        return self.application_weight(index, rule, bindings, weighted)
+        return self.guard_application(
+            rule,
+            bindings,
+            self.application_weight(index, rule, bindings, weighted),
+            lambda: self.fail(system.item, "derive", "rule", index, "guard"),
+        )
 
     def application_weight(
         self,

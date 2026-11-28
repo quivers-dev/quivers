@@ -264,7 +264,8 @@ def certify_span_order(presentation: RulePresentation) -> SpanOrder:
     Parameters
     ----------
     presentation
-        A checked unconditional presentation with one span judgment.
+        A checked presentation with one span judgment. The proof ignores
+        guards, which only delete edges from the certified supergraph.
 
     Returns
     -------

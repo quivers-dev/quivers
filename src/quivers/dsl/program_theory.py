@@ -1142,6 +1142,15 @@ def extract_deduction_schema(compiler: Compiler) -> panproto.Schema:
                     )
                 elif source.weight is not None:
                     builder.constraint(rule_vid, "weight", str(source.weight))
+                if source.side_condition is not None:
+                    guard = source.side_condition
+                    builder.constraint(
+                        rule_vid, "guard-computation", str(guard.computation)
+                    )
+                    for position, argument in enumerate(guard.arguments):
+                        builder.constraint(
+                            rule_vid, "guard-argument", f"{position}:{argument}"
+                        )
             builder.edge(sys_vid, rule_vid, "decl")
             for prem_idx, premise in enumerate(rule.premises):
                 p_vid = f"{rule_vid}/premise:{prem_idx}"

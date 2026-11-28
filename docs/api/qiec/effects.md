@@ -13,11 +13,25 @@ at their original entry points. A residual request observes the live
 addresses in their original order. Resumptions restore the same
 allocations for each shot, which has its own resumption path. Effects in
 an intervening clause use the scope outside the captured continuation.
+The clause keeps the shot path of its triggering request while it runs.
+When its answer leaves the handler, the continuation recovers the path
+outside the capture. Surviving outer shots still contribute to later
+addresses.
 
 A retained call also inherits its enclosing discharged shots and
 clause activations. Discharge keeps the reference handler when the call's
 residual row is open or could invoke an outer multi-shot clause inside
 that path.
+
+A resumption can revisit a runtime constructor case. Discharge can copy
+a case whose motive has no indices and whose patterns bind no static
+arguments. Each new copy has fresh pattern scopes and retains the
+original request sites. Execution still selects one branch per shot.
+An enclosing join keeps each case together when several result
+components are needed. The existing statement limit counts the copies.
+A repeated case with static pattern arguments or an indexed motive
+keeps reference execution with a `case` obstacle, as does a case whose
+branches cannot meet an outer continuation.
 
 An effectful return clause uses the address of its handler installation.
 Different installations of the same declaration have different return
@@ -32,7 +46,10 @@ alongside any captured local instance addresses.
 Jacobian-vector product as rational numbers. It follows the reference
 machine through authored clauses, parameter updates, resumptions, and
 recursive calls. Its arithmetic includes division by nonzero values and
-powers with fixed integral exponents.
+powers with fixed integral exponents. A constructor from a closed
+monomorphic family carries exact scalar fields into the selected case
+arm when its application has no static arguments. Each field is
+evaluated in declaration order.
 
 Every comparison reached by the run must either have unequal operands
 or be independent of the input. This gives a neighborhood where the
@@ -316,6 +333,11 @@ reply and all updated state coordinates in the old state, in declaration
 order. Recursive calls reuse the same companion definitions, so the size
 of the rewritten module does not depend on how many calls a run takes.
 Only the original installation applies the handler's return action.
+
+A case in a stateful body can match a closed monomorphic family without
+indices or static pattern arguments. The companion keeps the scrutinee
+and field bindings. Its selected arm receives the incoming state and
+returns the original result paired with the outgoing state.
 
 Module-level discharge uses the specialization when it reaches a
 recursive handled call within this fragment. The original and specialized
@@ -610,6 +632,75 @@ assert stage.stage == "handler-discharge"
 assert stage.rewrite is not None and stage.rewrite.companions == ()
 ```
 
+`plan.check_target(target)` reports the outcome of a QIEC export. It uses the
+ordinary target projector, renderer and grammar emitter. A host target
+can select the original handlers, which appear as `source-handler`. A
+static target reads the discharged computation and its stages. An
+unsupported export carries the target's refusal names and diagnostic.
+For a probabilistic program, `Compiler.effect_plan` retains the parsed
+source with its checked module. The report follows the public export
+selection and uses the program planner for data, constraints and sites.
+It labels the result `program-plan` and gives its QIEC helper projection
+in `helper_projection`. A plan made from QIEC alone needs parsed source
+to report that target stage.
+
+With `arguments` and `direction`, the report compares exact native JVPs
+for the source and the graph selected by the target. A supplied
+`derivative_rule` is checked independently against its nominal source.
+These checks concern QIEC. The `external_derivative` field records that
+the backend derivative is unverified even when the source and projected
+JVPs agree and the target emits code. A request to compare native JVPs
+on a probabilistic program reports an obstacle because the emitted
+statement plan has no corresponding scalar QIEC entry for that check.
+
+<!-- python: run -->
+```python
+from quivers.dsl import Compiler, parse
+
+source = """
+effect Echo
+    echo : Real -> Real
+
+instance echo : Echo
+
+handler identity for Echo : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    echo(value : Real) resumes 1 =>
+        resume(value)
+
+define square(x : Real) : Real !{} =
+    handle echo with identity in
+        let value <- perform echo.echo(x)
+        return value * value
+"""
+plan = Compiler(parse(source), module_name="echo-square").effect_plan("square")
+pyro = plan.check_target("pyro", arguments=(2,), direction=(1,))
+stan = plan.check_target("stan", arguments=(2,), direction=(1,))
+assert pyro.stages[0].stage == "source-handler"
+assert stan.stages[0].stage == "handler-discharge"
+assert stan.native_jvp.status == "checked" and stan.native_jvp.staged.tangent == 4
+assert stan.external_derivative.missing == ("external derivative unverified",)
+```
+
+<!-- python: run -->
+```python
+from quivers.dsl import Compiler, parse
+
+source = """
+object Row : FinSet 4
+
+program draws : Row -> Row
+    sample x <- Normal(loc=0.0, scale=1.0)
+    return x
+
+export draws
+"""
+plan = Compiler(parse(source), module_name="simple-draw").effect_plan("draws")
+report = plan.check_target("stan")
+assert report.projection == "program-plan"
+assert report.helper_projection == "discharged"
+assert report.external_derivative.missing == ("external derivative unverified",)
+```
+
 ::: quivers.qiec.effect_plan
 
 ## Static scoped operations
@@ -757,14 +848,41 @@ perturbation. Each stop is recorded at its original request address.
 The source check seals the carrier in the selected entry and
 requires each named handler installation to occur once. This fragment
 accepts up to two simultaneously active instances and sixteen source
-binds and handler installations. Larger inputs raise
+binds, handler installations and conditionals. Larger inputs raise
 `qiec-forward-limit` before target rendering.
 
+An instance can also declare `less : Number * Number -> Bool`. The
+comparison reads each operand's ground primal, through any enclosing
+coefficient carriers. Bind its answer and use it as the immediately
+following `if` guard. The comparison is defined for distinct finite
+primals, and evaluation follows only the chosen branch. A reached
+comparison at equality or on a nonfinite primal fails with
+`qiec-forward-comparison-boundary`. The checked native, discharged and
+Pyro routes implement that behavior. The other targets report a missing
+`strict-scalar-comparison` capability for the partial guard.
+
+An instance can declare `div : Number * Number -> Number` and
+`div resumes 1`. The generated clause solves the quotient in the
+parent coefficient algebra. Each ground quotient uses the same
+divisor primal. A reached zero or nonfinite divisor raises
+`qiec-forward-division-domain`. A nonfinite coefficient computed at
+working precision raises `qiec-forward-division-range`, even if the
+program would discard that coefficient or project a different one.
+For instance, an intermediate coefficient can overflow even when the
+exact mixed derivative is zero. Finite coefficients still use rounded
+arithmetic in the invocation's numeric representation. Pyro implements
+the same checks. The other targets report `strict-scalar-division` for
+this extension.
+
+The ratio example returns the directional derivative of $x/y$.
+At $(x,y)=(2,4)$ in direction $(3,2)$, it returns $3/4 - 2\cdot2/4^2=1/2$.
+
+<!-- python: run -->
 ```python
 from quivers.dsl import Compiler, parse
 from quivers.qiec import ForwardDiffInstance, elaborate_forward_diff, run_named
 
-source = """
+declarations = """
 family Number : Type
     constructor Jet : Real * Real -> Number
 
@@ -772,6 +890,8 @@ effect Diff
     seed : Real * Real -> Number
     add : Number * Number -> Number
     mul : Number * Number -> Number
+    div : Number * Number -> Number
+    less : Number * Number -> Bool
     stop_primal : Number -> Real
     stop_tangent : Number -> Real
 
@@ -781,34 +901,71 @@ handler forward for Diff : Real -> Real [coverage=total, forwards=none, implemen
     seed resumes 1
     add resumes 1
     mul resumes 1
+    div resumes 1
+    less resumes 1
     stop_primal resumes 1
     stop_tangent resumes 1
+"""
 
-define squared(x : Real, direction : Real) : Real !{} =
+def lower_forward(name, definition):
+    module = Compiler(parse(declarations + definition), module_name=name).qiec_module
+    assert module is not None
+    instance, = module.instances
+    handler, = module.handlers
+    constructor, = module.constructors
+    scope = ForwardDiffInstance(instance.entry.instance, handler.id, constructor.id)
+    return elaborate_forward_diff(module, (scope,))
+
+square = lower_forward("forward-square", """
+define positive_square(x : Real, direction : Real) : Real !{} =
     handle d with forward in
         let seeded <- perform d.seed(x, direction)
-        let product <- perform d.mul(seeded, seeded)
-        perform d.stop_tangent(product)
-"""
-module = Compiler(parse(source), module_name="forward-square").qiec_module
-assert module is not None
-instance, = module.instances
-handler, = module.handlers
-constructor, = module.constructors
-scope = ForwardDiffInstance(instance.entry.instance, handler.id, constructor.id)
-lowered = elaborate_forward_diff(module, (scope,))
-assert run_named(lowered, "squared", (3.0, 5.0)).value == 30.0
+        let zero <- perform d.seed(0.0, 0.0)
+        let positive <- perform d.less(zero, seeded)
+        if positive then
+            let product <- perform d.mul(seeded, seeded)
+            perform d.stop_tangent(product)
+        else
+            return 0.0
+""")
+assert run_named(square, "positive_square", (3.0, 5.0)).value == 30.0
+assert run_named(square, "positive_square", (-3.0, 5.0)).value == 0.0
+
+ratio = lower_forward("forward-ratio", """
+define ratio(x : Real, y : Real, dx : Real, dy : Real) : Real !{} =
+    handle d with forward in
+        let numerator <- perform d.seed(x, dx)
+        let divisor <- perform d.seed(y, dy)
+        let quotient <- perform d.div(numerator, divisor)
+        perform d.stop_tangent(quotient)
+""")
+assert run_named(ratio, "ratio", (2.0, 4.0, 3.0, 2.0)).value == 0.5
 ```
 
 ::: quivers.qiec.forward_diff
 
 ## Nominal reverse differentiation
 
-`elaborate_reverse_diff` checks one straight-line graph on a named
-reverse instance. The source seeds its Real inputs in parameter order,
+`elaborate_reverse_diff` checks a common straight-line graph on a
+named reverse instance. The source seeds its Real inputs in parameter order,
 seeds any constants after those inputs, and adds or multiplies earlier
 vertices. Each vertex has a consecutive integer slot starting at zero.
-The terminal `stop` names the output vertex.
+The terminal `stop` names the output vertex. An instance may also declare
+`less : Number * Number -> Bool` and `less resumes 1`. After allocating
+all vertices, the source can bind a comparison of two existing vertices
+and immediately branch on its result. Each arm can perform another such
+comparison or stop on an existing vertex.
+
+Only reached comparisons are evaluated. Equality or a nonfinite primal
+at a reached comparison raises `qiec-forward-comparison-boundary`.
+In exact real arithmetic, each strict difference of vertex primals has
+a constant sign in some neighborhood of the point. Intersect these
+neighborhoods for the reached comparisons. Throughout that intersection,
+execution selects the same polynomial output, whose derivative the reverse
+sweep computes. The checker admits up to 15 nested and
+256 total comparisons and reports `qiec-reverse-sink-limit` for larger
+selections. Backends without the partial comparison report
+`strict-scalar-comparison` when the computation requires it.
 
 The generated return clause puts a unit cotangent at that output's slot.
 Each arithmetic clause resumes once, then adds both operand
@@ -817,6 +974,7 @@ both contribute. The result contains the primal followed by all vertex
 cotangents, with the input cotangents first. The graph allows up to six
 vertices and rejects larger inputs with `qiec-reverse-limit`.
 
+<!-- python: run -->
 ```python
 from quivers.dsl import Compiler, parse
 from quivers.qiec import compile_reverse_diff, elaborate_reverse_diff, run_named
@@ -830,6 +988,7 @@ effect Reverse
     seed : Int * Real -> Number
     add : Int * Number * Number -> Number
     mul : Int * Number * Number -> Number
+    less : Number * Number -> Bool
     stop : Number -> Number
 
 instance d : Reverse
@@ -838,13 +997,18 @@ handler reverse for Reverse : Number -> (Real * Real * Real) [coverage=total, fo
     seed resumes 1
     add resumes 1
     mul resumes 1
+    less resumes 1
     stop resumes 1
 
 define squared(x : Real) : (Real * Real * Real) !{} =
     handle d with reverse in
         let input <- perform d.seed(0, x)
         let product <- perform d.mul(1, input, input)
-        perform d.stop(product)
+        let larger <- perform d.less(input, product)
+        if larger then
+            perform d.stop(product)
+        else
+            perform d.stop(input)
 """
 module = Compiler(parse(source), module_name="reverse-square").qiec_module
 assert module is not None
@@ -852,19 +1016,21 @@ instance, = module.instances
 handler, = module.handlers
 constructor, = module.constructors
 lowered = elaborate_reverse_diff(module, instance.entry.instance, handler.id, constructor.id)
-assert host_value(run_named(lowered, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
 compiled = compile_reverse_diff(module, instance.entry.instance, handler.id, constructor.id)
-assert host_value(run_named(compiled, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
+for graph in (lowered, compiled):
+    assert host_value(run_named(graph, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
+    assert host_value(run_named(graph, "squared", (0.5,)).value) == (0.5, 1.0, 0.0)
 ```
 
 `compile_reverse_diff` produces a standalone pure QIEC module for the
 same checked graph and supports up to 256 vertices. It retains the entry's
 identity and result type. The source vertex at slot $i$ supplies primal
 binding $i$ and cotangent $i+1$ in the returned tuple. The selected stop
-supplies the first tuple element. Forward arithmetic retains the origin of
-its source request. A multiplication's edge contribution uses the origin
-of the consumer, and an adjoint sum uses the origin of its vertex. The
-pure module emits no named-operation events. The bounded elaboration
+supplies the first tuple element. Forward arithmetic and comparisons
+retain the origin of their source requests. A multiplication's edge
+contribution uses the origin of the consumer, and an adjoint sum uses
+the origin of its vertex. The pure module emits no named-operation events.
+The bounded elaboration
 retains those operations and their addresses.
 
 The compiler binds primals in allocation order and completes cotangents
@@ -872,8 +1038,11 @@ in reverse order. Each operand occurrence contributes once to its
 predecessor. If the graph has $B$ binary vertices, of which $M$ multiply,
 evaluation performs $B$ primal operations, $2M$ reverse multiplications
 and at most $2B$ adjoint additions. This gives a bound of $5B$ scalar
-operations. The cost counts evaluation of the checked graph. Source
-parsing, module validation and target rendering have their own costs.
+operations. A lazy selection adds $H$ reached comparisons and two
+scalar operations per vertex to seed the reverse pass at the selected
+slot. The compiler uses one sequence of primal bindings and one reverse
+sweep for all choices. The cost counts evaluation of the checked graph.
+Source parsing, module validation and target rendering have their own costs.
 In particular, the QVR text parser can reach its nesting limit for a
 long written result product before the compiler's graph limit. The
 derivative recurrence is exact over the reals. Machine arithmetic uses

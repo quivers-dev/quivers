@@ -19,6 +19,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes.declarations import ObjectDecl, TypeFromExpr
 from quivers.dsl.ast_nodes.objects import DiscreteConstructor, TypeName
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.qiec._relation_operations import _UnaryOperation
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import ComposedRelationSpec
@@ -121,10 +122,7 @@ def _transform_spec(
     if other is None:
         return UnaryRelationTransformSpec(
             source=source,
-            operation=cast(
-                Literal["project", "condition", "invert", "trim", "closure"],
-                declaration.operation,
-            ),
+            operation=cast(_UnaryOperation, declaration.operation),
             positions=declaration.positions,
             word=declaration.word,
         )

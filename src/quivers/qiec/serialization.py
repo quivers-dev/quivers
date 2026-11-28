@@ -128,6 +128,7 @@ from quivers.qiec.effect_law_schema import (
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
+from quivers.qiec.finite_ep_runtime import FiniteStringEPRequest
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
@@ -142,10 +143,19 @@ from quivers.qiec.relation_feature_moments import (
     FixedRelationFeatureObservation,
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_capped_path_law import (
+    FixedCappedCyclicRelationPathSampleRequest,
+)
 from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
 )
+from quivers.qiec.relation_log_path_certificate import (
+    FixedCyclicLogProbPathCertificateRequest,
+    FixedLogProbPathCertificateRequest,
+)
+from quivers.qiec.relation_path_certificate import FixedMarkovPathCertificateRequest
+from quivers.qiec.relation_path_rank import FixedRelationPathRankRequest
 from quivers.qiec.relation_ranked import FixedRankedOTRelationRequest
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
@@ -213,6 +223,7 @@ from quivers.qiec.effects import (
     RowVariable,
 )
 from quivers.qiec.evidence import BranchGiven, Reflexivity
+from quivers.qiec._deduction_guards import _TermGuard
 from quivers.qiec.foreign import (
     DeductionLinearGoal,
     DeductionBooleanOutcomes,
@@ -220,6 +231,7 @@ from quivers.qiec.foreign import (
     DeductionOutcomeLaw,
     DeductionOutcomes,
     DeductionProofs,
+    _NodeBoundedDeductionProofs,
     Enumeration,
     KernelSemiring,
     SemiringProduct,
@@ -417,6 +429,11 @@ _NODE_CLASSES = (
     FixedRelationCostRequest,
     FixedRelationMarginalMapRequest,
     FixedRelationPathSampleRequest,
+    FixedCyclicLogProbPathCertificateRequest,
+    FixedLogProbPathCertificateRequest,
+    FixedMarkovPathCertificateRequest,
+    FixedRelationPathRankRequest,
+    FixedCappedCyclicRelationPathSampleRequest,
     FixedCyclicRelationPathSampleRequest,
     FixedRelationRequest,
     RationalRelationSpec,
@@ -431,6 +448,7 @@ _NODE_CLASSES = (
     RegularStringEPPolicy,
     TreeStringGraphRequest,
     RegularStringEPRequest,
+    FiniteStringEPRequest,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,
@@ -483,7 +501,9 @@ _NODE_CLASSES = (
     DeductionLinearGoal,
     DeductionOutcomes,
     DeductionProofs,
+    _NodeBoundedDeductionProofs,
     DeductionBooleanOutcomes,
+    _TermGuard,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     EffectRequest,

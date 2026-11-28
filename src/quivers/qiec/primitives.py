@@ -40,6 +40,8 @@ from quivers.qiec.types import BOOL, INT, REAL, STRING, TypeExpr
 type PrimitiveCapability = Literal[
     "arithmetic",
     "comparison",
+    "strict-scalar-comparison",
+    "strict-scalar-division",
     "boolean",
     "string",
     "conversion",
@@ -394,6 +396,37 @@ def _total(function: Callable[..., torch.Tensor]) -> Implementation:
     return apply
 
 
+def _strict_less(
+    _domain: NumberDomain, left: torch.Tensor, right: torch.Tensor
+) -> torch.Tensor:
+    """Compare two finite real primals off the equality boundary.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The numeric representation already used for both arguments.
+    left, right : torch.Tensor
+        The Real arguments to compare.
+
+    Returns
+    -------
+    torch.Tensor
+        Whether the left primal is strictly below the right one.
+
+    Raises
+    ------
+    ValueError
+        If the two primals are equal or either is nonfinite.
+    """
+    demand(
+        torch.isfinite(left) & torch.isfinite(right) & (left != right),
+        lambda: ValueError(
+            "qiec-forward-comparison-boundary: strict comparison requires finite distinct primals"
+        ),
+    )
+    return left < right
+
+
 def _truncating_division(
     _domain: NumberDomain, dividend: torch.Tensor, divisor: torch.Tensor
 ) -> torch.Tensor:
@@ -476,6 +509,44 @@ def _quotient(
     """
     _refuse_zero_divisor("div_real", divisor)
     return dividend / divisor
+
+
+def _strict_quotient(
+    _domain: NumberDomain, dividend: torch.Tensor, divisor: torch.Tensor
+) -> torch.Tensor:
+    """Compute one finite ground coefficient of nominal forward division.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The machine's numeric representation, already used by the inputs.
+    dividend, divisor : torch.Tensor
+        The ground numerator and common ground primal divisor.
+
+    Returns
+    -------
+    torch.Tensor
+        Their quotient in the machine's Real representation.
+
+    Raises
+    ------
+    ValueError
+        If the ground divisor is zero or nonfinite, or the quotient is nonfinite.
+    """
+    demand(
+        torch.isfinite(divisor) & (divisor != 0),
+        lambda: ValueError(
+            "qiec-forward-division-domain: division requires a finite nonzero primal divisor"
+        ),
+    )
+    quotient = dividend / divisor
+    demand(
+        torch.isfinite(quotient),
+        lambda: ValueError(
+            "qiec-forward-division-range: a quotient coefficient is nonfinite at working precision"
+        ),
+    )
+    return quotient
 
 
 def _reciprocal(_domain: NumberDomain, value: torch.Tensor) -> torch.Tensor:
@@ -1113,6 +1184,13 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
         "mul_real", (REAL, REAL), REAL, "arithmetic", _total(torch.mul), total=True
     ),
     _signature("div_real", (REAL, REAL), REAL, "arithmetic", _quotient),
+    _signature(
+        "strict_div_real",
+        (REAL, REAL),
+        REAL,
+        "strict-scalar-division",
+        _strict_quotient,
+    ),
     _signature("neg_real", (REAL,), REAL, "arithmetic", _total(torch.neg), total=True),
     _signature("abs_real", (REAL,), REAL, "arithmetic", _total(torch.abs), total=True),
     _signature(
@@ -1148,6 +1226,9 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
     _signature("eq_real", (REAL, REAL), BOOL, "comparison", _total(torch.eq)),
     _signature("ne_real", (REAL, REAL), BOOL, "comparison", _total(torch.ne)),
     _signature("lt_real", (REAL, REAL), BOOL, "comparison", _total(torch.lt)),
+    _signature(
+        "strict_lt_real", (REAL, REAL), BOOL, "strict-scalar-comparison", _strict_less
+    ),
     _signature("le_real", (REAL, REAL), BOOL, "comparison", _total(torch.le)),
     _signature("gt_real", (REAL, REAL), BOOL, "comparison", _total(torch.gt)),
     _signature("ge_real", (REAL, REAL), BOOL, "comparison", _total(torch.ge)),

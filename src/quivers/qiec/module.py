@@ -44,6 +44,7 @@ from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.identifiers import (
     ComputationId,
     EffectInstanceId,
+    FamilyId,
     HandlerId,
     QIEC_ABI,
     SiteProvenance,
@@ -704,6 +705,7 @@ def validate_module(module: QiecModule) -> KernelRegistry:
     for handler in module.handlers:
         registry.register_handler(handler)
     if not rechecked:
+        guard_bodies: dict[ComputationId, NamedComputation] | None = None
         for handler in module.handlers:
             if isinstance(handler.foreign, DeductionLinearGoal):
                 from quivers.qiec.linear_deduction import validate_linear_goal
@@ -716,6 +718,58 @@ def validate_module(module: QiecModule) -> KernelRegistry:
                 from quivers.qiec.deduction_outcomes import validate_outcome_adapter
 
                 validate_outcome_adapter(handler, handler.foreign, registry)
+                if isinstance(handler.foreign, DeductionOutcomes):
+                    from quivers.qiec.rules import RulePresentation
+
+                    presentation = handler.foreign.presentation
+                    assert isinstance(presentation, RulePresentation)
+                    if presentation.conditions:
+                        if guard_bodies is None:
+                            guard_bodies = {
+                                body.id: body for body in module.computations
+                            }
+                        from quivers.qiec._deduction_guards import (
+                            _TermGuard,
+                            _guard_in_scope,
+                            _term_guard_in_scope,
+                        )
+
+                        for guard in presentation.conditions:
+                            outer = guard_bodies.get(guard.id)
+                            scoped = None
+                            if outer is not None:
+                                if isinstance(guard, _TermGuard):
+                                    owner = FamilyId.derive(
+                                        module.module,
+                                        "family",
+                                        f"{presentation.name}__Item",
+                                    )
+                                    family = registry.families.get(guard.item_family.id)
+                                    if (
+                                        guard.item_family.id != owner
+                                        or family != guard.item_family
+                                        or any(
+                                            registry.constructors.get(item.id) != item
+                                            for item in guard.item_constructors
+                                        )
+                                    ):
+                                        raise KernelError(
+                                            f"deduction term guard {guard.name!r} must "
+                                            "capture its exact outer item declarations"
+                                        )
+                                    scoped = _term_guard_in_scope(
+                                        outer,
+                                        presentation.name,
+                                        guard.item_family,
+                                        guard.item_constructors,
+                                    )
+                                else:
+                                    scoped = _guard_in_scope(outer, presentation.name)
+                            if scoped != guard:
+                                raise KernelError(
+                                    f"deduction rule guard {guard.name!r} must match "
+                                    "the outer module's checked computation"
+                                )
             elif isinstance(handler.foreign, DeductionOutcomeGrouping):
                 from quivers.qiec.deduction_outcomes import validate_outcome_grouping
 

@@ -1075,7 +1075,12 @@ class _Chart:
                     ),
                 )
 
-            result = c.application_weight(index, rule, bindings, weighted)
+            result = c.guard_application(
+                rule,
+                bindings,
+                c.application_weight(index, rule, bindings, weighted),
+                lambda: Return(value=accumulated),
+            )
             bound = self.s.depth_cell[0]
             if bound is None:
                 return result

@@ -18,6 +18,7 @@ from quivers.qiec.numbers import decide
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.terms import (
     ConditionalValue,
+    ConstructorValue,
     LetValue,
     LiteralValue,
     Local,
@@ -282,7 +283,24 @@ def _dual(
 
 
 class _ScalarDerivativeEvaluator(Evaluator):
-    """Use exact rational control and arithmetic in the checked reference machine."""
+    """Use exact rational control and arithmetic in the checked reference machine.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked declarations used by this derivative run.
+    fuel : int
+        The allowed number of reference machine steps.
+    """
+
+    def __init__(self, *, module: QiecModule, fuel: int) -> None:
+        super().__init__(module=module, fuel=fuel)
+        self.case_constructors = frozenset(
+            constructor
+            for family in module.families
+            if family.closed and not family.parameters and not family.indices
+            for constructor in family.constructors
+        )
 
     def _constant(self, value: Fraction) -> _Scalar:
         """Embed a literal in the current scalar arithmetic.
@@ -352,6 +370,14 @@ class _ScalarDerivativeEvaluator(Evaluator):
         if isinstance(
             value, Var | LetValue | TupleValue | Projection | ConditionalValue
         ):
+            return super()._value(value, environment)
+        if (
+            isinstance(value, ConstructorValue)
+            and not value.static_arguments
+            and value.constructor in self.case_constructors
+        ):
+            # Keep the exact field values in the ordinary constructor.
+            # Matching unpacks them without adding derivative nodes.
             return super()._value(value, environment)
         raise JvpUnsupported(
             f"{type(value).__name__} has no exact scalar derivative rule"
@@ -979,8 +1005,10 @@ def exact_jvp(
 
     The run follows the checked reference machine, including authored
     clauses and resumptions. The result uses rational arithmetic for the
-    admitted primitives. An input-dependent comparison is admitted only
-    when its operands are unequal at the supplied point.
+    admitted primitives. Constructors from closed monomorphic families
+    carry exact scalar fields through their selected case arms when the
+    constructor application has no static arguments. An input-dependent
+    comparison is admitted only when its operands are unequal.
 
     Parameters
     ----------

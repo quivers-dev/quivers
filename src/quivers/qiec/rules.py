@@ -224,7 +224,9 @@ class SideCondition(QiecModel):
     arguments : tuple of str
         The rule's schematic variables or value fields passed to it, one
         per parameter. A natural-number variable is passed as an
-        ``Int``, a nullary constructor of a closed sort as a ``String``.
+        ``Int``. A captured source guard reads closed matched terms at
+        the deduction's nominal item type. A plain ground condition can
+        read a nullary constructor of a closed sort as a ``String``.
     """
 
     computation: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -1123,8 +1125,29 @@ class RulePresentation(QiecModel):
         -------
         QiecModule
             Its index sorts, families, constructors and conditions.
+
+        Raises
+        ------
+        RuleError
+            If term guards do not agree on their owned item declarations.
         """
         families, constructors = self.declarations()
+        if self.conditions:
+            from quivers.qiec._deduction_guards import _TermGuard
+
+            captures = tuple(
+                guard for guard in self.conditions if isinstance(guard, _TermGuard)
+            )
+            if captures:
+                first = captures[0]
+                if first.item_family.name != f"{self.name}__Item" or any(
+                    guard.item_family != first.item_family
+                    or guard.item_constructors != first.item_constructors
+                    for guard in captures[1:]
+                ):
+                    raise RuleError("term guards require one shared owned item family")
+                families = (*families, first.item_family)
+                constructors = (*constructors, *first.item_constructors)
         return QiecModule(
             module=self.name,
             source_protocol=PRESENTATION_PROTOCOL,
@@ -1468,6 +1491,8 @@ def _check_side_condition(
         If the computation is unknown, has a telescope, is not pure, does
         not return ``Bool``, or its parameters do not match the arguments.
     """
+    from quivers.qiec._deduction_guards import _TermGuard
+
     condition = rule.side_condition
     assert condition is not None
     computation = conditions.get(condition.computation)
@@ -1499,7 +1524,13 @@ def _check_side_condition(
                 "premises do not bind"
             )
         assert isinstance(binder, IndexBinder)
-        expected = INT if isinstance(binder.sort, NatSort) else STRING
+        expected = (
+            INT
+            if isinstance(binder.sort, NatSort)
+            else computation.item_type
+            if isinstance(computation, _TermGuard)
+            else STRING
+        )
         if parameter.type != expected:
             raise RuleError(
                 f"the side condition of {rule.name!r} takes {name!r} at another type"
@@ -2802,26 +2833,37 @@ def closed_derivation_value(
             "closed proof values require unconditional syntax without equations"
         )
 
-    def refuse_scope(item: Item) -> Local:
-        """Refuse to replace a scoped proof argument with a local placeholder.
-
-        Parameters
-        ----------
-        item
-            The item a scoped premise would bind.
-
-        Raises
-        ------
-        RuleError
-            Always, since a scoped premise has a function type of meanings.
-        """
-        del item
-        raise RuleError("a closed proof value cannot encode a premise under hypotheses")
-
-    value = _lower_value(presentation, derivation, (), [], refuse_scope, [], [])
-    assert isinstance(value, ConstructorValue)
-    _check_lowered_proof(presentation, value, derivation.item, ())
-    return value
+    frames: list[
+        tuple[
+            Derivation,
+            Rule | AxiomSlot,
+            tuple[IndexTerm, ...],
+            tuple[Blocks, ...],
+            list[Value],
+        ]
+    ] = []
+    node: ProofNode = derivation
+    while True:
+        if isinstance(node, Hole):
+            raise RuleError(f"hole {node.index} lies outside its context")
+        rule, _, static = _proof_arguments(presentation, node)
+        frames.append((node, rule, static, _hypotheses(presentation, node), []))
+        while frames:
+            current, rule, static, blocks, fields = frames[-1]
+            position = len(fields)
+            if position < len(current.premises):
+                if blocks and any(blocks[position]):
+                    raise RuleError(
+                        "a closed proof value cannot encode a premise under hypotheses"
+                    )
+                node = current.premises[position]
+                break
+            value = _proof_constructor(presentation, current, rule, static, fields)
+            frames.pop()
+            if not frames:
+                _check_lowered_proof(presentation, value, derivation.item, ())
+                return value
+            frames[-1][-1].append(value)
 
 
 def _check_lowered_proof(
@@ -2902,16 +2944,7 @@ def _lower_value(
         if entry.type != _item_type(presentation, body.item):
             raise RuleError("a hole assumes another item than its context holds")
         return Var(local=entry)
-    rule = presentation.constructors_by_id.get(body.constructor)
-    if rule is None:
-        raise RuleError("a derivation names a rule of another presentation")
-    binding = dict(body.binding)
-    static: list[IndexTerm] = []
-    for binder in rule.telescope:
-        assert isinstance(binder, IndexBinder)
-        if binder.name not in binding:
-            raise RuleError(f"{rule.name!r} leaves {binder.name!r} unbound")
-        static.append(_static(binding[binder.name], binder.sort))
+    rule, binding, static = _proof_arguments(presentation, body)
     fields: list[Value] = []
     blocks = _hypotheses(presentation, body)
     for position, child in enumerate(body.premises):
@@ -2937,14 +2970,90 @@ def _lower_value(
         placeholder = local(target)
         placeholders.append(placeholder)
         fields.append(Var(local=placeholder))
+    return _proof_constructor(presentation, body, rule, static, fields)
+
+
+def _proof_arguments(
+    presentation: RulePresentation, body: Derivation
+) -> tuple[Rule | AxiomSlot, dict[str, Ground], tuple[IndexTerm, ...]]:
+    """Resolve the derivation's exact constructor and telescope arguments.
+
+    Parameters
+    ----------
+    presentation
+        The proof declarations in scope.
+    body
+        The derivation occurrence.
+
+    Returns
+    -------
+    tuple
+        The constructor declaration, ground binding, and typed arguments in
+        telescope order.
+
+    Raises
+    ------
+    RuleError
+        If the constructor belongs to another presentation or a telescope
+        variable is unbound or has the wrong sort.
+    """
+    rule = presentation.constructors_by_id.get(body.constructor)
+    if rule is None:
+        raise RuleError("a derivation names a rule of another presentation")
+    binding = dict(body.binding)
+    static: list[IndexTerm] = []
+    for binder in rule.telescope:
+        assert isinstance(binder, IndexBinder)
+        if binder.name not in binding:
+            raise RuleError(f"{rule.name!r} leaves {binder.name!r} unbound")
+        static.append(_static(binding[binder.name], binder.sort))
+    return rule, binding, tuple(static)
+
+
+def _proof_constructor(
+    presentation: RulePresentation,
+    body: Derivation,
+    rule: Rule | AxiomSlot,
+    static: tuple[IndexTerm, ...],
+    premises: list[Value],
+) -> ConstructorValue:
+    """Finish the proof constructor after its ordered premises are lowered.
+
+    Parameters
+    ----------
+    presentation
+        The proof declarations in scope.
+    body
+        The derivation occurrence.
+    rule
+        Its resolved rule or axiom slot.
+    static
+        Its typed telescope arguments.
+    premises
+        Its lowered premise values, in rule order.
+
+    Returns
+    -------
+    ConstructorValue
+        The ordinary constructor value with its claimed indexed result type.
+
+    Raises
+    ------
+    RuleError
+        If the occurrence carries the wrong number of data fields.
+    """
     if len(body.values) != len(rule.values):
         raise RuleError(f"{rule.name!r} carries {len(rule.values)} values")
-    for value, field in zip(body.values, rule.values, strict=True):
-        fields.append(LiteralValue(value=value, type=field.type))
     return ConstructorValue(
         constructor=rule.id,
-        static_arguments=tuple(static),
-        fields=tuple(fields),
+        static_arguments=static,
+        fields=(
+            *premises,
+            *(
+                LiteralValue(value=value, type=field.type)
+                for value, field in zip(body.values, rule.values, strict=True)
+            ),
+        ),
         result_type=_item_type(presentation, body.item),
     )
 
@@ -3662,6 +3771,8 @@ class ReferenceInterpretation:
             If the condition reads a value field, which a rule instance
             found by grounding does not have.
         """
+        from quivers.qiec._deduction_guards import _matched_value
+
         condition = rule.side_condition
         assert condition is not None
         computation = next(
@@ -3678,7 +3789,9 @@ class ReferenceInterpretation:
                     f"the side condition of {rule.name!r} reads the value {name!r}, "
                     "which grounding does not give"
                 )
-            environment[parameter] = binding[name]
+            environment[parameter] = _matched_value(
+                computation, rule, name, parameter, binding[name]
+            )
         return bool(Evaluator().evaluate(computation.body, environment))
 
     def item(self, family: FamilyId, arguments: tuple[Ground, ...]) -> Item:

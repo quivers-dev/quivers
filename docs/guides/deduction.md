@@ -403,6 +403,8 @@ goal in the declared semiring, the number that
 [`goal_weight`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView.goal_weight)
 reads from the chart for the whole sentence. A program writes
 `let chart = parse(D, sentence)` and scores `chart.goal_weight()`.
+The single-sentence form also accepts a program-local rank-one
+`Tensor[String]`. A parse with a plate reads its corpus from program data.
 [`run_deduction`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.run_deduction)
 runs a deduction alone on the reference machine, and
 [`deduction_item`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.deduction_item)
@@ -520,6 +522,72 @@ with `normalize=lhs`, inherited through `parent`, or attached to a
 them through `parse` or `run_deduction`. The classic agenda, packed
 outcome and proof queries, and the exact linear planner require weight
 policies they can evaluate independently and refuse these operations.
+
+### Guards on matched coordinates
+
+A rule can name a Boolean computation with `#[guard=operation]`. The
+computation receives the rule's matched position variables as `Int` values
+in their telescope order. The example tests one split of a sentence.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 4
+object Result : Real 1
+
+deduction Guarded : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, S, word
+    rule join : span(I, K, A), span(K, J, B) |- span(I, J, S) #[guard=first_split]
+    lexicon
+        "x" : A = word
+        "y" : B = word
+
+define first_split(i : Int, k : Int, j : Int) : Bool !{} =
+    return k == 1
+
+program response : Token -> Result
+    let chart = parse(Guarded, sentence)
+    score result = chart.goal_weight()
+    return result
+
+export response
+```
+
+The guard has an empty effect row and no static parameters. Its body uses
+scalar `Int` and `Bool` operations. A true decision admits the matched
+application. A false decision removes that application before weighting or
+recording its edge. Distinct admitted applications still contribute
+separately. A runtime error in a guard fails any query that reaches it.
+The indexed query can check matches outside the goal. The equality
+of the inside sums assumes that the guard evaluations succeed.
+
+#### Guards on matched terms
+
+A guard can also take matched constructor terms at the deduction's
+generated `D__Item` type. That signature contains the entire matched
+telescope in order, with each position variable at `Int` and each term
+variable at `D__Item`. It can use exhaustive `case` on those terms and their
+matched children, alongside the scalar operations. The deduction's own
+constructor declarations determine the type and field order. A guard still
+has no static parameters, named calls, or effects. Rule patterns and
+closed lexical forms share one constructor vocabulary, with one arity
+for each symbol. A constructor can occur only in the lexicon. The
+grounded route reconstructs each matched term once per argument
+occurrence, checking its constructors in field order.
+
+Checked scalar `parse`, `run_deduction`, and lexical item outcome queries
+use the same checked guard body. The indexed query calls the guard once per
+completed candidate binding and reports this count in its trace. If there
+are $G$ candidate bindings, at most $m$ matched coordinates per binding,
+and at most $g$ scalar body steps per guard, guard execution and argument
+conversion take $O(G(m+g))$ work. Space for retained edges depends on the
+accepted applications. Removing edges
+preserves the span order certified from the unfiltered rule patterns.
+The production probabilities of a locally normalized grammar still use
+their original groups.
+
+The legacy agenda and external targets refuse guarded executions. Proof
+values, packed Boolean proof interpretations, and the linear-cycle
+executor require unconditional rules.
 
 ### Cyclic inside weights and finite-height proofs
 
@@ -756,8 +824,11 @@ The native trace emits a separate `deduction.grouped_outcomes` event after
 this stage. It records the key type, number of input rows, distinct keys,
 positive output rows, and whether this stage normalizes the result. The
 underlying packed query reports its own raw item or proof masses.
-Computing the key, comparing structured values, and summing the masses
-have separate costs and are listed as unmeasured here.
+The trace lists the key calculation, comparisons, and reductions as
+unmeasured. Run `python -m tests.benchmarks.deduction_key_grouping` to
+measure the checked query and its isolated reducer as item count, key
+count, and key depth vary. The benchmark checks the masses and gradients
+at each parameter point in the refit.
 
 #### Returning weighted proofs
 
@@ -767,6 +838,19 @@ The runtime counts the structural proofs of all selected goals against
 this limit before constructing any proof values. The count includes
 zero-weight proofs. An exceeded limit raises an error, and a successful
 query returns each positive-weight proof with its log weight.
+
+A deduction can also declare `proof_nodes=512` in its option block.
+This positive integer below $2^{53}$ limits the total rule and axiom occurrences in all
+selected structural proofs. A shared subtree contributes once per premise
+position that uses it. The node limit applies before filtering zero-weight
+proofs, and it excludes result list entries and the packed chart itself.
+Omitting the option leaves the proof-count limit alone.
+
+Run `python -m tests.benchmarks.deduction_proof_list` to measure the
+checked listing as the number of alternatives and the proof length
+vary. The benchmark counts proof constructors and checks that a
+refused cap stops before any proof node is built. The chart and its
+saturating count still incur work before that decision.
 
 `parse_normalized_proofs` normalizes over these same proofs and requires
 positive total mass. A raw query returns an empty list when no proof has
@@ -790,8 +874,31 @@ It records the budget, the number of structural proofs before filtering,
 the number of typed result rows, and the packed-forest construction
 counters. Reification work and backward storage are unmeasured. If the
 budget is exceeded, `deduction.proofs.refused` records the budget and the
-reason. The check saturates proof counts at the budget plus one, so the
-event supplies no exact total after refusal.
+reason. With only a proof-count limit, the check saturates counts at the
+limit plus one. A refusal can report a lower bound on the total.
+
+With a node limit, the same packed traversal counts proofs and their
+total unfolded size. For a partial combination with proof count $p$ and
+node sum $q$, adding a premise occurrence with count $c$ and node sum $s$
+gives $(pc, ps+qc)$. Each choice of that premise repeats the earlier nodes,
+and each earlier combination repeats the chosen premise's nodes. An edge adds
+$pc$ root nodes after the last premise. Summing alternatives and distinct
+goals gives the structural output size. A missing premise contributes
+$(0,0)$, so an impossible edge adds no nodes even when an earlier premise
+already exceeded a limit.
+
+The traversal saturates both counts at one above the larger limit. Every
+formula uses nonnegative integer sums and products, which preserve this
+truncation. After selecting the goal ancestors, the check makes one pass
+over them. This uses $O(V+E+R)$ arithmetic operations for $V$ items,
+$E$ edges and $R$ premise references in that part of the forest. Selecting
+the ancestors also scans the original chart's item lists. The count
+tables use $O(V)$ integers whose bit length is logarithmic in the larger
+limit. This work follows chart construction and precedes proof
+enumeration, proof weights and constructor allocation.
+The trace includes `proof_node_budget` when configured. A
+`too-many-proof-nodes` refusal also reports
+`minimum_structural_proof_nodes`.
 
 For instance, two rules can prove the same full span. This program uses
 the packed chart to return their total weight by summing the two proof rows.
@@ -801,7 +908,7 @@ the packed chart to return their total weight by summing the two proof rows.
 object Token : FinSet 2
 object Mass : Real 1
 
-deduction Reading : Token -> Token [semiring=LogProb, start=S]
+deduction Reading : Token -> Token [semiring=LogProb, start=S, proof_nodes=6]
     atoms span, A, B, C, S, meaning, word
     rule first : span(I, K, A, word), span(K, J, C, word) |- span(I, J, S, meaning)
     rule second : span(I, K, B, word), span(K, J, C, word) |- span(I, J, S, meaning)
@@ -1006,6 +1113,17 @@ the goal never uses, so its provenance grows quadratically on this
 grammar. QIEC's step budget applies to the interpreted computation
 and its truth calls. The packed host fold uses its separate finite
 grounding contract.
+
+The opt-in CPU benchmark checks the likelihood and gradient at every
+refit against a closed form. It reports forward and reverse tensor
+dispatch, logical saved elements, the tensor allocator peak, and the
+traced Python peak separately. For this fixture it checks the derived
+autograd tape bound of $28n+20$ saved elements. Run it from the
+repository root.
+
+```bash
+python -m tests.benchmarks.packed_boolean_outcomes
+```
 
 #### Encoding two proofs of one logical form
 

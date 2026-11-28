@@ -50,7 +50,7 @@ class RelationCascadeStep(QiecModel):
     operands : tuple of int
         The earlier step indices, in operation order.
     positions : tuple of int
-        Tape positions for project, condition, and join.
+        Tape positions for project, condition, join, and auto-intersection.
     word : tuple of int or None
         The fixed tape word for conditioning.
     keep_shared : bool
@@ -68,6 +68,7 @@ class RelationCascadeStep(QiecModel):
             "invert",
             "trim",
             "closure",
+            "auto_intersect",
             "compose",
             "union",
             "concatenate",

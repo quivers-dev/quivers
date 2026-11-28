@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+from quivers.qiec.contracts import DerivativeSemantics
+from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
+from quivers.qiec.derivative_rules import (
+    RationalDerivativeDecision,
+    check_rational_derivative_rule,
+)
 from quivers.qiec.differentiation import ExactJvp, JvpLimit, JvpUnsupported, exact_jvp
 from quivers.qiec.discharge import (
     DischargeObstacle,
@@ -35,11 +41,16 @@ from quivers.qiec.laws import FiniteLawDecision, FiniteLawLimit, FiniteLawUnsupp
 from quivers.qiec.module import (
     QiecModule,
     _execution_reachability,
+    installed_handlers,
+    program_computations,
     reached_handlers,
     validate_module,
 )
 from quivers.qiec.polynomial_laws import PolynomialLawLimit, PolynomialLawUnsupported
 from quivers.qiec.rational_laws import RationalLawLimit, RationalLawUnsupported
+
+if TYPE_CHECKING:
+    from quivers.dsl.ast_nodes import Module
 
 type _Decision = FiniteEffectLawDecision | ScalarEffectLawDecision
 type _Status = Literal["checked", "refuted", "unresolved"]
@@ -114,16 +125,18 @@ class EffectInterchangeReport:
 
 @dataclass(frozen=True, slots=True)
 class EffectExecutionStage:
-    """One source computation reached in the resulting execution graph.
+    """One source computation reached in the selected execution graph.
 
     Parameters
     ----------
     computation : ComputationId
         The original checked identity, preserved by lowering.
-    stage : {"direct", "handler-discharge", "recursive-state", "reference"}
-        The stage selected by ordinary discharge. `direct` has no
-        local rewrite and `reference` retains a handler. A direct
-        caller can reach another computation at a different stage.
+    stage : {"direct", "handler-discharge", "recursive-state", "reference", "source-handler", "program-plan"}
+        `direct` has no local rewrite. Ordinary discharge uses `reference`
+        for a retained handler and names its obstacle. A target selecting
+        the unchanged source uses `source-handler` at original installations.
+        A direct caller can reach a computation at another stage.
+        `program-plan` is the target's probabilistic statement plan.
     rewrite : DischargeRewrite or None
         The checked transformation and its companions, if one ran.
     obstacle : DischargeObstacle or None
@@ -131,7 +144,14 @@ class EffectExecutionStage:
     """
 
     computation: ComputationId
-    stage: Literal["direct", "handler-discharge", "recursive-state", "reference"]
+    stage: Literal[
+        "direct",
+        "handler-discharge",
+        "recursive-state",
+        "reference",
+        "source-handler",
+        "program-plan",
+    ]
     rewrite: DischargeRewrite | None = None
     obstacle: DischargeObstacle | None = None
 
@@ -181,6 +201,77 @@ class EffectJvpCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class EffectTargetReport:
+    """An actual export outcome with scoped derivative evidence.
+
+    Parameters
+    ----------
+    target : str
+        The requested public target key.
+    computation : ComputationId
+        The source entry whose execution stages are reported.
+    projection : {"source", "discharged", "program-plan"} or None
+        The selected standalone QIEC graph or probabilistic program plan.
+    stages : tuple[EffectExecutionStage, ...]
+        Source entries reached by a standalone graph, or the selected
+        program entry carrying the probabilistic statement stage.
+    refusals : tuple[str, ...]
+        The target's named refusal kinds, if the export failed.
+    detail : str or None
+        The backend diagnostic including any failed hypothesis.
+    laws : tuple[EffectLawReport, ...]
+        The plan's source law reports and their existing evidence.
+    native_jvp : EffectJvpCheck or None
+        Requested exact comparison of source and selected QIEC graph.
+    derivative_rule : RationalDerivativeDeclaration or None
+        The nominal source derivative formula, if requested.
+    rule_decision : RationalDerivativeDecision or None
+        The exact recheck of that formula against the actual source.
+    rule_obstacle : str or None
+        The reason the source formula could not be checked, if any.
+    external_derivative : DerivativeSemantics
+        The report for the emitted backend's derivative. Emission and
+        QIEC checks provide no evidence about that derivative.
+    helper_projection : {"source", "discharged"} or None
+        The QIEC helper graph selected alongside a probabilistic program plan.
+    native_obstacle : str or None
+        The named hypothesis blocking a requested comparison when its
+        target stage does not emit a comparable scalar QIEC graph.
+    """
+
+    target: str
+    computation: ComputationId
+    projection: Literal["source", "discharged", "program-plan"] | None
+    stages: tuple[EffectExecutionStage, ...]
+    refusals: tuple[str, ...]
+    detail: str | None
+    laws: tuple[EffectLawReport, ...]
+    native_jvp: EffectJvpCheck | None
+    derivative_rule: RationalDerivativeDeclaration | None
+    rule_decision: RationalDerivativeDecision | None
+    rule_obstacle: str | None
+    external_derivative: DerivativeSemantics
+    helper_projection: Literal["source", "discharged"] | None = None
+    native_obstacle: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgramTargetSource:
+    """A compiler-owned source snapshot bound to its checked program graph.
+
+    Parameters
+    ----------
+    parsed : Module
+        The parsed program that the compiler checked.
+    checked_digest : str
+        The canonical digest of the checked program module.
+    """
+
+    parsed: Module
+    checked_digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class EffectPlan:
     """A view of the source, carrier analysis, law results, and discharge.
 
@@ -203,6 +294,9 @@ class EffectPlan:
     stages : tuple[EffectExecutionStage, ...]
         The stages of reachable source computations in the discharged
         graph. Generated computations appear on their originating rewrite.
+    _program_source : object or None
+        The compiler's parsed program source and the digest of the checked
+        QIEC module compiled from it. Direct QIEC plans have neither.
     """
 
     bundle: EffectLawBundle
@@ -212,6 +306,27 @@ class EffectPlan:
     discharge: DischargedModule
     interchanges: tuple[EffectInterchangeReport, ...] = ()
     stages: tuple[EffectExecutionStage, ...] = ()
+    _program_source: object | None = field(default=None, compare=False, repr=False)
+
+    def _with_program_source(self, source: Module) -> EffectPlan:
+        """Retain the compiler's source bound to this exact checked graph.
+
+        Parameters
+        ----------
+        source : Module
+            The compiler's own parsed source for the checked module.
+
+        Returns
+        -------
+        EffectPlan
+            The same checked report with a bound public program input.
+        """
+        return replace(
+            self,
+            _program_source=_ProgramTargetSource(
+                source, _module_digest(self.bundle.module)
+            ),
+        )
 
     def check_jvp(
         self,
@@ -245,37 +360,322 @@ class EffectPlan:
         ValueError
             If the computation identity, inputs, or fuel are invalid.
         """
-        source = self.bundle.module
-        staged = self.discharge.module
-        owner = next(
-            (entry for entry in source.computations if entry.id == self.computation),
-            None,
-        )
-        if owner is None:
-            raise ValueError("the effect plan does not name a source computation")
-        if not any(
-            entry.id == owner.id and entry.name == owner.name
-            for entry in staged.computations
-        ):
-            raise ValueError("the staged graph does not preserve the source identity")
-        observations: list[tuple[ExactJvp | None, str | None]] = []
-        for graph in (source, staged):
-            try:
-                answer = exact_jvp(graph, owner.name, arguments, direction, fuel=fuel)
-            except (JvpUnsupported, JvpLimit) as error:
-                observations.append((None, str(error)))
-            else:
-                observations.append((answer, None))
-        (left, left_obstacle), (right, right_obstacle) = observations
-        return EffectJvpCheck(
+        return _compare_jvp(
+            self.bundle.module,
+            self.discharge.module,
             self.computation,
             arguments,
             direction,
-            left,
-            right,
-            left_obstacle,
-            right_obstacle,
+            fuel,
         )
+
+    def check_target(
+        self,
+        target: str,
+        *,
+        arguments: tuple[int | Fraction, ...] | None = None,
+        direction: tuple[int | Fraction, ...] | None = None,
+        derivative_rule: RationalDerivativeDeclaration | None = None,
+        fuel: int = 65_536,
+        max_rule_work: int = 65_536,
+    ) -> EffectTargetReport:
+        """Report the actual target export stage of the selected entry.
+
+        Standalone computations use the registered QIEC projector. A
+        compiler-created probabilistic plan uses its bound parsed source
+        and the same program preparation as public transpilation. The
+        regular renderer and emitter must accept the result. A supplied
+        rule is checked on the original QIEC source. Emission does not
+        execute the backend derivative.
+
+        Parameters
+        ----------
+        target : str
+            The public backend key accepted by the transpiler.
+        arguments, direction : tuple[int or Fraction, ...] or None
+            Optional input coordinates and tangent in source order.
+            Supply both for a native pointwise comparison of standalone
+            QIEC graphs. Probabilistic statement plans lack such an entry.
+        derivative_rule : RationalDerivativeDeclaration or None
+            A nominal source formula to certify or refute.
+        fuel : int
+            The step limit of each native derivative check.
+        max_rule_work : int
+            The symbolic work limit of the rule check.
+
+        Returns
+        -------
+        EffectTargetReport
+            The selected stage or refusal, with each observation scoped
+            to the graph on which it was checked.
+
+        Raises
+        ------
+        ValueError
+            If the source identity, inputs or a requested bound is invalid.
+        """
+        from panproto import PanprotoError
+
+        from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+        from quivers.transpile._api import UnsupportedConstruct
+        from quivers.transpile._entry import (
+            _emit_target,
+            _prepare_target,
+            available_targets,
+        )
+        from quivers.transpile.ir import IRProgram
+        from quivers.transpile.lower import pick_program
+        from quivers.transpile.qiec_ir import (
+            capabilities_for_target,
+            project_for_target,
+        )
+
+        source = self.bundle.module
+        owner = next(
+            (item for item in source.computations if item.id == self.computation), None
+        )
+        if owner is None:
+            raise ValueError("the effect plan does not name a source computation")
+        program = next(
+            (item for item in source.entries if item.computation == self.computation),
+            None,
+        )
+        if (arguments is None) != (direction is None):
+            raise ValueError(
+                "supply both arguments and direction for a native comparison"
+            )
+        rule, rule_obstacle = _declared_rule(
+            source, self.computation, derivative_rule, fuel, max_rule_work
+        )
+        stages: tuple[EffectExecutionStage, ...] = ()
+        native_jvp = None
+        selected: QiecModule | None = None
+        projection: Literal["source", "discharged", "program-plan"] | None = None
+        helper_projection: Literal["source", "discharged"] | None = None
+        native_obstacle = None
+        detail = None
+        refusals: tuple[str, ...] = ()
+        try:
+            targets = available_targets()
+            if target not in targets:
+                raise UnsupportedConstruct(
+                    target, [f"target:unknown:{target}:{','.join(targets)}"]
+                )
+            capabilities = capabilities_for_target(target)
+            if program is not None:
+                if self._program_source is None:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:program-plan-required:{program.name}"],
+                    )
+                binding = self._program_source
+                if not isinstance(
+                    binding, _ProgramTargetSource
+                ) or binding.checked_digest != _module_digest(source):
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:program-source-mismatch:{program.name}"],
+                    )
+                exported = pick_program(binding.parsed).name
+                if exported != program.name:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [
+                            f"qiec:target-stage:program-not-exported:{program.name}:{exported}"
+                        ],
+                    )
+                target_plan = _prepare_target(binding.parsed, target)
+                if target_plan.name != program.name:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [
+                            f"qiec:target-stage:program-not-exported:{program.name}:{target_plan.name}"
+                        ],
+                    )
+            else:
+                if source.gap:
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}", [source.gap.partition("; ")[0]]
+                    )
+                if source.entries or self.computation in program_computations(source):
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:program-plan-required:{owner.name}"],
+                    )
+                ir = project_for_target(
+                    source, self.discharge, target, capabilities=capabilities
+                )
+                if not any(
+                    item.id.text == str(self.computation) and item.name == owner.name
+                    for item in ir.computations
+                ):
+                    raise UnsupportedConstruct(
+                        f"qvr-{target}",
+                        [f"qiec:target-stage:entry-not-projected:{owner.name}"],
+                    )
+                target_plan = IRProgram(name=ir.module, inputs=(), body=(), module=ir)
+            _emit_target(target_plan, target)
+        except UnsupportedConstruct as error:
+            refusals = tuple(error.kinds)
+            detail = str(error)
+        except QiecDiagnosticError as error:
+            refusals = (f"qiec:target-lowering:{error.code}",)
+            detail = str(error)
+        except PanprotoError as error:
+            refusals = (f"qiec:target-emission:{type(error).__name__}",)
+            detail = str(error)
+        else:
+            if program is not None:
+                projection = "program-plan"
+                helper_projection = (
+                    "source" if capabilities.supports("handle") else "discharged"
+                )
+                stages = (EffectExecutionStage(self.computation, "program-plan"),)
+                if arguments is not None:
+                    native_obstacle = "qiec:target-stage:program-jvp-unverified"
+            elif capabilities.supports("handle"):
+                projection, selected = "source", source
+                reached, _ = _execution_reachability(source, self.computation)
+                stages = tuple(
+                    EffectExecutionStage(
+                        item.id,
+                        "source-handler" if installed_handlers(item.body) else "direct",
+                    )
+                    for item in source.computations
+                    if item.id in reached
+                )
+            else:
+                projection, selected = "discharged", self.discharge.module
+                stages = _ordinary_stages(source, self.discharge, self.computation)
+            if selected is not None and arguments is not None and direction is not None:
+                native_jvp = _compare_jvp(
+                    source, selected, self.computation, arguments, direction, fuel
+                )
+
+        external = DerivativeSemantics.none(
+            "target export refused" if refusals else "external derivative unverified"
+        )
+        return EffectTargetReport(
+            target,
+            self.computation,
+            projection,
+            stages,
+            refusals,
+            detail,
+            self.laws,
+            native_jvp,
+            derivative_rule,
+            rule,
+            rule_obstacle,
+            external,
+            helper_projection,
+            native_obstacle,
+        )
+
+
+def _declared_rule(
+    source: QiecModule,
+    computation: ComputationId,
+    declaration: RationalDerivativeDeclaration | None,
+    fuel: int,
+    max_work: int,
+) -> tuple[RationalDerivativeDecision | None, str | None]:
+    """Check the optional authored rule against the actual named source.
+
+    Parameters
+    ----------
+    source : QiecModule
+        The checked source defining the primal and action.
+    computation : ComputationId
+        The entry's nominal identity.
+    declaration : RationalDerivativeDeclaration or None
+        The optional authored rule to check.
+    fuel, max_work : int
+        The interpretation and symbolic proof limits.
+
+    Returns
+    -------
+    tuple[RationalDerivativeDecision or None, str or None]
+        The exact decision, including any counterexample, or an obstacle.
+
+    Raises
+    ------
+    ValueError
+        If a requested proof bound is invalid.
+    """
+    if declaration is None:
+        return None, None
+    if declaration.primal != computation:
+        return None, "the declared derivative belongs to another named computation"
+    try:
+        decision = check_rational_derivative_rule(
+            source, declaration, fuel=fuel, max_work=max_work
+        )
+    except (RationalLawLimit, RationalLawUnsupported) as error:
+        return None, str(error)
+    return decision, None
+
+
+def _compare_jvp(
+    source: QiecModule,
+    staged: QiecModule,
+    computation: ComputationId,
+    arguments: tuple[int | Fraction, ...],
+    direction: tuple[int | Fraction, ...],
+    fuel: int,
+) -> EffectJvpCheck:
+    """Compare exact observations from two graphs of the same checked entry.
+
+    Parameters
+    ----------
+    source, staged : QiecModule
+        The original source and the selected QIEC graph.
+    computation : ComputationId
+        The nominal entry identity that both graphs preserve.
+    arguments, direction : tuple[int or Fraction, ...]
+        The exact input coordinates and tangent in positional order.
+    fuel : int
+        Steps permitted in each evaluation.
+
+    Returns
+    -------
+    EffectJvpCheck
+        Both observations or the reference refusals at that point.
+
+    Raises
+    ------
+    ValueError
+        If either graph lacks the identity or a point or bound is invalid.
+    """
+    owner = next(
+        (entry for entry in source.computations if entry.id == computation),
+        None,
+    )
+    if owner is None:
+        raise ValueError("the effect plan does not name a source computation")
+    if not any(
+        entry.id == owner.id and entry.name == owner.name
+        for entry in staged.computations
+    ):
+        raise ValueError("the staged graph does not preserve the source identity")
+    observations: list[tuple[ExactJvp | None, str | None]] = []
+    for graph in (source, staged):
+        try:
+            answer = exact_jvp(graph, owner.name, arguments, direction, fuel=fuel)
+        except (JvpUnsupported, JvpLimit) as error:
+            observations.append((None, str(error)))
+        else:
+            observations.append((answer, None))
+    (left, left_obstacle), (right, right_obstacle) = observations
+    return EffectJvpCheck(
+        computation,
+        arguments,
+        direction,
+        left,
+        right,
+        left_obstacle,
+        right_obstacle,
+    )
 
 
 def _law_report(
@@ -340,6 +740,42 @@ def _law_report(
     ) as error:
         return EffectLawReport(obligation, None, str(error))
     return EffectLawReport(obligation, decision, None)
+
+
+def _ordinary_stages(
+    module: QiecModule, discharge: DischargedModule, computation: ComputationId
+) -> tuple[EffectExecutionStage, ...]:
+    """Read the stages of the source computations reached after discharge.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The source graph with the named roots and their stable identities.
+    discharge : DischargedModule
+        Its actual discharged graph and the reasons for retained handlers.
+    computation : ComputationId
+        The checked root of this request.
+
+    Returns
+    -------
+    tuple[EffectExecutionStage, ...]
+        The selected native stages in source order.
+    """
+    reached, _ = _execution_reachability(discharge.module, computation)
+    rewrites = {rewrite.computation: rewrite for rewrite in discharge.rewrites}
+    obstacles = {obstacle.computation: obstacle for obstacle in discharge.obstacles}
+    stages: list[EffectExecutionStage] = []
+    for source in module.computations:
+        if source.id not in reached:
+            continue
+        if (obstacle := obstacles.get(source.name)) is not None:
+            stage = EffectExecutionStage(source.id, "reference", obstacle=obstacle)
+        elif (rewrite := rewrites.get(source.id)) is not None:
+            stage = EffectExecutionStage(source.id, rewrite.method, rewrite=rewrite)
+        else:
+            stage = EffectExecutionStage(source.id, "direct")
+        stages.append(stage)
+    return tuple(stages)
 
 
 def checked_effect_plan(
@@ -446,20 +882,6 @@ def checked_effect_plan(
         else:
             comparisons.append(EffectInterchangeReport(statement, decision, None))
     discharge = discharge_module(module)
-    reached, _ = _execution_reachability(discharge.module, computation)
-    rewrites = {rewrite.computation: rewrite for rewrite in discharge.rewrites}
-    obstacles = {obstacle.computation: obstacle for obstacle in discharge.obstacles}
-    stages: list[EffectExecutionStage] = []
-    for source in module.computations:
-        if source.id not in reached:
-            continue
-        if (obstacle := obstacles.get(source.name)) is not None:
-            stage = EffectExecutionStage(source.id, "reference", obstacle=obstacle)
-        elif (rewrite := rewrites.get(source.id)) is not None:
-            stage = EffectExecutionStage(source.id, rewrite.method, rewrite=rewrite)
-        else:
-            stage = EffectExecutionStage(source.id, "direct")
-        stages.append(stage)
     return EffectPlan(
         bundle,
         computation,
@@ -467,7 +889,7 @@ def checked_effect_plan(
         laws,
         discharge,
         tuple(comparisons),
-        tuple(stages),
+        _ordinary_stages(module, discharge, computation),
     )
 
 
@@ -477,5 +899,6 @@ __all__ = [
     "EffectJvpCheck",
     "EffectLawReport",
     "EffectPlan",
+    "EffectTargetReport",
     "checked_effect_plan",
 ]

@@ -27,6 +27,7 @@ from quivers.qiec.module import (
 from quivers.qiec.terms import (
     Bind,
     Call,
+    Case,
     Computation,
     Handle,
     HandlerReturnAddress,
@@ -264,6 +265,12 @@ class _Specialization:
         self.terms = 0
         self.ordinary = _CarrierAnalysis(module)
         self.state_types = tuple(parameter.type for parameter in handler.parameters)
+        self.case_constructors = frozenset(
+            constructor
+            for family in module.families
+            if family.closed and not family.parameters and not family.indices
+            for constructor in family.constructors
+        )
         self.computations = self.ordinary.computations
         self.names = {item.name for item in module.computations}
         self.identities = set(self.computations)
@@ -605,6 +612,24 @@ class _Specialization:
                 then=self.thread(term.then, state, result, names),
                 otherwise=self.thread(term.otherwise, state, result, names),
             )
+        if isinstance(term, Case):
+            if term.motive.indices or any(
+                branch.static_arguments
+                or branch.constructor not in self.case_constructors
+                for branch in term.branches
+            ):
+                raise StateSpecializationUnsupported(
+                    "a state case needs a monomorphic family without indices "
+                    "or static pattern arguments"
+                )
+            self.spend(1)
+            return term.with_(
+                motive=term.motive.with_(result_type=self.pair(result)),
+                branches=tuple(
+                    branch.with_(body=self.thread(branch.body, state, result, names))
+                    for branch in term.branches
+                ),
+            )
         if isinstance(term, Perform):
             request = term.request
             if (
@@ -773,7 +798,9 @@ def specialize_recursive_state(
     followed by one tail resumption, with no introduced effects. Reached
     stateful recursive calls use pure companions that return their result
     and updated state. The selected boundary alone applies the authored
-    return action. Inlining the pure clauses preserves the number and order
+    return action. A case in a stateful body can select an arm of a closed
+    monomorphic family without indices or static pattern arguments.
+    Inlining the pure clauses preserves the number and order
     of calls that allocate runtime addresses. Evaluation agrees on returned
     values under the checked contracts. Handler and request diagnostic
     events and evaluator fuel counts can differ.

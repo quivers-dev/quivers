@@ -24,6 +24,7 @@
   "atoms"
   "attention"
   "authored"
+  "auto_intersect"
   "axiom"
   "binary"
   "binder_select"
@@ -474,6 +475,7 @@
 (relation_unary_recipe source: (identifier) @type)
 (relation_projection_recipe "project" @keyword source: (identifier) @type)
 (relation_conditioning_recipe "condition" @keyword source: (identifier) @type)
+(relation_auto_intersection_recipe "auto_intersect" @keyword source: (identifier) @type)
 (relation_binary_recipe source: (identifier) @type other: (identifier) @type)
 (relation_join_recipe ["join" "keep_shared"] @keyword source: (identifier) @type other: (identifier) @type)
 (relation_algebra) @type.builtin

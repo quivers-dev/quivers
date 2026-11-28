@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Hashable
+from typing import Never, cast
 
 import didactic.api as dx
 import torch
@@ -96,13 +97,16 @@ from quivers.stochastic.semiring import (
     VITERBI as SEMIRING_VITERBI,
 )
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
+from quivers.qiec.identifiers import FamilyId
 from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.rules import ComputedRuleWeight
 from quivers.dsl.compiler._deduction_presentation import (
     DeductionPresentationError,
     chart_category,
+    deduction_guard_names,
     deduction_presentation,
 )
+
 
 # Category-side pattern carried by a lexicon entry: either a
 # wildcard variable (any identifier not declared as an atom) or a
@@ -137,7 +141,8 @@ type LexiconEntry = tuple[str, LexiconPattern, LexiconLF, bool]
 #   the ``start`` goal symbol, the ``depth`` bound, the Kleene-star
 #   ``tolerance``, the agenda ``max_iterations``, and the attached
 #   item ``signature`` / ``encoder``, and whether the weights are
-#   normalized per left-hand side (``normalize``).
+#   normalized per left-hand side (``normalize``). Native proof
+#   queries read the optional unfolded limit ``proof_nodes``.
 # * Sequent-rule pragmas read the ``learnable`` / ``bounded`` flags
 #   and the ``parent`` composition reference.
 # * Lexicon-entry pragmas (inline and ``from "file"``) read only the
@@ -152,11 +157,12 @@ _DEDUCTION_OPTION_KEYS: frozenset[str] = frozenset(
         "max_iterations",
         "signature",
         "encoder",
+        "proof_nodes",
         NORMALIZE_OPTION,
     }
 )
 _SEQUENT_RULE_OPTION_KEYS: frozenset[str] = frozenset(
-    {"learnable", "parent", "bounded", "weight"}
+    {"learnable", "parent", "bounded", "weight", "guard"}
 )
 _LEXICON_ENTRY_OPTION_KEYS: frozenset[str] = frozenset({"learnable"})
 
@@ -164,6 +170,11 @@ _LEXICON_ENTRY_OPTION_KEYS: frozenset[str] = frozenset({"learnable"})
 def _require_checked_rule_weight(*_arguments: object) -> torch.Tensor:
     """Refuse calls through an extracted legacy inference rule."""
     raise ValueError("computed rule weights require checked QVR execution")
+
+
+def _require_checked_rule_guards(*_arguments: object) -> Never:
+    """Refuse the legacy agenda when the presentation has checked guards."""
+    raise ValueError("rule guards require checked QVR execution")
 
 
 def _words_display(entry: _LexiconEntryAst) -> str:
@@ -788,8 +799,33 @@ class _DeductionsMixin:
         # (the Prolog and Datalog convention), and a span pattern gains
         # a logical form slot when any rule or the ``binders`` block
         # uses one.
+        guard_names = deduction_guard_names(decl)
+        module = cast(_ProgramsMixin, self).qiec_module if guard_names else None
+        guards = (
+            {
+                item.name: item
+                for item in module.computations
+                if item.name in guard_names
+            }
+            if module is not None
+            else None
+        )
+        item_declarations = None
+        if module is not None:
+            family_id = FamilyId.derive(module.module, "family", f"{decl.name}__Item")
+            family = next(
+                (item for item in module.families if item.id == family_id), None
+            )
+            if family is not None:
+                constructors = {item.id: item for item in module.constructors}
+                item_declarations = (
+                    family,
+                    tuple(constructors[identity] for identity in family.constructors),
+                )
         try:
-            presented = deduction_presentation(decl)
+            presented = deduction_presentation(
+                decl, guards, item_declarations=item_declarations
+            )
         except DeductionPresentationError as refusal:
             raise CompileError(str(refusal), refusal.line, refusal.col) from refusal
         _uses_lf = presented.uses_forms
@@ -975,6 +1011,11 @@ class _DeductionsMixin:
                     premises=premises,
                     conclusion=conclusion,
                     weight_fn=weight_fn,
+                    side_condition=(
+                        _require_checked_rule_guards
+                        if presented_rule.rule.side_condition is not None
+                        else None
+                    ),
                 )
             )
         # A rule binding no non-position variable has exactly one weight
@@ -1430,7 +1471,11 @@ class _DeductionsMixin:
             name=decl.name,
             rules=tuple(inference_rules),
             semiring=semiring,
-            axiom_injector=axiom_injector,
+            axiom_injector=(
+                _require_checked_rule_guards
+                if presented.presentation.conditions
+                else axiom_injector
+            ),
             goal=_goal,
             goal_extent=goal_extent,
             agenda_factory=agenda_factory,

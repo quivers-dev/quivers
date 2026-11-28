@@ -26,6 +26,9 @@ from quivers.core.relations.queries import RelationLimitError, _validate_limits
 type _Word = tuple[int, ...]
 type _Messages = tuple[tuple[torch.Tensor, ...], ...]
 type _Occurrence = tuple[int, int]
+type _FiniteEPInitialSites = tuple[
+    tuple[int, str, tuple[_Word, ...], tuple[float, ...]], ...
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +77,11 @@ class StringSiteProjection:
 
 @dataclass(frozen=True, slots=True)
 class StringEPResult:
-    """Finite string beliefs and separate outer and local diagnostics."""
+    """Finite string beliefs and separate outer and local diagnostics.
+
+    Site projections retain the final pass. The three cumulative work
+    counts include all passes and any failing attempt.
+    """
 
     log_marginals: Mapping[str, torch.Tensor]
     status: Literal["converged", "limit", "projection_failed"]
@@ -82,6 +89,9 @@ class StringEPResult:
     message_residual: float | None
     log_messages: _Messages
     site_projections: tuple[StringSiteProjection, ...]
+    projection_attempts: int = 0
+    projection_iterations: int = 0
+    line_search_trials: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +180,42 @@ def _validate_pruned_settings(
         raise ValueError("pruned string beliefs require at least one sweep")
     if type(beam) is not int or beam < 1:
         raise ValueError("the string belief beam must be a positive integer")
+
+
+def _validate_finite_ep_initial_sites(
+    initial_sites: _FiniteEPInitialSites | None,
+) -> None:
+    if initial_sites is None:
+        return
+    if not isinstance(initial_sites, tuple):
+        raise ValueError("finite EP initial sites require ordered records")
+    for record in initial_sites:
+        if not isinstance(record, tuple) or len(record) != 4:
+            raise ValueError("invalid finite EP initial site record")
+        factor, variable, features, coefficients = record
+        if (
+            type(factor) is not int
+            or factor < 0
+            or not isinstance(variable, str)
+            or not variable
+            or not isinstance(features, tuple)
+            or any(
+                not isinstance(gram, tuple)
+                or not gram
+                or any(type(symbol) is not int or symbol < 0 for symbol in gram)
+                for gram in features
+            )
+        ):
+            raise ValueError("invalid finite EP initial site identity")
+        if (
+            not isinstance(coefficients, tuple)
+            or len(coefficients) != len(features)
+            or any(
+                type(value) is not float or not isfinite(value)
+                for value in coefficients
+            )
+        ):
+            raise ValueError("finite EP initial coefficients must be finite floats")
 
 
 def _message_residual(old: _Messages, new: _Messages) -> float:
@@ -279,6 +325,7 @@ class FiniteStringBeliefPlan:
             )
         self._tables = tuple(factors)
         self._occurrences = occurrences
+        self._ep_families: tuple[int, dict[str, NgramFamily]] | None = None
 
     @property
     def supports(self) -> Mapping[str, tuple[_Word, ...]]:
@@ -490,6 +537,7 @@ class FiniteStringBeliefPlan:
         projection_penalty: float = 0.0,
         projection_max_iterations: int = 64,
         projection_max_backtracks: int = 16,
+        initial_sites: _FiniteEPInitialSites | None = None,
     ) -> StringEPResult:
         """Run fixed n-gram inclusive-KL updates over the declared support.
 
@@ -501,7 +549,10 @@ class FiniteStringBeliefPlan:
         and the separate site diagnostic. A positive projection penalty
         uses the tree-group objective, with a proximal optimality
         residual and the same projection iteration limit. The
-        backtracking limit applies to the unpenalized fit.
+        backtracking limit applies to the unpenalized fit. Initial sites
+        give factor position, variable, exact affine-basis order and
+        finite coefficients. None starts each site at unit weight.
+        Autograd follows the executed updates and local accepted steps.
         """
         _validate_sweeps(max_sweeps, tolerance, damping)
         _validate_projection_settings(
@@ -509,14 +560,43 @@ class FiniteStringBeliefPlan:
         )
         if not 0 <= projection_penalty < float("inf"):
             raise ValueError("projection_penalty must be nonnegative and finite")
+        _validate_finite_ep_initial_sites(initial_sites)
+        cached = self._ep_families
+        if cached is None or type(order) is not int or order != cached[0]:
+            families = {
+                name: NgramFamily(words, order)
+                for name, words in self._supports.items()
+            }
+            self._ep_families = order, families
+        else:
+            _, families = cached
+        if initial_sites is not None:
+            expected = tuple(
+                (f, name, families[name].features)
+                for f, factor in enumerate(self._tables)
+                for name in factor.variables
+            )
+            if tuple(record[:3] for record in initial_sites) != expected:
+                raise ValueError(
+                    "finite EP initial sites must match graph and affine-basis order"
+                )
         tables, messages = self._start()
         like = tables[0]
         if like.dtype != torch.float64:
             raise TypeError("projected string messages require float64 factor weights")
-        families = {
-            name: NgramFamily(words, order) for name, words in self._supports.items()
-        }
-        sweeps = 0
+        if initial_sites is not None:
+            initial = iter(initial_sites)
+            messages = tuple(
+                tuple(
+                    _normalized(
+                        like.new_tensor(families[name]._matrix)
+                        @ like.new_tensor(next(initial)[3])
+                    )
+                    for name in factor.variables
+                )
+                for factor in self._tables
+            )
+        sweeps = projection_attempts = projection_iterations = line_search_trials = 0
         while True:
             beliefs, cavities = self._variables(messages, like)
             records: list[StringSiteProjection] = []
@@ -530,6 +610,7 @@ class FiniteStringBeliefPlan:
                     tilted = incoming + outgoing
                     log_mass = LOG_PROB.join(tilted, dim=0)
                     fit: NgramProjection | PenalizedNgramProjection | None = None
+                    projection_attempts += 1
                     if bool(
                         torch.isfinite(log_mass) & ((tilted - log_mass).exp() > 0).all()
                     ):
@@ -550,6 +631,10 @@ class FiniteStringBeliefPlan:
                                 max_iterations=projection_max_iterations,
                                 max_backtracks=projection_max_backtracks,
                             )
+                    if fit is not None:
+                        projection_iterations += fit.iterations
+                        if isinstance(fit, NgramProjection):
+                            line_search_trials += fit.line_search_trials
                     if fit is None or fit.status != "converged":
                         problem = (
                             "tilted weights must be positive on the full support"
@@ -566,6 +651,9 @@ class FiniteStringBeliefPlan:
                             None,
                             messages,
                             tuple(records),
+                            projection_attempts,
+                            projection_iterations,
+                            line_search_trials,
                         )
                     records.append(StringSiteProjection(f, name, log_mass, fit))
                     next_messages.append(_normalized(fit.log_probabilities - incoming))
@@ -582,6 +670,9 @@ class FiniteStringBeliefPlan:
                     residual,
                     messages,
                     tuple(records),
+                    projection_attempts,
+                    projection_iterations,
+                    line_search_trials,
                 )
             messages = (
                 tuple(

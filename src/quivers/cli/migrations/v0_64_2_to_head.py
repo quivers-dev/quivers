@@ -24,6 +24,7 @@ graph score declarations likewise leave prior declarations unchanged.
 Authored binary relation composition, explicit scoped interpretation
 options, string factor graphs, and sparse relation transformations are
 additive at this hop.
+The signed-delay tape-equality recipe adds one sparse transformation.
 
 This is a directed migration, not a target-source formatter. Reapplying it to a
 new static telescope fails the historical source gate rather than guessing at

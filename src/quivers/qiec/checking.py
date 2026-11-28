@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
+from typing import cast
 
 
 import didactic.api as dx
@@ -2930,63 +2931,139 @@ def infer_value(
             )
         return component  # type: ignore[return-value]
     if isinstance(value, ConstructorValue):
-        constructor = registry.constructor(value.constructor)
-        family = registry.families[constructor.family]
-        for argument in value.static_arguments:
-            registry.validate_static(argument)
-            _check_static_variable_scope(
-                argument,
-                context,
-                subject="constructor static argument",
-            )
-        registry.validate_type(value.result_type)
-        _check_static_variable_scope(
-            value.result_type,
-            context,
-            subject="constructor result type",
-        )
-        parameter_count = len(family.parameters)
-        local_count = len(constructor.telescope)
-        if len(value.static_arguments) != parameter_count + local_count:
-            raise KernelError(
-                f"constructor {constructor.name!r} expects "
-                f"{parameter_count + local_count} static arguments"
-            )
-        parameters = instantiate_telescope(
-            family.parameters,
-            value.static_arguments[:parameter_count],
-        )
-        locals_ = instantiate_telescope(
-            constructor.telescope,
-            value.static_arguments[parameter_count:],
-        )
-        substitution = _combine_substitutions(parameters, locals_)
-        if len(value.fields) != len(constructor.fields):
-            raise KernelError(
-                f"constructor {constructor.name!r} expects {len(constructor.fields)} fields"
-            )
-        for field_value, field in zip(value.fields, constructor.fields, strict=True):
-            actual = infer_value(field_value, registry, context)
-            expected = substitute_type(field.type, substitution)
-            if actual != expected:
-                raise KernelError(
-                    f"field {field.name!r} has type {render_static(actual)}, expected {render_static(expected)}"
-                )
-        parameter_arguments = value.static_arguments[:parameter_count]
-        result_indices = tuple(
-            substitute_static(index, substitution)
-            for index in constructor.result_indices
-        )
-        expected_result = TypeApplication(
-            constructor=family.type_constructor,
-            arguments=(*parameter_arguments, *result_indices),
-        )
-        if value.result_type != expected_result:
-            raise KernelError(
-                f"constructor result is {render_static(value.result_type)}, expected {render_static(expected_result)}"
-            )
-        return expected_result
+        return _infer_constructor_tree(value, registry, context)
     raise KernelError(f"unknown value term {value!r}")
+
+
+def _constructor_check(
+    value: ConstructorValue, registry: KernelRegistry, context: CheckContext
+) -> Generator[Value, TypeExpr, TypeExpr]:
+    """Check one constructor, requesting each field's inferred type in order.
+
+    Parameters
+    ----------
+    value
+        The constructor occurrence to check.
+    registry
+        The active type and constructor declarations.
+    context
+        The fixed scope of the constructor and its fields.
+
+    Yields
+    ------
+    Value
+        The next field to check, to be resumed with its inferred type.
+
+    Returns
+    -------
+    TypeExpr
+        The instantiated family type certified at this constructor.
+
+    Raises
+    ------
+    KernelError
+        If declarations, static arguments, fields or the result do not agree.
+    """
+    constructor = registry.constructor(value.constructor)
+    family = registry.families[constructor.family]
+    for argument in value.static_arguments:
+        registry.validate_static(argument)
+        _check_static_variable_scope(
+            argument,
+            context,
+            subject="constructor static argument",
+        )
+    registry.validate_type(value.result_type)
+    _check_static_variable_scope(
+        value.result_type,
+        context,
+        subject="constructor result type",
+    )
+    parameter_count = len(family.parameters)
+    local_count = len(constructor.telescope)
+    if len(value.static_arguments) != parameter_count + local_count:
+        raise KernelError(
+            f"constructor {constructor.name!r} expects "
+            f"{parameter_count + local_count} static arguments"
+        )
+    parameters = instantiate_telescope(
+        family.parameters,
+        value.static_arguments[:parameter_count],
+    )
+    locals_ = instantiate_telescope(
+        constructor.telescope,
+        value.static_arguments[parameter_count:],
+    )
+    substitution = _combine_substitutions(parameters, locals_)
+    if len(value.fields) != len(constructor.fields):
+        raise KernelError(
+            f"constructor {constructor.name!r} expects {len(constructor.fields)} fields"
+        )
+    for field_value, field in zip(value.fields, constructor.fields, strict=True):
+        actual = yield field_value
+        expected = substitute_type(field.type, substitution)
+        if actual != expected:
+            raise KernelError(
+                f"field {field.name!r} has type {render_static(actual)}, expected {render_static(expected)}"
+            )
+    parameter_arguments = value.static_arguments[:parameter_count]
+    result_indices = tuple(
+        substitute_static(index, substitution) for index in constructor.result_indices
+    )
+    expected_result = TypeApplication(
+        constructor=family.type_constructor,
+        arguments=(*parameter_arguments, *result_indices),
+    )
+    if value.result_type != expected_result:
+        raise KernelError(
+            f"constructor result is {render_static(value.result_type)}, expected {render_static(expected_result)}"
+        )
+    return expected_result
+
+
+def _infer_constructor_tree(
+    value: ConstructorValue, registry: KernelRegistry, context: CheckContext
+) -> TypeExpr:
+    """Check constructor fields without consuming a call frame at every node.
+
+    Parameters
+    ----------
+    value
+        The root constructor occurrence.
+    registry
+        The active declarations.
+    context
+        The scope of the value.
+
+    Returns
+    -------
+    TypeExpr
+        The type inferred for the root.
+
+    Raises
+    ------
+    KernelError
+        If any of the ordinary constructor or field checks fails.
+    """
+    parents: list[Generator[Value, TypeExpr, TypeExpr]] = []
+    current = _constructor_check(value, registry, context)
+    field_type: TypeExpr | None = None
+    while True:
+        try:
+            field = next(current) if field_type is None else current.send(field_type)
+        except StopIteration as checked:
+            result = cast(TypeExpr, checked.value)
+            if not parents:
+                return result
+            current = parents.pop()
+            field_type = result
+            continue
+        if isinstance(field, ConstructorValue):
+            parents.append(current)
+            current = _constructor_check(field, registry, context)
+            field_type = None
+        else:
+            field_type = infer_value(field, registry, context)
 
 
 def check_request(

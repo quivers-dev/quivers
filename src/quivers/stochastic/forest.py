@@ -83,6 +83,7 @@ class ForestRefusal(str, Enum):
     """Why a forest is not unfolded."""
 
     TOO_MANY = "too-many-derivations"
+    TOO_MANY_NODES = "too-many-proof-nodes"
     UNBOUNDED = "unbounded"
     MISSING = "missing"
 
@@ -347,7 +348,11 @@ def _below(key: Key) -> int | None:
 
 
 def _counts(
-    forest: DerivationForest, height: int | None, *, cap: int | None = None
+    forest: DerivationForest,
+    height: int | None,
+    *,
+    cap: int | None = None,
+    sizes: dict[Key, int] | None = None,
 ) -> dict[Key, int]:
     """Count derivations of every item, optionally saturating the count.
 
@@ -355,6 +360,13 @@ def _counts(
     addition and multiplication followed by truncation. A product of a
     saturated count with zero is still zero. Each operand is thus at most
     the cap, even when the exact count has exponentially many bits.
+
+    To count unfolded node occurrences as well, compose a premise count
+    and node sum `(c, s)` with the partial Cartesian product `(p, q)` as
+    `(p*c, p*s + q*c)`. This accounts for each premise position, even
+    when positions share an item. Add one root node per combination.
+    Truncation is sound for both coordinates since these formulas use
+    only addition and multiplication of nonnegative integers.
 
     Parameters
     ----------
@@ -364,6 +376,9 @@ def _counts(
         The bound on height.
     cap : int or None
         An optional positive saturation threshold for counts.
+    sizes : dict of Key to int or None
+        An optional empty table to receive total unfolded node counts,
+        with the same cap if supplied.
 
     Returns
     -------
@@ -380,22 +395,38 @@ def _counts(
     for level in _levels(forest, height):
         for key in level:
             total = 0
+            nodes = 0
             below = _below(key)
             for edge in forest.edges.get(key[0], ()):
                 product = 1
+                children = 0
                 if edge.occurrence is None:
                     if below is not None and below < 0:
                         continue
                     for premise in edge.premises:
-                        product *= counts.get((premise, below), 0)
+                        child = (premise, below)
+                        alternatives = counts.get(child, 0)
+                        if sizes is not None:
+                            children = children * alternatives + product * sizes.get(
+                                child, 0
+                            )
+                            if cap is not None:
+                                children = min(children, cap)
+                        product *= alternatives
                         if cap is not None:
                             product = min(product, cap)
                 total += product
-                if cap is not None and total >= cap:
-                    total = cap
-                    break
+                if sizes is not None:
+                    nodes += children + product
+                if cap is not None:
+                    total = min(total, cap)
+                    nodes = min(nodes, cap)
+                    if total == cap and (sizes is None or nodes == cap):
+                        break
             if total:
                 counts[key] = total
+                if sizes is not None:
+                    sizes[key] = nodes
     return counts
 
 
@@ -891,11 +922,13 @@ def fold_derivations_many[V](
     limit: int,
     like: torch.Tensor,
     height: int | None = None,
+    node_limit: int | None = None,
 ) -> dict[Item, Listed[V]]:
     """List several goals' derivations under one exact global proof budget.
 
     Count structural proofs over the common subforest in one pass,
-    saturating integers at ``limit + 1``. Every useful subtree extends to
+    saturating integers at one above the larger of the active limits.
+    Every useful subtree extends to
     a requested proof, so each list in a successful run has at most
     ``limit`` entries. Build and fold each sub-derivation once across all
     goals. This sharing applies to host interpretations whose operations
@@ -920,6 +953,10 @@ def fold_derivations_many[V](
         The dtype and device of the unit.
     height : int or None
         The bound on height, required for a cyclic forest.
+    node_limit : int or None
+        An optional global limit on the sum of the unfolded proof sizes
+        of those goals. Repeated subtree occurrences each count, even
+        when the listing stores their derivations once.
 
     Returns
     -------
@@ -929,24 +966,47 @@ def fold_derivations_many[V](
     Raises
     ------
     ForestRefused
-        If there are more proofs than the limit or an unbounded cycle.
+        If there are more proofs or unfolded nodes than the limits allow,
+        or the forest has an unbounded cycle.
     ValueError
-        If the proof budget is negative.
+        If a proof budget is negative.
     """
     if limit < 0:
         raise ValueError("the proof budget must be nonnegative")
+    if node_limit is not None and node_limit < 0:
+        raise ValueError("the proof node budget must be nonnegative")
     goals = tuple(dict.fromkeys(goals))
     if not goals:
         return {}
     part = forest.below_all(goals)
-    counts = _counts(part, height, cap=limit + 1)
-    total = sum(counts.get((goal, height), 0) for goal in goals)
+    cap = max(limit, node_limit or 0) + 1
+    sizes: dict[Key, int] = {}
+    if node_limit is None:
+        counts = _counts(part, height, cap=cap)
+        total = sum(counts.get((goal, height), 0) for goal in goals)
+    else:
+        counts = _counts(part, height, cap=cap, sizes=sizes)
+        total = 0
+        for goal in goals:
+            total += counts.get((goal, height), 0)
+            if total > limit:
+                break
     if total > limit:
         raise ForestRefused(
             ForestRefusal.TOO_MANY,
             f"at least {total} derivations exceed the declared limit of {limit}; "
             "none is returned",
         )
+    if node_limit is not None:
+        nodes = 0
+        for goal in goals:
+            nodes += sizes.get((goal, height), 0)
+            if nodes > node_limit:
+                raise ForestRefused(
+                    ForestRefusal.TOO_MANY_NODES,
+                    f"at least {nodes} unfolded proof nodes exceed the declared "
+                    f"node limit of {node_limit}; none is returned",
+                )
     useful = _useful(part, goals, height, counts)
     operations = interpretation.operations
     listed: dict[Key, Listed[V]] = {}

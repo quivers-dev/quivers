@@ -9,6 +9,7 @@ requests under conditionals and inside callees.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from itertools import product
 
 import pytest
@@ -18,6 +19,7 @@ import quivers.qiec.discharge as discharge
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     RANDOM_SAMPLE,
+    REAL,
     SCORE_ADD,
     CheckContext,
     DISCHARGE_STATEMENTS,
@@ -31,6 +33,7 @@ from quivers.qiec import (
     Handle,
     If,
     InstanceAddress,
+    Local,
     NamedComputation,
     NewInstance,
     Perform,
@@ -46,6 +49,10 @@ from quivers.qiec import (
     validate_module,
 )
 from quivers.qiec.serialization import dumps, loads
+from quivers.transpile import transpile
+from quivers.transpile._entry import _emit_target
+from quivers.transpile.ir import IRProgram
+from quivers.transpile.qiec_ir import project_for_target
 from tests._handler_programs import HANDLERS, random_body
 
 _POINTS = ((0.3137, -0.7171), (1.2113, 0.4092), (-0.9049, 0.8117))
@@ -293,6 +300,216 @@ def _request_addresses(
         if event.event == "operation.requested"
         and event.detail["operation"] in (str(RANDOM_SAMPLE), str(SCORE_ADD))
     )
+
+
+_CROSS_CAPTURE = """
+effect Split
+    fork : Real -> Real
+effect Relay
+    pass : Real -> Real
+
+instance child : Split
+instance parent : Split
+instance relay : Relay
+instance score : Score
+
+handler twice for Split : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    fork(x : Real) resumes omega =>
+        let left <- resume(x)
+        let right <- resume(x + 1.0)
+        return left + 2.0 * right
+
+handler route for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    pass(x : Real) resumes 1 =>
+        perform score.add(weight(x + 20.0))
+        let y <- resume(2.0 * x)
+        perform score.add(weight(y + 30.0))
+        return y
+
+handler accumulate for Score : Real -> (Real * LogWeight) [coverage=total, implementation=foreign]
+    add resumes 1
+
+define crossed(x : Real) : Real !{score} =
+    handle relay with route in
+        handle child with twice in
+            let shot <- perform child.fork(x)
+            let y <- perform relay.pass(shot)
+            perform score.add(weight(y))
+            return y
+
+define nested(x : Real) : Real !{score} =
+    handle parent with twice in
+        let shot <- perform parent.fork(x)
+        let y <- crossed(shot)
+        perform score.add(weight(y))
+        return y
+
+define crossed_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- crossed(x)
+        perform score.add(weight(y))
+        return y
+
+define nested_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- nested(x)
+        perform score.add(weight(y))
+        return y
+"""
+
+
+def _cross_capture_outcome(x):
+    shots = (x, x + 1)
+    value = 2 * shots[0] + 4 * shots[1]
+    score = sum(shot + 20 + 2 * shot for shot in shots) + 2 * (value + 30)
+    return value, score
+
+
+@pytest.mark.parametrize("position", ("caller", "within", "nested"))
+def test_clause_exit_restores_only_the_shots_outside_its_handler(position):
+    module = _module(_CROSS_CAPTURE)
+    crossed = _computation(module, "crossed")
+    run = "nested_run" if position == "nested" else "crossed_run"
+    outer = _computation(module, run)
+    (outside,) = _effect_sites(outer.body, "Score")
+    (relay,) = _effect_sites(crossed.body, "Relay")
+    (inside,) = _effect_sites(crossed.body, "Score")
+    before, after = _effect_sites(_effect_clause_body(module, "route"), "Score")
+
+    def capture(call, parent):
+        clause = (*call, ("handler-clause", relay))
+        return [
+            (before, clause, (*parent, 0)),
+            (inside, call, (*parent, 0)),
+            (before, clause, (*parent, 1)),
+            (inside, call, (*parent, 1)),
+            (after, clause, (*parent, 1)),
+            (after, clause, (*parent, 0)),
+        ]
+
+    x = 0.5
+    if position == "nested":
+        (between,) = _effect_sites(_computation(module, "nested").body, "Score")
+        caller = (("call", "nested#1"),)
+        expected = []
+        values = []
+        scores = []
+        for i, argument in enumerate((x, x + 1)):
+            expected.extend(capture((*caller, ("call", f"crossed#{i + 2}")), (i,)))
+            expected.append((between, caller, (i,)))
+            value, score = _cross_capture_outcome(argument)
+            values.append(value)
+            scores.append(score)
+        value = values[0] + 2 * values[1]
+        score = sum(scores) + sum(values)
+    else:
+        caller = (("call", "crossed#1"),)
+        expected = capture(caller, ())
+        value, score = _cross_capture_outcome(x)
+
+    if position == "within":
+        # Put the explicit post-handler continuation in the same checked
+        # computation, so discharge itself must emit its empty shot path.
+        assert isinstance(outer.body, Handle)
+        sequence = outer.body.computation
+        assert isinstance(sequence, Bind)
+        replacement = {
+            crossed.id: crossed.with_(body=sequence.with_(first=crossed.body)),
+            outer.id: outer.with_(body=outer.body.with_(computation=sequence.first)),
+        }
+        module = module.with_(
+            computations=tuple(
+                replacement.get(entry.id, entry) for entry in module.computations
+            )
+        )
+        validate_module(module)
+    expected.append((outside, caller if position == "within" else (), ()))
+
+    discharged = discharge_module(module)
+    assert discharged.obstacle("crossed") is None
+    assert discharged.obstacle("nested") is None
+    restored = loads(dumps(discharged.module))
+    assert isinstance(restored, QiecModule)
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={"handlers": {"accumulate": {"kind": "score"}}},
+            ),
+        )
+    )
+    for checked in (module, discharged.module, restored):
+        answer = run_named(checked, run, (x,), runtime=runtime)
+        assert isinstance(answer.value, tuple)
+        assert tuple(float(item) for item in answer.value) == (value, score + value)
+        assert tuple(
+            event.detail["address"]
+            for event in answer.trace
+            if event.event == "operation.requested"
+            and event.detail["operation"] == str(SCORE_ADD)
+        ) == tuple(expected)
+
+
+@pytest.mark.parametrize("kind", ("passthrough", "score"))
+def test_foreign_clause_exit_restores_the_path_outside_its_capture(kind):
+    before, _, rest = _CROSS_CAPTURE.partition("handler route for")
+    _, _, after = rest.partition("handler accumulate for")
+    effect, operation = ("Relay", "pass") if kind == "passthrough" else ("Score", "add")
+    source = (
+        before
+        + f"""handler route for {effect} : Real -> Real [coverage=total, forwards=none, implementation=foreign]
+    {operation} resumes 1
+
+handler accumulate for"""
+        + after
+    )
+    if kind == "score":
+        source = source.replace("instance relay : Relay", "instance relay : Score")
+        source = source.replace(
+            "            let y <- perform relay.pass(shot)",
+            "            perform relay.add(weight(shot))\n            let y = shot",
+        )
+    module = _module(source)
+    obstacle = discharge_module(module).obstacle("crossed")
+    assert obstacle is not None and obstacle.kind == "foreign"
+    instance = next(
+        item.entry.instance for item in module.instances if item.name == "score"
+    )
+    crossed = _computation(module, "crossed")
+    outside = _computation(module, "crossed_run")
+    (inside_site,) = (
+        str(term.request.origin.static_site)
+        for term in _terms(crossed.body)
+        if isinstance(term, Perform) and term.request.instance == instance
+    )
+    (outside_site,) = _effect_sites(outside.body, "Score")
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={
+                    "handlers": {
+                        "route": {"kind": kind},
+                        "accumulate": {"kind": "score"},
+                    }
+                },
+            ),
+        )
+    )
+    value = run_named(module, "crossed_run", (0.5,), runtime=runtime)
+    assert isinstance(value.value, tuple)
+    assert tuple(float(item) for item in value.value) == (3.5, 5.5)
+    call = (("call", "crossed#1"),)
+    assert tuple(
+        event.detail["address"]
+        for event in value.trace
+        if event.event == "operation.requested"
+        and event.detail["instance"] == str(instance)
+    ) == ((inside_site, call, (0,)), (inside_site, call, (1,)), (outside_site, (), ()))
 
 
 def test_discharge_keeps_equal_valued_shots_and_restores_the_outer_path(
@@ -1687,12 +1904,12 @@ define subject(a : Real) : Real !{} =
     "case": (
         """
 family Outcome : Type
-    constructor Won : Real -> Outcome
+    constructor Won[tag : Nat] : Real -> Outcome
     constructor Lost : Outcome
 
 define score(out : Outcome) : Real !{ch} =
     case out motive => Real
-        Won(x) =>
+        Won[tag](x) =>
             let y <- perform ch.flip(x)
             return y
         Lost =>
@@ -1704,7 +1921,7 @@ define subject(out : Outcome) : Real !{} =
         let x <- score(out)
         return x + k
 """,
-        "branches with `case` on a value known only at run time",
+        "copying the case would require freshening static constructor arguments",
     ),
     "growth": (
         """
@@ -1825,6 +2042,412 @@ define subject(a : Real) : Real !{} =
     expected = 10.0 * (0.25 * 1.25 + 0.75 * 0.75) + 1.5
     for checked in (module, discharge_module(module).module):
         assert run_named(checked, "subject", (0.25,)).value == pytest.approx(expected)
+
+
+_CONSTRUCTOR_SHOTS = """
+family Mode : Type
+    constructor Red : Real -> Mode
+    constructor Blue : Real -> Mode
+
+effect Fan
+    split : Mode * Mode -> Mode
+effect Adjust
+    plus : Real -> Real
+    times : Real -> Real
+
+instance fan : Fan
+instance adjust : Adjust
+instance score : Score
+
+handler twice for Fan : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    split(left : Mode, right : Mode) resumes omega =>
+        let first <- resume(left)
+        let second <- resume(right)
+        return first + 2.0 * second
+
+handler transform for Adjust : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    plus(v : Real) resumes 1 =>
+        resume(2.0 * v)
+    times(v : Real) resumes 1 =>
+        resume(3.0 * v)
+
+handler accumulate for Score : Real -> (Real * LogWeight) [coverage=total, implementation=foreign]
+    add resumes 1
+
+define red(x : Real) : Mode !{} =
+    return construct Red(x) as Mode
+
+define blue(x : Real) : Mode !{} =
+    return construct Blue(x) as Mode
+
+define selected(mode : Mode, s : Real) : Real !{adjust, score} =
+    case mode motive => Real
+        Red(x) =>
+            let z <- perform adjust.plus(x + s)
+            perform score.add(weight(z))
+            return z
+        Blue(x) =>
+            let z <- perform adjust.times(x - s)
+            perform score.add(weight(2.0 * z))
+            return z + 1.0
+
+define subject(left : Mode, right : Mode, x : Real) : Real !{score} =
+    handle adjust with transform in
+        handle fan with twice in
+            let mode <- perform fan.split(left, right)
+            let y <- selected(mode, x)
+            return 2.0 * y + x
+
+define settle(x : Real) : Real !{score} =
+    perform score.add(weight(x + 3.0))
+    return x
+
+define subject_run(left : Mode, right : Mode, x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let answer <- subject(left, right, x)
+        let result <- settle(answer)
+        perform score.add(weight(result + 5.0))
+        return answer
+"""
+_CASE_POINT = tuple(map(Fraction, (2.0, -0.5, 0.5)))
+
+
+def _case_outcome(tags, point):
+    left, right, shared = point
+    continuations = []
+    contributions = []
+    for tag, payload in zip(tags, (left, right), strict=True):
+        if tag == "red":
+            transformed = 2 * (payload + shared)
+            continuations.append(2 * transformed + shared)
+            contributions.append(transformed)
+        else:
+            transformed = 3 * (payload - shared)
+            continuations.append(2 * (transformed + 1) + shared)
+            contributions.append(2 * transformed)
+    value = continuations[0] + 2 * continuations[1]
+    return value, sum(contributions) + 2 * value + 8
+
+
+def _case_jacobian(tags):
+    step = Fraction(1, 16)
+    columns = []
+    for coordinate in range(3):
+        upper = tuple(
+            v + step if i == coordinate else v for i, v in enumerate(_CASE_POINT)
+        )
+        lower = tuple(
+            v - step if i == coordinate else v for i, v in enumerate(_CASE_POINT)
+        )
+        # The return and the accumulated score are affine at fixed tags.
+        columns.append(
+            tuple(
+                (a - b) / (2 * step)
+                for a, b in zip(
+                    _case_outcome(tags, upper), _case_outcome(tags, lower), strict=True
+                )
+            )
+        )
+    return tuple(zip(*columns, strict=True))
+
+
+def _execute_constructor_shots(module, tags):
+    point = tuple(
+        torch.tensor(float(value), dtype=torch.float64, requires_grad=True)
+        for value in _CASE_POINT
+    )
+    left, right = (
+        run_named(module, tag, (payload,)).value
+        for tag, payload in zip(tags, point[:2], strict=True)
+    )
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={"handlers": {"accumulate": {"kind": "score"}}},
+            ),
+        )
+    )
+    answer = run_named(module, "subject_run", (left, right, point[2]), runtime=runtime)
+    assert isinstance(answer.value, tuple)
+    output, score = answer.value
+    assert isinstance(output, torch.Tensor) and isinstance(score, torch.Tensor)
+    jacobian = tuple(
+        tuple(
+            float(item) for item in torch.autograd.grad(value, point, retain_graph=True)
+        )
+        for value in (output, score)
+    )
+    addresses = tuple(
+        event.detail["address"]
+        for event in answer.trace
+        if event.event == "operation.requested"
+        and event.detail["operation"] == str(SCORE_ADD)
+    )
+    return (float(output.detach()), float(score.detach())), jacobian, addresses
+
+
+def _case_addresses(module, tags):
+    red, blue = _effect_sites(_computation(module, "selected").body, "Score")
+    (later,) = _effect_sites(_computation(module, "settle").body, "Score")
+    (outside,) = _effect_sites(_computation(module, "subject_run").body, "Score")
+    sites = {"red": red, "blue": blue}
+    return (
+        *(
+            (
+                sites[tag],
+                (("call", "subject#1"), ("call", f"selected#{shot + 2}")),
+                (shot,),
+            )
+            for shot, tag in enumerate(tags)
+        ),
+        (later, (("call", "settle#4"),), ()),
+        (outside, (), ()),
+    )
+
+
+@pytest.fixture(scope="module")
+def constructor_shots():
+    module = _module(_CONSTRUCTOR_SHOTS)
+    compiled = discharge_module(module)
+    assert compiled.obstacle("subject") is None
+    subject = _computation(compiled.module, "subject")
+    assert not any(isinstance(term, Handle | Resume) for term in _terms(subject.body))
+    validate_module(compiled.module)
+    return module, compiled.module
+
+
+def test_repeated_nonindexed_case_keeps_the_selected_traces_and_gradients(
+    constructor_shots,
+):
+    source, compiled = constructor_shots
+    subject = _computation(compiled, "subject")
+    cases = [term for term in _terms(subject.body) if isinstance(term, Case)]
+    assert len(cases) == 2
+    scopes = {branch.scope for term in cases for branch in term.branches}
+    assert len(scopes) == 4
+    restored = loads(dumps(compiled))
+    assert isinstance(restored, QiecModule) and restored == compiled
+    for tags in product(("red", "blue"), repeat=2):
+        expected = (
+            _case_outcome(tags, _CASE_POINT),
+            _case_jacobian(tags),
+            _case_addresses(source, tags),
+        )
+        for module in (source, compiled, restored):
+            assert _execute_constructor_shots(module, tags) == expected
+
+
+def _replace_case_entry(module, entry, body):
+    changed = module.with_(
+        computations=tuple(
+            item.with_(body=body) if item.id == entry.id else item
+            for item in module.computations
+        )
+    )
+    validate_module(changed)
+    return changed
+
+
+def test_constructor_case_oracle_rejects_execution_of_the_untaken_arm(
+    constructor_shots,
+):
+    source, _ = constructor_shots
+    selected = _computation(source, "selected")
+    assert isinstance(selected.body, Case)
+    red, blue = selected.body.branches
+    assert red.fields == blue.fields
+    eager = Bind(
+        binder=Local(name="untaken_answer", type=REAL), first=blue.body, then=red.body
+    )
+    mutant = _replace_case_entry(
+        source, selected, selected.body.with_(branches=(red.with_(body=eager), blue))
+    )
+    tags = ("red", "blue")
+    expected = _case_outcome(tags, _CASE_POINT)
+    extra = 6 * (_CASE_POINT[0] - _CASE_POINT[2])
+    original = _case_addresses(source, tags)
+    # The first selected invocation additionally executes the actual Blue
+    # score site, with Red's payload, in the first shot.
+    wrong = ((original[1][0], original[0][1], (0,)), *original)
+    lowered = discharge_module(mutant)
+    obstacle = lowered.obstacle("subject")
+    assert obstacle is not None and obstacle.kind == "case"
+    for module in (mutant, lowered.module):
+        value, jacobian, events = _execute_constructor_shots(module, tags)
+        assert value == (expected[0], expected[1] + extra)
+        assert jacobian != _case_jacobian(tags)
+        assert events == wrong
+
+
+def test_constructor_case_oracle_rejects_a_wrong_shot_even_at_the_same_value(
+    constructor_shots,
+):
+    source, compiled = constructor_shots
+
+    def relabel(term):
+        if isinstance(term, Bind):
+            return term.with_(first=relabel(term.first), then=relabel(term.then))
+        if isinstance(term, Case):
+            return term.with_(
+                branches=tuple(
+                    branch.with_(body=relabel(branch.body)) for branch in term.branches
+                )
+            )
+        if isinstance(term, WithTraceAddresses):
+            return term.with_(body=relabel(term.body))
+        if isinstance(term, Perform) and term.request.origin.resumption_path == (1,):
+            return term.with_(
+                request=term.request.with_(
+                    origin=term.request.origin.with_(resumption_path=(0,))
+                )
+            )
+        return term
+
+    subject = _computation(compiled, "subject")
+    mutant = _replace_case_entry(compiled, subject, relabel(subject.body))
+    tags = ("blue", "red")
+    expected = _case_addresses(source, tags)
+    value, jacobian, addresses = _execute_constructor_shots(mutant, tags)
+    assert (value, jacobian) == (_case_outcome(tags, _CASE_POINT), _case_jacobian(tags))
+    assert addresses == (expected[0], (*expected[1][:2], (0,)), *expected[2:])
+
+
+def test_runtime_constructor_cases_emit_and_execute_on_the_normal_pyro_route():
+    pure = _CONSTRUCTOR_SHOTS.split("define settle(")[0]
+    before, _, end = pure.partition("handler accumulate for")
+    _, _, after = end.partition("define red(")
+    pure = before + "define red(" + after
+    pure = (
+        "".join(
+            line
+            for line in pure.splitlines(keepends=True)
+            if "perform score.add" not in line and "instance score : Score" not in line
+        )
+        .replace("!{adjust, score}", "!{adjust}")
+        .replace("!{score}", "!{}")
+    )
+    source = parse(pure)
+    compiler = Compiler(source)
+    report = compiler.effect_plan("subject").check_target("pyro")
+    assert report.projection == "source" and report.refusals == ()
+    assert report.external_derivative.missing == ("external derivative unverified",)
+    module = compiler.qiec_module
+    assert module is not None
+    discharged = discharge_module(module)
+    assert discharged.obstacle("subject") is None
+    program = project_for_target(
+        discharged.module, discharge_module(discharged.module), "pyro"
+    )
+    plan = IRProgram(name=program.module, inputs=(), body=(), module=program)
+    authored, flat = {}, {}
+    exec(transpile(source, target="pyro"), authored)
+    exec(_emit_target(plan, "pyro"), flat)
+
+    def execute(namespace, tags, point):
+        left, right = (
+            namespace[f"qiec_{tag}"](payload)
+            for tag, payload in zip(tags, point[:2], strict=True)
+        )
+        return namespace["qiec_subject"](left, right, point[2])
+
+    for tags in (("red", "blue"), ("blue", "red")):
+        expected = _case_outcome(tags, _CASE_POINT)[0]
+        assert execute(authored, tags, tuple(map(float, _CASE_POINT))) == expected
+        point = tuple(
+            torch.tensor(float(value), dtype=torch.float64, requires_grad=True)
+            for value in _CASE_POINT
+        )
+        value = execute(flat, tags, point)
+        assert float(value.detach()) == expected
+        assert (
+            tuple(float(item) for item in torch.autograd.grad(value, point))
+            == _case_jacobian(tags)[0]
+        )
+
+
+def test_repeated_runtime_case_with_indexed_motive_keeps_the_reference():
+    source = (
+        _OBSTACLES["case"][0]
+        .replace("family Outcome : Type", "family Outcome(position : Nat) : Type")
+        .replace("Won[tag : Nat] : Real -> Outcome", "Won : Real -> Outcome(1)")
+        .replace("constructor Lost : Outcome", "constructor Lost : Outcome(1)")
+        .replace("out : Outcome", "out : Outcome(1)")
+        .replace("case out motive => Real", "case out motive (position : Nat) => Real")
+        .replace("Won[tag](x)", "Won(x)")
+    )
+    module = _module(HANDLERS + source)
+    result = discharge_module(module)
+    obstacle = result.obstacle("subject")
+    assert obstacle is not None and obstacle.kind == "case"
+    assert "indexed motive" in obstacle.reason
+    assert _computation(result.module, "subject") == _computation(module, "subject")
+
+
+def test_enclosing_if_keeps_a_case_once_when_joining_several_results():
+    declarations = _CONSTRUCTOR_SHOTS.split("define selected(")[0].replace(
+        "handler transform for Adjust : Real -> Real",
+        "handler transform for Adjust : (Real * Real) -> (Real * Real)",
+    )
+    module = _module(
+        declarations
+        + """
+define pair(mode : Mode, s : Real, flag : Bool) : Real * Real !{} =
+    handle adjust with transform in
+        if flag then
+            case mode motive => (Real * Real)
+                Red(x) =>
+                    let z <- perform adjust.plus(x + s)
+                    return (z, s)
+                Blue(x) =>
+                    let z <- perform adjust.times(x - s)
+                    return (s, z)
+        else
+            return (1.0, 2.0)
+"""
+    )
+    discharged = discharge_module(module)
+    assert discharged.obstacle("pair") is None
+    validate_module(discharged.module)
+    subject = _computation(discharged.module, "pair")
+    assert sum(isinstance(term, Case) for term in _terms(subject.body)) == 1
+    for current in (module, discharged.module):
+        for tag, expected in (("red", (5.0, 0.5)), ("blue", (0.5, 4.5))):
+            mode = run_named(current, tag, (2.0,)).value
+            assert run_named(current, "pair", (mode, 0.5, True)).value == expected
+            assert run_named(current, "pair", (mode, 0.5, False)).value == (1.0, 2.0)
+
+
+def test_runtime_case_that_cannot_meet_its_outer_join_keeps_the_reference():
+    module = _module(
+        HANDLERS
+        + """
+family Outcome : Type
+    constructor Won : Real -> Outcome
+    constructor Lost : Outcome
+
+define subject(out : Outcome, flag : Bool) : Real !{} =
+    handle ab with stopped in
+        if flag then
+            case out motive => Real
+                Won(x) =>
+                    return x
+                Lost =>
+                    let y <- perform ab.stop(2.0)
+                    return y
+        else
+            return 3.0
+"""
+    )
+    result = discharge_module(module)
+    obstacle = result.obstacle("subject")
+    assert obstacle is not None and obstacle.kind == "case"
+    assert "branches do not meet" in obstacle.reason
+    assert _computation(result.module, "subject") == _computation(module, "subject")
 
 
 def test_branches_meet_at_the_handler_whose_clause_ends_one() -> None:

@@ -248,6 +248,110 @@ primitive relation checks that declaration's topology instead.
 
 ::: quivers.qiec.relation_composition.FixedComposedRelationRequest
 
+## Checked Markov path certificates
+
+`FixedMarkovPathCertificateRequest` adds exact rational absolute or
+relative tolerances to an existing Markov pair-weight request. The
+original request keeps its wire fields. The computed foreign handler
+name binds the nominal topology, weight owner identities, observed
+words, and canonical tolerances. A check against the same numerical
+target may use a different resource budget.
+
+The ordinary named Compute returns status, diagnostic, availability,
+a detached `Real` score, `Tensor[String]([4, 2])`, relative-bound
+availability, and `Tensor[Int]([3])` counters. The four string rows
+encode the lower endpoint, upper endpoint, absolute error bound, and
+optional relative error bound in that order. Each row has the exact
+hexadecimal numerator and positive denominator. These strings preserve
+ratios beyond the `Int` range. A missing relative bound uses an empty
+row and a false availability flag. A verified exact zero has numerator
+`0x0`, denominator `0x1`, and true availability.
+
+The counters give exact operations, the maximum charged bit bound,
+and closure cells. A resource limit, divergent or undecided closure,
+unsupported closure or precision, and unverified accuracy have
+separate unavailable statuses. Unavailable reports carry empty rows,
+false flags, and zero placeholders. Consumers check availability
+before reading the scalar or evidence.
+
+The provider reuses the compiled sparse chart and reads one current
+binary64 slot snapshot per evaluation. Its returned interval concerns
+that evaluated vector. The checked report carries value assurance and
+has no derivative. Targets without this native foreign handler report
+that missing capability.
+
+::: quivers.qiec.relation_path_certificate.FixedMarkovPathCertificateRequest
+
+::: quivers.qiec.relation_path_certificate.FixedMarkovPathCertificateRuntimeProvider
+
+## Checked acyclic LogProb path certificates
+
+`FixedLogProbPathCertificateRequest` adds an exact rational absolute
+tolerance in log units to an acyclic LogProb pair-weight request. The
+foreign handler identity binds the exact nominal relation and its
+original parameter owners, the observed words in tape order, and the
+canonical tolerance. The declared execution limits can vary while
+checking the same objective. A closure limit is outside this request's
+domain.
+
+The native Compute returns status, diagnostic, score availability, a
+detached `LogWeight`, three exact witness rows in `Tensor[String]([3, 2])`,
+endpoint availability, and three counters in `Tensor[Int]([3])`. The
+witness rows give the lower and upper log endpoints and the absolute
+log error bound. Each row encodes the signed numerator and positive
+denominator as hexadecimal strings. A verified zero mass has score
+`−∞`, absent endpoints, and error `(0x0, 0x1)`.
+
+The counters record Decimal calls and binary64 conversions, exact
+rational operations, and the maximum charged integer bit bound. A
+resource limit, productive epsilon cycle, unsupported precision, or
+failure to prove the requested accuracy yields its own unavailable
+status. An unavailable report has false availability flags, empty
+witness rows, and zero placeholders.
+
+The provider reuses the compiled topology and evaluates the score and
+witness from a single current binary64 weight vector. The certificate
+covers that vector and the reported value. Gradient assurance is outside
+the contract. [The core arithmetic and limits](../core/morphisms.md#certifying-numerical-accuracy-of-acyclic-logprob-path-weights)
+
+Use the ordinary checked foreign `Compute[Unit, A]` declaration and
+bind its request-specific handler to
+`FixedLogProbPathCertificateRuntimeProvider` at execution. A target that
+lacks the native handler reports the missing capability.
+
+::: quivers.qiec.relation_log_path_certificate.FixedLogProbPathCertificateRequest
+
+::: quivers.qiec.relation_log_path_certificate.FixedLogProbPathCertificateRuntimeProvider
+
+## Checked cyclic LogProb path certificates
+
+`FixedCyclicLogProbPathCertificateRequest` requires a LogProb pair
+observation with a local closure order bound. It also declares an
+aggregate closure cell limit and the arithmetic limits for exact
+endpoint solves. The handler name identifies the cyclic objective,
+the relation and original parameter owners, the tape-ordered words,
+and the canonical absolute tolerance in log units. Execution limits
+can vary for the same handler.
+
+`FixedCyclicLogProbPathCertificateRuntimeProvider` returns the same
+typed log score and exact witness fields as the acyclic provider.
+The ordinary checked native computation uses a single evaluated
+binary64 snapshot for its score and bounds. The value report is
+detached. Targets missing the native handler report that capability.
+
+A divergent lower-endpoint star yields `divergent_closure`. This
+diagnostic concerns the local structurally productive component.
+An upper star that cannot be proved finite gives `unverified_accuracy`
+when its lower endpoint provides no divergence witness. The
+native star may separately yield `undecided_closure` if its working
+precision cannot establish a usable closure. Resource exhaustion and
+unsupported dtype have separate unavailable statuses.
+[The cyclic arithmetic and limits](../core/morphisms.md#certifying-numerical-accuracy-of-cyclic-logprob-path-weights)
+
+::: quivers.qiec.relation_log_path_certificate.FixedCyclicLogProbPathCertificateRequest
+
+::: quivers.qiec.relation_log_path_certificate.FixedCyclicLogProbPathCertificateRuntimeProvider
+
 ## Typed sparse path posteriors
 
 A `FixedRelationPathSampleRequest` binds a fixed word tuple and a
@@ -301,6 +405,107 @@ and serialized fields.
 
 ::: quivers.qiec.relation_path_law.RelationPathLaw
 
+### A tail outcome for capped cyclic paths
+
+`FixedCappedCyclicRelationPathSampleRequest` specifies a different
+checked law on the same original paths. At capacity $K$ it retains
+each accepting walk of at most $K$ traversals and maps every longer
+walk to one Tail outcome. The tagged element type is
+`(Bool * Int * Int * Tensor[Int]([K]))`. A false tag carries a complete
+original trace with trailing `-1` padding. A true tag carries `-1` in
+both state fields and every arc position. This distinguishes a
+genuine empty trace at capacity zero. Noncanonical typed records have
+zero probability.
+
+Write $\alpha_j(s)$ for the mass of prefixes that start at an
+initial mark, take exactly $j$ original arcs, and arrive at observation
+state $s$. Write $h(s)$ for its total accepting suffix mass and $Z$
+for the original fixed-word normalizer. Each longer accepting walk
+has exactly one prefix of length $K+1$. Thus
+
+$$
+P(\mathrm{Tail})=\frac{\sum_s \alpha_{K+1}(s)h(s)}{Z}.
+$$
+
+The prefix pass ignores stop choices and preserves parallel arc
+multiplicity. The suffix includes all accepting stops and longer
+continuations, using the same convergence-checked local stars as the
+ordinary path law. A retained trace has its original mass divided by
+$Z$. These outcomes partition the full posterior, so `log_mass` gives
+zero after checking the live $Z$. Evaluation computes Tail from the
+positive terms of its own sum. This preserves a finite log tail
+even when its probability is below the linear float64 range.
+
+For a draw, the sampler uses float64 suffix conditionals. After $K$
+traversals, stopping returns the retained trace and continuing returns
+Tail, with no further random choices. The checked Random and replay
+handlers use the same tagged value type. Probability and normalization
+statements describe the mathematical pushforward. Computed scores,
+their gradients, and random choice probabilities use float64
+arithmetic. Scores differentiate the fixed outcome through the live
+weights, suffix closure, and normalizer on positive support.
+The checked law supports `log_prob` and `log_mass` directly, and the
+implicit support is unavailable to the finite enumeration handler.
+
+For $V$ active states and $E$ active original arc occurrences, the
+packed prefix map has $O(V+E)$ stored entries and reuses its incoming
+groups across all $K+1$ layers. The work cap uses the conservative
+count $(K+1)(3E+2V)+|I|+2V$, including padded reductions and initial
+and final work for $|I|$ initial states. The depth grid has $(K+2)V$
+state cells, bounded by `max_prefix_cells`. Without autograd the
+prefix sweep needs $O(V+E)$ live tensor entries. Backward through it
+may retain $O((K+1)(V+E))$ entries, with the suffix chart and its held
+closure tensors accounted for separately. Observation, order,
+aggregate closure cells, and prefix limits are checked before a draw.
+The existing untagged path request retains its bounded-attempt
+execution contract.
+
+::: quivers.qiec.relation_capped_path_law.FixedCappedCyclicRelationPathSampleRequest
+
+::: quivers.qiec.relation_capped_path_law.CappedRelationPathLaw
+
+## Checked deterministic path ranking
+
+`FixedRelationPathRankRequest` ranks up to $k$ positive complete paths
+at a fixed word tuple. Choose $k=1$ for the deterministic best path.
+The native result contains an `Int` valid-row count, a $k\times2$ matrix
+of original boundary states, a $k\times C$ matrix of ordered original
+arc occurrence IDs, and $k$ original-algebra path weights. LogProb
+uses `LogWeight`, and Markov uses `Real`. Absent rows have both states
+set to `-1` and semiring-zero weight. An empty accepting path has
+real boundary states and no arc IDs. All unused arc positions use `-1`.
+
+Ties follow original initial-mark order. From a fixed configuration,
+the stop precedes outgoing arcs. All-epsilon arcs precede the indexed
+first emitting tape order, and arcs within that index keep their
+original occurrence order. The same comparison applies recursively
+to the remaining path. Score derivatives hold the selected occurrence
+sequence fixed, including at a tie.
+
+The checked provider constructs the sparse observation once and reads
+the original weights for each invocation. `max_states` and `max_work`
+bound observation construction. With $Q$ active states, the retained
+suffix records and the selected path positions each have a bound of
+$k(Q+1)$, checked against `max_rank_entries`. Let $d$ range over all structural local
+merge degrees, including the initial merge. Each degree counts one
+stream per productive arc and one for a stop when available. The
+`max_rank_work` allowance sums $d+k(1+\lceil\log_2(d+1)\rceil)$ over
+positive degrees and adds the number of original weight slots. This
+accounts for weight-slot reads, stream visits, and the growth in heap
+work per retained entry. Rank arithmetic uses exact binary rationals,
+whose bit costs depend on the weights and lengths.
+
+The output requires $1+k(C+3)$ cells and checks `max_result_cells`
+before compilation. A selected path longer than $C$ raises a resource
+error. Productive cycles are outside the ranking capability. The
+reserved foreign Compute name binds the exact original nominal
+topology, word tuple, and result dimensions. No code generation
+fallback is supplied for a target without this native capability.
+
+::: quivers.qiec.relation_path_rank.FixedRelationPathRankRequest
+
+::: quivers.qiec.relation_path_rank.FixedRelationPathRankRuntimeProvider
+
 ## Checked sparse relation transformations
 
 A `UnaryRelationTransformSpec` stores the original typed topology,
@@ -308,6 +513,20 @@ parameter identities, and one supported operation. Projection sums
 over erased tapes. Conditioning fixes one tape word. Inversion
 exchanges the input and output groups, trim retains only structurally
 productive records, and closure permits all finite repetitions.
+
+The `auto_intersect` recipe constrains two distinct positions with the
+same nominal tape type to emit equal words, retaining both tapes in
+their original positions. It uses the checked signed-delay construction.
+Every accepted source path contributes once with its original weights.
+A cascade may project away either or both constrained tapes afterward.
+The compiler charges signed-cycle relaxations and residual product arc
+visits to `max_work`, after the linear structural trim. Productive paths
+with opposite-sign cycles fail the applicability check. The budget
+applies to the exact transformation and carries no approximation claim.
+In ordinary QVR, write `relation synced = auto_intersect(original, 0, 1)`.
+An authored `relation_score` can use that recipe directly or use a
+cascade that projects away the synchronized tapes. The score owner
+includes the authored tape positions and operand identity.
 
 A `BinaryRelationTransformSpec` keeps both original operands in order.
 Union adds their weights. Concatenation sums over the possible splits
@@ -527,6 +746,14 @@ scan. Each independently verified local witness requires two scans
 of the same candidate arc set, at most twice `max_work`, and a separate
 check of its original trace. The result reports these counts separately.
 
+The default `step_ratio=(p, q)` uses a harmonic step of $p/(qt)$ at
+iteration $t$. An explicit `step_ratio=("constant", p, q)` uses $p/q$
+at each update. For each feature, every copy subtracts its count from
+the mean count and multiplies by the same rational step. The increments
+sum to zero, so both schedules preserve the dual bound. The independent
+certificate verifies the local optima and the complete-word agreement
+under the actual final multipliers.
+
 `JointAlignmentMapGapConfig` pairs the ordinary solver settings with
 one or both rational gap targets. The executor checks them against the
 feasible score and dual bound computed from the original live model.
@@ -671,3 +898,79 @@ torch.testing.assert_close(scores.exp(), torch.tensor([0.5, 0.0], dtype=torch.fl
 ::: quivers.qiec.regular_ep_runtime.RegularStringEPRequest
 
 ::: quivers.qiec.regular_ep_runtime.RegularStringEPRuntimeProvider
+
+The regular report's final integer counts local fit attempts in the
+final pass. The Python result separately records moment evaluations
+across all attempted sweeps.
+
+## Checked finite-unrolled string EP
+
+`FiniteStringEPRequest` gives an authored string graph an explicit
+finite word support on each variable and a fixed number of accepted
+synchronous sweeps. The provider reuses the finite-support EP solver
+with an unpenalized unigram family and float64 weights. The full tilt
+must have positive probability at every declared support word in the
+working precision. Each observed-pair factor query requires an acyclic
+productive path graph. Observed variables restrict their support to
+the observed word.
+
+Each call evaluates the original live factor tables. The provider reuses
+the table topology and affine bases. The finite solver
+forms normalized cavities, fits an inclusive-KL unigram projection by
+Newton steps, and divides the fitted marginal by the cavity to get its
+site message. Damping interpolates old and proposed log sites. An
+optional warm initialization gives finite coefficients in exact factor,
+variable, and affine-basis order. These are initial sites for the
+requested computation.
+
+The checked handler identity binds the graph, ordered supports and
+probes, warm sites, sweep count, damping, and local optimizer settings.
+The graph and feature resource caps can tighten for the same finite
+program. A successful report has status `completed`, its accepted
+sweep count, the final undamped residual, a score-availability flag,
+the ordered log probabilities, and `Tensor[Int]([3])`. The three
+cumulative counts cover local fit attempts, accepted Newton steps,
+and line-search trials, including the final diagnostic pass. An
+ordered probe off the declared support has log weight negative
+infinity. A local fit failure makes the requested report unavailable
+and records its accepted sweep count and work through the failure.
+Graph and feature exhaustion and unsupported closure have their own
+statuses.
+
+Autodiff follows the executed finite program, including the accepted
+Newton and damping updates. Stopping and trial selection are discrete
+tests in working precision. The derivative applies along the branch
+selected by those tests. A branch with zero accepted local iterations
+can give a constant score with respect to its factor. Completion
+reports the requested number of sweeps. Converged-solution,
+fixed-point, and certified global error guarantees are outside this
+report's domain. A target that lacks the native handler reports that
+capability boundary.
+
+### Work and storage bounds
+
+Table construction charges cumulative entries, visited states, and
+candidate arcs over the explicit factor supports. Derived factor
+construction applies the state and work bounds per transform. For a
+variable with $N$ supported words, $D$ distinct unigrams and affine
+rank $r\leq\min(N-1,D)$, the feature cap charges $ND$ cells after
+any observation restriction. Unigram counting scans the word tokens,
+the exact affine-basis selection uses $O(DN(1+r))$ rational operations
+on the count matrix, and the fit stores $O(Nr+r^2+N)$ tensor entries
+per step, apart from the existing factor table and cavity tensors.
+
+A fit forms its dense local covariance in $O(Nr^2)$ work and solves
+the Newton system in $O(r^3)$ work. Each line-search trial costs
+$O(N(r+1))$. Factor-to-variable messages reduce the declared dense
+factor table once per outgoing axis. If the graph has $A$ factor-argument
+sites, $S$ fixed sweeps admit at most $(S+1)A$ local fits. The final
+pass checks updates at the returned state. With $P$ accepted-step
+slots and $B$ backtracks allowed per step, there are at most
+$(S+1)AP$ accepted updates and $(S+1)AP(B+1)$ trials. Backward retains
+the accepted finite trajectory and factor-table evaluation. The
+domain and these limits bound tensor sizes and operation counts
+separately from backend memory use and rational integer bit cost.
+
+::: quivers.qiec.finite_ep_runtime.FiniteStringEPRequest
+
+::: quivers.qiec.finite_ep_runtime.FiniteStringEPRuntimeProvider

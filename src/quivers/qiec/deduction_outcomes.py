@@ -33,6 +33,7 @@ from quivers.qiec.foreign import (
     DeductionOutcomeLaw,
     DeductionOutcomes,
     DeductionProofs,
+    _NodeBoundedDeductionProofs,
 )
 from quivers.qiec.identifiers import ConstructorId, OperationId
 from quivers.qiec.kinds import NAT, IndexBinder, UserIndexSort
@@ -60,6 +61,7 @@ from quivers.qiec.types import (
 )
 from quivers.stochastic.forest import (
     DerivationForest,
+    ForestRefusal,
     ForestRefused,
     _weights_only,
     build_forest,
@@ -729,6 +731,11 @@ def _packed_trace(
         "algebra": "LogProb",
         "derivative": "autograd-on-finite-log-weights-at-fixed-support",
         "retention": "packed-forest-during-query",
+        **(
+            {"checked_rule_guards": forest.work.conditions}
+            if forest.presentation.conditions
+            else {}
+        ),
         "goal_items": goals,
         "positive_rows": rows,
         "construction_work": tuple(
@@ -1240,6 +1247,11 @@ def deduction_proofs_handler(
         limit = host_index(budget, "deduction proof budget")
         if limit < 1:
             raise EvaluationError("deduction proof budgets must be positive")
+        node_limit = (
+            semantics.node_limit
+            if isinstance(semantics, _NodeBoundedDeductionProofs)
+            else None
+        )
         forest, inputs, goals = _lexical_forest(semantics.chart, tokens, terms, weights)
         try:
             by_goal = fold_derivations_many(
@@ -1250,6 +1262,7 @@ def deduction_proofs_handler(
                 _weights_only(forest),
                 limit=limit,
                 like=weights,
+                node_limit=node_limit,
             )
         except ForestRefused as error:
             reason = error.code.value
@@ -1261,6 +1274,17 @@ def deduction_proofs_handler(
                     "proof_budget": limit,
                     "goal_items": len(goals),
                     "reason": reason,
+                    **(
+                        {"proof_node_budget": node_limit}
+                        if node_limit is not None
+                        else {}
+                    ),
+                    **(
+                        {"minimum_structural_proof_nodes": node_limit + 1}
+                        if node_limit is not None
+                        and reason == ForestRefusal.TOO_MANY_NODES.value
+                        else {}
+                    ),
                 },
             )
             raise EvaluationError(str(error)) from error
@@ -1298,6 +1322,7 @@ def deduction_proofs_handler(
                 "observer": "weighted-proof-rows",
                 "algorithm": "indexed-packed-forest-budgeted-enumeration",
                 "proof_budget": limit,
+                **({"proof_node_budget": node_limit} if node_limit is not None else {}),
                 "structural_goal_proofs": len(listed),
                 "unmeasured": (
                     "enumeration_arithmetic",

@@ -1431,7 +1431,7 @@ def _emit_qiec_handler_decl(decl: QiecHandlerDecl, indent: int) -> str:
     options.append(f"implementation={decl.implementation}")
     head = f"handler {decl.name}{_emit_qiec_telescope(decl.binders)}"
     head += f" for {_emit_qiec_effect_ref(decl.effect)}"
-    head += f" : {_emit_qiec_type(decl.input_type)}"
+    head += f" : {_emit_qiec_type_child(decl.input_type, _QIEC_TYPE_PREC_ATOM)}"
     head += f" -> {_emit_qiec_type(decl.output_type)}"
     if decl.parameters:
         parameters = ", ".join(

@@ -715,10 +715,39 @@ class DeductionOutcomes(QiecModel):
         presentation = self.presentation
         if not isinstance(presentation, RulePresentation):
             raise ValueError("deduction outcomes require a checked rule presentation")
-        if presentation.conditions or presentation.equations:
-            raise ValueError(
-                "deduction outcomes require unconditional rules without proof equations"
+        if presentation.equations:
+            raise ValueError("deduction outcomes do not interpret proof equations")
+        if presentation.conditions:
+            from quivers.qiec._deduction_guards import (
+                _TermGuard,
+                _check_guard_body,
+                _matched_arguments,
             )
+
+            used = set()
+            for rule in presentation.rules:
+                condition = rule.side_condition
+                if condition is None:
+                    continue
+                guard = presentation.conditions_by_id[condition.computation]
+                if condition.arguments != _matched_arguments(rule, guard):
+                    fields = (
+                        "ordered matched Int and owned Item fields"
+                        if isinstance(guard, _TermGuard)
+                        else "ordered matched Int fields"
+                    )
+                    raise ValueError(f"deduction outcome guards require the {fields}")
+                used.add(condition.computation)
+            if used != presentation.conditions_by_id.keys():
+                raise ValueError("deduction outcomes carry unused rule guard bodies")
+            for guard in presentation.conditions:
+                if isinstance(guard, _TermGuard):
+                    if guard.item_type != self.item_type:
+                        raise ValueError(
+                            "deduction outcome guard must read the checked item family"
+                        )
+                else:
+                    _check_guard_body(guard)
         if len(presentation.judgments) != 1 or len(presentation.axioms) != 1:
             raise ValueError("deduction outcomes require one lexical span judgment")
         (form,) = presentation.judgments
@@ -816,6 +845,22 @@ class DeductionProofs(QiecModel):
     chart: DeductionOutcomes = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["deduction-proofs"] = "deduction-proofs"
 
+    @dx.model_validator()
+    def _unconditional_lexical_proofs(self) -> None:
+        """Require proof constructors whose types entail their admissibility.
+
+        Raises
+        ------
+        ValueError
+            If a proof constructor needs an extra guard witness.
+        """
+        from quivers.qiec.rules import RulePresentation
+
+        presentation = self.chart.presentation
+        assert isinstance(presentation, RulePresentation)
+        if presentation.conditions:
+            raise ValueError("deduction proof outcomes require unconditional rules")
+
     @cached_property
     def proof_presentation(self) -> RulePresentation:
         """Rename the chart's proof declarations into the calling module.
@@ -832,6 +877,37 @@ class DeductionProofs(QiecModel):
         presentation = self.chart.presentation
         assert isinstance(presentation, RulePresentation)
         return export_lexical_proofs(presentation, presentation.name)
+
+
+class _NodeBoundedDeductionProofs(DeductionProofs):
+    """A proof query with a separate unfolded structural output limit.
+
+    Parameters
+    ----------
+    chart
+        The same lexical chart descriptor used by the row-only query.
+    tag
+        The proof query's operation kind. The wire record has its own type tag.
+    node_limit
+        A positive cap on the total constructor occurrences of all
+        structural goal proofs, including zero-weight proofs.
+    """
+
+    chart: DeductionOutcomes = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["deduction-proofs"] = "deduction-proofs"
+    node_limit: int
+
+    @dx.model_validator()
+    def _check_node_limit(self) -> None:
+        """Require a positive proof size budget.
+
+        Raises
+        ------
+        ValueError
+            If the cap would not allow a single node.
+        """
+        if self.node_limit < 1:
+            raise ValueError("deduction proof node budgets must be positive")
 
 
 class DeductionBooleanOutcomes(QiecModel):
@@ -869,6 +945,10 @@ class DeductionBooleanOutcomes(QiecModel):
             raise ValueError("Boolean proof outcomes require a checked lexical chart")
         presentation = chart.presentation
         assert isinstance(presentation, RulePresentation)
+        if presentation.conditions:
+            raise ValueError(
+                "packed Boolean proof outcomes require unconditional rules"
+            )
         if any(rule.arity > 2 or rule.values for rule in presentation.rules):
             raise ValueError(
                 "packed Boolean proof outcomes require rules of arity at most "

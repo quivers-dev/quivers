@@ -32,6 +32,8 @@ from quivers.qiec.terms import (
     Computation,
     ConstructorValue,
     Handle,
+    If,
+    LetBinding,
     LiteralValue,
     Local,
     Perform,
@@ -41,10 +43,10 @@ from quivers.qiec.terms import (
     Value,
     Var,
 )
-from quivers.qiec.types import REAL, TypeApplication, TypeExpr
+from quivers.qiec.types import BOOL, REAL, TypeApplication, TypeExpr
 
 _MAX_NESTING = 2
-_MAX_SOURCE_BINDINGS = 16
+_MAX_SOURCE_NODES = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +154,10 @@ def _scope(
         "stop_primal": ((number,), coefficient),
         "stop_tangent": ((number,), coefficient),
     }
+    if "less" in operations:
+        expected["less"] = ((number, number), BOOL)
+    if "div" in operations:
+        expected["div"] = ((number, number), number)
     actual = {
         op.name: (tuple(arg.type for arg in op.arguments), op.result_type)
         for op in interface.operations
@@ -208,19 +214,44 @@ def _check_source(
     ):
         raise KernelError("forward differentiation needs a closed scalar Real entry")
     installed: set[EffectInstanceId] = set()
-    pending: list[tuple[Computation, tuple[_Scope, ...]]] = [(entry.body, ())]
-    bindings = 0
+    pending: list[tuple[Computation, tuple[_Scope, ...], bool]] = [
+        (entry.body, (), False)
+    ]
+    nodes = 0
     while pending:
-        term, active = pending.pop()
+        term, active, comparison_guard = pending.pop()
         if isinstance(term, Bind | Handle):
-            bindings += 1
-            if bindings > _MAX_SOURCE_BINDINGS:
+            nodes += 1
+            if isinstance(term, Bind) and isinstance(term.then, If):
+                nodes += 1
+            if nodes > _MAX_SOURCE_NODES:
                 raise KernelError(
-                    f"forward source exceeds {_MAX_SOURCE_BINDINGS} binds and handlers",
+                    f"forward source exceeds {_MAX_SOURCE_NODES} binds and handlers or branches",
                     "qiec-forward-limit",
                 )
         if isinstance(term, Bind):
-            pending.extend(((term.then, active), (term.first, active)))
+            if isinstance(term.then, If):
+                branch = term.then
+                if (
+                    not isinstance(term.first, Perform)
+                    or term.binder.type != BOOL
+                    or branch.condition != Var(local=term.binder)
+                ):
+                    raise KernelError(
+                        "a forward branch must immediately use its named comparison",
+                        "qiec-forward-comparison-use",
+                    )
+                pending.extend(
+                    (
+                        (branch.otherwise, active, False),
+                        (branch.then, active, False),
+                        (term.first, active, True),
+                    )
+                )
+            else:
+                pending.extend(
+                    ((term.then, active, False), (term.first, active, False))
+                )
             continue
         if isinstance(term, Handle):
             if len(active) == _MAX_NESTING:
@@ -259,21 +290,39 @@ def _check_source(
                     "a forward number must stop before leaving its instance"
                 )
             installed.add(term.instance)
-            pending.append((term.computation, (*active, scope)))
+            pending.append((term.computation, (*active, scope), False))
             continue
         if isinstance(term, Perform):
             request = term.request
-            if not any(
-                scope.entry.instance == request.instance
-                and request.operation in {op.id for op in scope.operations.values()}
-                for scope in active
-            ):
+            scope = next(
+                (
+                    candidate
+                    for candidate in active
+                    if candidate.entry.instance == request.instance
+                ),
+                None,
+            )
+            if scope is None or request.operation not in {
+                op.id for op in scope.operations.values()
+            }:
                 raise KernelError(
                     "a forward request must use its active named instance"
+                )
+            less = scope.operations.get("less")
+            is_comparison = less is not None and request.operation == less.id
+            if comparison_guard != is_comparison:
+                raise KernelError(
+                    "a forward comparison must immediately guard a branch",
+                    "qiec-forward-comparison-use",
                 )
             values = request.arguments
         elif isinstance(term, Return):
             values = (term.value,)
+        elif isinstance(term, If):
+            raise KernelError(
+                "a forward branch must immediately use its named comparison",
+                "qiec-forward-comparison-use",
+            )
         else:
             raise KernelError(
                 f"{type(term).__name__} is outside the finite forward scope"
@@ -447,14 +496,14 @@ class _ForwardOperation:
         Parameters
         ----------
         name : str
-            The checked scalar arithmetic operation.
+            The checked scalar arithmetic or comparison operation.
         x, y : Value
             The underlying Real coefficients.
 
         Returns
         -------
         PrimitiveApplication
-            One pure Real operation.
+            The pure ground operation with its checked result type.
         """
         primitive = PRIMITIVES[f"{name}_real"]
         return PrimitiveApplication(
@@ -462,8 +511,27 @@ class _ForwardOperation:
             name=primitive.name,
             arguments=(x, y),
             origin=self.origin(name, "coefficient"),
-            result_type=REAL,
+            result_type=primitive.result,
         )
+
+    def ground_primal(self, value: Value) -> Value:
+        """Read the zeroth coefficient through all checked nominal pairs.
+
+        Parameters
+        ----------
+        value : Value
+            A value belonging to this operation's nominal carrier.
+
+        Returns
+        -------
+        Value
+            Its Real primal, independent of every perturbation coefficient.
+        """
+        scope: _Scope | None = self.scope
+        while scope is not None:
+            value, _ = self.open_pair(value, scope)
+            scope = self.carriers.get(scope.coefficient)
+        return value
 
     def add(self, x: tuple[Value, ...], y: tuple[Value, ...]) -> tuple[Value, ...]:
         """Add two vectors of coefficients.
@@ -501,6 +569,42 @@ class _ForwardOperation:
         right = self.multiply(x[:half], y[half:])
         return (*primal, *self.add(left, right))
 
+    def divide(
+        self, x: tuple[Value, ...], y: tuple[Value, ...], bindings: list[LetBinding]
+    ) -> tuple[Value, ...]:
+        """Solve the quotient equation one coefficient algebra at a time.
+
+        Parameters
+        ----------
+        x, y : tuple[Value, ...]
+            Numerator and divisor in the same flattened carrier order.
+        bindings : list[LetBinding]
+            The ground quotients in dependency order, initially empty.
+            Each quotient checks the common ground divisor and its result.
+
+        Returns
+        -------
+        tuple[Value, ...]
+            The references to the quotient's shared coefficients.
+        """
+        if len(x) == 1:
+            binder = Local(name=f"quotient_{len(bindings)}", type=REAL)
+            bindings.append(
+                LetBinding(
+                    binder=binder, value=self.primitive("strict_div", x[0], y[0])
+                )
+            )
+            return (Var(local=binder),)
+        half = len(x) // 2
+        divisor = y[:half]
+        primal = self.divide(x[:half], divisor, bindings)
+        correction = self.multiply(primal, y[half:])
+        numerator = tuple(
+            self.primitive("sub", coefficient, product)
+            for coefficient, product in zip(x[half:], correction, strict=True)
+        )
+        return (*primal, *self.divide(numerator, divisor, bindings))
+
     def clause(self) -> HandlerClauseDef:
         """Generate the pure prefix and single tail resumption of a clause.
 
@@ -515,22 +619,34 @@ class _ForwardOperation:
             for i, arg in enumerate(self.operation.arguments)
         )
         operands = tuple(Var(local=parameter) for parameter in parameters)
+        quotients: list[LetBinding] = []
         if name == "seed":
             x, dx = operands
             result = self.pair(self.scope, x, dx)
         elif name in ("stop_primal", "stop_tangent"):
             x, dx = self.open_pair(operands[0], self.scope)
             result = x if name == "stop_primal" else dx
+        elif name == "less":
+            result = self.primitive(
+                "strict_lt",
+                self.ground_primal(operands[0]),
+                self.ground_primal(operands[1]),
+            )
         else:
             x_values = self.coefficients(operands[0], self.scope)
             y_values = self.coefficients(operands[1], self.scope)
-            values = (
-                self.add(x_values, y_values)
-                if name == "add"
-                else self.multiply(x_values, y_values)
-            )
+            if name == "div":
+                values = self.divide(x_values, y_values, quotients)
+            elif name == "add":
+                values = self.add(x_values, y_values)
+            else:
+                values = self.multiply(x_values, y_values)
             result = self.pack(values, self.scope)
         body: Computation = Resume(value=result, origin=self.origin("resume"))
+        for binding in reversed(quotients):
+            body = Bind(
+                binder=binding.binder, first=Return(value=binding.value), then=body
+            )
         for index, (source, scope, fields) in reversed(tuple(enumerate(self.matches))):
             body = Case(
                 scrutinee=source,
@@ -566,7 +682,14 @@ def elaborate_forward_diff(
     number type. Addition and multiplication use the dual-number rules.
     Coefficient arithmetic specializes to pure Real operations in each
     generated clause. The portable fragment admits two simultaneously
-    active instances and sixteen source binds and handlers in total.
+    active instances and sixteen source binds, handlers and branches in
+    total. An optional named `less` compares only the two ground primals
+    and immediately guards a lazy branch. Equality and nonfinite primals
+    refuse the comparison at runtime.
+    An optional `div` solves the quotient in the parent coefficient
+    algebra. Each ground quotient checks the common divisor for a
+    finite nonzero primal and refuses a nonfinite coefficient in the
+    invocation's numeric representation.
     The two explicit stop operations project the primal or tangent into
     the coefficient algebra, retaining the parent perturbation when
     nested. Those original requests remain visible in ordinary traces.

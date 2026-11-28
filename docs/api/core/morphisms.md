@@ -212,7 +212,9 @@ the work is $O(d_q + K_q \log(d_q+1))$ arithmetic operations per
 state, and an analogous merge chooses the initial marks. Reading
 weight slots, the bit lengths of the exact rational scores, and
 materializing the selected arc sequences contribute additional
-costs.
+costs. A [checked native path rank request](../qiec/serialization.md#checked-deterministic-path-ranking)
+exposes the same ranked traces and separates the observation, rank,
+and result storage limits.
 
 To sample from these paths, `sample_path` chooses an initial state by its weighted
 suffix mass, then chooses an arc or a stop with probability proportional to
@@ -234,6 +236,168 @@ discard the intermediate tensors of the path pass and compute them again
 during backward. The source weight evaluation and its saved tensors are
 outside the path checkpoint.
 
+
+### Certifying numerical accuracy of Markov path weights
+
+`certify_markov_path_weight` checks an absolute or relative forward-error
+tolerance for the ordinary packed score. Its mathematical input is the
+evaluated binary64 Markov weight vector from the same call. The verifier
+reads that vector as exact binary rationals. This scopes the guarantee to
+the path evaluation, including for a vector produced by a rounded source
+weight expression. The returned tensor keeps its ordinary derivative.
+The certificate concerns only its scalar value.
+
+The verifier computes rational suffix intervals on the productive graph.
+At an acyclic state it sums the final weight and weighted successor
+intervals. Within a cyclic component, let $A$ be the matrix of internal
+arc weights, with a contribution from every original occurrence. The
+right-hand side $b$ includes final and outgoing weights and has a known
+interval $[b_-,b_+]$. The ordinary local star proposes a suffix vector
+$y$ and a positive direction $v$. The verifier checks
+$d=(I-A)v>0$ over the original sparse rows. The resulting inequality
+$Av<v$ gives $\rho(A)<1$, and $(I-A)^{-1}$ is entrywise nonnegative.
+
+For either endpoint of the right-hand side, the residual is
+$r_\pm=b_\pm-(I-A)y$. Set $c=\max_i\max(|r_{-,i}|,|r_{+,i}|)/d_i$.
+Every admitted residual lies between $-cd$ and $cd$. Applying the
+nonnegative inverse bounds the suffix by $y-cv$ and $y+cv$. The lower
+endpoint may be clipped at zero. Thus a small residual with very small
+$d$ can still give a wide interval. The verifier propagates the suffix
+intervals to the initial marks and tests the returned scalar against
+both endpoints. The relative check requires a positive lower endpoint
+or a zero-width interval and a score both equal to zero.
+
+Observation construction has the same state and arc budgets as a fixed
+query. Each declared local star order $m_i$ includes auxiliary states
+for parallel transitions. The compiler checks the aggregate
+$\sum_i m_i^2$ before allocating the associated packed expansions or
+dense star matrices. Ordinary closure uses $O(\sum_i m_i^3)$ scalar work.
+The matrix-vector proposals add $O(\sum_i m_i^2)$ floating-point work,
+and the verifier adds $O(V+E+W)$ exact operations for active states $V$,
+arc occurrences $E$, and original weight slots $W$. Its bit budget is
+checked conservatively before producing exact integer intermediates.
+The arithmetic cost per rational operation includes bounded integer
+products and gcds. Saved tensors for differentiating the packed score
+follow the usual evaluation contract and can retain quadratic arrays
+at each of the $m_i$ elimination pivots. The certificate verifier keeps
+one pair of rational endpoints per active state and one exact value per
+weight slot, in addition to the sparse observation and closed matrices.
+
+When the reachable graph, star order, closure cells, or exact arithmetic
+exceeds a limit, the call raises the corresponding resource error.
+Unsupported algebra or precision, divergence, an unverified contraction,
+and an interval that misses the requested tolerance have distinct
+diagnostics. The acyclic LogProb guarantee uses directed
+transcendental enclosures.
+
+### Certifying numerical accuracy of acyclic LogProb path weights
+
+`certify_logprob_path_weight` checks an absolute tolerance in log units
+for a fixed-word observation whose productive graph is acyclic. The
+ordinary packed score and the verifier read the same evaluated binary64
+slot snapshot. The returned tensor keeps its ordinary derivative, and
+the certificate concerns its value.
+
+The verifier converts each used binary64 log weight to Decimal exactly.
+It treats negative infinity as exact zero mass and a zero log weight as
+exact unit mass. For each other weight, it encloses the exponential by
+the two neighbors of the correctly rounded nearest-even result.
+[Python's Decimal operations](https://docs.python.org/3.14/library/decimal.html#decimal.Decimal.exp)
+
+Let $B_q$ be the final weight at configuration $q$. In reverse
+topological order the verifier bounds $S_q=B_q+\sum_{e:q\to r}w_e S_r$.
+All weights and suffix masses are nonnegative, so each lower-bound
+operation may use the lower endpoints of its operands and round down.
+The upper-bound operations use upper endpoints and round up. Each
+sparse update uses a directed fused multiply-add with one final rounding.
+Summing over the initial marks in the same way encloses the exact
+mass $Z$. [General Decimal Arithmetic Specification](https://speleotrove.com/decimal/daops.html)
+
+Monotonicity of the logarithm and the neighboring decimals around its
+nearest-even result give rational bounds $L\leq\log Z\leq U$ when
+the mass interval is positive. The verifier tests the larger distance
+from the packed score to $L$ and $U$ in exact rational arithmetic. Both
+mass endpoints equal to zero and a packed score of negative infinity
+give a verified zero mass. Its log endpoints are absent and its error
+is zero by convention.
+
+The declared adjusted exponent limit $E$ is symmetric. Each exponentiated
+input must satisfy $|\ell|\leq 2E$, which keeps its exact mass in range
+because $e^2<10$. Later arithmetic, including the two logarithms and their
+needed neighbors, must also stay in normal Decimal range. A path with
+a finite log weight of $-1000$ can pass these checks even though its mass
+would underflow in binary64. Exponent exhaustion and subnormal or
+unavailable endpoints yield resource refusals. A productive epsilon
+cycle is outside the certified domain. An unsupported dtype, a nonfinite
+packed score on positive support, and an interval too wide for the
+requested tolerance have distinct diagnostics.
+
+The verifier uses $O(V+E_a+W)$ graph work for $V$ active configurations,
+$E_a$ arc occurrences, and $W$ weight slots. The Decimal work budget
+counts at most four operations per exponentiated slot, two per used arc
+or initial mark, and four for the terminal logarithm bounds. This
+counts calls to the arithmetic library. Decimal precision and exponent
+range bound the stored operand sizes. The verifier checks the integer
+bit bound before converting a Decimal endpoint to a rational and
+charges the exact operations in the final error test separately.
+
+### Certifying numerical accuracy of cyclic LogProb path weights
+
+`certify_cyclic_logprob_path_weight` admits productive epsilon cycles
+under explicit local star order and aggregate cell limits. The
+ordinary score and verifier read one evaluated float64 snapshot.
+The result remains the ordinary LogProb tensor and the certificate
+covers its value in log units.
+
+For each productive strongly connected component, let
+$A_{ij}=\sum_{e:i\to j} \exp(\ell_e)$ sum the weights of its internal
+arc occurrences. The right side $b$ contains final weights and
+weighted suffixes from downstream components. Directed exponential
+endpoints bound every arc weight, so the lower and upper systems
+preserve the ordering of each finite partial path sum. Within each
+local system the endpoint coefficients are exact rationals, with
+every parallel occurrence included.
+
+Eliminating state $k$ replaces its contribution by
+
+$$
+x_k=\frac{b_k+\sum_{j>k} A_{kj}x_j}{1-A_{kk}}.
+$$
+
+At this step $A_{kk}$ sums the nonempty return walks through
+previously eliminated states. Every segment through $k$ consists of
+an entrance, zero or more such return walks, and an exit. Thus a
+strictly positive pivot $1-A_{kk}$ permits the exact geometric
+sum and the corresponding nonnegative substitution into the
+remaining equations. Positive pivots at all upper-system steps
+establish a finite upper star for the component because these checks
+apply to every unit right side. Back substitution then gives its upper
+suffix sums. Coefficientwise comparison of finite partial walk sums
+and their increasing limits justifies the lower and upper results.
+
+The verifier transfers the two exact rational solutions outward into
+Decimal. Directed sparse updates connect the components and the
+terminal logarithm yields the log endpoints. The verifier preserves
+masses such as $\exp(-1000)$ when they fall below the binary64 range.
+If an upper pivot is nonpositive, the verifier checks whether the
+lower endpoint system proves divergence. A nonpositive lower pivot
+gives return mass at least one, so its geometric series diverges.
+If all lower pivots remain positive, the available bounds give an
+unverified accuracy outcome. This may occur when the true mass is
+finite. The verifier checks every structurally productive component,
+including those with zero current boundary mass, so a divergence
+diagnostic concerns that local star. The requested score accuracy and
+the numerical star evaluator must also pass their respective checks.
+
+The rational elimination uses $O(n^2)$ cells and $O(n^3)$ exact
+operations per component of $n$ original observation states, in
+addition to processing its arc occurrences. The order and aggregate
+cell limits include auxiliary states used by the ordinary closure for
+parallel arcs. Lower and upper rational systems are solved in sequence.
+The exact integer bit and operation budgets apply throughout the proof,
+and the Decimal range and work budgets also cover the directed
+transfers. The acyclic core entry point and checked native certificate
+retain their acyclic domains.
 
 ## Exact string factor trees
 
@@ -741,31 +905,69 @@ this synchronous schedule.
 
 #### Two-variable comparison
 
-The benchmark gives each variable all four two-symbol words. One binary
-factor links them and each variable has a unary factor. Exact sparse tree
-marginals agree with enumeration over the 16 assignments. The beam keeps
-three words at each directed message and approximates the intermediate sum
-using the retained incoming support. The n-gram vocabulary includes both
-unigrams and all four bigrams.
+All methods use the same graph with one binary factor, two unary
+factors, and the same four two-symbol words on each variable.
+An independent dense sum over the 16 assignments supplies the exact
+marginals. The exact sparse tree and full-width production beam agree
+with these marginals. The width-three row runs
+`FiniteStringBeliefPlan.run_pruned` on the same graph, including its
+final proposal pass. Regular EP uses both unigrams and all four
+bigrams as candidate features.
 
-| Method | Status | Mean TV error | Site features | Site states | Marginal states | Median ms | Peak Python KiB |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Exact sparse tree | exact | 0.000000 | — | — | 452 | 10.1 | 229.3 |
-| Beam 3 | truncated | 0.399886 | — | 24 | 8 | 0.1 | 2.6 |
-| Regular EP (0) | converged | 0.000000 | 24 | 28 | 14 | 895.6 | 197.1 |
-| Regular EP (0.025) | converged | 0.048646 | 12 | 24 | 14 | 3185.6 | 205.1 |
-| Regular EP (0.1) | converged | 0.112319 | 7 | 19 | 13 | 114.5 | 196.0 |
-| Regular EP (0.3) | converged | 0.153415 | 0 | 12 | 6 | 38.1 | 175.0 |
-| Regular EP (1) | converged | 0.153415 | 0 | 12 | 6 | 33.5 | 174.6 |
+| Method | Status | Mean TV error | Site features | Site states/arcs | Marginal states/arcs |
+| --- | --- | --- | --- | --- | --- |
+| Exact sparse tree | exact | 0.000000 | — | — | 452/480 |
+| Production beam 3 | converged (truncated) | 0.399886 | — | 24/20 | 8/6 |
+| Regular EP (0) | converged | 0.000000 | 24 | 28/24 | 14/12 |
+| Regular EP (0.025) | converged | 0.048646 | 12 | 24/22 | 14/12 |
+| Regular EP (0.1) | converged | 0.112319 | 7 | 19/20 | 13/12 |
+| Regular EP (0.3) | converged | 0.153415 | 0 | 12/16 | 6/8 |
+| Regular EP (1) | converged | 0.153415 | 0 | 12/16 | 6/8 |
 
-The site and marginal counts sum states across the returned representations.
-Regular site counts use the automaton compiled on each site's active features.
-Beam counts use tries of the surviving word prefixes. Times are medians of
-five runs on one arm64 CPU thread with PyTorch 2.15. Peak memory counts Python
-allocations traced during a separate run. To reproduce the comparisons, run
-`python tools/benchmark_string_messages.py --repeats 5` from the checkout.
-The penalty reduced site and marginal sizes in this graph. The smaller first
-penalty increased optimization time as compared with the unpenalized fit.
+The representation counts sum states and arcs across the individual
+sites or queried marginals. For regular sites the benchmark compiles
+the automaton induced by the fitted active features. The beam counts
+derive from the tries of the surviving word prefixes. The production
+beam holds dense vectors over the declared finite axes.
+
+Let $A$ count the factor-argument sites, $S$ count accepted sweeps, and
+$L$ count fits recorded on the final pass. Each accepted sweep visits
+all $A$ sites, and the solver evaluates another pass at the returned
+state. Thus it attempts $AS+L$ local fits, including any failing fit
+on a final partial pass. A moment evaluation is one evaluation of
+the sparse normalizer and feature counts. The solver counts both
+target and base calls and the calls made by rejected optimizer
+trials. The benchmark test observes the actual site and moment
+invocations and detects a false reported sweep.
+
+On this graph a complete beam pass has four proposals and charges
+$2\cdot16+4+4=40$ factor-table cells across the outgoing axes. The
+three executed passes include the final check. These counts
+describe the input cells for the proposal reductions. Beam sorting,
+cavity normalization, and table construction have separate costs.
+A test derives the expected width-three support from the sums over
+retained incoming candidates and detects a wider beam substituted for it.
+
+| Method | Sweeps | Site fits | Moment evaluations | Beam input cells | Median ms | Peak Python KiB |
+| --- | --- | --- | --- | --- | --- | --- |
+| Exact sparse tree | — | — | — | — | 9.0 | 229.0 |
+| Production beam 3 | 2 | — | — | 120 | 4.4 | 30.5 |
+| Regular EP (0) | 4 | 20 | 1709 | — | 630.2 | 194.7 |
+| Regular EP (0.025) | 9 | 40 | 4139 | — | 2171.0 | 203.7 |
+| Regular EP (0.1) | 2 | 12 | 141 | — | 93.3 | 196.1 |
+| Regular EP (0.3) | 1 | 8 | 16 | — | 25.0 | 175.2 |
+| Regular EP (1) | 1 | 8 | 16 | — | 23.9 | 175.1 |
+
+Run `python tools/benchmark_string_messages.py --repeats 5` from the
+checkout. Times are medians of five calls after one warmup per row,
+on macOS 15.7.4 arm64 with one CPU thread and PyTorch 2.15.0. Calls
+include solver preparation, marginal scoring, and representation
+counts. Every invocation starts from the same initial sites. The
+memory column measures peak allocations traced by Python's
+`tracemalloc` during a separate call. It describes Python allocations
+and omits native tensor and allocator storage. The smallest positive
+penalty halved the retained feature count in this graph and increased
+moment evaluations from 1,709 to 4,139.
 
 ### Posteriors on closed productive components
 
@@ -1038,10 +1240,13 @@ choices held fixed.
         - NgramMessagePlan
         - NgramProjection
         - PathStatistics
+        - PathWeightCertificate
+        - LogPathWeightCertificate
         - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
         - PrunedStringBeliefResult
         - RelationLimitError
+        - RelationAccuracyError
         - RelationPath
         - StringAlignment
         - StringAlignmentCertificate
@@ -1063,6 +1268,9 @@ choices held fixed.
         - backoff_query
         - backoff_total_weight
         - best_marginal_output
+        - certify_markov_path_weight
+        - certify_cyclic_logprob_path_weight
+        - certify_logprob_path_weight
         - closure
         - compile_ranked_ot
         - concatenate

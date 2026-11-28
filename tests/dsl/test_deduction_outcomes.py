@@ -265,11 +265,6 @@ export generic
             "qiec-program",
             "already bound in program",
         ),
-        (
-            '    let sentence = ["x", "y"]\n    let result = parse(Mix, sentence)\n',
-            "qiec-program",
-            "which a step binds",
-        ),
     ),
 )
 def test_computed_deduction_input_requires_a_supported_binding_and_shape(
