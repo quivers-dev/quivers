@@ -18,6 +18,7 @@ from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
+from quivers.qiec.relation_cascades import RelationCascadeSpec
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
@@ -48,6 +49,7 @@ def _relation_score_handler_id(
     | ComposedRelationSpec
     | UnaryRelationTransformSpec
     | BinaryRelationTransformSpec
+    | RelationCascadeSpec
     | None = None,
 ) -> HandlerId:
     """Derive the checked handler identity of a source score.

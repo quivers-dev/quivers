@@ -9,7 +9,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE
-from quivers.core.algebras import LOG_PROB, MARKOV
+from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import (
     ComposedRelation,
     ComposedStringQuery,
@@ -18,6 +18,7 @@ from quivers.core.relations import (
 )
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
+from quivers.qiec._relation_operations import _RelationInterface, _binary_layout
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.relations import RationalRelationSpec, _bind_relation_operands
@@ -51,25 +52,13 @@ class ComposedRelationSpec(QiecModel):
         ValueError
             If operand types or scalar algebras do not match the composition.
         """
-        left, right = self.left.topology, self.right.topology
-        if any(
-            len(operand.tapes) != 2 or operand.input_tapes != 1
-            for operand in (left, right)
-        ):
-            raise ValueError(
-                "composition requires one input and one output tape per operand"
-            )
-        if left.tapes[1] != right.tapes[0]:
-            raise ValueError(
-                "composition operands require the same nominal shared tape"
-            )
-        if self.left.algebra != self.right.algebra or self.left.algebra not in (
-            MARKOV.subject,
-            LOG_PROB.subject,
-        ):
-            raise ValueError(
-                "composition requires one shared Markov or LogProb algebra"
-            )
+        _binary_layout(
+            _RelationInterface.of(self.left),
+            _RelationInterface.of(self.right),
+            "compose",
+            None,
+            False,
+        )
 
     def bind(self, parameters: Mapping[ParameterId, torch.Tensor]) -> ComposedRelation:
         """Bind the original identities and construct a sparse composition.

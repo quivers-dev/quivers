@@ -803,18 +803,20 @@ word tuple. Multiple identically labeled arcs contribute as separate
 occurrences even when their weight names resolve to one parameter.
 
 A declaration of the form `relation target = compose(left, right)`
-names a binary composition of two primitive authored relations. The
+names a binary composition of two authored relations. The
 operand order specifies the tape to synchronize. The two shared tape
 types and the scalar algebras must agree. The composed relation
 exposes a `pair_weight` score.
 
 The right-hand side of an authored relation can also name a sparse
-transformation. Inversion, trimming, and closure take one primitive
+transformation. Inversion, trimming, and closure take one
 operand. Projection takes its increasing tuple of retained tape
 positions and conditioning takes one tape position and a fixed word.
 Union, concatenation, and weighted intersection take two operands.
 A join also specifies the two shared tape positions and can retain
-the shared tape with `keep_shared=true`.
+the shared tape with `keep_shared=true`. Operands may refer to
+other relation declarations. Forward references are allowed when
+their dependency graph is acyclic.
 
 A `string_graph` declares nominal variables and ordered occurrences
 of authored sparse factors. A variable can supply a fixed word,

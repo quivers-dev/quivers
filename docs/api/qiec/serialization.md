@@ -199,6 +199,34 @@ the foreign handler as a required runtime capability.
 
 ::: quivers.qiec.relation_transforms.BinaryRelationTransformSpec
 
+A `RelationCascadeSpec` extends this recipe to a dependency-ordered
+table of named declarations. A reference to an earlier step can occur
+in either operand position or in both. Sharing construction and weight
+reads preserves the path multiplicity of each operation. Cycles between
+declarations, ill-typed layouts, and unused steps are refused before
+binding. The provider evaluates the table in order and keeps a fresh
+weight snapshot for each call, so parameter mutations and gradients use
+the original owners.
+
+In a cascade, `max_states` limits the state count of each intermediate
+topology. `max_work` limits the number of distinct steps, the number of
+retained topology records at each step, and the native sparse construction
+work at each conditioned or product step. The storage count includes tapes,
+arcs, per-tape labels, initial and final marks, and weight slots.
+Linear operations that expand the topology check their output size
+before allocation. Native sparse products can temporarily produce
+labels for up to the allowed arcs at the inferred tape width before
+checking the retained record count. The final fixed observation and
+any productive component closure have their own query limits.
+For $s$ steps and limits $S$ and $W$, the retained intermediate tables
+have at most $sS$ states and $sW$ records. Each evaluation reads each
+distinct weight source once. Both references to a shared operand still
+contribute to the enclosing operation's path sum and gradient.
+
+::: quivers.qiec.relation_cascades.RelationCascadeStep
+
+::: quivers.qiec.relation_cascades.RelationCascadeSpec
+
 ::: quivers.qiec.relation_transforms.FixedTransformedRelationRequest
 
 ## String factor graphs

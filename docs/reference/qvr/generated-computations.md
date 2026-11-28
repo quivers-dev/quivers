@@ -321,8 +321,8 @@ original parameters, including weight names shared by both operands.
 specification for a `FixedComposedRelationRequest`. The runtime
 request supplies the two outer words, the original scalar parameter
 bindings, and the product and query limits. Markov pair scores return
-`Real`. LogProb pair scores return `LogWeight`. This declaration
-accepts two primitive operands and exposes pair weights.
+`Real`. LogProb pair scores return `LogWeight`. Pair weights are also
+available when an operand is another checked relation operation.
 
 ## Authored string factor graphs
 
@@ -377,8 +377,11 @@ object Letters : FinSet 2
 
 relation visible_inputs = project(channel, (0))
 relation fixed_input = condition(channel, 0, (1))
+relation response = compose(filtered, channel)
+relation filtered = trim(channel)
 relation_score visible : Real [operation=pair_weight, relation=visible_inputs]
 relation_score fixed : Real [operation=pair_weight, relation=fixed_input]
+relation_score weight : Real [operation=pair_weight, relation=response]
 
 relation channel [algebra=markov, states=2]
     input Letters
@@ -399,11 +402,15 @@ forms `union(left, right)`, `concatenate(left, right)`, and
 two tape positions and retains their word once. Omitting
 `keep_shared` sums over the synchronized word.
 
-Operands refer to primitive declarations in the module, which can
-appear after the transformation. The compiler exposes the recipes in
+A relation operand can name a primitive declaration or the result of
+another sparse operation, including one declared later. In the example,
+`response` composes the trimmed relation `filtered` with `channel`.
+
+The compiler rejects cycles between declarations and checks the
+nominal tape layout of each step. It exposes longer recipes in
 `Compiler.transformed_relation_specs`. A
 `FixedTransformedRelationRequest` supplies the observed result words
-and work limits. A checked `pair_weight` score binds the exact recipe
-to its reference-machine attachment. Productive cycles require the
-declared closure capability. Native code targets identify the
-foreign handler that supplies the sparse score.
+and work limits. A checked `pair_weight` score binds the exact named,
+ordered recipe. Cycles in a relation's state graph still require the
+declared closure capability. Native code targets identify the foreign
+handler that supplies the sparse score.

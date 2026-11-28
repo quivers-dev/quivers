@@ -69,6 +69,7 @@ from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
 from quivers.qiec.program_runtime import passed_data_notes
+from quivers.qiec.relation_cascades import RelationCascadeSpec
 from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
@@ -371,19 +372,25 @@ class Compiler(
     @property
     def transformed_relation_specs(
         self,
-    ) -> dict[str, UnaryRelationTransformSpec | BinaryRelationTransformSpec]:
+    ) -> dict[
+        str,
+        UnaryRelationTransformSpec | BinaryRelationTransformSpec | RelationCascadeSpec,
+    ]:
         """Return checked sparse transformations by their authored names.
 
         Returns
         -------
-        dict[str, UnaryRelationTransformSpec | BinaryRelationTransformSpec]
-            Ordered original operands and the selected sparse operations.
+        dict[str, UnaryRelationTransformSpec | BinaryRelationTransformSpec | RelationCascadeSpec]
+            Ordered original operands and selected sparse operations, including cascades.
         """
         return {
             name: relation
             for name, relation in self._authored_relation_specs().items()
             if isinstance(
-                relation, UnaryRelationTransformSpec | BinaryRelationTransformSpec
+                relation,
+                UnaryRelationTransformSpec
+                | BinaryRelationTransformSpec
+                | RelationCascadeSpec,
             )
         }
 
@@ -411,7 +418,8 @@ class Compiler(
         RationalRelationSpec
         | ComposedRelationSpec
         | UnaryRelationTransformSpec
-        | BinaryRelationTransformSpec,
+        | BinaryRelationTransformSpec
+        | RelationCascadeSpec,
     ]:
         from quivers.dsl._relation_specs import authored_relation_specs
 

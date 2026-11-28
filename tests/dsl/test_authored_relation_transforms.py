@@ -230,7 +230,7 @@ def test_bound_transform_and_primitive_score_owners_remain_distinct():
         (
             "project(base, (0))",
             "project(projected, (0))",
-            "transformation requires primitive",
+            "cyclic authored relation",
         ),
         (
             "project(base, (0))",

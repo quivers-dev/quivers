@@ -10,26 +10,21 @@ import torch
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB, MARKOV
-from quivers.core.laws import SEMIRING_LAWS, TIMES_COMMUTATIVE, ClaimSubject
-from quivers.core.relations import (
-    FixedStringQuery,
-    RationalRelation,
-    Words,
-    closure,
-    concatenate,
-    condition,
-    intersect,
-    join,
-    invert,
-    project,
-    trim,
-    union,
-)
-from quivers.core.relations.calculus import _JoinLayout
+from quivers.core.laws import ClaimSubject
+from quivers.core.relations import FixedStringQuery, RationalRelation, Words
 from quivers.core.relations.queries import _validate_limits
+from quivers.core.relations.topology import _validate_tape_words
 from quivers.qiec._models import QiecModel
+from quivers.qiec._relation_operations import (
+    _RelationInterface,
+    _apply_binary,
+    _apply_unary,
+    _binary_layout,
+    _unary_layout,
+)
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
+from quivers.qiec.relation_cascades import RelationCascadeSpec
 from quivers.qiec.relations import RationalRelationSpec, _bind_relation_operands
 from quivers.qiec.types import REAL, TypeExpr
 
@@ -77,76 +72,42 @@ class UnaryRelationTransformSpec(QiecModel):
             raise TypeError(
                 "a transformed relation requires a checked source specification"
             )
-        n_tapes = len(self.source.tapes)
-        if not isinstance(self.positions, tuple) or any(
-            type(i) is not int or not 0 <= i < n_tapes for i in self.positions
-        ):
-            raise ValueError("transformed relation positions must name valid tapes")
-        if self.operation == "condition":
-            if (
-                len(self.positions) != 1
-                or n_tapes < 2
-                or not isinstance(self.word, tuple)
-            ):
-                raise ValueError(
-                    "conditioning requires one fixed tape word and a remaining tape"
-                )
-            self._validate_words(((),) * (n_tapes - 1))
-        elif self.word is not None:
-            raise ValueError("only conditioning accepts a fixed tape word")
-        elif self.operation == "project":
-            positions = self.positions
-            if not positions or any(b <= a for a, b in zip(positions, positions[1:])):
-                raise ValueError(
-                    "projection requires increasing distinct tape positions"
-                )
-        elif self.positions:
-            raise ValueError(
-                "this transformed relation operation takes no tape positions"
-            )
+        self._layout()
 
-    def _tape_order(self) -> tuple[int, ...]:
-        """Return the source tape positions in the transformed order.
+    def _layout(self) -> _RelationInterface:
+        """Return the checked tape layout and scalar algebra.
 
         Returns
         -------
-        tuple of int
-            One source position per transformed tape.
+        _RelationInterface
+            The result's nominal tapes, orientation, and scalar algebra.
         """
-        count = len(self.source.tapes)
-        split = self.source.input_tapes
-        if self.operation == "project":
-            return self.positions
-        if self.operation == "condition":
-            return tuple(i for i in range(count) if i != self.positions[0])
-        if self.operation == "invert":
-            return (*range(split, count), *range(split))
-        return tuple(range(count))
+        return _unary_layout(
+            _RelationInterface.of(self.source),
+            self.operation,
+            self.positions,
+            self.word,
+        )
 
     def _validate_words(self, words: Words) -> None:
-        """Check transformed words through the source's tape validator.
+        """Validate observations against the transformed tape layout.
 
         Parameters
         ----------
         words : Words
-            The observed word on each transformed tape, in order.
+            The observed word on each result tape.
 
         Raises
         ------
         ValueError
-            The observed words have the wrong arity or include an invalid symbol.
+            The word tuple has the wrong arity or an invalid symbol.
         """
-        positions = self._tape_order()
-        if len(positions) != len(words):
+        tapes = self._layout().tapes
+        if len(words) != len(tapes):
             raise ValueError(
                 "a transformed query needs exactly one word per retained tape"
             )
-        padded: list[tuple[int, ...]] = [()] * len(self.source.tapes)
-        for position, word in zip(positions, words, strict=True):
-            padded[position] = word
-        if self.word is not None:
-            padded[self.positions[0]] = self.word
-        self.source.topology._validate_words(tuple(padded))
+        _validate_tape_words(tapes, words)
 
     def bind(
         self,
@@ -173,24 +134,14 @@ class UnaryRelationTransformSpec(QiecModel):
         """
         _validate_limits(max_states, max_work)
         source = self.source.bind(parameters)
-        match self.operation:
-            case "project":
-                return project(source, self.positions)
-            case "condition":
-                assert self.word is not None
-                return condition(
-                    source,
-                    self.positions[0],
-                    self.word,
-                    max_states=max_states,
-                    max_work=max_work,
-                )
-            case "invert":
-                return invert(source)
-            case "trim":
-                return trim(source)
-            case "closure":
-                return closure(source)
+        return _apply_unary(
+            source,
+            self.operation,
+            self.positions,
+            self.word,
+            max_states=max_states,
+            max_work=max_work,
+        )
 
 
 class BinaryRelationTransformSpec(QiecModel):
@@ -236,97 +187,43 @@ class BinaryRelationTransformSpec(QiecModel):
             for source in (self.left, self.right)
         ):
             raise TypeError("binary transforms require two checked relation operands")
-        if self.left.algebra != self.right.algebra:
-            raise TypeError("binary relation transforms require one shared algebra")
-        if self.operation != "join" and (
-            self.shared_tapes is not None or self.keep_shared
-        ):
-            raise ValueError("only join accepts shared tape positions and retention")
-        left, right = self.left.topology, self.right.topology
-        if self.operation in ("union", "concatenate"):
-            if left.tapes != right.tapes or left.input_tapes != right.input_tapes:
-                raise TypeError(
-                    "relation expressions require identical ordered tape types"
-                )
-            return
-        if self.operation == "intersect":
-            if (
-                len(left.tapes) != 1
-                or len(right.tapes) != 1
-                or left.input_tapes != right.input_tapes
-            ):
-                raise TypeError(
-                    "intersection requires one tape per operand with the same orientation"
-                )
-            l_tape = r_tape = 0
-        else:
-            supplied = self.shared_tapes
-            if (
-                not isinstance(supplied, tuple)
-                or len(supplied) != 2
-                or any(
-                    type(i) is not int or not 0 <= i < len(source.tapes)
-                    for i, source in zip(supplied, (left, right), strict=True)
-                )
-            ):
-                raise ValueError("join requires one valid tape position per operand")
-            l_tape, r_tape = supplied
-        if left.tapes[l_tape] != right.tapes[r_tape]:
-            raise TypeError("binary products require the same nominal shared tape")
-        algebra = self.left._algebra
-        if algebra is None or not algebra.establishes(
-            *SEMIRING_LAWS, TIMES_COMMUTATIVE
-        ):
-            raise TypeError(
-                "binary products require an established commutative semiring"
-            )
-        self._visible()
+        self._layout()
 
-    def _visible(self) -> tuple[tuple[int, int], ...]:
-        """Return ordered operand and tape positions for the result layout.
+    def _layout(self) -> _RelationInterface:
+        """Return the checked ordered output tapes and scalar algebra.
 
         Returns
         -------
-        tuple
-            The operand position and original tape for each result tape.
+        _RelationInterface
+            The result's nominal tapes, orientation, and scalar algebra.
         """
-        if self.operation in ("union", "concatenate"):
-            return tuple((0, i) for i in range(len(self.left.tapes)))
-        shared = (0, 0) if self.operation == "intersect" else self.shared_tapes
-        assert shared is not None
-        return _JoinLayout.build(
-            self.left.topology,
-            self.right.topology,
-            *shared,
-            keep_shared=self.keep_shared or self.operation == "intersect",
-        ).visible
+        return _binary_layout(
+            _RelationInterface.of(self.left),
+            _RelationInterface.of(self.right),
+            self.operation,
+            self.shared_tapes,
+            self.keep_shared,
+        )
 
     def _validate_words(self, words: Words) -> None:
-        """Check the observed words using their original typed tape positions.
+        """Validate observations against the transformed tape layout.
 
         Parameters
         ----------
         words : Words
-            The observed words on the result tapes, in order.
+            The observed word on each result tape.
 
         Raises
         ------
         ValueError
-            The word tuple does not inhabit the result tape layout.
+            The word tuple has the wrong arity or an invalid symbol.
         """
-        visible = self._visible()
-        if len(words) != len(visible):
+        tapes = self._layout().tapes
+        if len(words) != len(tapes):
             raise ValueError(
                 "a transformed query needs exactly one word per retained tape"
             )
-        padded: tuple[list[tuple[int, ...]], list[tuple[int, ...]]] = (
-            [()] * len(self.left.tapes),
-            [()] * len(self.right.tapes),
-        )
-        for (side, tape), word in zip(visible, words, strict=True):
-            padded[side][tape] = word
-        self.left.topology._validate_words(tuple(padded[0]))
-        self.right.topology._validate_words(tuple(padded[1]))
+        _validate_tape_words(tapes, words)
 
     def bind(
         self,
@@ -355,24 +252,15 @@ class BinaryRelationTransformSpec(QiecModel):
         left, right = _bind_relation_operands(
             self.left, self.right, parameters, description="binary relation"
         )
-        match self.operation:
-            case "union":
-                return union(left, right)
-            case "concatenate":
-                return concatenate(left, right)
-            case "intersect":
-                return intersect(left, right, max_states=max_states, max_work=max_work)
-            case "join":
-                assert self.shared_tapes is not None
-                return join(
-                    left,
-                    right,
-                    left_tape=self.shared_tapes[0],
-                    right_tape=self.shared_tapes[1],
-                    keep_shared=self.keep_shared,
-                    max_states=max_states,
-                    max_work=max_work,
-                )
+        return _apply_binary(
+            left,
+            right,
+            self.operation,
+            self.shared_tapes,
+            self.keep_shared,
+            max_states=max_states,
+            max_work=max_work,
+        )
 
 
 class FixedTransformedRelationRequest(QiecModel):
@@ -384,21 +272,22 @@ class FixedTransformedRelationRequest(QiecModel):
 
     Parameters
     ----------
-    relation : UnaryRelationTransformSpec or BinaryRelationTransformSpec
+    relation : UnaryRelationTransformSpec or BinaryRelationTransformSpec or RelationCascadeSpec
         The original relation and its transformation.
     words : Words
         One observed word per transformed tape.
     max_states : int
         State budget for conditioning and each fixed observation.
     max_work : int
-        Work budget for conditioning and each fixed observation.
+        Work budget for conditioning and each fixed observation. A cascade
+        also limits the number of steps and the records in each topology.
     max_closure_size : int or None
         Optional bound for productive cyclic closure components.
     """
 
-    relation: UnaryRelationTransformSpec | BinaryRelationTransformSpec = dx.field(
-        opaque=True, extras=OPAQUE_BY_VALUE
-    )
+    relation: (
+        UnaryRelationTransformSpec | BinaryRelationTransformSpec | RelationCascadeSpec
+    ) = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     words: Words = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     max_states: int
     max_work: int
@@ -414,11 +303,17 @@ class FixedTransformedRelationRequest(QiecModel):
             A word, limit, or algebra is invalid for a fixed relation query.
         """
         if not isinstance(
-            self.relation, UnaryRelationTransformSpec | BinaryRelationTransformSpec
+            self.relation,
+            UnaryRelationTransformSpec
+            | BinaryRelationTransformSpec
+            | RelationCascadeSpec,
         ):
             raise TypeError("a transformed query requires a checked relation recipe")
         _validate_limits(self.max_states, self.max_work, self.max_closure_size)
-        self.relation._validate_words(self.words)
+        if isinstance(self.relation, RelationCascadeSpec):
+            _validate_tape_words(self.relation._layout.tapes, self.words)
+        else:
+            self.relation._validate_words(self.words)
         if self._algebra not in (MARKOV.subject, LOG_PROB.subject):
             raise ValueError("fixed transformed relations require Markov or LogProb")
 
@@ -454,6 +349,8 @@ class FixedTransformedRelationRequest(QiecModel):
             The original algebra claim identity.
         """
         relation = self.relation
+        if isinstance(relation, RelationCascadeSpec):
+            return relation.algebra
         return (
             relation.source.algebra
             if isinstance(relation, UnaryRelationTransformSpec)

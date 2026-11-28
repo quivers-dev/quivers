@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from graphlib import CycleError, TopologicalSorter
 from typing import Literal, cast
 
 import didactic.api as dx
@@ -19,6 +20,7 @@ from quivers.dsl.ast_nodes.declarations import ObjectDecl, TypeFromExpr
 from quivers.dsl.ast_nodes.objects import DiscreteConstructor, TypeName
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec.contracts import ParameterId
+from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
@@ -32,6 +34,7 @@ type AuthoredRelationSpec = (
     | ComposedRelationSpec
     | UnaryRelationTransformSpec
     | BinaryRelationTransformSpec
+    | RelationCascadeSpec
 )
 type _Declaration = (
     QiecRelationDecl | QiecRelationComposeDecl | QiecRelationTransformDecl
@@ -140,6 +143,57 @@ def _transform_spec(
     )
 
 
+def _operands(declaration: _Declaration) -> tuple[str, ...]:
+    if isinstance(declaration, QiecRelationDecl):
+        return ()
+    if isinstance(declaration, QiecRelationComposeDecl):
+        return declaration.left, declaration.right
+    if declaration.other is None:
+        return (declaration.source,)
+    return declaration.source, declaration.other
+
+
+def _cascade(
+    root: str,
+    declarations: dict[str, _Declaration],
+    primitive: dict[str, RationalRelationSpec],
+    dependencies: dict[str, tuple[str, ...]],
+) -> RelationCascadeSpec:
+    # Postorder following ordered operands makes the reachable wire independent
+    # of unrelated declarations and of source order for forward references.
+    pending = [(root, False)]
+    indices: dict[str, int] = {}
+    steps = []
+    while pending:
+        name, expanded = pending.pop()
+        if name in indices:
+            continue
+        declaration = declarations[name]
+        if not expanded:
+            pending.append((name, True))
+            pending.extend((item, False) for item in reversed(dependencies[name]))
+            continue
+        indices[name] = len(steps)
+        operands = tuple(indices[item] for item in dependencies[name])
+        if isinstance(declaration, QiecRelationDecl):
+            step = RelationCascadeStep(name=name, primitive=primitive[name])
+        elif isinstance(declaration, QiecRelationComposeDecl):
+            step = RelationCascadeStep(
+                name=name, operation="compose", operands=operands
+            )
+        else:
+            step = RelationCascadeStep(
+                name=name,
+                operation=declaration.operation,
+                operands=operands,
+                positions=declaration.positions,
+                word=declaration.word,
+                keep_shared=declaration.keep_shared,
+            )
+        steps.append(step)
+    return RelationCascadeSpec(steps=tuple(steps))
+
+
 def authored_relation_specs(
     syntax: Module, module_name: str, file_path: str
 ) -> dict[str, AuthoredRelationSpec]:
@@ -180,36 +234,42 @@ def authored_relation_specs(
             except (TypeError, ValueError, dx.ValidationError) as error:
                 raise diagnostic(declaration, str(error)) from error
 
+    dependencies = {
+        name: _operands(declaration) for name, declaration in declarations.items()
+    }
+    for name, operands in dependencies.items():
+        for operand in operands:
+            if operand not in declarations:
+                raise diagnostic(
+                    declarations[name], f"unknown authored relation {operand!r}"
+                )
+    try:
+        order = tuple(TopologicalSorter(dependencies).static_order())
+    except CycleError as error:
+        names = tuple(cast(list[str], error.args[1]))
+        raise diagnostic(
+            declarations[names[0]], f"cyclic authored relation: {' -> '.join(names)}"
+        ) from error
+
     result: dict[str, AuthoredRelationSpec] = {}
-    for name, declaration in declarations.items():
+    for name in order:
+        declaration = declarations[name]
         if isinstance(declaration, QiecRelationDecl):
             result[name] = primitive[name]
             continue
-        names: tuple[str, str | None]
-        if isinstance(declaration, QiecRelationComposeDecl):
-            names = (declaration.left, declaration.right)
-            purpose = "composition"
-        else:
-            names = (declaration.source, declaration.other)
-            purpose = "transformation"
-        for operand in names:
-            if operand is None:
-                continue
-            if operand not in declarations:
-                raise diagnostic(declaration, f"unknown authored relation {operand!r}")
-            if operand not in primitive:
-                raise diagnostic(
-                    declaration,
-                    f"{purpose} requires primitive relation operands, got {operand!r}",
-                )
-        source = primitive[names[0]]
-        other = None if names[1] is None else primitive[names[1]]
+        operands = dependencies[name]
         try:
+            if any(operand not in primitive for operand in operands):
+                result[name] = _cascade(name, declarations, primitive, dependencies)
+                continue
+            source = primitive[operands[0]]
             if isinstance(declaration, QiecRelationComposeDecl):
-                assert other is not None
-                result[name] = ComposedRelationSpec(left=source, right=other)
+                result[name] = ComposedRelationSpec(
+                    left=source, right=primitive[operands[1]]
+                )
             else:
+                other = primitive[operands[1]] if len(operands) == 2 else None
                 result[name] = _transform_spec(declaration, source, other)
         except (TypeError, ValueError, dx.ValidationError) as error:
             raise diagnostic(declaration, str(error)) from error
-    return result
+    return {name: result[name] for name in declarations}

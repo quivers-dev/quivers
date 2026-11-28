@@ -118,6 +118,7 @@ from quivers.qiec.contracts import (
     WorkReport,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
@@ -366,6 +367,8 @@ _NODE_CLASSES = (
     ComposedRelationSpec,
     UnaryRelationTransformSpec,
     BinaryRelationTransformSpec,
+    RelationCascadeSpec,
+    RelationCascadeStep,
     FixedTransformedRelationRequest,
     FixedComposedRelationRequest,
     FixedRelationArcCountsRequest,

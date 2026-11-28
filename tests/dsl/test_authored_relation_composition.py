@@ -191,7 +191,7 @@ def test_authored_logprob_composition_returns_log_weight_and_live_gradient():
         (
             "compose(source_channel, target_channel)",
             "compose(pair_channel, target_channel)",
-            "requires primitive relation operands",
+            "cyclic authored relation",
         ),
         (
             "relation source_channel [algebra=markov, states=3]\n    input Letters\n    output Letters",

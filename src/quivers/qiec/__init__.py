@@ -379,6 +379,7 @@ from quivers.qiec.reference_support import (
     DistributionError,
 )
 from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
+from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
@@ -715,6 +716,8 @@ __all__ = [
     "REAL",
     "ROW",
     "ComposedRelationSpec",
+    "RelationCascadeSpec",
+    "RelationCascadeStep",
     "UnaryRelationTransformSpec",
     "BinaryRelationTransformSpec",
     "FixedTransformedRelationRequest",

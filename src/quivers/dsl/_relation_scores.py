@@ -35,6 +35,7 @@ from quivers.qiec.string_graph_runtime import (
     _string_graph_score_handler_name,
     _tree_string_graph_handler,
 )
+from quivers.qiec.relation_cascades import RelationCascadeSpec
 from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
@@ -80,7 +81,10 @@ def _score_specification(
         )
     if isinstance(
         relation,
-        ComposedRelationSpec | UnaryRelationTransformSpec | BinaryRelationTransformSpec,
+        ComposedRelationSpec
+        | UnaryRelationTransformSpec
+        | BinaryRelationTransformSpec
+        | RelationCascadeSpec,
     ):
         if operation != "pair_weight":
             kind = (
@@ -93,11 +97,12 @@ def _score_specification(
                 f"authored {kind} currently support pair_weight scores",
                 code="qiec-relation-score",
             )
-        algebra = (
-            relation.source.algebra
-            if isinstance(relation, UnaryRelationTransformSpec)
-            else relation.left.algebra
-        )
+        if isinstance(relation, RelationCascadeSpec):
+            algebra = relation.algebra
+        elif isinstance(relation, UnaryRelationTransformSpec):
+            algebra = relation.source.algebra
+        else:
+            algebra = relation.left.algebra
     else:
         algebra = relation.algebra
         if operation == "conditional_log_prob" and not 0 < relation.input_tapes < len(

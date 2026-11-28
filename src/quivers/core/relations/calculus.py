@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from itertools import product
-from typing import cast
+from typing import Protocol, cast
 
 import torch
 from torch import nn
@@ -15,6 +15,7 @@ from torch import nn
 from quivers.core.algebras import Semiring
 from quivers.core.laws import SEMIRING_LAWS, TIMES_COMMUTATIVE
 from quivers.core.morphisms import Morphism
+from quivers.core.objects import StringSet
 from quivers.core.relations import RationalRelation
 from quivers.core.relations._packed import _take
 from quivers.core.relations.queries import (
@@ -247,6 +248,14 @@ def _compile_composition(
     )
 
 
+class _TapeLayout(Protocol):
+    @property
+    def tapes(self) -> tuple[StringSet, ...]: ...
+
+    @property
+    def input_tapes(self) -> int: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _JoinLayout:
     left_tape: int
@@ -257,8 +266,8 @@ class _JoinLayout:
     @classmethod
     def build(
         cls,
-        left: RelationTopology,
-        right: RelationTopology,
+        left: _TapeLayout,
+        right: _TapeLayout,
         left_tape: int,
         right_tape: int,
         *,
