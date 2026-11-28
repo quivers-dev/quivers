@@ -666,6 +666,39 @@ acceptor describes candidates for this input alone. Compiling one
 transducer for arbitrary ranked inputs requires additional
 regularity hypotheses.
 
+### Uniform compilation for capped ranked constraints
+
+`compile_ranked_ot` compiles a single transducer for all inputs
+when each violation count has an explicit finite cap. A cap of
+one records whether a constraint has been violated. The count
+update adds the arc's violations, then clips each coordinate
+at its cap.
+
+Each weighted product state records the current candidate and
+its capped vector. It also records the set of all candidate
+configurations reachable by consuming the same input prefix.
+This set is closed under input-epsilon transitions. A consuming
+transition updates the set for its input symbol and takes the
+epsilon closure again. The construction retains all reachable
+vectors, since saturation can reverse the ordering of two prefix
+vectors after they receive the same further violations.
+
+An original path uniquely determines its weighted product path.
+That path accepts exactly when the original path ends in a final
+state and its rank equals the minimum among all final
+configurations in the competitor set. The competitor set filters
+the original paths without contributing any weight or alignment
+multiplicity. All tied original paths keep their weights, and
+sharing through the original parameters remains live.
+
+The compiler visits reachable weighted product states and caches
+competitor transitions by state set and observed label. It
+does not iterate over the entire alphabet or the entire cap
+product. Nevertheless the number of reachable sets can be
+exponential. State and work limits give explicit failure when
+exploration exceeds the supplied budgets. The caps define the
+model, and the limits bound construction.
+
 ::: quivers.core.relations
     options:
       members:
@@ -718,6 +751,7 @@ regularity hypotheses.
         - backoff_query
         - best_marginal_output
         - closure
+        - compile_ranked_ot
         - concatenate
         - condition
         - dual_alignment_map

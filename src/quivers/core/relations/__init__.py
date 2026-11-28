@@ -90,6 +90,7 @@ __all__ = [
     "backoff_query",
     "best_marginal_output",
     "closure",
+    "compile_ranked_ot",
     "concatenate",
     "condition",
     "dual_alignment_map",
@@ -698,4 +699,7 @@ from quivers.core.relations.regular_ep import (  # noqa: E402
 from quivers.core.relations.equality import auto_intersect  # noqa: E402
 from quivers.core.relations.backoff import FailureArc, backoff_query  # noqa: E402
 from quivers.core.relations.minimization import minimize_static_acceptor  # noqa: E402
-from quivers.core.relations.ranked import ranked_output_candidates  # noqa: E402
+from quivers.core.relations.ranked import (  # noqa: E402
+    compile_ranked_ot,
+    ranked_output_candidates,
+)
