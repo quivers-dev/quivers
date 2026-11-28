@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Fixed-word composition of sparse relations.** `ComposedRelation` matches two bivariate relations on their shared tape. Its epsilon filter counts each compatible pair of paths once, and reusable queries score the live operand weights with explicit construction limits.
 - **Bounded closure of productive cycles.** A fixed-word `RationalRelation` query can use the algebra's star for strongly connected cyclic components. The plan preserves parallel occurrences and live gradients and reports the order of each local closure matrix.
 - Checked lexical deductions can return weighted forms, categories, or full goal items. QVR programs can normalize reading weights and use them in a response likelihood, with gradients reaching lexical and supported production weights. Token tensors computed in QVR can feed the same query.
+- Checked outcome queries can group goal weights by a deterministic QVR computation that returns a discrete scalar or a closed constructor value.
 
 ### Fixed
 

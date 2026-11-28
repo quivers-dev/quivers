@@ -185,6 +185,18 @@ def validate_outcome_key(type_: TypeExpr, registry: KernelRegistry) -> None:
     their ordered fields recursively. Each admitted scalar representation
     has exact value equality, so the resulting equality is structural by
     induction on finite values. The visited set handles recursive families.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The checked result type of the key computation.
+    registry : KernelRegistry
+        The closed families and constructor declarations used by the type.
+
+    Raises
+    ------
+    KernelError
+        The type or one of its fields lacks the supported structural equality.
     """
     families = {
         family.type_constructor: family for family in registry.families.values()
@@ -219,7 +231,22 @@ def validate_outcome_key(type_: TypeExpr, registry: KernelRegistry) -> None:
 def validate_outcome_grouping(
     definition: HandlerDef, grouping: DeductionOutcomeGrouping, registry: KernelRegistry
 ) -> None:
-    """Check a grouping handler against its typed data family and operation."""
+    """Check a grouping handler against its typed data family and operation.
+
+    Parameters
+    ----------
+    definition : HandlerDef
+        The checked handler declaration to validate.
+    grouping : DeductionOutcomeGrouping
+        The descriptor naming the key type and row constructors.
+    registry : KernelRegistry
+        The declarations against which the descriptor is checked.
+
+    Raises
+    ------
+    KernelError
+        The key type, row family, or grouping operation has an invalid signature.
+    """
     validate_outcome_key(grouping.key_type, registry)
     output = definition.output_type
     empty = registry.constructors.get(grouping.empty)
@@ -459,7 +486,26 @@ def _chart_outcomes(
 def _outcome_masses[K](
     grouped: Mapping[K, list[torch.Tensor]], normalize: bool
 ) -> dict[K, torch.Tensor]:
-    """Sum all occurrences per key, then normalize the positive support."""
+    """Sum all occurrences per key, then normalize the positive support.
+
+    Parameters
+    ----------
+    grouped : Mapping[K, list[torch.Tensor]]
+        Each key's nonempty list of scalar log masses.
+    normalize : bool
+        Whether to subtract the total log mass from the supported rows.
+
+    Returns
+    -------
+    dict[K, torch.Tensor]
+        The grouped log masses with zero-mass keys omitted.
+
+    Raises
+    ------
+    EvaluationError
+        A supported mass or normalizer is nonfinite, or normalization was
+        requested for empty support.
+    """
     rows: dict[K, torch.Tensor] = {}
     for outcome, weights_for_key in grouped.items():
         mass = LOG_PROB.join(torch.stack(weights_for_key), 0)
@@ -494,7 +540,24 @@ def _materialize_rows(
     entry: ConstructorId,
     rows: Iterable[tuple[HeldValue, torch.Tensor]],
 ) -> RuntimeConstructor:
-    """Produce the typed row list in first-occurrence order."""
+    """Produce the typed row list in first-occurrence order.
+
+    Parameters
+    ----------
+    output : TypeExpr
+        The checked row-list family type.
+    empty : ConstructorId
+        The nullary constructor for the end of the list.
+    entry : ConstructorId
+        The constructor for a key, log mass, and remaining rows.
+    rows : Iterable[tuple[HeldValue, torch.Tensor]]
+        The key and scalar log mass of each retained row, in order.
+
+    Returns
+    -------
+    RuntimeConstructor
+        The head of the typed row list, or its empty constructor.
+    """
     result = RuntimeConstructor(
         constructor=empty, static_arguments=(), fields=(), result_type=output
     )
@@ -509,7 +572,25 @@ def _materialize_rows(
 
 
 def _typed_key(value: HeldValue, type_: TypeExpr) -> Hashable:
-    """Use the machine's exact equality on the checked key domain."""
+    """Use the machine's exact equality on the checked key domain.
+
+    Parameters
+    ----------
+    value : HeldValue
+        The runtime result of the key computation.
+    type_ : TypeExpr
+        The checked key result type.
+
+    Returns
+    -------
+    Hashable
+        A key using the runtime's value equality for this type.
+
+    Raises
+    ------
+    InvalidHandlerError
+        The runtime value does not have the expected representation.
+    """
     if type_ == STRING and isinstance(value, str):
         return value
     if type_ == UNIT and value is None:
@@ -533,11 +614,47 @@ def outcome_grouping_handler(
     operation: OperationId,
     grouping: DeductionOutcomeGrouping,
 ) -> RuntimeHandler:
-    """Push forward checked weighted rows without traversing their proofs."""
+    """Push forward checked weighted rows without traversing their proofs.
+
+    Parameters
+    ----------
+    definition : HandlerDef
+        The checked grouping handler declaration.
+    operation : OperationId
+        The operation that groups rows and optionally normalizes their weights.
+    grouping : DeductionOutcomeGrouping
+        The checked descriptor for the input and output row representation.
+
+    Returns
+    -------
+    RuntimeHandler
+        The handler that sums scalar log weights by their checked key.
+    """
 
     def group(
         request: RuntimeRequest, _resume: Resumption, _context: ClauseContext
     ) -> TailResume:
+        """Fold the typed input rows and resume with their grouped masses.
+
+        Parameters
+        ----------
+        request : RuntimeRequest
+            The evaluated rows and the normalization flag.
+        _resume : Resumption
+            The resumption supplied by the machine.
+        _context : ClauseContext
+            The clause context supplied by the machine.
+
+        Returns
+        -------
+        TailResume
+            A tail resumption with the grouped rows.
+
+        Raises
+        ------
+        InvalidHandlerError
+            The input does not have the checked row representation.
+        """
         row, normalize = request.arguments
         grouped: dict[Hashable, list[torch.Tensor]] = {}
         representatives: dict[Hashable, HeldValue] = {}
