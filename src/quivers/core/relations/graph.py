@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -179,6 +180,24 @@ class TreeStringMarginal:
 
     def log_prob(self, word: tuple[int, ...]) -> torch.Tensor:
         """Return the log probability of one word under the full graph."""
+        return self.query(word)()
+
+    def query(self, word: tuple[int, ...]) -> Callable[[], torch.Tensor]:
+        """Compile a reusable normalized score for one word.
+
+        The query retains the word's sparse plan and the component
+        normalizers. Each evaluation reads the current weight sources.
+
+        Parameters
+        ----------
+        word : tuple of int
+            The fixed word on this marginal's tape.
+
+        Returns
+        -------
+        Callable
+            A callable returning the word's normalized log probability.
+        """
         bounds = self._bounds
         plan = self.relation.query(
             (word,),
@@ -186,13 +205,17 @@ class TreeStringMarginal:
             max_work=bounds.max_work,
             max_closure_size=bounds.max_closure_size,
         )
-        algebra = self.relation.algebra
-        with _weight_snapshot():
-            masses = [query.weight() for query in self._normalizers]
-            for mass in masses[1:]:
-                _require_normalizer(mass, algebra)
-            score = plan.weight()
-        return _conditional_log_ratio(score, masses[0], algebra)
+
+        def evaluate() -> torch.Tensor:
+            algebra = self.relation.algebra
+            with _weight_snapshot():
+                masses = [query.weight() for query in self._normalizers]
+                for mass in masses[1:]:
+                    _require_normalizer(mass, algebra)
+                score = plan.weight()
+            return _conditional_log_ratio(score, masses[0], algebra)
+
+        return evaluate
 
 
 type _Vertex = str | int

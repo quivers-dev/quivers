@@ -358,7 +358,11 @@ from quivers.qiec.reference_support import (
 )
 from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
 from quivers.qiec.relations import FixedRelationRequest, RationalRelationSpec
-from quivers.qiec.string_graphs import StringFactorGraphSpec
+from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
+from quivers.qiec.string_graph_runtime import (
+    TreeStringGraphRuntimeProvider,
+    tree_string_graph_handler,
+)
 from quivers.qiec.serialization import (
     JsonValue,
     QIEC_WIRE_FORMAT,
@@ -665,6 +669,9 @@ __all__ = [
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
     "StringFactorGraphSpec",
+    "TreeStringGraphRequest",
+    "TreeStringGraphRuntimeProvider",
+    "tree_string_graph_handler",
     "Reachability",
     "Reduction",
     "ReductionOperator",
