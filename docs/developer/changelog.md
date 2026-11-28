@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Expectation propagation with regular string messages.** A typed graph uses sparse cavity joins and compact fitted n-gram sites over declared regular supports. Local projection, outer convergence, and relation limits have separate diagnostics.
 - **Sparse penalized n-gram projection.** Forward-KL projection on finite regular support estimates moments through path sums. The structured penalty selects features, and the fitted message compiles only the active ones.
 - **Compact regular n-gram messages.** Deterministic suffix states reweight a sparse language by live n-gram coefficients, retaining epsilon alignments, original weight owners, and ordinary closure checks.
 - **Alignment-marginal output ranking.** Compare the exact sum of all alignments for each declared candidate output in acyclic Markov observations, with a differentiable log score for the selected pair.
