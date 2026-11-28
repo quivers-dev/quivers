@@ -163,15 +163,20 @@ infinitely many paths. The local star checks decide whether the sum
 can be used. Construction of these three topologies uses linear space
 in the original records and introduces one arc per connecting boundary.
 
-
 A fixed-word query with an acyclic productive graph supports `best_path`
 and `k_best_paths` for Markov and LogProb weights. Ranking compares the exact
 values of the stored binary weights and reports path occurrence IDs in the
-original topology. Several paths can realize the same strings. To sample
-from these paths, `sample_path` chooses an initial state by its weighted
+original topology. Several paths can realize the same strings. At each active
+vertex, the ranking retains at most $k$ suffixes and considers at most $k$
+extensions per outgoing arc. Heap selection uses $O(\log(k+1))$ comparisons
+per candidate. The cost of each exact comparison depends on the sizes of its
+rational operands, and materializing the answers also costs their total length.
+
+To sample from these paths, `sample_path` chooses an initial state by its weighted
 suffix mass, then chooses an arc or a stop with probability proportional to
-the weight of an accepting continuation. The observations enter through the
-query, and a positive normalizer is required. Each sampled walk terminates.
+the weight of an accepting continuation, evaluated in float64 log space. The
+observations enter through the query, and a positive normalizer is required.
+Each sampled walk terminates.
 
 For expected counts, `expected_arc_counts` uses one packed pass in each
 direction and gathers the corresponding prefix and suffix at every active arc
