@@ -110,6 +110,19 @@ def _require_normalizer(total: torch.Tensor, algebra: Semiring) -> None:
         raise ValueError("path operation requires a positive finite normalizer")
 
 
+def _conditional_log_ratio(
+    score: torch.Tensor, mass: torch.Tensor, algebra: Semiring
+) -> torch.Tensor:
+    _require_normalizer(mass, algebra)
+    if not algebra.contains(score).item():
+        raise OverflowError("a conditional weight is outside the evaluation precision")
+    if algebra is LOG_PROB:
+        return score - mass
+    positive = score > 0
+    safe_score = torch.where(positive, score, torch.ones_like(score))
+    return torch.where(positive, safe_score.log() - mass.log(), -torch.inf)
+
+
 class _AcyclicWalks:
     def __init__(
         self,
