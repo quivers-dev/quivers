@@ -177,6 +177,48 @@ exclude relation construction and allocator memory. A three-way star with $N$ pa
 each relation for a given free value has $N^3$ joined bindings. The three partner sums each
 take linear work before their product gives the value for that free binding.
 
+### Comparison across refits
+
+A single rule chooses one occurrence from each of three relations of
+width $n$. All occurrences share the rule's hub index. The $n^3$
+ordered proofs have total weight $Z=\prod_{a=1}^3\sum_i w_{a,i}$.
+For log weights $\theta_{a,i}=\log w_{a,i}$, the derivative is
+$w_{a,i}Z/\sum_j w_{a,j}$. The benchmark checks each executor against
+these formulas at three successive parameter updates. Every executor
+starts with the same weights and applies its own gradient at each update.
+
+| Width | Engine | Refit ms | Provenance records | Peak Python KiB | Saved tape KiB |
+| --- | --- | --- | --- | --- | --- |
+| 4 | Explicit proofs | 0.11 | 64 | 2.6 | 3.6 |
+| 4 | Indexed | 4.03 | 13 | 49.5 | 0.6 |
+| 4 | Indexed with goal evidence | 4.94 | 269 | 73.3 | 0.6 |
+| 4 | Dense contraction | 0.17 | 0 | 13.8 | 0.1 |
+| 4 | Rule variable elimination | 5.24 | 0 | 43.1 | 0.1 |
+| 8 | Explicit proofs | 0.32 | 512 | 9.3 | 28.2 |
+| 8 | Indexed | 25.69 | 25 | 122.2 | 4.2 |
+| 8 | Indexed with goal evidence | 32.24 | 2073 | 363.1 | 4.2 |
+| 8 | Dense contraction | 0.17 | 0 | 13.8 | 0.2 |
+| 8 | Rule variable elimination | 5.34 | 0 | 53.6 | 0.2 |
+| 12 | Explicit proofs | 0.82 | 1728 | 28.8 | 94.8 |
+| 12 | Indexed | 84.37 | 37 | 287.0 | 13.9 |
+| 12 | Indexed with goal evidence | 105.57 | 6949 | 1419.2 | 13.9 |
+| 12 | Dense contraction | 0.18 | 0 | 13.4 | 0.3 |
+| 12 | Rule variable elimination | 5.77 | 0 | 64.1 | 0.3 |
+
+The explicit arm enumerates ordered occurrence tuples. The dense arm
+uses a tensor contraction. The indexed variants share the same rule plan.
+The ordinary indexed arm reports one parent count for each derived item.
+The evidence arm also counts one record for each retained edge and each
+of its premise references. Elimination reuses the checked presentation
+and contracts the independent variables before multiplying their sums.
+
+Times are medians per refit across three warmed runs on one arm64 CPU
+thread with PyTorch 2.15. They include the forward evaluation, backward
+pass, and parameter update. Peak Python allocations and unique storage
+saved for the busiest backward pass are measured in separate runs.
+To reproduce the comparison, run `python tools/benchmark_deduction_plans.py`
+from the repository checkout.
+
 ## Acyclicity by a measure {#proof-measure}
 
 A presentation whose form graph has a cycle, like the span rules
