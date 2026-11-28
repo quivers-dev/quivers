@@ -130,6 +130,35 @@ live weights.
 
 ::: quivers.qiec.relation_runtime.FixedRelationRuntimeProvider
 
+## Compact backoff relation requests
+
+A `FixedBackoffRelationRequest` scores a word against an authored
+deterministic one-tape Markov or LogProb topology with explicit failure
+links. The checked foreign handler name identifies the original
+topology, ordered failure links and their weight identities, and the
+observation. State and work limits are invocation settings. An ordinary
+pair-weight request cannot bind this handler.
+
+For a missing symbol, a chain of failures leaves the symbol unconsumed
+until the first ordinary match. Its weight is the ordered product of
+the failure weights followed by the matching ordinary weight. This is
+the same transition a full deterministic expansion would supply for
+that state and symbol. Each ordinary transition is present structurally,
+so a zero ordinary coefficient takes precedence over any fallback. At
+the end of the word, only the current state's final mark can contribute.
+The compact plan follows this sequence for the observed word and keeps
+the original tensors, including shared and failure-only identities.
+
+In QVR, a named computation can install a `foreign` `Compute[Unit, A]`
+handler using the request's `handler_name`, with `apply resumes 1`.
+Here `A` is `Real` or `LogWeight` according to the request. A native run
+supplies `FixedRelationRuntimeProvider` and the original weight tensors.
+The budget counts visited state configurations and ordinary symbol
+probes after validation of the sparse graph. The exhaustive alphabet
+expansion is only an equivalence description.
+
+::: quivers.qiec.relation_backoff.FixedBackoffRelationRequest
+
 ## Sparse relation composition requests
 
 A `ComposedRelationSpec` records the two original operands of a

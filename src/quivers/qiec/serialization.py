@@ -119,6 +119,7 @@ from quivers.qiec.contracts import (
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
+from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
@@ -385,6 +386,7 @@ _NODE_CLASSES = (
     RelationCascadeStep,
     FixedTransformedRelationRequest,
     FixedComposedRelationRequest,
+    FixedBackoffRelationRequest,
     FixedMinimizedRelationRequest,
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,

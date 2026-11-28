@@ -18,6 +18,10 @@ from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
+from quivers.qiec.relation_backoff import (
+    FixedBackoffRelationRequest,
+    _BACKOFF_HANDLER_PREFIX,
+)
 from quivers.qiec.relation_cascades import RelationCascadeSpec
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
@@ -170,7 +174,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest or FixedMinimizedRelationRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest or FixedMinimizedRelationRequest or FixedBackoffRelationRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The original scalar tensors supplying the request's weight
@@ -192,6 +196,7 @@ class FixedRelationRuntimeProvider:
         | FixedRelationFeatureMomentRequest
         | FixedCyclicRelationFeatureMomentRequest
         | FixedComposedArcFeatureMomentRequest
+        | FixedBackoffRelationRequest
         | FixedMinimizedRelationRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
@@ -199,6 +204,10 @@ class FixedRelationRuntimeProvider:
     ) -> None:
         if not isinstance(handler_name, str) or not handler_name:
             raise ValueError("a fixed relation provider requires a handler name")
+        if handler_name.startswith(_BACKOFF_HANDLER_PREFIX) and not isinstance(
+            request, FixedBackoffRelationRequest
+        ):
+            raise ValueError("a checked backoff handler requires its backoff request")
         self._handler_name = handler_name
         self._result_type = request.result_type
         self._result_shape = (
@@ -215,6 +224,13 @@ class FixedRelationRuntimeProvider:
             self._operation = request.observation.operation
             self._relation_spec = request.observation.relation
             self._score = request.plan(parameters)[0].weight
+            return
+        if isinstance(request, FixedBackoffRelationRequest):
+            if handler_name != request.handler_name:
+                raise ValueError("fixed backoff requires its exact observation handler")
+            self._operation = "pair_weight"
+            self._relation_spec = request.relation
+            self._score = request.plan(parameters).weight
             return
         if isinstance(
             request,

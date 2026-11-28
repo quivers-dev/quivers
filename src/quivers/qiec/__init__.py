@@ -384,6 +384,7 @@ from quivers.qiec.pruned_string_graph_runtime import (
     PrunedStringGraphRuntimeProvider,
     pruned_string_graph_handler,
 )
+from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
 from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
@@ -739,6 +740,7 @@ __all__ = [
     "FixedRelationFeatureMomentRequest",
     "FixedRelationFeatureObservation",
     "FixedComposedRelationRequest",
+    "FixedBackoffRelationRequest",
     "FixedMinimizedRelationRequest",
     "FixedRelationArcCountsRequest",
     "FixedRelationCostRequest",
