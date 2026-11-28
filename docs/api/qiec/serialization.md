@@ -57,6 +57,21 @@ An omitted group contributes zero. The provider returns a signed
 `Real` and preserves derivatives to the original relation weights.
 Costs are fixed data in the serialized request.
 
+### Checked best-path weights
+
+A `FixedRelationRequest` with operation `best_path_weight` selects
+the highest-weight positive alignment for the observed word on each
+tape. The exact ranking compares the rational values represented by
+the input tensors. The returned scalar uses the original Markov or
+LogProb carrier. A tie follows the fixed topology order and carries
+the derivative of that selected path's original occurrences.
+
+An empty positive support returns the semiring zero. This objective
+requires an acyclic productive graph. In the QIEC reference machine
+a foreign linear `Compute[Unit, Real]` or
+`Compute[Unit, LogWeight]` handler can bind the request. Native score
+targets report that handler as an unsupported capability.
+
 ::: quivers.qiec.relations.FixedRelationRequest
 
 ::: quivers.qiec.relations.FixedRelationCostRequest
