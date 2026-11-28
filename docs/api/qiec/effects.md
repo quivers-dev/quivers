@@ -802,6 +802,61 @@ assert run_named(lowered, "squared", (3.0, 5.0)).value == 30.0
 
 ::: quivers.qiec.forward_diff
 
+## Nominal reverse differentiation
+
+`elaborate_reverse_diff` checks one straight-line graph on a named
+reverse instance. The source seeds its Real inputs in parameter order,
+seeds any constants after those inputs, and adds or multiplies earlier
+vertices. Each vertex has a consecutive integer slot starting at zero.
+The terminal `stop` names the output vertex.
+
+The generated return clause puts a unit cotangent at that output's slot.
+Each arithmetic clause resumes once, then adds both operand
+contributions to the tuple it receives. Two uses of the same operand
+both contribute. The result contains the primal followed by all vertex
+cotangents, with the input cotangents first. The graph allows up to six
+vertices and rejects larger inputs with `qiec-reverse-limit`.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import elaborate_reverse_diff, run_named
+from quivers.qiec.numbers import host_value
+
+source = """
+family Number : Type
+    constructor Vertex : Real * Int -> Number
+
+effect Reverse
+    seed : Int * Real -> Number
+    add : Int * Number * Number -> Number
+    mul : Int * Number * Number -> Number
+    stop : Number -> Number
+
+instance d : Reverse
+
+handler reverse for Reverse : Number -> (Real * Real * Real) [coverage=total, forwards=none, implementation=foreign]
+    seed resumes 1
+    add resumes 1
+    mul resumes 1
+    stop resumes 1
+
+define squared(x : Real) : (Real * Real * Real) !{} =
+    handle d with reverse in
+        let input <- perform d.seed(0, x)
+        let product <- perform d.mul(1, input, input)
+        perform d.stop(product)
+"""
+module = Compiler(parse(source), module_name="reverse-square").qiec_module
+assert module is not None
+instance, = module.instances
+handler, = module.handlers
+constructor, = module.constructors
+lowered = elaborate_reverse_diff(module, instance.entry.instance, handler.id, constructor.id)
+assert host_value(run_named(lowered, "squared", (3.0,)).value) == (9.0, 6.0, 1.0)
+```
+
+::: quivers.qiec.reverse_diff
+
 ## Finite elimination
 
 `eliminate_finite` contracts explicit finite tables. Each factor gives its
