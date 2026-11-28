@@ -45,19 +45,40 @@ class CappedRelationPathLaw:
 
     Parameters
     ----------
-    paths : _CappedPaths
-        The compiled original graph, suffix, and bounded prefix plan.
+    request : FixedCappedCyclicRelationPathSampleRequest
+        The checked observation, capacity, and evaluation limits.
+    parameters : RelationWeightBindings
+        The original live scalar weight owners.
     generator : torch.Generator
         The CPU generator for native Random draws.
     """
 
-    def __init__(self, paths: _CappedPaths, *, generator: torch.Generator) -> None:
+    def __init__(
+        self,
+        request: FixedCappedCyclicRelationPathSampleRequest,
+        parameters: RelationWeightBindings,
+        *,
+        generator: torch.Generator,
+    ) -> None:
         if not isinstance(generator, torch.Generator) or generator.device.type != "cpu":
             raise ValueError("a capped path law needs a CPU generator")
+        cyclic = request.request
+        source = cyclic.request
+        paths = _CappedPaths(
+            source.relation.bind(parameters),
+            source.words,
+            source.trace_capacity,
+            max_states=source.max_states,
+            max_work=source.max_work,
+            max_closure_size=cyclic.max_closure_size,
+            max_closure_cells=request.max_closure_cells,
+            max_prefix_work=request.max_prefix_work,
+            max_prefix_cells=request.max_prefix_cells,
+        )
         with torch.no_grad():
             paths.log_mass()
         self._paths = paths
-        self._capacity = paths._capacity
+        self._capacity = source.trace_capacity
         self._element = _capped_trace_type(self._capacity)
         self._generator = generator
 
@@ -258,20 +279,7 @@ class FixedCappedCyclicRelationPathSampleRequest(QiecModel):
         RelationLimitError
             Graph or prefix construction exceeds a declared limit.
         """
-        cyclic = self.request
-        source = cyclic.request
-        paths = _CappedPaths(
-            source.relation.bind(parameters),
-            source.words,
-            source.trace_capacity,
-            max_states=source.max_states,
-            max_work=source.max_work,
-            max_closure_size=cyclic.max_closure_size,
-            max_closure_cells=self.max_closure_cells,
-            max_prefix_work=self.max_prefix_work,
-            max_prefix_cells=self.max_prefix_cells,
-        )
-        return CappedRelationPathLaw(paths, generator=generator)
+        return CappedRelationPathLaw(self, parameters, generator=generator)
 
 
 __all__ = ["CappedRelationPathLaw", "FixedCappedCyclicRelationPathSampleRequest"]
