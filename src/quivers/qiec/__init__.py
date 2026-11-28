@@ -540,6 +540,10 @@ from quivers.qiec.pruned_string_graph_runtime import (
     PrunedStringGraphRuntimeProvider,
     pruned_string_graph_handler,
 )
+from quivers.qiec.alignment_map_runtime import (
+    JointAlignmentMapRequest,
+    JointAlignmentMapRuntimeProvider,
+)
 from quivers.qiec.finite_ep_runtime import (
     FiniteStringEPRequest,
     FiniteStringEPRuntimeProvider,
@@ -977,6 +981,8 @@ __all__ = [
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
     "StringFactorGraphSpec",
+    "JointAlignmentMapRequest",
+    "JointAlignmentMapRuntimeProvider",
     "JointAlignmentMapConfig",
     "JointAlignmentMapDecomposition",
     "JointAlignmentMapGapConfig",

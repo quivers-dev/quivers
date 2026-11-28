@@ -128,6 +128,7 @@ from quivers.qiec.effect_law_schema import (
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
+from quivers.qiec.alignment_map_runtime import JointAlignmentMapRequest
 from quivers.qiec.finite_ep_runtime import FiniteStringEPRequest
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
@@ -456,6 +457,7 @@ _NODE_CLASSES = (
     TreeStringGraphRequest,
     RegularStringEPRequest,
     FiniteStringEPRequest,
+    JointAlignmentMapRequest,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,

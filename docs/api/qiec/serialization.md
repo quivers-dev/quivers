@@ -806,6 +806,61 @@ returned approximate result.
 
 ::: quivers.qiec.string_solvers.JointAlignmentMapDecomposition
 
+## Checked native joint alignment MAP
+
+`JointAlignmentMapRequest` combines a checked string factor graph
+with a portable singleton exact-local solver or its objective-gap
+policy. Compile the ordinary QVR graph to get its specification.
+Declare a total foreign `Compute[Unit, A]` handler using the request's
+handler name and result carrier, then bind a
+`JointAlignmentMapRuntimeProvider` to the original live scalar owners.
+The handler identity binds the ordered graph, nominal tapes and
+observations, parameter identities, complete solver record, and
+word capacity. The solver reads the current weights on each
+invocation.
+
+For $V$ declared variables and word capacity $K$, the report follows
+this order.
+
+| Field | QVR carrier |
+| --- | --- |
+| Search status and diagnostic | `String * String` |
+| Feasible assignment availability | `Bool` |
+| Word tokens in variable declaration order | `Tensor[Int]([V, K])` |
+| Word lengths in the same order | `Tensor[Int]([V])` |
+| Feasible score, dual upper bound, absolute gap, relative gap | `Tensor[String]([4, 2])` |
+| Agreement certificate and attained gap target | `Bool * Bool` |
+| Iterations, peak local states, local arc examinations, peak verification states, verification arc examinations | `Tensor[Int]([5])` |
+
+Words use `-1` suffix padding. An available empty word has length
+zero. An absent assignment uses length `-1` and a false availability
+flag. A run without a feasible assignment may still report an exact
+dual upper bound.
+
+Each available rational has its signed hexadecimal numerator and
+positive denominator. Their exact integers can exceed both the
+floating-point mantissa and the QVR `Int` range. An unavailable
+ratio has two empty strings. A request admits $V(K+1)$ assignment
+cells before any output allocation. Each report checks the actual
+word lengths, symbol and count ranges, and total integer bit
+count before formatting ratios or packing observed words. A
+`report_limit` returns absent evidence when the encoding cannot
+represent the result. A solver state or work limit returns
+`resource_limit`.
+
+An agreement certificate flag means the solver independently
+verified the original local trace scores and the exact local optima
+under the cancelling multipliers. The `optimal` status requires
+whole-word agreement. A verified absolute or relative gap may yield
+`gap` and an attained target with the agreement flag false. The
+result concerns the discrete optimization of the evaluated parameter
+snapshot, with no optimizer derivative. Native targets requiring
+foreign calls to be discharged report the exact missing handler.
+
+::: quivers.qiec.alignment_map_runtime.JointAlignmentMapRequest
+
+::: quivers.qiec.alignment_map_runtime.JointAlignmentMapRuntimeProvider
+
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
 
 ::: quivers.qiec.string_solvers.RegularStringEPPolicy
