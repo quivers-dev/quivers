@@ -388,6 +388,8 @@ class _ClauseFrame(_Frame):
         The clause's declared resumption grade.
     resumptions
         The shot path at the handled request.
+    outside_resumptions
+        The shot path outside the captured continuation.
     next_shot
         The ordinal of the next shot of this invocation.
     clause_path
@@ -401,6 +403,7 @@ class _ClauseFrame(_Frame):
     serial: int
     grade: ResumptionGrade = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    outside_resumptions: tuple[int, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     next_shot: int = 0
     clause_path: _ClausePath = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     captured_clauses: _ClausePath = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -1325,7 +1328,9 @@ class _Discharger:
                                 *stack,
                             )
                         state = substitute_computation(answer.body, frame.statics)
-                elif isinstance(frame, _ClauseFrame | _ShotFrame):
+                elif isinstance(frame, _ClauseFrame):
+                    resumptions = frame.outside_resumptions
+                elif isinstance(frame, _ShotFrame):
                     resumptions = frame.resumptions
                 elif isinstance(frame, _JoinFrame) and frame.serial in self.awaited:
                     return _Arrival(
@@ -1524,15 +1529,27 @@ class _Discharger:
                         )
                 bound, environment, state = self.clause(request, answering, clause)
                 made.extend(bound)
+                captured = stack[: position + 1]
+                # Unwinding the captured frames ends at their outermost
+                # path boundary. Frames outside the handler remain live.
+                outside_resumptions = resumptions
+                for boundary in reversed(captured):
+                    if isinstance(boundary, _ShotFrame):
+                        outside_resumptions = boundary.resumptions
+                        break
+                    if isinstance(boundary, _ClauseFrame):
+                        outside_resumptions = boundary.outside_resumptions
+                        break
                 stack = (
                     _ClauseFrame(
-                        captured=stack[: position + 1],
+                        captured=captured,
                         answer=substitute_type(
                             answering.handler.output_type, answering.statics
                         ),
                         serial=self.ordinal(),
                         grade=clause.grade,
                         resumptions=resumptions,
+                        outside_resumptions=outside_resumptions,
                         clause_path=clause_path,
                         captured_clauses=_clause_path(stack[position + 1 :]),
                     ),
@@ -1814,7 +1831,7 @@ class _Discharger:
             made.extend(bound)
             arguments.append(read)
         joins, beyond = self.clause_end(stack)
-        restored = frame.resumptions
+        restored = frame.outside_resumptions
         shot_path = frame.resumptions
         multiple = self.track_shots and frame.grade is ResumptionGrade.UNRESTRICTED
         if multiple:

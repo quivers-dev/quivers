@@ -295,6 +295,216 @@ def _request_addresses(
     )
 
 
+_CROSS_CAPTURE = """
+effect Split
+    fork : Real -> Real
+effect Relay
+    pass : Real -> Real
+
+instance child : Split
+instance parent : Split
+instance relay : Relay
+instance score : Score
+
+handler twice for Split : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    fork(x : Real) resumes omega =>
+        let left <- resume(x)
+        let right <- resume(x + 1.0)
+        return left + 2.0 * right
+
+handler route for Relay : Real -> Real [coverage=total, forwards=none, introduces=!{score}, implementation=authored]
+    return x =>
+        return x
+    pass(x : Real) resumes 1 =>
+        perform score.add(weight(x + 20.0))
+        let y <- resume(2.0 * x)
+        perform score.add(weight(y + 30.0))
+        return y
+
+handler accumulate for Score : Real -> (Real * LogWeight) [coverage=total, implementation=foreign]
+    add resumes 1
+
+define crossed(x : Real) : Real !{score} =
+    handle relay with route in
+        handle child with twice in
+            let shot <- perform child.fork(x)
+            let y <- perform relay.pass(shot)
+            perform score.add(weight(y))
+            return y
+
+define nested(x : Real) : Real !{score} =
+    handle parent with twice in
+        let shot <- perform parent.fork(x)
+        let y <- crossed(shot)
+        perform score.add(weight(y))
+        return y
+
+define crossed_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- crossed(x)
+        perform score.add(weight(y))
+        return y
+
+define nested_run(x : Real) : Real * LogWeight !{} =
+    handle score with accumulate in
+        let y <- nested(x)
+        perform score.add(weight(y))
+        return y
+"""
+
+
+def _cross_capture_outcome(x):
+    shots = (x, x + 1)
+    value = 2 * shots[0] + 4 * shots[1]
+    score = sum(shot + 20 + 2 * shot for shot in shots) + 2 * (value + 30)
+    return value, score
+
+
+@pytest.mark.parametrize("position", ("caller", "within", "nested"))
+def test_clause_exit_restores_only_the_shots_outside_its_handler(position):
+    module = _module(_CROSS_CAPTURE)
+    crossed = _computation(module, "crossed")
+    run = "nested_run" if position == "nested" else "crossed_run"
+    outer = _computation(module, run)
+    (outside,) = _effect_sites(outer.body, "Score")
+    (relay,) = _effect_sites(crossed.body, "Relay")
+    (inside,) = _effect_sites(crossed.body, "Score")
+    before, after = _effect_sites(_effect_clause_body(module, "route"), "Score")
+
+    def capture(call, parent):
+        clause = (*call, ("handler-clause", relay))
+        return [
+            (before, clause, (*parent, 0)),
+            (inside, call, (*parent, 0)),
+            (before, clause, (*parent, 1)),
+            (inside, call, (*parent, 1)),
+            (after, clause, (*parent, 1)),
+            (after, clause, (*parent, 0)),
+        ]
+
+    x = 0.5
+    if position == "nested":
+        (between,) = _effect_sites(_computation(module, "nested").body, "Score")
+        caller = (("call", "nested#1"),)
+        expected = []
+        values = []
+        scores = []
+        for i, argument in enumerate((x, x + 1)):
+            expected.extend(capture((*caller, ("call", f"crossed#{i + 2}")), (i,)))
+            expected.append((between, caller, (i,)))
+            value, score = _cross_capture_outcome(argument)
+            values.append(value)
+            scores.append(score)
+        value = values[0] + 2 * values[1]
+        score = sum(scores) + sum(values)
+    else:
+        caller = (("call", "crossed#1"),)
+        expected = capture(caller, ())
+        value, score = _cross_capture_outcome(x)
+
+    if position == "within":
+        # Put the explicit post-handler continuation in the same checked
+        # computation, so discharge itself must emit its empty shot path.
+        assert isinstance(outer.body, Handle)
+        sequence = outer.body.computation
+        assert isinstance(sequence, Bind)
+        replacement = {
+            crossed.id: crossed.with_(body=sequence.with_(first=crossed.body)),
+            outer.id: outer.with_(body=outer.body.with_(computation=sequence.first)),
+        }
+        module = module.with_(
+            computations=tuple(
+                replacement.get(entry.id, entry) for entry in module.computations
+            )
+        )
+        validate_module(module)
+    expected.append((outside, caller if position == "within" else (), ()))
+
+    discharged = discharge_module(module)
+    assert discharged.obstacle("crossed") is None
+    assert discharged.obstacle("nested") is None
+    restored = loads(dumps(discharged.module))
+    assert isinstance(restored, QiecModule)
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={"handlers": {"accumulate": {"kind": "score"}}},
+            ),
+        )
+    )
+    for checked in (module, discharged.module, restored):
+        answer = run_named(checked, run, (x,), runtime=runtime)
+        assert isinstance(answer.value, tuple)
+        assert tuple(float(item) for item in answer.value) == (value, score + value)
+        assert tuple(
+            event.detail["address"]
+            for event in answer.trace
+            if event.event == "operation.requested"
+            and event.detail["operation"] == str(SCORE_ADD)
+        ) == tuple(expected)
+
+
+@pytest.mark.parametrize("kind", ("passthrough", "score"))
+def test_foreign_clause_exit_restores_the_path_outside_its_capture(kind):
+    before, _, rest = _CROSS_CAPTURE.partition("handler route for")
+    _, _, after = rest.partition("handler accumulate for")
+    effect, operation = ("Relay", "pass") if kind == "passthrough" else ("Score", "add")
+    source = (
+        before
+        + f"""handler route for {effect} : Real -> Real [coverage=total, forwards=none, implementation=foreign]
+    {operation} resumes 1
+
+handler accumulate for"""
+        + after
+    )
+    if kind == "score":
+        source = source.replace("instance relay : Relay", "instance relay : Score")
+        source = source.replace(
+            "            let y <- perform relay.pass(shot)",
+            "            perform relay.add(weight(shot))\n            let y = shot",
+        )
+    module = _module(source)
+    obstacle = discharge_module(module).obstacle("crossed")
+    assert obstacle is not None and obstacle.kind == "foreign"
+    instance = next(
+        item.entry.instance for item in module.instances if item.name == "score"
+    )
+    crossed = _computation(module, "crossed")
+    outside = _computation(module, "crossed_run")
+    (inside_site,) = (
+        str(term.request.origin.static_site)
+        for term in _terms(crossed.body)
+        if isinstance(term, Perform) and term.request.instance == instance
+    )
+    (outside_site,) = _effect_sites(outside.body, "Score")
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={
+                    "handlers": {
+                        "route": {"kind": kind},
+                        "accumulate": {"kind": "score"},
+                    }
+                },
+            ),
+        )
+    )
+    value = run_named(module, "crossed_run", (0.5,), runtime=runtime)
+    assert isinstance(value.value, tuple)
+    assert tuple(float(item) for item in value.value) == (3.5, 5.5)
+    call = (("call", "crossed#1"),)
+    assert tuple(
+        event.detail["address"]
+        for event in value.trace
+        if event.event == "operation.requested"
+        and event.detail["instance"] == str(instance)
+    ) == ((inside_site, call, (0,)), (inside_site, call, (1,)), (outside_site, (), ()))
+
+
 def test_discharge_keeps_equal_valued_shots_and_restores_the_outer_path(
     address_module: tuple[QiecModule, DischargedModule],
 ) -> None:

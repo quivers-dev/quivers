@@ -3910,6 +3910,16 @@ class Evaluator:
                 )
             outer_stack = tuple(stack[:index])
             captured_stack = tuple(stack[index:])
+            # Captured frames unwind from the top. The lowest path
+            # boundary in the capture is the last one crossed on exit.
+            outside_path = next(
+                (
+                    captured.resumption_path
+                    for captured in captured_stack
+                    if isinstance(captured, _PathFrame | _ClauseFrame)
+                ),
+                request.resumption_path,
+            )
             if runtime_clause.invoke is _authored_clause:
                 body = structural_clause.body
                 if body is None:
@@ -3981,7 +3991,7 @@ class Evaluator:
                         definition=definition,
                         handler=handler,
                         environment=frame.environment,
-                        resumption_path=request.resumption_path,
+                        resumption_path=outside_path,
                         clause_path=clause_path,
                     )
                 )
@@ -4036,7 +4046,7 @@ class Evaluator:
                     answer.value, answer.arguments
                 )
                 del stack[index:]
-                stack.append(_PathFrame(resumption_path=request.resumption_path))
+                stack.append(_PathFrame(resumption_path=outside_path))
                 stack.extend(shot_frames)
                 return _Continue(
                     current=_Returned(value=answer.value),
@@ -4086,7 +4096,7 @@ class Evaluator:
             return _Continue(
                 current=_Returned(value=answer),
                 environment=Scope.of(frame.environment),
-                resumption_path=request.resumption_path,
+                resumption_path=outside_path,
             )
         if self.trace_hook is not None:
             self._emit_trace(

@@ -13,6 +13,10 @@ at their original entry points. A residual request observes the live
 addresses in their original order. Resumptions restore the same
 allocations for each shot, which has its own resumption path. Effects in
 an intervening clause use the scope outside the captured continuation.
+The clause keeps the shot path of its triggering request while it runs.
+When its answer leaves the handler, the continuation recovers the path
+outside the capture. Surviving outer shots still contribute to later
+addresses.
 
 A retained call also inherits its enclosing discharged shots and
 clause activations. Discharge keeps the reference handler when the call's
