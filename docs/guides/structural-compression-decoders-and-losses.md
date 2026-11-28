@@ -220,6 +220,59 @@ depth-bounded decoder. A supplied candidate set has the conditional
 semantics above. The signature, depth and vocabulary stay fixed between
 calls on a prepared support, while code and learned parameters can change.
 
+### Drawing from a declared decoder
+
+An authored decoder can declare `max_candidates` to prepare its complete
+support before execution. This exposes the checked computation
+`D__law(code)` for decoder `D`. Its term type uses the signature name
+and the root object sort, for instance `Colors__TermValue`. Its
+constructors use the signature's prefix. The checked law uses the
+same neural heads as the decoder and keeps their gradients.
+
+<!-- compile: qiec -->
+```qvr
+signature Colors
+    sorts
+        Term : object [dim=2]
+    constructors
+        Red : -> Term
+        Blue : -> Term
+
+decoder D : Colors [depth=1, max_candidates=2]
+    body |-> recursive
+
+instance random : Random
+
+define draw_color(code : Tensor[Real]([2])) : Colors__TermValue !{random} =
+    let law <- D__law(code)
+    perform random.sample[Colors__TermValue](site("color"), law)
+
+define read_color(color : Colors__TermValue) : Real !{} =
+    case color motive => Real
+        Colors__Red =>
+            return 2.0
+        Colors__Blue =>
+            return 4.0
+
+object Input : FinSet 1
+object Out : Real 1
+
+program measure(code : Tensor[Real]([2])) : Input -> Out
+    let color <- draw_color(code)
+    let center <- read_color(color)
+    observe response <- Normal(loc=center, scale=1.0)
+    return center
+
+export measure
+```
+
+The call takes one code and returns a `Sampleable[Colors__TermValue]`,
+which also admits `log_prob(law, color)` and replay at the same site.
+The bound is carried in the checked request. Running serialized QIEC
+requires the compiled decoder attachment with the same carrier and
+bound. The namespaced values coexist with the opaque term type used
+by the original structural decoder and encoder computations.
+
 ## Stdlib decoders
 
 `quivers.structural.shapes` provides decoders to match its encoders:
