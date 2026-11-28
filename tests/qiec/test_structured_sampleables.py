@@ -9,6 +9,9 @@ import pytest
 import torch
 
 from quivers.dsl import loads as load_source
+from quivers.effects import replay
+from quivers.inference import LatentRegistry, trace
+from quivers.inference.registry import _trace_latent_values
 from quivers.qiec.builtins import RANDOM, RANDOM_SAMPLE, TraceRecorder, trace_handler
 from quivers.qiec.canonical import sampleable_type
 from quivers.qiec.distributions import DistributionError
@@ -317,3 +320,94 @@ def test_public_host_entry_rejects_law_at_the_wrong_nominal_carrier() -> None:
     with pytest.raises(ExecutionFailure) as errors:
         run_named(module, "mass", arguments=(other,))
     assert errors.value.diagnostic.code == "qiec-run-argument"
+
+
+def test_common_trace_preserves_typed_sites_through_condition_and_replay() -> None:
+    compiled = load_source(SOURCE.replace("export recorded\n", ""))
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    weights = torch.tensor(
+        [0.2, -0.3, 1.2, -torch.inf], dtype=torch.float64, requires_grad=True
+    )
+    law, nested, _zero = _law(module, weights)
+    x = weights.new_zeros((1, 1))
+    observed = weights.new_tensor(1.7)
+    data = {"law": law, "response": observed}
+
+    sampled = trace(compiled.morphism, x, data)
+    point = sampled.sites["meaning"]
+    assert point.is_structured and not point.is_observed
+    assert point.sampleable is law and point.morphism is None
+    assert point.value in (law.values[0], nested)
+    assert point.log_prob.shape == (1,)
+    assert sampled.sites["response"].is_observed
+    assert not sampled.sites["response"].is_structured
+    with pytest.raises(
+        ValueError, match="structured latent 'meaning'.*continuous latent registry"
+    ):
+        LatentRegistry.from_trace(compiled.morphism, sampled)
+    with pytest.raises(
+        ValueError, match="tensor draws cannot retain structured site 'meaning'"
+    ):
+        _trace_latent_values(sampled)
+    unflattened = LatentRegistry.from_trace(
+        compiled.morphism, sampled, exclude={"meaning"}
+    )
+    assert unflattened.names == ()
+    assert unflattened.observed_names == {"response"}
+
+    clamped = trace(compiled.morphism, x, {**data, "meaning": nested})
+    assert clamped.sites["meaning"].is_observed
+    assert clamped.sites["meaning"].value is nested
+    assert clamped.sites["meaning"].address == point.address
+    registry = LatentRegistry.from_trace(compiled.morphism, clamped)
+    assert registry.names == ()
+    assert registry.observed_names == {"meaning", "response"}
+    assert isinstance(clamped.log_joint, torch.Tensor)
+    expected = (
+        weights[1:3].logsumexp(0)
+        - weights[:3].logsumexp(0)
+        - (observed - 2.0).square() / 2
+        - math.log(2 * math.pi) / 2
+    )
+    torch.testing.assert_close(
+        clamped.log_joint, expected.reshape(1), atol=1e-12, rtol=1e-12
+    )
+    torch.testing.assert_close(
+        torch.autograd.grad(clamped.log_joint.sum(), weights)[0],
+        torch.autograd.grad(expected, weights)[0],
+        atol=1e-12,
+        rtol=1e-12,
+    )
+
+    new_weights = weights.new_tensor([-0.5, 1.4, 0.7, -torch.inf])
+    new_law = law.with_(log_weights=new_weights)
+    with replay(clamped):
+        replayed = trace(compiled.morphism, x, {**data, "law": new_law})
+    site = replayed.sites["meaning"]
+    assert site.value is nested and site.sampleable is new_law
+    assert site.address == point.address
+    expected_replay = new_weights[1:3].logsumexp(0) - new_weights[:3].logsumexp(0)
+    torch.testing.assert_close(site.log_prob, expected_replay.reshape(1))
+
+
+def test_structured_draws_are_not_vectorized_into_one_shared_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compiled = load_source(SOURCE.replace("export recorded\n", ""))
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    weights = torch.tensor([0.2, -0.3, 1.2, -torch.inf], dtype=torch.float64)
+    law, nested, _zero = _law(module, weights)
+    x = weights.new_zeros((2, 1))
+    data = {"law": law, "response": weights.new_tensor(1.7)}
+    with pytest.raises(ValueError, match="structured trace site.*one independent run"):
+        trace(compiled.morphism, x, data)
+
+    values = iter((law.values[0], nested))
+    monkeypatch.setattr(FiniteSampleable, "sample", lambda _law: next(values))
+    actual = compiled.morphism.rsample(x, observations=data)
+    torch.testing.assert_close(actual, weights.new_tensor([0.0, 2.0]))
+    assert compiled.morphism.work.iterations == 2
+    with pytest.raises(StopIteration):
+        next(values)
