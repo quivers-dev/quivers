@@ -4,6 +4,7 @@ Authored relation transformations
 
 relation keep = project(base, (0, 2))
 relation empty = condition(base, 0, ())
+relation identical = auto_intersect(base, 0, 2)
 relation reverse = invert(base)
 relation together = union(base, base)
 relation synced = join(base, cover, 1, 0, keep_shared=true)
@@ -24,6 +25,12 @@ relation_score alignment : Real [operation=pair_weight, relation=synced]
       (identifier)
       (integer)
       (relation_conditioning_word)))
+  (relation_transform_decl
+    (identifier)
+    (relation_auto_intersection_recipe
+      (identifier)
+      (integer)
+      (integer)))
   (relation_transform_decl
     (identifier)
     (relation_unary_recipe

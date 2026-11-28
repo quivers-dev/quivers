@@ -2169,6 +2169,10 @@
               },
               {
                 "type": "SYMBOL",
+                "name": "relation_auto_intersection_recipe"
+              },
+              {
+                "type": "SYMBOL",
                 "name": "relation_binary_recipe"
               },
               {
@@ -2769,6 +2773,55 @@
               ]
             }
           ]
+        }
+      ]
+    },
+    "relation_auto_intersection_recipe": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "auto_intersect"
+        },
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "FIELD",
+          "name": "source",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ","
+        },
+        {
+          "type": "FIELD",
+          "name": "positions",
+          "content": {
+            "type": "SYMBOL",
+            "name": "integer"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ","
+        },
+        {
+          "type": "FIELD",
+          "name": "positions",
+          "content": {
+            "type": "SYMBOL",
+            "name": "integer"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ")"
         }
       ]
     },

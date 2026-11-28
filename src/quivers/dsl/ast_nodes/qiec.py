@@ -1378,7 +1378,7 @@ class QiecRelationTransformDecl(Statement):
     source, other
         Named primitive operands in operation order.
     positions
-        Original tape positions for a projection, condition, or join.
+        Original tape positions for projection, conditioning, equality, or join.
     word
         The fixed word of a conditioning operation, including empty.
     keep_shared
@@ -1398,6 +1398,7 @@ class QiecRelationTransformDecl(Statement):
         "closure",
         "project",
         "condition",
+        "auto_intersect",
         "union",
         "concatenate",
         "intersect",

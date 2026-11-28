@@ -9943,6 +9943,32 @@
     }
   },
   {
+    "type": "relation_auto_intersection_recipe",
+    "named": true,
+    "fields": {
+      "positions": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "relation_binary_operation",
     "named": true,
     "fields": {}
@@ -10393,6 +10419,10 @@
         "multiple": false,
         "required": true,
         "types": [
+          {
+            "type": "relation_auto_intersection_recipe",
+            "named": true
+          },
           {
             "type": "relation_binary_recipe",
             "named": true
@@ -12445,6 +12475,10 @@
   },
   {
     "type": "authored",
+    "named": false
+  },
+  {
+    "type": "auto_intersect",
     "named": false
   },
   {
