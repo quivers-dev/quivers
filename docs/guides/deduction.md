@@ -1170,7 +1170,7 @@ An edge $e$ with ordered premises $u_1,\ldots,u_k$ has weight $w_e$ and
 an operation $f_e$. In probability scale the fold computes
 
 $$
-m_v(b) = \sum_{e 	o v} w_e
+m_v(b) = \sum_{e \to v} w_e
     \sum_{\substack{(b_1,\ldots,b_k) \\ f_e(b_1,\ldots,b_k)=b}}
        \prod_{j=1}^{k} m_{u_j}(b_j).
 $$
@@ -1183,18 +1183,22 @@ in topological order gives the same mass as interpreting and grouping
 the individual proofs. Repeated premises contribute one factor per
 premise position, including when both positions refer to the same item.
 
-The `deduction.boolean_outcomes` trace records the indexed
-forest construction separately from the folded portion that reaches a
-goal. Each rule edge in that portion contributes at most four meaning
-tuples, each with at most two LogProb products. Thus after grounding, the
-fold has linear scalar arithmetic and graph storage in the number of
-items and edges. The retained differentiation graph has the same scalar
-size bound. The key table has one entry per distinct declared lexical
-word and at most four entries per rule. Each run builds the table,
-grounds the forest, and differentiates the current numerical weights
-at fixed truth tables. Those costs include the authored operation
-evaluations, and the trace leaves actual allocator and backward
-measurements unspecified.
+The `deduction.boolean_outcomes` trace records forest construction and
+the fold over edges that reach a goal. Each useful axiom contributes one
+lane. A useful rule with $k$ premises contributes $2^k$ lanes and
+$k2^k$ LogProb products. Since $k\le 2$, the scalar arithmetic and lane
+storage after grounding are linear in the number of useful items and edges.
+
+The `deduction.boolean_outcomes.plan` trace records the actual table
+supplied to the native query. It retains the lexical word order and
+binds each rule's truth values to its checked identity, with false before
+true at each premise. The plan charges table conversion once per entry,
+including entries the current sentence cannot use. The caller's operation
+evaluations and optional trace serialization are outside that bound.
+Reverse accumulation uses the saved scalar lanes at fixed tables and
+support. A selection from the weight tensor may also require a dense
+adjoint of that tensor. Actual allocator and backward work remain
+unmeasured by this trace.
 
 For $n\ge 1$ copies of the ambiguous word in the example, there are $2^n$
 proofs and $10n-2$ meaning tuples in the fold over goal ancestors.

@@ -2384,6 +2384,41 @@ class WeightedProofRows(_Observable):
         return requirements(laws, algebra)
 
 
+class BooleanProofWeightRows(_Observable):
+    """The mass of each positive Boolean meaning of the proofs.
+
+    The interpretation supplies one truth value per lexical word and a
+    truth table over each rule's ordered premise meanings. The result has
+    at most one row for each Boolean value.
+
+    Parameters
+    ----------
+    normalized
+        Whether to divide the two masses by their common positive total.
+    tag
+        Always ``"boolean-proof-weight-rows"``.
+    """
+
+    normalized: bool = False
+    tag: Literal["boolean-proof-weight-rows"] = "boolean-proof-weight-rows"
+
+    def requirements(self, algebra: ClaimSubject) -> tuple[Requirement, ...]:
+        """Require finite sums of products and optional division.
+
+        Parameters
+        ----------
+        algebra
+            The weight algebra.
+
+        Returns
+        -------
+        tuple of Requirement
+            The semiring laws, and division for a normalized result.
+        """
+        laws = (*SEMIRING_LAWS, DIVISION) if self.normalized else SEMIRING_LAWS
+        return requirements(laws, algebra)
+
+
 class Statistic(_Observable):
     """The weight and the expectation of a statistic, in a semimodule.
 
@@ -2651,6 +2686,7 @@ type Observable = (
     | Fold
     | NonlinearFold
     | Forest
+    | BooleanProofWeightRows
 )
 """What a query observes of the detailed meaning of a judgment."""
 
@@ -4728,6 +4764,7 @@ __all__ = [
     "Bias",
     "BiasBound",
     "BiasUnknown",
+    "BooleanProofWeightRows",
     "Bounded",
     "BudgetExhausted",
     "Certificate",

@@ -7,6 +7,7 @@ from itertools import product
 import torch
 
 from quivers.core.algebras import LOG_PROB
+from quivers.qiec._boolean_outcome_plan import BOOLEAN_ALGORITHM, boolean_plan_trace
 from quivers.qiec.deduction_outcomes import (
     _lexical_forest,
     _materialize_rows,
@@ -147,7 +148,7 @@ def deduction_boolean_outcomes_handler(
             "deduction.boolean_outcomes",
             lambda: {
                 **_packed_trace(forest, normalized, len(goals), len(rows)),
-                "algorithm": "indexed-packed-forest-boolean-fold",
+                "algorithm": BOOLEAN_ALGORITHM,
                 "observer": "weighted-boolean-proof-meanings",
                 "evaluated_items": len(order),
                 "truth_table_entries": len(truths),
@@ -163,17 +164,37 @@ def deduction_boolean_outcomes_handler(
                 ),
             },
         )
-        return TailResume(
-            value=_materialize_rows(
-                definition.output_type,
-                semantics.chart.empty,
-                semantics.chart.entry,
-                (
-                    (context.attachments.numbers.number("truth", outcome), mass)
-                    for outcome, mass in rows.items()
-                ),
-            )
+        result = _materialize_rows(
+            definition.output_type,
+            semantics.chart.empty,
+            semantics.chart.entry,
+            (
+                (context.attachments.numbers.number("truth", outcome), mass)
+                for outcome, mass in rows.items()
+            ),
         )
+        context.emit_trace(
+            "deduction.boolean_outcomes.plan",
+            lambda: boolean_plan_trace(
+                semantics,
+                definition,
+                operation,
+                len(tokens),
+                len(terms),
+                weights,
+                table,
+                lexical,
+                rule_tables,
+                normalized,
+                {
+                    "evaluated_items": len(order),
+                    "edge_meaning_lanes": lanes,
+                    "weight_products": products,
+                    "reduced_entries": reduced_entries,
+                },
+            ),
+        )
+        return TailResume(value=result)
 
     return RuntimeHandler(
         definition=definition,

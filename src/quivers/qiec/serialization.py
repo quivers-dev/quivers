@@ -49,6 +49,7 @@ from quivers.qiec.contracts import (
     BestKnown,
     BiasBound,
     BiasUnknown,
+    BooleanProofWeightRows,
     Bounded,
     BudgetExhausted,
     Certified,
@@ -719,6 +720,7 @@ _NODE_CLASSES = (
     MeasureComponent,
     PlanRecord,
     RuleJoin,
+    BooleanProofWeightRows,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}
