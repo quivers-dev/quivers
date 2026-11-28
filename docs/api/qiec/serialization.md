@@ -61,3 +61,14 @@ to a single parameter store to share a relation across repeated factor
 occurrences and to share stable weight identities across distinct relations.
 
 ::: quivers.qiec.string_graphs.StringFactorGraphSpec
+
+`TreeStringGraphRequest` stores a partition or a normalized word
+query with explicit construction limits. The checked handler includes
+the operation in its stable identity. A runtime provider compiles the
+query once and uses the live graph parameters on every invocation.
+
+::: quivers.qiec.string_graphs.TreeStringGraphRequest
+
+::: quivers.qiec.string_graph_runtime.tree_string_graph_handler
+
+::: quivers.qiec.string_graph_runtime.TreeStringGraphRuntimeProvider
