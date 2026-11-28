@@ -27,3 +27,24 @@ return, its operation-clause address includes the captured activation
 alongside any captured local instance addresses.
 
 ::: quivers.qiec.effects
+
+## Finite laws
+
+The finite law checker compares two named QIEC computations with the same
+positional input types and result type. It runs both sides for every assignment
+of Booleans, unit values, and their finite products. Each side has an empty
+residual effect row, and reachable handler clauses use the same exact finite
+fragment.
+
+`finite_continuation_type` gives a total continuation one result cell for every
+tuple of arguments. Include handler state among those arguments when the
+continuation can observe it. Both sides receive the same table. For a continuation
+from a pair of Booleans to a Boolean, the four cells are indexed by
+`(false, false)`, `(false, true)`, `(true, false)`, and `(true, true)`, in that
+order.
+
+The checker returns the first counterexample with its full assignment and both
+results. A positive decision follows only after every assignment completes.
+An unsupported term or an exhausted limit raises an error.
+
+::: quivers.qiec.laws
