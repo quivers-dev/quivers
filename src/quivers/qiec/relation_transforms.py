@@ -10,21 +10,27 @@ import torch
 
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB, MARKOV
+from quivers.core.laws import SEMIRING_LAWS, TIMES_COMMUTATIVE, ClaimSubject
 from quivers.core.relations import (
     FixedStringQuery,
     RationalRelation,
     Words,
     closure,
+    concatenate,
     condition,
+    intersect,
+    join,
     invert,
     project,
     trim,
+    union,
 )
+from quivers.core.relations.calculus import _JoinLayout
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relations import RationalRelationSpec, _bind_relation_operands
 from quivers.qiec.types import REAL, TypeExpr
 
 
@@ -187,6 +193,188 @@ class UnaryRelationTransformSpec(QiecModel):
                 return closure(source)
 
 
+class BinaryRelationTransformSpec(QiecModel):
+    """A checked two-operand recipe with ordered typed weight sources.
+
+    Union adds masses with distinct path occurrences. Concatenation
+    sums over word splittings. Intersection and join sum over
+    compatible pairs, using the bounded epsilon-filtered product.
+
+    Parameters
+    ----------
+    left, right : RationalRelationSpec
+        The ordered original typed operands.
+    operation : str
+        The supported binary transformation.
+    shared_tapes : tuple of int or None
+        One position per operand when using a single-tape join.
+    keep_shared : bool
+        Whether a join retains the selected tape at its left position.
+    """
+
+    left: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    right: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    operation: Literal["union", "concatenate", "intersect", "join"]
+    shared_tapes: tuple[int, int] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    keep_shared: bool = False
+
+    @dx.model_validator()
+    def _validate_operation(self) -> None:
+        """Check operand types, algebra, and supported single-tape parameters.
+
+        Raises
+        ------
+        TypeError
+            An operand is unchecked or tape types or algebras disagree.
+        ValueError
+            The operation has an invalid or absent required tape argument.
+        """
+        if not all(
+            isinstance(source, RationalRelationSpec)
+            for source in (self.left, self.right)
+        ):
+            raise TypeError("binary transforms require two checked relation operands")
+        if self.left.algebra != self.right.algebra:
+            raise TypeError("binary relation transforms require one shared algebra")
+        if self.operation != "join" and (
+            self.shared_tapes is not None or self.keep_shared
+        ):
+            raise ValueError("only join accepts shared tape positions and retention")
+        left, right = self.left.topology, self.right.topology
+        if self.operation in ("union", "concatenate"):
+            if left.tapes != right.tapes or left.input_tapes != right.input_tapes:
+                raise TypeError(
+                    "relation expressions require identical ordered tape types"
+                )
+            return
+        if self.operation == "intersect":
+            if (
+                len(left.tapes) != 1
+                or len(right.tapes) != 1
+                or left.input_tapes != right.input_tapes
+            ):
+                raise TypeError(
+                    "intersection requires one tape per operand with the same orientation"
+                )
+            l_tape = r_tape = 0
+        else:
+            supplied = self.shared_tapes
+            if (
+                not isinstance(supplied, tuple)
+                or len(supplied) != 2
+                or any(
+                    type(i) is not int or not 0 <= i < len(source.tapes)
+                    for i, source in zip(supplied, (left, right), strict=True)
+                )
+            ):
+                raise ValueError("join requires one valid tape position per operand")
+            l_tape, r_tape = supplied
+        if left.tapes[l_tape] != right.tapes[r_tape]:
+            raise TypeError("binary products require the same nominal shared tape")
+        algebra = self.left._algebra
+        if algebra is None or not algebra.establishes(
+            *SEMIRING_LAWS, TIMES_COMMUTATIVE
+        ):
+            raise TypeError(
+                "binary products require an established commutative semiring"
+            )
+        self._visible()
+
+    def _visible(self) -> tuple[tuple[int, int], ...]:
+        """Return ordered operand and tape positions for the result layout.
+
+        Returns
+        -------
+        tuple
+            The operand position and original tape for each result tape.
+        """
+        if self.operation in ("union", "concatenate"):
+            return tuple((0, i) for i in range(len(self.left.tapes)))
+        shared = (0, 0) if self.operation == "intersect" else self.shared_tapes
+        assert shared is not None
+        return _JoinLayout.build(
+            self.left.topology,
+            self.right.topology,
+            *shared,
+            keep_shared=self.keep_shared or self.operation == "intersect",
+        ).visible
+
+    def _validate_words(self, words: Words) -> None:
+        """Check the observed words using their original typed tape positions.
+
+        Parameters
+        ----------
+        words : Words
+            The observed words on the result tapes, in order.
+
+        Raises
+        ------
+        ValueError
+            The word tuple does not inhabit the result tape layout.
+        """
+        visible = self._visible()
+        if len(words) != len(visible):
+            raise ValueError(
+                "a transformed query needs exactly one word per retained tape"
+            )
+        padded: tuple[list[tuple[int, ...]], list[tuple[int, ...]]] = (
+            [()] * len(self.left.tapes),
+            [()] * len(self.right.tapes),
+        )
+        for (side, tape), word in zip(visible, words, strict=True):
+            padded[side][tape] = word
+        self.left.topology._validate_words(tuple(padded[0]))
+        self.right.topology._validate_words(tuple(padded[1]))
+
+    def bind(
+        self,
+        parameters: Mapping[ParameterId, torch.Tensor],
+        *,
+        max_states: int,
+        max_work: int,
+    ) -> RationalRelation:
+        """Construct the checked sparse operation with its original leaves.
+
+        Parameters
+        ----------
+        parameters : Mapping of ParameterId to torch.Tensor
+            The original shared scalar parameters of the two operands.
+        max_states : int
+            State limit for a sparse product.
+        max_work : int
+            Label-probe and arc examination limit for a sparse product.
+
+        Returns
+        -------
+        RationalRelation
+            The transformed sparse relation with live weight sources.
+        """
+        _validate_limits(max_states, max_work)
+        left, right = _bind_relation_operands(
+            self.left, self.right, parameters, description="binary relation"
+        )
+        match self.operation:
+            case "union":
+                return union(left, right)
+            case "concatenate":
+                return concatenate(left, right)
+            case "intersect":
+                return intersect(left, right, max_states=max_states, max_work=max_work)
+            case "join":
+                assert self.shared_tapes is not None
+                return join(
+                    left,
+                    right,
+                    left_tape=self.shared_tapes[0],
+                    right_tape=self.shared_tapes[1],
+                    keep_shared=self.keep_shared,
+                    max_states=max_states,
+                    max_work=max_work,
+                )
+
+
 class FixedTransformedRelationRequest(QiecModel):
     """A typed fixed observation of a transformed sparse relation.
 
@@ -196,7 +384,7 @@ class FixedTransformedRelationRequest(QiecModel):
 
     Parameters
     ----------
-    relation : UnaryRelationTransformSpec
+    relation : UnaryRelationTransformSpec or BinaryRelationTransformSpec
         The original relation and its transformation.
     words : Words
         One observed word per transformed tape.
@@ -208,7 +396,9 @@ class FixedTransformedRelationRequest(QiecModel):
         Optional bound for productive cyclic closure components.
     """
 
-    relation: UnaryRelationTransformSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    relation: UnaryRelationTransformSpec | BinaryRelationTransformSpec = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     words: Words = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     max_states: int
     max_work: int
@@ -223,13 +413,13 @@ class FixedTransformedRelationRequest(QiecModel):
         ValueError
             A word, limit, or algebra is invalid for a fixed relation query.
         """
-        if not isinstance(self.relation, UnaryRelationTransformSpec):
-            raise TypeError(
-                "a transformed query requires a checked unary relation recipe"
-            )
+        if not isinstance(
+            self.relation, UnaryRelationTransformSpec | BinaryRelationTransformSpec
+        ):
+            raise TypeError("a transformed query requires a checked relation recipe")
         _validate_limits(self.max_states, self.max_work, self.max_closure_size)
         self.relation._validate_words(self.words)
-        if self.relation.source.algebra not in (MARKOV.subject, LOG_PROB.subject):
+        if self._algebra not in (MARKOV.subject, LOG_PROB.subject):
             raise ValueError("fixed transformed relations require Markov or LogProb")
 
     @property
@@ -252,7 +442,23 @@ class FixedTransformedRelationRequest(QiecModel):
         TypeExpr
             LogWeight for LogProb and Real for Markov.
         """
-        return LOG_WEIGHT if self.relation.source.algebra == LOG_PROB.subject else REAL
+        return LOG_WEIGHT if self._algebra == LOG_PROB.subject else REAL
+
+    @property
+    def _algebra(self) -> ClaimSubject:
+        """Return the canonical algebra identity shared by the recipe's operands.
+
+        Returns
+        -------
+        ClaimSubject
+            The original algebra claim identity.
+        """
+        relation = self.relation
+        return (
+            relation.source.algebra
+            if isinstance(relation, UnaryRelationTransformSpec)
+            else relation.left.algebra
+        )
 
     def plan(self, parameters: Mapping[ParameterId, torch.Tensor]) -> FixedStringQuery:
         """Compile the bounded sparse query with original scalar weights.
@@ -278,4 +484,8 @@ class FixedTransformedRelationRequest(QiecModel):
         )
 
 
-__all__ = ["FixedTransformedRelationRequest", "UnaryRelationTransformSpec"]
+__all__ = [
+    "BinaryRelationTransformSpec",
+    "FixedTransformedRelationRequest",
+    "UnaryRelationTransformSpec",
+]

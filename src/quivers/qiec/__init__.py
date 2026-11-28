@@ -389,6 +389,7 @@ from quivers.qiec.relation_path_law import (
     RelationPathLaw,
 )
 from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
     FixedTransformedRelationRequest,
     UnaryRelationTransformSpec,
 )
@@ -710,6 +711,7 @@ __all__ = [
     "ROW",
     "ComposedRelationSpec",
     "UnaryRelationTransformSpec",
+    "BinaryRelationTransformSpec",
     "FixedTransformedRelationRequest",
     "FixedComposedRelationRequest",
     "FixedRelationArcCountsRequest",
