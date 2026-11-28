@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked log feature moment requests.** A serialized fixed observation declares finite feature tables, a typed log tensor result, and a bounded provider that retains the original live weights.
 - **Packed nonnegative path feature moments.** Fixed acyclic string observations can compute log-space first moments using the expectation semiring, with per-occurrence features and live derivatives through shared weights.
 - **Authored sparse relation cascades.** Checked relation operations can reuse the results of earlier or forward-declared operations. Each step retains its nominal operands and reads the original live parameters under explicit intermediate limits.
 - **Checked expected traversal vectors.** Serialize ordered original arc IDs and retrieve their live conditional traversal counts, including bounded cyclic queries.

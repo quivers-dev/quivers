@@ -229,6 +229,36 @@ contribute to the enclosing operation's path sum and gradient.
 
 ::: quivers.qiec.relation_transforms.FixedTransformedRelationRequest
 
+## Checked log feature moments
+
+A `FixedRelationFeatureObservation` records fixed words, the original
+typed relation, a positive feature extent $d$, and optional boundary
+features. Each table has one row per original occurrence and $d$
+columns. Entries contain finite log increments or `None` for log zero.
+The codec preserves `None` as JSON null. The provider restores it as
+negative infinity on the original weight dtype and device.
+
+The observation's `handler_name` identifies its exact topology, words,
+and ordered features. A checked foreign handler at that name declares
+`Compute[Unit, Tensor[LogWeight]([d+1])]`. Its result places the log
+total first and the unnormalized log moments in feature order. Use
+`FixedRelationRuntimeProvider` with the request and its `handler_name`
+to attach the evaluator. The provider reads the original parameter
+objects each time the handler runs. An observation with no accepting
+mass returns log zero in every position.
+
+`FixedRelationFeatureMomentRequest` sets independent state, examined-arc,
+and feature-cell limits. The feature-cell count is $(d+1)(N+V+E)$,
+where $N$ counts original arc and boundary occurrences, and $V$ and $E$
+count productive states and arcs in the observation. Budget changes keep
+the observation's handler name. A productive epsilon cycle requires a
+different carrier capability. Native targets that require foreign calls
+to be discharged report the observation's handler as the obstacle.
+
+::: quivers.qiec.relation_feature_moments.FixedRelationFeatureObservation
+
+::: quivers.qiec.relation_feature_moments.FixedRelationFeatureMomentRequest
+
 ## String factor graphs
 
 `StringFactorGraphSpec` records the nominal alphabet and optional

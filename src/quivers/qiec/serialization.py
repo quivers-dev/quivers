@@ -123,6 +123,10 @@ from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
 )
+from quivers.qiec.relation_feature_moments import (
+    FixedRelationFeatureMomentRequest,
+    FixedRelationFeatureObservation,
+)
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relation_path_law import FixedRelationPathSampleRequest
 from quivers.qiec.relation_transforms import (
@@ -368,6 +372,8 @@ _NODE_CLASSES = (
     ComposedRelationSpec,
     UnaryRelationTransformSpec,
     BinaryRelationTransformSpec,
+    FixedRelationFeatureMomentRequest,
+    FixedRelationFeatureObservation,
     RelationCascadeSpec,
     RelationCascadeStep,
     FixedTransformedRelationRequest,

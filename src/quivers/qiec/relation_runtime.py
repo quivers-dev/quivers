@@ -23,6 +23,7 @@ from quivers.qiec.relation_composition import (
     ComposedRelationSpec,
     FixedComposedRelationRequest,
 )
+from quivers.qiec.relation_feature_moments import FixedRelationFeatureMomentRequest
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
@@ -164,7 +165,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The live scalar tensors supplying the request's weight identities.
@@ -181,7 +182,8 @@ class FixedRelationRuntimeProvider:
         | FixedRelationArcCountsRequest
         | FixedComposedRelationRequest
         | FixedRelationMarginalMapRequest
-        | FixedTransformedRelationRequest,
+        | FixedTransformedRelationRequest
+        | FixedRelationFeatureMomentRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
         handler_name: str,
@@ -189,8 +191,6 @@ class FixedRelationRuntimeProvider:
         if not isinstance(handler_name, str) or not handler_name:
             raise ValueError("a fixed relation provider requires a handler name")
         self._handler_name = handler_name
-        self._operation = request.operation
-        self._relation_spec = request.relation
         self._result_type = request.result_type
         self._result_shape = (
             (len(request.arc_ids),)
@@ -198,6 +198,19 @@ class FixedRelationRuntimeProvider:
             else ()
         )
         self._score: Callable[[], torch.Tensor]
+        self._feature_size: int | None = None
+        if isinstance(request, FixedRelationFeatureMomentRequest):
+            if handler_name != request.handler_name:
+                raise ValueError(
+                    "fixed feature moments require their exact observation handler"
+                )
+            self._feature_size = request.observation.feature_extent + 1
+            self._operation = "feature_moments"
+            self._relation_spec = request.observation.relation
+            self._score = request.plan(parameters)
+            return
+        self._operation = request.operation
+        self._relation_spec = request.relation
         if isinstance(
             request, FixedComposedRelationRequest | FixedTransformedRelationRequest
         ):
@@ -319,6 +332,16 @@ class FixedRelationRuntimeProvider:
         if argument is not None:
             raise TypeError("a fixed relation request takes a unit argument")
         score = self._score()
+        if self._feature_size is not None:
+            if (
+                score.shape != (self._feature_size,)
+                or not score.is_floating_point()
+                or not bool(LOG_PROB.contains(score).all())
+            ):
+                raise ValueError(
+                    "fixed relation feature moments are outside their log carrier"
+                )
+            return score
         if self._result_type == LOG_WEIGHT:
             result_algebra = LOG_PROB
         elif self._operation in (
@@ -423,6 +446,13 @@ class FixedRelationRuntimeProvider:
         if type_ != self._result_type:
             return None
         core = CoreRuntimeProvider().validator_for(type_)
+        if self._feature_size is not None:
+            assert core is not None
+            return lambda value: (
+                isinstance(value, torch.Tensor)
+                and core(value)
+                and bool(LOG_PROB.contains(value).all())
+            )
         if self._result_shape:
             return core
         algebra = LOG_PROB if type_ == LOG_WEIGHT else None

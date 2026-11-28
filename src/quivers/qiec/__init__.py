@@ -389,6 +389,10 @@ from quivers.qiec.relation_path_law import (
     FixedRelationPathSampleRequest,
     RelationPathLaw,
 )
+from quivers.qiec.relation_feature_moments import (
+    FixedRelationFeatureMomentRequest,
+    FixedRelationFeatureObservation,
+)
 from quivers.qiec.relation_transforms import (
     BinaryRelationTransformSpec,
     FixedTransformedRelationRequest,
@@ -722,6 +726,8 @@ __all__ = [
     "UnaryRelationTransformSpec",
     "BinaryRelationTransformSpec",
     "FixedTransformedRelationRequest",
+    "FixedRelationFeatureMomentRequest",
+    "FixedRelationFeatureObservation",
     "FixedComposedRelationRequest",
     "FixedRelationArcCountsRequest",
     "FixedRelationCostRequest",
