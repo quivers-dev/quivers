@@ -1097,7 +1097,7 @@ module.exports = grammar({
       'rule',
       field('name', $.identifier),
       ':',
-      field('premises', commaSep1($._object_expr)),
+      optional(field('premises', commaSep1($._object_expr))),
       choice('|-', '⊢'),
       field('conclusion', $._object_expr),
       optional(field('pragma', $.lexicon_pragma)),
@@ -1758,7 +1758,7 @@ module.exports = grammar({
 
     object_effect_apply: $ => prec(PREC.object_apply, seq(
       field('effect', $.identifier),
-      bracketedList($, '(', field('args', $._object_expr), ')'),
+      bracketedList($, '(', field('args', choice($._object_expr, $.integer)), ')'),
     )),
 
     /* Sized-space constructors use space application, matching the

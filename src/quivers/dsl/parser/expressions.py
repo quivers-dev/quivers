@@ -87,6 +87,8 @@ def _walk_type(t: _Tree, vid: str) -> ObjectExpr:
     """Walk a tree-sitter type-expr vertex into the unified ObjectExpr AST."""
     k = t.kind(vid)
     line, col = t.line_col(vid)
+    if k == "integer":
+        return TypeName(name=t.text(vid), line=line, col=col)
     if k == "object_atom":
         kids = t.positional(vid)
         if not kids:

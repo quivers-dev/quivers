@@ -197,6 +197,48 @@ deduction parse : T -> T [semiring=LogProb]
           (identifier))))))
 
 ==================
+ground deduction rules and literal span endpoints
+==================
+
+deduction P : T -> T
+    rule empty : |- span(0, 0, E)
+    rule finish : span(0, J, E) |- span(0, J, S)
+
+---
+
+(source_file
+  (deduction_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (deduction_rule
+      (identifier)
+      (object_effect_apply
+        (identifier)
+        (integer)
+        (integer)
+        (object_atom
+          (identifier))))
+    (deduction_rule
+      (identifier)
+      (object_effect_apply
+        (identifier)
+        (integer)
+        (object_atom
+          (identifier))
+        (object_atom
+          (identifier)))
+      (object_effect_apply
+        (identifier)
+        (integer)
+        (object_atom
+          (identifier))
+        (object_atom
+          (identifier))))))
+
+==================
 deduction with lexicon from file
 ==================
 

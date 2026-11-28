@@ -505,11 +505,13 @@ Learned lexical log weights remain
 available. The normalized groups also accept the same labeled probability
 bindings as `parse`, with components in $[0,1]$ and positive total mass in
 each bound group. The fragment excludes category depth bounds, open
-hypotheses, and rule weights computed from bindings. The current QVR
-syntax requires at least one premise per rule. A checked QIEC presentation
-may also supply ground rules with ordered literal endpoints, including
-empty spans. The checker computes which category heads may derive empty
-spans. A premise can preserve the conclusion's width when the other
+hypotheses, and rule weights computed from bindings. A ground rule can
+also supply an ordered interval, including an empty span. For instance,
+`rule left_boundary : |- span(0, 0, E, empty)` supplies an empty span at
+the first token boundary. A zero-premise rule's endpoints are natural
+number literals and its conclusion is ground. The checker computes which
+category heads may derive empty spans. A premise can preserve the
+conclusion's width when the other
 premises are empty. The checker requires an acyclic graph of fixed
 category heads for all such transitions, including transitions from
 rules with several premises.
@@ -535,6 +537,39 @@ numbers the fold and its reverse pass require arithmetic linear in those
 counts, plus the cost of constructing and grouping the structural keys.
 Grounding uses the indexed agenda to find the rule instances. The runtime
 grounds the forest again on each invocation.
+
+#### Ground rules and empty spans
+
+This deduction supplies one empty left boundary and uses it to complete
+the parse of `word`. The first rule applies only at boundary zero.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 1
+object Result : Real 1
+
+deduction WithBoundary : Token -> Token [semiring=LogProb, start=S]
+    atoms span, E, A, S, empty, word, complete
+    rule boundary : |- span(0, 0, E, empty)
+    rule finish : span(I, K, E, empty), span(K, J, A, word) |- span(I, J, S, complete)
+    lexicon
+        "word" : A = word
+
+define total(rows : WithBoundary__Outcomes) : Real !{} =
+    case rows motive => Real
+        WithBoundary__outcome_end =>
+            return 0.0
+        WithBoundary__outcome_entry(key, weight, tail) =>
+            let rest <- total(tail)
+            return exp(weight) + rest
+
+program parse_with_boundary : Token -> Result
+    let rows = parse_outcomes(WithBoundary, sentence, "form")
+    let answer <- total(rows)
+    return answer
+
+export parse_with_boundary
+```
 
 #### Choosing a typed key
 

@@ -17,6 +17,8 @@ well-typed cardinality declaration.
 Handler parameters are additive likewise: no released source writes ``with``
 after a handler's answer type or after ``resume(...)``, nor parentheses after the
 handler a ``handle`` installs.
+Ground deduction rules and literal application arguments are additive
+too, so existing deduction rules need no rewrite at this hop.
 
 This is a directed migration, not a target-source formatter. Reapplying it to a
 new static telescope fails the historical source gate rather than guessing at

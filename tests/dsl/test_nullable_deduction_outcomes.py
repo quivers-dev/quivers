@@ -6,7 +6,11 @@ import didactic.api as dx
 import pytest
 import torch
 
-from quivers.dsl import loads as load_source
+from quivers.dsl import CompileError, loads as load_source
+from quivers.dsl.emit import module_to_source
+from quivers.dsl.parser import parse
+from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.qiec.foreign import DeductionOutcomes
 from quivers.qiec.identifiers import ConstructorId
 from quivers.qiec.kinds import NAT
@@ -170,3 +174,34 @@ def test_ground_span_refuses_reversed_endpoints() -> None:
         dx.ValidationError, match="requires ordered literal span endpoints"
     ):
         _with_ground_rules(GRAMMAR, ("reversed", 2, 1, "E", "lex"))
+
+
+def test_an_authored_nullable_grammar_uses_the_same_checked_query() -> None:
+    source = GRAMMAR.replace(
+        "    lexicon\n",
+        "    rule epsilon_one : |- span(0, 0, E, lex)\n"
+        "    rule epsilon_two : |- span(0, 0, E, lex)\n"
+        "    rule span_axiom : |- span(0, 1, S, yes)\n"
+        "    rule out_of_goal : |- span(2, 2, E, lex)\n"
+        "    lexicon\n",
+    ).replace(
+        "span(I, K, E, lex), span(K, J, E, lex) |- span(I, J, F, lex)",
+        "span(0, 0, E, lex), span(0, 0, E, lex) |- span(0, 0, F, lex)",
+    )
+    emitted = module_to_source(parse(source + "\n" + PROGRAM))
+    assert "rule epsilon_one : |- span(0, 0, E, lex)" in emitted
+    compiled = load_source(emitted)
+    data = {"sentence": ("x",), "yes_rate": 0.8, "no_rate": 0.3}
+    scored = compiled.run("scored", data=data)
+    assert scored.log_joint == pytest.approx(
+        torch.tensor((5 * 0.8 + 2 * 0.3) / 7).log().item()
+    )
+    assert compiled.run("raw", data={**data, "sentence": ()}).value == pytest.approx(
+        4 * 0.8
+    )
+
+    invalid = source.replace("span(0, 0, E, lex)\n", "span(I, I, E, lex)\n", 1)
+    with pytest.raises(CompileError, match="which no premise binds"):
+        load_source(invalid + "\n" + PROGRAM)
+    with pytest.raises(QiecDiagnosticError, match="which no premise binds"):
+        lower_qvr_to_qiec(parse(invalid + "\n" + PROGRAM))

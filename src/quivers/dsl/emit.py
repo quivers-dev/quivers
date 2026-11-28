@@ -1751,7 +1751,7 @@ def _emit_deduction(decl: DeductionDecl, indent: int) -> str:
 def _emit_sequent_rule(rule: SequentRule, indent: int) -> str:
     premises = ", ".join(_emit_object_expr(p) for p in rule.premises)
     return (
-        f"{_pad(indent)}rule {rule.name} : {premises} |- "
+        f"{_pad(indent)}rule {rule.name} : {premises + ' ' if premises else ''}|- "
         f"{_emit_object_expr(rule.conclusion)}{_emit_pragma(rule.options)}"
     )
 

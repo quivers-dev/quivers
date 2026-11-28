@@ -2672,14 +2672,11 @@ class _DeductionElaboration:
         # the parameter store.
         logged = system.semiring.log_weights
         lexical_learned = logged and any(entry.learnable for entry in system.entries)
-        firing = (
-            [system.rules[index] for index in system.live]
-            if system.by_yield
-            else system.rules
-        )
-        learned = lexical_learned or (
-            logged and any(rule.learnable or rule.parent is not None for rule in firing)
-        )
+        rule_reads = {
+            index
+            for index, rule in enumerate(system.rules)
+            if logged and (rule.learnable or rule.parent is not None)
+        }
         if system.normalized_cell[0]:
             # A normalized production's weight reads the learnable free
             # weights of its group when the group has several members.
@@ -2693,20 +2690,25 @@ class _DeductionElaboration:
             lexical_learned = any(
                 ("lexicon", index) in reading for index in range(len(system.entries))
             )
-            learned = lexical_learned or any(
-                ("rule", system.rules[index].presented.index) in reading
-                for index in (
-                    system.live if system.by_yield else range(len(system.rules))
-                )
-            )
+            rule_reads = {
+                index
+                for index, rule in enumerate(system.rules)
+                if ("rule", rule.presented.index) in reading
+            }
         if weighted:
-            lexical_learned = learned = False
+            lexical_learned = False
+            rule_reads.clear()
+        learned = lexical_learned or any(
+            index in rule_reads
+            for index in (system.live if system.by_yield else range(len(system.rules)))
+        )
         base = (system.choice_cell[0].entry, system.weight_cell[0].entry)
         axiom_row = EffectRow(
             entries=(*base, params.entry) if lexical_learned else base
         )
         row = EffectRow(entries=(*base, params.entry) if learned else base)
         outer = EffectRow(entries=(params.entry,) if learned else ())
+        lexical_outer = EffectRow(entries=(params.entry,) if lexical_learned else ())
         assert system.settle_cell[0] is not None
         stopping = EffectRow(entries=(*outer.entries, system.settle_cell[0].entry))
         pure = EffectRow()
@@ -2921,7 +2923,7 @@ class _DeductionElaboration:
                 ("chart_size", (chart,), INT, pure),
                 ("chart_goal", (chart,), carrier, pure),
                 (
-                    ("chart_lexicon", (INT, chart, *inputs), chart, outer)
+                    ("chart_lexicon", (INT, chart, *inputs), chart, lexical_outer)
                     if system.entries
                     else ("chart_axioms", (INT, chart, *inputs), chart, pure)
                 ),
@@ -2937,7 +2939,7 @@ class _DeductionElaboration:
                         (extent,),
                         (chart, chart, chart, carrier, INT, *((item,) * position)),
                         chart,
-                        outer,
+                        outer if rule_index in rule_reads else pure,
                     )
             entry = declare(
                 system.name("run"),
