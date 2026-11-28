@@ -20,7 +20,7 @@ import torch.nn as nn
 from torch.distributions import constraints as _constraints
 
 from quivers.continuous.spaces import ContinuousSpace, Euclidean, ProductSpace
-from quivers.core.morphisms import Morphism
+from quivers.core.morphisms import Morphism, _require_finite
 from quivers.core.morphisms import Morphism as _CatMorphism
 from quivers.core.objects import SetObject
 
@@ -1438,6 +1438,7 @@ class DiscreteAsContinuous(ContinuousMorphism):
 
         if not isinstance(inner, Morphism):
             raise TypeError(f"expected a discrete Morphism, got {type(inner).__name__}")
+        inner = _require_finite(inner)
         super().__init__(inner.domain, inner.codomain)
         self._inner = inner
         self._inner_module = inner.module()

@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Sparse relations over strings.** `StringSet` describes an unbounded tape and `RationalRelation` sums the weights of accepting walks for fixed words using a sparse index. Arc occurrences can share weight slots, and reused queries read the live weights on every evaluation. An explicit size-checked restriction provides a `FiniteMorphism` for callers that need a tensor.
+- **Serializable sparse relation specifications.** `RationalRelationSpec` stores ordered tapes, arcs, boundary marks, and stable weight identities in the QIEC codec. Runtime binding resolves those identities to the original tensors, preserving shared parameters and derivatives.
+- **Fixed-word composition of sparse relations.** `ComposedRelation` matches two bivariate relations on their shared tape. Its epsilon filter counts each compatible pair of paths once, and reusable queries score the live operand weights with explicit construction limits.
+- **Reusable sparse product topologies.** A bounded materialization can be used in further composition, cyclic closure, projection, inversion, and structural trimming. Original parameter sources remain live through these operations.
+- **Tape constraints on sparse relations.** A bounded fixed-word slice preserves joint mass on the remaining tapes. Weighted-language intersection multiplies the mass assigned by two one-tape relations through the epsilon-filtered product.
+- **Regular operations on sparse relations.** Weighted union, concatenation, and Kleene closure preserve path multiplicities and original weight sources. Queries use the same bounded closure checks when repetition gives a productive cycle.
+- **Single-tape joins and total mass.** Weighted relations can synchronize one typed tape and retain or sum over its word. A total-weight query sums all accepting walks with the existing closure diagnostics.
+- **Runnable sparse noisy-channel example.** A geometric source and a deletion channel share a parameter and infer an unbounded source length using the sparse relation calculus.
+- **Bounded closure of productive cycles.** A fixed-word `RationalRelation` query can use the algebra's star for strongly connected cyclic components. The plan preserves parallel occurrences and live gradients and reports the order of each local closure matrix.
 - Checked lexical deductions can return weighted forms, categories, or full goal items. QVR programs can normalize reading weights and use them in a response likelihood, with gradients reaching lexical and supported production weights. Token tensors computed in QVR can feed the same query.
 - Checked outcome queries can group goal weights by a deterministic QVR computation that returns a discrete scalar or a closed constructor value.
 - Checked QIEC deduction outcomes accept ordered ground span rules, including empty spans, when an acyclic category rank certifies every potentially equal-width dependency.
@@ -16,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.
+
+### Changed
+
+- Fixed-word path sums evaluate arcs in batches by topological level. Incoming terms use linear space even when states have very different numbers of incoming arcs.
 
 ## [0.70.0] - 2026-11-27
 

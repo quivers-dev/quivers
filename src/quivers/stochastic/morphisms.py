@@ -13,11 +13,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from quivers.core.objects import SetObject
-from quivers.core.morphisms import Morphism, _MorphismModule
+from quivers.core.morphisms import FiniteMorphism, _MorphismModule
 from quivers.core.algebras import MARKOV
 
 
-class StochasticMorphism(Morphism):
+class StochasticMorphism(FiniteMorphism):
     """A learnable Markov kernel backed by softmax-normalized parameters.
 
     Stores unconstrained real-valued logits and applies softmax along

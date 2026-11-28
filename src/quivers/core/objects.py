@@ -1,12 +1,11 @@
-"""Objects of the category of finite sets: finite sets, products, coproducts, and more.
+"""Objects for typed morphisms, including finite sets and string sets.
 
-The set-object family is a sum type with six variants, discriminated by
-``kind``: `FinSet`, `ProductSet`, `CoproductSet`, `FreeMonoid`,
-`EnumSet` and `FreeResiduated`. ``SetObject`` is the `dx.TaggedUnion`
-root that gathers them; ``X * Y`` and ``X + Y`` work on any pair of
-variants.
+``SetObject`` is the tagged union of the available object
+representations. ``X * Y`` and ``X + Y`` construct products and
+coproducts without assigning tensor axes to unbounded objects.
 """
 
+from bisect import bisect_right
 from math import prod
 from typing import Literal
 
@@ -16,18 +15,14 @@ from quivers.stochastic.categories import CategorySystem
 
 
 class SetObject(dx.TaggedUnion, discriminator="kind"):
-    """A finite set, the type of objects of the category of finite sets.
+    """Set object with products and coproducts.
 
-    A ``SetObject`` is one object, not the category: one of the six
-    variants `FinSet`, `ProductSet`, `CoproductSet`, `FreeMonoid`,
-    `EnumSet` and `FreeResiduated`. Variants share two derived
-    properties (`size`, `shape`) and the ``*`` / ``+`` operators for
-    product and coproduct construction.
+    Finite representations provide a cardinality and tensor shape.
     """
 
     @property
     def size(self) -> int:
-        """Total cardinality of the set."""
+        """Total cardinality when the object admits a finite tensor."""
         raise NotImplementedError
 
     @property
@@ -234,17 +229,26 @@ class FreeMonoid(SetObject):
 
     @property
     def size(self) -> int:
-        return self._coproduct.size
+        if self.max_length < 0:
+            raise ValueError(f"max_length must be >= 0, got {self.max_length}")
+        return self._length_offset(self.max_length + 1)
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self._coproduct.shape
+        return (self.size,)
+
+    def _length_offset(self, length: int) -> int:
+        alphabet_size = self.generators.cardinality
+        if alphabet_size == 1:
+            return length
+        return (alphabet_size**length - 1) // (alphabet_size - 1)
 
     def offset(self, index: int) -> int:
-        return self._coproduct.offset(index)
+        return self._length_offset(range(self.max_length + 1)[index])
 
     def component_range(self, index: int) -> tuple[int, int]:
-        return self._coproduct.component_range(index)
+        length = range(self.max_length + 1)[index]
+        return self._length_offset(length), self._length_offset(length + 1)
 
     def encode(self, word: tuple[int, ...]) -> int:
         """Encode a word (tuple of generator indices) to a flat index."""
@@ -267,25 +271,84 @@ class FreeMonoid(SetObject):
         if not 0 <= flat_index < self.size:
             raise ValueError(f"flat_index {flat_index} out of range [0, {self.size})")
         g = self.generators.cardinality
-        cop = self._coproduct
-        for k in range(len(cop.components)):
-            start, end = cop.component_range(k)
-            if start <= flat_index < end:
-                local = flat_index - start
-                if k == 0:
-                    return ()
-                digits: list[int] = []
-                for _ in range(k):
-                    digits.append(local % g)
-                    local //= g
-                digits.reverse()
-                return tuple(digits)
-        raise RuntimeError("unreachable")
+        length = (
+            bisect_right(
+                range(self.max_length + 1), flat_index, key=self._length_offset
+            )
+            - 1
+        )
+        local = flat_index - self._length_offset(length)
+        digits: list[int] = []
+        for _ in range(length):
+            local, digit = divmod(local, g)
+            digits.append(digit)
+        return tuple(reversed(digits))
 
     def __str__(self) -> str:
         return (
             f"FreeMonoid(generators={self.generators!s}, max_length={self.max_length})"
         )
+
+
+class StringSet(SetObject):
+    """All finite strings over a finite alphabet, including the empty string.
+
+    Attributes
+    ----------
+    alphabet : FinSet
+        Alphabet with symbols identified by indices in
+        ``0..alphabet.cardinality-1``.
+    """
+
+    alphabet: FinSet
+    kind: Literal["string_set"] = "string_set"
+
+    @property
+    def size(self) -> int:
+        raise TypeError("StringSet is unbounded; use an explicit bounded restriction")
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        raise TypeError("StringSet has no finite tensor shape")
+
+    def bounded(self, max_length: int, *, max_size: int) -> FreeMonoid:
+        """Restrict to words of length at most a specified bound.
+
+        Parameters
+        ----------
+        max_length : int
+            Maximum length of the accepted words, inclusive.
+        max_size : int
+            Maximum permitted finite cardinality, including the empty word.
+
+        Returns
+        -------
+        FreeMonoid
+            The length-bounded carrier in length-then-lexicographic order.
+
+        Raises
+        ------
+        ValueError
+            If a bound is invalid or the restriction exceeds the size limit.
+        """
+        if type(max_length) is not int or max_length < 0:
+            raise ValueError("max_length must be a nonnegative integer")
+        if type(max_size) is not int or max_size < 1:
+            raise ValueError("max_size must be a positive integer")
+        alphabet_size = self.alphabet.cardinality
+        if alphabet_size == 1:
+            if max_length >= max_size:
+                raise ValueError("bounded StringSet exceeds max_size")
+        else:
+            # Stop as soon as the geometric sum exceeds the budget.
+            # This avoids a huge exponent when max_length itself is huge.
+            size = words_at_length = 1
+            for _ in range(max_length):
+                words_at_length *= alphabet_size
+                size += words_at_length
+                if size > max_size:
+                    raise ValueError("bounded StringSet exceeds max_size")
+        return FreeMonoid(generators=self.alphabet, max_length=max_length)
 
 
 class EnumSet(SetObject):
@@ -433,6 +496,7 @@ __all__ = [
     "ProductSet",
     "CoproductSet",
     "FreeMonoid",
+    "StringSet",
     "EnumSet",
     "FreeResiduated",
 ]
