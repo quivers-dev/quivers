@@ -27,6 +27,8 @@ possibilities sum to one at each input position, so the transducer is a
 normalized conditional distribution for every fixed input. Its fixed-word
 queries sum all deletion alignments.
 
+## Try it
+
 <!-- python: run -->
 ```python
 from itertools import combinations, permutations, product

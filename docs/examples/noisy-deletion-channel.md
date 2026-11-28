@@ -18,6 +18,8 @@ word through composition, and conditioning fixes the channel's
 output. The resulting unary relation sums the compatible alignments
 at every source word.
 
+## Try it
+
 <!-- python: run -->
 ```python
 import torch
