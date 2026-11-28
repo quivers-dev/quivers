@@ -23,6 +23,12 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecCallComputation,
     QiecComputationDecl,
     QiecInterpretationDecl,
+    QiecRelationComposeDecl,
+    QiecRelationDecl,
+    QiecRelationScoreDecl,
+    QiecRelationTransformDecl,
+    QiecStringGraphDecl,
+    QiecStringGraphScoreDecl,
     QiecSequenceComputation,
     QiecPureBinding,
     QiecInstanceComputation,
@@ -44,6 +50,7 @@ from quivers.dsl.emit import module_to_source, static_argument_to_source
 from quivers.dsl.qiec_lowering import (
     QIEC_STATEMENT_TYPES,
     _call_operand,
+    _contextual_rule_call,
     has_qiec_surface,
     non_qiec_projection,
 )
@@ -65,6 +72,8 @@ type QiecBindingKind = Literal[
     "instance",
     "handler",
     "computation",
+    "relation",
+    "string-graph",
     "local",
     "parameter",
     "scoped-instance",
@@ -94,6 +103,10 @@ QIEC_DIAGNOSTIC_CODES = frozenset(
         "qiec-program-gap",
         "qiec-deduction-outcomes",
         "qiec-interpretation",
+        "qiec-relation-score",
+        "qiec-relation-declaration",
+        "qiec-string-graph-declaration",
+        "qiec-string-graph-score",
     }
 )
 
@@ -192,7 +205,7 @@ class QiecBinding(QiecModel):
             colours by role, and an index, a family, and an effect all
             read as types at a use site.
         """
-        if self.kind in {"index", "family", "effect"}:
+        if self.kind in {"index", "family", "effect", "relation", "string-graph"}:
             return "type"
         if self.kind == "instance":
             return "variable"
@@ -538,7 +551,34 @@ def qiec_bindings(module: Module) -> tuple[QiecBinding, ...]:
                     owner=statement,
                 )
             )
-        elif isinstance(statement, QiecComputationDecl | QiecInterpretationDecl):
+        elif isinstance(
+            statement,
+            QiecRelationDecl | QiecRelationComposeDecl | QiecRelationTransformDecl,
+        ):
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="relation",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
+        elif isinstance(statement, QiecStringGraphDecl):
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="string-graph",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
+        elif isinstance(
+            statement,
+            QiecComputationDecl
+            | QiecInterpretationDecl
+            | QiecRelationScoreDecl
+            | QiecStringGraphScoreDecl,
+        ):
             out.append(
                 QiecBinding(
                     name=statement.name,
@@ -1083,6 +1123,10 @@ def _collect_calls(
             _collect_calls(item, owner, out, computations, macros)
         return
     if isinstance(node, QiecCallComputation):
+        if node.callee not in computations and (lifted := _contextual_rule_call(node)):
+            operation, _, _ = lifted
+            _collect_calls(operation, owner, out, computations, macros)
+            return
         out.append(
             CallSite(
                 callee=node.callee,

@@ -17,7 +17,7 @@ from typing import Literal
 
 import didactic.api as dx
 
-from quivers.dsl.ast_nodes._shared import Statement
+from quivers.dsl.ast_nodes._shared import OptionEntry, Statement
 from quivers.dsl.ast_nodes.let_expressions import LetExprNode
 
 
@@ -1242,18 +1242,20 @@ class QiecInterpretationClause(dx.Model):
 
 
 class QiecInterpretationDecl(Statement):
-    """A named computation that folds a deduction's typed proof.
+    """A named computation that folds a checked deduction or structural proof.
 
     Parameters
     ----------
     name
         The computation's name.
     deduction
-        The deduction whose proof family it consumes.
+        The deduction or structural signature whose proof family it consumes.
     carrier
         The closed result type of the fold.
     clauses
         One computation assignment per rule or axiom slot.
+    options
+        The explicit structural permissions of a scoped interpretation.
     docs
         The attached doc comments.
     line, col
@@ -1266,10 +1268,239 @@ class QiecInterpretationDecl(Statement):
     deduction: str
     carrier: QiecTypeExpr
     clauses: tuple[QiecInterpretationClause, ...]
+    options: tuple[OptionEntry, ...] = ()
     docs: tuple[str, ...] = ()
     line: int = 0
     col: int = 0
     kind: Literal["interpretation_decl"] = "interpretation_decl"
+
+
+class QiecRelationTape(dx.Model):
+    """One typed input or output tape of an authored relation."""
+
+    direction: Literal["input", "output"]
+    alphabet: str
+
+
+class QiecRelationMark(dx.Model):
+    """One initial or final occurrence of a named weight at a state."""
+
+    state: int
+    weight: str
+
+
+class QiecRelationArc(dx.Model):
+    """One primitive authored arc, with None denoting an epsilon label."""
+
+    source: int
+    target: int
+    labels: tuple[int | None, ...]
+    weight: str
+
+
+class QiecRelationDecl(Statement):
+    """A finite sparse topology over typed string tapes.
+
+    Tape order includes the input and output boundary. Each record in
+    the arc tuple is a distinct occurrence. Identical weight names
+    denote one original scalar parameter across the module.
+
+    Parameters
+    ----------
+    name
+        The authored relation name.
+    algebra
+        The shipped Markov or LogProb scalar algebra.
+    n_states
+        The number of finite control states.
+    tapes
+        Ordered direction and finite alphabet names.
+    arcs
+        Ordered source, target, label tuple, and weight-name records.
+    initial, final
+        The state and weight-name boundary records.
+    docs
+        The attached documentation comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    algebra: Literal["markov", "logprob"]
+    n_states: int
+    tapes: tuple[QiecRelationTape, ...]
+    arcs: tuple[QiecRelationArc, ...] = ()
+    initial: tuple[QiecRelationMark, ...] = ()
+    final: tuple[QiecRelationMark, ...] = ()
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_decl"] = "relation_decl"
+
+
+class QiecRelationComposeDecl(Statement):
+    """A binary composition of two named authored sparse relations.
+
+    Parameters
+    ----------
+    name
+        The resulting relation name.
+    left, right
+        The ordered primitive relation operands.
+    docs
+        The attached source doc comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    left: str
+    right: str
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_compose_decl"] = "relation_compose_decl"
+
+
+class QiecRelationTransformDecl(Statement):
+    """An authored unary or binary sparse relation transformation.
+
+    Parameters
+    ----------
+    name
+        The resulting relation's name.
+    operation
+        The sparse transformation applied to the source operands.
+    source, other
+        Named primitive operands in operation order.
+    positions
+        Original tape positions for a projection, condition, or join.
+    word
+        The fixed word of a conditioning operation, including empty.
+    keep_shared
+        Whether a join retains the synchronized tape.
+    docs
+        The attached source documentation comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    operation: Literal[
+        "invert",
+        "trim",
+        "closure",
+        "project",
+        "condition",
+        "union",
+        "concatenate",
+        "intersect",
+        "join",
+    ]
+    source: str
+    other: str | None = None
+    positions: tuple[int, ...] = ()
+    word: tuple[int, ...] | None = None
+    keep_shared: bool = False
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_transform_decl"] = "relation_transform_decl"
+
+
+class QiecRelationScoreDecl(Statement):
+    """A named score whose fixed relation request is supplied at runtime.
+
+    Parameters
+    ----------
+    name
+        The generated computation name.
+    result_type
+        The closed scalar type of the score.
+    operation
+        The relation objective the runtime attachment must implement.
+    relation
+        The optional authored topology required by the score.
+    docs
+        The attached source doc comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    result_type: QiecTypeExpr
+    operation: Literal[
+        "pair_weight", "conditional_log_prob", "path_entropy", "expected_path_cost"
+    ]
+    relation: str | None = None
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_score_decl"] = "relation_score_decl"
+
+
+class QiecStringGraphVariable(dx.Model):
+    """One nominal string variable with an optional observed word."""
+
+    name: str
+    alphabet: str
+    observed: tuple[int, ...] | None = None
+
+
+class QiecStringGraphFactor(dx.Model):
+    """One ordered occurrence of an existing authored sparse relation."""
+
+    relation: str
+    scope: tuple[str, ...]
+
+
+class QiecStringGraphDecl(Statement):
+    """An ordered declaration of variables and sparse factor occurrences.
+
+    Parameters
+    ----------
+    name
+        The authored graph name.
+    variables
+        Nominally typed variables and their observed words.
+    factors
+        Ordered relation references and their variable scopes.
+    docs
+        Attached documentation comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    variables: tuple[QiecStringGraphVariable, ...]
+    factors: tuple[QiecStringGraphFactor, ...]
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["string_graph_decl"] = "string_graph_decl"
+
+
+class QiecStringGraphScoreDecl(Statement):
+    """A named partition or normalized word score on a runtime string graph."""
+
+    name: str
+    result_type: QiecTypeExpr
+    operation: Literal["tree_partition", "tree_log_prob"]
+    graph: str | None = None
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["string_graph_score_decl"] = "string_graph_score_decl"
 
 
 __all__ = [
@@ -1335,4 +1566,15 @@ __all__ = [
     "QiecComputationDecl",
     "QiecInterpretationClause",
     "QiecInterpretationDecl",
+    "QiecRelationArc",
+    "QiecRelationComposeDecl",
+    "QiecRelationDecl",
+    "QiecRelationMark",
+    "QiecRelationTape",
+    "QiecRelationTransformDecl",
+    "QiecRelationScoreDecl",
+    "QiecStringGraphDecl",
+    "QiecStringGraphFactor",
+    "QiecStringGraphVariable",
+    "QiecStringGraphScoreDecl",
 ]

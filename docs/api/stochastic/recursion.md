@@ -66,6 +66,26 @@ A divergent closure has no value: no partial sum is returned. The cost is
 [`CYCLIC_WORK`][quivers.stochastic.planning.CYCLIC_WORK]: the edges, plus $S^3$ operations of the
 algebra for a component of $S$ items, which a ring would lower to $S^\omega$.
 
+### Parallel unary steps in a span
+
+The span executor gives each extra parallel step in a cyclic `LogProb`
+closure its own auxiliary state. An arc of weight $w$ from $i$ to $j$
+becomes a step of weight $w$ from $i$ to that state followed by a unit
+step to $j$. Every walk between original states has a unique expansion
+of the same weight. Conversely, a walk between original states must
+complete each passage through an auxiliary state. Thus the projected
+star sums the original walks with their multiplicities. Differentiating
+the projected result preserves each original coefficient's contribution
+on the open domain of convergence.
+
+The star receives the primitive weights, so a sum of parallel weights
+near one stays inside its rounding-aware convergence check. With $N$
+categories and $d$ extra parallel steps, the star eliminates $N+d$
+states and its input matrix holds $(N+d)^2$ elements. The span report
+counts the augmented pivots and algebra operations. A cyclic span plan
+refuses a general resource budget, whose full limits the executor does
+not enforce.
+
 ## Monotone polynomial systems
 
 Under [`MonotonePolynomial`][quivers.qiec.contracts.MonotonePolynomial] a component may have

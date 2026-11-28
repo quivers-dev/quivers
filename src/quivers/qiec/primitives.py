@@ -48,6 +48,7 @@ type PrimitiveCapability = Literal[
     "activation",
     "weight",
     "probability",
+    "rule-log-weight",
 ]
 """The feature a target must support to render a primitive."""
 
@@ -918,6 +919,35 @@ def log_probability(value: torch.Tensor) -> torch.Tensor:
     return torch.where(positive, safe.log(), -torch.inf)
 
 
+def _require_rule_log_weight(
+    _domain: NumberDomain, value: torch.Tensor
+) -> torch.Tensor:
+    """Require a finite application weight or exact additive zero.
+
+    Parameters
+    ----------
+    _domain : NumberDomain
+        The number domain, unchanged.
+    value : torch.Tensor
+        A scalar LogWeight from a checked rule computation.
+
+    Returns
+    -------
+    torch.Tensor
+        The same live weight.
+
+    Raises
+    ------
+    ValueError
+        If the weight is NaN or positive infinity.
+    """
+    demand(
+        ~value.isnan() & ~value.isposinf(),
+        lambda: ValueError("computed rule weight must be finite or negative infinity"),
+    )
+    return value
+
+
 def log1mexp(value: torch.Tensor) -> torch.Tensor:
     """``log(1 - exp(value))`` without cancellation.
 
@@ -1192,6 +1222,13 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Implementation], ...] = (
         "observation_weight", (REAL,), REAL, "weight", _total(observation_weight)
     ),
     _signature("as_weight", (REAL,), LOG_WEIGHT, "weight", _total(torch.clone)),
+    _signature(
+        "require_rule_log_weight",
+        (LOG_WEIGHT,),
+        LOG_WEIGHT,
+        "rule-log-weight",
+        _require_rule_log_weight,
+    ),
     _signature("weight_value", (LOG_WEIGHT,), REAL, "weight", _total(torch.clone)),
     _signature(
         "add_weight",

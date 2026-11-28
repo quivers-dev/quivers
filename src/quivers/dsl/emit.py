@@ -160,6 +160,12 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputation,
     QiecComputationDecl,
     QiecInterpretationDecl,
+    QiecRelationComposeDecl,
+    QiecRelationTransformDecl,
+    QiecRelationDecl,
+    QiecRelationScoreDecl,
+    QiecStringGraphDecl,
+    QiecStringGraphScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
     QiecEffectBinder,
@@ -1021,13 +1027,87 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
         return _emit_qiec_handler_decl(stmt, indent)
     if isinstance(stmt, QiecInterpretationDecl):
         lines = _doc_lines(stmt.docs, indent)
-        head = f"interpret {stmt.name} : {stmt.deduction} -> {_emit_qiec_type(stmt.carrier)}"
+        head = f"interpret {stmt.name}{_emit_options(stmt.options)} : {stmt.deduction} -> {_emit_qiec_type(stmt.carrier)}"
         lines.append(f"{_pad(indent)}{head}")
         lines.extend(
             f"{_pad(indent + 1)}{clause.constructor_kind} {clause.constructor} = {clause.operation}"
             for clause in stmt.clauses
         )
         return "\n".join(lines)
+    if isinstance(stmt, QiecRelationDecl):
+        lines = _doc_lines(stmt.docs, indent)
+        lines.append(
+            f"{_pad(indent)}relation {stmt.name} [algebra={stmt.algebra}, states={stmt.n_states}]"
+        )
+        pad = _pad(indent + 1)
+        lines.extend(f"{pad}{tape.direction} {tape.alphabet}" for tape in stmt.tapes)
+        lines.extend(
+            f"{pad}initial {mark.state} [weight={mark.weight}]" for mark in stmt.initial
+        )
+        for arc in stmt.arcs:
+            encoded = ", ".join(
+                "eps" if label is None else str(label) for label in arc.labels
+            )
+            lines.append(
+                f"{pad}arc {arc.source} -> {arc.target} [labels=({encoded}), weight={arc.weight}]"
+            )
+        lines.extend(
+            f"{pad}final {mark.state} [weight={mark.weight}]" for mark in stmt.final
+        )
+        return "\n".join(lines)
+    if isinstance(stmt, QiecRelationComposeDecl):
+        text = f"relation {stmt.name} = compose({stmt.left}, {stmt.right})"
+        return _with_docs(stmt.docs, indent, text)
+    if isinstance(stmt, QiecRelationTransformDecl):
+        arguments = [stmt.source]
+        if stmt.other is not None:
+            arguments.append(stmt.other)
+        if stmt.operation == "project":
+            arguments.append(f"({', '.join(map(str, stmt.positions))})")
+        else:
+            arguments.extend(map(str, stmt.positions))
+        if stmt.word is not None:
+            arguments.append(f"({', '.join(map(str, stmt.word))})")
+        if stmt.keep_shared:
+            arguments.append("keep_shared=true")
+        text = f"relation {stmt.name} = {stmt.operation}({', '.join(arguments)})"
+        return _with_docs(stmt.docs, indent, text)
+    if isinstance(stmt, QiecStringGraphDecl):
+        lines = _doc_lines(stmt.docs, indent)
+        lines.append(f"{_pad(indent)}string_graph {stmt.name}")
+        pad = _pad(indent + 1)
+        for variable in stmt.variables:
+            observed = ""
+            if variable.observed is not None:
+                word = ", ".join(map(str, variable.observed))
+                observed = f" [observed=({word})]"
+            lines.append(
+                f"{pad}variable {variable.name} : {variable.alphabet}{observed}"
+            )
+        lines.extend(
+            f"{pad}factor {factor.relation}({', '.join(factor.scope)})"
+            for factor in stmt.factors
+        )
+        return "\n".join(lines)
+    if isinstance(stmt, QiecRelationScoreDecl | QiecStringGraphScoreDecl):
+        result = _emit_qiec_type(stmt.result_type)
+        keyword = (
+            "string_graph_score"
+            if isinstance(stmt, QiecStringGraphScoreDecl)
+            else "relation_score"
+        )
+        relation = (
+            f", relation={stmt.relation}"
+            if isinstance(stmt, QiecRelationScoreDecl) and stmt.relation is not None
+            else ""
+        )
+        graph = (
+            f", graph={stmt.graph}"
+            if isinstance(stmt, QiecStringGraphScoreDecl) and stmt.graph is not None
+            else ""
+        )
+        text = f"{keyword} {stmt.name} : {result} [operation={stmt.operation}{relation}{graph}]"
+        return _with_docs(stmt.docs, indent, text)
     if isinstance(stmt, QiecComputationDecl):
         return _emit_qiec_computation_decl(stmt, indent)
     if isinstance(stmt, CompositionDecl):

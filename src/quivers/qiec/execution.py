@@ -61,6 +61,8 @@ from quivers.qiec.canonical import (
 from quivers.qiec.contracts import ContractNotMet, FailurePolicy
 from quivers.qiec.effects import HandlerDef, ResumptionGrade
 from quivers.qiec.foreign import (
+    DeductionLinearGoal,
+    DeductionBooleanOutcomes,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -679,6 +681,24 @@ class CoreRuntimeProvider(QiecModel):
                     reduction=semantics.reduction,
                 ),
                 "Random",
+            )
+        if isinstance(semantics, DeductionLinearGoal):
+            from quivers.qiec.linear_deduction import linear_goal_handler
+
+            return linear_goal_handler(
+                definition,
+                self._single_clause(definition, ResumptionGrade.LINEAR),
+                semantics,
+            )
+        if isinstance(semantics, DeductionBooleanOutcomes):
+            from quivers.qiec._boolean_deduction_outcomes import (
+                deduction_boolean_outcomes_handler,
+            )
+
+            return deduction_boolean_outcomes_handler(
+                definition,
+                self._single_clause(definition, ResumptionGrade.LINEAR),
+                semantics,
             )
         if isinstance(semantics, DeductionOutcomes):
             from quivers.qiec.deduction_outcomes import deduction_outcomes_handler
@@ -2494,11 +2514,12 @@ def _core_validator(type_: TypeExpr) -> RuntimeValidator | None:
         return lambda value: isinstance(value, str)
     if isinstance(type_, TypeApplication):
         if type_.constructor == SAMPLEABLE_CONSTRUCTOR:
+            from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             return lambda value: (
                 value.element == type_.arguments[0]
-                if isinstance(value, FiniteSampleable)
+                if isinstance(value, FiniteSampleable | RelationPathLaw)
                 else callable(getattr(value, "log_prob", None))
                 and (
                     callable(getattr(value, "sample", None))

@@ -6,7 +6,10 @@ import torch
 
 from quivers.dsl import Compiler, module_to_source, parse
 from quivers.dsl._data_inference import infer_data_objects
-from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
+from quivers.dsl.qiec_lowering import (
+    _lower_qvr_with_companions,
+    lower_qvr_to_qiec,
+)
 from quivers.modeling import Model
 
 
@@ -27,10 +30,12 @@ def test_unchanged_source_keeps_its_checked_contract_across_bindings():
     source = source.replace("program p[n:Nat]", "program p").replace("([n])", "([2])")
     with (
         patch(
-            "quivers.modeling.model.lower_qvr_to_qiec", wraps=lower_qvr_to_qiec
+            "quivers.modeling.model._lower_qvr_with_companions",
+            wraps=_lower_qvr_with_companions,
         ) as initial,
         patch(
-            "quivers.dsl.compiler.core.lower_qvr_to_qiec", wraps=lower_qvr_to_qiec
+            "quivers.dsl.compiler.core._lower_qvr_with_companions",
+            wraps=_lower_qvr_with_companions,
         ) as compiled,
     ):
         specification = Model(source)
@@ -56,7 +61,8 @@ def test_combined_extents_recheck_rewrites_and_keep_density_and_gradient():
                 "quivers.dsl.qiec_lowering.lower_qvr_to_qiec", wraps=lower_qvr_to_qiec
             ) as inferred,
             patch(
-                "quivers.dsl.compiler.core.lower_qvr_to_qiec", wraps=lower_qvr_to_qiec
+                "quivers.dsl.compiler.core._lower_qvr_with_companions",
+                wraps=_lower_qvr_with_companions,
             ) as compiled,
         ):
             bound = specification.bind(data)

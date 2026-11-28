@@ -122,6 +122,69 @@ def test_qvr_scores_distinct_proofs_of_the_same_goal_and_preserves_gradients() -
     )
     assert isinstance(raw.value, torch.Tensor)
     torch.testing.assert_close(raw.value, logs.exp().sum(), atol=1e-12, rtol=1e-12)
+    for run, normalized in ((scored, True), (raw, False)):
+        (event,) = [
+            event for event in run.result.trace if event.event == "deduction.proofs"
+        ]
+        assert event.detail["observer"] == "weighted-proof-rows"
+        assert event.detail["normalized"] is normalized
+        assert event.detail["algorithm"] == "indexed-packed-forest-budgeted-enumeration"
+        assert event.detail["proof_budget"] == 3
+        assert event.detail["goal_items"] == 2
+        assert (
+            event.detail["structural_goal_proofs"] == event.detail["positive_rows"] == 3
+        )
+        assert dict(event.detail["construction_work"])["provenance_records"] == 13
+        assert "reified_proof_nodes" in event.detail["unmeasured"]
+
+
+def test_proof_report_distinguishes_structural_budget_from_positive_mass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_source(GRAMMAR + "\n" + QUERY).qiec
+    assert isinstance(module, QiecModule)
+    logs = torch.tensor(
+        [-0.1, -torch.inf, -0.4], dtype=torch.float64, requires_grad=True
+    )
+    parameters = {
+        f"Mix.lex.{index}": weight for index, weight in enumerate(logs.unbind())
+    }
+    data = {"first": "x", "last": "y", "limit": 3, "a": 0.8, "b": 0.3, "d": 0.1}
+    result = run_program(module, "assess", data=data, sites={}, parameters=parameters)
+    expected = (logs.softmax(0) @ logs.new_tensor([0.8**2, 0.3, 0.1])).log()
+    torch.testing.assert_close(result.log_joint, expected)
+    torch.testing.assert_close(
+        torch.autograd.grad(result.log_joint, logs)[0],
+        torch.autograd.grad(expected, logs)[0],
+    )
+    (accepted,) = [
+        event.detail
+        for event in result.result.trace
+        if event.event == "deduction.proofs"
+    ]
+    assert accepted["structural_goal_proofs"] == 3 and accepted["positive_rows"] == 2
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("the rejected proof query reified a row")
+
+    monkeypatch.setattr(deduction_outcomes, "closed_derivation_value", forbidden)
+    observed = []
+    with pytest.raises(ExecutionFailure, match="too-many-derivations"):
+        run_program(
+            module,
+            "assess",
+            data={**data, "limit": 2},
+            sites={},
+            parameters=parameters,
+            observer=observed.append,
+        )
+    assert all(event.event != "deduction.proofs" for event in observed)
+    (refused,) = [
+        event.detail for event in observed if event.event == "deduction.proofs.refused"
+    ]
+    assert refused["reason"] == "too-many-derivations" and refused["proof_budget"] == 2
+    assert refused["goal_items"] == accepted["goal_items"]
+    assert "structural_goal_proofs" not in refused
 
 
 def test_proof_query_refuses_over_budget_before_reifying_any_row(

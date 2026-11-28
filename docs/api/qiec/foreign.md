@@ -12,6 +12,9 @@ from that statement and from nothing else, in particular never from the handler'
 - [`Enumeration`][quivers.qiec.foreign.Enumeration]: an enumeration of a finite draw.
 - [`Settlement`][quivers.qiec.foreign.Settlement]: the stop of an iteration, answered with its value
   only when the stop certifies it.
+- [`DeductionLinearGoal`][quivers.qiec.foreign.DeductionLinearGoal] computes the full-span
+  `LogWeight` of a checked lexical recurrence by span evaluation with certified unary
+  closure. The program binding `parse_linear` selects this operation.
 - [`DeductionOutcomes`][quivers.qiec.foreign.DeductionOutcomes] folds a finite packed lexical
   chart in `LogProb` and groups full-span goal masses by a structural key.
 - [`DeductionProofs`][quivers.qiec.foreign.DeductionProofs] uses the same chart and returns

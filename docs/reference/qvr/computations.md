@@ -140,6 +140,42 @@ given *fuel*, a bound on its number of evaluation steps (`--fuel` in
 [execution controls](execution-and-tooling.md#execution-controls)), and a run that exhausts it stops
 with `qiec-run-fuel`.
 
+### Contextual rule calls
+
+Use `lift_first[statics](rule, a, b, frame)` to call `rule[statics](a, b)`
+and return `(answer, frame)`. The dual form
+`lift_second[statics](rule, frame, a, b)` returns `(frame, answer)`.
+Both use the named computation's own arity, argument types, static
+telescope, and effect row. For instance, a lift may change an indexed
+tensor premise while preserving a string in the result.
+
+<!-- compile: qiec -->
+```qvr
+define calibrate[n : Nat](values : Tensor[Real]([n]), center : Real) : Real !{} =
+    return values[0] - center
+
+define tagged[n : Nat](tag : String, values : Tensor[Real]([n]), center : Real) : String * Real !{} =
+    lift_second[n](calibrate, tag, values, center)
+```
+
+Bind a computed frame before the lift. An existing value binding or a
+literal supplies the frame, and the ordinary call rules evaluate the
+active operands once in their written order. The lift adds one bind for
+the call result and one pair that reuses the frame. Its continuation
+holds that value until return, under the ordinary resumption and
+capture checks. If the frame came from a draw, two lifts that use the
+same binding keep the result of that one draw.
+
+This implements the product actions `first` and `second` of a Kleisli
+arrow over checked computations. The equality with the explicit
+call-and-pair expansion follows from substituting the returned value
+into the bind. Arrow composition and naturality equations require an
+observation that respects the corresponding administrative steps and
+site renamings. A map on the frame can move across the call only when it
+is suitably pure and total and the observation respects that change.
+Effectful maps on different components can depend on their order.
+[Hughes (2000), §§4.1 and 7](https://doi.org/10.1016/S0167-6423(99)00023-4)
+
 ## Requests
 
 A request names an instance and an operation and may give the operation's static arguments:

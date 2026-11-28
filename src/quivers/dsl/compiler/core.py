@@ -54,12 +54,18 @@ from quivers.dsl.compiler.resolution import _ResolutionMixin
 from quivers.dsl.compiler.expressions import _ExpressionsMixin
 from quivers.dsl.program_elaboration import GAP_CODE
 from quivers.dsl.qiec_lowering import (
+    CheckedQvrQiec,
     QiecDiagnosticError,
     has_qiec_surface,
-    lower_qvr_to_qiec,
+    _lower_qvr_with_companions,
     non_qiec_projection,
+    _module_name,
 )
-from quivers.qiec import QiecModule
+from quivers.qiec import (
+    ClosedInterpretationBinding,
+    PackedBooleanInterpretationBinding,
+    QiecModule,
+)
 from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.terms import PlateAxis
@@ -68,6 +74,14 @@ from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
 from quivers.qiec.program_runtime import passed_data_notes
+from quivers.qiec.relation_cascades import RelationCascadeSpec
+from quivers.qiec.relation_composition import ComposedRelationSpec
+from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
+    UnaryRelationTransformSpec,
+)
+from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.string_graphs import StringFactorGraphSpec
 
 
 def _plate_axes(
@@ -141,6 +155,10 @@ class Compiler(
         self._family_catalog = families
         self._distribution_families = families if families is not None else FAMILIES
         self._qiec_module: QiecModule | None = None
+        self._closed_interpretations: tuple[ClosedInterpretationBinding, ...] = ()
+        self._packed_interpretations: tuple[
+            PackedBooleanInterpretationBinding, ...
+        ] = ()
         self._deferred_statements: tuple[Statement, ...] = ()
         # The QIEC projection is lowered on first use, after the
         # statements' own checks when `compile` drives it, so a source
@@ -327,8 +345,104 @@ class Compiler(
             program gap, which the module records instead.
         """
         if self._qiec_source is not None and self._qiec_module is None:
-            self._qiec_module = self._lower_qiec(self._qiec_source)
+            checked = self._lower_qiec_with_companions(self._qiec_source)
+            self._qiec_module = checked.module
+            self._closed_interpretations = checked.closed_interpretations
+            self._packed_interpretations = checked.packed_interpretations
         return self._qiec_module
+
+    @property
+    def relation_specs(self) -> dict[str, RationalRelationSpec]:
+        """Return the checked authored relation specifications in this source.
+
+        Returns
+        -------
+        dict[str, RationalRelationSpec]
+            Topologies and live weight identities keyed by source name.
+        """
+        return {
+            name: relation
+            for name, relation in self._authored_relation_specs().items()
+            if isinstance(relation, RationalRelationSpec)
+        }
+
+    @property
+    def composed_relation_specs(self) -> dict[str, ComposedRelationSpec]:
+        """Return checked binary compositions keyed by their authored names.
+
+        Returns
+        -------
+        dict[str, ComposedRelationSpec]
+            Ordered operand specifications and original weight identities.
+        """
+        return {
+            name: relation
+            for name, relation in self._authored_relation_specs().items()
+            if isinstance(relation, ComposedRelationSpec)
+        }
+
+    @property
+    def transformed_relation_specs(
+        self,
+    ) -> dict[
+        str,
+        UnaryRelationTransformSpec | BinaryRelationTransformSpec | RelationCascadeSpec,
+    ]:
+        """Return checked sparse transformations by their authored names.
+
+        Returns
+        -------
+        dict[str, UnaryRelationTransformSpec | BinaryRelationTransformSpec | RelationCascadeSpec]
+            Ordered original operands and selected sparse operations, including cascades.
+        """
+        return {
+            name: relation
+            for name, relation in self._authored_relation_specs().items()
+            if isinstance(
+                relation,
+                UnaryRelationTransformSpec
+                | BinaryRelationTransformSpec
+                | RelationCascadeSpec,
+            )
+        }
+
+    @property
+    def string_graph_specs(self) -> dict[str, StringFactorGraphSpec]:
+        """Return checked string graphs by their authored names.
+
+        Returns
+        -------
+        dict[str, StringFactorGraphSpec]
+            Ordered observations and factor scopes with original relation identities.
+        """
+        from quivers.dsl._string_graph_specs import authored_string_graph_specs
+
+        if self._qiec_source is None:
+            return {}
+        return authored_string_graph_specs(
+            self._qiec_source, self._authored_relation_specs(), self._qiec_file_path
+        )
+
+    def _authored_relation_specs(
+        self,
+    ) -> dict[
+        str,
+        RationalRelationSpec
+        | ComposedRelationSpec
+        | UnaryRelationTransformSpec
+        | BinaryRelationTransformSpec
+        | RelationCascadeSpec,
+    ]:
+        from quivers.dsl._relation_specs import authored_relation_specs
+
+        if self._qiec_source is None:
+            return {}
+        module_name = self._qiec_module_name
+        if module_name is None:
+            module_name = _module_name(self._qiec_file_path)
+        return authored_relation_specs(
+            self._qiec_source, module_name, self._qiec_file_path
+        )
 
     def entry_points(self) -> tuple[EntryPoint, ...]:
         """The executable entry points of the checked module.
@@ -402,8 +516,12 @@ class Compiler(
         QiecDiagnosticError
             If the surface fails to lower other than by a program gap.
         """
+        return self._lower_qiec_with_companions(module).module
+
+    def _lower_qiec_with_companions(self, module: Module) -> CheckedQvrQiec:
+        """Keep source interpretation contracts alongside the checked module."""
         try:
-            return lower_qvr_to_qiec(
+            return _lower_qvr_with_companions(
                 module,
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
@@ -412,15 +530,14 @@ class Compiler(
         except QiecDiagnosticError as error:
             if error.code != GAP_CODE:
                 raise
-            return lower_qvr_to_qiec(
+            checked = _lower_qvr_with_companions(
                 module,
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
                 elaborate_programs=False,
                 families=self._family_catalog,
-            ).with_(
-                gap=error.message,
             )
+            return checked.with_(module=checked.module.with_(gap=error.message))
 
     def compile(self) -> Program:
         """Compile the module into a trainable Program.
@@ -534,13 +651,21 @@ class Compiler(
         if resolved is source:
             return
         self._qiec_module = None
+        self._closed_interpretations = ()
+        self._packed_interpretations = ()
         if self._qiec_source is not None:
             self._qiec_source = resolved
             self._module = non_qiec_projection(resolved)
         else:
             self._module = resolved
 
-    def _reuse_checked_source(self, source: Module, checked: QiecModule) -> bool:
+    def _reuse_checked_source(
+        self,
+        source: Module,
+        checked: QiecModule,
+        closed_interpretations: tuple[ClosedInterpretationBinding, ...] = (),
+        packed_interpretations: tuple[PackedBooleanInterpretationBinding, ...] = (),
+    ) -> bool:
         """Seed the lazy checked cache only when source expansion kept its identity."""
         if self._qiec_source is not source:
             return False
@@ -550,6 +675,8 @@ class Compiler(
         if checked.distribution_families != expected:
             return False
         self._qiec_module = checked
+        self._closed_interpretations = closed_interpretations
+        self._packed_interpretations = packed_interpretations
         return True
 
     def _attach_host_data_types(self, module: QiecModule) -> None:

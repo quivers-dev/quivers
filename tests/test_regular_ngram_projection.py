@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from itertools import product
+from math import log
 
 import pytest
 import torch
@@ -97,6 +98,94 @@ def test_regular_proximal_fit_matches_dense_forward_kl_and_feature_expectations(
     with torch.no_grad():
         base_weights[0] += 100
     torch.testing.assert_close(fit.message.weight(((0, 0),)), observed[-4])
+
+
+def test_fixed_step_matches_global_covariance_bound_and_counts_moment_evaluations():
+    base, weights = _language()
+    model, _ = _language(1.2, -0.25)
+    rows = _feature_rows(weights)
+    target_scores = weights.new_tensor(
+        [sum((1.2, -0.25)[symbol] for symbol in word) for word in _WORDS]
+    )
+    tilt = target_scores.softmax(0)
+    direction = tilt @ rows - rows.mean(0)
+    # The two unigram count ranges are 2 and the four bigram ranges are
+    # 1. The global denominator is (2 * 4 + 4) / 4 = 3.
+    fixed = penalized_regular_ngram_projection(
+        base,
+        model,
+        _FEATURES,
+        penalty=0.0,
+        tolerance=1e-10,
+        optimizer="fixed_lipschitz",
+        **(_POLICY | dict(max_iterations=1)),
+    )
+    assert fixed.optimizer == "fixed_lipschitz" and fixed.status == "limit"
+    assert fixed.iterations == 1 and fixed.moment_evaluations == 3
+    torch.testing.assert_close(fixed.coefficients, direction / 3)
+    torch.testing.assert_close(fixed.target_moments, tilt @ rows)
+    torch.testing.assert_close(
+        fixed.fitted_moments, (rows @ (direction / 3)).softmax(0) @ rows
+    )
+
+    unigram_rows = rows[:, (0, 3)]
+    for optimizer in ("backtracking", "fixed_lipschitz"):
+        fit = penalized_regular_ngram_projection(
+            base,
+            model,
+            _FEATURES[::3],
+            penalty=0.0,
+            tolerance=1e-9,
+            optimizer=optimizer,
+            **_POLICY,
+        )
+        assert fit.status == "converged" and fit.optimizer == optimizer
+        assert fit.moment_evaluations >= 2 + fit.iterations
+        if optimizer == "fixed_lipschitz":
+            assert fit.moment_evaluations == 2 + fit.iterations
+        torch.testing.assert_close(
+            (unigram_rows @ fit.coefficients).softmax(0), tilt, atol=1e-7, rtol=1e-7
+        )
+
+
+def test_backtracking_counts_rejected_sparse_moment_trials():
+    length = 8
+    topology = RelationTopology(
+        (_TAPE,),
+        0,
+        length + 1,
+        tuple(Arc(i, i + 1, (0,), 0) for i in range(length)),
+        (Boundary(0, 0),),
+        (Boundary(0, 0), Boundary(length, 1)),
+        ("unit", "odds"),
+    )
+    base = RationalRelation(
+        topology, torch.zeros(2, dtype=torch.float64), algebra=LOG_PROB
+    )
+    model = RationalRelation(
+        topology, base._weights().new_tensor([0.0, log(7)]), algebra=LOG_PROB
+    )
+    exact_target = length * 7 / 8
+    for optimizer in ("backtracking", "fixed_lipschitz"):
+        fit = penalized_regular_ngram_projection(
+            base,
+            model,
+            ((0,),),
+            penalty=0.0,
+            tolerance=1e-10,
+            optimizer=optimizer,
+            **(_POLICY | dict(max_iterations=1)),
+        )
+        assert fit.iterations == 1 and fit.target_moments.item() == pytest.approx(
+            exact_target
+        )
+        if optimizer == "backtracking":
+            assert fit.moment_evaluations == 7
+        else:
+            assert fit.moment_evaluations == 3
+            assert fit.coefficients.item() == pytest.approx(
+                (exact_target - length / 2) / 16
+            )
 
 
 def test_penalty_selects_the_base_and_representation_changes_with_budget():

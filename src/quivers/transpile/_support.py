@@ -111,7 +111,7 @@ def unsupported_for(target: str, module: Module, *, allow: frozenset[str]) -> No
         for statement in module.statements
     )
     has_structural = "signature_decl" in kinds and bool(
-        kinds & {"encoder_decl", "decoder_decl"}
+        kinds & {"encoder_decl", "decoder_decl", "interpretation_decl"}
     )
     effective_allow = allow | QIEC_SURFACE
     if has_program or has_schema_parser:

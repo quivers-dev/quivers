@@ -62,6 +62,12 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecBinder,
     QiecComputationDecl,
     QiecInterpretationDecl,
+    QiecRelationComposeDecl,
+    QiecRelationDecl,
+    QiecRelationScoreDecl,
+    QiecRelationTransformDecl,
+    QiecStringGraphDecl,
+    QiecStringGraphScoreDecl,
     QiecEffectDecl,
     QiecEffectInstanceDecl,
     QiecFamilyDecl,
@@ -826,7 +832,13 @@ def _render_hover(
             parts.append(f"```qvr\n{instantiated}\n```")
     inferred = (
         _inferred_row(doc, name)
-        if isinstance(decl, QiecComputationDecl | QiecInterpretationDecl)
+        if isinstance(
+            decl,
+            QiecComputationDecl
+            | QiecInterpretationDecl
+            | QiecRelationScoreDecl
+            | QiecStringGraphScoreDecl,
+        )
         else None
     )
     if inferred is not None:
@@ -1477,7 +1489,22 @@ def _symbol_kind(stmt: Statement) -> lsp.SymbolKind:
         return lsp.SymbolKind.Interface
     if isinstance(stmt, QiecEffectInstanceDecl):
         return lsp.SymbolKind.Object
-    if isinstance(stmt, QiecHandlerDecl | QiecComputationDecl | QiecInterpretationDecl):
+    if isinstance(
+        stmt,
+        QiecRelationDecl
+        | QiecRelationComposeDecl
+        | QiecRelationTransformDecl
+        | QiecStringGraphDecl,
+    ):
+        return lsp.SymbolKind.Struct
+    if isinstance(
+        stmt,
+        QiecHandlerDecl
+        | QiecComputationDecl
+        | QiecInterpretationDecl
+        | QiecRelationScoreDecl
+        | QiecStringGraphScoreDecl,
+    ):
         return lsp.SymbolKind.Function
     return lsp.SymbolKind.Variable
 

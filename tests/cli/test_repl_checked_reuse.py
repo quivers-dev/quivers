@@ -5,7 +5,7 @@ from unittest.mock import patch
 import torch
 
 from quivers.cli.repl_session import ReplSession
-from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
+from quivers.dsl.compiler import core as compiler_core
 
 
 SOURCE = """\
@@ -20,13 +20,17 @@ define answer() : Int !{} =
 def test_kind_probe_reuses_identical_checked_source():
     session = ReplSession()
     assert session.dispatch(SOURCE).ok
-    with patch(
-        "quivers.dsl.compiler.core.lower_qvr_to_qiec", wraps=lower_qvr_to_qiec
+    with patch.object(
+        compiler_core,
+        "_lower_qvr_with_companions",
+        wraps=compiler_core._lower_qvr_with_companions,
     ) as lower:
         response = session.dispatch(":kind FinSet 3")
         again = session.dispatch(":kind FinSet 3")
+        lower.assert_not_called()
+        assert ReplSession().dispatch(SOURCE.replace("return 42", "return 43")).ok
+        lower.assert_called()
     assert response.ok and again.body == response.body == "FinSet 3 :: FinSet 3"
-    lower.assert_not_called()
 
 
 def test_scratch_compilers_share_only_checked_immutable_evidence():

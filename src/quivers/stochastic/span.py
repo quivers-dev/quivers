@@ -42,7 +42,8 @@ import torch
 import torch.nn as nn
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
-from quivers.core.algebras import OrderPreservingSemiring, Star
+from quivers.core._closure_block import _make_block
+from quivers.core.algebras import LogProbAlgebra, OrderPreservingSemiring, Star
 from quivers.core.elimination import fiber_join
 from quivers.core.laws import TIMES_COMMUTATIVE
 from quivers.qiec.identifiers import FamilyId
@@ -1345,18 +1346,14 @@ def _closure(
         algebra has no star to sum.
     """
     size = len(grammar.categories)
-    identity = algebra.identity_tensor((size,), dtype=like.dtype, device=like.device)
     if not edges:
-        return identity
+        return algebra.identity_tensor((size,), dtype=like.dtype, device=like.device)
     stacked = torch.stack([weight for _, _, weight in edges])
     fibers: list[list[int]] = [[] for _ in range(size * size)]
     successors: dict[int, set[int]] = {}
     for position, (source, target, _) in enumerate(edges):
         fibers[source * size + target].append(position)
         successors.setdefault(source, set()).add(target)
-    matrix = fiber_join(
-        algebra, stacked, fibers, algebra.zero_like((1,), like), axis=0
-    ).reshape(size, size, *stacked.shape[1:])
     order = _order(size, successors)
     if order is None:
         if not cyclic:
@@ -1369,12 +1366,32 @@ def _closure(
                 "the steps over one span have a cycle and the algebra has no star",
                 "algebra",
             )
-        closure, work = algebra.star_with_work(matrix)
+        if isinstance(algebra, LogProbAlgebra):
+            block = _make_block(
+                size,
+                tuple(
+                    (source, target, index)
+                    for index, (source, target, _) in enumerate(edges)
+                ),
+            )
+            matrix = count.made(block.matrix(stacked, algebra))
+            closed, work = algebra.star_with_work(matrix)
+            closure = block.project(count.made(closed))
+        else:
+            matrix = fiber_join(
+                algebra, stacked, fibers, algebra.zero_like((1,), like), axis=0
+            ).reshape(size, size, *stacked.shape[1:])
+            closure, work = algebra.star_with_work(matrix)
+            count.made(closure)
         count.pivots += work.pivots
         count.exact += work.exact
         count.products += work.products
         count.sums += work.sums
-        return count.made(closure)
+        return closure
+    matrix = fiber_join(
+        algebra, stacked, fibers, algebra.zero_like((1,), like), axis=0
+    ).reshape(size, size, *stacked.shape[1:])
+    identity = algebra.identity_tensor((size,), dtype=like.dtype, device=like.device)
     rows: dict[int, torch.Tensor] = {}
     zero_row = algebra.zero_like((size,), like)
     for node in order:

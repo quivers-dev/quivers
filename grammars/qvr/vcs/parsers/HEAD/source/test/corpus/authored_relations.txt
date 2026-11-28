@@ -1,0 +1,58 @@
+==========================
+Authored sparse relations
+==========================
+
+relation lex [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0, eps), weight=emit]
+    arc 0 -> 1 [labels=(0, eps), weight=emit]
+    final 1 [weight=one]
+
+relation_score ambiguity : Real [operation=path_entropy, relation=lex]
+relation_score risk : Real [operation=expected_path_cost, relation=lex]
+
+---
+
+(source_file
+  (relation_decl
+    (identifier)
+    (relation_algebra)
+    (integer)
+    (relation_tape_decl
+      (relation_tape_direction)
+      (identifier))
+    (relation_tape_decl
+      (relation_tape_direction)
+      (identifier))
+    (relation_boundary_decl
+      (relation_boundary_kind)
+      (integer)
+      (identifier))
+    (relation_arc_decl
+      (integer)
+      (integer)
+      (relation_label (integer))
+      (relation_label)
+      (identifier))
+    (relation_arc_decl
+      (integer)
+      (integer)
+      (relation_label (integer))
+      (relation_label)
+      (identifier))
+    (relation_boundary_decl
+      (relation_boundary_kind)
+      (integer)
+      (identifier)))
+  (relation_score_decl
+    (identifier)
+    (qiec_type_name (identifier))
+    (relation_score_operation)
+    (identifier))
+  (relation_score_decl
+    (identifier)
+    (qiec_type_name (identifier))
+    (relation_score_operation)
+    (identifier)))

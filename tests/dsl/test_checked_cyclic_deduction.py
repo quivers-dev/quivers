@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from math import comb, log
 from pathlib import Path
 
 import pytest
 import torch
 
-from quivers.core.algebras import LOG_PROB, DivergentClosureError
+from quivers.core.algebras import LOG_PROB, DivergentClosureError, UndecidedClosureError
 from quivers.dsl import loads as load_source
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec.contracts import (
@@ -33,6 +34,7 @@ from quivers.qiec.contracts import (
     PackedForest,
     QuerySpec,
     Rational,
+    ResourceBudget,
     Target,
     Unestablished,
     Weight,
@@ -111,6 +113,105 @@ def _accuracy(guarantee: Exact | Certified) -> AccuracyContract:
         guarantee=guarantee,
         gradient=DerivativeSemantics.implicit(SPECTRAL_RADIUS_BELOW_ONE),
     )
+
+
+@pytest.fixture(scope="module")
+def parallel_span():
+    source = SOURCE.replace(
+        "    lexicon",
+        "    rule second : span(I, J, S) |- span(I, J, S) #[learnable]\n    lexicon",
+        1,
+    )
+    presentation = load_source(source).deductions["Linear"].presentation
+    seed = torch.empty(2, dtype=torch.float64)
+    query, goal, axioms, _ = _plan_inputs(
+        presentation.with_(rules=presentation.rules[:1]), seed
+    )
+    parameters = tuple(
+        weight for rule in presentation.rules if (weight := rule.weight) is not None
+    )
+    assert len(parameters) == 2
+    slots = (axioms[0].occurrence, *parameters)
+    selected = plan(
+        query.with_(differentiate_with_respect_to=slots),
+        presentation,
+        LOG_PROB,
+        LinearCyclic(),
+        _accuracy(Exact()),
+        NoRetention(),
+    )
+    assert selected.span is not None and selected.record.algorithm == SPAN_ALGORITHM
+    return selected, goal, axioms, slots
+
+
+def test_parallel_span_star_differentiates_each_original_occurrence(
+    parallel_span,
+) -> None:
+    selected, goal, axioms, slots = parallel_span
+    weights = (
+        torch.tensor([0.3, 0.16, 0.24], dtype=torch.float64).log().requires_grad_()
+    )
+    run = selected.run(
+        axioms, dict(zip(slots, weights.unbind(), strict=True)), like=weights
+    )
+    value = run.values[goal]
+    a, first, second = weights.exp().unbind()
+    # There are 2^h distinct unary-rule strings of length h. For each k
+    # uses of the first rule, there are h choose k such strings.
+    oracle = (
+        a
+        * sum(
+            comb(h, k) * first**k * second ** (h - k)
+            for h in range(30)
+            for k in range(h + 1)
+        )
+    ).log()
+    torch.testing.assert_close(value, oracle)
+    assert not torch.isclose(value, (a / (1 - first)).log())
+    gradient = torch.autograd.grad(value, weights)[0]
+    torch.testing.assert_close(gradient, torch.autograd.grad(oracle, weights)[0])
+    torch.testing.assert_close(
+        gradient, torch.tensor([1, 0.16 / 0.6, 0.24 / 0.6], dtype=weights.dtype)
+    )
+    assert run.pivots == len(selected.span.categories) + 1
+    assert run.allocated >= 2 * run.pivots**2
+
+
+@pytest.mark.parametrize(
+    ("loops", "cause"),
+    [
+        ((-log(2), -log(2)), UndecidedClosureError),
+        ((log(0.55), log(0.5)), DivergentClosureError),
+    ],
+)
+def test_parallel_span_star_certifies_original_coefficient_domain(
+    parallel_span, loops, cause
+):
+    selected, _, axioms, slots = parallel_span
+    weights = torch.tensor([log(0.3), *loops], dtype=torch.float64)
+    with pytest.raises(PlanRefused) as refused:
+        selected.run(
+            axioms, dict(zip(slots, weights.unbind(), strict=True)), like=weights
+        )
+    assert isinstance(refused.value.__cause__, cause)
+
+
+def test_cyclic_span_does_not_accept_an_unenforced_compute_budget(
+    parallel_span,
+) -> None:
+    selected, _, _, _ = parallel_span
+    accuracy = selected.record.accuracy.with_(
+        budget=ResourceBudget(states=len(selected.span.categories))
+    )
+    with pytest.raises(PlanRefused, match="does not enforce a general resource budget"):
+        plan(
+            selected.record.query,
+            selected.presentation,
+            LOG_PROB,
+            LinearCyclic(),
+            accuracy,
+            NoRetention(),
+        )
 
 
 @pytest.mark.parametrize(

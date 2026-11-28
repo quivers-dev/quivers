@@ -1,0 +1,570 @@
+"""Reference-machine provider for serialized fixed-word relation requests."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from functools import partial
+from hashlib import sha256
+
+import torch
+
+from quivers.core.algebras import LOG_PROB, MARKOV, REAL as REAL_ALGEBRA
+from quivers.core.relations import FixedStringQuery
+from quivers.qiec.builtins import COMPUTE, COMPUTE_APPLY, compute_handler
+from quivers.qiec.canonical import LOG_WEIGHT
+from quivers.qiec.effects import EMPTY_ROW, HandlerDef, ResumptionGrade
+from quivers.qiec.evaluator import ClauseContext, RuntimeAttachments
+from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
+from quivers.qiec.identifiers import HandlerId
+from quivers.qiec.module import QiecModule
+from quivers.qiec.relation_backoff import (
+    FixedBackoffRelationRequest,
+    _BACKOFF_HANDLER_PREFIX,
+)
+from quivers.qiec.relation_cascades import RelationCascadeSpec
+from quivers.qiec.relation_composition import (
+    ComposedRelationSpec,
+    FixedComposedRelationRequest,
+)
+from quivers.qiec.relation_feature_moments import (
+    FixedComposedArcFeatureMomentRequest,
+    FixedCyclicRelationFeatureMomentRequest,
+    FixedRelationFeatureMomentRequest,
+)
+from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_ranked import (
+    FixedRankedOTRelationRequest,
+    _RANKED_OT_HANDLER_PREFIX,
+)
+from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
+    FixedTransformedRelationRequest,
+    UnaryRelationTransformSpec,
+)
+from quivers.qiec.relations import (
+    RelationWeightBindings,
+    FixedMinimizedRelationRequest,
+    FixedRelationArcCountsRequest,
+    FixedRelationCostRequest,
+    FixedRelationRequest,
+    RationalRelationSpec,
+)
+from quivers.qiec.types import UNIT, TypeExpr
+
+
+_RELATION_SCORE_HANDLER_PREFIX = "__relation_score_"
+
+
+def _relation_score_handler_id(
+    module: str,
+    name: str,
+    operation: str,
+    relation: RationalRelationSpec
+    | ComposedRelationSpec
+    | UnaryRelationTransformSpec
+    | BinaryRelationTransformSpec
+    | RelationCascadeSpec
+    | None = None,
+) -> HandlerId:
+    """Derive the checked handler identity of a source score.
+
+    Parameters
+    ----------
+    module
+        The QIEC module name.
+    name
+        The score's source name.
+    operation
+        The explicitly declared relation objective.
+    relation
+        An authored specification when the score binds its topology.
+
+    Returns
+    -------
+    HandlerId
+        The stable identity that includes the declared operation.
+    """
+    path = ("relation_scores", name, operation)
+    if relation is not None:
+        from quivers.qiec.serialization import dumps
+
+        fingerprint = sha256(dumps(relation).encode("utf-8")).hexdigest()
+        path += ("authored_topology", fingerprint)
+    return HandlerId.derive(module, *path, "handler")
+
+
+def _relation_score_handler_name(name: str) -> str:
+    """Derive the handler name for a source-declared score.
+
+    Parameters
+    ----------
+    name
+        The score's source name.
+
+    Returns
+    -------
+    str
+        The generated handler's name.
+    """
+    return f"{_RELATION_SCORE_HANDLER_PREFIX}{name}"
+
+
+def _expected_path_cost(
+    query: FixedStringQuery,
+    initial_costs: torch.Tensor | None,
+    arc_costs: torch.Tensor | None,
+    final_costs: torch.Tensor | None,
+) -> torch.Tensor:
+    """Evaluate the checked scalar expectation for the bound path costs.
+
+    Parameters
+    ----------
+    query : FixedStringQuery
+        The live fixed-word posterior query.
+    initial_costs : torch.Tensor or None
+        Costs on initial occurrences.
+    arc_costs : torch.Tensor or None
+        Costs on arc occurrences.
+    final_costs : torch.Tensor or None
+        Costs on final occurrences.
+
+    Returns
+    -------
+    torch.Tensor
+        The differentiable signed expected cost.
+    """
+    value = query.path_statistics(
+        initial_costs=initial_costs, arc_costs=arc_costs, final_costs=final_costs
+    ).expected_cost
+    assert value is not None
+    return value
+
+
+def _selected_arc_counts(
+    query: FixedStringQuery, arc_ids: tuple[int, ...]
+) -> torch.Tensor:
+    """Return expected traversal counts in request order.
+
+    Parameters
+    ----------
+    query : FixedStringQuery
+        The observed path graph with live original weight sources.
+    arc_ids : tuple of int
+        Original arc occurrence IDs in the requested result order.
+
+    Returns
+    -------
+    torch.Tensor
+        The selected real counts, using zero for absent occurrences.
+    """
+    result = query.expected_arc_counts()
+    positions = {arc_id: row for row, arc_id in enumerate(result.arc_ids)}
+    missing = len(result.arc_ids)
+    rows = torch.tensor(
+        [positions.get(arc_id, missing) for arc_id in arc_ids],
+        dtype=torch.long,
+        device=result.counts.device,
+    )
+    with_zero = torch.cat((result.counts, result.counts.new_zeros(1)))
+    return with_zero.index_select(0, rows)
+
+
+def _fixed_compute_definition(
+    module: QiecModule, name: str, result: TypeExpr
+) -> HandlerDef:
+    """Require a checked foreign once-resuming Compute handler.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked module containing the handler declaration.
+    name : str
+        The required name, including any request ownership identity.
+    result : TypeExpr
+        The exact result type of `Compute[Unit, A]`.
+
+    Returns
+    -------
+    HandlerDef
+        One compatible checked foreign declaration.
+
+    Raises
+    ------
+    ValueError
+        The module has no unique handler with the required name.
+    TypeError
+        The handler does not have the required linear compute contract.
+    """
+    declarations = [handler for handler in module.handlers if handler.name == name]
+    if len(declarations) != 1:
+        raise ValueError(f"unknown fixed relation handler {name!r}")
+    definition = declarations[0]
+    clauses = tuple((clause.operation, clause.grade) for clause in definition.clauses)
+    if (
+        definition.implementation != "foreign"
+        or definition.effect != COMPUTE.with_(arguments=(UNIT, result))
+        or definition.input_type != result
+        or definition.output_type != result
+        or clauses != ((COMPUTE_APPLY, ResumptionGrade.LINEAR),)
+        or definition.parameters
+        or definition.telescope
+        or definition.introduced != EMPTY_ROW
+        or not definition.total
+        or definition.forwards_unknown
+        or definition.return_clause is not None
+        or definition.foreign is not None
+    ):
+        raise TypeError(f"incompatible fixed relation handler {name!r}")
+    return definition
+
+
+class FixedRelationRuntimeProvider:
+    """Bind one declared foreign Compute handler to a sparse request.
+
+    The checked handler must have type `Compute[Unit, A]`, where `A`
+    is the result type of the request, and resume once. Weight
+    identities resolve to the caller's original tensors.
+
+    Parameters
+    ----------
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest or FixedRelationFeatureMomentRequest or FixedCyclicRelationFeatureMomentRequest or FixedComposedArcFeatureMomentRequest or FixedMinimizedRelationRequest or FixedBackoffRelationRequest or FixedRankedOTRelationRequest
+        The checked fixed observation, objective, and resource limits.
+    parameters : RelationWeightBindings
+        The original scalar tensors supplying the request's weight
+        identities. A minimized request snapshots nontrainable values.
+    handler_name : str
+        The name of the foreign handler to bind in the checked module.
+    """
+
+    name = "sparse-relations"
+
+    def __init__(
+        self,
+        request: FixedRelationRequest
+        | FixedRelationCostRequest
+        | FixedRelationArcCountsRequest
+        | FixedComposedRelationRequest
+        | FixedRelationMarginalMapRequest
+        | FixedTransformedRelationRequest
+        | FixedRelationFeatureMomentRequest
+        | FixedCyclicRelationFeatureMomentRequest
+        | FixedComposedArcFeatureMomentRequest
+        | FixedBackoffRelationRequest
+        | FixedRankedOTRelationRequest
+        | FixedMinimizedRelationRequest,
+        parameters: RelationWeightBindings,
+        *,
+        handler_name: str,
+    ) -> None:
+        if not isinstance(handler_name, str) or not handler_name:
+            raise ValueError("a fixed relation provider requires a handler name")
+        if handler_name.startswith(_BACKOFF_HANDLER_PREFIX) and not isinstance(
+            request, FixedBackoffRelationRequest
+        ):
+            raise ValueError("a checked backoff handler requires its backoff request")
+        if handler_name.startswith(_RANKED_OT_HANDLER_PREFIX) and not isinstance(
+            request, FixedRankedOTRelationRequest
+        ):
+            raise ValueError("a checked ranked handler requires its ranked request")
+        self._handler_name = handler_name
+        self._result_type = request.result_type
+        self._result_shape = (
+            (len(request.arc_ids),)
+            if isinstance(request, FixedRelationArcCountsRequest)
+            else ()
+        )
+        self._score: Callable[[], torch.Tensor]
+        self._feature_size: int | None = None
+        self._requires_authored_topology = isinstance(
+            request, FixedMinimizedRelationRequest
+        )
+        if isinstance(request, FixedMinimizedRelationRequest):
+            self._operation = request.observation.operation
+            self._relation_spec = request.observation.relation
+            self._score = request.plan(parameters)[0].weight
+            return
+        if isinstance(
+            request, FixedBackoffRelationRequest | FixedRankedOTRelationRequest
+        ):
+            if handler_name != request.handler_name:
+                raise ValueError(
+                    f"{type(request).__name__} requires its exact observation handler"
+                )
+            self._operation = "pair_weight"
+            self._relation_spec = request.relation
+            self._score = request.plan(parameters).weight
+            return
+        if isinstance(
+            request,
+            FixedRelationFeatureMomentRequest
+            | FixedCyclicRelationFeatureMomentRequest
+            | FixedComposedArcFeatureMomentRequest,
+        ):
+            if handler_name != request.handler_name:
+                raise ValueError(
+                    "fixed feature moments require their exact observation handler"
+                )
+            self._operation = "feature_moments"
+            if isinstance(request, FixedComposedArcFeatureMomentRequest):
+                self._feature_size = request.feature_extent + 1
+                self._relation_spec = request.request.relation
+            else:
+                self._feature_size = request.observation.feature_extent + 1
+                self._relation_spec = request.observation.relation
+            self._score = request.plan(parameters)
+            return
+        self._operation = request.operation
+        self._relation_spec = request.relation
+        if isinstance(
+            request, FixedComposedRelationRequest | FixedTransformedRelationRequest
+        ):
+            self._score = request.plan(parameters).weight
+            return
+        relation = request.relation.bind(parameters)
+        if isinstance(request, FixedRelationMarginalMapRequest):
+            zero = relation._weights().new_full((), -torch.inf)
+
+            def marginal_map_score() -> torch.Tensor:
+                """Read the live score of the current winning output.
+
+                Returns
+                -------
+                torch.Tensor
+                    The selected log pair weight or the LogProb zero.
+                """
+                choice = request._choose(relation)
+                return zero if choice is None else choice.log_pair_weight
+
+            self._score = marginal_map_score
+            return
+        limits = dict(
+            max_states=request.max_states,
+            max_work=request.max_work,
+            max_closure_size=request.max_closure_size,
+        )
+        if isinstance(request, FixedRelationArcCountsRequest):
+            query = relation.query(request.words, **limits)
+            self._score = partial(_selected_arc_counts, query, request.arc_ids)
+        elif isinstance(request, FixedRelationCostRequest):
+            query = relation.query(request.words, **limits)
+            anchor = relation._weights()
+            initial, arcs, final = (
+                None if group is None else anchor.new_tensor(group)
+                for group in (
+                    request.initial_costs,
+                    request.arc_costs,
+                    request.final_costs,
+                )
+            )
+            self._score = partial(_expected_path_cost, query, initial, arcs, final)
+        elif request.operation == "pair_weight":
+            self._score = relation.query(request.words, **limits).weight
+        elif request.operation == "best_path_weight":
+            self._score = relation.query(request.words, **limits).best_path_weight
+        elif request.operation == "path_entropy":
+            query = relation.query(request.words, **limits)
+            self._score = lambda: query.path_statistics().entropy
+        else:
+            split = relation.topology.input_tapes
+            conditional = relation.conditional(
+                request.words[:split],
+                max_states=request.max_states,
+                max_work=request.max_work,
+                max_closure_size=request.max_closure_size,
+            )
+            self._score = lambda: conditional.log_prob(request.words[split:])
+
+    @classmethod
+    def for_score(
+        cls,
+        name: str,
+        request: FixedRelationRequest
+        | FixedRelationCostRequest
+        | FixedRelationArcCountsRequest
+        | FixedComposedRelationRequest
+        | FixedRelationMarginalMapRequest
+        | FixedTransformedRelationRequest
+        | FixedMinimizedRelationRequest,
+        parameters: RelationWeightBindings,
+    ) -> FixedRelationRuntimeProvider:
+        """Bind a fixed request to a source-declared relation score.
+
+        Parameters
+        ----------
+        name
+            The name used in the source declaration.
+        request
+            The serialized and validated fixed relation request.
+        parameters
+            The original scalar parameter objects indexed by identity.
+            A minimized request takes a nontrainable snapshot at binding.
+
+        Returns
+        -------
+        FixedRelationRuntimeProvider
+            A provider for the generated checked handler.
+
+        Raises
+        ------
+        ValueError
+            If the source name is empty or the binding is invalid.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("a source-declared relation score requires a name")
+        return cls(request, parameters, handler_name=_relation_score_handler_name(name))
+
+    def _evaluate(self, argument: object, _context: ClauseContext) -> torch.Tensor:
+        """Evaluate the objective with its live values or static snapshot.
+
+        Parameters
+        ----------
+        argument : object
+            The evaluated unit argument to `Compute`.
+        _context : ClauseContext
+            The clause context supplied by the reference machine.
+
+        Returns
+        -------
+        torch.Tensor
+            The query result in its declared carrier with its gradient path.
+
+        Raises
+        ------
+        TypeError
+            The argument is outside the unit carrier.
+        ValueError
+            The result is outside its declared carrier.
+        """
+        if argument is not None:
+            raise TypeError("a fixed relation request takes a unit argument")
+        score = self._score()
+        if self._feature_size is not None:
+            if (
+                score.shape != (self._feature_size,)
+                or not score.is_floating_point()
+                or not bool(LOG_PROB.contains(score).all())
+            ):
+                raise ValueError(
+                    "fixed relation feature moments are outside their log carrier"
+                )
+            return score
+        if self._result_type == LOG_WEIGHT:
+            result_algebra = LOG_PROB
+        elif self._operation in (
+            "pair_weight",
+            "best_path_weight",
+            "expected_arc_counts",
+        ):
+            result_algebra = MARKOV
+        else:
+            result_algebra = REAL_ALGEBRA
+        if (
+            score.shape != self._result_shape
+            or not score.is_floating_point()
+            or not bool(result_algebra.contains(score).all())
+        ):
+            raise ValueError("fixed relation score is outside its declared carrier")
+        return score
+
+    def attach(self, module: QiecModule, attachments: RuntimeAttachments) -> None:
+        """Attach the provider to its exact checked foreign handler.
+
+        Parameters
+        ----------
+        module : QiecModule
+            The checked module declaring the handler.
+        attachments : RuntimeAttachments
+            The runtime bindings for the invocation.
+
+        Raises
+        ------
+        ValueError
+            The module has no unique handler with the requested name.
+        TypeError
+            The declaration does not have the required linear compute contract.
+        """
+        result = self._result_type
+        definition = _fixed_compute_definition(module, self._handler_name, result)
+        score_name = definition.name.removeprefix(_RELATION_SCORE_HANDLER_PREFIX)
+        if self._requires_authored_topology and score_name == definition.name:
+            raise TypeError("a minimized relation score requires its authored topology")
+        if score_name != definition.name:
+            expected_id = _relation_score_handler_id(
+                module.module, score_name, self._operation
+            )
+            if self._requires_authored_topology or definition.id != expected_id:
+                bound_id = _relation_score_handler_id(
+                    module.module, score_name, self._operation, self._relation_spec
+                )
+                if definition.id != bound_id:
+                    raise TypeError(
+                        f"relation score {score_name!r} has a different declared operation "
+                        f"or authored topology from the supplied {self._operation!r} request"
+                    )
+        validation = self.validator_for(result)
+        assert validation is not None
+        runtime = compute_handler(
+            self._evaluate,
+            effect=definition.effect,
+            result_validator=validation,
+            answer_type=result,
+            key=self._handler_name,
+        )
+        attachments.bind_handler(runtime.with_(definition=definition))
+
+    def validator_for(self, type_: TypeExpr) -> RuntimeValidator | None:
+        """Validate the request's differentiable result.
+
+        Parameters
+        ----------
+        type_ : TypeExpr
+            The requested checked result type.
+
+        Returns
+        -------
+        RuntimeValidator or None
+            The predicate for this request's result type, or `None` for other types.
+        """
+        if type_ != self._result_type:
+            return None
+        core = CoreRuntimeProvider().validator_for(type_)
+        if self._feature_size is not None:
+            assert core is not None
+            return lambda value: (
+                isinstance(value, torch.Tensor)
+                and core(value)
+                and bool(LOG_PROB.contains(value).all())
+            )
+        if self._result_shape:
+            return core
+        algebra = LOG_PROB if type_ == LOG_WEIGHT else None
+
+        def validate(value: object) -> bool:
+            """Check a value against the declared scalar carrier.
+
+            Parameters
+            ----------
+            value : object
+                The runtime value to check.
+
+            Returns
+            -------
+            bool
+                Whether the value inhabits the requested type.
+            """
+            if core is not None and core(value):
+                return True
+            if not (
+                isinstance(value, torch.Tensor)
+                and value.shape == ()
+                and value.is_floating_point()
+            ):
+                return False
+            return bool(
+                torch.isfinite(value) if algebra is None else algebra.contains(value)
+            )
+
+        return validate
+
+
+__all__ = ["FixedRelationRuntimeProvider"]

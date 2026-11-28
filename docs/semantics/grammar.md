@@ -791,3 +791,60 @@ relies on. The handlers of a deduction $D$ are declared this way: `D__search` su
 `D__collect` multiplies the weights of one derivation, and `D__settle` settles an iteration (§5).
 The full grammar,
 worked examples, and limits are in the [QIEC developer note](../developer/qiec.md).
+
+### Authored sparse relations
+
+A `relation` introduces a finite control graph over ordered string
+tapes, each typed by a nominal finite alphabet. The input tapes
+come first. An arc carries one symbol or `eps` on each tape. The
+initial and final tables assign a weight to each marked state.
+The relation sums the weights of all accepting paths realizing a
+word tuple. Multiple identically labeled arcs contribute as separate
+occurrences even when their weight names resolve to one parameter.
+
+A declaration of the form `relation target = compose(left, right)`
+names a binary composition of two authored relations. The
+operand order specifies the tape to synchronize. The two shared tape
+types and the scalar algebras must agree. The composed relation
+exposes a `pair_weight` score.
+
+The right-hand side of an authored relation can also name a sparse
+transformation. Inversion, trimming, and closure take one
+operand. Projection takes its increasing tuple of retained tape
+positions and conditioning takes one tape position and a fixed word.
+Union, concatenation, and weighted intersection take two operands.
+A join also specifies the two shared tape positions and can retain
+the shared tape with `keep_shared=true`. Operands may refer to
+other relation declarations. Forward references are allowed when
+their dependency graph is acyclic.
+
+A `string_graph` declares nominal variables and ordered occurrences
+of sparse factors. A variable can supply a fixed word, including the
+empty word. Each factor names a primitive or derived relation and lists
+one distinct variable per tape. A `string_graph_score` can bind the
+resulting graph identity.
+
+A closed `relation_score` may specify the authored relation it uses.
+Its identity then binds the ordered topology, scalar algebra, and
+weight identities. The host supplies the observation and a checked
+binding of those parameters. Path entropy and additive expected loss
+are taken under the normalized distribution over accepting paths
+when that distribution has positive finite mass.
+
+### String graph scores
+
+A `string_graph_score` declares a closed scalar computation. Its attached
+graph has a weight $F_f(\mathbf{w}_f)$ for each factor $f$ and a partial
+assignment $e$ of observed words. The exact tree request computes
+
+$$
+Z(e) = \sum_{\mathbf{w}\supseteq e}\prod_f F_f(\mathbf{w}_f).
+$$
+
+The operation `tree_partition` returns this sum in the graph's algebra.
+The operation `tree_log_prob` at variable $v$ and word $w$ returns
+$\log Z(e, v=w) - \log Z(e)$ when the normalizer is positive and finite.
+Sparse evaluation admits a forest when each local operation and any
+productive closure meet the request's limits. The generated foreign
+handler carries the objective in its identity, and the provider
+checks that identity alongside the declared scalar type. [String graph requests](../api/qiec/serialization.md#string-factor-graphs)

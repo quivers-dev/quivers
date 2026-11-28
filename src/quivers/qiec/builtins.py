@@ -902,6 +902,12 @@ def _support(sampleable: object) -> tuple[object, ...]:
         If the value is no runtime distribution or its family has no
         finite support.
     """
+    from quivers.qiec.relation_path_law import RelationPathLaw
+
+    if isinstance(sampleable, RelationPathLaw) and sampleable.has_productive_cycle:
+        raise InvalidHandlerError(
+            "a cyclic path law has no finite support to enumerate"
+        )
     if not isinstance(sampleable, RuntimeDistribution):
         raise InvalidHandlerError("enumeration needs a runtime distribution")
     record = family(sampleable.family)
@@ -1384,11 +1390,12 @@ def _site_and_sampleable(
         if the site is not hashable and so cannot key an observation
         or replay table.
     """
+    from quivers.qiec.relation_path_law import RelationPathLaw
     from quivers.qiec.structured_sampleables import FiniteSampleable
 
     site, sampleable = _expect_arguments(request, 2, handler)
     if (
-        isinstance(sampleable, FiniteSampleable)
+        isinstance(sampleable, FiniteSampleable | RelationPathLaw)
         and sampleable.element != request.core.result_type
     ):
         raise RuntimeTypeMismatch(

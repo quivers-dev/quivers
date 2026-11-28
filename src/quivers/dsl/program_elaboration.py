@@ -31,8 +31,13 @@ from typing import TYPE_CHECKING, Literal, cast
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.dsl._deduction_outcomes import (
+    LINEAR_CODE,
+    LINEAR_PARSE,
+    NATIVE_DEDUCTION_CALLS,
+    NORMALIZED_BOOLEAN_PARSE,
     OUTCOME_CALLS,
     OUTCOME_CODE,
+    PACKED_BOOLEAN_CALLS,
     PROOF_CALLS,
     PROOF_KEY_CALLS,
     elaborate_outcome_law,
@@ -4379,10 +4384,47 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             optional plate is not a pair of a string label and a value.
         """
         if not isinstance(expr, LetExprCall) or (
-            expr.func != "parse" and expr.func not in OUTCOME_CALLS
+            expr.func != "parse" and expr.func not in NATIVE_DEDUCTION_CALLS
         ):
             return None
-        outcomes = expr.func in OUTCOME_CALLS
+        packed_boolean = expr.func in PACKED_BOOLEAN_CALLS
+        if packed_boolean and (
+            len(expr.args) < 3
+            or not all(isinstance(argument, LetExprVar) for argument in expr.args[:3])
+        ):
+            self._fail(
+                node,
+                f"{expr.func} requires a deduction, a token tensor binding, "
+                "and a named closed Boolean proof interpretation",
+                code=OUTCOME_CODE,
+            )
+        if expr.func == LINEAR_PARSE:
+            if len(expr.args) != 3 or not all(
+                isinstance(argument, LetExprVar) for argument in expr.args[:2]
+            ):
+                self._fail(
+                    node,
+                    "parse_linear requires a deduction name, a token tensor binding, "
+                    "and a maximum closure size of type Int",
+                    code=LINEAR_CODE,
+                )
+            target, source, closure_limit = expr.args
+            assert isinstance(target, LetExprVar) and isinstance(source, LetExprVar)
+            if target.name not in self._linear_goal_queries:
+                self._fail(
+                    node,
+                    f"parse_linear requires a declared lexical deduction in a direct "
+                    f"program let binding (found {target.name!r})",
+                    code=LINEAR_CODE,
+                )
+            return _ParseCall(
+                deduction=target.name,
+                source=source.name,
+                plate=None,
+                bindings=(),
+                linear_goal=closure_limit,
+            )
+        outcomes = expr.func in OUTCOME_CALLS or packed_boolean
         proofs = expr.func in PROOF_CALLS
         proof_key = expr.func in PROOF_KEY_CALLS
         if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
@@ -4422,6 +4464,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         key: str | None = None
         typed_key = False
         proof_budget = None
+        packed_interpretation: str | None = None
+        if packed_boolean:
+            interpretation = rest.pop(0)
+            assert isinstance(interpretation, LetExprVar)
+            packed_interpretation = interpretation.name
         if proofs:
             if target.name not in self._proof_queries:
                 self._fail(
@@ -4436,7 +4483,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     code=OUTCOME_CODE,
                 )
             proof_budget = rest.pop(0)
-        if outcomes and (not proofs or proof_key):
+        if outcomes and not packed_boolean and (not proofs or proof_key):
             if not proofs and target.name not in self._outcome_queries:
                 self._fail(
                     node,
@@ -4508,11 +4555,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             outcome_key=key,
             typed_outcome_key=typed_key,
             proof_budget=proof_budget,
+            packed_boolean=packed_interpretation,
             normalize_outcomes=expr.func
             in (
                 "parse_normalized_outcomes",
                 "parse_normalized_proofs",
                 "parse_normalized_proof_outcomes",
+                NORMALIZED_BOOLEAN_PARSE,
             ),
         )
 
@@ -4563,6 +4612,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             deduction (see `_production_table`).
         """
         name, source = parse.deduction, parse.source
+        if (
+            parse.packed_boolean is not None
+            and name not in self._boolean_outcome_queries
+        ):
+            self._fail(
+                node,
+                f"packed Boolean proof outcomes require a lexical deduction in a "
+                f"direct program let binding (found {name!r})",
+                code=OUTCOME_CODE,
+            )
         signature = self.computation_signatures[f"{name}__run"]
         if len(signature.parameters) != 1:
             self._fail(
@@ -4572,7 +4631,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         tokens = scope.lookup(source)
-        if tokens is not None and not parse.observes_rows:
+        if tokens is not None and not (
+            parse.observes_rows or parse.linear_goal is not None
+        ):
             self._fail(
                 node,
                 f"parse reads {source!r}, which a step binds; the sentence a "
@@ -4581,7 +4642,21 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         suffix = "run"
         extra: tuple[Value, ...] = ()
-        if parse.proof_budget is not None:
+        if parse.linear_goal is not None:
+            suffix = "linear_goal"
+            authored = parse.linear_goal
+            limit = self._let_value(authored, scope, state, node)
+            if self._value_type(limit, scope.context(), authored) != INT:
+                self._fail(
+                    authored,
+                    "linear deduction maximum closure size must have type Int",
+                    code=LINEAR_CODE,
+                )
+            extra = (limit,)
+        elif parse.packed_boolean is not None:
+            suffix = f"{parse.packed_boolean}__packed_boolean_outcomes"
+            extra = (LiteralValue(value=parse.normalize_outcomes, type=BOOL),)
+        elif parse.proof_budget is not None:
             suffix = "proofs"
             authored = parse.proof_budget
             budget = self._let_value(authored, scope, state, node)
@@ -4651,10 +4726,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if layout is None or layout[0] != STRING or len(layout[1]) != 1:
                 self._fail(
                     node,
-                    f"deduction outcome input {source!r} must be a rank-one "
+                    f"deduction {'linear goal' if parse.linear_goal is not None else 'outcome'} "
+                    f"input {source!r} must be a rank-one "
                     "Tensor[String] with a checked extent "
                     f"(found {render_static(tokens.type)})",
-                    code=OUTCOME_CODE,
+                    code=LINEAR_CODE if parse.linear_goal is not None else OUTCOME_CODE,
                 )
             (extent,) = layout[1]
         return Call(
@@ -11216,6 +11292,10 @@ class _ParseCall(dx.Model):
         The checked integer budget of a proof query.
     normalize_outcomes : bool
         Whether to normalize the outcome weights by the total goal mass.
+    linear_goal : LetExprNode or None
+        The checked closure size cap for a certified linear query.
+    packed_boolean : str or None
+        The closed Boolean interpretation of a packed query.
     """
 
     deduction: str
@@ -11226,11 +11306,17 @@ class _ParseCall(dx.Model):
     typed_outcome_key: bool = False
     proof_budget: LetExprNode | None = None
     normalize_outcomes: bool = False
+    linear_goal: LetExprNode | None = None
+    packed_boolean: str | None = None
 
     @property
     def observes_rows(self) -> bool:
         """Whether the query observes weighted keys or explicit proofs."""
-        return self.outcome_key is not None or self.proof_budget is not None
+        return (
+            self.outcome_key is not None
+            or self.proof_budget is not None
+            or self.packed_boolean is not None
+        )
 
 
 def _sampled_support(

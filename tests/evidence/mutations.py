@@ -490,9 +490,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=f"{ALGEBRAS}:LogProbAlgebra.star_with_work",
         rewrites=(
             Rewrite(
-                old="return -torch.log(-torch.expm1(loop))",
+                old="return -torch.log(denominator)",
                 new="return torch.logsumexp("
-                "loop * torch.arange(64, dtype=loop.dtype), 0)",
+                "torch.cat((loop.new_zeros(1), "
+                "loop * torch.arange(1, 64, dtype=loop.dtype, device=loop.device))), 0)",
             ),
         ),
         rejected_by=(

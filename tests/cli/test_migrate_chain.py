@@ -90,6 +90,57 @@ def test_authored_interpretation_keywords_are_contextual_for_old_source() -> Non
     assert compose_migration("v0.64.2", "HEAD")(source) == source
 
 
+def test_relation_score_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object relation_score : FinSet 2\n"
+        b"object operation : FinSet 2\n"
+        b"object pair_weight : FinSet 2\n"
+        b"object conditional_log_prob : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
+def test_authored_transform_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object invert, trim, closure, project, condition : FinSet 2\n"
+        b"object union, concatenate, intersect, join, keep_shared : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
+def test_authored_graph_keywords_are_contextual_for_old_source() -> None:
+    source = b"object string_graph, variable, observed, graph : FinSet 2\n"
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
+def test_string_graph_score_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object string_graph_score : FinSet 2\n"
+        b"object tree_partition : FinSet 2\n"
+        b"object tree_log_prob : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
+def test_authored_relation_compose_remains_an_old_identifier() -> None:
+    source = b"object compose, relation : FinSet 2\n"
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
+def test_authored_relation_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object relation, algebra, states, input, output : FinSet 2\n"
+        b"object initial, final, arc, labels, weight, eps : FinSet 2\n"
+        b"object markov, logprob, path_entropy, expected_path_cost : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
+def test_scoped_interpretation_options_remain_old_identifiers() -> None:
+    source = b"object structure, cartesian : FinSet 2\n"
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_zero_hop_rejects_missing_recovery_vertices() -> None:
     with pytest.raises(MigrationError, match="missing .* token"):
         compose_migration("HEAD", "HEAD")(b"object A :\n")

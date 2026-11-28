@@ -13,7 +13,7 @@ from typing import cast
 import torch
 from torch import nn
 
-from quivers.core.algebras import REAL, Semiring
+from quivers.core.algebras import LOG_PROB, MARKOV, REAL, Semiring
 from quivers.core.morphisms import FiniteMorphism, Morphism
 from quivers.core.objects import FreeMonoid, ProductSet, SetObject, Unit
 from quivers.core.relations.paths import (
@@ -21,6 +21,9 @@ from quivers.core.relations.paths import (
     PathStatistics,
     RelationPath,
     _PathWalks,
+    _markov_log_weights,
+    _probability_algebra,
+    _require_normalizer,
 )
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
@@ -62,6 +65,7 @@ __all__ = [
     "NgramProjection",
     "PenalizedNgramProjection",
     "PathStatistics",
+    "PairedAlignmentMapResult",
     "ProductiveEpsilonCycleError",
     "QueryWork",
     "RationalRelation",
@@ -73,16 +77,21 @@ __all__ = [
     "RelationLimitError",
     "RelationPath",
     "RelationTopology",
+    "StaticMinimizationWork",
     "StringAlignment",
     "StringAlignmentCertificate",
     "StringAlignmentMapResult",
+    "StringAlignmentTrace",
     "StringBeliefResult",
+    "PrunedStringBeliefResult",
     "StringEPResult",
     "StringSiteProjection",
     "StringFactor",
     "StringFactorGraph",
     "StringMapCertificate",
     "StringMapResult",
+    "StringCandidateMessage",
+    "StringCandidatePlan",
     "StringVariable",
     "TreeStringMarginal",
     "Words",
@@ -95,12 +104,14 @@ __all__ = [
     "concatenate",
     "condition",
     "dual_alignment_map",
+    "paired_dual_alignment_map",
     "dual_string_map",
     "intersect",
     "invert",
     "join",
     "penalized_regular_ngram_projection",
     "minimize_static_acceptor",
+    "minimize_static_acceptor_with_work",
     "project",
     "regular_string_ep",
     "ranked_output_candidates",
@@ -472,6 +483,20 @@ class FixedStringQuery:
         paths = self.k_best_paths(1)
         return paths[0] if paths else None
 
+    def best_path_weight(self) -> torch.Tensor:
+        """Return the best positive path weight, or the semiring zero.
+
+        The same exact ranking and deterministic tie order as
+        `best_path` select the path. The result differentiates its
+        original occurrences with the selected path held fixed. At a
+        tie the derivative is that of the selected path. If no positive
+        path exists, the result is a constant semiring zero.
+        """
+        weights = self._relation._weights()
+        algebra = self._relation.algebra
+        paths = self._walks.k_best(1, weights, algebra)
+        return paths[0].weight if paths else algebra.zero_like((), weights)
+
     def k_best_paths(self, k: int) -> tuple[RelationPath, ...]:
         """Return up to `k` positive paths in decreasing weight order.
 
@@ -484,6 +509,44 @@ class FixedStringQuery:
         if type(k) is not int or k < 0:
             raise ValueError("k must be a nonnegative integer")
         return self._walks.k_best(k, self._relation._weights(), self._relation.algebra)
+
+    @property
+    def max_path_length(self) -> int | None:
+        """Return the maximum arc count over structurally accepting paths.
+
+        The productive graph must be acyclic. A graph without accepting
+        paths has no maximum. The bound includes paths whose current
+        weights are zero, since subsequent weight changes may enable them.
+        """
+        return self._walks.max_path_length
+
+    def path_log_prob(
+        self, initial_state: int, arc_ids: tuple[int, ...], final_state: int
+    ) -> torch.Tensor:
+        """Score an original trace under the fixed-word path posterior.
+
+        The trace supplies its original initial state, ordered arc
+        occurrence IDs, and original final state. Invalid or zero-weight
+        traces have log probability negative infinity. The observed path
+        mass must be positive and finite. The positive trace score and
+        the normalizer use the same current weight source.
+        """
+        log_weights = self._log_path_weights()
+        total = self._path_log_normalizer(log_weights)
+        return self._walks.path_log_prob(
+            self._words, initial_state, arc_ids, final_state, log_weights, total
+        )
+
+    def _path_log_normalizer(self, log_weights: torch.Tensor) -> torch.Tensor:
+        total = self._plan.evaluate(log_weights, LOG_PROB)
+        _require_normalizer(total, LOG_PROB)
+        return total
+
+    def _log_path_weights(self, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+        weights = self._relation._weights()
+        algebra = _probability_algebra(weights, self._relation.algebra)
+        weights = weights if dtype is None else weights.to(dtype=dtype)
+        return _markov_log_weights(weights) if algebra is MARKOV else weights
 
     def sample_path(
         self, *, generator: torch.Generator | None = None, max_steps: int | None = None
@@ -535,6 +598,63 @@ class FixedStringQuery:
             initial_costs,
             arc_costs,
             final_costs,
+        )
+
+    def log_feature_moments(
+        self,
+        arc_logs: torch.Tensor,
+        *,
+        initial_logs: torch.Tensor | None = None,
+        final_logs: torch.Tensor | None = None,
+        allow_cyclic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the log total mass and unnormalized log feature moments.
+
+        For each feature, the moment sums the path weight times the sum
+        of its nonnegative feature increments. Observations use Markov or
+        LogProb probability weights. Acyclic observations use the packed
+        expectation carrier. The cyclic form uses the certified scalar
+        component closures on both sides of each marked occurrence.
+
+        Parameters
+        ----------
+        arc_logs, initial_logs, final_logs : torch.Tensor or None
+            Log increments with one row per original occurrence and the
+            same nonempty feature axis, dtype, and device. A value of
+            minus infinity contributes zero. Omitted boundary tables
+            contribute zero increments.
+        allow_cyclic : bool
+            Use the marked-occurrence evaluator for a productive cycle.
+            The query must also have an explicit closure size limit.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The scalar log path mass and the vector of log weighted sums.
+            Zero mass or feature sums return minus infinity. With positive
+            mass, subtract its log from the vector to normalize the sums.
+            Derivatives flow on the current positive support.
+
+        Raises
+        ------
+        ProductiveEpsilonCycleError
+            The productive observation needs explicit cyclic moments.
+        DivergentClosureError, UndecidedClosureError
+            A required scalar closure diverges or cannot be certified.
+        TypeError
+            The relation does not have floating-point probability weights.
+        ValueError
+            A log feature table has the wrong shape or carrier.
+        OverflowError
+            A reduction produces NaN or positive infinity.
+        """
+        return self._walks.log_feature_moments(
+            self._relation._weights(),
+            self._relation.algebra,
+            arc_logs,
+            initial_logs,
+            final_logs,
+            allow_cyclic=allow_cyclic,
         )
 
 
@@ -663,6 +783,7 @@ from quivers.core.relations.projection import (  # noqa: E402
 )
 from quivers.core.relations.beliefs import (  # noqa: E402
     FiniteStringBeliefPlan,
+    PrunedStringBeliefResult,
     StringBeliefResult,
     StringEPResult,
     StringSiteProjection,
@@ -677,6 +798,11 @@ from quivers.core.relations.alignment_dual import (  # noqa: E402
     StringAlignmentCertificate,
     StringAlignmentMapResult,
     dual_alignment_map,
+)
+from quivers.core.relations.alignment_groups import (  # noqa: E402
+    PairedAlignmentMapResult,
+    StringAlignmentTrace,
+    paired_dual_alignment_map,
 )
 
 from quivers.core.relations.marginal_map import (  # noqa: E402
@@ -703,8 +829,16 @@ from quivers.core.relations.backoff import (  # noqa: E402
     backoff_query,
     backoff_total_weight,
 )
-from quivers.core.relations.minimization import minimize_static_acceptor  # noqa: E402
+from quivers.core.relations.minimization import (  # noqa: E402
+    StaticMinimizationWork,
+    minimize_static_acceptor,
+    minimize_static_acceptor_with_work,
+)
 from quivers.core.relations.ranked import (  # noqa: E402
     compile_ranked_ot,
     ranked_output_candidates,
+)
+from quivers.core.relations.messages import (  # noqa: E402
+    StringCandidateMessage,
+    StringCandidatePlan,
 )

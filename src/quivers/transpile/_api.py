@@ -127,6 +127,7 @@ QIEC_SURFACE: frozenset[str] = frozenset(
         "effect_instance_decl",
         "handler_decl",
         "computation_decl",
+        "interpretation_decl",
     }
 )
 """QIEC declaration kinds admitted once the shared boundary has checked the module.

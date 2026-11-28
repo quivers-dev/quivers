@@ -136,16 +136,7 @@ class RelationTopology:
         )
 
     def _validate_words(self, words: Words) -> None:
-        if len(words) != len(self.tapes):
-            raise ValueError("a query must supply exactly one word per tape")
-        for index, (word, tape) in enumerate(zip(words, self.tapes)):
-            size = tape.alphabet.cardinality
-            if any(
-                type(symbol) is not int or not 0 <= symbol < size for symbol in word
-            ):
-                raise ValueError(
-                    f"query word contains an invalid symbol on tape {index}"
-                )
+        _validate_tape_words(self.tapes, words)
 
     def _candidate_arcs(
         self, state: int, words: Words, offsets: tuple[int, ...]
@@ -156,6 +147,15 @@ class RelationTopology:
         for tape, (word, offset) in enumerate(zip(words, offsets)):
             if offset < len(word):
                 yield from self._by_label.get((state, tape, word[offset]), ())
+
+
+def _validate_tape_words(tapes: tuple[StringSet, ...], words: Words) -> None:
+    if len(words) != len(tapes):
+        raise ValueError("a query must supply exactly one word per tape")
+    for index, (word, tape) in enumerate(zip(words, tapes)):
+        size = tape.alphabet.cardinality
+        if any(type(symbol) is not int or not 0 <= symbol < size for symbol in word):
+            raise ValueError(f"query word contains an invalid symbol on tape {index}")
 
 
 __all__ = [

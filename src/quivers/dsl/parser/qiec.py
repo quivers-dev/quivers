@@ -15,6 +15,17 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecInterpretationClause,
     QiecInterpretationDecl,
+    QiecRelationArc,
+    QiecRelationComposeDecl,
+    QiecRelationDecl,
+    QiecRelationMark,
+    QiecRelationTape,
+    QiecRelationTransformDecl,
+    QiecRelationScoreDecl,
+    QiecStringGraphDecl,
+    QiecStringGraphFactor,
+    QiecStringGraphVariable,
+    QiecStringGraphScoreDecl,
     QiecConstructorValue,
     QiecContextSort,
     QiecEffectBinder,
@@ -67,6 +78,7 @@ from quivers.dsl.ast_nodes.qiec import (
 )
 from quivers.dsl.parser._helpers import _field_text, _required_field
 from quivers.dsl.parser.expressions import _walk_let_arith
+from quivers.dsl.parser.options import _walk_option_block
 from quivers.dsl.parser._registry import ParseError, _Tree
 
 
@@ -79,6 +91,12 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "handler_decl",
         "computation_decl",
         "interpretation_decl",
+        "relation_decl",
+        "relation_compose_decl",
+        "relation_transform_decl",
+        "relation_score_decl",
+        "string_graph_decl",
+        "string_graph_score_decl",
     }
 )
 
@@ -179,11 +197,126 @@ def _walk_qiec_statement(t: _Tree, vid: str):
                     col=clause_col,
                 )
             )
+        options = t.field(vid, "options")
         return QiecInterpretationDecl(
             name=_field_text(t, vid, "name"),
             deduction=_field_text(t, vid, "deduction"),
             carrier=_walk_type(t, _required_field(t, vid, "carrier")),
             clauses=tuple(clauses),
+            options=_walk_option_block(t, options) if options else (),
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "relation_decl":
+        return _walk_relation_decl(t, vid, docs, line, col)
+    if kind == "relation_compose_decl":
+        return QiecRelationComposeDecl(
+            name=_field_text(t, vid, "name"),
+            left=_field_text(t, vid, "left"),
+            right=_field_text(t, vid, "right"),
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "relation_transform_decl":
+        recipe = _required_field(t, vid, "recipe")
+        name = {
+            "relation_projection_recipe": "project",
+            "relation_conditioning_recipe": "condition",
+            "relation_join_recipe": "join",
+        }.get(t.kind(recipe))
+        operation = _field_text(t, recipe, "operation") if name is None else name
+        word = t.field(recipe, "word")
+        other = t.field(recipe, "other")
+        keep = t.field(recipe, "keep_shared")
+        return QiecRelationTransformDecl(
+            name=_field_text(t, vid, "name"),
+            operation=cast(
+                Literal[
+                    "invert",
+                    "trim",
+                    "closure",
+                    "project",
+                    "condition",
+                    "union",
+                    "concatenate",
+                    "intersect",
+                    "join",
+                ],
+                operation,
+            ),
+            source=_field_text(t, recipe, "source"),
+            other=None if other is None else t.text(other),
+            positions=tuple(
+                int(t.text(item)) for item in t.fields(recipe, "positions")
+            ),
+            word=None
+            if word is None
+            else tuple(int(t.text(item)) for item in t.fields(word, "symbols")),
+            keep_shared=keep is not None and t.text(keep) == "true",
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "relation_score_decl":
+        relation = t.field(vid, "relation")
+        return QiecRelationScoreDecl(
+            name=_field_text(t, vid, "name"),
+            result_type=_walk_type(t, _required_field(t, vid, "result")),
+            operation=cast(
+                Literal[
+                    "pair_weight",
+                    "conditional_log_prob",
+                    "path_entropy",
+                    "expected_path_cost",
+                ],
+                _field_text(t, vid, "operation"),
+            ),
+            relation=None if relation is None else t.text(relation),
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "string_graph_decl":
+        variables = []
+        for child in t.fields(vid, "variables"):
+            observed = t.field(child, "observed")
+            variables.append(
+                QiecStringGraphVariable(
+                    name=_field_text(t, child, "name"),
+                    alphabet=_field_text(t, child, "alphabet"),
+                    observed=None
+                    if observed is None
+                    else tuple(
+                        int(t.text(word)) for word in t.fields(observed, "symbols")
+                    ),
+                )
+            )
+        return QiecStringGraphDecl(
+            name=_field_text(t, vid, "name"),
+            variables=tuple(variables),
+            factors=tuple(
+                QiecStringGraphFactor(
+                    relation=_field_text(t, child, "relation"),
+                    scope=tuple(t.text(name) for name in t.fields(child, "scope")),
+                )
+                for child in t.fields(vid, "factors")
+            ),
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "string_graph_score_decl":
+        graph = t.field(vid, "graph")
+        return QiecStringGraphScoreDecl(
+            name=_field_text(t, vid, "name"),
+            result_type=_walk_type(t, _required_field(t, vid, "result")),
+            operation=cast(
+                Literal["tree_partition", "tree_log_prob"],
+                _field_text(t, vid, "operation"),
+            ),
+            graph=None if graph is None else t.text(graph),
             docs=docs,
             line=line,
             col=col,
@@ -203,6 +336,62 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             col=col,
         )
     raise ParseError(f"unexpected QIEC statement kind {kind!r} at {vid}")
+
+
+def _walk_relation_decl(
+    t: _Tree, vid: str, docs: tuple[str, ...], line: int, col: int
+) -> QiecRelationDecl:
+    tapes: list[QiecRelationTape] = []
+    initial: list[QiecRelationMark] = []
+    final: list[QiecRelationMark] = []
+    arcs: list[QiecRelationArc] = []
+    for child in t.fields(vid, "entries"):
+        kind = t.kind(child)
+        if kind == "relation_tape_decl":
+            direction = cast(
+                Literal["input", "output"], _field_text(t, child, "direction")
+            )
+            tapes.append(
+                QiecRelationTape(
+                    direction=direction, alphabet=_field_text(t, child, "alphabet")
+                )
+            )
+        elif kind == "relation_boundary_decl":
+            boundary = _field_text(t, child, "boundary")
+            marks = initial if boundary == "initial" else final
+            marks.append(
+                QiecRelationMark(
+                    state=int(_field_text(t, child, "state")),
+                    weight=_field_text(t, child, "weight"),
+                )
+            )
+        elif kind == "relation_arc_decl":
+            labels = tuple(
+                None if t.text(label) == "eps" else int(t.text(label))
+                for label in t.fields(child, "labels")
+            )
+            arcs.append(
+                QiecRelationArc(
+                    source=int(_field_text(t, child, "source")),
+                    target=int(_field_text(t, child, "target")),
+                    labels=labels,
+                    weight=_field_text(t, child, "weight"),
+                )
+            )
+        else:
+            raise AssertionError(f"unexpected relation record {kind!r}")
+    return QiecRelationDecl(
+        name=_field_text(t, vid, "name"),
+        algebra=cast(Literal["markov", "logprob"], _field_text(t, vid, "algebra")),
+        n_states=int(_field_text(t, vid, "states")),
+        tapes=tuple(tapes),
+        arcs=tuple(arcs),
+        initial=tuple(initial),
+        final=tuple(final),
+        docs=docs,
+        line=line,
+        col=col,
+    )
 
 
 def _docs(t: _Tree, vid: str) -> tuple[str, ...]:

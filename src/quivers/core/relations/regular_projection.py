@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
+from math import nextafter
 from typing import Literal
 
 import torch
@@ -23,6 +24,27 @@ from quivers.core.relations.queries import _validate_limits
 from quivers.core.relations.transforms import intersect, trim
 
 type _Feature = tuple[int, ...]
+type _ProjectionOptimizer = Literal["backtracking", "fixed_lipschitz"]
+
+
+def _validate_regular_optimizer(optimizer: _ProjectionOptimizer) -> None:
+    if optimizer not in ("backtracking", "fixed_lipschitz"):
+        raise ValueError("unknown regular n-gram projection optimizer")
+
+
+class _RegularZeroMassError(ValueError):
+    """An evaluated regular distribution has a log-zero normalizer."""
+
+
+def _require_regular_normalizer(total: torch.Tensor, distribution: str) -> None:
+    try:
+        _require_normalizer(total, LOG_PROB)
+    except ValueError:
+        if total.isneginf().item():
+            raise _RegularZeroMassError(
+                f"the {distribution} has log-zero evaluated mass"
+            ) from None
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +56,8 @@ class RegularNgramProjection:
     unnormalized mass exp(log_normalizer). Its density relative to the
     original base is the exponential of the fitted feature score.
     The objective change is relative to the unpenalized base at zero.
+    Moment evaluations count both initial distributions and every trial
+    fitted distribution, including rejected backtracking trials.
     """
 
     status: Literal["converged", "limit", "stalled"]
@@ -51,6 +75,8 @@ class RegularNgramProjection:
     message: RationalRelation
     full_candidate_states: int
     retained_states: int
+    optimizer: _ProjectionOptimizer = "backtracking"
+    moment_evaluations: int = 0
 
     @property
     def log_site_scale(self) -> torch.Tensor:
@@ -66,7 +92,10 @@ class _MomentPlan:
         max_states: int,
         max_work: int,
         max_closure_size: int | None,
+        *,
+        distribution: str,
     ) -> None:
+        self._distribution = distribution
         self._probe = nn.Parameter(anchor.new_zeros(len(plan.features)))
         self._query = plan.bind(self._probe)._total_query(
             max_states, max_work, max_closure_size
@@ -77,7 +106,7 @@ class _MomentPlan:
             self._probe.copy_(coefficients)
         with torch.enable_grad(), _weight_snapshot():
             normalizer = self._query.weight()
-            _require_normalizer(normalizer, LOG_PROB)
+            _require_regular_normalizer(normalizer, self._distribution)
             if len(self._probe) and normalizer.requires_grad:
                 (moment,) = torch.autograd.grad(
                     normalizer, self._probe, allow_unused=True
@@ -133,6 +162,7 @@ def penalized_regular_ngram_projection(
     max_states: int,
     max_work: int,
     max_closure_size: int | None = None,
+    optimizer: _ProjectionOptimizer = "backtracking",
 ) -> RegularNgramProjection:
     """Fit an active n-gram family to a regular tilted distribution.
 
@@ -164,6 +194,9 @@ def penalized_regular_ngram_projection(
     max_closure_size : int or None
         Explicit component limit if the tilted likelihood has
         productive epsilon cycles.
+    optimizer : {"backtracking", "fixed_lipschitz"}
+        Convex proximal gradient with adaptive majorization tests or
+        with the global feature-covariance step bound.
 
     Returns
     -------
@@ -187,6 +220,7 @@ def penalized_regular_ngram_projection(
         )
     _validate_limits(max_states, max_work, max_closure_size)
     _validate_projection_settings(tolerance, max_iterations, 0)
+    _validate_regular_optimizer(optimizer)
     if not 0 <= penalty < float("inf"):
         raise ValueError("n-gram projection penalty must be nonnegative and finite")
     length = _maximum_length(base)
@@ -212,19 +246,31 @@ def penalized_regular_ngram_projection(
     tilt_plan = NgramMessagePlan(
         tilted, features, max_states=max_states, max_work=max_work
     )
-    evaluate_base = _MomentPlan(base_plan, anchor, max_states, max_work, None)
+    evaluate_base = _MomentPlan(
+        base_plan, anchor, max_states, max_work, None, distribution="regular reference"
+    )
     evaluate_tilt = _MomentPlan(
-        tilt_plan, anchor, max_states, max_work, max_closure_size
+        tilt_plan,
+        anchor,
+        max_states,
+        max_work,
+        max_closure_size,
+        distribution="tilted distribution",
     )
     coefficients = anchor.new_zeros(len(features))
     tilt_mass, target = evaluate_tilt(coefficients)
     base_mass, fitted = evaluate_base(coefficients)
+    moment_evaluations = 2
     normalizer = base_mass
     # The variance of each count is at most one quarter of its
     # squared range. Their sum bounds the covariance operator norm.
     range_squares = sum(max(0, length - len(gram) + 1) ** 2 for gram in features)
-    guaranteed_step = 4 / max(4, range_squares)
-    step = 1.0
+    denominator = max(4, range_squares)
+    guaranteed_step = 4 / denominator
+    numerator, divisor = guaranteed_step.as_integer_ratio()
+    if numerator * denominator > 4 * divisor:
+        guaranteed_step = nextafter(guaranteed_step, 0.0)
+    step = 1.0 if optimizer == "backtracking" else guaranteed_step
     roundoff = 8 * torch.finfo(anchor.dtype).eps
     if guaranteed_step == 0 or (penalty and guaranteed_step * penalty == 0):
         raise OverflowError(
@@ -258,31 +304,33 @@ def penalized_regular_ngram_projection(
                 break
 
             proposed_normalizer, proposed_moments = evaluate_base(candidate)
-            linear = fitted @ displacement
-            quadratic = displacement.square().sum() / (2 * step)
-            gain = proposed_normalizer - normalizer
-            slack = (
-                roundoff
-                * torch.stack(
-                    (
-                        normalizer.abs(),
-                        proposed_normalizer.abs(),
-                        linear.abs(),
-                        quadratic,
-                    )
-                ).max()
-            )
-            upper = linear + quadratic + slack
-            if step == guaranteed_step or (
-                torch.isfinite(gain) & torch.isfinite(upper) & (gain <= upper)
-            ):
-                accepted = candidate, proposed_normalizer, proposed_moments
-                break
-            step = max(guaranteed_step, step / 2)
+            moment_evaluations += 1
+            if step != guaranteed_step:
+                linear = fitted @ displacement
+                quadratic = displacement.square().sum() / (2 * step)
+                gain = proposed_normalizer - normalizer
+                slack = (
+                    roundoff
+                    * torch.stack(
+                        (
+                            normalizer.abs(),
+                            proposed_normalizer.abs(),
+                            linear.abs(),
+                            quadratic,
+                        )
+                    ).max()
+                )
+                upper = linear + quadratic + slack
+                if not (torch.isfinite(gain) & torch.isfinite(upper) & (gain <= upper)):
+                    step = max(guaranteed_step, step / 2)
+                    continue
+            accepted = candidate, proposed_normalizer, proposed_moments
+            break
         if accepted is None:
             break
         coefficients, normalizer, fitted = accepted
-        step = min(1.0, 2 * step)
+        if optimizer == "backtracking":
+            step = min(1.0, 2 * step)
 
     norms = sum(
         (
@@ -314,6 +362,8 @@ def penalized_regular_ngram_projection(
         message,
         base_plan.n_states,
         compact.n_states,
+        optimizer,
+        moment_evaluations,
     )
 
 

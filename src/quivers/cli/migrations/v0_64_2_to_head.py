@@ -19,7 +19,11 @@ after a handler's answer type or after ``resume(...)``, nor parentheses after th
 handler a ``handle`` installs.
 Ground deduction rules and literal application arguments are additive
 too, so existing deduction rules need no rewrite at this hop. The authored
-proof interpretation declaration also leaves prior declarations unchanged.
+proof interpretation, sparse relations, and fixed relation and string
+graph score declarations likewise leave prior declarations unchanged.
+Authored binary relation composition, explicit scoped interpretation
+options, string factor graphs, and sparse relation transformations are
+additive at this hop.
 
 This is a directed migration, not a target-source formatter. Reapplying it to a
 new static telescope fails the historical source gate rather than guessing at

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
@@ -15,17 +16,76 @@ from quivers.core.relations import RationalRelation, _weight_snapshot
 from quivers.core.relations.beliefs import _validate_sweeps
 from quivers.core.relations.graph import StringFactor, StringFactorGraph, _TreeBounds
 from quivers.core.relations.ngram_message import NgramMessagePlan
-from quivers.core.relations.paths import _require_normalizer
 from quivers.core.relations.projection import _validate_projection_settings
 from quivers.core.relations.regular_projection import (
     RegularNgramProjection,
+    _ProjectionOptimizer,
     _maximum_length,
+    _require_regular_normalizer,
     _snapshot,
+    _validate_regular_optimizer,
     penalized_regular_ngram_projection,
 )
 from quivers.core.relations.transforms import intersect
 
 type _Word = tuple[int, ...]
+type _InitialSites = tuple[
+    tuple[int, str, tuple[_Word, ...], tuple[float, ...], float], ...
+]
+
+
+def _validate_initial_values(initial: _InitialSites | None) -> None:
+    if initial is None:
+        return
+    if not isinstance(initial, tuple):
+        raise ValueError("regular EP initial sites require ordered tuples")
+    for record in initial:
+        if not isinstance(record, tuple) or len(record) != 5:
+            raise ValueError("invalid regular EP initial site record")
+        factor, variable, features, coefficients, scale = record
+        if (
+            type(factor) is not int
+            or factor < 0
+            or not isinstance(variable, str)
+            or not variable
+            or not isinstance(features, tuple)
+            or any(
+                not isinstance(gram, tuple)
+                or not gram
+                or any(type(symbol) is not int or symbol < 0 for symbol in gram)
+                for gram in features
+            )
+        ):
+            raise ValueError("invalid regular EP initial site identity")
+        if (
+            not isinstance(coefficients, tuple)
+            or len(coefficients) != len(features)
+            or any(
+                type(value) is not float or not isfinite(value)
+                for value in coefficients
+            )
+            or type(scale) is not float
+            or not isfinite(scale)
+        ):
+            raise ValueError(
+                "regular EP initial coefficients and scale must be finite floats"
+            )
+
+
+def _validate_initial_scope(
+    scopes: tuple[tuple[str, ...], ...],
+    features: Mapping[str, tuple[_Word, ...]],
+    initial: _InitialSites | None,
+) -> None:
+    if initial is None:
+        return
+    expected = tuple(
+        (factor, name, features[name])
+        for factor, scope in enumerate(scopes)
+        for name in scope
+    )
+    if tuple(record[:3] for record in initial) != expected:
+        raise ValueError("regular EP initial sites must match graph and feature order")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +128,11 @@ class RegularStringSiteUpdate:
 
 @dataclass(frozen=True, slots=True)
 class RegularStringEPResult:
-    """Approximate fitted beliefs, sites, and separate projection diagnostics."""
+    """Approximate beliefs and site diagnostics with total moment evaluations.
+
+    The moment count covers every attempted local fit across the schedule.
+    Updates retain the individual fit reports for the final pass.
+    """
 
     marginals: Mapping[str, RegularStringBelief]
     sites: tuple[RegularStringSite, ...]
@@ -76,6 +140,7 @@ class RegularStringEPResult:
     sweeps: int
     message_residual: float | None
     updates: tuple[RegularStringSiteUpdate, ...]
+    moment_evaluations: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +197,7 @@ class _ReferenceLanguage:
         mass = relation.total_weight(
             max_states=bounds.max_states, max_work=bounds.max_work
         )
-        _require_normalizer(mass, LOG_PROB)
+        _require_regular_normalizer(mass, "regular belief or cavity")
         return RegularStringBelief(relation, mass, bounds.max_states, bounds.max_work)
 
 
@@ -145,6 +210,7 @@ def _projection(
     penalty: float,
     tolerance: float,
     max_iterations: int,
+    optimizer: _ProjectionOptimizer,
 ) -> tuple[RegularNgramProjection, torch.Tensor, torch.Tensor]:
     bounds = reference.bounds
     likelihood = factor.relation
@@ -163,6 +229,7 @@ def _projection(
         max_states=bounds.max_states,
         max_work=bounds.max_work,
         max_closure_size=bounds.max_closure_size,
+        optimizer=optimizer,
     )
     return (
         fit,
@@ -212,6 +279,8 @@ def regular_string_ep(
     damping: float = 0.0,
     projection_tolerance: float = 1e-8,
     projection_max_iterations: int = 512,
+    projection_optimizer: _ProjectionOptimizer = "backtracking",
+    initial_sites: _InitialSites | None = None,
 ) -> RegularStringEPResult:
     """Approximate sum-product over finite regular reference languages.
 
@@ -248,6 +317,13 @@ def regular_string_ep(
         Local proximal gradient tolerance.
     projection_max_iterations : int
         Maximum accepted iterations per local projection.
+    projection_optimizer : {"backtracking", "fixed_lipschitz"}
+        The local proximal optimizer and step policy.
+    initial_sites : tuple or None
+        Optional initial site records in factor and argument order. Each
+        record gives the factor position, variable, candidate features in
+        order, finite float coefficients, and finite float log scale.
+        None initializes unit sites.
 
     Returns
     -------
@@ -259,12 +335,17 @@ def regular_string_ep(
     """
     _validate_sweeps(max_sweeps, tolerance, damping)
     _validate_projection_settings(projection_tolerance, projection_max_iterations, 0)
+    _validate_regular_optimizer(projection_optimizer)
+    _validate_initial_values(initial_sites)
     if not 0 <= penalty < float("inf"):
         raise ValueError("n-gram projection penalty must be nonnegative and finite")
     if set(graph._variables) != set(bases) or set(graph._variables) != set(features):
         raise ValueError(
             "regular string EP requires bases and feature vocabularies for every variable"
         )
+    _validate_initial_scope(
+        tuple(f.variables for f in graph._factors), features, initial_sites
+    )
     for name, variable in graph._variables.items():
         base = bases[name]
         if base.algebra is not LOG_PROB or base.topology.tapes != (variable.tape,):
@@ -299,14 +380,23 @@ def regular_string_ep(
             )
         references[name] = _ReferenceLanguage(base, features[name], bounds)
 
-    sites = tuple(
-        tuple(
-            _Site(references[name].zeros, references[name].zeros.new_zeros(()))
-            for name in factor.variables
-        )
-        for factor in factors
-    )
+    initial = iter(initial_sites) if initial_sites is not None else None
+    rows = []
+    for factor in factors:
+        row = []
+        for name in factor.variables:
+            zeros = references[name].zeros
+            if initial is None:
+                row.append(_Site(zeros, zeros.new_zeros(())))
+            else:
+                _, _, _, coefficients, scale = next(initial)
+                row.append(
+                    _Site(zeros.new_tensor(coefficients), zeros.new_tensor(scale))
+                )
+        rows.append(tuple(row))
+    sites = tuple(rows)
     sweeps = 0
+    moment_evaluations = 0
     while True:
         marginals, cavity = _beliefs(references, factors, sites)
         updates: list[RegularStringSiteUpdate] = []
@@ -334,7 +424,9 @@ def regular_string_ep(
                     penalty=penalty,
                     tolerance=projection_tolerance,
                     max_iterations=projection_max_iterations,
+                    optimizer=projection_optimizer,
                 )
+                moment_evaluations += fit.moment_evaluations
                 updates.append(RegularStringSiteUpdate(index, name, mass, fit))
                 if fit.status != "converged":
                     return RegularStringEPResult(
@@ -344,6 +436,7 @@ def regular_string_ep(
                         sweeps,
                         None,
                         tuple(updates),
+                        moment_evaluations,
                     )
                 candidate = _Site(fit.coefficients, scale)
                 difference = (
@@ -369,6 +462,7 @@ def regular_string_ep(
                 sweeps,
                 residual,
                 tuple(updates),
+                moment_evaluations,
             )
         sites = tuple(proposed)
         sweeps += 1

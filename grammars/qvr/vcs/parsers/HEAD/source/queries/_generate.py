@@ -94,6 +94,42 @@ NODE_PATTERNS = """\
 (qiec_handler_operation_clause parameters: (qiec_local_binding name: (identifier) @variable.parameter))
 (qiec_handler_return_clause binder: (qiec_local_binding name: (identifier) @variable.parameter))
 (computation_decl name: (identifier) @function)
+(relation_decl "relation" @keyword)
+(relation_decl name: (identifier) @type)
+(relation_compose_decl ["relation" "compose"] @keyword)
+(relation_compose_decl name: (identifier) @type)
+(relation_compose_decl left: (identifier) @type)
+(relation_compose_decl right: (identifier) @type)
+(relation_transform_decl "relation" @keyword)
+(relation_transform_decl name: (identifier) @type)
+(relation_unary_operation) @keyword
+(relation_binary_operation) @keyword
+(relation_unary_recipe source: (identifier) @type)
+(relation_projection_recipe "project" @keyword source: (identifier) @type)
+(relation_conditioning_recipe "condition" @keyword source: (identifier) @type)
+(relation_binary_recipe source: (identifier) @type other: (identifier) @type)
+(relation_join_recipe ["join" "keep_shared"] @keyword source: (identifier) @type other: (identifier) @type)
+(relation_algebra) @type.builtin
+(relation_tape_direction) @keyword
+(relation_tape_decl alphabet: (identifier) @type)
+(relation_boundary_kind) @keyword
+(relation_boundary_decl weight: (identifier) @variable.parameter)
+(relation_arc_decl weight: (identifier) @variable.parameter)
+(relation_label "eps" @constant.builtin)
+(relation_score_decl relation: (identifier) @type)
+(relation_score_decl name: (identifier) @function)
+(relation_score_operation) @keyword
+(string_graph_decl "string_graph" @keyword)
+(string_graph_decl name: (identifier) @type)
+(string_graph_variable "variable" @keyword)
+(string_graph_variable name: (identifier) @variable)
+(string_graph_variable alphabet: (identifier) @type)
+(string_graph_factor "factor" @keyword)
+(string_graph_factor relation: (identifier) @type)
+(string_graph_factor scope: (identifier) @variable)
+(string_graph_score_decl graph: (identifier) @type)
+(string_graph_score_decl name: (identifier) @function)
+(string_graph_score_operation) @keyword
 (interpretation_decl name: (identifier) @function)
 (interpretation_decl deduction: (identifier) @function)
 (interpretation_clause constructor: (identifier) @constructor)

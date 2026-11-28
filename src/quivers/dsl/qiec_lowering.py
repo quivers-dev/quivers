@@ -44,6 +44,11 @@ from quivers.qiec.canonical import (
 from quivers.qiec.builtins import BUILTIN_EFFECTS
 from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.family_catalog import FamilyCatalog
+from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
+from quivers.qiec._packed_boolean_interpretation import (
+    PackedBooleanInterpretationBinding,
+    check_packed_boolean_bindings,
+)
 from quivers.qiec._proof_interpretation import bind_operands
 from quivers.qiec.checking import _plated_sample_type
 from quivers.qiec.programs import ProgramEntry
@@ -69,6 +74,12 @@ from quivers.dsl.pure_builtins import (
 )
 from quivers.dsl.deduction_elaboration import _DeductionElaboration
 from quivers.dsl._deduction_interpretations import declare_interpretations
+from quivers.dsl._scoped_interpretations import declare_scoped_types
+from quivers.dsl._relation_scores import declare_relation_scores, lower_relation_scores
+from quivers.dsl._packed_boolean_outcomes import (
+    check_packed_boolean_bodies,
+    declare_packed_boolean_computations,
+)
 from quivers.dsl._deduction_outcomes import (
     check_outcome_key_bodies,
     declare_outcome_key_computations,
@@ -224,6 +235,12 @@ QIEC_STATEMENT_TYPES = (
     surface.QiecHandlerDecl,
     surface.QiecComputationDecl,
     surface.QiecInterpretationDecl,
+    surface.QiecRelationDecl,
+    surface.QiecRelationComposeDecl,
+    surface.QiecRelationTransformDecl,
+    surface.QiecRelationScoreDecl,
+    surface.QiecStringGraphDecl,
+    surface.QiecStringGraphScoreDecl,
 )
 """The declaration classes that make up the QIEC surface of a module.
 
@@ -283,9 +300,19 @@ class CheckedQvrQiec(QiecModel):
     ----------
     module : QiecModule
         The kernel module the stages produced.
+    closed_interpretations : tuple of ClosedInterpretationBinding
+        Source companions retained through checked model schema extraction.
+    packed_interpretations : tuple of PackedBooleanInterpretationBinding
+        Each verified invocation of a closed interpretation's packed form.
     """
 
     module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    closed_interpretations: tuple[ClosedInterpretationBinding, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    packed_interpretations: tuple[PackedBooleanInterpretationBinding, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def has_qiec_surface(module: surface.Module) -> bool:
@@ -424,6 +451,36 @@ _ATOMIC_LET_EXPRESSIONS = (
     surface.LetExprUnit,
     surface.LetExprString,
 )
+
+_CONTEXTUAL_LIFTS = frozenset({"lift_first", "lift_second"})
+
+
+def _contextual_rule_call(
+    authored: surface.QiecCallComputation,
+) -> tuple[surface.QiecCallComputation, surface.QiecValue, bool] | None:
+    """Read the named operation, its unmodified operands, and the saved frame."""
+    if (
+        authored.callee not in _CONTEXTUAL_LIFTS
+        or len(authored.arguments) < 2
+        or not isinstance(rule := authored.arguments[0], surface.LetExprVar)
+    ):
+        return None
+    first = authored.callee == "lift_first"
+    operands = authored.arguments[1:]
+    values, frame = (
+        (operands[:-1], operands[-1]) if first else (operands[1:], operands[0])
+    )
+    return (
+        surface.QiecCallComputation(
+            callee=rule.name,
+            static_arguments=authored.static_arguments,
+            arguments=values,
+            line=rule.line,
+            col=rule.col,
+        ),
+        frame,
+        first,
+    )
 
 
 def _call_operand(
@@ -570,9 +627,17 @@ class QvrQiecLowerer:
         KernelError
             If the lowered module fails its independent recheck.
         """
-        module = _Elaborator(source).elaborate()
-        validate_module(module)
-        return CheckedQvrQiec(module=module)
+        elaborator = _Elaborator(source)
+        module = elaborator.elaborate()
+        registry = validate_module(module)
+        closed = tuple(elaborator.closed_interpretations)
+        packed = tuple(elaborator.packed_interpretations)
+        check_packed_boolean_bindings(module, registry, closed, packed)
+        return CheckedQvrQiec(
+            module=module,
+            closed_interpretations=closed,
+            packed_interpretations=packed,
+        )
 
     def lower(self, checked: CheckedQvrQiec, /) -> QiecModule:
         """Return the checked module.
@@ -995,6 +1060,36 @@ def lower_qvr_to_qiec(
         If the lowered module fails its independent recheck.
     """
 
+    return _lower_qvr_with_companions(
+        module,
+        module_name=module_name,
+        file_path=file_path,
+        source_version=source_version,
+        target_version=target_version,
+        elaborate_programs=elaborate_programs,
+        families=families,
+    ).module
+
+
+class _QvrQiecCompanionLowerer(QvrQiecLowerer):
+    """Keep the checked source companions through the existing versioned route."""
+
+    def lower(self, checked: CheckedQvrQiec, /) -> QiecModule:
+        self.result = checked
+        return checked.module
+
+
+def _lower_qvr_with_companions(
+    module: surface.Module,
+    *,
+    module_name: str | None = None,
+    file_path: str = "<source>",
+    source_version: str = QVR_SOURCE_VERSION,
+    target_version: str = QIEC_ABI,
+    elaborate_programs: bool = True,
+    families: FamilyCatalog | None = None,
+) -> CheckedQvrQiec:
+    """Run the checked lowering route once, retaining its source companions."""
     if module_name is None:
         module_name = _module_name(file_path)
     try:
@@ -1014,12 +1109,14 @@ def lower_qvr_to_qiec(
         elaborate_programs=elaborate_programs,
         distribution_families=families.definitions if families is not None else (),
     )
-    return lower_checked(
+    lowerer = _QvrQiecCompanionLowerer()
+    lower_checked(
         source,
-        QvrQiecLowerer(),
+        lowerer,
         source_version=source_version,
         target_version=target_version,
     )
+    return lowerer.result
 
 
 def _authored_strings(syntax: surface.Module) -> frozenset[str]:
@@ -1575,6 +1672,8 @@ class _Elaborator(
         self.handlers: dict[str, HandlerDef] = {}
         self.computation_signatures: dict[str, ComputationSignature] = {}
         self.entries: list[ProgramEntry] = []
+        self.closed_interpretations: list[ClosedInterpretationBinding] = []
+        self.packed_interpretations: list[PackedBooleanInterpretationBinding] = []
         self._lambda_macros: dict[str, surface.LetExprLambda] = {}
         # Numbers the locals a lowering introduces to share a value, so
         # each such binder is unique across the module.
@@ -1639,24 +1738,32 @@ class _Elaborator(
         self._build_registry()
         self._declare_deduction_declarations()
         self._declare_structural_signatures()
+        scoped_interpretations = declare_scoped_types(self)
         self._declare_computation_signatures()
-        interpretations = declare_interpretations(self)
+        interpretations = declare_interpretations(self, scoped_interpretations)
+        relation_routes = declare_relation_scores(self)
         self._declare_handlers()
         self._register_handlers()
         deductions = self._declare_deductions()
         outcome_keys = declare_outcome_key_computations(self)
+        boolean_outcomes, boolean_operations = declare_packed_boolean_computations(self)
         structural = self._declare_structural_computations()
+        relation_scores = lower_relation_scores(self, relation_routes)
         programs = self._declare_programs()
         computations = self._declare_computations()
         bodies = (
             *deductions,
             *outcome_keys,
+            *boolean_outcomes,
             *structural,
+            *relation_scores,
             *interpretations,
             *programs,
             *computations,
         )
         check_outcome_key_bodies(self, bodies)
+        check_packed_boolean_bodies(self, bodies, boolean_operations)
+        self._check_computed_rule_weight_bodies(bodies)
         return QiecModule(
             module=self.source.module_name,
             source_protocol=QVR_SOURCE_VERSION,
@@ -2625,38 +2732,51 @@ class _Elaborator(
             family = self.families.get(authored.constructor)
             if family is None:
                 self._fail(authored, f"unknown indexed family {authored.constructor!r}")
-            if len(authored.static_arguments) != len(family.parameters):
+            static_indices = tuple(
+                binder for binder in family.indices if isinstance(binder, TypeBinder)
+            )
+            index_binders = tuple(
+                binder for binder in family.indices if isinstance(binder, IndexBinder)
+            )
+            if len(static_indices) + len(index_binders) != len(family.indices):
                 self._fail(
                     authored,
-                    f"family {family.name!r} expects {len(family.parameters)} "
-                    "static parameters",
+                    "family indices must use type or index binders",
+                    code="qiec-index",
+                )
+            static_binders = (*family.parameters, *static_indices)
+            if len(authored.static_arguments) != len(static_binders):
+                description = (
+                    "static arguments" if static_indices else "static parameters"
+                )
+                self._fail(
+                    authored,
+                    f"family {family.name!r} expects {len(static_binders)} {description}",
                     code="qiec-kind",
                 )
-            if len(authored.indices) != len(family.indices):
+            if len(authored.indices) != len(index_binders):
                 self._fail(
                     authored,
-                    f"family {family.name!r} expects {len(family.indices)} indices",
+                    f"family {family.name!r} expects {len(index_binders)} indices",
                     code="qiec-index",
                 )
-            parameters = tuple(
+            statics = tuple(
                 self._lower_static_argument(argument, binder, scope, static_bindings)
                 for argument, binder in zip(
-                    authored.static_arguments, family.parameters, strict=True
+                    authored.static_arguments, static_binders, strict=True
                 )
             )
+            parameters = statics[: len(family.parameters)]
+            type_arguments = iter(statics[len(family.parameters) :])
+            index_arguments = iter(authored.indices)
             indices = tuple(
-                self._lower_index(argument, binder.sort, scope, static_bindings)
-                for argument, binder in zip(
-                    authored.indices, family.indices, strict=True
+                self._lower_index(
+                    next(index_arguments), binder.sort, scope, static_bindings
                 )
                 if isinstance(binder, IndexBinder)
+                else next(type_arguments)
+                for binder in family.indices
             )
-            if len(indices) != len(family.indices):
-                self._fail(
-                    authored,
-                    "family indices must use index binders",
-                    code="qiec-index",
-                )
             return TypeApplication(
                 constructor=family.type_constructor, arguments=(*parameters, *indices)
             )
@@ -6610,6 +6730,10 @@ class _Elaborator(
         if authored.callee == "traverse":
             return self._lower_traverse(authored, scope, context, path, static_bindings)
         signature = self.computation_signatures.get(authored.callee)
+        if signature is None and authored.callee in _CONTEXTUAL_LIFTS:
+            return self._lower_contextual_rule(
+                authored, scope, context, path, static_bindings
+            )
         if signature is None:
             self._fail(
                 authored,
@@ -6688,6 +6812,55 @@ class _Elaborator(
                 result_type=substitute_type(signature.result, substitution),
                 effects=substitute_row(signature.effects, substitution),
                 origin=self._origin(authored, path, "call"),
+            ),
+        )
+
+    def _lower_contextual_rule(
+        self,
+        authored: surface.QiecCallComputation,
+        scope: Telescope,
+        context: CheckContext,
+        path: tuple[str | int, ...],
+        static_bindings: Mapping[str, StaticArgument] | None,
+    ) -> Computation:
+        """Call one checked operation while retaining an already evaluated frame."""
+        parts = _contextual_rule_call(authored)
+        if parts is None:
+            self._fail(
+                authored,
+                f"{authored.callee} requires a named operation and an untouched frame",
+                code="qiec-call",
+            )
+        call, saved, first = parts
+        if call.callee not in self.computation_signatures:
+            self._fail(call, f"unknown computation {call.callee!r}", code="qiec-route")
+        if not isinstance(saved, _ATOMIC_LET_EXPRESSIONS):
+            self._fail(
+                saved,
+                f"{authored.callee} requires an already evaluated frame value. "
+                "Bind the frame to a name first",
+                code="qiec-call",
+            )
+        frame = self._lower_value(
+            saved, scope, context, static_bindings, (*path, "frame")
+        )
+        frame_type = self._value_type(frame, context, saved)
+        invocation = self._lower_call(
+            call, scope, context, (*path, "rule"), static_bindings
+        )
+        try:
+            output = infer_computation(invocation, self.registry, context).result
+        except (KernelError, dx.ValidationError) as error:
+            self._fail_kernel(call, error, fallback="qiec-call")
+        answer = self._shared_local("rule_result", output, context)
+        result = Var(local=answer)
+        values = (result, frame) if first else (frame, result)
+        components = (output, frame_type) if first else (frame_type, output)
+        return Bind(
+            binder=answer,
+            first=invocation,
+            then=Return(
+                value=TupleValue(items=values, result_type=product_type(*components))
             ),
         )
 

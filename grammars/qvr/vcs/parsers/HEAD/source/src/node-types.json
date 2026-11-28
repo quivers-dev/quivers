@@ -3836,6 +3836,16 @@
             "named": true
           }
         ]
+      },
+      "options": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "option_block",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -9882,6 +9892,563 @@
     }
   },
   {
+    "type": "relation_algebra",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_arc_decl",
+    "named": true,
+    "fields": {
+      "labels": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "relation_label",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "weight": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_binary_operation",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_binary_recipe",
+    "named": true,
+    "fields": {
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_binary_operation",
+            "named": true
+          }
+        ]
+      },
+      "other": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_boundary_decl",
+    "named": true,
+    "fields": {
+      "boundary": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_boundary_kind",
+            "named": true
+          }
+        ]
+      },
+      "state": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "weight": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_boundary_kind",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_compose_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "left": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "right": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_conditioning_recipe",
+    "named": true,
+    "fields": {
+      "positions": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "word": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_conditioning_word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_conditioning_word",
+    "named": true,
+    "fields": {
+      "symbols": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_decl",
+    "named": true,
+    "fields": {
+      "algebra": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_algebra",
+            "named": true
+          }
+        ]
+      },
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "entries": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "relation_arc_decl",
+            "named": true
+          },
+          {
+            "type": "relation_boundary_decl",
+            "named": true
+          },
+          {
+            "type": "relation_tape_decl",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "states": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_join_recipe",
+    "named": true,
+    "fields": {
+      "keep_shared": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "let_bool",
+            "named": true
+          }
+        ]
+      },
+      "other": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "positions": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_label",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "integer",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "relation_projection_recipe",
+    "named": true,
+    "fields": {
+      "positions": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_score_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_score_operation",
+            "named": true
+          }
+        ]
+      },
+      "relation": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "result": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qiec_type_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_score_operation",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_tape_decl",
+    "named": true,
+    "fields": {
+      "alphabet": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "direction": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_tape_direction",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_tape_direction",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_transform_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "recipe": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_binary_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_conditioning_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_join_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_projection_recipe",
+            "named": true
+          },
+          {
+            "type": "relation_unary_recipe",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "relation_unary_operation",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "relation_unary_recipe",
+    "named": true,
+    "fields": {
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "relation_unary_operation",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "repeat_expr",
     "named": true,
     "fields": {
@@ -10946,6 +11513,22 @@
           "named": true
         },
         {
+          "type": "relation_compose_decl",
+          "named": true
+        },
+        {
+          "type": "relation_decl",
+          "named": true
+        },
+        {
+          "type": "relation_score_decl",
+          "named": true
+        },
+        {
+          "type": "relation_transform_decl",
+          "named": true
+        },
+        {
           "type": "rule_decl",
           "named": true
         },
@@ -10955,6 +11538,14 @@
         },
         {
           "type": "signature_decl",
+          "named": true
+        },
+        {
+          "type": "string_graph_decl",
+          "named": true
+        },
+        {
+          "type": "string_graph_score_decl",
           "named": true
         }
       ]
@@ -11044,6 +11635,191 @@
           },
           {
             "type": "trans_compose",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "factors": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "string_graph_factor",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "variables": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "string_graph_variable",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_factor",
+    "named": true,
+    "fields": {
+      "relation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "scope": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_observation",
+    "named": true,
+    "fields": {
+      "symbols": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "integer",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_score_decl",
+    "named": true,
+    "fields": {
+      "docs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "doc_comment_group",
+            "named": true
+          }
+        ]
+      },
+      "graph": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "operation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string_graph_score_operation",
+            "named": true
+          }
+        ]
+      },
+      "result": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qiec_type_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "string_graph_score_operation",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "string_graph_variable",
+    "named": true,
+    "fields": {
+      "alphabet": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "observed": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "string_graph_observation",
             "named": true
           }
         ]
@@ -11648,6 +12424,14 @@
     "named": false
   },
   {
+    "type": "algebra",
+    "named": false
+  },
+  {
+    "type": "arc",
+    "named": false
+  },
+  {
     "type": "as",
     "named": false
   },
@@ -11725,7 +12509,27 @@
     "named": false
   },
   {
+    "type": "closure",
+    "named": false
+  },
+  {
+    "type": "compose",
+    "named": false
+  },
+  {
     "type": "composition",
+    "named": false
+  },
+  {
+    "type": "concatenate",
+    "named": false
+  },
+  {
+    "type": "condition",
+    "named": false
+  },
+  {
+    "type": "conditional_log_prob",
     "named": false
   },
   {
@@ -11813,6 +12617,14 @@
     "named": false
   },
   {
+    "type": "eps",
+    "named": false
+  },
+  {
+    "type": "expected_path_cost",
+    "named": false
+  },
+  {
     "type": "export",
     "named": false
   },
@@ -11830,6 +12642,10 @@
   },
   {
     "type": "fan",
+    "named": false
+  },
+  {
+    "type": "final",
     "named": false
   },
   {
@@ -11858,6 +12674,10 @@
   },
   {
     "type": "from_data",
+    "named": false
+  },
+  {
+    "type": "graph",
     "named": false
   },
   {
@@ -11897,6 +12717,14 @@
     "named": false
   },
   {
+    "type": "initial",
+    "named": false
+  },
+  {
+    "type": "input",
+    "named": false
+  },
+  {
     "type": "instance",
     "named": false
   },
@@ -11909,11 +12737,31 @@
     "named": false
   },
   {
+    "type": "intersect",
+    "named": false
+  },
+  {
     "type": "introduces",
     "named": false
   },
   {
+    "type": "invert",
+    "named": false
+  },
+  {
     "type": "iterations",
+    "named": false
+  },
+  {
+    "type": "join",
+    "named": false
+  },
+  {
+    "type": "keep_shared",
+    "named": false
+  },
+  {
+    "type": "labels",
     "named": false
   },
   {
@@ -11946,11 +12794,19 @@
     "extra": true
   },
   {
+    "type": "logprob",
+    "named": false
+  },
+  {
     "type": "loss",
     "named": false
   },
   {
     "type": "marginalize",
+    "named": false
+  },
+  {
+    "type": "markov",
     "named": false
   },
   {
@@ -11986,6 +12842,10 @@
     "named": false
   },
   {
+    "type": "observed",
+    "named": false
+  },
+  {
     "type": "omega",
     "named": false
   },
@@ -11994,11 +12854,23 @@
     "named": false
   },
   {
+    "type": "operation",
+    "named": false
+  },
+  {
     "type": "ops",
     "named": false
   },
   {
+    "type": "output",
+    "named": false
+  },
+  {
     "type": "outputs",
+    "named": false
+  },
+  {
+    "type": "pair_weight",
     "named": false
   },
   {
@@ -12007,6 +12879,10 @@
   },
   {
     "type": "partial",
+    "named": false
+  },
+  {
+    "type": "path_entropy",
     "named": false
   },
   {
@@ -12019,6 +12895,10 @@
   },
   {
     "type": "program",
+    "named": false
+  },
+  {
+    "type": "project",
     "named": false
   },
   {
@@ -12067,6 +12947,14 @@
   },
   {
     "type": "recursive",
+    "named": false
+  },
+  {
+    "type": "relation",
+    "named": false
+  },
+  {
+    "type": "relation_score",
     "named": false
   },
   {
@@ -12130,8 +13018,20 @@
     "named": false
   },
   {
+    "type": "states",
+    "named": false
+  },
+  {
     "type": "string",
     "named": true
+  },
+  {
+    "type": "string_graph",
+    "named": false
+  },
+  {
+    "type": "string_graph_score",
+    "named": false
   },
   {
     "type": "structure",
@@ -12154,11 +13054,27 @@
     "named": false
   },
   {
+    "type": "tree_log_prob",
+    "named": false
+  },
+  {
+    "type": "tree_partition",
+    "named": false
+  },
+  {
+    "type": "trim",
+    "named": false
+  },
+  {
     "type": "true",
     "named": false
   },
   {
     "type": "unary",
+    "named": false
+  },
+  {
+    "type": "union",
     "named": false
   },
   {
@@ -12174,7 +13090,15 @@
     "named": false
   },
   {
+    "type": "variable",
+    "named": false
+  },
+  {
     "type": "vertex_kinds",
+    "named": false
+  },
+  {
+    "type": "weight",
     "named": false
   },
   {

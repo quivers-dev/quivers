@@ -69,6 +69,7 @@ from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.kinds import NAT, IndexBinder, IndexSort, UserIndexSort
 from quivers.qiec.rules import (
     AxiomSlot,
+    ComputedRuleWeight,
     Judgment,
     JudgmentDecl,
     Premise,
@@ -885,6 +886,17 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
 
     rules: list[DeductionRule] = []
     forms = list(reader.families)
+    computed_names = {
+        rule.name
+        for rule in decl.rules
+        if find_option(rule.options, "weight") is not None
+    }
+    normalize = find_option(decl.options, "normalize")
+    normalizes = (
+        normalize is not None
+        and isinstance(normalize.value, OptionName)
+        and normalize.value.value == "lhs"
+    )
     for index, (rule, premises, conclusion, variables) in enumerate(read):
         learnable = get_option_flag(rule.options, "learnable")
         parent = find_option(rule.options, "parent")
@@ -893,11 +905,37 @@ def deduction_presentation(decl: DeductionDecl) -> DeductionPresentation:
             if parent is not None and isinstance(parent.value, OptionName)
             else None
         )
-        weight = (
-            ParameterId.derive(decl.name, "rule", rule.name)
-            if learnable or parent_name is not None
-            else None
-        )
+        weights = tuple(option for option in rule.options if option.key == "weight")
+        weight: ParameterId | ComputedRuleWeight | None = None
+        if weights:
+            if len(weights) != 1 or not isinstance(weights[0].value, OptionName):
+                raise DeductionPresentationError(
+                    f"rule {rule.name!r} weight must name one checked computation",
+                    rule.line,
+                    rule.col,
+                )
+            if (
+                any(
+                    option.key in {"learnable", "bounded", "parent"}
+                    for option in rule.options
+                )
+                or normalizes
+            ):
+                raise DeductionPresentationError(
+                    f"rule {rule.name!r} computed weight cannot be combined with "
+                    "learnable, bounded, parent, or normalize=lhs",
+                    rule.line,
+                    rule.col,
+                )
+            weight = ComputedRuleWeight(operation=weights[0].value.value)
+        elif parent_name in computed_names:
+            raise DeductionPresentationError(
+                f"rule {rule.name!r} cannot inherit a computed weight from {parent_name!r}",
+                rule.line,
+                rule.col,
+            )
+        elif learnable or parent_name is not None:
+            weight = ParameterId.derive(decl.name, "rule", rule.name)
         choices = _instances(reader, [*premises, conclusion], forms, variables)
         for choice in choices:
             telescope = dict(variables)

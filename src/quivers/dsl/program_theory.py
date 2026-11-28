@@ -124,6 +124,7 @@ from quivers.core.objects import (
 )
 from quivers.dsl.ast_nodes import ExprIdent, ExprIdentity
 from quivers.dsl.compiler import Compiler
+from quivers.qiec.rules import ComputedRuleWeight
 from quivers.qiec.effects import EffectRow, HandlerDef
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.programs import ProgramEntry
@@ -1135,7 +1136,11 @@ def extract_deduction_schema(compiler: Compiler) -> panproto.Schema:
             source = presented[rule_idx] if presented else None
             if source is not None:
                 builder.constraint(rule_vid, "identity", str(source.id))
-                if source.weight is not None:
+                if isinstance(source.weight, ComputedRuleWeight):
+                    builder.constraint(
+                        rule_vid, "weight-computation", source.weight.operation
+                    )
+                elif source.weight is not None:
                     builder.constraint(rule_vid, "weight", str(source.weight))
             builder.edge(sys_vid, rule_vid, "decl")
             for prem_idx, premise in enumerate(rule.premises):

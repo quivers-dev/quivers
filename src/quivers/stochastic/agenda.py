@@ -2584,6 +2584,8 @@ class DeductionSystem(QiecModel):
             The completed chart, its goal items, and any attached
             loss.
         """
+        if self.presentation is not None and self.presentation.computed_weight_rules:
+            raise ValueError("computed rule weights require checked QVR execution")
         axioms = self.axiom_injector(input_value)
         registry = self.losses.get(self.name)
         deduction_name = self.name

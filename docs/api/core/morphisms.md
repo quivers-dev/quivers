@@ -113,6 +113,10 @@ used in a cascade, queried with bounded cyclic closure, or projected onto select
 tapes. The limits cover reachable product and intermediate states, shared-label
 probes and constructed arc occurrences.
 
+Each composed relation retains its latest materialized topology and
+weight-slot mapping. Repeating the same two construction limits reuses
+that structure. Every result reads the original live operand weights.
+
 Each matched pair becomes two consecutive arcs. The first writes the two outer
 labels and takes the left weight. The other advances with epsilon labels and takes
 the right weight. The intermediate state has that one continuation, so expansion
@@ -379,6 +383,21 @@ gradient mapping. The finite group implementation scans the declared
 feature vocabulary. Each shrink copies the coefficient vector, so a
 proximal update takes $O(rg)$ work for $r$ coefficients and $g$ groups.
 
+## Candidate string messages
+
+`StringCandidatePlan` scores a finite list of words in a unary LogProb
+relation. Its complement is a deterministic acceptor that recognizes
+every other word. Its unique accepting path for each omitted word gives
+exactly one matching path for every original occurrence of that word.
+The candidate queries and the complement thus partition the original
+path sum. In particular, the omitted mass can remain visible when it is
+too small to recover by subtracting the retained mass from the total.
+
+An optional beam retains the highest-scoring candidates, breaking ties
+lexicographically and reporting a tie across the boundary. The full
+message scale and the weights of the selected words stay differentiable
+on the selected support. Construction limits raise a distinct error.
+
 ## Batched contextual edits
 
 `ContextualEditChannel` sums the alignments of observed input-output
@@ -405,6 +424,33 @@ compatible observation arcs count toward the explicit work budget.
 The bound on consecutive insertions is part of the channel model, and the scorer
 can use the whole input as context for each edit.
 
+### Packed training on a contextual channel
+
+A two-layer scorer reads each word's remaining suffix and the current
+insertion count. The training fixture observes paired binary strings and
+fits their conditional log likelihood. Both execution modes reuse their
+observation plans and start with the same neural parameters. The benchmark
+checks the loss at all four updates and compares the final parameters.
+The singleton mode concatenates the individual scores before each backward
+pass so both modes optimize the same batch mean.
+
+| Batch size | Mode | Update ms | Peak Python KiB | Saved tape KiB | Final loss |
+| --- | --- | --- | --- | --- | --- |
+| 4 | Packed | 2.54 | 20.0 | 25.5 | 4.152484 |
+| 4 | Singletons | 5.45 | 36.3 | 22.7 | 4.152484 |
+| 16 | Packed | 2.32 | 35.8 | 104.2 | 4.248501 |
+| 16 | Singletons | 22.92 | 130.7 | 95.2 | 4.248501 |
+| 64 | Packed | 5.69 | 133.9 | 418.8 | 4.332192 |
+| 64 | Singletons | 114.46 | 509.0 | 384.1 | 4.332192 |
+
+Times are medians per update across three warmed runs on one arm64 CPU
+thread with PyTorch 2.15. They include scoring, backward, and parameter
+updates. The two memory columns measure peak Python allocations and
+unique tensor storage saved for backward in separate runs. At batch size
+64, packing reduced Python allocations while retaining more saved tensor
+storage. To reproduce the comparison, run
+`python tools/benchmark_contextual_edits.py` from the repository checkout.
+
 ### Path entropy and additive risk
 
 `FixedStringQuery.path_statistics` uses packed prefix and suffix
@@ -430,6 +476,39 @@ The log normalizer, entropy, and expected costs have derivatives
 on the current positive support. Zero-probability choices contribute
 zero. An entropy of paths can differ from an entropy of the output
 words when several paths emit the same word.
+
+### Packed nonnegative feature moments
+
+`FixedStringQuery.log_feature_moments` runs the packed acyclic executor
+over an occurrence-indexed plan with `ExpectationSemiring` over
+`FreeSemimodule(LogProb, d)`.
+Each initial mark, arc, and final mark has an optional nonnegative
+feature increment $f$ represented by its logarithm. An occurrence
+with mass $p$ starts with the pair $(p,pf)$. Multiplying two pairs adds
+the increments for the extended path because their second component
+is $p_1(p_2f_2) + p_2(p_1f_1)$. Adding pairs sums the weighted
+increments across distinct paths. [Li and Eisner (2009), §3](https://aclanthology.org/D09-1005/)
+
+The query returns $\log Z$ and the vector of unnormalized log moments.
+Subtract $\log Z$ from the vector for conditional log expectations
+when $Z$ is positive. Operations stay in log space, including for a
+path with a log weight of $-1000$. Feature rows follow original
+occurrences even when weights are tied or an arc is traversed at
+multiple offsets. `path_statistics` computes entropy and signed
+additive costs, including on observations with a supported cyclic
+closure. The packed expectation pass uses a fixed-width carrier at each
+active entry of an acyclic observation chart.
+
+For a productive cyclic observation, pass `allow_cyclic=True` to a
+query with a scalar closure budget. For each arc occurrence $e:s\to t$,
+the unnormalized moment adds $\alpha(s)w(e)f(e)\beta(t)$, with
+corresponding terms for initial and final marks. Choosing one marked
+visit gives a unique prefix, occurrence, and suffix. Since the summands
+are nonnegative, their order can change under a certified finite scalar
+closure. Inside one component this computes $A^* B_f A^*$, where $B_f$
+sums the feature-weighted original arcs of that component. Repeated visits
+and distinct parallel occurrences both contribute. Divergence and an
+uncertifiable scalar closure produce the corresponding scalar errors.
 
 ### Alignment-marginal output ranking
 
@@ -480,10 +559,83 @@ multipliers. It can return an uncertified feasible assignment and an
 upper bound at the iteration limit. Feature-count agreement alone
 does not establish a certificate.
 
+Before returning a bound, the solver checks the saved local witnesses
+under the multipliers that produced it. First it reconstructs each
+original walk, verifies its observed words, and recomputes its two
+scores from the boundaries, arc weights, and direct n-gram counts.
+Then it derives the exact suffix optimum in each reachable local
+configuration. In reverse topological order, each scalar suffix value
+is the maximum over its available final score and every arc score
+plus its successor's suffix value. This pass does not use the decoder's
+prefix maxima or backpointers. The claimed adjusted scores must attain
+these independently calculated maxima, and the multipliers must still
+sum to zero. Feasible lower witnesses are checked against their
+complete word assignment. An infeasibility claim requires a local
+subproblem with no accepting path under its observations.
+
+Reachability and suffix verification each examine the same reachable
+configurations and candidate arcs as a local forward decode. They
+reuse its state limits. With `max_work = B`, each scan examines at
+most $B$ arcs, for at most $2B$ candidate arc probes per checked local
+witness, plus visits to the witness's original arcs. The verifier stores one exact
+score per reachable configuration and no materialized transition table.
+Trace checking additionally visits the selected primitive arcs and
+computes n-gram counts for the selected words. Exact rational arithmetic
+and feature work depend on coefficient bit lengths, tape widths, word
+lengths and active feature orders. `max_verification_states` and
+`verification_arc_examinations` record the additional graph work.
+
+The solver may also stop at a requested absolute or relative objective
+gap. With an exact feasible score $L$ and dual upper bound $U$, the
+unknown optimum $z$ satisfies $L\leq z\leq U$. Thus $U-L$ bounds the
+absolute suboptimality of the returned assignment. For $z>0$, the
+relative error is $1-L/z$. For $z<0$, it is $L/z-1$. On a positive
+interval with $L\geq0$, or a strictly negative interval, the relevant
+function increases with $z$. The maximum relative error is thus
+$(U-L)/|U|$. If $L<0\leq U$, these bounds alone give no finite relative
+guarantee. When $L=U$, the relative gap is defined to be zero, including
+at the exact zero optimum.
+
+Supply `absolute_gap` or `relative_gap` as a nonnegative exact rational.
+All supplied targets must be established. An early stop based only on
+these bounds has status `gap`, with `gap_target_met=True`. The separate
+status `optimal` and its agreement certificate require exact local
+maximizers to agree on their complete words. When there is no feasible
+result, neither gap can be established.
+
 The returned score and certificate concern the evaluated parameter
 snapshot. Local paths are discrete decisions. The solver reports
 the peak number of reached local configurations and total local
-arc examinations, including primal feasibility checks.
+arc examinations, including primal feasibility checks. The [joint alignment
+MAP benchmark](../../developer/string-alignment-map-benchmark.md)
+compares these counts with a materialized intersection and verifies
+both against independent path enumeration.
+
+`paired_dual_alignment_map` accepts a partition of original factor
+positions into singletons and pairs. Each pair must share exactly one
+nominal tape variable. Its filtered sparse join keeps the shared tape
+once, retains the other tapes in join order, and represents every
+compatible original path pair once. The solver applies one multiplier
+copy per group for each shared variable. Equality between groups thus
+imposes the same original feasible assignments as the singleton solver.
+
+The grouped decoder reads the original binary-rational log coefficients.
+Its arc macros retain primitive weight slots, and it adds the two
+boundary coefficients directly as rationals. This preserves the
+original objective even when adding the boundary in a float would
+lose a smaller coefficient. A feasible grouped path yields one
+`StringAlignmentTrace` per original factor. Each expansion checks its
+original endpoints, ordered arcs, emitted words, and exact base score.
+The grouped result's certificate has one local maximum per group.
+
+Each paired product uses its own state and work limits. If its two
+operands have $V_l$ and $V_r$ states and the builder emits $M$ matched
+moves, it has at most $3 V_l V_r+M$ states. The extra states keep
+matched primitive weights separate. Label probes and emitted arcs are
+charged to `max_group_work`, and products remain available between
+dual updates. Local graph sizes and work are then bounded and reported
+as for singleton decoding. This groups only the explicitly requested
+factor pairs. A pair with zero or multiple shared variables is refused.
 
 ### Compact regular n-gram messages
 
@@ -529,12 +681,20 @@ If the base's longest word has length $L$, a feature for a gram $g$
 counts at most $r_g=\max(0,L-|g|+1)$ occurrences. Its variance is at
 most $r_g^2/4$. The Hessian of $\log Z_\theta$ is the feature covariance,
 so its operator norm is at most the trace bound
-$B=\sum_g r_g^2/4$. The optimizer tries a larger proximal step up to
-one and checks the quadratic upper bound on the smooth objective.
-Halving stops by the globally valid step $1/\max(1,B)$. Thus the
-backtracking work per accepted update is logarithmic in the bound,
-and an accepted step gives descent in exact arithmetic. The
-implementation checks trial steps in float64 with a rounding allowance.
+$B=\sum_g r_g^2/4$. The fixed-Lipschitz optimizer uses a step at most
+$1/\max(1,B)$, rounded downward in float64 if needed. It evaluates the
+target and base moments once each, then makes one moment evaluation per
+accepted step. Adaptive backtracking tries a step up to one and checks the
+quadratic upper bound on the smooth objective with a float64 rounding
+allowance. Halving ends at the globally valid step. The number of trials
+per accepted update grows at most logarithmically with $\max(1,B)$.
+Both policies report actual moment evaluations, including rejected
+trials. They reuse the same sparse moment plan across proposals.
+On a uniform base over the empty word and an eight-symbol repetition,
+with tilted mass ratio $7:1$ in favor of the repetition, both policies
+choose the first coefficient step $3/16$. Adaptive backtracking takes
+seven moment evaluations including four rejected trials. The fixed
+policy takes three.
 
 The projection reports the proximal gradient residual separately
 from its iteration status. The fitted message compiles only
@@ -570,6 +730,14 @@ local optimizer and an exhausted outer sweep retain the last
 accepted messages with distinct statuses. Relation construction
 or closure limits raise their usual errors. The result describes
 an approximate inference run over a fixed weight snapshot.
+
+Unit sites initialize with zero coefficients and log scales. A supplied
+initializer may instead give finite coefficients and a finite log scale
+for every site in factor, tape, and feature order. This sets the initial
+iterate and carries no convergence claim. The solver still measures the
+undamped defect at the last accepted iterate, including at a zero sweep
+budget. Total moment evaluations include every attempted local fit of
+this synchronous schedule.
 
 #### Two-variable comparison
 
@@ -688,6 +856,61 @@ on coefficient bit lengths. Coefficients in the result must be exactly
 representable in the input floating-point dtype. Trainable weights
 are refused because changing them can change the equivalence classes.
 
+`minimize_static_acceptor_with_work` also accepts cyclic positive
+support. For each productive state $q$, let $u_q$ be its least accepted
+suffix in length-then-symbol order and let $p_q=R_q(u_q)>0$. A reverse
+breadth-first traversal finds the distance to a final mark. A pass in
+increasing distance uses the least first symbol that decreases the
+distance, multiplying its weight by the already computed scale of its
+target. This is finite-suffix weight pushing over exact rationals.
+[Eisner (2003), §6](https://www.cs.jhu.edu/~jason/papers/eisner.hlt03.pdf).
+
+The quotient construction scales an initial coefficient at $q$ by
+$p_q$, divides a final coefficient at $q$ by $p_q$, and replaces an arc
+coefficient $w(q,a,t)$ by $w(q,a,t)p_t/p_q$. These factors telescope on
+every finite word. The argument applies even if the sum of the weights
+of all words diverges. Two nonzero residuals are positively proportional
+if and only if their normalized series agree, since proportional series
+have the same support and hence the same least suffix. Equality of
+normalized series forces equal final coefficients and equal support
+after every symbol. The normalized target series assign weight one to
+the same least suffix, so evaluating this suffix also forces the two
+pushed arc weights to agree. The resulting partition is thus exactly
+the stable partition of the deterministic partial automaton with final
+weights as state observations and `(symbol, pushed weight)` as labels.
+Each class represents a nonzero residual of a reachable prefix, up to
+its positive prefix scale. An equivalent deterministic epsilon-free
+one-initial acceptor must reach a different state for each such class,
+since two prefixes reaching one state have proportional residuals. This
+gives the state lower bound for the class in which minimization is claimed.
+
+Refinement initially queues all final-weight blocks. Each popped block
+only examines its own states and their incoming arcs, grouped by label.
+If two states remain in the same source block but a label takes them to
+distinct target blocks, at least one of the defined target blocks remains
+queued. Processing that block separates the sources. Splitting a queued
+block retains both children in the queue. Splitting any other block adds
+its smaller child, which suffices for this invariant when targets first
+separate. A state returns to the queue after processing only in a block of
+at most half its previous processed size. With $V$ productive states and
+$E$ productive arcs, the measured state and predecessor visits are thus
+bounded by $V(1+\lfloor\log_2 V\rfloor)$ and $E(1+\lfloor\log_2 V\rfloor)$
+respectively for $V>0$. Grouping and splitting use expected constant-time
+hash operations per record at fixed key size. Preprocessing is linear in
+the input records, and rational arithmetic and coefficient storage depend
+separately on bit length. This uses sparse partial-automaton refinement.
+[Hopcroft (1971)](https://www.cs.cmu.edu/~cdm/resources/Hopcroft1971.pdf),
+[Valmari and Lehtinen (2008), §§2–5](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.STACS.2008.1328).
+
+`StaticMinimizationWork` reports input records, productive states and
+arcs, and the two refinement counts. `max_states` bounds the productive
+states, and `max_work` bounds the input records plus the two refinement
+counts. The returned snapshot uses the input dtype and device. The
+shortest-suffix gauge can produce coefficients outside the original
+floating-point dtype, even from exactly represented source weights. The
+routine raises in that case. The acyclic gcd entry point retains its
+own gauge and coefficient ordering.
+
 ### Ranked constraints for a fixed input
 
 `ranked_output_candidates` restricts a candidate generator to one
@@ -752,6 +975,37 @@ exponential. State and work limits give explicit failure when
 exploration exceeds the supplied budgets. The caps define the
 model, and the limits bound construction.
 
+## Beam-pruned finite string beliefs
+
+`FiniteStringBeliefPlan.run_pruned` applies synchronous sum-product
+over the declared typed candidate supports. It ranks each proposed
+factor-to-variable message by raw marginal weight, breaks ties by
+lexicographic word order, and normalizes the retained positive
+weights. The full and omitted masses use the same gauge, with
+incoming variable cavities normalized before the factor sum. These
+masses refer to the declared finite candidates.
+
+Damping first restricts the old message to the positive support of
+the new pruned proposal. When the old message has positive retained
+mass, the update mixes the two normalized vectors on this support.
+When their positive supports are disjoint, the update uses the new
+proposal. Every transmitted message after the first sweep thus has
+at most the requested positive support size.
+
+The reported total-variation residual compares the current messages
+with the undamped pruned proposal. `converged` describes this
+approximate update. The result also records positive omitted mass
+across completed proposal evaluations and per-message masses for
+the latest complete proposal. A hard support conflict reports
+`empty_support` with no normalized beliefs. Plan construction still
+reports resource exhaustion through the configured state, work, and
+factor-entry limits.
+
+The declared factor tables are built within those limits. The beam
+caps positive message support and leaves the factor-table allocation
+bound in place. Derivatives follow the executed updates with beam
+choices held fixed.
+
 ::: quivers.core.relations
     options:
       members:
@@ -786,11 +1040,14 @@ model, and the limits bound construction.
         - PathStatistics
         - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
+        - PrunedStringBeliefResult
         - RelationLimitError
         - RelationPath
         - StringAlignment
         - StringAlignmentCertificate
         - StringAlignmentMapResult
+        - StringAlignmentTrace
+        - PairedAlignmentMapResult
         - StringBeliefResult
         - StringEPResult
         - StringSiteProjection
@@ -798,6 +1055,8 @@ model, and the limits bound construction.
         - StringFactorGraph
         - StringMapCertificate
         - StringMapResult
+        - StringCandidateMessage
+        - StringCandidatePlan
         - StringVariable
         - TreeStringMarginal
         - auto_intersect
@@ -809,12 +1068,15 @@ model, and the limits bound construction.
         - concatenate
         - condition
         - dual_alignment_map
+        - paired_dual_alignment_map
         - dual_string_map
         - intersect
         - invert
         - join
         - penalized_regular_ngram_projection
+        - StaticMinimizationWork
         - minimize_static_acceptor
+        - minimize_static_acceptor_with_work
         - project
         - regular_string_ep
         - ranked_output_candidates

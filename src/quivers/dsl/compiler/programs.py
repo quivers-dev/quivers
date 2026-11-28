@@ -42,7 +42,7 @@ from quivers.continuous.morphisms import (
 )
 from quivers.core.algebras import CompositionRule
 from quivers.core.morphisms import Morphism, ObservedMorphism
-from quivers.dsl._deduction_outcomes import OUTCOME_CALLS
+from quivers.dsl._deduction_outcomes import NATIVE_DEDUCTION_CALLS
 
 from quivers.continuous.inline import (
     UnsizedParameterError,
@@ -733,7 +733,7 @@ def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
         if (
             isinstance(step, LetStep)
             and isinstance(step.value, LetExprCall)
-            and step.value.func in OUTCOME_CALLS
+            and step.value.func in NATIVE_DEDUCTION_CALLS
         ):
             return True
         if isinstance(step, MarginalizeStep) and _calls_a_computation(step.scope):

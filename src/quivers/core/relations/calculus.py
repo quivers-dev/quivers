@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from itertools import product
-from typing import cast
+from typing import Protocol, cast
 
 import torch
 from torch import nn
@@ -15,6 +15,7 @@ from torch import nn
 from quivers.core.algebras import Semiring
 from quivers.core.laws import SEMIRING_LAWS, TIMES_COMMUTATIVE
 from quivers.core.morphisms import Morphism
+from quivers.core.objects import StringSet
 from quivers.core.relations import RationalRelation
 from quivers.core.relations._packed import _take
 from quivers.core.relations.queries import (
@@ -247,6 +248,14 @@ def _compile_composition(
     )
 
 
+class _TapeLayout(Protocol):
+    @property
+    def tapes(self) -> tuple[StringSet, ...]: ...
+
+    @property
+    def input_tapes(self) -> int: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _JoinLayout:
     left_tape: int
@@ -257,8 +266,8 @@ class _JoinLayout:
     @classmethod
     def build(
         cls,
-        left: RelationTopology,
-        right: RelationTopology,
+        left: _TapeLayout,
+        right: _TapeLayout,
         left_tape: int,
         right_tape: int,
         *,
@@ -286,20 +295,26 @@ class _JoinLayout:
         )
 
 
+type _ArcOrigin = tuple[int, int]
+
+
 def _materialize_product(
     left: RelationTopology,
     right: RelationTopology,
     layout: _JoinLayout,
     max_states: int,
     max_work: int,
-) -> tuple[RelationTopology, tuple[_WeightPair, ...]]:
+    *,
+    arc_origins: list[_ArcOrigin] | None = None,
+    boundary_origins: dict[int, tuple[int, int]] | None = None,
+) -> tuple[RelationTopology, tuple[tuple[int, int], ...]]:
     if len(left.initial) * len(right.initial) > max_states:
         raise RelationLimitError("composition exceeds max_states")
     left_index = _arc_index(left, None, layout.left_tape)
     right_index = _arc_index(right, None, layout.right_tape)
     left_count = len(left.weight_names)
     source_slots = left_count + len(right.weight_names)
-    boundary_slots: dict[_WeightPair, int] = {}
+    boundary_slots: dict[tuple[int, int], int] = {}
     states: list[tuple[int, _ProductState]] = []
     state_ids: dict[_ProductState, int] = {}
     initial: list[Boundary] = []
@@ -325,10 +340,19 @@ def _materialize_product(
             states.append((index, state))
         return index
 
-    def add_arc(source: int, target: int, labels: tuple[Label, ...], slot: int) -> None:
+    def add_arc(
+        source: int,
+        target: int,
+        labels: tuple[Label, ...],
+        slot: int,
+        side: int,
+        arc: int,
+    ) -> None:
         work.demand()
         work.arcs += 1
         arcs.append(Arc(source, target, labels, slot))
+        if arc_origins is not None:
+            arc_origins.append((side, arc))
 
     def boundary_slot(left_slot: int, right_slot: int) -> int:
         pair = left_slot, right_slot
@@ -337,11 +361,15 @@ def _materialize_product(
     for l_mark, r_mark in product(left.initial, right.initial):
         state = state_id((l_mark.state, r_mark.state, _Filter.MATCH))
         initial.append(Boundary(state, boundary_slot(l_mark.weight, r_mark.weight)))
+        if boundary_origins is not None:
+            boundary_origins[state] = l_mark.state, r_mark.state
     for source, (l_state, r_state, phase) in states:
         l_final = left._final_slots.get(l_state)
         r_final = right._final_slots.get(r_state)
         if l_final is not None and r_final is not None:
             final.append(Boundary(source, boundary_slot(l_final, r_final)))
+            if boundary_origins is not None:
+                boundary_origins[source] = l_state, r_state
         l_group = left_index.get((l_state, EPSILON))
         r_group = right_index.get((r_state, EPSILON))
         for l_id, r_id, next_phase in _moves(
@@ -359,21 +387,25 @@ def _materialize_product(
             )
             emitted = layout.labels(l_arc, r_arc)
             if l_arc is None:
-                assert r_arc is not None
+                assert r_arc is not None and r_id is not None
                 add_arc(
                     source,
                     target,
                     emitted,
                     left_count + r_arc.weight,
+                    1,
+                    r_id,
                 )
             elif r_arc is None:
-                add_arc(source, target, emitted, l_arc.weight)
+                assert l_id is not None
+                add_arc(source, target, emitted, l_arc.weight, 0, l_id)
             else:
                 # Preserve both primitive factors for a future star of a
                 # cyclic product. This intermediate has one continuation.
                 between = allocate()
-                add_arc(source, between, emitted, l_arc.weight)
-                add_arc(between, target, silent, left_count + r_arc.weight)
+                assert l_id is not None and r_id is not None
+                add_arc(source, between, emitted, l_arc.weight, 0, l_id)
+                add_arc(between, target, silent, left_count + r_arc.weight, 1, r_id)
     names = (
         *(f"left:{name}" for name in left.weight_names),
         *(f"right:{name}" for name in right.weight_names),
@@ -428,6 +460,15 @@ class ComposedRelation(Morphism):
         self._right = right
         self._left_index = _arc_index(left.topology, 0, 1)
         self._right_index = _arc_index(right.topology, 1, 0)
+        self._materialized: (
+            tuple[
+                tuple[int, int],
+                RelationTopology,
+                tuple[_WeightPair, ...],
+                tuple[_ArcOrigin, ...] | None,
+            ]
+            | None
+        ) = None
         left_module, right_module = left.module(), right.module()
         self._module = nn.ModuleList(
             (left_module,)
@@ -452,24 +493,48 @@ class ComposedRelation(Morphism):
 
         The limits bound the states and the sum of shared-label probes
         and arcs. They include intermediate states and arcs that retain
-        the primitive factors of a matched pair. The result reads both
-        original weight sources on each evaluation.
+        the primitive factors of a matched pair. The last topology and
+        weight-slot mapping can be reused for identical budgets.
+        Each result reads both original weight sources on evaluation.
         """
+        return self._materialize(max_states=max_states, max_work=max_work)[0]
+
+    def _materialize(
+        self, *, max_states: int, max_work: int, capture_origins: bool = False
+    ) -> tuple[RationalRelation, tuple[_ArcOrigin, ...] | None]:
         if max_states is None or max_work is None:
             raise ValueError(
                 "materialized composition requires explicit state and work limits"
             )
         _validate_limits(max_states, max_work)
         left, right = self._left, self._right
-        layout = _JoinLayout.build(
-            left.topology, right.topology, 1, 0, keep_shared=False
-        )
-        topology, pairs = _materialize_product(
-            left.topology, right.topology, layout, max_states, max_work
-        )
-        return RationalRelation(
+        budgets = max_states, max_work
+        materialized = self._materialized
+        if (
+            materialized is None
+            or materialized[0] != budgets
+            or (capture_origins and materialized[3] is None)
+        ):
+            layout = _JoinLayout.build(
+                left.topology, right.topology, 1, 0, keep_shared=False
+            )
+            arc_origins: list[_ArcOrigin] | None = [] if capture_origins else None
+            topology, pairs = _materialize_product(
+                left.topology,
+                right.topology,
+                layout,
+                max_states,
+                max_work,
+                arc_origins=arc_origins,
+            )
+            origins = None if arc_origins is None else tuple(arc_origins)
+            materialized = budgets, topology, pairs, origins
+            self._materialized = materialized
+        _, topology, pairs, origins = materialized
+        relation = RationalRelation(
             topology, _MaterializedWeights(left, right, pairs), algebra=self.algebra
         )
+        return relation, origins
 
     def query(
         self,

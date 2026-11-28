@@ -465,6 +465,62 @@ lists the families, effects,
 [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries
 a deduction or a parser built from rule schemata adds.
 
+### Rule weights computed from matching fields
+
+On a checked `LogProb` deduction, `#[weight=operation]` supplies the log
+weight of one rule application. The named `define` takes the variables of
+the rule's instantiated telescope in presentation order, which starts with
+their first occurrence in the written premises. Position fields have type
+`Int`. Term fields have the deduction's own nominal item type. The operation
+returns `LogWeight`, has an empty effect row, and takes no static arguments.
+Its reachable calls cannot install a handler, since an empty row can hide
+effects handled inside the operation.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 2
+object Result : Real 1
+
+deduction Agreement : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, D, S, lex
+    rule join : span(I, K, Left, lex), span(K, J, D, lex) |- span(I, J, S, lex) #[weight=mass]
+    lexicon
+        "x" : A = lex #[learnable]
+        "x" : B = lex #[learnable]
+        "y" : D = lex
+
+define mass(i : Int, k : Int, left : Agreement__Item, j : Int) : LogWeight !{} =
+    let matches <- Agreement__eq(left, construct Agreement__A() as Agreement__Item)
+    if matches then
+        return weight(log(0.2))
+    else
+        return weight(log(0.6))
+
+program response : Token -> Result
+    let chart = parse(Agreement, sentence)
+    score result = weight_value(chart)
+    return result
+
+export response
+```
+
+For the sentence `["x", "y"]`, the two derivations use the same split
+and differ in the category assigned to `"x"`. If those lexical choices
+have log weights $a$ and $b$, the inside mass is
+$0.2\exp(a) + 0.6\exp(b)$. Each successful application adds the computed
+log weight to the log weights of its premises. In the checked chart, all
+proof tuples with the same matching fields use the same factor, so
+distributivity gives the same sum when those premises are already
+aggregated. Negative infinity denotes zero mass. NaN and positive infinity
+are rejected at the application.
+
+Computed weights contribute to raw inside mass. They cannot be combined
+with `normalize=lhs`, inherited through `parent`, or attached to a
+`learnable` or `bounded` rule. The checked reference machine can execute
+them through `parse` or `run_deduction`. The classic agenda, packed
+outcome and proof queries, and the exact linear planner require weight
+policies they can evaluate independently and refuse these operations.
+
 ### Cyclic inside weights and finite-height proofs
 
 For the one-token sentence `seed`, let $a$ be the lexical mass and $r$
@@ -488,6 +544,48 @@ sums the geometric series to $a/(1-r)$, with log derivatives $1$ and
 $r/(1-r)$ with respect to $\log a$ and $\log r$. For $r=1$ and $a>0$ the
 closure refuses divergence even though the checked log residual can become
 small as the mass grows.
+
+In a checked program, `let mass = parse_linear(Linear, sentence, 16)` selects
+the same span executor and returns a scalar `LogWeight`. With the weights
+above it gives $\log 0.5$. Its sentence is a rank-one token tensor that can
+come from program data or a checked local binding. If the deduction names
+a start category, the result is the mass of that category over the full
+sentence. With no start category, it sums all full-span categories.
+
+This entry admits `LogProb` lexical systems with atomic categories, unary
+rules that preserve both endpoints, and binary rules that concatenate
+adjacent spans. Each lexical occurrence has width one, so both premises
+of a binary rule have smaller width than its conclusion. Thus by induction
+on width, the lexical terms and binary contributions to a cell give a
+known vector $b$ before that cell's unary rules run. The unary closure
+computes the least sum $\sum_{k\geq 0} bU^k$, where $U$ contains the
+total weight of the unary steps between each pair of categories.
+Duplicate lexical alternatives and rule applications are added in
+`LogProb`. An absent full-span goal has zero mass.
+
+The final argument is a positive `Int` bound on the order of the unary
+closure matrix. An extra parallel step occupies an auxiliary state, so
+the limit includes those states. The call refuses a larger matrix before
+allocating it. This bound covers the matrix order and leaves the number
+of chart cells and the rest of the run's work unconstrained. The run records
+the cap as a control alongside the selected algorithm and arithmetic.
+
+Each rule uses its fixed weight or one learned parameter independent
+of the rule's bindings. The entry refuses nullable axioms, logical forms,
+binding-keyed and inherited rule weights, and left-hand-side production
+normalization. Native execution uses `float64` or `float32` log weights.
+The closure checks that its unary series converges for the supplied
+weights whenever it evaluates a chart with lexical occurrences. It
+distinguishes divergence from a case where the available arithmetic
+cannot establish convergence or evaluate a usable pivot. For positive
+goal mass in the open convergence domain, differentiating the finite
+elimination computes the
+derivative of the least solution in the run's precision. Indeed, for
+$v=b+vU$, the differential is $dv=(db+v\,dU)U^*$. Logarithmic differentiation
+then divides the relevant mass differential by the mass. Structural zero
+cells use the `LogProb` zero-gradient convention. The ordinary `parse`
+and `run_deduction` entries retain their iteration and settlement
+contracts.
 
 `MonotonePolynomial` selects the certified Newton plan for the branching
 rule. For $a,r>0$ and $4ar<1$, the smaller quadratic root is
@@ -580,6 +678,22 @@ counts, plus the cost of constructing and grouping the structural keys.
 Grounding uses the indexed agenda to find the rule instances. The runtime
 grounds the forest again on each invocation.
 
+In a native checked trace, each completed built-in outcome fold emits
+`deduction.outcomes`. The event names the selector, the raw or normalized
+mass mode, and the indexed packed-forest schedule. It reports the number
+of full-span goal items before grouping and positive-mass rows after
+grouping. Construction work counts indexed lookups, candidates examined,
+and the stored forest edges plus their premise references. Those records
+are live during the query. The result contains the weighted rows.
+
+The event states the derivative contract for the log weights on fixed
+support. Its `unmeasured` field names fold and backward arithmetic, tensors
+saved for backward, and peak bytes. The report also covers the item query
+that precedes a user-defined key. The subsequent calls to that key are
+outside its construction counters. When trace recording and the observer
+are both disabled, the runtime skips constructing the event and counting
+the forest records for it.
+
 #### Ground rules and empty spans
 
 This deduction supplies one empty left boundary and uses it to complete
@@ -638,6 +752,12 @@ The query runs the projection once per supported goal, then groups keys
 in a hash table. Its extra work depends on the number of goal items and
 the cost of computing and comparing their keys, even when the proof count
 is much larger. The masses and their normalizer retain their gradients.
+The native trace emits a separate `deduction.grouped_outcomes` event after
+this stage. It records the key type, number of input rows, distinct keys,
+positive output rows, and whether this stage normalizes the result. The
+underlying packed query reports its own raw item or proof masses.
+Computing the key, comparing structured values, and summing the masses
+have separate costs and are listed as unmeasured here.
 
 #### Returning weighted proofs
 
@@ -662,8 +782,16 @@ and form indices inhabit `D__Term`. The proof's constructors include
 `D__rule_<name>` for each rule and `D__axiom_span` for a lexical occurrence.
 A QVR `case` can bind these indices and pass the proof to another checked
 computation. Enumeration makes no requests on behalf of that computation.
-The proof limit counts returned alternatives before zero-weight filtering.
-Reifying them also takes work proportional to their explicit proof sizes.
+Reifying positive-weight proofs takes work proportional to their explicit
+proof sizes.
+
+The native trace emits `deduction.proofs` after a successful enumeration.
+It records the budget, the number of structural proofs before filtering,
+the number of typed result rows, and the packed-forest construction
+counters. Reification work and backward storage are unmeasured. If the
+budget is exceeded, `deduction.proofs.refused` records the budget and the
+reason. The check saturates proof counts at the budget plus one, so the
+event supplies no exact total after refusal.
 
 For instance, two rules can prove the same full span. This program uses
 the packed chart to return their total weight by summing the two proof rows.
@@ -805,6 +933,79 @@ the key once per returned proof and groups the result. The cost includes
 the explicit proof sizes, the key computations, and hashing the resulting
 key values. When the key depends only on the conclusion item, use
 `parse_outcomes` with an item key to sum the proofs first in the packed chart.
+
+#### Packing Boolean proof meanings
+
+Use `parse_packed_boolean_outcomes(D, sentence, meaning)` for an
+`interpret meaning : D -> Bool` whose operations can be tabulated. The
+[parity example](../examples/qiec/packed-boolean-proof-outcomes.qvr) assigns
+each word one of two readings and computes the parity of a proof's readings.
+Its checked likelihood sums the probabilities of every odd-parity proof.
+
+The result is a `D__BooleanOutcomes` list. A
+`D__boolean_outcome_entry` contains a Boolean key, its log mass, and
+the remaining rows. The list ends with `D__boolean_outcome_end`.
+It contains only positive-mass rows, in false-then-true order.
+`parse_normalized_packed_boolean_outcomes` divides by the total goal mass and
+refuses an empty or zero-mass result. Either list can serve as input to
+`outcome_law` when the total mass is positive.
+
+A `normalize=lhs` grammar can take program-supplied production probabilities
+in either packed query. Append the same `("left-hand side", probabilities)`
+pairs used by [ordinary parsing](#priors-on-production-probabilities)
+after the interpretation. These probabilities replace the grammar's local
+weights for that call. The choice to normalize the returned meaning masses
+still divides by the total mass of the current sentence.
+
+This query uses the finite acyclic lexical fragment of `parse_outcomes`.
+Rules have at most two ordered premises and carry no additional value
+fields. The interpretation's rule and axiom operations have empty effect
+rows, take no static parameters, and install no handlers in any reachable
+call. QIEC calls the actual operations once for each declared lexical
+word and each ordered tuple of premise truth values. Thus those calls must
+succeed at all entries, including tuples and words the current sentence
+cannot reach. If a call fails, the packed query fails. Use the budgeted
+proof query for computations that need a proof's indices or are defined
+only on the reachable proofs.
+
+For an item $v$, let $m_v(b)$ be the mass of proofs with meaning $b$.
+An edge $e$ with ordered premises $u_1,\ldots,u_k$ has weight $w_e$ and
+an operation $f_e$. In probability scale the fold computes
+
+$$
+m_v(b) = \sum_{e 	o v} w_e
+    \sum_{\substack{(b_1,\ldots,b_k) \\ f_e(b_1,\ldots,b_k)=b}}
+       \prod_{j=1}^{k} m_{u_j}(b_j).
+$$
+
+An axiom contributes its own weight at the value of its lexical operation.
+For each rule, the Cartesian product of its premise proof occurrences
+partitions by the tuple of their meanings. Distributivity factors the
+sum within each tuple into the product of its premise masses. Induction
+in topological order gives the same mass as interpreting and grouping
+the individual proofs. Repeated premises contribute one factor per
+premise position, including when both positions refer to the same item.
+
+The `deduction.boolean_outcomes` trace records the indexed
+forest construction separately from the folded portion that reaches a
+goal. Each rule edge in that portion contributes at most four meaning
+tuples, each with at most two LogProb products. Thus after grounding, the
+fold has linear scalar arithmetic and graph storage in the number of
+items and edges. The retained differentiation graph has the same scalar
+size bound. The key table has one entry per distinct declared lexical
+word and at most four entries per rule. Each run builds the table,
+grounds the forest, and differentiates the current numerical weights
+at fixed truth tables. Those costs include the authored operation
+evaluations, and the trace leaves actual allocator and backward
+measurements unspecified.
+
+For $n\ge 1$ copies of the ambiguous word in the example, there are $2^n$
+proofs and $10n-2$ meaning tuples in the fold over goal ancestors.
+The forest construction still records edges for shorter spans that
+the goal never uses, so its provenance grows quadratically on this
+grammar. QIEC's step budget applies to the interpreted computation
+and its truth calls. The packed host fold uses its separate finite
+grounding contract.
 
 #### Encoding two proofs of one logical form
 

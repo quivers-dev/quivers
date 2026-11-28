@@ -103,6 +103,12 @@ module.exports = grammar({
       $.handler_decl,
       $.computation_decl,
       $.interpretation_decl,
+      $.relation_decl,
+      $.relation_compose_decl,
+      $.relation_transform_decl,
+      $.relation_score_decl,
+      $.string_graph_decl,
+      $.string_graph_score_decl,
       $.composition_decl,
       $.category_decl,
       $.rule_decl,
@@ -372,6 +378,7 @@ module.exports = grammar({
       optional(field('docs', $.doc_comment_group)),
       'interpret',
       field('name', $.identifier),
+      optional(field('options', $.option_block)),
       ':',
       field('deduction', $.identifier),
       '->',
@@ -391,6 +398,170 @@ module.exports = grammar({
     ),
 
     interpretation_clause_kind: _ => choice('rule', 'axiom'),
+
+
+    relation_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation',
+      field('name', $.identifier),
+      '[', 'algebra', '=', field('algebra', $.relation_algebra),
+      ',', 'states', '=', field('states', $.integer), ']',
+      $._newline,
+      $._indent,
+      repeat1(choice(field('entries', $._relation_entry), $._newline)),
+      $._dedent,
+    ),
+
+    relation_compose_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation',
+      field('name', $.identifier),
+      '=', 'compose', '(', field('left', $.identifier),
+      ',', field('right', $.identifier), ')',
+      $._newline,
+    ),
+
+    relation_transform_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation', field('name', $.identifier), '=',
+      field('recipe', choice(
+        $.relation_unary_recipe,
+        $.relation_projection_recipe,
+        $.relation_conditioning_recipe,
+        $.relation_binary_recipe,
+        $.relation_join_recipe,
+      )),
+      $._newline,
+    ),
+
+    relation_unary_recipe: $ => seq(
+      field('operation', $.relation_unary_operation),
+      '(', field('source', $.identifier), ')',
+    ),
+
+    relation_unary_operation: _ => choice('invert', 'trim', 'closure'),
+
+    relation_projection_recipe: $ => seq(
+      'project', '(', field('source', $.identifier), ',',
+      parenthesizedList($, field('positions', $.integer)), ')',
+    ),
+
+    relation_conditioning_recipe: $ => seq(
+      'condition', '(', field('source', $.identifier), ',',
+      field('positions', $.integer), ',',
+      field('word', $.relation_conditioning_word), ')',
+    ),
+
+    relation_conditioning_word: $ => parenthesizedList($, field('symbols', $.integer)),
+
+    relation_binary_recipe: $ => seq(
+      field('operation', $.relation_binary_operation),
+      '(', field('source', $.identifier), ',', field('other', $.identifier), ')',
+    ),
+
+    relation_binary_operation: _ => choice('union', 'concatenate', 'intersect'),
+
+    relation_join_recipe: $ => seq(
+      'join', '(', field('source', $.identifier), ',', field('other', $.identifier), ',',
+      field('positions', $.integer), ',', field('positions', $.integer),
+      optional(seq(',', 'keep_shared', '=', field('keep_shared', $.let_bool))), ')',
+    ),
+
+    relation_algebra: _ => choice('markov', 'logprob'),
+
+    _relation_entry: $ => choice(
+      $.relation_tape_decl,
+      $.relation_boundary_decl,
+      $.relation_arc_decl,
+    ),
+
+    relation_tape_decl: $ => seq(
+      field('direction', $.relation_tape_direction),
+      field('alphabet', $.identifier),
+      $._newline,
+    ),
+
+    relation_tape_direction: _ => choice('input', 'output'),
+
+    relation_boundary_decl: $ => seq(
+      field('boundary', $.relation_boundary_kind),
+      field('state', $.integer),
+      '[', 'weight', '=', field('weight', $.identifier), ']',
+      $._newline,
+    ),
+
+    relation_boundary_kind: _ => choice('initial', 'final'),
+
+    relation_arc_decl: $ => seq(
+      'arc', field('source', $.integer), '->', field('target', $.integer),
+      '[', 'labels', '=',
+      parenthesizedList($, field('labels', $.relation_label)),
+      ',', 'weight', '=', field('weight', $.identifier),
+      ']',
+      $._newline,
+    ),
+
+    relation_label: $ => choice($.integer, 'eps'),
+
+    relation_score_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation_score',
+      field('name', $.identifier),
+      ':',
+      field('result', $.qiec_type_name),
+      '[', 'operation', '=',
+      field('operation', $.relation_score_operation),
+      optional(seq(',', 'relation', '=', field('relation', $.identifier))),
+      ']',
+      $._newline,
+    ),
+
+    relation_score_operation: _ => choice(
+      'pair_weight', 'conditional_log_prob', 'path_entropy', 'expected_path_cost',
+    ),
+
+    string_graph_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'string_graph', field('name', $.identifier),
+      $._newline,
+      $._indent,
+      repeat1(choice(
+        field('variables', $.string_graph_variable),
+        field('factors', $.string_graph_factor),
+        $._newline,
+      )),
+      $._dedent,
+    ),
+
+    string_graph_variable: $ => seq(
+      'variable', field('name', $.identifier),
+      ':', field('alphabet', $.identifier),
+      optional(seq('[', 'observed', '=', field('observed', $.string_graph_observation), ']')),
+      $._newline,
+    ),
+
+    string_graph_observation: $ => parenthesizedList($, field('symbols', $.integer)),
+
+    string_graph_factor: $ => seq(
+      'factor', field('relation', $.identifier),
+      parenthesizedList($, field('scope', $.identifier)),
+      $._newline,
+    ),
+
+    string_graph_score_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'string_graph_score',
+      field('name', $.identifier),
+      ':',
+      field('result', $.qiec_type_name),
+      '[', 'operation', '=',
+      field('operation', $.string_graph_score_operation),
+      optional(seq(',', 'graph', '=', field('graph', $.identifier))),
+      ']',
+      $._newline,
+    ),
+
+    string_graph_score_operation: _ => choice('tree_partition', 'tree_log_prob'),
 
     _qiec_value_parameters: $ => parenthesizedList($, field('parameters', $.qiec_value_parameter)),
 

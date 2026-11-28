@@ -14,11 +14,13 @@ import torch
 from quivers.core.algebras import (
     LOG_PROB,
     MARKOV,
+    FreeSemimodule,
     LogProbAlgebra,
     MarkovAlgebra,
     Semiring,
 )
-from quivers.core.relations._packed import _take
+from quivers.core.carriers import ExpectationSemiring
+from quivers.core.relations._packed import _PackedPaths, _pack_paths, _take
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
     RelationLimitError,
@@ -237,6 +239,76 @@ class _PathWalks:
         self._arcs = graph.arcs
         self._initial = graph.initial
         self._final = dict(observation.final)
+
+    @cached_property
+    def max_path_length(self) -> int | None:
+        if self._cyclic:
+            raise ProductiveEpsilonCycleError(
+                "a finite trace capacity requires an acyclic productive graph"
+            )
+        longest: dict[int, int] = {}
+        for state in reversed(self._order):
+            longest[state] = max(
+                (1 + longest[target] for target, _ in self._arcs[state]), default=0
+            )
+        return max((longest[state] for state, _ in self._initial), default=None)
+
+    def path_log_prob(
+        self,
+        words: Words,
+        initial: int,
+        arcs: tuple[int, ...],
+        final: int,
+        log_weights: torch.Tensor,
+        total: torch.Tensor,
+    ) -> torch.Tensor:
+        slots = self._path_slots(words, initial, arcs, final)
+        if slots is None:
+            return log_weights.new_full((), -torch.inf)
+        values = _take(log_weights, slots)
+        if bool(torch.isneginf(values).any()):
+            return log_weights.new_full((), -torch.inf)
+        result = values.sum() - total
+        if not bool(torch.isfinite(result)):
+            raise OverflowError("normalized trace score is outside the input precision")
+        return result
+
+    @cached_property
+    def _initial_by_state(self) -> dict[int, int]:
+        return {mark.state: mark.weight for mark in self._topology.initial}
+
+    def _path_slots(
+        self, words: Words, initial: int, ids: tuple[int, ...], final: int
+    ) -> tuple[int, ...] | None:
+        topology = self._topology
+        if type(initial) is not int or type(final) is not int:
+            return None
+        start = self._initial_by_state.get(initial)
+        end = topology._final_slots.get(final)
+        if start is None or end is None:
+            return None
+        offsets = [0] * len(words)
+        locations = [start]
+        current = initial
+        for arc_id in ids:
+            if type(arc_id) is not int or not 0 <= arc_id < len(topology.arcs):
+                return None
+            arc = topology.arcs[arc_id]
+            if arc.source != current:
+                return None
+            for tape, (symbol, word) in enumerate(zip(arc.labels, words, strict=True)):
+                if symbol is not None:
+                    offset = offsets[tape]
+                    if offset == len(word) or word[offset] != symbol:
+                        return None
+                    offsets[tape] += 1
+            current = arc.target
+            locations.append(arc.weight)
+        if current != final or any(
+            offset != len(word) for offset, word in zip(offsets, words, strict=True)
+        ):
+            return None
+        return (*locations, end)
 
     @cached_property
     def _forward(self) -> _Chart:
@@ -550,6 +622,117 @@ class _PathWalks:
         index = torch.tensor(destinations, dtype=torch.long, device=weights.device)
         counts = normalized.new_zeros((len(ids),)).index_add(0, index, normalized)
         return ArcCounts(ids, counts, normalizer)
+
+    @cached_property
+    def _feature_plan(self) -> _PackedPaths:
+        if self._cyclic:
+            raise ProductiveEpsilonCycleError(
+                "feature moments require an acyclic productive observation"
+            )
+        topology = self._topology
+        arc_start = len(topology.initial)
+        final_start = arc_start + len(topology.arcs)
+        final_rows = {mark.state: index for index, mark in enumerate(topology.final)}
+        # The first observations are the initial marks in topology order.
+        # Arc payloads are original occurrence IDs, including occurrences
+        # that share scalar weight slots or repeat at different offsets.
+        return _pack_paths(
+            self._order,
+            [
+                tuple((target, arc_start + arc_id) for target, arc_id in edges)
+                for edges in self._arcs
+            ],
+            tuple((state, state) for state, _ in self._initial),
+            [
+                (state, final_start + final_rows[self._original[state]])
+                for state in self._final
+            ],
+        )
+
+    def log_feature_moments(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        arc_logs: torch.Tensor,
+        initial_logs: torch.Tensor | None,
+        final_logs: torch.Tensor | None,
+        *,
+        allow_cyclic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        plan = None if self._cyclic and allow_cyclic else self._feature_plan
+        algebra = _probability_algebra(weights, algebra)
+        if algebra is MARKOV:
+            weights = _markov_log_weights(weights)
+        if (
+            not isinstance(arc_logs, torch.Tensor)
+            or arc_logs.ndim != 2
+            or not arc_logs.shape[1]
+        ):
+            raise ValueError("arc log features require a nonempty feature axis")
+        width = arc_logs.shape[1]
+        topology = self._topology
+        features: list[torch.Tensor] = []
+        slots: list[int] = []
+        for name, values, marks in (
+            ("initial", initial_logs, topology.initial),
+            ("arc", arc_logs, topology.arcs),
+            ("final", final_logs, topology.final),
+        ):
+            slots.extend(mark.weight for mark in marks)
+            shape = (len(marks), width)
+            if values is None:
+                features.append(weights.new_full(shape, -torch.inf))
+                continue
+            if (
+                not isinstance(values, torch.Tensor)
+                or values.shape != shape
+                or values.dtype != weights.dtype
+                or values.device != weights.device
+                or values.layout != torch.strided
+                or not bool(LOG_PROB.contains(values).all())
+            ):
+                raise ValueError(
+                    f"{name} log features require one log-space row per occurrence "
+                    "on the weight dtype and device"
+                )
+            features.append(values)
+        if plan is None:
+            return self._closed_log_feature_moments(weights, features)
+        carrier = ExpectationSemiring(FreeSemimodule(LOG_PROB, width))
+        local_weights = _take(weights, tuple(slots))
+        local_moments = carrier.module.act(local_weights, torch.cat(features))
+        result = plan.evaluate(carrier.pack(local_weights, local_moments), carrier)
+        if not bool(carrier.contains(result)):
+            raise OverflowError(
+                "log feature moments are outside the evaluation precision"
+            )
+        return carrier.parts(result)
+
+    def _closed_log_feature_moments(
+        self, weights: torch.Tensor, features: list[torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        total, prefix = self._forward.evaluate(weights, LOG_PROB)
+        _, suffix = self._backward.evaluate(weights, LOG_PROB)
+        events = self._events
+        unit = weights.new_zeros(1)
+        # The marked occurrence splits each walk into an arbitrary prefix,
+        # one original occurrence, and an arbitrary suffix. In a component
+        # this is A* B A*, with one term for every possible mark of a walk.
+        left = _take(torch.cat((prefix, unit)), events.prefix)
+        right = _take(torch.cat((suffix, unit)), events.suffix)
+        marked = left + _take(weights, events.slots) + right
+        rows = torch.cat(
+            tuple(
+                _take(group, indices)
+                for group, indices in zip(features, events.original_ids, strict=True)
+            )
+        )
+        moments = LOG_PROB.join(marked.unsqueeze(-1) + rows, dim=0)
+        if not bool(LOG_PROB.contains(total) & LOG_PROB.contains(moments).all()):
+            raise OverflowError(
+                "log feature moments are outside the evaluation precision"
+            )
+        return total, moments
 
 
 __all__ = ["ArcCounts", "PathStatistics", "RelationPath"]

@@ -24,6 +24,8 @@ from quivers.qiec.checking import (
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec.foreign import (
+    DeductionLinearGoal,
+    DeductionBooleanOutcomes,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -442,6 +444,41 @@ def installed_handlers(body: Computation) -> frozenset[HandlerId]:
     return frozenset(found)
 
 
+def _first_handled_call(
+    root: ComputationId,
+    by_id: dict[ComputationId, NamedComputation],
+    visited: set[ComputationId],
+) -> NamedComputation | None:
+    """Find a reachable installed handler hidden by an empty result row.
+
+    Parameters
+    ----------
+    root
+        The closed computation starting the search.
+    by_id
+        The checked computations in the module.
+    visited
+        Shared cache of traversed computations, filled in place. A
+        caller refuses on the first hit before reusing this cache.
+
+    Returns
+    -------
+    NamedComputation or None
+        The first computation that installs a handler, if any.
+    """
+    pending = [root]
+    while pending:
+        identity = pending.pop()
+        if identity in visited:
+            continue
+        visited.add(identity)
+        computation = by_id[identity]
+        if installed_handlers(computation.body):
+            return computation
+        pending.extend(called_computations(computation.body))
+    return None
+
+
 def reached_handlers(module: QiecModule, root: ComputationId) -> frozenset[HandlerId]:
     """The handlers a run of one computation may install.
 
@@ -460,6 +497,26 @@ def reached_handlers(module: QiecModule, root: ComputationId) -> frozenset[Handl
     -------
     frozenset[HandlerId]
         The identity of every handler installed along the way.
+    """
+    _, handlers = _execution_reachability(module, root)
+    return frozenset(handlers)
+
+
+def _execution_reachability(
+    module: QiecModule, root: ComputationId
+) -> tuple[set[ComputationId], set[HandlerId]]:
+    """Walk the computations and handler clauses reachable from one root.
+
+    Parameters
+    ----------
+    module, root
+        The checked module and the selected computation.
+
+    Returns
+    -------
+    tuple
+        The reached computations and installed handlers, respectively.
+        Reachability is conservative across branches and handler clauses.
     """
     computations = {computation.id: computation for computation in module.computations}
     handlers = {handler.id: handler for handler in module.handlers}
@@ -490,7 +547,7 @@ def reached_handlers(module: QiecModule, root: ComputationId) -> frozenset[Handl
             )
             if declaration.return_clause is not None:
                 bodies.append(declaration.return_clause.body)
-    return frozenset(found)
+    return seen_computations, found
 
 
 def program_computations(module: QiecModule) -> frozenset[ComputationId]:
@@ -648,7 +705,14 @@ def validate_module(module: QiecModule) -> KernelRegistry:
         registry.register_handler(handler)
     if not rechecked:
         for handler in module.handlers:
-            if isinstance(handler.foreign, DeductionOutcomes | DeductionProofs):
+            if isinstance(handler.foreign, DeductionLinearGoal):
+                from quivers.qiec.linear_deduction import validate_linear_goal
+
+                validate_linear_goal(handler, handler.foreign, registry, module.module)
+            elif isinstance(
+                handler.foreign,
+                DeductionOutcomes | DeductionProofs | DeductionBooleanOutcomes,
+            ):
                 from quivers.qiec.deduction_outcomes import validate_outcome_adapter
 
                 validate_outcome_adapter(handler, handler.foreign, registry)
@@ -1007,6 +1071,10 @@ def _validate_index_sorts(module: QiecModule) -> None:
     ]
     while pending:
         node = pending.pop()
+        if isinstance(node, DeductionLinearGoal):
+            # The nested presentation has its own checked lexical index
+            # sorts. The operation exchanges only ordinary outer types.
+            continue
         if isinstance(node, DeductionOutcomes):
             # Its rule presentation validates a separate module of index
             # sorts and can have nominal sorts named by another scope.

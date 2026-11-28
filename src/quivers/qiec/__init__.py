@@ -378,7 +378,66 @@ from quivers.qiec.programs import (
 from quivers.qiec.reference_support import (
     DistributionError,
 )
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relation_ranked import FixedRankedOTRelationRequest
+from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
+from quivers.qiec.pruned_string_graph_runtime import (
+    PrunedStringGraphRequest,
+    PrunedStringGraphRuntimeProvider,
+    pruned_string_graph_handler,
+)
+from quivers.qiec.regular_ep_runtime import (
+    RegularStringEPRequest,
+    RegularStringEPRuntimeProvider,
+)
+from quivers.qiec.contextual_edit_runtime import (
+    ContextualEditRuntimeProvider,
+    FixedContextualEditRequest,
+)
+from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
+from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
+from quivers.qiec.relation_composition import (
+    ComposedRelationSpec,
+    FixedComposedRelationRequest,
+)
+from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_path_law import (
+    FixedCyclicRelationPathSampleRequest,
+    FixedRelationPathSampleRequest,
+    RelationPathLaw,
+)
+from quivers.qiec.relation_feature_moments import (
+    FixedComposedArcFeatureMomentRequest,
+    FixedCyclicRelationFeatureMomentRequest,
+    FixedRelationFeatureMomentRequest,
+    FixedRelationFeatureObservation,
+)
+from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
+    FixedTransformedRelationRequest,
+    UnaryRelationTransformSpec,
+)
+from quivers.qiec.relations import (
+    FixedMinimizedRelationRequest,
+    FixedRelationArcCountsRequest,
+    FixedRelationCostRequest,
+    FixedRelationRequest,
+    RationalRelationSpec,
+    RelationWeightBindings,
+    RelationWeightComplement,
+)
+from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
+from quivers.qiec.string_solvers import (
+    JointAlignmentMapConfig,
+    JointAlignmentMapDecomposition,
+    JointAlignmentMapGapConfig,
+    PrunedStringBPConfig,
+    RegularStringEPConfig,
+    RegularStringEPPolicy,
+)
+from quivers.qiec.string_graph_runtime import (
+    TreeStringGraphRuntimeProvider,
+    tree_string_graph_handler,
+)
 from quivers.qiec.serialization import (
     JsonValue,
     QIEC_WIRE_FORMAT,
@@ -388,6 +447,13 @@ from quivers.qiec.serialization import (
     loads,
     to_data,
 )
+from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
+from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
+from quivers.qiec._packed_boolean_interpretation import (
+    PackedBooleanInterpretationBinding,
+)
+from quivers.qiec._scoped_proof_fold import ScopedProofFold, scoped_proof_fold
+from quivers.qiec._scoped_proof_types import ScopedProofTypes, scoped_proof_types
 from quivers.qiec.structured_sampleables import FiniteSampleable
 from quivers.qiec.substitution import (
     StaticSubstitution,
@@ -681,7 +747,48 @@ __all__ = [
     "RANDOM_SAMPLE",
     "REAL",
     "ROW",
+    "ComposedRelationSpec",
+    "RelationCascadeSpec",
+    "RelationCascadeStep",
+    "UnaryRelationTransformSpec",
+    "BinaryRelationTransformSpec",
+    "FixedTransformedRelationRequest",
+    "FixedComposedArcFeatureMomentRequest",
+    "FixedCyclicRelationFeatureMomentRequest",
+    "FixedRelationFeatureMomentRequest",
+    "FixedRelationFeatureObservation",
+    "FixedComposedRelationRequest",
+    "FixedBackoffRelationRequest",
+    "ContextualEditRuntimeProvider",
+    "FixedContextualEditRequest",
+    "FixedRankedOTRelationRequest",
+    "FixedMinimizedRelationRequest",
+    "FixedRelationArcCountsRequest",
+    "FixedRelationCostRequest",
+    "FixedRelationMarginalMapRequest",
+    "FixedRelationPathSampleRequest",
+    "FixedCyclicRelationPathSampleRequest",
+    "RelationPathLaw",
+    "FixedRelationRequest",
+    "RelationWeightBindings",
+    "RelationWeightComplement",
+    "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
+    "StringFactorGraphSpec",
+    "JointAlignmentMapConfig",
+    "JointAlignmentMapDecomposition",
+    "JointAlignmentMapGapConfig",
+    "PrunedStringBPConfig",
+    "PrunedStringGraphRequest",
+    "PrunedStringGraphRuntimeProvider",
+    "pruned_string_graph_handler",
+    "RegularStringEPConfig",
+    "RegularStringEPPolicy",
+    "RegularStringEPRequest",
+    "RegularStringEPRuntimeProvider",
+    "TreeStringGraphRequest",
+    "TreeStringGraphRuntimeProvider",
+    "tree_string_graph_handler",
     "Reachability",
     "Reduction",
     "ReductionOperator",
@@ -911,6 +1018,15 @@ __all__ = [
     "positive_parameter",
     "scale_weight",
     "static_shape",
+]
+__all__ += [
+    "ClosedInterpretationBinding",
+    "PackedBooleanInterpretationBinding",
+    "ScopedInterpretationBinding",
+    "ScopedProofFold",
+    "ScopedProofTypes",
+    "scoped_proof_fold",
+    "scoped_proof_types",
 ]
 __all__ += contracts.__all__
 __all__ += foreign.__all__

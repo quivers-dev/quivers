@@ -231,6 +231,22 @@ class SideCondition(QiecModel):
     arguments: tuple[str, ...] = ()
 
 
+class ComputedRuleWeight(QiecModel):
+    """A rule weight supplied by a named checked computation.
+
+    The presentation records the requirement. Checked source lowers each
+    application to a call on the rule telescope's bound fields. An executor
+    without that lowering cannot give the rule a numerical weight.
+
+    Parameters
+    ----------
+    operation : str
+        The name of the computation in the owning source module.
+    """
+
+    operation: str
+
+
 class Rule(QiecModel):
     """An inference rule: a constructor of its conclusion's proof family.
 
@@ -255,9 +271,9 @@ class Rule(QiecModel):
         a leaf; their types are value types.
     side_condition : SideCondition or None
         A checked computation each instance has to satisfy.
-    weight : ParameterId or None
-        The parameter that weights each application, or ``None`` for the
-        unit weight.
+    weight : ParameterId, ComputedRuleWeight, or None
+        The parameter or checked computation that weights each application,
+        or ``None`` for the unit weight.
     """
 
     id: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -273,7 +289,7 @@ class Rule(QiecModel):
     side_condition: SideCondition | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    weight: ParameterId | None = dx.field(
+    weight: ParameterId | ComputedRuleWeight | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -1021,6 +1037,19 @@ class RulePresentation(QiecModel):
     # ---- lowering -------------------------------------------------------
 
     @cached_property
+    def computed_weight_rules(self) -> tuple[Rule, ...]:
+        """Rules requiring an executable, telescope-dependent weight.
+
+        Returns
+        -------
+        tuple of Rule
+            The rules in presentation order.
+        """
+        return tuple(
+            rule for rule in self.rules if isinstance(rule.weight, ComputedRuleWeight)
+        )
+
+    @cached_property
     def constructors_by_id(self) -> Mapping[ConstructorId, Rule | AxiomSlot]:
         """Every rule and slot by its identity.
 
@@ -1331,6 +1360,10 @@ def _validate_presentation(presentation: RulePresentation) -> None:
             )
 
     for rule in presentation.rules:
+        if rule.weight is not None and not isinstance(
+            rule.weight, (ParameterId, ComputedRuleWeight)
+        ):
+            raise RuleError(f"rule {rule.name!r} has an invalid weight descriptor")
         bound: set[str] = set()
         for position, premise in enumerate(rule.premises):
             for hypothesis in premise.hypotheses:
@@ -3833,6 +3866,7 @@ __all__ = [
     "Blocks",
     "Binding",
     "CARTESIAN",
+    "ComputedRuleWeight",
     "ContextStructure",
     "CyclicDerivations",
     "Derivation",

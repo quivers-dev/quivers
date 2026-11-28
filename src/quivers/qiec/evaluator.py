@@ -1495,6 +1495,25 @@ class ClauseContext:
         """
         return self._evaluator.attachments
 
+    def emit_trace(
+        self,
+        event: str,
+        detail: Callable[[], Mapping[str, object]],
+    ) -> None:
+        """Emit a handler event through an installed execution observer.
+
+        Parameters
+        ----------
+        event
+            The stable event name.
+        detail
+            A function producing JSON-compatible event data. Without a
+            trace hook, the function is never called.
+        """
+        hook = self._evaluator.trace_hook
+        if hook is not None:
+            hook(event, detail())
+
     def evaluate(self, computation: Computation) -> object:
         """Evaluate a clause body in the outer handler context.
 
@@ -2745,10 +2764,14 @@ class Evaluator:
                 natural=natural,
             )
         if isinstance(value, LogMass):
+            from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             sampleable = self._value(value.sampleable, environment)
-            if not isinstance(sampleable, RuntimeDistribution | FiniteSampleable):
+            if not isinstance(
+                sampleable,
+                RuntimeDistribution | FiniteSampleable | RelationPathLaw,
+            ):
                 raise EvaluationError(
                     "log_mass was given a runtime value with no measure mass"
                 )
@@ -2757,10 +2780,14 @@ class Evaluator:
             except (ArithmeticError, ValueError) as error:
                 raise EvaluationError(f"log_mass failed: {error}") from error
         if isinstance(value, LogDensity):
+            from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             sampleable = self._value(value.sampleable, environment)
-            if not isinstance(sampleable, RuntimeDistribution | FiniteSampleable):
+            if not isinstance(
+                sampleable,
+                RuntimeDistribution | FiniteSampleable | RelationPathLaw,
+            ):
                 raise EvaluationError(
                     "log_prob was given a runtime value with no log density"
                 )

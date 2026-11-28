@@ -144,6 +144,135 @@ right block), so a binder decides what
 its variables stand for, and [`fold_open`][quivers.qiec.rules.HostInterpretation.fold_open] folds an
 open derivation at values of its context.
 
+### Checked right-scoped folds
+
+[`scoped_proof_types`][quivers.qiec.scoped_proof_types] derives checked QIEC proof and
+environment types from an unconditional, unindexed Cartesian presentation. The
+presentation explicitly grants exchange, weakening, and contraction. The adapter admits
+right-scoped hypotheses and requires a closed semantic carrier per judgment when interpreting
+a proof. A structural signature can use the existing [`presentation_of`][quivers.qiec.rules.presentation_of]
+and [`term_derivation`][quivers.qiec.rules.term_derivation] adapters. Set the Cartesian
+permissions on that presentation explicitly before preparing the scoped types.
+
+An environment extends a context with a nominal frame that carries the previous environment
+and the value of the newest hypothesis. A proof that refers to a hypothesis carries a checked
+witness of its exact position in that environment. Induction on the witness shows that lookup
+returns the newest value for the innermost reference and visits one preceding frame for each
+position it passes. Each premise's context is computed by extending its parent's context in
+the order the rule declares. Proof constructors and their stable identities are
+shared across choices of semantic carriers. [`ScopedProofTypes.value`][quivers.qiec.ScopedProofTypes.value]
+checks an open derivation and retains the original input occurrence identities.
+
+[`scoped_proof_fold`][quivers.qiec.scoped_proof_fold] fixes the carriers and closed effect
+rows for an interpretation. [`ScopedProofFold.operation_parameters`][quivers.qiec.ScopedProofFold.operation_parameters]
+gives the typed arguments of each rule operation at an arbitrary environment type. Eager
+premises run in written order. A scoped premise gives the operation a pair of its child proof
+and captured environment. [`ScopedProofFold.applications`][quivers.qiec.ScopedProofFold.applications]
+supplies the named computation that takes that pair and one value per introduced hypothesis.
+Each application extends the captured environment in order and evaluates the child once.
+Treating scoped arguments as functions of their hypotheses requires actions to consume them
+through these applications. An action can also inspect the proof in the pair as a proof
+observer, so extensional equations are an additional obligation on such actions.
+
+[`ScopedProofFold.assemble`][quivers.qiec.ScopedProofFold.assemble] combines the operations
+with the generated folds and checks the module. The resulting computations serialize and
+run on the native QIEC evaluator. Applying a scoped argument repeatedly runs its effects
+at the corresponding dynamic addresses. Skipping the argument skips those effects.
+Applications descend into strict proof subtrees. On finite proofs they terminate when each
+operation uses its supplied arguments finitely and terminates apart from these calls.
+The adapter checks scope and effect types. Ordered and left-scoped presentations,
+term-dependent judgments, and preservation of proof equations require a separate contract.
+
+An authored scoped interpretation can supply one closed lexical row using
+`effects=[instance, ...]` for a signature with several object sorts.
+Each judgment's generated fold must have exactly that residual row.
+Eager premises and scoped applications invoke the fold of the premise's
+nominal judgment. Two names for instances of one interface remain
+distinct in those folds and in the schema's effect requirements.
+
+`carriers=by_judgment` assigns a closed type to each judgment from its
+named rule operations. The interpretation's codomain gives the root
+carrier. Every other judgment needs a rule whose operation returns its
+carrier, and every operation concluding that judgment must agree on
+the same type. These result types are closed independently of the ambient
+context binder. A frame for a bound judgment stores that judgment's carrier, so
+a scoped premise can read a nominal data value even when its own fold
+returns `Real`. An interpretation without this option supplies its
+codomain as the common carrier.
+
+A `ModelSchema` exposes the selected program’s checked
+[`ScopedInterpretationBinding`][quivers.qiec.ScopedInterpretationBinding] records through
+`scoped_interpretations`. Reachability follows ordinary calls and calls made in installed
+authored handler clauses. Each binding retains the original rule presentation, the
+assignment of rules to operation identities, the root computation, the carriers, and the
+named instances required by its effect rows. The binding can be serialized alongside the
+executable QIEC module. Its [`validate`][quivers.qiec.ScopedInterpretationBinding.validate]
+method rechecks the executable declarations before using a restored binding. The
+companion has its own wire record and describes the scope and effect contract.
+It carries no claims about preservation of proof equations. Its reconstruction
+checks the generated environment and fold against the checked computations,
+including premise order and the named effect instances.
+
+For the scope comparison, let $\rho$ map hypothesis positions in a context
+$\Gamma$ to positions of the same judgment in $\Delta$. Each renamed
+hypothesis reads the same value at a valuation $v$ of $\Delta$ as the
+original reads at $v\circ\rho$. Lookup follows the membership witness, and
+crossing a binder extends $\rho$ by the identity on the newly introduced
+positions. The same argument covers substituting a hypothesis by a reference
+to another position. It extends to result equality for total pure rule
+operations that consume scoped arguments through application. An operation
+that inspects proof syntax may distinguish the proofs. This comparison
+does not license precomputing a replacement with effects or erasing,
+duplicating, or permuting its requests.
+
+For $J$ judgment forms, the membership declarations contain $J(J+1)$ constructors, each with
+$J$ uniform carrier types. Each concrete hypothesis reference at depth $d$ adds $d+1$
+membership nodes. Lowering also visits all rule nodes and their ordered premise fields once,
+sharing context tails in memory. Validation and serialization additionally process the
+written type arguments and the nested context types. These folds consume the supplied proofs.
+A deduction executor can still use a packed aggregate when its observable and algebra admit
+a more efficient computation.
+
+### Closed lexical interpretation contracts
+
+A `ModelSchema` also exposes the reachable
+[`ClosedInterpretationBinding`][quivers.qiec.ClosedInterpretationBinding]
+records through `closed_interpretations`. A binding retains the lexical
+proof presentation’s nominal rules and axioms, the operation assigned to
+each constructor, and the carrier over the judgment’s declared indices.
+It also gives the closed effect row and the lexical identity of each
+required instance. Reachability includes calls made in installed authored
+handlers. Source lowering records the companions while it builds the
+ordinary folds, so model binding can reuse them when the source is unchanged.
+The companion holds the existing immutable presentation and adds one
+assignment per constructor and one identity per required instance. Schema
+selection walks the checked call and handler graph once, independent of the
+number and size of proofs the program subsequently interprets.
+
+A companion has a standalone codec. Validation reconstructs the indexed
+case and compares the whole fold declaration, including its ordered rule
+calls and specialized result type. If the executable also has a packed
+query for the same presentation, validation compares the whole qualified
+presentation. A normalized lexical query may replace source rule weights
+with its own ordered production addresses. Validation checks each address
+against the owning presentation and rule position, and checks that any
+source parameter belongs to its own rule. A program that folds
+an explicitly supplied proof may have no such query. Its checked proof
+constructors and fold then establish the shape of the interpretation, while
+the interpretation makes no claim about weighted search or theory equations.
+
+A packed Boolean query reaches the same ordinary interpretation through
+its truth table. The schema's `packed_interpretations` contains a
+[packed companion][quivers.qiec.PackedBooleanInterpretationBinding] for each
+reached invocation and retains the corresponding ordinary companion in
+`closed_interpretations`. The check reconstructs the ordered calls with
+their actual nominal operations and literal inputs. It checks that the
+native query uses the original table, sentence, and normalization mode
+from the wrapper. Compiler validation shares the executable indexes across
+companions, and inference runs use the already checked declarations.
+
+::: quivers.qiec._packed_boolean_interpretation.PackedBooleanInterpretationBinding
+
 ## Binding
 
 Terms of a structural signature use de Bruijn indices.

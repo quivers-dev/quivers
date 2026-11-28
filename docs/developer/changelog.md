@@ -8,6 +8,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Explicit regular EP policies.** Choose a proved fixed-Lipschitz or adaptive-backtracking proximal step, provide checked initial sites, and inspect actual sparse moment work. Unsupported derivative or global error guarantees refuse.
+- **Packed Boolean proof outcomes.** A checked lexical interpretation can sum raw or normalized proof mass into Boolean outcomes by evaluating one finite truth table per cited rule and folding the reachable packed graph.
+- **Checked regular EP reports.** A named QVR computation can query normalized word scores, projection outcomes, and sweep diagnostics on its authored graph through the existing regular EP runtime. An evaluated log-zero normalizer reports an unavailable belief.
+- **Typed paired alignment-MAP decomposition.** Optional bounded one-tape joins coordinate exact grouped decoders. Feasible solutions retain each original factor's boundary states, arc occurrences, and rational score.
+- **Independent local verification for alignment MAP.** Returned bounds and certificates check original traces, exact suffix optima and centered multipliers, with reported verification work.
+- **Source-authored pruned graph queries.** A native QVR foreign computation can call a checked graph belief provider with its exact graph and candidate identity.
+- **Computed deduction rule weights.** A checked rule can name a pure `LogWeight` computation over its matched fields. Native lexical search and chart execution use the grounded weight with live derivatives.
+- **Checked cyclic posterior path draws.** Native Random uses certified suffix closure with a per-draw arc ceiling and full posterior scores for returned original traces.
+- **Proved objective gap targets for joint alignment MAP.** Exact feasible and dual scores can establish a serialized absolute or relative tolerance. Gap-based stops retain a status distinct from agreement certification.
+- **Checked packed contextual edit likelihoods.** Typed native scores reuse one packed alignment plan with the caller's original live contextual network.
+- **Checked capped ranked relation scores.** Serialized requests compile finite capped profiles for a typed transducer and sum live weights over the winning original paths at an observed pair.
+- **Checked compact backoff relations.** Serialized fixed-word requests keep ordinary transition priority, original scalar weight identities, and a bounded sparse plan. A named QVR computation can call the checked native provider.
+- **Checked static minimized relation scores.** An authored Markov acceptor's declared pair weight can use an exact bounded quotient of frozen weights. The snapshot request retains the original topology's checked identity.
+- **Cyclic deterministic weighted acceptor minimization.** A static Markov quotient preserves exact weights of finite words and reports sparse smaller-half refinement work, with explicit refinement budgets and coefficient representability checks.
+- **Original-arc moments through composition.** Checked materialized compositions can report unnormalized nonnegative moments of each operand's original arc features, including compatible pairs with a hidden middle word and certified epsilon cycles.
+- **Certified cyclic feature moments.** Checked fixed-word requests can combine scalar component closures to sum nonnegative features over all visits, with an explicit closure order bound.
+- **Derived relations in authored string graphs.** A named sparse relation cascade can serve as a factor with checked output tape types, explicit construction limits, and the original live weights.
+- **Checked pruned string beliefs.** The authored factor graph shares its parameter owners with a typed approximate query that reports support conflicts, resource limits, and pre-renormalization proposal masses.
+- **Checked log feature moment requests.** A serialized fixed observation declares finite feature tables, a typed log tensor result, and a bounded provider that retains the original live weights.
+- **Packed nonnegative path feature moments.** Fixed acyclic string observations can compute log-space first moments using the expectation semiring, with per-occurrence features and live derivatives through shared weights.
+- **Authored sparse relation cascades.** Checked relation operations can reuse the results of earlier or forward-declared operations. Each step retains its nominal operands and reads the original live parameters under explicit intermediate limits.
+- **Checked expected traversal vectors.** Serialize ordered original arc IDs and retrieve their live conditional traversal counts, including bounded cyclic queries.
+- **Checked sparse posterior path laws.** Fixed-word requests bind typed path posteriors for Random draws, replay, and differentiable trace scoring with original arc identities.
+- **Checked alignment-marginal ranking requests.** Serialize an explicit candidate set and sparse query limits for the exact alignment-sum objective, with a live selected log score.
+- **Serializable string solver configurations.** The same typed graph can be solved with exact acyclic local decoders for alignment MAP or approximate regular expectation propagation. Solver records preserve their distinct objectives, limits, and reference-language settings.
+- **Checked binary sparse relation transformations.** Serial recipes cover weighted union, concatenation, intersection, and single-tape joins with original operand identities.
+- **Authored sparse relation transformations.** QVR names typed projection, conditioning, inversion, trim, closure, union, concatenation, intersection, and join recipes for checked pair scores.
+- **Checked unary sparse relation transformations.** Serialized requests apply projection, conditioning, inversion, trimming, and closure to original typed relations and score the resulting words with live weights.
+- **Checked QIEC composition requests.** A wire record preserves both original sparse operand topologies and their shared weight identities, with explicit lazy or materialized execution.
+- **Checked best-path weight.** Serialized fixed-relation requests can score the highest-weight alignment of observed words with exact acyclic ranking and a deterministic tie derivative.
+- **Authored sparse relation composition.** QVR authors can compose two typed primitive relations and request a checked pair weight over the outer tape words.
+- **Authored sparse relation topologies.** QVR declares typed tapes, ordered epsilon and parallel arcs, and shared scalar identities. A checked source score can bind that exact topology and evaluate path entropy or signed expected cost.
+- **Authored string factor graphs.** QVR declares nominal variables, observed words, and ordered scopes over named sparse relations. Checked tree scores can bind the exact authored graph.
+- **Authored string graph scores.** QVR can name a checked graph partition or normalized word objective and call it from an ordinary computation.
+- **Candidate string messages.** A bounded candidate view retains the original unary LogProb message scale, sums omitted mass directly, and reports truncation and beam ties separately.
 - **Sampleable deduction outcomes.** A checked QVR program can turn weighted outcome rows into a typed finite law, draw a reading, and replay its score under the original grammar weights.
 - **Exact finite log expectations.** A single checked Random handler can sum scalar log scores across several dependent or structured finite draws with live gradients.
 - **Checked proof queries and interpretations.** QVR can return weighted proof occurrences under an explicit structural budget, interpret rule and axiom applications with checked computations, and sum proof weights by the resulting discrete meaning.
@@ -25,7 +60,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Exact static weighted acceptor minimization.** Proportional suffix series share one state in epsilon-free deterministic Markov acceptors with acyclic positive support. The quotient preserves each accepted weight exactly when its coefficients fit the input dtype.
 - **Sparse relations over strings.** `StringSet` describes an unbounded tape and `RationalRelation` sums the weights of accepting walks for fixed words using a sparse index. Arc occurrences can share weight slots, and reused queries read the live weights on every evaluation. An explicit size-checked restriction provides a `FiniteMorphism` for callers that need a tensor.
 - **Serializable sparse relation specifications.** `RationalRelationSpec` stores ordered tapes, arcs, boundary marks, and stable weight identities in the QIEC codec. Runtime binding resolves those identities to the original tensors, preserving shared parameters and derivatives.
+- **Checked fixed-word relation requests.** A serializable sparse request supplies a fixed pair score or conditional log probability through an explicit reference-machine provider with live parameter identities.
+- **Source-declared fixed relation scores.** QVR can declare a named pair weight or conditional log probability and call the checked sparse provider with original parameter identities.
 - **Fixed-word composition of sparse relations.** `ComposedRelation` matches two bivariate relations on their shared tape. Its epsilon filter counts each compatible pair of paths once, and reusable queries score the live operand weights with explicit construction limits.
+- **Cached sparse composition structure.** Repeated materialization with identical bounds reuses the latest topology and weight-slot mapping with live original parameters.
 - **Reusable sparse product topologies.** A bounded materialization can be used in further composition, cyclic closure, projection, inversion, and structural trimming. Original parameter sources remain live through these operations.
 - **Tape constraints on sparse relations.** A bounded fixed-word slice preserves joint mass on the remaining tapes. Weighted-language intersection multiplies the mass assigned by two one-tape relations through the epsilon-filtered product.
 - **Regular operations on sparse relations.** Weighted union, concatenation, and Kleene closure preserve path multiplicities and original weight sources. Queries use the same bounded closure checks when repetition gives a productive cycle.
@@ -33,9 +71,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Runnable sparse noisy-channel example.** A geometric source and a deletion channel share a parameter and infer an unbounded source length using the sparse relation calculus.
 - **Path inference for fixed strings.** Acyclic Markov and LogProb queries provide exact path ranking, conditional path sampling, and differentiable sparse expected arc counts with the original occurrence identities.
 - **Exact inference on forests of string factors.** Typed variables, observations, and sparse relation joins yield exact unary tree marginals, partition weights, and normalized word probabilities. Repeated uses of a weight source share its values within each evaluation.
+- **Serializable string factor graphs.** QIEC records nominal tape types, observations, named sparse relations, and ordered factor scopes. Binding restores shared relations and original parameter identities. Checked partition and normalized word queries reuse their plans and read live weights.
 - **Globally normalized sparse string conditionals.** Fixed input tapes define a conditional over every output word tuple. The numerator and the closure-checked normalizer share one live weight evaluation.
 - **Certified finite string MAP.** Dual decomposition over explicitly listed string supports maintains exact rational bounds and certifies optimality when the adjusted factor maximizers agree on full words.
 - **Fixed n-gram projection.** A finite declared n-gram family matches tilted moments by inclusive-KL projection. It reports residuals, local solver status, and differentiable fitted log probabilities.
+- **Portable pruned string inference settings.** QIEC serializes finite candidate supports, beam width, and resource limits separately from the graph. Runtime evaluation supplies the measured diagnostics.
+- **Beam-pruned finite string beliefs.** Typed sum-product messages use a declared support limit, preserve raw and omitted masses, and report support conflicts separately from convergence.
 - **Loopy belief propagation on finite string supports.** Explicitly listed support words define differentiable synchronous factor messages with optional damping, fixed-point residuals, and visible limits.
 - **Fixed-family expectation propagation for finite string graphs.** The finite message plan uses n-gram tilted projections, cavity division, family-preserving damping, and separate diagnostics for site fits and outer sweeps.
 - **Tree-group penalized n-gram projection.** Finite EP can penalize prefix groups with an exact ordered proximal map and report composite optimality separately from moment matching and outer convergence.

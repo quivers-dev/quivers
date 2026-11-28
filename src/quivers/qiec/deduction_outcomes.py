@@ -28,6 +28,7 @@ from quivers.qiec.evaluator import (
 )
 from quivers.qiec.foreign import (
     DEDUCTION_OUTCOME_KEYS,
+    DeductionBooleanOutcomes,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -100,7 +101,7 @@ def proof_entry_type(
 
 def validate_outcome_adapter(
     definition: HandlerDef,
-    semantics: DeductionOutcomes | DeductionProofs,
+    semantics: DeductionOutcomes | DeductionProofs | DeductionBooleanOutcomes,
     registry: KernelRegistry,
 ) -> None:
     """Check how a lexical span presentation exchanges typed values with QIEC.
@@ -120,7 +121,11 @@ def validate_outcome_adapter(
         If a type or constructor disagrees with the presented vocabulary
         or the operation cannot carry the query's inputs and answer.
     """
-    lexical = semantics.chart if isinstance(semantics, DeductionProofs) else semantics
+    lexical = (
+        semantics.chart
+        if isinstance(semantics, (DeductionProofs, DeductionBooleanOutcomes))
+        else semantics
+    )
     presentation = lexical.presentation
     assert isinstance(presentation, RulePresentation)
     (form,) = presentation.judgments
@@ -138,6 +143,11 @@ def validate_outcome_adapter(
             )
         result_binders, key_type = proof_entry_type(family)
         control = INT
+    elif isinstance(semantics, DeductionBooleanOutcomes):
+        key_type = BOOL
+        control = tensor_type(
+            BOOL, (IndexLiteral(value=semantics.table_size, sort=NAT),)
+        )
     output = definition.output_type
     empty = registry.constructors.get(lexical.empty)
     entry = registry.constructors.get(lexical.entry)
@@ -591,6 +601,8 @@ def _chart_outcomes(
     weights: torch.Tensor,
     key: str,
     normalize: bool,
+    *,
+    context: ClauseContext,
 ) -> dict[Ground, torch.Tensor]:
     """Push full-span goal weights forward to the selected structural keys.
 
@@ -608,6 +620,8 @@ def _chart_outcomes(
         The projection requested for the keys of the result.
     normalize
         Whether to subtract the log total mass from each returned log weight.
+    context
+        The runtime trace hook, if the invocation has one.
 
     Returns
     -------
@@ -642,7 +656,86 @@ def _chart_outcomes(
             else goal.arguments[2 if key == "category" else 3]
         )
         grouped.setdefault(outcome, []).append(weight)
-    return _outcome_masses(grouped, normalize)
+    rows = _outcome_masses(grouped, normalize)
+    context.emit_trace(
+        "deduction.outcomes",
+        lambda: _outcome_trace(forest, key, normalize, len(goals), len(rows)),
+    )
+    return rows
+
+
+def _outcome_trace(
+    forest: DerivationForest,
+    key: str,
+    normalized: bool,
+    goals: int,
+    rows: int,
+) -> Mapping[str, object]:
+    """Report the observed schedule and counters of one completed outcome fold.
+
+    Parameters
+    ----------
+    forest
+        The actual indexed forest built for the request.
+    key, normalized
+        The field selected as the outcome key and whether the returned
+        log masses subtract their common log total.
+    goals, rows
+        The number of full-span goal items and positive-mass result rows.
+
+    Returns
+    -------
+    Mapping of str to object
+        An execution record with construction measurements only.
+    """
+    return {
+        **_packed_trace(forest, normalized, goals, rows),
+        "observer": "weighted-outcome-rows",
+        "key": key,
+        "algorithm": "indexed-packed-forest-topological-fold",
+        "unmeasured": (
+            "fold_arithmetic",
+            "backward_arithmetic",
+            "elements_saved_for_backward",
+            "peak_bytes",
+        ),
+    }
+
+
+def _packed_trace(
+    forest: DerivationForest, normalized: bool, goals: int, rows: int
+) -> Mapping[str, object]:
+    """Report the measurements common to completed lexical forest queries.
+
+    Parameters
+    ----------
+    forest
+        The indexed forest built by the invocation.
+    normalized
+        Whether the query subtracts the common normalizer.
+    goals, rows
+        The number of full-span goal items and positive-weight result rows.
+
+    Returns
+    -------
+    Mapping of str to object
+        The finite weight contract and measured construction work.
+    """
+    construction = forest.report()
+    return {
+        "presentation": str(forest.presentation.id),
+        "normalized": normalized,
+        "recursion": "finite-acyclic",
+        "algebra": "LogProb",
+        "derivative": "autograd-on-finite-log-weights-at-fixed-support",
+        "retention": "packed-forest-during-query",
+        "goal_items": goals,
+        "positive_rows": rows,
+        "construction_work": tuple(
+            (measure.value, getattr(construction, measure.value))
+            for measure in construction.measured
+        ),
+    }
 
 
 def _outcome_masses[K](
@@ -794,7 +887,7 @@ def outcome_grouping_handler(
     """
 
     def group(
-        request: RuntimeRequest, _resume: Resumption, _context: ClauseContext
+        request: RuntimeRequest, _resume: Resumption, context: ClauseContext
     ) -> TailResume:
         """Fold the typed input rows and resume with their grouped masses.
 
@@ -804,8 +897,8 @@ def outcome_grouping_handler(
             The evaluated rows and the normalization flag.
         _resume : Resumption
             The resumption supplied by the machine.
-        _context : ClauseContext
-            The clause context supplied by the machine.
+        context : ClauseContext
+            The optional execution trace supplied by the machine.
 
         Returns
         -------
@@ -825,8 +918,28 @@ def outcome_grouping_handler(
             and row.result_type == definition.output_type
         ):
             if row.constructor == grouping.empty and not row.fields:
-                masses = _outcome_masses(
-                    grouped, decide(normalize, "outcome normalization")
+                normalized = decide(normalize, "outcome normalization")
+                masses = _outcome_masses(grouped, normalized)
+                context.emit_trace(
+                    "deduction.grouped_outcomes",
+                    lambda: {
+                        "observer": "weighted-typed-key-rows",
+                        "algorithm": "hash-grouped-structural-keys",
+                        "key_type": render_static(grouping.key_type),
+                        "normalized": normalized,
+                        "derivative": "autograd-on-finite-log-weights-at-fixed-support",
+                        "input_rows": sum(len(weights) for weights in grouped.values()),
+                        "distinct_keys": len(grouped),
+                        "positive_rows": len(masses),
+                        "unmeasured": (
+                            "key_computation",
+                            "key_hash_and_equality",
+                            "group_arithmetic",
+                            "backward_arithmetic",
+                            "elements_saved_for_backward",
+                            "peak_bytes",
+                        ),
+                    },
                 )
                 return TailResume(
                     value=_materialize_rows(
@@ -1042,6 +1155,7 @@ def deduction_outcomes_handler(
             weights,
             key,
             decide(normalize, "outcome normalization"),
+            context=context,
         )
         numbers = context.attachments.numbers
         constructors = dict(semantics.item_constructors)
@@ -1138,13 +1252,25 @@ def deduction_proofs_handler(
                 like=weights,
             )
         except ForestRefused as error:
+            reason = error.code.value
+            context.emit_trace(
+                "deduction.proofs.refused",
+                lambda: {
+                    "presentation": str(forest.presentation.id),
+                    "observer": "weighted-proof-rows",
+                    "proof_budget": limit,
+                    "goal_items": len(goals),
+                    "reason": reason,
+                },
+            )
             raise EvaluationError(str(error)) from error
         listed = tuple(
             (proof, weight) for rows in by_goal.values() for proof, weight, _ in rows
         )
+        normalized = decide(normalize, "proof normalization")
         masses = _outcome_masses(
             {index: [mass] for index, (_, mass) in enumerate(listed)},
-            decide(normalize, "proof normalization"),
+            normalized,
         )
         result = RuntimeConstructor(
             constructor=semantics.chart.empty,
@@ -1165,6 +1291,23 @@ def deduction_proofs_handler(
                 fields=(value, weight, result),
                 result_type=definition.output_type,
             )
+        context.emit_trace(
+            "deduction.proofs",
+            lambda: {
+                **_packed_trace(forest, normalized, len(goals), len(masses)),
+                "observer": "weighted-proof-rows",
+                "algorithm": "indexed-packed-forest-budgeted-enumeration",
+                "proof_budget": limit,
+                "structural_goal_proofs": len(listed),
+                "unmeasured": (
+                    "enumeration_arithmetic",
+                    "reified_proof_nodes",
+                    "backward_arithmetic",
+                    "elements_saved_for_backward",
+                    "peak_bytes",
+                ),
+            },
+        )
         return TailResume(value=result)
 
     return RuntimeHandler(

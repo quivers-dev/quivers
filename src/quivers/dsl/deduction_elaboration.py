@@ -65,15 +65,21 @@ from quivers.qiec._models import QiecModel
 
 from quivers.dsl._deduction_chart import declare_chart, elaborate_chart
 from quivers.dsl._deduction_outcomes import (
+    LINEAR_CODE,
+    LINEAR_PARSE,
     OUTCOME_CALLS,
+    PACKED_BOOLEAN_CALLS,
     PROOF_CALLS,
+    LinearGoalQuery,
     OutcomeKey,
     OutcomeQuery,
     declare_lexical_proofs,
     declare_outcome_key_types,
     declare_outcomes,
+    elaborate_linear_goal,
     elaborate_outcomes,
     outcome_call_sites,
+    register_linear_goal,
 )
 
 from quivers.dsl.ast_nodes import (
@@ -100,6 +106,7 @@ from quivers.dsl.ast_nodes import (
     OptionName,
     OptionNumber,
     ProgramDecl,
+    QiecComputationDecl,
     QiecInterpretationDecl,
     SchemaDecl,
     SequentRule,
@@ -130,7 +137,7 @@ from quivers.dsl.compiler._deduction_presentation import (
     category_term,
     deduction_presentation,
 )
-from quivers.qiec.rules import Judgment, RulePresentation
+from quivers.qiec.rules import ComputedRuleWeight, Judgment, RulePresentation
 from quivers.stochastic.categories import (
     AtomicCategory,
     Category,
@@ -153,6 +160,7 @@ from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
 from quivers.qiec.foreign import (
     PRODUCT_LAWS,
     SUM_LAWS,
+    DeductionLinearGoal,
     KernelSemiring,
     KernelValue,
     MissingLaw,
@@ -160,9 +168,11 @@ from quivers.qiec.foreign import (
     SemiringSum,
     Settlement,
 )
+from quivers.qiec.contracts import ParameterId
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.effects import (
     ArgumentDef,
+    EMPTY_ROW,
     EffectDef,
     EffectRef,
     EffectRequest,
@@ -184,7 +194,11 @@ from quivers.qiec.identifiers import (
     StaticScopeId,
 )
 from quivers.qiec.kinds import NAT
-from quivers.qiec.module import NamedComputation, NamedEffectInstance
+from quivers.qiec.module import (
+    NamedComputation,
+    NamedEffectInstance,
+    _first_handled_call,
+)
 from quivers.qiec.checking import ComputationSignature
 from quivers.qiec.terms import (
     Bind,
@@ -1280,7 +1294,11 @@ def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
             value = getattr(step, "value", None)
             if (
                 isinstance(value, LetExprCall)
-                and (value.func == "parse" or value.func in OUTCOME_CALLS)
+                and (
+                    value.func == "parse"
+                    or value.func in OUTCOME_CALLS
+                    or value.func in PACKED_BOOLEAN_CALLS
+                )
                 and value.args
                 and isinstance(value.args[0], LetExprVar)
                 and any(isinstance(argument, LetExprTuple) for argument in value.args)
@@ -1368,6 +1386,8 @@ class _DeductionElaboration:
         """
         self._deductions: dict[str, _System] = {}
         self._outcome_queries: dict[str, OutcomeQuery] = {}
+        self._boolean_outcome_queries: dict[str, OutcomeQuery] = {}
+        self._linear_goal_queries: dict[str, LinearGoalQuery] = {}
         self._proof_queries: dict[str, OutcomeQuery] = {}
         self._lexical_proofs: dict[str, RulePresentation] = {}
         self._outcome_keys: dict[tuple[str, str], OutcomeKey] = {}
@@ -1382,15 +1402,27 @@ class _DeductionElaboration:
         if not declarations:
             return
         calls = outcome_call_sites(self)
+        linear_calls = {
+            call.args[0].name: call
+            for call in calls
+            if call.func == LINEAR_PARSE and isinstance(call.args[0], LetExprVar)
+        }
         outcome_calls = {
             call.args[0].name: call
             for call in calls
-            if call.func not in PROOF_CALLS and isinstance(call.args[0], LetExprVar)
+            if call.func in OUTCOME_CALLS - PROOF_CALLS
+            and isinstance(call.args[0], LetExprVar)
         }
         proof_calls = {
             call.args[0].name: call
             for call in calls
             if call.func in PROOF_CALLS and isinstance(call.args[0], LetExprVar)
+        }
+        boolean_calls = {
+            call.args[0].name: call
+            for call in calls
+            if call.func in PACKED_BOOLEAN_CALLS
+            and isinstance(call.args[0], LetExprVar)
         }
         interpretations = {
             statement.deduction: statement
@@ -1428,10 +1460,19 @@ class _DeductionElaboration:
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
+            if (linear := linear_calls.get(declaration.name)) is not None:
+                self._linear_goal_queries[declaration.name] = self._declare_linear_goal(
+                    system, linear
+                )
             query = outcome_calls.get(declaration.name)
             if query is not None:
                 self._outcome_queries[declaration.name] = declare_outcomes(
                     self, system, query
+                )
+            boolean = boolean_calls.get(declaration.name)
+            if boolean is not None:
+                self._boolean_outcome_queries[declaration.name] = declare_outcomes(
+                    self, system, boolean, boolean=True
                 )
             proof = proof_calls.get(declaration.name)
             proof_declaration = interpretations.get(declaration.name, proof)
@@ -1449,7 +1490,74 @@ class _DeductionElaboration:
                 self._declare_chain_family(system)
             self._declare_deduction_instances(system)
             self._deductions[declaration.name] = system
-        self._outcome_keys = declare_outcome_key_types(self, calls)
+        self._outcome_keys = declare_outcome_key_types(
+            self, tuple(call for call in calls if call.func in OUTCOME_CALLS)
+        )
+
+    def _declare_linear_goal(
+        self: _Elaborator, system: _System, node: LetExprCall
+    ) -> LinearGoalQuery:
+        """Check a source query's binding-independent lexical weights."""
+        if any(
+            isinstance(rule.presented.rule.weight, ComputedRuleWeight)
+            for rule in system.rules
+        ):
+            self._fail(
+                node,
+                "parse_linear cannot execute computed rule weights",
+                code=LINEAR_CODE,
+            )
+        if (
+            system.semiring.algebra != LOG_PROB.subject
+            or not system.entries
+            or system.uses_forms_cell[0]
+            or system.depth_cell[0] is not None
+            or system.normalized_cell[0]
+        ):
+            self._fail(
+                node,
+                "parse_linear requires an unnormalized lexical LogProb deduction "
+                "without logical forms or a category depth bound",
+                code=LINEAR_CODE,
+            )
+        lexicon: list[tuple[str, str]] = []
+        for entry in system.entries:
+            if not isinstance(entry.category, _Atom):
+                self._fail(
+                    node,
+                    "parse_linear requires atomic lexical categories",
+                    code=LINEAR_CODE,
+                )
+            lexicon.append((entry.word, entry.category.name))
+        parameters = {}
+        for index, rule in enumerate(system.rules):
+            presented = rule.presented.rule
+            if presented.weight is None:
+                continue
+            assert isinstance(presented.weight, ParameterId)
+            if rule.parent is not None or any(
+                not isinstance(binder, IndexBinder) or binder.sort != NAT
+                for binder in presented.telescope
+            ):
+                self._fail(
+                    node,
+                    "parse_linear requires one binding-independent weight per rule "
+                    "and does not accept inherited weights",
+                    code=LINEAR_CODE,
+                )
+            parameters.setdefault(presented.weight, index)
+        presented = system.presentation_cell[0]
+        assert presented is not None
+        try:
+            semantics = DeductionLinearGoal(
+                presentation=presented.presentation,
+                lexicon=tuple(lexicon),
+                parameters=tuple(parameters),
+                start=system.start,
+            )
+        except (ValueError, dx.ValidationError) as error:
+            self._fail_kernel(node, error, fallback=LINEAR_CODE)
+        return register_linear_goal(self, system, semantics, tuple(parameters.values()))
 
     def _schema_parser_declarations(
         self: _Elaborator,
@@ -1899,7 +2007,7 @@ class _DeductionElaboration:
         try:
             presented = deduction_presentation(declaration)
         except DeductionPresentationError as refusal:
-            self._fail(declaration, str(refusal), code="qiec-program")
+            self._fail(refusal, str(refusal), code="qiec-program")
         system.presentation_cell[0] = presented
         system.uses_forms_cell[0] = presented.uses_forms
         for item in presented.rules:
@@ -1922,12 +2030,13 @@ class _DeductionElaboration:
                     "which no premise binds",
                     code="qiec-program",
                 )
-            if find_option(rule.options, "weight") is not None:
+            if isinstance(item.rule.weight, ComputedRuleWeight) and (
+                system.semiring.algebra != LOG_PROB.subject
+            ):
                 self._fail(
                     rule,
-                    f"rule {rule.name!r} option weight is an expression over its "
-                    "bindings; a computed rule weight has no elaboration yet",
-                    code="qiec-program-gap",
+                    f"rule {rule.name!r} computed weight requires LogProb",
+                    code="qiec-deduction-rule-weight",
                 )
             system.rules.append(
                 _Rule(presented=item, premises=premises, conclusion=conclusion)
@@ -2663,6 +2772,93 @@ class _DeductionElaboration:
                 computations.extend(self._elaborate_deduction(system, weighted=True))
         return tuple(computations)
 
+    def _check_computed_rule_weight_bodies(
+        self: _Elaborator, computations: tuple[NamedComputation, ...]
+    ) -> None:
+        """Check reachable code for effects hidden by a locally handled row."""
+        annotated = [
+            (rule.source, weight)
+            for system in self._deductions.values()
+            for rule in system.rules
+            if isinstance(weight := rule.presented.rule.weight, ComputedRuleWeight)
+        ]
+        if not annotated:
+            return
+        by_id = {computation.id: computation for computation in computations}
+        visited: set[ComputationId] = set()
+        for source, weight in annotated:
+            operation = self.computation_signatures[weight.operation]
+            body = _first_handled_call(operation.id, by_id, visited)
+            if body is not None:
+                self._fail(
+                    source,
+                    f"computed weight {operation.name!r} must be deterministic; "
+                    f"{body.name!r} installs an effect handler",
+                    code="qiec-deduction-rule-weight",
+                )
+
+    def _computed_rule_weights(
+        self: _Elaborator, system: _System
+    ) -> dict[int, ComputationSignature]:
+        """Check one closed weight operation over each instantiated telescope."""
+        computed = [
+            (index, rule, weight)
+            for index, rule in enumerate(system.rules)
+            if isinstance(weight := rule.presented.rule.weight, ComputedRuleWeight)
+        ]
+        if not computed:
+            return {}
+        authored = {
+            declaration.name
+            for declaration in self.source.syntax.statements
+            if isinstance(declaration, QiecComputationDecl)
+        }
+        operations: dict[int, ComputationSignature] = {}
+        for index, rule, weight in computed:
+            source = rule.presented.rule
+            names = tuple(
+                binder.name
+                for binder in source.telescope
+                if isinstance(binder, IndexBinder)
+            )
+            bound = {
+                name
+                for premise in rule.premises
+                for name in _pattern_variables(premise)
+            }
+            if len(names) != len(source.telescope) or not bound.issuperset(names):
+                self._fail(
+                    rule.presented.source,
+                    f"rule {source.name!r} computed weight needs each telescope field bound by a premise",
+                    code="qiec-deduction-rule-weight",
+                )
+            parameters = tuple(
+                INT if binder.sort == NAT else system.item
+                for binder in source.telescope
+                if isinstance(binder, IndexBinder)
+            )
+            operation = self.computation_signatures.get(weight.operation)
+            if operation is None or (
+                weight.operation not in authored
+                or operation.telescope
+                or operation.effects != EMPTY_ROW
+                or operation.result != LOG_WEIGHT
+                or operation.parameters != parameters
+            ):
+                signature = ", ".join(
+                    f"{name}: {('Int' if type_ == INT else system.name('Item'))}"
+                    for name, type_ in zip(names, parameters, strict=True)
+                )
+                self._fail(
+                    rule.presented.source,
+                    f"rule {source.name!r} weight {weight.operation!r} must name an "
+                    f"authored computation ({signature}) -> LogWeight !{{}} "
+                    "with no static parameters",
+                    code="qiec-deduction-rule-weight",
+                )
+            operations[index] = operation
+        return operations
+
     def _elaborate_deduction(
         self: _Elaborator, system: _System, weighted: bool = False
     ) -> list[NamedComputation]:
@@ -2690,6 +2886,7 @@ class _DeductionElaboration:
         list[NamedComputation]
             Its computations.
         """
+        computed_weights = self._computed_rule_weights(system)
         params = self.instances[PARAMS_INSTANCE]
         assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
         # Only a log semiring reads learned weights, and only the
@@ -2755,7 +2952,7 @@ class _DeductionElaboration:
         threaded = (
             {
                 system.name(suffix): system.name(f"weighted_{suffix}")
-                for suffix in (*THREADED, "outcomes", "proofs")
+                for suffix in (*THREADED, "outcomes", "proofs", "boolean_outcomes")
             }
             if weighted
             else {}
@@ -2976,10 +3173,14 @@ class _DeductionElaboration:
         if system.depth_cell[0] is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
         normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
-        queries = (
+        queries: tuple[tuple[str, OutcomeQuery | None, TypeExpr], ...] = (
             ("outcomes", self._outcome_queries.get(system.decl.name), STRING),
             ("proofs", self._proof_queries.get(system.decl.name), INT),
         )
+        boolean = self._boolean_outcome_queries.get(system.decl.name)
+        if boolean is not None:
+            assert boolean.boolean_table is not None
+            queries = (*queries, ("boolean_outcomes", boolean, boolean.boolean_table))
         query_entries = tuple(
             (
                 query,
@@ -2993,6 +3194,18 @@ class _DeductionElaboration:
             )
             for suffix, query, control in queries
             if query is not None
+        )
+        linear = None if weighted else self._linear_goal_queries.get(system.decl.name)
+        linear_entry = (
+            None
+            if linear is None
+            else declare(
+                system.name("linear_goal"),
+                (extent,),
+                (tokens_type, INT),
+                LOG_WEIGHT,
+                outer,
+            )
         )
         if system.normalized_cell[0] and not weighted:
             for index, group in enumerate(system.groups_cell[0]):
@@ -3011,7 +3224,16 @@ class _DeductionElaboration:
                             group,
                         )
                     )
-        context = _Context(self, system, signatures, params, n, table, threaded)
+        context = _Context(
+            self,
+            system,
+            signatures,
+            params,
+            n,
+            table,
+            threaded,
+            computed_weights,
+        )
         computations: list[NamedComputation] = [
             context.normalizer(signature, group) for signature, group in normalizers
         ]
@@ -3019,6 +3241,8 @@ class _DeductionElaboration:
             elaborate_outcomes(context, query, signature)
             for query, signature in query_entries
         )
+        if linear is not None and linear_entry is not None:
+            computations.append(elaborate_linear_goal(context, linear, linear_entry))
         if not weighted:
             computations.extend(
                 (
@@ -3166,6 +3390,8 @@ class _Context:
     threaded : dict[str, str]
         In the weighted variant, the weighted name of each computation
         that takes the table.
+    computed_weights : dict of int to ComputationSignature or None
+        Checked operations for rules with telescope-dependent weights.
     """
 
     def __init__(
@@ -3177,6 +3403,7 @@ class _Context:
         extent: IndexVariable,
         table: Local | None = None,
         threaded: dict[str, str] | None = None,
+        computed_weights: dict[int, ComputationSignature] | None = None,
     ) -> None:
         self.elaborator = elaborator
         self.system = system
@@ -3185,6 +3412,7 @@ class _Context:
         self.extent = extent
         self.table = table
         self.threaded = dict(threaded or {})
+        self.computed_weights = computed_weights or {}
         self.module = elaborator.source.module_name
         self.path: tuple[str | int, ...] = (
             ("deductions", system.decl.name)
@@ -4945,13 +5173,48 @@ class _Context:
                 then=then(conclusion),
             )
 
-        if system.normalized_cell[0]:
-            return self.production_weight(("rule", rule.presented.index), weighted)
-        if not system.semiring.log_weights or not (
+        return self.application_weight(index, rule, bindings, weighted)
+
+    def application_weight(
+        self,
+        index: int,
+        rule: _Rule,
+        bindings: dict[str, Local],
+        then: Callable[[Value], Computation],
+    ) -> Computation:
+        """Select a weight after the rule's premise telescope has matched."""
+        operation = self.computed_weights.get(index)
+        if operation is not None:
+            source = rule.presented
+            return self.bind(
+                "computed_weight",
+                LOG_WEIGHT,
+                Call(
+                    callee=operation.id,
+                    name=operation.name,
+                    static_arguments=(),
+                    arguments=tuple(
+                        Var(local=bindings[binder.name])
+                        for binder in source.rule.telescope
+                        if isinstance(binder, IndexBinder)
+                    ),
+                    result_type=LOG_WEIGHT,
+                    effects=EMPTY_ROW,
+                    origin=self.elaborator._origin(
+                        source.source, (*self.path, "rules", index, "weight"), "call"
+                    ),
+                ),
+                lambda weight: then(
+                    self.primitive("require_rule_log_weight", Var(local=weight))
+                ),
+            )
+        if self.system.normalized_cell[0]:
+            return self.production_weight(("rule", rule.presented.index), then)
+        if self.system.semiring.log_weights and (
             rule.learnable or rule.parent is not None
         ):
-            return weighted(self.weight_of(None))
-        return self.rule_weight(rule, index, bindings, weighted)
+            return self.rule_weight(rule, index, bindings, then)
+        return then(self.weight_of(None))
 
     def depth_measure(self, signature: ComputationSignature) -> NamedComputation:
         """The constructor-tree depth of an item's category.

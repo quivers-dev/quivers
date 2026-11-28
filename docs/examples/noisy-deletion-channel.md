@@ -4,6 +4,7 @@ A source produces a string over a one-symbol alphabet. It repeats the
 symbol with probability $p$ and stops with probability $1-p$. The
 channel deletes each source symbol with probability $p$ and keeps it
 with probability $1-p$. Both relations read the same parameter.
+The source terminates almost surely for $0\leq p<1$.
 
 We observe a word of length $m$ and infer the source length $n$. For
 $n\geq m$, the weight of the paired words is
@@ -23,70 +24,81 @@ at every source word.
 <!-- python: run -->
 ```python
 import torch
-from torch import nn
 
-from quivers import FinSet, StringSet
-from quivers.core.algebras import MARKOV
-from quivers.core.relations import (
-    Arc,
-    Boundary,
-    RationalRelation,
-    RelationTopology,
-    condition,
-    join,
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    FixedRelationRuntimeProvider,
+    FixedTransformedRelationRequest,
+    ParameterId,
+    RelationWeightComplement,
+    RuntimeConfiguration,
+    run_named,
 )
 
+source = """
+object UnaryAlphabet : FinSet 1
 
-class ChannelWeights(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.p = nn.Parameter(torch.tensor(0.25, dtype=torch.float64))
+relation geometric [algebra=markov, states=1]
+    output UnaryAlphabet
+    initial 0 [weight=unit_weight]
+    arc 0 -> 0 [labels=(0), weight=repeat_or_delete]
+    final 0 [weight=stop_or_keep]
 
-    def forward(self):
-        return torch.stack((self.p, 1 - self.p, self.p.new_ones(())))
+relation deletion [algebra=markov, states=1]
+    input UnaryAlphabet
+    output UnaryAlphabet
+    initial 0 [weight=unit_weight]
+    arc 0 -> 0 [labels=(0, eps), weight=repeat_or_delete]
+    arc 0 -> 0 [labels=(0, 0), weight=stop_or_keep]
+    final 0 [weight=unit_weight]
 
+relation joint = join(geometric, deletion, 0, 0, keep_shared=true)
+relation observed = project(joint, (1))
+relation_score evidence : Real [operation=pair_weight, relation=observed]
+relation_score mass : Real [operation=pair_weight, relation=joint]
 
-tape = StringSet(alphabet=FinSet(name="UnaryAlphabet", cardinality=1))
-weights = ChannelWeights()
-slots = ("repeat_or_delete", "stop_or_keep", "unit")
-unit = (Boundary(0, 2),)
+define observation_log_prob() : Real !{} =
+    let z <- evidence()
+    return log(z)
 
-source = RationalRelation(
-    RelationTopology(
-        (tape,), 0, 1, (Arc(0, 0, (0,), 0),), unit, (Boundary(0, 1),), slots
-    ),
-    weights,
-    algebra=MARKOV,
-)
-channel = RationalRelation(
-    RelationTopology(
-        (tape, tape), 1, 1,
-        (Arc(0, 0, (0, None), 0), Arc(0, 0, (0, 0), 1)),
-        unit, unit, slots,
-    ),
-    weights,
-    algebra=MARKOV,
-)
+define posterior_length() : Real !{} =
+    let z <- evidence()
+    let w <- mass()
+    return w / z
+"""
 
-joint = join(
-    source,
-    channel,
-    left_tape=0,
-    right_tape=0,
-    keep_shared=True,
-    max_states=64,
-    max_work=128,
-)
-observed = condition(joint, 1, (0, 0), max_states=64, max_work=128)
-evidence = observed.total_weight(max_states=64, max_work=128, max_closure_size=2)
-posterior_at_three = observed.weight(((0, 0, 0),)) / evidence
-(sensitivity,) = torch.autograd.grad(posterior_at_three, weights.p)
+compiler = Compiler(parse(source), module_name="noisy-deletion")
+module = compiler.qiec_module
+assert module is not None
+p = torch.nn.Parameter(torch.tensor(0.25, dtype=torch.float64))
+owner = ParameterId.derive(module.module, "relation_weights", "repeat_or_delete")
+weights = {
+    owner: p,
+    ParameterId.derive(module.module, "relation_weights", "stop_or_keep"):
+        RelationWeightComplement(owner=owner),
+    ParameterId.derive(module.module, "relation_weights", "unit_weight"): p.new_ones(()),
+}
+providers = []
+for score, relation, words in (
+    ("evidence", "observed", ((0, 0),)),
+    ("mass", "joint", ((0, 0, 0), (0, 0))),
+):
+    request = FixedTransformedRelationRequest(
+        relation=compiler.transformed_relation_specs[relation],
+        words=words, max_states=64, max_work=128, max_closure_size=4,
+    )
+    providers.append(FixedRelationRuntimeProvider.for_score(score, request, weights))
+runtime = RuntimeConfiguration(providers=tuple(providers))
 
-assert torch.isclose(evidence.detach(), weights.p.new_tensor(0.032))
+log_evidence = run_named(module, "observation_log_prob", runtime=runtime).value
+posterior_at_three = run_named(module, "posterior_length", runtime=runtime).value
+(sensitivity,) = torch.autograd.grad(posterior_at_three, p)
+
+assert torch.isclose(log_evidence.exp(), p.new_tensor(0.032))
 assert torch.isfinite(sensitivity)
 ```
 
-Erasing the remaining source labels for the total-weight calculation exposes
+Projecting onto the observed tape exposes
 loops for deleted source symbols. The star calculation sums arbitrarily
 many deletions before, between, and after the observed symbols. The
 evidence is
@@ -95,8 +107,10 @@ $$
 P(Y=m) = \frac{(1-p)\bigl(p(1-p)\bigr)^m}{(1-p^2)^{m+1}},
 $$
 
-and $N-m$ under the posterior has a negative binomial distribution
+When the evidence is positive, $N-m$ under the posterior has a negative binomial distribution
 with $m+1$ successes and success probability $1-p^2$. The code uses a
 three-state product topology and a query sized by the observed length.
 The source length is unbounded, and the source and channel
-contributions both reach the original parameter derivative.
+contributions both reach the original parameter derivative. The checked
+runtime recomputes the complement from that same leaf after an optimizer
+update.

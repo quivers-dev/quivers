@@ -200,3 +200,216 @@ requires search, and a loss over a decoder requires neural attachments. The diag
 reachable computation and keeps its source range. `qvr check --target TARGET`, or a target set in the
 language server, reports these requirements while the source is edited, and `qvr transpile` then
 reports any restriction particular to the target's renderer.
+
+
+## Fixed-word relation scores
+
+A `relation_score` declaration exposes a zero-argument computation for
+a fixed-word relation request. Pair weights have type `Real` for
+Markov or `LogWeight` for LogProb. A conditional log probability has
+type `LogWeight`. Path entropy and expected additive costs return
+`Real`.
+
+<!-- compile: qiec -->
+```qvr
+relation_score paired_words : Real [operation=pair_weight]
+relation_score output_likelihood : LogWeight [operation=conditional_log_prob]
+```
+
+Each declaration elaborates to a checked computation that installs a
+foreign `Compute` handler. In the reference machine,
+`FixedRelationRuntimeProvider.for_score` serves that handler with a
+serialized `FixedRelationRequest` and the original scalar parameters
+indexed by identity. The provider checks the operation and result type
+against the declaration. The request supplies the topology, observed
+words, and construction limits. The [wire and runtime contract][fixed-relation-wire]
+describes the operations and their wire records.
+
+Stan, BUGS, and JAGS report the foreign handler as an obstacle. The
+ordinary QIEC provider boundary remains explicit for other hosts.
+
+[fixed-relation-wire]: ../../api/qiec/serialization.md#fixed-word-relation-requests
+
+## Authored relation topologies
+
+A `relation` declaration supplies the finite control states, typed
+tapes, and weighted occurrences of a sparse relation. Each tape
+names a finite alphabet declared by an `object` statement. Input
+tapes precede output tapes, and the label list follows that order.
+The label `eps` consumes no symbol. Arcs with the same record are
+distinct occurrences. Repeating a weight name shares one live
+scalar parameter across the module.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+relation deletion [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0, eps), weight=delete]
+    arc 0 -> 1 [labels=(0, 0), weight=keep]
+    final 1 [weight=one]
+
+relation_score uncertainty : Real [operation=path_entropy, relation=deletion]
+relation_score expected_loss : Real [operation=expected_path_cost, relation=deletion]
+```
+
+`Compiler.relation_specs["deletion"]` returns its ordinary
+`RationalRelationSpec` for constructing a serialized request.
+The request supplies the words and limits. An expected-cost request
+also supplies its signed costs in occurrence order. The checked
+handler's identity includes the authored specification, so attaching
+a request with different arcs, tapes, or weight identities fails
+even if the scalar result type agrees.
+
+## String graph scores
+
+A `string_graph_score` declaration exposes a zero-argument
+computation for a checked tree query. Both declarations below receive
+their graph, observations, and resource limits from a serialized
+`TreeStringGraphRequest`.
+
+<!-- compile: qiec -->
+```qvr
+string_graph_score full_mass : Real [operation=tree_partition]
+string_graph_score word_probability : LogWeight [operation=tree_log_prob]
+```
+
+A partition may also use `LogWeight` when its graph uses LogProb.
+`tree_log_prob` always uses `LogWeight`. Attach each request using
+`TreeStringGraphRuntimeProvider.for_score` and the original graph's
+parameter store. The reference machine checks both the operation and its
+result type before it runs the request. [String graph serialization](../../api/qiec/serialization.md#string-factor-graphs)
+
+## Authored relation composition
+
+Two primitive declarations can be composed on a shared tape. An
+operand may appear later in the module.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+relation channel = compose(typo, normalize)
+relation_score pair : Real [operation=pair_weight, relation=channel]
+
+relation typo [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0, 1), weight=error]
+    final 1 [weight=one]
+
+relation normalize [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(1, 0), weight=normalize_weight]
+    final 1 [weight=one]
+```
+
+Each operand must have one input tape and one output tape. The first
+operand's output and the second operand's input must have the same
+nominal alphabet. The operands must share the Markov or LogProb
+algebra. The composed relation sums over the shared word, including
+all distinct compatible pairs of accepting paths. It keeps the
+original parameters, including weight names shared by both operands.
+
+`Compiler.composed_relation_specs["channel"]` returns the ordered
+specification for a `FixedComposedRelationRequest`. The runtime
+request supplies the two outer words, the original scalar parameter
+bindings, and the product and query limits. Markov pair scores return
+`Real`. LogProb pair scores return `LogWeight`. Pair weights are also
+available when an operand is another checked relation operation.
+
+## Authored string factor graphs
+
+A string graph declares variables, their observations, and ordered
+factor scopes. A factor names a primitive or derived relation. The
+variable order within each scope follows that relation's tape order.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+string_graph chain
+    variable source : Letters
+    variable middle : Letters
+    variable response : Letters [observed=(1)]
+    factor edit(source, middle)
+    factor edit(middle, response)
+
+string_graph_score evidence : Real [operation=tree_partition, graph=chain]
+
+relation edit [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0, 1), weight=change]
+    arc 0 -> 1 [labels=(1, 1), weight=keep]
+    final 1 [weight=one]
+```
+
+A variable without an observation ranges over the words on its tape.
+The expression `[observed=()]` fixes the empty word. When different
+factors name the same relation, they share its weights and still
+contribute at separate graph positions.
+
+`Compiler.string_graph_specs["chain"]` gives the checked
+`StringFactorGraphSpec`. The `TreeStringGraphRequest` supplies a
+query variable, an optional separately scored word, and sparse work
+limits. An authored score fixes the named graph's variables,
+observations, factor order, and relation topology. The runtime binds concrete parameter values
+and verifies the forest precondition before running the tree query.
+
+## Authored sparse relation transformations
+
+A named transformation keeps the original typed relation
+specifications and parameter identities. This example projects the
+input tape and fixes the input word in a separate relation.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+relation visible_inputs = project(channel, (0))
+relation fixed_input = condition(channel, 0, (1))
+relation response = compose(filtered, channel)
+relation filtered = trim(channel)
+relation_score visible : Real [operation=pair_weight, relation=visible_inputs]
+relation_score fixed : Real [operation=pair_weight, relation=fixed_input]
+relation_score weight : Real [operation=pair_weight, relation=response]
+
+relation channel [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(1, 0), weight=replace]
+    arc 0 -> 1 [labels=(1, 1), weight=keep]
+    final 1 [weight=one]
+```
+
+Tape positions are zero-based. `project(source, (0, 2))` retains
+the named tapes in increasing order. `condition(source, 0, ())`
+fixes the empty word on tape zero. Other unary forms are
+`invert(source)`, `trim(source)`, and `closure(source)`. The binary
+forms `union(left, right)`, `concatenate(left, right)`, and
+`intersect(left, right)` use their typed operand orders.
+`join(left, right, 1, 0, keep_shared=true)` synchronizes those
+two tape positions and retains their word once. Omitting
+`keep_shared` sums over the synchronized word.
+
+A relation operand can name a primitive declaration or the result of
+another sparse operation, including one declared later. In the example,
+`response` composes the trimmed relation `filtered` with `channel`.
+
+The compiler rejects cycles between declarations and checks the
+nominal tape layout of each step. It exposes longer recipes in
+`Compiler.transformed_relation_specs`. A
+`FixedTransformedRelationRequest` supplies the observed result words
+and work limits. A checked `pair_weight` score binds the exact named,
+ordered recipe. Cycles in a relation's state graph still require the
+declared closure capability. Native code targets identify the foreign
+handler that supplies the sparse score.

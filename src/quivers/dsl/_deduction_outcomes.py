@@ -16,7 +16,7 @@ from quivers.dsl.ast_nodes import (
     QiecInterpretationDecl,
 )
 from quivers.qiec._lexical_proof_types import export_lexical_proofs
-from quivers.qiec.canonical import sampleable_type, tensor_type
+from quivers.qiec.canonical import LOG_WEIGHT, sampleable_type, tensor_type
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.coverage import constructor_skolems
@@ -35,6 +35,8 @@ from quivers.qiec.effects import (
     instantiate_effect,
 )
 from quivers.qiec.foreign import (
+    DeductionBooleanOutcomes,
+    DeductionLinearGoal,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -54,8 +56,7 @@ from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.module import (
     NamedComputation,
     NamedEffectInstance,
-    called_computations,
-    installed_handlers,
+    _first_handled_call,
 )
 from quivers.qiec.rules import RulePresentation
 from quivers.qiec.substitution import instantiate_telescope, substitute_type
@@ -96,6 +97,12 @@ PROOF_KEY_CALLS = frozenset({"parse_proof_outcomes", "parse_normalized_proof_out
 PROOF_CALLS = frozenset({"parse_proofs", "parse_normalized_proofs"}) | PROOF_KEY_CALLS
 OUTCOME_CALLS = frozenset({"parse_outcomes", "parse_normalized_outcomes"}) | PROOF_CALLS
 OUTCOME_CODE = "qiec-deduction-outcomes"
+LINEAR_PARSE = "parse_linear"
+LINEAR_CODE = "qiec-deduction-linear-goal"
+PACKED_BOOLEAN_PARSE = "parse_packed_boolean_outcomes"
+NORMALIZED_BOOLEAN_PARSE = "parse_normalized_packed_boolean_outcomes"
+PACKED_BOOLEAN_CALLS = frozenset({PACKED_BOOLEAN_PARSE, NORMALIZED_BOOLEAN_PARSE})
+NATIVE_DEDUCTION_CALLS = OUTCOME_CALLS | PACKED_BOOLEAN_CALLS | {LINEAR_PARSE}
 _SPAN = "span"
 _QUERY = "query"
 _GROUP = "group"
@@ -110,6 +117,17 @@ class OutcomeQuery:
     terms: TypeApplication
     weights: TypeApplication
     production_indices: tuple[int, ...]
+    boolean_table: TypeApplication | None = None
+
+
+@dataclass(frozen=True)
+class LinearGoalQuery:
+    """The closed scalar operation and the source rules supplying its weights."""
+
+    instance: NamedEffectInstance
+    handler: HandlerDef
+    weights: TypeApplication
+    rule_indices: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -127,14 +145,14 @@ class OutcomeKey:
 
 
 def outcome_call_sites(elaborator: _Elaborator) -> tuple[LetExprCall, ...]:
-    """Find the direct program bindings that can introduce an outcome family."""
+    """Find direct program bindings using a checked native deduction query."""
     return tuple(
         value
         for statement in elaborator.source.syntax.statements
         if isinstance(statement, ProgramDecl)
         for step in statement.draws
         if isinstance(value := getattr(step, "value", None), LetExprCall)
-        and value.func in OUTCOME_CALLS
+        and value.func in NATIVE_DEDUCTION_CALLS
         and value.args
         and isinstance(value.args[0], LetExprVar)
     )
@@ -279,23 +297,16 @@ def check_outcome_key_bodies(
     by_id = {computation.id: computation for computation in computations}
     visited: set[ComputationId] = set()
     for key in elaborator._outcome_keys.values():
-        pending = [elaborator.computation_signatures[key.node.name].id]
-        while pending:
-            identity = pending.pop()
-            if identity in visited:
-                continue
-            visited.add(identity)
-            computation = by_id[identity]
-            # An empty row can hide effects from a locally installed
-            # handler. Those have no general determinism/sharing law.
-            if installed_handlers(computation.body):
-                elaborator._fail(
-                    key.node,
-                    f"deduction outcome key {key.node.name!r} must be deterministic; "
-                    f"{computation.name!r} installs an effect handler",
-                    code=OUTCOME_CODE,
-                )
-            pending.extend(called_computations(computation.body))
+        handler = _first_handled_call(
+            elaborator.computation_signatures[key.node.name].id, by_id, visited
+        )
+        if handler is not None:
+            elaborator._fail(
+                key.node,
+                f"deduction outcome key {key.node.name!r} must be deterministic; "
+                f"{handler.name!r} installs an effect handler",
+                code=OUTCOME_CODE,
+            )
 
 
 class _KeyProjection:
@@ -525,7 +536,12 @@ def declare_lexical_proofs(
 
 
 def declare_outcomes(
-    elaborator: _Elaborator, system: _System, node: object, *, proofs: bool = False
+    elaborator: _Elaborator,
+    system: _System,
+    node: object,
+    *,
+    proofs: bool = False,
+    boolean: bool = False,
 ) -> OutcomeQuery:
     """Declare the result family and one operation fixed to this presentation."""
     if system.semiring.algebra != LOG_PROB.subject or not system.entries:
@@ -540,6 +556,15 @@ def declare_outcomes(
             "outcome queries do not yet support a category depth bound",
             code=OUTCOME_CODE,
         )
+    presented = system.presentation_cell[0]
+    assert presented is not None
+    presentation = presented.presentation
+    if presentation.computed_weight_rules:
+        elaborator._fail(
+            node,
+            "outcome and proof queries cannot execute computed rule weights",
+            code=OUTCOME_CODE,
+        )
     if not system.normalized_cell[0] and any(
         rule.presented.weighted for rule in system.rules
     ):
@@ -548,9 +573,6 @@ def declare_outcomes(
             "outcome queries require fixed or normalize=lhs rule weights. Free weights keyed by a rule's bindings are outside this fragment",
             code=OUTCOME_CODE,
         )
-    presented = system.presentation_cell[0]
-    assert presented is not None
-    presentation = presented.presentation
     module = elaborator.source.module_name
     production_indices: tuple[int, ...] = ()
     parameters: dict[int, ParameterId] = {}
@@ -568,7 +590,10 @@ def declare_outcomes(
                 for rule in presented.rules
             )
         )
-    family_name = system.name("Proofs" if proofs else "Outcomes")
+    family_name = system.name(
+        "BooleanOutcomes" if boolean else "Proofs" if proofs else "Outcomes"
+    )
+    stem = "boolean_outcome" if boolean else "proof" if proofs else "outcome"
     family_id = FamilyId.derive(module, "family", family_name)
     empty_id = ConstructorId.derive(family_id, "empty")
     entry_id = ConstructorId.derive(family_id, "entry")
@@ -580,6 +605,7 @@ def declare_outcomes(
         constructors=(empty_id, entry_id),
     )
     result = TypeApplication(constructor=family.type_constructor, arguments=())
+    boolean_table: TypeApplication | None = None
     try:
         chart = DeductionOutcomes(
             presentation=presentation,
@@ -595,13 +621,20 @@ def declare_outcomes(
             empty=empty_id,
             entry=entry_id,
         )
-        semantics: DeductionOutcomes | DeductionProofs = chart
-        if proofs:
+        semantics: DeductionOutcomes | DeductionProofs | DeductionBooleanOutcomes = (
+            chart
+        )
+        if boolean:
+            semantics = DeductionBooleanOutcomes(chart=chart)
+            boolean_table = tensor_type(
+                BOOL, (IndexLiteral(value=semantics.table_size, sort=NAT),)
+            )
+        elif proofs:
             semantics = DeductionProofs(chart=chart)
     except (ValueError, dx.ValidationError) as error:
         elaborator._fail_kernel(node, error, fallback=OUTCOME_CODE)
     key_binders: tuple[IndexBinder, ...] = ()
-    key_type = system.item
+    key_type: TypeExpr = BOOL if boolean else system.item
     if proofs:
         (proof_family,), _ = elaborator._lexical_proofs[system.decl.name].declarations()
         key_binders, key_type = proof_entry_type(proof_family)
@@ -610,7 +643,7 @@ def declare_outcomes(
         family,
         result,
         key_type,
-        system.name("proof" if proofs else "outcome"),
+        system.name(stem),
         key_binders=key_binders,
     )
 
@@ -621,7 +654,9 @@ def declare_outcomes(
     weights = tensor_type(
         REAL, (IndexLiteral(value=len(system.entries) + len(parameters), sort=NAT),)
     )
-    effect_name = system.name("ProofQuery" if proofs else "OutcomeQuery")
+    effect_name = system.name(
+        "BooleanOutcomeQuery" if boolean else "ProofQuery" if proofs else "OutcomeQuery"
+    )
     effect_id = EffectId.derive(module, "effect", effect_name)
     extent = IndexVariable(name="n", sort=NAT)
     operation = OperationDef(
@@ -632,7 +667,9 @@ def declare_outcomes(
             ArgumentDef(name="tokens", type=tensor_type(STRING, (extent,))),
             ArgumentDef(name="terms", type=terms),
             ArgumentDef(name="weights", type=weights),
-            ArgumentDef(name="limit", type=INT)
+            ArgumentDef(name="truths", type=boolean_table)
+            if boolean_table is not None
+            else ArgumentDef(name="limit", type=INT)
             if proofs
             else ArgumentDef(name="key", type=STRING),
             ArgumentDef(name="normalize", type=BOOL),
@@ -644,11 +681,57 @@ def declare_outcomes(
         system.decl,
         EffectRef(id=effect_id, name=effect_name),
         operation,
-        system.name("proof_query" if proofs else "outcome_query"),
-        system.name("query_proofs" if proofs else "query_outcomes"),
+        system.name(f"{stem}_query"),
+        system.name(
+            "query_outcomes"
+            if not boolean and not proofs
+            else "query_proofs"
+            if proofs
+            else "query_boolean_outcomes"
+        ),
         semantics,
     )
-    return OutcomeQuery(instance, handler, terms, weights, production_indices)
+    return OutcomeQuery(
+        instance, handler, terms, weights, production_indices, boolean_table
+    )
+
+
+def register_linear_goal(
+    elaborator: _Elaborator,
+    system: _System,
+    semantics: DeductionLinearGoal,
+    rule_indices: tuple[int, ...],
+) -> LinearGoalQuery:
+    """Give this nominal lexical recurrence its closed query operation."""
+    module = elaborator.source.module_name
+    weights = tensor_type(
+        REAL,
+        (IndexLiteral(value=len(semantics.lexicon) + len(rule_indices), sort=NAT),),
+    )
+    effect_name = system.name("LinearGoal")
+    effect_id = EffectId.derive(module, "effect", effect_name)
+    extent = IndexVariable(name="n", sort=NAT)
+    operation = OperationDef(
+        id=OperationId.derive(effect_id, "operation", _QUERY),
+        name=_QUERY,
+        telescope=(IndexBinder(name=extent.name, sort=NAT),),
+        arguments=(
+            ArgumentDef(name="tokens", type=tensor_type(STRING, (extent,))),
+            ArgumentDef(name="weights", type=weights),
+            ArgumentDef(name="max_closure_size", type=INT),
+        ),
+        result_type=LOG_WEIGHT,
+    )
+    instance, handler = _register_query_handler(
+        elaborator,
+        system.decl,
+        EffectRef(id=effect_id, name=effect_name),
+        operation,
+        system.name("linear_goal_query"),
+        system.name("query_linear_goal"),
+        semantics,
+    )
+    return LinearGoalQuery(instance, handler, weights, rule_indices)
 
 
 def elaborate_outcome_law(
@@ -661,6 +744,11 @@ def elaborate_outcome_law(
         semantics = known.foreign
         if isinstance(semantics, DeductionOutcomeGrouping):
             layout = semantics
+            break
+        if isinstance(semantics, DeductionBooleanOutcomes):
+            layout = DeductionOutcomeGrouping(
+                key_type=BOOL, empty=semantics.chart.empty, entry=semantics.chart.entry
+            )
             break
         if isinstance(semantics, DeductionOutcomes):
             layout = DeductionOutcomeGrouping(
@@ -741,8 +829,10 @@ def _register_query_handler(
     operation: OperationDef,
     instance_name: str,
     handler_name: str,
-    semantics: DeductionOutcomes
+    semantics: DeductionLinearGoal
+    | DeductionOutcomes
     | DeductionProofs
+    | DeductionBooleanOutcomes
     | DeductionOutcomeGrouping
     | DeductionOutcomeLaw,
 ) -> tuple[NamedEffectInstance, HandlerDef]:
@@ -823,10 +913,13 @@ def elaborate_outcomes(
     """Read weights through the grammar's checked readers and run the query."""
     system = context.system
     proofs = isinstance(query.handler.foreign, DeductionProofs)
+    selector_name = (
+        "truths" if query.boolean_table is not None else "limit" if proofs else "key"
+    )
     tokens, selector, normalize = tuple(
         Local(name=name, type=type_)
         for name, type_ in zip(
-            ("tokens", "limit" if proofs else "key", "normalize"),
+            ("tokens", selector_name, "normalize"),
             context.inputs(signature),
             strict=True,
         )
@@ -862,10 +955,57 @@ def elaborate_outcomes(
                 Var(local=normalize),
             ),
             signature.result,
-            "proofs" if proofs else "outcomes",
+            "boolean_outcomes"
+            if query.boolean_table is not None
+            else "proofs"
+            if proofs
+            else "outcomes",
         ),
         static_arguments=(),
     )
     for local, reading in reversed(tuple(zip(values, readings, strict=True))):
         body = Bind(binder=local, first=reading, then=body)
     return context.computation(signature, (tokens, selector, normalize), body)
+
+
+def elaborate_linear_goal(
+    context: _Context, query: LinearGoalQuery, signature: ComputationSignature
+) -> NamedComputation:
+    """Read the existing lexical and rule parameters without grounding proofs."""
+    system = context.system
+    tokens_type, limit_type = context.inputs(signature)
+    tokens = Local(name="tokens", type=tokens_type)
+    limit = Local(name="max_closure_size", type=limit_type)
+    readings = [
+        context.entry_weight(index, entry, lambda weight: Return(value=weight))
+        for index, entry in enumerate(system.entries)
+    ] + [
+        context.rule_weight(
+            system.rules[index], index, {}, lambda weight: Return(value=weight)
+        )
+        for index in query.rule_indices
+    ]
+    values = tuple(system.local("weight", system.carrier) for _ in readings)
+    body: Computation = Handle(
+        instance=query.instance.entry.instance,
+        handler=query.handler.id,
+        computation=context.request(
+            query.instance,
+            _QUERY,
+            (context.extent,),
+            (
+                Var(local=tokens),
+                TensorValue(
+                    items=tuple(context.real_of(Var(local=local)) for local in values),
+                    result_type=query.weights,
+                ),
+                Var(local=limit),
+            ),
+            signature.result,
+            "linear_goal",
+        ),
+        static_arguments=(),
+    )
+    for local, reading in reversed(tuple(zip(values, readings, strict=True))):
+        body = Bind(binder=local, first=reading, then=body)
+    return context.computation(signature, (tokens, limit), body)

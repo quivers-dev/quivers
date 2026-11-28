@@ -117,11 +117,59 @@ from quivers.qiec.contracts import (
     Weight,
     WorkReport,
 )
+from quivers.qiec.contextual_edit_runtime import FixedContextualEditRequest
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
+from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
+from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
+from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
+from quivers.qiec.relation_composition import (
+    ComposedRelationSpec,
+    FixedComposedRelationRequest,
+)
+from quivers.qiec.relation_feature_moments import (
+    FixedComposedArcFeatureMomentRequest,
+    FixedCyclicRelationFeatureMomentRequest,
+    FixedRelationFeatureMomentRequest,
+    FixedRelationFeatureObservation,
+)
+from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_path_law import (
+    FixedCyclicRelationPathSampleRequest,
+    FixedRelationPathSampleRequest,
+)
+from quivers.qiec.relation_ranked import FixedRankedOTRelationRequest
+from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
+    FixedTransformedRelationRequest,
+    UnaryRelationTransformSpec,
+)
+from quivers.qiec.relations import (
+    FixedMinimizedRelationRequest,
+    FixedRelationArcCountsRequest,
+    FixedRelationCostRequest,
+    FixedRelationRequest,
+    RationalRelationSpec,
+    RelationWeightComplement,
+)
+from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
+from quivers.qiec.string_solvers import (
+    JointAlignmentMapConfig,
+    JointAlignmentMapDecomposition,
+    JointAlignmentMapGapConfig,
+    PrunedStringBPConfig,
+    RegularStringEPConfig,
+    RegularStringEPPolicy,
+)
+from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
+from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
+from quivers.qiec._packed_boolean_interpretation import (
+    PackedBooleanInterpretationBinding,
+)
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
+    ComputedRuleWeight,
     ContextStructure,
     Derivation,
     Equation,
@@ -158,6 +206,8 @@ from quivers.qiec.effects import (
 )
 from quivers.qiec.evidence import BranchGiven, Reflexivity
 from quivers.qiec.foreign import (
+    DeductionLinearGoal,
+    DeductionBooleanOutcomes,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     DeductionOutcomes,
@@ -340,7 +390,39 @@ _NODE_CLASSES = (
     DistributionFamily,
     FamilyParameter,
     FamilyShapeSignature,
+    FixedContextualEditRequest,
+    ComposedRelationSpec,
+    UnaryRelationTransformSpec,
+    BinaryRelationTransformSpec,
+    FixedComposedArcFeatureMomentRequest,
+    FixedCyclicRelationFeatureMomentRequest,
+    FixedRelationFeatureMomentRequest,
+    FixedRelationFeatureObservation,
+    RelationCascadeSpec,
+    RelationCascadeStep,
+    FixedTransformedRelationRequest,
+    FixedComposedRelationRequest,
+    FixedBackoffRelationRequest,
+    FixedRankedOTRelationRequest,
+    FixedMinimizedRelationRequest,
+    FixedRelationArcCountsRequest,
+    FixedRelationCostRequest,
+    FixedRelationMarginalMapRequest,
+    FixedRelationPathSampleRequest,
+    FixedCyclicRelationPathSampleRequest,
+    FixedRelationRequest,
     RationalRelationSpec,
+    RelationWeightComplement,
+    StringFactorGraphSpec,
+    JointAlignmentMapConfig,
+    JointAlignmentMapDecomposition,
+    JointAlignmentMapGapConfig,
+    PrunedStringGraphRequest,
+    PrunedStringBPConfig,
+    RegularStringEPConfig,
+    RegularStringEPPolicy,
+    TreeStringGraphRequest,
+    RegularStringEPRequest,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,
@@ -390,8 +472,10 @@ _NODE_CLASSES = (
     SemiringProduct,
     Enumeration,
     Settlement,
+    DeductionLinearGoal,
     DeductionOutcomes,
     DeductionProofs,
+    DeductionBooleanOutcomes,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     EffectRequest,
@@ -537,6 +621,7 @@ _NODE_CLASSES = (
     AccuracyReport,
     Refusal,
     # rule presentations
+    ComputedRuleWeight,
     JudgmentDecl,
     Judgment,
     Premise,
@@ -554,6 +639,9 @@ _NODE_CLASSES = (
     FamilyComponent,
     PresentationAnalysis,
     InterpretationDecl,
+    ScopedInterpretationBinding,
+    ClosedInterpretationBinding,
+    PackedBooleanInterpretationBinding,
 )
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}

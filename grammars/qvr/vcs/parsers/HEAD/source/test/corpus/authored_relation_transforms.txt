@@ -1,0 +1,50 @@
+======================
+Authored relation transformations
+======================
+
+relation keep = project(base, (0, 2))
+relation empty = condition(base, 0, ())
+relation reverse = invert(base)
+relation together = union(base, base)
+relation synced = join(base, cover, 1, 0, keep_shared=true)
+relation_score alignment : Real [operation=pair_weight, relation=synced]
+
+---
+
+(source_file
+  (relation_transform_decl
+    (identifier)
+    (relation_projection_recipe
+      (identifier)
+      (integer)
+      (integer)))
+  (relation_transform_decl
+    (identifier)
+    (relation_conditioning_recipe
+      (identifier)
+      (integer)
+      (relation_conditioning_word)))
+  (relation_transform_decl
+    (identifier)
+    (relation_unary_recipe
+      (relation_unary_operation)
+      (identifier)))
+  (relation_transform_decl
+    (identifier)
+    (relation_binary_recipe
+      (relation_binary_operation)
+      (identifier)
+      (identifier)))
+  (relation_transform_decl
+    (identifier)
+    (relation_join_recipe
+      (identifier)
+      (identifier)
+      (integer)
+      (integer)
+      (let_bool)))
+  (relation_score_decl
+    (identifier)
+    (qiec_type_name (identifier))
+    (relation_score_operation)
+    (identifier)))

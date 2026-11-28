@@ -12,7 +12,22 @@ from quivers.dsl.emit import module_to_source
 from quivers.dsl.parser import parse
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import qiec_binding_map
+from quivers.modeling import Model
+from quivers.qiec import (
+    BOOL,
+    ClosedInterpretationBinding,
+    ComputationId,
+    EffectRow,
+    LiteralValue,
+    ParameterId,
+    PresentationId,
+    Return,
+    RuleError,
+    validate_module,
+)
 from quivers.qiec.execution import ExecutionFailure, run_named
+from quivers.qiec.foreign import DeductionOutcomes, DeductionProofs
+from quivers.qiec.rules import RulePresentation
 from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import run_program
@@ -180,6 +195,26 @@ def test_indexed_proof_carrier_substitutes_each_premise_and_conclusion() -> None
     assert float(compiled.run("assess_indexed", data={}).value) == 1.0
 
 
+def test_contextual_lift_in_an_indexed_binary_interpretation() -> None:
+    source = INDEXED.replace(
+        "    let x <- extract[k](left)\n    let y <- extract[j](right)\n",
+        "    let kept <- lift_first[k](extract, left, right)\n"
+        "    let x = kept[0]\n"
+        "    let y <- extract[j](kept[1])\n",
+    )
+    compiled = load_source(source)
+    module = loads(dumps(compiled.qiec))
+    assert isinstance(module, QiecModule)
+    # The proof's left and right child denote 2 and 3 independently.
+    assert float(run_named(module, "result").value) == 2**2 - 3
+    assert float(compiled.run("assess_indexed", data={}).value) == 2**2 - 3
+
+    with pytest.raises(
+        QiecDiagnosticError, match=r"expected Measurement\[k\], got Measurement\[j\]"
+    ):
+        load_source(source.replace("extract[j](kept[1])", "extract[k](kept[1])"))
+
+
 @pytest.mark.parametrize(
     "old,new,message",
     [
@@ -311,6 +346,138 @@ program inspect : Token -> Height
 export inspect
 """
     assert load_source(source).run("inspect").value == 2.0
+
+
+def test_closed_schema_checks_assigned_actions_and_weighted_proof_identity() -> None:
+    source = (
+        GRAMMAR.replace(
+            "instance audit : Inspection",
+            "instance audit : Inspection\ninstance spare : Inspection",
+        )
+        + """
+program unrelated : Token -> Result
+    let value = 0.0
+    return value
+"""
+    )
+    model = Model(source, entry="assess")
+    rating, evidence = model.schema.closed_interpretations
+    module = model.checked_module
+    wire = dumps(module)
+    assert {item.name for item in rating.presentation.rules} == {
+        "Mix__rule_first",
+        "Mix__rule_second",
+    }
+    assert rating.presentation == evidence.presentation
+    assert rating.carrier != evidence.carrier == BOOL
+    assert rating.interpretation.preserves == evidence.interpretation.preserves == ()
+    (audit,) = rating.instances
+    assert audit.name == "audit" and rating.effects == EffectRow(entries=(audit.entry,))
+    assert evidence.effects == EffectRow() and evidence.instances == ()
+    assert model.bind({"sentence": ("x", "y")}).schema.closed_interpretations == (
+        rating,
+        evidence,
+    )
+    assert Model(source, entry="unrelated").schema.closed_interpretations == ()
+
+    restored_module = loads(wire)
+    assert isinstance(restored_module, QiecModule)
+    for binding in (rating, evidence):
+        restored = loads(dumps(binding))
+        assert isinstance(restored, ClosedInterpretationBinding) and restored == binding
+        restored.validate(restored_module)
+    assert dumps(restored_module) == wire
+
+    first, second = rating.presentation.rules
+    changed_weight = rating.presentation.with_(
+        rules=(first.with_(weight=ParameterId.derive("stale")), second)
+    )
+    ((a, f), (b, g), leaf) = rating.interpretation.operations
+    reassigned = rating.interpretation.with_(operations=((a, g), (b, f), leaf))
+    spare = next(item for item in module.instances if item.name == "spare")
+    variants = (
+        (
+            rating.with_(
+                presentation=rating.presentation.with_(
+                    id=PresentationId.derive("stale")
+                )
+            ),
+            "nominal closed interpretation presentation",
+        ),
+        (
+            rating.with_(computation=ComputationId.derive("stale")),
+            "unknown closed interpretation root",
+        ),
+        (rating.with_(presentation=changed_weight), "differs from its packed query"),
+        (rating.with_(effects=EffectRow()), "effect row does not match"),
+        (rating.with_(instances=(spare,)), "lexical effect requirements are stale"),
+        (rating.with_(interpretation=reassigned), "differs from its checked fold"),
+    )
+    for changed, diagnostic in variants:
+        restored = loads(dumps(changed))
+        assert isinstance(restored, ClosedInterpretationBinding)
+        with pytest.raises(RuleError, match=diagnostic):
+            restored.validate(restored_module)
+
+    replaced = restored_module.with_(
+        computations=tuple(
+            computation.with_(body=Return(value=LiteralValue(value=False, type=BOOL)))
+            if computation.id == evidence.computation
+            else computation
+            for computation in restored_module.computations
+        )
+    )
+    validate_module(replaced)
+    with pytest.raises(RuleError, match="differs from its checked fold"):
+        evidence.validate(replaced)
+
+
+def test_closed_schema_keeps_index_template_reached_through_an_authored_handler() -> (
+    None
+):
+    source = (
+        INDEXED
+        + """
+effect Lookup
+    get : Unit -> Real
+
+instance lookup : Lookup
+
+handler use_proof for Lookup : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    get resumes 1 =>
+        let value <- result()
+        resume(value)
+
+define prompted() : Real !{} =
+    handle lookup with use_proof in
+        perform lookup.get()
+
+program through_handler : Token -> Result
+    let value <- prompted()
+    return value
+"""
+    )
+    model = Model(source, entry="through_handler")
+    (binding,) = model.bind({}).schema.closed_interpretations
+    assert binding == model.schema.closed_interpretations[0]
+    fold = next(
+        item
+        for item in model.checked_module.computations
+        if item.id == binding.computation
+    )
+    assert isinstance(fold.body, Case)
+    assert binding.carrier == fold.body.motive.result_type
+    assert binding.carrier != fold.type.result
+    (judgment,) = binding.presentation.judgments
+    assert fold.body.motive.indices == judgment.indices
+    restored = loads(dumps(binding))
+    assert isinstance(restored, ClosedInterpretationBinding)
+    restored.validate(model.checked_module)
+    assert float(load_source(source).run("through_handler").value) == 1.0
+    with pytest.raises(RuleError, match="does not match the closed interpretation"):
+        restored.with_(carrier=BOOL).validate(model.checked_module)
 
 
 @pytest.mark.parametrize(
@@ -465,6 +632,14 @@ def test_proof_keys_group_equal_meanings_within_one_identical_chart_item() -> No
         in {"Mix__proofs", "Mix__evidence__key_outcomes"}
     )
     assert calls == ("Mix__proofs", "Mix__evidence__key_outcomes")
+    (proofs, grouped) = [
+        event.detail
+        for event in actual.result.trace
+        if event.event in {"deduction.proofs", "deduction.grouped_outcomes"}
+    ]
+    assert proofs["normalized"] is False and proofs["structural_goal_proofs"] == 3
+    assert grouped["normalized"] is True and grouped["input_rows"] == 3
+    assert grouped["key_type"] == "Bool" and grouped["positive_rows"] == 2
 
 
 def test_proof_keys_reject_swapped_proof_indices() -> None:
@@ -510,3 +685,104 @@ define is_x(word : String) : Bool !{} =
         QiecDiagnosticError, match="must be deterministic.*installs an effect handler"
     ):
         load_source(masked)
+
+
+def _normalized_lexical_source() -> str:
+    return (
+        GRAMMAR.replace("start=S]", "start=S, normalize=lhs]")
+        .replace(", lex)", ")")
+        .replace(", same)", ")")
+        .replace("[i, j, category, form]", "[i, j, category]")
+    )
+
+
+@pytest.mark.parametrize("learnable", (False, True))
+def test_ordinary_proof_companion_accepts_normalized_production_weights(
+    learnable,
+) -> None:
+    source = _normalized_lexical_source()
+    if learnable:
+        source = source.replace(
+            "span(I, J, S)\n    rule second",
+            "span(I, J, S) #[learnable]\n    rule second",
+            1,
+        )
+    model = Model(source, entry="assess")
+    assert len(model.schema.closed_interpretations) == 2
+    for binding in model.schema.closed_interpretations:
+        restored = loads(dumps(binding))
+        assert isinstance(restored, ClosedInterpretationBinding)
+        restored.validate(model.checked_module)
+
+
+def test_normalized_companion_checks_both_sources_of_weight_identity() -> None:
+    model = Model(_normalized_lexical_source(), entry="assess")
+    module = model.checked_module
+    original = model.schema.closed_interpretations[0]
+    first, second = original.presentation.rules
+    forged = original.with_(
+        presentation=original.presentation.with_(
+            rules=(
+                first.with_(weight=ParameterId.derive("unrelated", "rule", "first")),
+                second,
+            )
+        )
+    )
+    with pytest.raises(RuleError, match="differs from its packed query"):
+        forged.validate(module)
+
+    (handler,) = [
+        item for item in module.handlers if isinstance(item.foreign, DeductionProofs)
+    ]
+    assert isinstance(handler.foreign, DeductionProofs)
+    chart = handler.foreign.chart
+    assert len(chart.parameters) == 2
+    forged_chart = chart.with_(parameters=chart.parameters[::-1])
+    changed = module.with_(
+        handlers=tuple(
+            item.with_(foreign=handler.foreign.with_(chart=forged_chart))
+            if item.id == handler.id
+            else item
+            for item in module.handlers
+        )
+    )
+    validate_module(changed)
+    with pytest.raises(RuleError, match="differs from its packed query"):
+        original.validate(changed)
+
+
+def test_companion_refuses_a_different_checked_chart_proof_shape() -> None:
+    source = GRAMMAR.replace(
+        "    let proofs = parse_normalized_proofs",
+        '    let items = parse_outcomes(Mix, sentence, "item")\n'
+        "    let proofs = parse_normalized_proofs",
+        1,
+    )
+    model = Model(source, entry="assess")
+    module = model.checked_module
+    (handler,) = [
+        item for item in module.handlers if isinstance(item.foreign, DeductionOutcomes)
+    ]
+    chart = handler.foreign
+    assert isinstance(chart, DeductionOutcomes)
+    presentation = chart.presentation
+    assert isinstance(presentation, RulePresentation)
+    rule, *others = presentation.rules
+    first, *rest = rule.premises
+    i, k, category, form = first.judgment.arguments
+    assert isinstance(category, IndexLiteral) and category.value == "A"
+    different = first.judgment.with_(arguments=(i, k, category.with_(value="B"), form))
+    changed = presentation.with_(
+        rules=(rule.with_(premises=(first.with_(judgment=different), *rest)), *others)
+    )
+    forged = module.with_(
+        handlers=tuple(
+            item.with_(foreign=chart.with_(presentation=changed))
+            if item.id == handler.id
+            else item
+            for item in module.handlers
+        )
+    )
+    validate_module(forged)
+    with pytest.raises(RuleError, match="differs from its packed query"):
+        model.schema.closed_interpretations[0].validate(forged)
