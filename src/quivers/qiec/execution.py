@@ -61,6 +61,8 @@ from quivers.qiec.canonical import (
 from quivers.qiec.contracts import ContractNotMet, FailurePolicy
 from quivers.qiec.effects import HandlerDef, ResumptionGrade
 from quivers.qiec.foreign import (
+    DeductionOutcomeGrouping,
+    DeductionOutcomes,
     Enumeration,
     SemiringProduct,
     SemiringSum,
@@ -672,6 +674,22 @@ class CoreRuntimeProvider(QiecModel):
                     reduction=semantics.reduction,
                 ),
                 "Random",
+            )
+        if isinstance(semantics, DeductionOutcomes):
+            from quivers.qiec.deduction_outcomes import deduction_outcomes_handler
+
+            return deduction_outcomes_handler(
+                definition,
+                self._single_clause(definition, ResumptionGrade.LINEAR),
+                semantics,
+            )
+        if isinstance(semantics, DeductionOutcomeGrouping):
+            from quivers.qiec.deduction_outcomes import outcome_grouping_handler
+
+            return outcome_grouping_handler(
+                definition,
+                self._single_clause(definition, ResumptionGrade.LINEAR),
+                semantics,
             )
         assert isinstance(semantics, Settlement)
         policy = options.get("on_failure", FailurePolicy.REFUSE)

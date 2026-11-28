@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.dsl._deduction_outcomes import OUTCOME_CALLS, OUTCOME_CODE
+from quivers.qiec.foreign import DEDUCTION_OUTCOME_KEYS
 from quivers.dsl.ast_nodes import (
     CallStep,
     ContinuousConstructor,
@@ -4288,6 +4290,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         deduction = self._parse_call(step.value, step)
         if deduction is not None:
             call = self._deduction_call(deduction, scope, state, step)
+            if deduction.typed_outcome_key:
+                rows = self._bind_step(scope, None, call.result_type, call, step)
+                name = f"{deduction.deduction}__{deduction.outcome_key}__key_outcomes"
+                signature = self.computation_signatures[name]
+                call = Call(
+                    callee=signature.id,
+                    name=signature.name,
+                    static_arguments=(),
+                    arguments=(
+                        Var(local=rows),
+                        LiteralValue(value=deduction.normalize_outcomes, type=BOOL),
+                    ),
+                    result_type=signature.result,
+                    effects=signature.effects,
+                    origin=call.origin,
+                )
             self._bind_step(scope, step.name, call.result_type, call, step)
             return
         scan = scan_let_call(step.value)
@@ -4335,15 +4353,36 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             by a variable, or an argument after the input and the
             optional plate is not a pair of a string label and a value.
         """
-        if not isinstance(expr, LetExprCall) or expr.func != "parse":
+        if not isinstance(expr, LetExprCall) or (
+            expr.func != "parse" and expr.func not in OUTCOME_CALLS
+        ):
             return None
+        outcomes = expr.func in OUTCOME_CALLS
         if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
+            if outcomes:
+                self._fail(
+                    node,
+                    f"{expr.func} needs a deduction, a sentence and an outcome key",
+                    code=OUTCOME_CODE,
+                )
             return None
         target = expr.args[0]
         if target.name not in getattr(self, "_deductions", {}):
+            if outcomes:
+                self._fail(
+                    node,
+                    f"{expr.func} names unknown deduction {target.name!r}",
+                    code=OUTCOME_CODE,
+                )
             return None
         source = expr.args[1]
         if not isinstance(source, LetExprVar):
+            if outcomes:
+                self._fail(
+                    node,
+                    f"{expr.func} requires a token tensor named by a program binding",
+                    code=OUTCOME_CODE,
+                )
             self._fail(
                 node,
                 f"parse reads the input of {target.name!r} from a program input "
@@ -4352,7 +4391,43 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         rest = list(expr.args[2:])
         plate: str | None = None
-        if rest and isinstance(rest[0], LetExprVar):
+        key: str | None = None
+        typed_key = False
+        if outcomes:
+            if target.name not in self._outcome_queries:
+                self._fail(
+                    node,
+                    f"{expr.func} requires a direct program let binding",
+                    code=OUTCOME_CODE,
+                )
+            selector = rest.pop(0) if rest else None
+            if (
+                isinstance(selector, LetExprVar)
+                and (target.name, selector.name) in self._outcome_keys
+            ):
+                key, typed_key = selector.name, True
+            elif (
+                isinstance(selector, LetExprString)
+                and selector.value in DEDUCTION_OUTCOME_KEYS
+            ):
+                key = selector.value
+            else:
+                self._fail(
+                    node,
+                    f'{expr.func} requires "item", "category", "form", or a named pure outcome key',
+                    code=OUTCOME_CODE,
+                )
+            if (
+                not typed_key
+                and key == "form"
+                and not self._deductions[target.name].uses_forms_cell[0]
+            ):
+                self._fail(
+                    node,
+                    f"deduction {target.name!r} has no logical form field",
+                    code=OUTCOME_CODE,
+                )
+        elif rest and isinstance(rest[0], LetExprVar):
             plate = rest[0].name
             rest = rest[1:]
         bindings: list[_ParseBinding] = []
@@ -4384,6 +4459,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             source=source.name,
             plate=plate,
             bindings=tuple(bindings),
+            outcome_key=key,
+            typed_outcome_key=typed_key,
+            normalize_outcomes=expr.func == "parse_normalized_outcomes",
         )
 
     def _deduction_call(
@@ -4395,11 +4473,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     ) -> Call:
         """Call a deduction's entry on a sentence or a corpus the program takes.
 
-        The input is a program input of tokens: a sentence, whose length
-        is one of the program's open extents, or with a plate, a corpus of
-        one sentence per object of the plate, all of one open length,
-        whose answer is the semiring product of the sentences' inside
-        weights (their joint weight, the sentences being independent).
+        A named sentence can be supplied as program data, with its length
+        an open extent. An outcome query can also take a checked local
+        token tensor and instantiate its extent from that local's type.
+        With a plate, scalar ``parse`` reads data as a corpus whose
+        sentences share one extent, and multiplies their inside weights.
         Without bindings the deduction reads its learned weights through
         the module's ``params`` instance, which the program's row gains.
         With bindings, the deduction must be normalized per left-hand
@@ -4426,10 +4504,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         Raises
         ------
         QiecDiagnosticError
-            If the deduction takes its axioms rather than a sentence, the
-            input is bound by a step, the plate names no object with a
-            static extent, or the bindings do not fit the deduction (see
-            `_production_table`).
+            If the deduction takes its axioms rather than a sentence, a
+            scalar parse names a local, a local outcome input is not a
+            rank-one string tensor with a checked extent, the plate lacks
+            a static extent, or the production bindings do not fit the
+            deduction (see `_production_table`).
         """
         name, source = parse.deduction, parse.source
         signature = self.computation_signatures[f"{name}__run"]
@@ -4440,32 +4519,32 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "sentence; a program supplies items to it through a computation",
                 code="qiec-program",
             )
-        if scope.lookup(source) is not None:
+        tokens = scope.lookup(source)
+        if tokens is not None and parse.outcome_key is None:
             self._fail(
                 node,
                 f"parse reads {source!r}, which a step binds; the sentence a "
                 "deduction parses is a program input",
                 code="qiec-program",
             )
-        table: TensorValue | None = None
+        suffix = "run"
+        extra: tuple[Value, ...] = ()
+        if parse.outcome_key is not None:
+            suffix = "outcomes"
+            extra = (
+                LiteralValue(
+                    value="item" if parse.typed_outcome_key else parse.outcome_key,
+                    type=STRING,
+                ),
+                LiteralValue(
+                    value=parse.normalize_outcomes and not parse.typed_outcome_key,
+                    type=BOOL,
+                ),
+            )
         if parse.bindings:
-            table = self._production_table(parse, scope, state, node)
-            signature = self.computation_signatures[f"{name}__weighted_run"]
-        binder = state.extents.get(f"{source}_extent")
-        if binder is None:
-            binder = IndexBinder(name=f"{source}_extent", sort=NAT)
-            state.extents[binder.name] = binder
-        extent = IndexVariable(name=binder.name, sort=binder.sort)
-        sentence_type = tensor_type(STRING, (extent,))
-        rows = None if parse.plate is None else self._axis(parse.plate, node).size
-        tokens = self._declare_parameter(
-            source,
-            sentence_type if rows is None else tensor_type(STRING, (rows, extent)),
-            "data",
-            scope,
-            state,
-            node,
-        )
+            extra = (*extra, self._production_table(parse, scope, state, node))
+            suffix = f"weighted_{suffix}"
+        signature = self.computation_signatures[f"{name}__{suffix}"]
         params = self.instances.get(PARAMS_INSTANCE)
         if params is not None and any(
             entry.instance == params.entry.instance
@@ -4481,19 +4560,42 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 node,
             ),
         )
-        extra = () if table is None else (table,)
-        if rows is None:
-            return Call(
-                callee=signature.id,
-                name=signature.name,
-                static_arguments=(extent,),
-                arguments=(Var(local=tokens), *extra),
-                result_type=signature.result,
-                effects=signature.effects,
-                origin=origin,
+        extent: IndexTerm
+        if tokens is None:
+            binder = state.extents.get(f"{source}_extent")
+            if binder is None:
+                binder = IndexBinder(name=f"{source}_extent", sort=NAT)
+                state.extents[binder.name] = binder
+            external_extent = IndexVariable(name=binder.name, sort=binder.sort)
+            rows = None if parse.plate is None else self._axis(parse.plate, node).size
+            shape = (external_extent,) if rows is None else (rows, external_extent)
+            tokens = self._declare_parameter(
+                source, tensor_type(STRING, shape), "data", scope, state, node
             )
-        return self._corpus_call(
-            signature, tokens, rows, extent, extra, state, node, origin
+            if rows is not None:
+                return self._corpus_call(
+                    signature, tokens, rows, external_extent, extra, state, node, origin
+                )
+            extent = external_extent
+        else:
+            layout = tensor_shape(tokens.type)
+            if layout is None or layout[0] != STRING or len(layout[1]) != 1:
+                self._fail(
+                    node,
+                    f"deduction outcome input {source!r} must be a rank-one "
+                    "Tensor[String] with a checked extent "
+                    f"(found {render_static(tokens.type)})",
+                    code=OUTCOME_CODE,
+                )
+            (extent,) = layout[1]
+        return Call(
+            callee=signature.id,
+            name=signature.name,
+            static_arguments=(extent,),
+            arguments=(Var(local=tokens), *extra),
+            result_type=signature.result,
+            effects=signature.effects,
+            origin=origin,
         )
 
     def _production_table(
@@ -4627,16 +4729,27 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 total = self._primitive(
                     "add_real", (total, item), node, (*path, "table", label, "total")
                 )
+            if parse.outcome_key is not None:
+                total = self._primitive(
+                    "positive_parameter",
+                    (total,),
+                    node,
+                    (*path, "table", label, "total"),
+                )
             normalizer = self._primitive(
                 "log", (total,), node, (*path, "table", label, "normalizer")
             )
+            logarithm = "log" if parse.outcome_key is None else "log_probability"
             for position, item in enumerate(probabilities):
                 entries.append(
                     self._primitive(
                         "sub_real",
                         (
                             self._primitive(
-                                "log", (item,), node, (*path, "table", label, position)
+                                logarithm,
+                                (item,),
+                                node,
+                                (*path, "table", label, position),
                             ),
                             normalizer,
                         ),
@@ -4657,7 +4770,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         tokens: Local,
         rows: IndexTerm,
         extent: IndexVariable,
-        extra: tuple[TensorValue, ...],
+        extra: tuple[Value, ...],
         state: _ProgramState,
         node: LetStep,
         origin: SourceOrigin,
@@ -11020,18 +11133,27 @@ class _ParseCall(dx.Model):
     deduction : str
         The deduction.
     source : str
-        The program input the deduction parses.
+        The program input or checked local token tensor the deduction parses.
     plate : str | None
         The object whose elements index the corpus's sentences, when the
         input is a corpus.
     bindings : tuple[_ParseBinding, ...]
         The production probabilities, by left-hand side.
+    outcome_key : str or None
+        The structural selector or the name of a checked key computation.
+    typed_outcome_key : bool
+        Whether the selector names a checked key computation.
+    normalize_outcomes : bool
+        Whether to normalize the outcome weights by the total goal mass.
     """
 
     deduction: str
     source: str
     plate: str | None
     bindings: tuple[_ParseBinding, ...]
+    outcome_key: str | None = None
+    typed_outcome_key: bool = False
+    normalize_outcomes: bool = False
 
 
 def _sampled_support(

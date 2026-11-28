@@ -123,6 +123,9 @@ FORWARDING_SITES: dict[tuple[str, str], str] = {
         "an elaboration gap's leading kind, a StepResolutionError kind or "
         "one of the elaboration's own gap kinds"
     ),
+    ("transpile/qiec_ir.py", "_refuse_outcome_projection"): (
+        "the deduction-outcomes capability diagnostics for affected entry computations"
+    ),
     ("transpile/renderers/_qiec.py", "render_computations_dynamic"): (
         "QIEC capability diagnostics, measured on the support page"
     ),

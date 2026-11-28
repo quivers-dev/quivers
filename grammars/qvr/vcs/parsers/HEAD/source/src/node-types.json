@@ -1993,7 +1993,7 @@
       },
       "premises": {
         "multiple": true,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": ",",
@@ -6086,6 +6086,10 @@
           },
           {
             "type": "discrete_constructor",
+            "named": true
+          },
+          {
+            "type": "integer",
             "named": true
           },
           {

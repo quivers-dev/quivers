@@ -22,6 +22,7 @@ from quivers.qiec.checking import (
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.families import FAMILIES, DistributionFamily
+from quivers.qiec.foreign import DeductionOutcomeGrouping, DeductionOutcomes
 from quivers.qiec.effects import (
     ComputationType,
     EffectDef,
@@ -610,6 +611,15 @@ def validate_module(module: QiecModule) -> KernelRegistry:
     for handler in module.handlers:
         registry.register_handler(handler)
     if not rechecked:
+        for handler in module.handlers:
+            if isinstance(handler.foreign, DeductionOutcomes):
+                from quivers.qiec.deduction_outcomes import validate_outcome_adapter
+
+                validate_outcome_adapter(handler, handler.foreign, registry)
+            elif isinstance(handler.foreign, DeductionOutcomeGrouping):
+                from quivers.qiec.deduction_outcomes import validate_outcome_grouping
+
+                validate_outcome_grouping(handler, handler.foreign, registry)
         _recheck_bodies(module, registry)
         module.__dict__[_RECHECKED] = True
     return registry
@@ -949,6 +959,12 @@ def _validate_index_sorts(module: QiecModule) -> None:
     ]
     while pending:
         node = pending.pop()
+        if isinstance(node, DeductionOutcomes):
+            # Its rule presentation validates a separate module of index
+            # sorts and can have nominal sorts named by another scope.
+            # The item type is the part supplied by this outer module.
+            pending.append(node.item_type)
+            continue
         if isinstance(node, UserIndexSort):
             expected = declared.get(node.name)
             if expected is None:

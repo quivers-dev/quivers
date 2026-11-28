@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- Checked lexical deductions can return weighted forms, categories, or full goal items. QVR programs can normalize reading weights and use them in a response likelihood, with gradients reaching lexical and supported production weights. Token tensors computed in QVR can feed the same query.
+- Checked outcome queries can group goal weights by a deterministic QVR computation that returns a discrete scalar or a closed constructor value.
+- Checked QIEC deduction outcomes accept ordered ground span rules, including empty spans, when an acyclic category rank certifies every potentially equal-width dependency.
+- QVR authors can declare ground deduction rules with no premises and literal span endpoints. Checked weighted outcome queries can use these rules for empty spans and literal anchors.
+
 ### Fixed
 
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.

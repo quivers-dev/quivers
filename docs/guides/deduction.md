@@ -465,6 +465,224 @@ lists the families, effects,
 [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries
 a deduction or a parser built from rule schemata adds.
 
+### Weighted outcomes of a lexical deduction
+
+In a `program`, write `let readings = parse_outcomes(D, sentence, "form")` to get
+the full-span logical forms and their log inside weights. The selectors
+`"category"` and `"item"` return the category or the entire span item,
+respectively. All three produce the closed family `D__Outcomes`, with
+`D__outcome_end` for the empty list and `D__outcome_entry(key, weight, tail)`
+for each entry. The key has type `D__Item` and the weight has type `Real`.
+The query sums the weights of all derivations whose goal has the same
+structural key, including derivations of distinct goal items that map to that
+key. When the deduction declares a start category, the query first restricts
+the full-span items to that category.
+
+`parse_normalized_outcomes` subtracts the log of the total goal mass from each
+log weight. A key with zero mass has no entry. A raw query with no positive
+goal mass returns an empty list, and a normalized query raises an error in that
+case. For a response with likelihood $L(k)$ under key $k$, a QVR computation
+can traverse the normalized entries and sum $P(k\mid\text{sentence}) L(k)$,
+then pass the logarithm of that sum to `score`.
+
+The sentence can come from program data or from an earlier binding of type
+`Tensor[String]([n])`. For instance, `let sentence <- tokenize(input)` can
+call a checked computation before the query. The query takes the already bound
+tensor and specializes its own extent argument to `n`. Its input type thus
+matches the local's type exactly. Given the same tokens and weights, this call
+computes the same masses as a query on program data. The extent may be a
+program index specialized when the program runs. A computation with a
+data-dependent output length needs a checked extent to feed this query.
+
+These calls use the checked runtime and accept one sentence. The current
+fragment has one lexical span judgment and unit-width lexical entries.
+A rule combines contiguous spans in premise order or preserves the span of
+one premise. In the latter case its two category heads must be fixed, and
+the graph from unary premise heads to conclusion heads must be acyclic.
+The pair of span width and category rank thus grows along each rule edge.
+The rules use unit weights or weights from `normalize=lhs` groups.
+Learned lexical log weights remain
+available. The normalized groups also accept the same labeled probability
+bindings as `parse`, with components in $[0,1]$ and positive total mass in
+each bound group. The fragment excludes category depth bounds, open
+hypotheses, and rule weights computed from bindings. A ground rule can
+also supply an ordered interval, including an empty span. For instance,
+`rule left_boundary : |- span(0, 0, E, empty)` supplies an empty span at
+the first token boundary. A zero-premise rule's endpoints are natural
+number literals and its conclusion is ground. The checker computes which
+category heads may derive empty spans. A premise can preserve the
+conclusion's width when the other
+premises are empty. The checker requires an acyclic graph of fixed
+category heads for all such transitions, including transitions from
+rules with several premises.
+Lexical categories and forms must inhabit the vocabulary of the deduction's
+closed rule presentation. The query supports derivatives on fixed positive
+support, with zero masses omitted from its output. When every span is
+positive, a derivation for $n > 0$ tokens has at most $(2n - 1)(h + 1)$
+nodes, where $h$ is the longest unary path. With nullable heads, $h$ instead
+bounds every chain of equal-width transitions. A zero-width subtree has
+at most $1+a+\cdots+a^h$ nodes for maximum rule arity $a$. A positive-width
+derivation retains the bound on its positive-width nodes, with at most
+$a$ zero-width subtrees attached to each. These bounds also account for
+an empty input. The runtime uses them to check whether finite log weights
+leave room for their sum and normalization in the run's number type.
+
+The runtime grounds a packed forest and computes one inside value per useful
+item, shared across all requested goals. For each incoming rule instance, a
+proof independently chooses a proof for each premise occurrence. Distributivity
+thus lets the fold multiply the premise sums and the rule weight, then sum
+across incoming instances. After grounding, the fold uses one visit per useful
+edge and one multiplication per premise occurrence. On scalar machine
+numbers the fold and its reverse pass require arithmetic linear in those
+counts, plus the cost of constructing and grouping the structural keys.
+Grounding uses the indexed agenda to find the rule instances. The runtime
+grounds the forest again on each invocation.
+
+#### Ground rules and empty spans
+
+This deduction supplies one empty left boundary and uses it to complete
+the parse of `word`. The first rule applies only at boundary zero.
+
+<!-- compile: qiec -->
+```qvr
+object Token : FinSet 1
+object Result : Real 1
+
+deduction WithBoundary : Token -> Token [semiring=LogProb, start=S]
+    atoms span, E, A, S, empty, word, complete
+    rule boundary : |- span(0, 0, E, empty)
+    rule finish : span(I, K, E, empty), span(K, J, A, word) |- span(I, J, S, complete)
+    lexicon
+        "word" : A = word
+
+define total(rows : WithBoundary__Outcomes) : Real !{} =
+    case rows motive => Real
+        WithBoundary__outcome_end =>
+            return 0.0
+        WithBoundary__outcome_entry(key, weight, tail) =>
+            let rest <- total(tail)
+            return exp(weight) + rest
+
+program parse_with_boundary : Token -> Result
+    let rows = parse_outcomes(WithBoundary, sentence, "form")
+    let answer <- total(rows)
+    return answer
+
+export parse_with_boundary
+```
+
+#### Choosing a typed key
+
+Instead of a string selector, pass the name of a checked computation. For
+instance, `parse_outcomes(D, sentence, classify)` calls `classify` on each
+positive-mass full-span goal. If `classify` has type `D__Item -> K` and an
+empty effect row, the result has family `D__classify__Outcomes`. Its
+constructors are `D__classify__outcome_end` and
+`D__classify__outcome_entry(key, weight, tail)`, where `key : K`.
+
+The key type may be `Bool`, `Int`, `String`, `Unit`, or a closed algebraic
+family without parameters or indices whose fields have these key types.
+Constructor identity and ordered field
+values determine equality, recursively. The query refuses key types whose
+equality it has not established, including `Real`, functions, and indexed
+families. The key computation must terminate on the goals it receives.
+It and the computations it calls may not install effect handlers.
+
+If $g$ is a goal item, the chart has already summed the weights of all its
+proofs into $m(g)$. The mass of a key $k$ is thus
+$\sum_{g:\,\mathrm{classify}(g)=k} m(g)$. Each proof contributes through
+its goal exactly once, and the caller can normalize by $\sum_g m(g)$.
+The query runs the projection once per supported goal, then groups keys
+in a hash table. Its extra work depends on the number of goal items and
+the cost of computing and comparing their keys, even when the proof count
+is much larger. The masses and their normalizer retain their gradients.
+
+#### Scoring a response with a prover
+
+The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules
+yield two derivations of the form `approved` and one of `unresolved`. The
+form selector adds the two masses for `approved` before normalizing. The
+checked `to_claim` computation uses the parser's structural equality to
+construct an item of the prover's own family. For each such item, the call
+`Prover__run[1]([claim], [true])` asks whether the one supplied axiom proves
+the goal in the Boolean semiring.
+
+<!-- compile: qiec -->
+```qvr
+object Word : FinSet 2
+object Weight : Real 1
+
+deduction Reading : Word -> Word [semiring=LogProb, start=S]
+    atoms span, A, B, C, D, S, lexical, approved, unresolved
+    rule first : span(I, K, A, lexical), span(K, J, D, lexical) |- span(I, J, S, approved)
+    rule second : span(I, K, B, lexical), span(K, J, D, lexical) |- span(I, J, S, approved)
+    rule third : span(I, K, C, lexical), span(K, J, D, lexical) |- span(I, J, S, unresolved)
+    lexicon
+        "item" : A = lexical #[learnable]
+        "item" : B = lexical #[learnable]
+        "item" : C = lexical #[learnable]
+        "reviewed" : D = lexical
+
+deduction Prover : Word -> Word [semiring=Boolean, start=Goal]
+    atoms Accepted, Pending, Licensed, Goal
+    rule license : Accepted |- Licensed
+    rule discharge : Licensed |- Goal
+
+define pack_tokens(first : String, last : String) : Tensor[String]([2]) !{} =
+    return [first, last]
+
+define to_claim(form : Reading__Item) : Prover__Item !{} =
+    let accepted = construct Reading__approved() as Reading__Item
+    let matches : Bool <- Reading__eq(form, accepted)
+    if matches then
+        return construct Prover__Accepted() as Prover__Item
+    else
+        return construct Prover__Pending() as Prover__Item
+
+define response_mass(rows : Reading__Outcomes, yes : Real, no : Real) : Real !{} =
+    case rows motive => Real
+        Reading__outcome_end =>
+            return 0.0
+        Reading__outcome_entry(form, log_weight, tail) =>
+            let claim : Prover__Item <- to_claim(form)
+            let proved : Bool <- Prover__run[1]([claim], [true])
+            let rest : Real <- response_mass(tail, yes, no)
+            if proved then
+                return rest + exp(log_weight) * yes
+            else
+                return rest + exp(log_weight) * no
+
+program assess(first : String, last : String, yes : Real, no : Real) : Word -> Weight
+    let sentence <- pack_tokens(first, last)
+    let readings = parse_normalized_outcomes(Reading, sentence, "form")
+    let likelihood <- response_mass(readings, yes, no)
+    score response = log(likelihood)
+    return response
+
+export assess
+```
+
+The likelihood sums the reading probabilities weighted by `yes` when the
+prover succeeds and `no` otherwise. For lexical log weights $w_0,w_1,w_2$,
+the likelihood is
+
+$$
+\frac{(e^{w_0}+e^{w_1})\,\mathrm{yes}+e^{w_2}\,\mathrm{no}}
+     {e^{w_0}+e^{w_1}+e^{w_2}}.
+$$
+
+Save the source as `weighted_parser_prover.qvr` and run it with the default
+lexical log weights and different response probabilities.
+
+```bash
+qvr run weighted_parser_prover.qvr assess \
+    --data 'first="item"' --data 'last="reviewed"' --data yes=0.8 --data no=0.3
+```
+
+This example uses a pure typed adapter and Boolean deduction. Typed rule
+interpretations with effects require a separate account of what each rule
+does and which uses of its result may share an effect.
+
 ## Schema export
 
 A compiled `DeductionDecl` can also be exported as a

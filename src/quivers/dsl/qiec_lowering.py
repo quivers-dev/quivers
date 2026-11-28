@@ -66,6 +66,10 @@ from quivers.dsl.pure_builtins import (
     _ROWWISE,
 )
 from quivers.dsl.deduction_elaboration import _DeductionElaboration
+from quivers.dsl._deduction_outcomes import (
+    check_outcome_key_bodies,
+    declare_outcome_key_computations,
+)
 from quivers.dsl.structural_elaboration import _StructuralElaboration
 from quivers.dsl.latent_weights import LatentWeightsError, expand_latent_weights
 from quivers.dsl.program_elaboration import (
@@ -1600,9 +1604,12 @@ class _Elaborator(
         self._declare_handlers()
         self._register_handlers()
         deductions = self._declare_deductions()
+        outcome_keys = declare_outcome_key_computations(self)
         structural = self._declare_structural_computations()
         programs = self._declare_programs()
         computations = self._declare_computations()
+        bodies = (*deductions, *outcome_keys, *structural, *programs, *computations)
+        check_outcome_key_bodies(self, bodies)
         return QiecModule(
             module=self.source.module_name,
             source_protocol=QVR_SOURCE_VERSION,
@@ -1613,7 +1620,7 @@ class _Elaborator(
             effects=tuple(self.effects.values()),
             instances=tuple(self.instances.values()),
             handlers=tuple(self.handlers.values()),
-            computations=(*deductions, *structural, *programs, *computations),
+            computations=bodies,
             entries=tuple(self.entries),
         )
 

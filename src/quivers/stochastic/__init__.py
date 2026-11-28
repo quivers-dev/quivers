@@ -116,6 +116,7 @@ if TYPE_CHECKING:
         expected_embedding,
         fold_derivations,
         forest_fold,
+        forest_folds,
         nonlinear_fold,
     )
     from quivers.stochastic.indexed import (
@@ -528,6 +529,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "expected_embedding": "quivers.stochastic.forest",
     "fold_derivations": "quivers.stochastic.forest",
     "forest_fold": "quivers.stochastic.forest",
+    "forest_folds": "quivers.stochastic.forest",
     "nonlinear_fold": "quivers.stochastic.forest",
     "FOREST_ALGORITHM": "quivers.stochastic.planning",
     "CYCLIC_WORK": "quivers.stochastic.planning",
@@ -855,6 +857,7 @@ __all__ = [
     "expected_embedding",
     "fold_derivations",
     "forest_fold",
+    "forest_folds",
     "nonlinear_fold",
     # recursion
     "Component",

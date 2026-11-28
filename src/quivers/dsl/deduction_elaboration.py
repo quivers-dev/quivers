@@ -64,6 +64,15 @@ from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec._models import QiecModel
 
 from quivers.dsl._deduction_chart import declare_chart, elaborate_chart
+from quivers.dsl._deduction_outcomes import (
+    OUTCOME_CALLS,
+    OutcomeKey,
+    OutcomeQuery,
+    declare_outcome_key_types,
+    declare_outcomes,
+    elaborate_outcomes,
+    outcome_call_sites,
+)
 
 from quivers.dsl.ast_nodes import (
     BundleDecl,
@@ -1268,7 +1277,7 @@ def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
             value = getattr(step, "value", None)
             if (
                 isinstance(value, LetExprCall)
-                and value.func == "parse"
+                and (value.func == "parse" or value.func in OUTCOME_CALLS)
                 and value.args
                 and isinstance(value.args[0], LetExprVar)
                 and any(isinstance(argument, LetExprTuple) for argument in value.args)
@@ -1355,6 +1364,8 @@ class _DeductionElaboration:
             not cover.
         """
         self._deductions: dict[str, _System] = {}
+        self._outcome_queries: dict[str, OutcomeQuery] = {}
+        self._outcome_keys: dict[tuple[str, str], OutcomeKey] = {}
         declarations = [
             statement
             for statement in self.source.syntax.statements
@@ -1365,6 +1376,12 @@ class _DeductionElaboration:
         declarations.extend(declaration for declaration, _ in schema_parsers)
         if not declarations:
             return
+        calls = outcome_call_sites(self)
+        outcome_calls = {
+            call.args[0].name: call
+            for call in calls
+            if isinstance(call.args[0], LetExprVar)
+        }
         self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
         for declaration in declarations:
@@ -1396,12 +1413,18 @@ class _DeductionElaboration:
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
+            query = outcome_calls.get(declaration.name)
+            if query is not None:
+                self._outcome_queries[declaration.name] = declare_outcomes(
+                    self, system, query
+                )
             if not system.searched:
                 declare_chart(self, system)
             if system.chained:
                 self._declare_chain_family(system)
             self._declare_deduction_instances(system)
             self._deductions[declaration.name] = system
+        self._outcome_keys = declare_outcome_key_types(self, calls)
 
     def _schema_parser_declarations(
         self: _Elaborator,
@@ -2649,14 +2672,11 @@ class _DeductionElaboration:
         # the parameter store.
         logged = system.semiring.log_weights
         lexical_learned = logged and any(entry.learnable for entry in system.entries)
-        firing = (
-            [system.rules[index] for index in system.live]
-            if system.by_yield
-            else system.rules
-        )
-        learned = lexical_learned or (
-            logged and any(rule.learnable or rule.parent is not None for rule in firing)
-        )
+        rule_reads = {
+            index
+            for index, rule in enumerate(system.rules)
+            if logged and (rule.learnable or rule.parent is not None)
+        }
         if system.normalized_cell[0]:
             # A normalized production's weight reads the learnable free
             # weights of its group when the group has several members.
@@ -2670,20 +2690,25 @@ class _DeductionElaboration:
             lexical_learned = any(
                 ("lexicon", index) in reading for index in range(len(system.entries))
             )
-            learned = lexical_learned or any(
-                ("rule", system.rules[index].presented.index) in reading
-                for index in (
-                    system.live if system.by_yield else range(len(system.rules))
-                )
-            )
+            rule_reads = {
+                index
+                for index, rule in enumerate(system.rules)
+                if ("rule", rule.presented.index) in reading
+            }
         if weighted:
-            lexical_learned = learned = False
+            lexical_learned = False
+            rule_reads.clear()
+        learned = lexical_learned or any(
+            index in rule_reads
+            for index in (system.live if system.by_yield else range(len(system.rules)))
+        )
         base = (system.choice_cell[0].entry, system.weight_cell[0].entry)
         axiom_row = EffectRow(
             entries=(*base, params.entry) if lexical_learned else base
         )
         row = EffectRow(entries=(*base, params.entry) if learned else base)
         outer = EffectRow(entries=(params.entry,) if learned else ())
+        lexical_outer = EffectRow(entries=(params.entry,) if lexical_learned else ())
         assert system.settle_cell[0] is not None
         stopping = EffectRow(entries=(*outer.entries, system.settle_cell[0].entry))
         pure = EffectRow()
@@ -2705,7 +2730,7 @@ class _DeductionElaboration:
         threaded = (
             {
                 system.name(suffix): system.name(f"weighted_{suffix}")
-                for suffix in THREADED
+                for suffix in (*THREADED, "outcomes")
             }
             if weighted
             else {}
@@ -2898,7 +2923,7 @@ class _DeductionElaboration:
                 ("chart_size", (chart,), INT, pure),
                 ("chart_goal", (chart,), carrier, pure),
                 (
-                    ("chart_lexicon", (INT, chart, *inputs), chart, outer)
+                    ("chart_lexicon", (INT, chart, *inputs), chart, lexical_outer)
                     if system.entries
                     else ("chart_axioms", (INT, chart, *inputs), chart, pure)
                 ),
@@ -2914,7 +2939,7 @@ class _DeductionElaboration:
                         (extent,),
                         (chart, chart, chart, carrier, INT, *((item,) * position)),
                         chart,
-                        outer,
+                        outer if rule_index in rule_reads else pure,
                     )
             entry = declare(
                 system.name("run"),
@@ -2926,6 +2951,18 @@ class _DeductionElaboration:
         if system.depth_cell[0] is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
         normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
+        outcome_query = self._outcome_queries.get(system.decl.name)
+        outcome_entry = (
+            declare(
+                system.name("outcomes"),
+                (extent,),
+                (tokens_type, STRING, BOOL),
+                outcome_query.handler.output_type,
+                outer,
+            )
+            if outcome_query is not None
+            else None
+        )
         if system.normalized_cell[0] and not weighted:
             for index, group in enumerate(system.groups_cell[0]):
                 if len(group.productions) > 1 and any(
@@ -2947,6 +2984,10 @@ class _DeductionElaboration:
         computations: list[NamedComputation] = [
             context.normalizer(signature, group) for signature, group in normalizers
         ]
+        if outcome_query is not None and outcome_entry is not None:
+            computations.append(
+                elaborate_outcomes(context, outcome_query, outcome_entry)
+            )
         if not weighted:
             computations.extend(
                 (
