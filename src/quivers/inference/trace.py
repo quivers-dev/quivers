@@ -21,6 +21,8 @@ The `SampleSite` and `Trace` data types are defined in
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 
 from quivers.continuous.programs import MonadicProgram
@@ -34,7 +36,7 @@ __all__ = ["SampleSite", "Trace", "trace"]
 def trace(
     program: MonadicProgram,
     x: torch.Tensor,
-    observations: dict[str, torch.Tensor] | None = None,
+    observations: dict[str, object] | None = None,
 ) -> Trace:
     """Execute a program and record all sample sites.
 
@@ -53,20 +55,23 @@ def trace(
     x : torch.Tensor
         Program input, shape ``(B, ...)``: ``B`` independent runs of
         the program.
-    observations : dict[str, torch.Tensor] or None
-        Values to clamp observed variables to. Keys are variable
-        names; a value is given once per run, along a leading axis of
-        length ``B``, or once for every run to share.
+    observations : dict[str, object] or None
+        Data and clamped values by name. Tensor values may have a leading
+        run axis of length ``B``, or be shared across runs. Checked programs
+        can accept typed host data, including a finite structured law as
+        an argument and one of its points as a site value.
 
     Returns
     -------
     Trace
-        Complete execution trace: each site's value laid out along the
-        run axis, its density per run, ``(B,)``, and the joint of each
-        run, ``(B,)``.
+        Complete execution trace with densities and joint on the run
+        axis. A tensor site lays its value out on that axis. A finite
+        structured site holds its typed value directly and requires one run.
     """
     with TraceHandler() as handler:
-        output = program.rsample(x, torch.Size(), observations)
+        output = program.rsample(
+            x, torch.Size(), cast(dict[str, torch.Tensor] | None, observations)
+        )
     handler.trace = handler.trace.with_(
         output=output, log_joint=handler.total_log_joint(x.device)
     )
