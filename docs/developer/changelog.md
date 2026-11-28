@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked centered string likelihoods.** A named QVR computation can return a centered conditional or tree log probability with live gradients and measured dyadic work.
 - **Centered acyclic string likelihoods.** Opt-in binary64 LogProb queries keep fixed-word conditional and tree probabilities usable when rounded absolute log masses erase their difference.
 - **Certified acyclic LogProb path accuracy.** A fixed-word query can bound its float64 score's absolute log error using a sparse directed verifier, including for inputs near log weight −1000. The checked native provider returns the log score and exact rational evidence from one live snapshot.
 - **Certified cyclic LogProb path accuracy.** Bounded productive epsilon components can use exact rational endpoint stars to certify the ordinary log score, including when a path mass underflows in binary64. The checked native report distinguishes proven local divergence from an unverified upper star.

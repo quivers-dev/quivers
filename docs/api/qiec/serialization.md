@@ -405,6 +405,28 @@ and serialized fields.
 
 ::: quivers.qiec.relation_path_law.RelationPathLaw
 
+### Centered acyclic string log probabilities
+
+`CenteredStringLogProbRequest` wraps either an authored fixed-input
+conditional request or an authored tree word query with LogProb
+weights. The [centered evaluator](../core/morphisms.md#centered-acyclic-string-likelihoods)
+requires binary64 weights and acyclic productive observations. Both
+likelihood sums read one evaluated vector of live original weights.
+The request sets a combined occurrence limit and an exact-work limit
+in addition to the original observation limits.
+
+An ordinary QVR foreign `Compute` declaration uses the checked handler
+name from the request. The name records the exact original relation and
+ordered words, or the original graph, variable, and word. Execution
+returns the differentiable log probability and a four-element Int
+tensor of productive states, occurrences, weight slots, and dyadic
+work. Other policy bounds can reuse the same declaration. Stan, BUGS,
+and JAGS report the named native capability as unavailable.
+
+::: quivers.qiec.centered_string_runtime.CenteredStringLogProbRequest
+
+::: quivers.qiec.centered_string_runtime.CenteredStringLogProbRuntimeProvider
+
 ### A tail outcome for capped cyclic paths
 
 `FixedCappedCyclicRelationPathSampleRequest` specifies a different

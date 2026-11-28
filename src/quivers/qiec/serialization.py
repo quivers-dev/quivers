@@ -153,6 +153,7 @@ from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
 )
+from quivers.qiec.centered_string_runtime import CenteredStringLogProbRequest
 from quivers.qiec.relation_log_path_certificate import (
     FixedCyclicLogProbPathCertificateRequest,
     FixedLogProbPathCertificateRequest,
@@ -442,6 +443,7 @@ _NODE_CLASSES = (
     FixedCyclicLogProbPathCertificateRequest,
     FixedLogProbPathCertificateRequest,
     FixedMarkovPathCertificateRequest,
+    CenteredStringLogProbRequest,
     FixedRelationPathRankRequest,
     FixedCappedCyclicRelationPathSampleRequest,
     FixedCyclicRelationPathSampleRequest,
