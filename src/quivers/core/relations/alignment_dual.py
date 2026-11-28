@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
@@ -13,6 +13,7 @@ import torch
 
 from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import _weight_snapshot
+from quivers.core.relations._ngram import _NgramAutomaton
 from quivers.core.relations.graph import StringFactor, StringFactorGraph
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
 from quivers.core.relations.topology import Words
@@ -31,47 +32,17 @@ class _NgramScorer:
     """Count active contiguous features with a deterministic suffix automaton."""
 
     def __init__(self, coefficients: Mapping[_Ngram, Fraction]) -> None:
-        edges: list[dict[int, int]] = [{}]
-        failure = [0]
-        scores = [Fraction(0)]
-        for gram, weight in coefficients.items():
-            if not weight:
-                continue
-            state = 0
-            for symbol in gram:
-                target = edges[state].get(symbol)
-                if target is None:
-                    target = len(edges)
-                    edges[state][symbol] = target
-                    edges.append({})
-                    failure.append(0)
-                    scores.append(Fraction(0))
-                state = target
-            scores[state] += weight
-
-        ready = deque(edges[0].values())
-        while ready:
-            parent = ready.popleft()
-            for symbol, child in edges[parent].items():
-                fallback = failure[parent]
-                while fallback and symbol not in edges[fallback]:
-                    fallback = failure[fallback]
-                failure[child] = edges[fallback].get(symbol, 0)
-                scores[child] += scores[failure[child]]
-                ready.append(child)
-        self._edges = edges
-        self._failure = failure
-        self._scores = scores
-        self._cache: dict[tuple[int, int], tuple[int, Fraction]] = {}
+        active = {gram: weight for gram, weight in coefficients.items() if weight}
+        self._machine = _NgramAutomaton(tuple(active))
+        weights = tuple(active.values())
+        self._scores = tuple(
+            sum((weights[index] for index in matched), Fraction(0))
+            for matched in self._machine.emissions
+        )
 
     def step(self, state: int, symbol: int) -> tuple[int, Fraction]:
-        key = state, symbol
-        if key not in self._cache:
-            while state and symbol not in self._edges[state]:
-                state = self._failure[state]
-            target = self._edges[state].get(symbol, 0)
-            self._cache[key] = target, self._scores[target]
-        return self._cache[key]
+        target = self._machine.step(state, symbol)
+        return target, self._scores[target]
 
 
 @dataclass(frozen=True, slots=True)

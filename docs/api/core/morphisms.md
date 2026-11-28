@@ -445,6 +445,31 @@ snapshot. Local paths are discrete decisions. The solver reports
 the peak number of reached local configurations and total local
 arc examinations, including primal feasibility checks.
 
+### Compact regular n-gram messages
+
+`NgramMessagePlan` compiles the product of a one-tape LogProb
+relation and a deterministic suffix automaton over supplied n-grams.
+The automaton moves on emitted symbols and retains its state across
+epsilon arcs. It charges every matching feature at its ending symbol,
+including overlapping occurrences. An original path has exactly one
+product path and receives the same feature score as any other path
+with the same output word.
+
+The compiled message has log weight $\log M(w) + \theta^\mathsf{T}
+\phi(w)$, where $M$ is the original weighted language and
+$\phi$ counts feature occurrences. It reuses the original weight
+and coefficient sources. Each weight evaluation gathers the
+required coefficient rows and shares identical pairs of original
+slots and feature emissions.
+
+The automaton uses prefixes of the supplied feature set and failure
+links to proper suffixes. Only reached product configurations are
+created, and no iteration over the alphabet is required. The work
+budget includes trie construction, failure links, examined product
+arcs, and feature emissions. Ordinary relation limits and closure
+checks apply when summing the message. In particular, tilting a
+cyclic language can change whether its normalizer is finite.
+
 ::: quivers.core.relations
     options:
       members:
@@ -468,6 +493,7 @@ arc examinations, including primal feasibility checks.
         - FiniteStringScore
         - MarginalOutputChoice
         - NgramFamily
+        - NgramMessagePlan
         - NgramProjection
         - PathStatistics
         - PenalizedNgramProjection

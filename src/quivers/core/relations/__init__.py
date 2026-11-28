@@ -57,6 +57,7 @@ __all__ = [
     "Label",
     "MarginalOutputChoice",
     "NgramFamily",
+    "NgramMessagePlan",
     "NgramProjection",
     "PenalizedNgramProjection",
     "PathStatistics",
@@ -658,3 +659,4 @@ from quivers.core.relations.marginal_map import (  # noqa: E402
     MarginalOutputChoice,
     best_marginal_output,
 )
+from quivers.core.relations.ngram_message import NgramMessagePlan  # noqa: E402
