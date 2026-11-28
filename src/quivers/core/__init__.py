@@ -240,6 +240,7 @@ from quivers.core.carriers import (
     ElementStar,
     SecondOrderExpectationSemiring,
 )
+from quivers.core.signed_log import SignedLogDualSemiring
 from quivers.core.spanning import (
     DirectedTrees,
     directed_tree,
@@ -461,6 +462,7 @@ __all__ = [
     "ExpectationSemiring",
     "ProductSemiring",
     "SecondOrderExpectationSemiring",
+    "SignedLogDualSemiring",
     "ElementStar",
     # spanning trees
     "DirectedTrees",
