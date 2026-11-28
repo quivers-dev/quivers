@@ -144,7 +144,6 @@ LEDGERED: dict[str, dict[str, tuple[str, ...]]] = {
     "einsum-wiring": {
         "Q6": (
             "certain-entry-clamped",
-            "dense-is-the-contract",
             "kan-extension-detaches",
         ),
     },

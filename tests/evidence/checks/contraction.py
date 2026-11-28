@@ -33,6 +33,7 @@ from quivers.core.elimination import (
 from quivers.core.wiring import EinsumWiring
 from quivers.enriched.day_convolution import day_convolution
 from quivers.categorical.monoidal import CartesianProductMonoidal
+from quivers.core.morphisms import FiniteMorphism, Morphism
 from quivers.core.objects import FinSet
 from quivers.qiec.contracts import Phase, measured_total
 from tests.evidence.checks._registry import add
@@ -903,6 +904,12 @@ class _LeftProjection(CompositionRule):
         return t.sum(dim=dim)
 
 
+def check_finite_morphism_boundary() -> None:
+    """Require the dense tensor only at the finite morphism boundary."""
+    assert "tensor" not in Morphism.__abstractmethods__
+    assert "tensor" in FiniteMorphism.__abstractmethods__
+
+
 def _register() -> None:
     """Register every check of this module."""
     row = "einsum-wiring"
@@ -924,6 +931,7 @@ def _register() -> None:
                 "Q1g",
                 partial(check_contraction_gradient, network, rule),
             )
+    add("contraction/finite-morphism-boundary", row, "Q6", check_finite_morphism_boundary)
     add("contraction/order", row, "Q6", check_order)
     add("contraction/chain-peak", row, "Q6", check_chain_peak)
     add("contraction/counts-measured", row, "Q6", check_counts_are_measured)

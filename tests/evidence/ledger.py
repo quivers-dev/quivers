@@ -26,7 +26,7 @@ from quivers.core.algebras import (
     GODEL,
     ProductFuzzyAlgebra,
 )
-from quivers.core.morphisms import Morphism, observed
+from quivers.core.morphisms import observed
 from quivers.core.objects import FinSet, ProductSet
 from quivers.dsl import loads
 from quivers.dsl.ast_nodes import LetExprCall, LetExprVar, SchemaDecl, TypeName
@@ -613,20 +613,6 @@ record(
             float(1 - (1 - Fraction(1)) * (1 - Fraction(0))):.10g}"
     },
 )
-
-record(
-    "dense-is-the-contract",
-    "core/morphisms.py: Morphism",
-    "a dense tensor is part of the root interface of a morphism",
-    {"the root interface requires a tensor": "True"},
-    {"the root interface requires a tensor": "False"},
-    lambda: {
-        "the root interface requires a tensor": str(
-            "tensor" in Morphism.__abstractmethods__
-        )
-    },
-)
-
 
 def _kan_gradient() -> Facts:
     """Whether a Kan extension of trainable values has a gradient path.
