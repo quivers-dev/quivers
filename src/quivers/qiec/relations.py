@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import cached_property
-from typing import cast
+from typing import Literal, cast
 
 import didactic.api as dx
 import torch
 from torch import nn
 
 from quivers._values import OPAQUE_BY_VALUE
-from quivers.core.algebras import Semiring
+from quivers.core.algebras import LOG_PROB, MARKOV, Semiring
 from quivers.core.laws import ClaimSubject
 from quivers.core.objects import FinSet, StringSet
 from quivers.core.relations import (
@@ -20,10 +20,14 @@ from quivers.core.relations import (
     Label,
     RationalRelation,
     RelationTopology,
+    Words,
 )
+from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
+from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.foreign import KERNEL_ALGEBRAS
+from quivers.qiec.types import REAL, TypeExpr
 
 
 class _RelationWeights(nn.Module):
@@ -299,4 +303,45 @@ class RationalRelationSpec(QiecModel):
         return RationalRelation(self.topology, weights, algebra=algebra)
 
 
-__all__ = ["RationalRelationSpec"]
+class FixedRelationRequest(QiecModel):
+    """A fixed observation and exact-work contract over a sparse topology.
+
+    The words are in tape order. For `conditional_log_prob`, the
+    topology's input split separates conditioning words from scored
+    words. The wire contains only the request and stable relation
+    specification. The provider binds its live scalar parameters.
+    """
+
+    relation: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    operation: Literal["pair_weight", "conditional_log_prob"]
+    words: Words = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_states: int
+    max_work: int
+    max_closure_size: int | None = None
+
+    @dx.model_validator()
+    def _validate_request(self) -> None:
+        _validate_limits(self.max_states, self.max_work, self.max_closure_size)
+        topology = self.relation.topology
+        topology._validate_words(self.words)
+        if self.relation.algebra not in (MARKOV.subject, LOG_PROB.subject):
+            raise ValueError("fixed relation requests require Markov or LogProb")
+        if self.operation == "conditional_log_prob" and not (
+            0 < topology.input_tapes < len(topology.tapes)
+        ):
+            raise ValueError(
+                "conditional relation requests require input and output tapes"
+            )
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """The checked scalar type of the request result."""
+        if (
+            self.operation == "conditional_log_prob"
+            or self.relation.algebra == LOG_PROB.subject
+        ):
+            return LOG_WEIGHT
+        return REAL
+
+
+__all__ = ["FixedRelationRequest", "RationalRelationSpec"]
