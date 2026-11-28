@@ -810,8 +810,11 @@ The native trace emits a separate `deduction.grouped_outcomes` event after
 this stage. It records the key type, number of input rows, distinct keys,
 positive output rows, and whether this stage normalizes the result. The
 underlying packed query reports its own raw item or proof masses.
-Computing the key, comparing structured values, and summing the masses
-have separate costs and are listed as unmeasured here.
+The trace lists the key calculation, comparisons, and reductions as
+unmeasured. Run `python -m tests.benchmarks.deduction_key_grouping` to
+measure the checked query and its isolated reducer as item count, key
+count, and key depth vary. The benchmark checks the masses and gradients
+at each parameter point in the refit.
 
 #### Returning weighted proofs
 
