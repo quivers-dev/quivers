@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked effect-stage receipts.** Serialize the selected target stage and verify its emitted artifact or named refusal against the original checked program.
+- **Checked lexical projection plans.** Category and form outcomes report their nominal source judgment, projected binder, and normalization contract.
 - **Checked centered log-ratio certificates.** A bounded native conditional or tree likelihood can verify the delivered value against the original binary64 weights and return exact rational error bounds.
 - **Checked centered string likelihoods.** A named QVR computation can return a centered conditional or tree log probability with live gradients and measured dyadic work.
 - **Centered acyclic string likelihoods.** Opt-in binary64 LogProb queries keep fixed-word conditional and tree probabilities usable when rounded absolute log masses erase their difference.
