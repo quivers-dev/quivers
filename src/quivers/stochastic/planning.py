@@ -31,8 +31,10 @@ import itertools
 import math
 from collections import deque
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
+from graphlib import CycleError, TopologicalSorter
 from typing import Literal
 
 import didactic.api as dx
@@ -40,7 +42,7 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring, RealEmbedding, Star
-from quivers.core.elimination import fiber_join
+from quivers.core.elimination import ELIMINATION_LAWS, fiber_join
 from quivers.core.laws import (
     PLUS_IDEMPOTENT,
     REAL_EMBEDDING,
@@ -63,6 +65,7 @@ from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import (
     NOT_DIFFERENTIATED,
     SPECTRAL_RADIUS_BELOW_ONE,
+    UNLIMITED,
     AbsoluteError,
     AbsoluteLogError,
     AccuracyReport,
@@ -131,7 +134,13 @@ from quivers.qiec.rules import (
     RulePresentation,
     evaluate_index,
 )
-from quivers.qiec.types import IndexLiteral, IndexSum, IndexTerm, IndexVariable
+from quivers.qiec.types import (
+    IndexConstructor,
+    IndexLiteral,
+    IndexSum,
+    IndexTerm,
+    IndexVariable,
+)
 from quivers.stochastic.forest import DerivationForest, ForestEdge, build_forest
 from quivers.stochastic.indexed import ChartWork, IndexedChart, generic_joinable
 from quivers.stochastic.recursion import (
@@ -143,7 +152,15 @@ from quivers.stochastic.recursion import (
     solve,
     solve_polynomial,
 )
-from quivers.stochastic.joins import agm_bound, body_query
+from quivers.stochastic.joins import (
+    BodyQuery,
+    JoinWork,
+    agm_bound,
+    body_query,
+    eliminate,
+    elimination_order,
+    relations,
+)
 from quivers.stochastic.span import (
     SpanGrammar,
     SpanRefused,
@@ -200,6 +217,7 @@ class PlanRefusal(str, Enum):
     OBSERVABLE_WITHOUT_EXECUTOR = "observable-without-executor"
     RETENTION_WITHOUT_EXECUTOR = "retention-without-executor"
     ALGEBRA = "algebra"
+    ELIMINATION_FRAGMENT = "elimination-fragment"
     CYCLE = "cycle"
     NONLINEAR_CYCLE = "nonlinear-cycle"
     MIXED_SIDES = "mixed-sides"
@@ -1139,7 +1157,8 @@ class RuleJoin(QiecModel):
     name : str
         Its name.
     algorithm : str
-        ``"generic join"``, ``"keyed premise at a time"`` or ``"constant"``
+        ``"generic join"``, ``"keyed premise at a time"``, ``"variable elimination"``
+        or ``"constant"``
         for a rule without premises.
     rho : Rational
         The weight of a least fractional edge cover of the body's
@@ -1148,14 +1167,19 @@ class RuleJoin(QiecModel):
         The bound on the join's lookups and candidates over a run.
     reason : str
         Why the algorithm applies.
+    order : tuple of str
+        The variables summed out, in the selected elimination order.
     """
 
     rule: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    algorithm: Literal["generic join", "keyed premise at a time", "constant"]
+    algorithm: Literal[
+        "generic join", "keyed premise at a time", "variable elimination", "constant"
+    ]
     rho: Rational = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     bound: str
     reason: str
+    order: tuple[str, ...] = ()
 
 
 def rule_joins(presentation: RulePresentation) -> tuple[RuleJoin, ...]:
@@ -1393,6 +1417,8 @@ class Evaluation(ValueModel):
     accuracy : AccuracyReport or None
         What a run of an inexact method reached, which its contract
         settles; ``None`` for exact methods.
+    join_work : tuple of JoinWork
+        A counter per rule evaluated by variable elimination, in execution order.
     """
 
     values: dict[Item, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -1427,6 +1453,9 @@ class Evaluation(ValueModel):
     )
     accuracy: AccuracyReport | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    join_work: tuple[JoinWork, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     @property
@@ -1485,7 +1514,11 @@ class Evaluation(ValueModel):
             star_pivots=kept(WorkField.STAR_PIVOTS, self.pivots),
             exact_operations=kept(WorkField.EXACT_OPERATIONS, self.exact),
             hash_operations=kept(WorkField.HASH_OPERATIONS, self.work.lookups),
-            key_comparisons=kept(WorkField.KEY_COMPARISONS, self.work.candidates),
+            key_comparisons=kept(
+                WorkField.KEY_COMPARISONS,
+                self.work.candidates
+                + sum(w.iterated + w.probes for w in self.join_work),
+            ),
             provenance_records=kept(
                 WorkField.PROVENANCE_RECORDS, self.counts + self.retained
             ),
@@ -1519,6 +1552,13 @@ class Evaluation(ValueModel):
 # the plan
 
 
+@dataclass(frozen=True)
+class _EliminatedRule:
+    query: BodyQuery
+    order: tuple[str, ...]
+    families: tuple[FamilyId, ...]
+
+
 class Plan(ValueModel):
     """A selected algorithm for a query, ready to run.
 
@@ -1532,6 +1572,9 @@ class Plan(ValueModel):
         The weight algebra.
     span : SpanGrammar or None
         The presentation's span form, when a span executor is selected.
+    eliminations : tuple or None
+        The family order and each family's rule queries and elimination orders,
+        when the partition executor is selected.
     """
 
     record: PlanRecord = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -1539,6 +1582,9 @@ class Plan(ValueModel):
     algebra: OrderPreservingSemiring = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     span: SpanGrammar | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    eliminations: tuple[tuple[FamilyId, tuple[_EliminatedRule, ...]], ...] | None = (
+        dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
     )
 
     def item(self, family: FamilyId, arguments: tuple[Ground, ...]) -> Item:
@@ -1724,7 +1770,7 @@ class Plan(ValueModel):
         """The gradient of a goal's value in every input weight.
 
         With ``backward == "autograd"`` the run is differentiated by
-        autograd, whose tape holds every instance. With ``"recompute"`` the
+        autograd, whose tape holds the selected executor's operations. With ``"recompute"`` the
         run keeps only values and their order, and a reverse sweep
         enumerates each item's incoming instances again and differentiates
         each item's sum on its own.
@@ -1949,6 +1995,7 @@ def plan(
     retention: Retention,
     *,
     claims: Sequence[LawClaim] = (),
+    executor: Literal["auto", "eliminate"] = "auto",
 ) -> Plan:
     """Select and record an algorithm for a query.
 
@@ -1976,6 +2023,10 @@ def plan(
     claims : Sequence of LawClaim
         Further law claims the result may rest on, such as the linearity
         of a fold; they are checked with the algebra's and recorded.
+    executor : {"auto", "eliminate"}
+        The default selects among the chart, span and forest executors.
+        ``"eliminate"`` requires the exact family-acyclic weight fragment
+        and sums out rule variables before combining their conclusions.
 
     Returns
     -------
@@ -1993,6 +2044,12 @@ def plan(
         raise PlanRefused(
             PlanRefusal.INADMISSIBLE,
             "the query names another presentation or another retention",
+        )
+    if executor not in ("auto", "eliminate"):
+        raise PlanRefused(PlanRefusal.INADMISSIBLE, f"unknown executor {executor!r}")
+    if executor == "eliminate":
+        return _plan_elimination(
+            query, presentation, algebra, recursion, accuracy, retention, claims
         )
     try:
         check_admissible(
@@ -2209,6 +2266,212 @@ def plan(
     return Plan(record=record, presentation=presentation, algebra=algebra, span=span)
 
 
+_ELIMINATION_ALGORITHM = "variable elimination in judgment-family order"
+
+_ELIMINATION_MEASURES = measuring(
+    {
+        WorkField.SCALAR_SUMS,
+        WorkField.SCALAR_PRODUCTS,
+        WorkField.KEY_COMPARISONS,
+        WorkField.PROVENANCE_RECORDS,
+    }
+)
+
+_ELIMINATION_COMPLEXITY = ComplexityClaim(
+    query="exact weight without provenance on an acyclic family graph",
+    parameters=(
+        ComplexityParameter(name="S", meaning="work of compiling the rule queries"),
+        ComplexityParameter(name="G", meaning="the size of the presentation"),
+        ComplexityParameter(
+            name="I", meaning="input occurrences and item scans by rules"
+        ),
+        ComplexityParameter(
+            name="J", meaning="work of the selected bag and output joins"
+        ),
+        ComplexityParameter(name="A", meaning="all sums and products in the run"),
+        ComplexityParameter(name="V", meaning="items in the result"),
+        ComplexityParameter(
+            name="M", meaning="largest live set of factor and trie rows"
+        ),
+        ComplexityParameter(name="P", meaning="elements per algebra operand"),
+    ),
+    model=ALGEBRA_OPERATIONS,
+    bounds=tuple(
+        ComplexityBound(
+            phase=phase,
+            resource=resource,
+            expression=expression,
+            status=Unresolved(
+                obligation="tighter bounds across rules and order choices for the family DAG"
+            ),
+        )
+        for phase, time, space in (
+            (Phase.CONSTRUCTION, "S", "S"),
+            (Phase.EXECUTION, "G + I + J + A", "G + V + M"),
+            (Phase.DIFFERENTIATION, "G + I + J + A", "G + V + M + P A"),
+            (Phase.REFIT, "G + I + J + A", "G + V + M"),
+        )
+        for resource, expression in (("time", time), ("space", space))
+    ),
+    conditions=(
+        "expected constant-time hashing and fixed-size patterns for data complexity",
+        "S includes graph analysis, greedy order selection and full-body edge covers",
+        "J includes trie construction, cover reporting, partial bindings and the free output",
+        "execution and refit space exclude the autograd tape",
+        "a run counts algebra operations, independent of tensor shape",
+        "the differentiation space assumes a bounded number of saved operand tensors per operation",
+    ),
+)
+
+
+def _elimination_pattern(term: IndexTerm) -> bool:
+    if isinstance(term, IndexConstructor):
+        return all(_elimination_pattern(argument) for argument in term.arguments)
+    if isinstance(term, IndexSum):
+        return len(term.terms) <= 1 and term.constant >= 0
+    return isinstance(term, (IndexVariable, IndexLiteral))
+
+
+def _plan_elimination(
+    query: QuerySpec,
+    presentation: RulePresentation,
+    algebra: OrderPreservingSemiring,
+    recursion: Recursion,
+    accuracy: AccuracyContract,
+    retention: Retention,
+    claims: Sequence[LawClaim],
+) -> Plan:
+    if not isinstance(query.observable, Weight):
+        raise PlanRefused(
+            PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR,
+            f"variable elimination answers weight, but the query asks for {query.observable.tag}",
+        )
+    if not isinstance(retention, NoRetention):
+        raise PlanRefused(
+            PlanRefusal.RETENTION_WITHOUT_EXECUTOR,
+            f"variable elimination keeps no provenance, but the query asks for {retention.tag}",
+        )
+    if not isinstance(recursion, Acyclic):
+        raise PlanRefused(
+            PlanRefusal.RECURSION_WITHOUT_EXECUTOR,
+            "variable elimination requires an acyclic judgment-family graph",
+        )
+    if accuracy.budget != UNLIMITED:
+        raise PlanRefused(
+            PlanRefusal.INADMISSIBLE,
+            "variable elimination does not enforce resource limits",
+        )
+    missing = [law.name for law in ELIMINATION_LAWS if not algebra.establishes(law)]
+    if missing:
+        raise PlanRefused(
+            PlanRefusal.ALGEBRA,
+            f"variable elimination requires established laws {missing}",
+        )
+    try:
+        check_admissible(
+            query,
+            recursion,
+            accuracy,
+            algebra=algebra.subject,
+            claims=(*algebra.claims(), *claims),
+            uses=requirements(ELIMINATION_LAWS, algebra.subject),
+        )
+    except InadmissibleContract as error:
+        raise PlanRefused(PlanRefusal.INADMISSIBLE, str(error)) from error
+
+    dependencies: dict[FamilyId, dict[FamilyId, None]] = {
+        family.id: {} for family in presentation.judgments
+    }
+    for rule in presentation.rules:
+        dependencies[rule.conclusion.family].update(
+            (premise.judgment.family, None) for premise in rule.premises
+        )
+    try:
+        families = tuple(TopologicalSorter(dependencies).static_order())
+    except CycleError as error:
+        cycle = " -> ".join(
+            presentation.judgments_by_id[family].name for family in error.args[1]
+        )
+        raise PlanRefused(
+            PlanRefusal.CYCLE,
+            f"variable elimination found a judgment-family cycle: {cycle}",
+        ) from error
+
+    orders: dict[FamilyId, list[_EliminatedRule]] = {family: [] for family in families}
+    records: list[RuleJoin] = []
+    for rule in presentation.rules:
+        if any(premise.hypotheses for premise in rule.premises):
+            raise PlanRefused(
+                PlanRefusal.OPEN_PREMISES, f"{rule.name!r} has open premises"
+            )
+        judgments = [premise.judgment for premise in rule.premises] + [rule.conclusion]
+        if rule.side_condition is not None or not all(
+            _elimination_pattern(argument)
+            for judgment in judgments
+            for argument in judgment.arguments
+        ):
+            raise PlanRefused(
+                PlanRefusal.ELIMINATION_FRAGMENT,
+                f"variable elimination requires independent flat patterns and no "
+                f"side condition in {rule.name!r}",
+            )
+        body = body_query(rule)
+        unbound = {binder.name for binder in rule.telescope} - set(body.variables)
+        if unbound:
+            raise PlanRefused(
+                PlanRefusal.ELIMINATION_FRAGMENT,
+                f"{rule.name!r} leaves {sorted(unbound)} unbound by its premises",
+            )
+        order = elimination_order(body)
+        premises = tuple(dict.fromkeys(atom.family for atom in body.atoms))
+        orders[rule.conclusion.family].append(_EliminatedRule(body, order, premises))
+        edges = [atom.variables for atom in body.atoms]
+        rho = agm_bound(body.variables, edges, [2] * len(edges)).rho
+        records.append(
+            RuleJoin(
+                rule=rule.id,
+                name=rule.name,
+                algorithm="variable elimination" if edges else "constant",
+                rho=Rational.of(rho),
+                bound="sum of the chosen bag and free-output join bounds"
+                if edges
+                else "1",
+                reason="premise families have final values before the rule runs",
+                order=order,
+            )
+        )
+    record = PlanRecord(
+        query=query,
+        recursion=recursion,
+        accuracy=accuracy,
+        retention=retention,
+        algebra=algebra.subject,
+        claims=(*algebra.claims(), *claims),
+        algorithm=_ELIMINATION_ALGORITHM,
+        assumptions=(
+            "every rule uses only earlier judgment families",
+            "one factor for each ordered premise, using the sum of its item's derivations",
+            "distributivity permits summing a binding variable before multiplying by "
+            "factors that do not contain it",
+        ),
+        structure=presentation.analysis,
+        complexity=_ELIMINATION_COMPLEXITY,
+        alternatives=(
+            Alternative(
+                algorithm=TWO_PASS_ALGORITHM,
+                reason="joins every grounded rule instance before aggregating its weight",
+            ),
+        ),
+        joins=tuple(records),
+    )
+    return Plan(
+        record=record,
+        presentation=presentation,
+        algebra=algebra,
+        eliminations=tuple((family, tuple(orders[family])) for family in families),
+    )
+
+
 def _span_form(
     query: QuerySpec,
     presentation: RulePresentation,
@@ -2390,17 +2653,19 @@ def _accumulate(
     return algebra.join(torch.stack(torch.broadcast_tensors(current, term)), 0)
 
 
-def _axiom_item(plan: Plan, chart: IndexedChart, occurrence: AxiomOccurrence) -> Item:
+def _axiom_item(
+    plan: Plan, occurrence: AxiomOccurrence, chart: IndexedChart | None = None
+) -> Item:
     """The item of an input occurrence.
 
     Parameters
     ----------
     plan : Plan
         The plan.
-    chart : IndexedChart
-        The chart, whose table interns the item.
     occurrence : AxiomOccurrence
         The occurrence.
+    chart : IndexedChart or None
+        The chart that interns the item, when the executor uses one.
 
     Returns
     -------
@@ -2419,6 +2684,8 @@ def _axiom_item(plan: Plan, chart: IndexedChart, occurrence: AxiomOccurrence) ->
     arguments = tuple(
         evaluate_index(argument, binding) for argument in slot.judgment.arguments
     )
+    if chart is None:
+        return Item(family=slot.judgment.family, arguments=arguments)
     return chart.items.intern(slot.judgment.family, arguments)
 
 
@@ -2524,7 +2791,7 @@ def _discover(
     seen: set[Item] = set()
     queue: deque[Item] = deque()
     for occurrence in axioms:
-        item = _axiom_item(plan, chart, occurrence)
+        item = _axiom_item(plan, occurrence, chart)
         leaves.setdefault(item, []).append(occurrence)
         if item.family in requested:
             _keep(
@@ -2613,6 +2880,8 @@ def _run(
     PlanRefused
         If the run has no value under the plan.
     """
+    if plan.eliminations is not None:
+        return _run_elimination(plan, plan.eliminations, axioms, inputs, like)
     if plan.span is not None:
         return _run_span(plan, plan.span, axioms, inputs, like)
     if isinstance(plan.record.recursion, MonotonePolynomial):
@@ -2620,6 +2889,66 @@ def _run(
     if isinstance(plan.record.recursion, LinearCyclic):
         return _solve_cyclic(plan, axioms, inputs, like)
     return _evaluate(plan, axioms, inputs, like)
+
+
+def _run_elimination(
+    plan: Plan,
+    stages: tuple[tuple[FamilyId, tuple[_EliminatedRule, ...]], ...],
+    axioms: Sequence[AxiomOccurrence],
+    inputs: Mapping[InputId, torch.Tensor],
+    like: torch.Tensor,
+) -> Evaluation:
+    """Finalize each family's sum before joining any rule that uses it."""
+    values: dict[Item, torch.Tensor] = {}
+    by_family: dict[FamilyId, dict[Item, None]] = {family: {} for family, _ in stages}
+    reports: list[JoinWork] = []
+    sums = 0
+
+    def add(item: Item, term: torch.Tensor) -> None:
+        nonlocal sums
+        current = values.get(item)
+        sums += current is not None
+        values[item] = _accumulate(plan.algebra, current, term)
+        by_family[item.family][item] = None
+
+    for occurrence in axioms:
+        add(
+            _axiom_item(plan, occurrence),
+            _occurrence_weight(plan, occurrence, inputs, like),
+        )
+    for family, rules in stages:
+        for stage in rules:
+            body = stage.query
+            weight = _weight(plan, body.rule.weight, inputs, like)
+            if not body.atoms:
+                arguments = tuple(
+                    evaluate_index(a, {}) for a in body.rule.conclusion.arguments
+                )
+                add(Item(family=family, arguments=arguments), weight)
+                continue
+            items = itertools.chain.from_iterable(by_family[f] for f in stage.families)
+            result = eliminate(
+                body,
+                relations(body, items),
+                plan.presentation,
+                plan.algebra,
+                values,
+                like=like,
+                rule_weight=weight,
+                order=stage.order,
+            )
+            reports.append(result.work)
+            for item, term in result.values.items():
+                add(item, term)
+    return Evaluation(
+        values=values,
+        order=tuple(itertools.chain.from_iterable(by_family.values())),
+        work=ChartWork(),
+        sums=sums + sum(work.sums for work in reports),
+        products=sum(work.products for work in reports),
+        measures=_ELIMINATION_MEASURES,
+        join_work=tuple(reports),
+    )
 
 
 def _run_span(
@@ -3437,7 +3766,7 @@ def _rebuild(
         chart.add(item)
     leaves: dict[Item, list[AxiomOccurrence]] = {}
     for occurrence in axioms:
-        leaves.setdefault(_axiom_item(plan, chart, occurrence), []).append(occurrence)
+        leaves.setdefault(_axiom_item(plan, occurrence, chart), []).append(occurrence)
     return chart, leaves
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from itertools import product
 
 import pytest
 import torch
@@ -18,13 +19,16 @@ from quivers.qiec.contracts import (
     NoRetention,
     OccurrenceId,
     ParentCounts,
+    ParameterId,
     Phase,
     PresentationId,
     ProvedOptimal,
     Retention,
+    Support,
 )
-from quivers.qiec.kinds import NAT
-from quivers.qiec.rules import Item
+from quivers.qiec.identifiers import ConstructorId
+from quivers.qiec.kinds import NAT, IndexBinder
+from quivers.qiec.rules import AxiomOccurrence, AxiomSlot, Item
 from quivers.qiec.types import IndexLiteral, IndexSum, IndexVariable
 from quivers.stochastic.indexed import index_variables, join_plans
 from quivers.stochastic.planning import (
@@ -36,7 +40,7 @@ from quivers.stochastic.planning import (
     acyclicity_certificate,
     plan,
 )
-from tests.evidence import graphs
+from tests.evidence import bodies, graphs
 from tests.evidence import presentations as fixture
 
 LIKE = torch.zeros((), dtype=torch.float64)
@@ -139,6 +143,235 @@ def test_parent_counts_are_admitted_and_reported() -> None:
     # tripled ones by three
     assert report.scalar_products == 2 * 8 + 3 * 7
     assert float(evaluation.value(graphs.node(6))) == 4.0
+
+
+@pytest.mark.parametrize("algebra", [REAL, LOG_PROB])
+def test_family_elimination_preserves_labelled_proofs(algebra) -> None:
+    """Each ordered premise can independently select either axiom occurrence."""
+    triple = Item(family=graphs.TRIPLE, arguments=(0,))
+    goal = Item(family=graphs.EDGE, arguments=(0, 0))
+    base_id = ParameterId.derive("family-elimination", "base")
+    constant = graphs.TRIPLED.with_(
+        id=ConstructorId.derive("family-elimination", "base"),
+        name="base",
+        telescope=(),
+        premises=(),
+        conclusion=graphs.TRIPLED.conclusion.with_(
+            arguments=(IndexLiteral(value=0, sort=NAT),)
+        ),
+        weight=base_id,
+    )
+    finish = graphs.TRIPLED.with_(
+        id=ConstructorId.derive("family-elimination", "finish"),
+        name="finish",
+        premises=(
+            graphs.TRIPLED.premises[0].with_(judgment=graphs.TRIPLED.conclusion),
+        ),
+        conclusion=graphs.TRIPLED.conclusion.with_(
+            family=graphs.EDGE, arguments=graphs.TRIPLED.conclusion.arguments * 2
+        ),
+        weight=None,
+    )
+    presentation = graphs.PRESENTATION.with_(rules=(finish, constant, graphs.TRIPLED))
+    (first,) = graphs.occurrences([])
+    second = first.with_(occurrence=OccurrenceId.derive("family-elimination", "second"))
+    weights = LIKE.new_tensor([[0.0, 2.0], [3.0, 1.0], [5.0, 3.0], [7.0, 11.0]])
+    if algebra is LOG_PROB:
+        weights = weights.log()
+    weights.requires_grad_()
+    parameters = (first.occurrence, second.occurrence, graphs.TRIPLED.weight, base_id)
+    inputs = dict(zip(parameters, weights.unbind(), strict=True))
+    occurrences = (first, second)
+    args = (
+        graphs.query(),
+        presentation,
+        algebra,
+        Acyclic(),
+        graphs.contract(),
+        NoRetention(),
+    )
+    selected = plan(*args, executor="eliminate")
+    chart = plan(*args)
+    masses = weights.exp() if algebra is LOG_PROB else weights
+    # Index triples are ordered proofs. The two occurrences have the same
+    # judgment but distinct identities. Their eight products are all terms.
+    exact = masses[3] + sum(
+        masses[2] * masses[left] * masses[middle] * masses[right]
+        for left, middle, right in product(range(2), repeat=3)
+    )
+    if algebra is LOG_PROB:
+        exact = exact.log()
+    result = selected.run(occurrences, inputs, like=LIKE)
+    assert result.order.index(graphs.node(0)) < result.order.index(triple)
+    assert result.order.index(triple) < result.order.index(goal)
+    assert result.report().provenance_records == 0
+    assert [join.algorithm for join in selected.record.joins] == [
+        "variable elimination",
+        "constant",
+        "variable elimination",
+    ]
+    assert [work.outputs for work in result.join_work] == [1, 1]
+    for engine in (selected, chart):
+        value = engine.run(occurrences, inputs, like=LIKE).value(goal)
+        torch.testing.assert_close(value, exact)
+        derivative = engine.gradient(occurrences, inputs, goal, like=LIKE)
+        (oracle,) = torch.autograd.grad(exact.sum(), weights, retain_graph=True)
+        torch.testing.assert_close(
+            torch.stack([derivative[key] for key in parameters]), oracle
+        )
+    # The term with the zero occurrence is structurally present and has
+    # a nonzero first derivative in the real rather than log coordinates.
+    if algebra is REAL:
+        assert oracle[0, 0].item() == 135.0
+    empty = selected.run([], {base_id: LIKE.new_tensor(7.0)}, like=LIKE)
+    assert set(empty.values) == {triple, goal}
+    assert empty.value(goal).item() == 7.0
+
+
+def test_family_elimination_avoids_the_cubic_star() -> None:
+    """Three independent partners are summed before their masses are multiplied."""
+    slots = tuple(
+        AxiomSlot(
+            id=ConstructorId.derive("family-elimination", family),
+            name=family,
+            telescope=tuple(IndexBinder(name=name, sort=NAT) for name in ("x", "y")),
+            judgment=bodies.judgment(family, "x", "y"),
+        )
+        for family in ("r1", "r2", "r3")
+    )
+    presentation = bodies.PRESENTATION.with_(rules=(bodies.STAR,), axioms=slots)
+    args = (
+        graphs.query().with_(presentation=presentation.id),
+        presentation,
+        REAL,
+        Acyclic(),
+        graphs.contract(),
+        NoRetention(),
+    )
+    selected = plan(*args, executor="eliminate")
+    chart = plan(*args)
+    assert selected.record.joins[0].order == ("y1", "y2", "y3")
+    size = 8
+    occurrences = tuple(
+        AxiomOccurrence(
+            slot=slot.id,
+            occurrence=OccurrenceId.derive("family-elimination", slot.name, str(y)),
+            binding=(("x", 0), ("y", y)),
+        )
+        for slot in slots
+        for y in range(size)
+    )
+    result = selected.run(occurrences, {}, like=LIKE)
+    chart_result = chart.run(occurrences, {}, like=LIKE)
+    assert result.values == chart_result.values
+    (goal,) = bodies.items("hub", [(0,)])
+    assert result.value(goal).item() == size**3
+    (join,) = result.join_work
+    assert join.outputs == 1
+    assert join.iterated <= 4 * size
+    assert result.report().scalar_sums + result.report().scalar_products <= 4 * size
+    assert chart_result.work.instances >= size**3
+
+
+def test_family_elimination_refuses_unsupported_contracts() -> None:
+    """An explicit executor cannot silently switch to a chart or a forest."""
+    presentation = graphs.PRESENTATION.with_(rules=(graphs.TRIPLED,))
+    query = graphs.query()
+    no_retention = NoRetention()
+    with pytest.raises(PlanRefused, match="support") as caught:
+        plan(
+            query.with_(observable=Support()),
+            presentation,
+            REAL,
+            Acyclic(),
+            graphs.contract(),
+            no_retention,
+            executor="eliminate",
+        )
+    assert caught.value.code is PlanRefusal.OBSERVABLE_WITHOUT_EXECUTOR
+    kept = ParentCounts()
+    with pytest.raises(PlanRefused, match="provenance") as caught:
+        plan(
+            query.with_(retention=kept),
+            presentation,
+            REAL,
+            Acyclic(),
+            graphs.contract(),
+            kept,
+            executor="eliminate",
+        )
+    assert caught.value.code is PlanRefusal.RETENTION_WITHOUT_EXECUTOR
+    with pytest.raises(PlanRefused, match="established laws") as caught:
+        plan(
+            query,
+            presentation,
+            _Unproved(),
+            Acyclic(),
+            graphs.contract(),
+            no_retention,
+            executor="eliminate",
+        )
+    assert caught.value.code is PlanRefusal.ALGEBRA
+    with pytest.raises(PlanRefused, match="resource limits") as caught:
+        plan(
+            query,
+            presentation,
+            REAL,
+            Acyclic(),
+            graphs.contract(recompute=True),
+            no_retention,
+            executor="eliminate",
+        )
+    assert caught.value.code is PlanRefusal.INADMISSIBLE
+    with pytest.raises(PlanRefused, match="reach -> reach") as caught:
+        plan(
+            query,
+            graphs.PRESENTATION,
+            REAL,
+            Acyclic(),
+            graphs.contract(),
+            no_retention,
+            executor="eliminate",
+        )
+    assert caught.value.code is PlanRefusal.CYCLE
+
+
+@pytest.mark.parametrize("rule", [bodies.FIRST, bodies.SUMMED])
+def test_family_elimination_checks_rule_fragment(rule) -> None:
+    """The separate rule-elimination solver can use a wider rule fragment."""
+    presentation = bodies.PRESENTATION.with_(rules=(rule,))
+    with pytest.raises(PlanRefused, match=rule.name) as caught:
+        plan(
+            graphs.query().with_(presentation=presentation.id),
+            presentation,
+            REAL,
+            Acyclic(),
+            graphs.contract(),
+            NoRetention(),
+            executor="eliminate",
+        )
+    assert caught.value.code is PlanRefusal.ELIMINATION_FRAGMENT
+
+
+def test_family_elimination_refuses_unbound_rule_index() -> None:
+    """A rule row identifies a grounding only if its premises bind the telescope."""
+    indexed = graphs.TRIPLED.with_(
+        telescope=(*graphs.TRIPLED.telescope, IndexBinder(name="unbound", sort=NAT))
+    )
+    presentation = graphs.PRESENTATION.with_(rules=(indexed,))
+    with pytest.raises(
+        PlanRefused, match=r"'unbound'.*unbound by its premises"
+    ) as caught:
+        plan(
+            graphs.query(),
+            presentation,
+            REAL,
+            Acyclic(),
+            graphs.contract(),
+            NoRetention(),
+            executor="eliminate",
+        )
+    assert caught.value.code is PlanRefusal.ELIMINATION_FRAGMENT
 
 
 def test_another_presentation_is_refused() -> None:
