@@ -439,6 +439,36 @@ _ATOMIC_LET_EXPRESSIONS = (
     surface.LetExprString,
 )
 
+_CONTEXTUAL_LIFTS = frozenset({"lift_first", "lift_second"})
+
+
+def _contextual_rule_call(
+    authored: surface.QiecCallComputation,
+) -> tuple[surface.QiecCallComputation, surface.QiecValue, bool] | None:
+    """Read the named operation, its unmodified operands, and the saved frame."""
+    if (
+        authored.callee not in _CONTEXTUAL_LIFTS
+        or len(authored.arguments) < 2
+        or not isinstance(rule := authored.arguments[0], surface.LetExprVar)
+    ):
+        return None
+    first = authored.callee == "lift_first"
+    operands = authored.arguments[1:]
+    values, frame = (
+        (operands[:-1], operands[-1]) if first else (operands[1:], operands[0])
+    )
+    return (
+        surface.QiecCallComputation(
+            callee=rule.name,
+            static_arguments=authored.static_arguments,
+            arguments=values,
+            line=rule.line,
+            col=rule.col,
+        ),
+        frame,
+        first,
+    )
+
 
 def _call_operand(
     value: surface.QiecValue,
@@ -6678,6 +6708,10 @@ class _Elaborator(
         if authored.callee == "traverse":
             return self._lower_traverse(authored, scope, context, path, static_bindings)
         signature = self.computation_signatures.get(authored.callee)
+        if signature is None and authored.callee in _CONTEXTUAL_LIFTS:
+            return self._lower_contextual_rule(
+                authored, scope, context, path, static_bindings
+            )
         if signature is None:
             self._fail(
                 authored,
@@ -6756,6 +6790,55 @@ class _Elaborator(
                 result_type=substitute_type(signature.result, substitution),
                 effects=substitute_row(signature.effects, substitution),
                 origin=self._origin(authored, path, "call"),
+            ),
+        )
+
+    def _lower_contextual_rule(
+        self,
+        authored: surface.QiecCallComputation,
+        scope: Telescope,
+        context: CheckContext,
+        path: tuple[str | int, ...],
+        static_bindings: Mapping[str, StaticArgument] | None,
+    ) -> Computation:
+        """Call one checked operation while retaining an already evaluated frame."""
+        parts = _contextual_rule_call(authored)
+        if parts is None:
+            self._fail(
+                authored,
+                f"{authored.callee} requires a named operation and an untouched frame",
+                code="qiec-call",
+            )
+        call, saved, first = parts
+        if call.callee not in self.computation_signatures:
+            self._fail(call, f"unknown computation {call.callee!r}", code="qiec-route")
+        if not isinstance(saved, _ATOMIC_LET_EXPRESSIONS):
+            self._fail(
+                saved,
+                f"{authored.callee} requires an already evaluated frame value. "
+                "Bind the frame to a name first",
+                code="qiec-call",
+            )
+        frame = self._lower_value(
+            saved, scope, context, static_bindings, (*path, "frame")
+        )
+        frame_type = self._value_type(frame, context, saved)
+        invocation = self._lower_call(
+            call, scope, context, (*path, "rule"), static_bindings
+        )
+        try:
+            output = infer_computation(invocation, self.registry, context).result
+        except (KernelError, dx.ValidationError) as error:
+            self._fail_kernel(call, error, fallback="qiec-call")
+        answer = self._shared_local("rule_result", output, context)
+        result = Var(local=answer)
+        values = (result, frame) if first else (frame, result)
+        components = (output, frame_type) if first else (frame_type, output)
+        return Bind(
+            binder=answer,
+            first=invocation,
+            then=Return(
+                value=TupleValue(items=values, result_type=product_type(*components))
             ),
         )
 

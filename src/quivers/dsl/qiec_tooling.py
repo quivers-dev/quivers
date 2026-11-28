@@ -50,6 +50,7 @@ from quivers.dsl.emit import module_to_source, static_argument_to_source
 from quivers.dsl.qiec_lowering import (
     QIEC_STATEMENT_TYPES,
     _call_operand,
+    _contextual_rule_call,
     has_qiec_surface,
     non_qiec_projection,
 )
@@ -1122,6 +1123,10 @@ def _collect_calls(
             _collect_calls(item, owner, out, computations, macros)
         return
     if isinstance(node, QiecCallComputation):
+        if node.callee not in computations and (lifted := _contextual_rule_call(node)):
+            operation, _, _ = lifted
+            _collect_calls(operation, owner, out, computations, macros)
+            return
         out.append(
             CallSite(
                 callee=node.callee,

@@ -193,6 +193,26 @@ def test_indexed_proof_carrier_substitutes_each_premise_and_conclusion() -> None
     assert float(compiled.run("assess_indexed", data={}).value) == 1.0
 
 
+def test_contextual_lift_in_an_indexed_binary_interpretation() -> None:
+    source = INDEXED.replace(
+        "    let x <- extract[k](left)\n    let y <- extract[j](right)\n",
+        "    let kept <- lift_first[k](extract, left, right)\n"
+        "    let x = kept[0]\n"
+        "    let y <- extract[j](kept[1])\n",
+    )
+    compiled = load_source(source)
+    module = loads(dumps(compiled.qiec))
+    assert isinstance(module, QiecModule)
+    # The proof's left and right child denote 2 and 3 independently.
+    assert float(run_named(module, "result").value) == 2**2 - 3
+    assert float(compiled.run("assess_indexed", data={}).value) == 2**2 - 3
+
+    with pytest.raises(
+        QiecDiagnosticError, match=r"expected Measurement\[k\], got Measurement\[j\]"
+    ):
+        load_source(source.replace("extract[j](kept[1])", "extract[k](kept[1])"))
+
+
 @pytest.mark.parametrize(
     "old,new,message",
     [
