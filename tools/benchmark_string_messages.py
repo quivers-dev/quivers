@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import product
+from math import prod
 from statistics import median
 from time import perf_counter
 import tracemalloc
@@ -17,6 +18,7 @@ from quivers.core.objects import FinSet, StringSet
 from quivers.core.relations import (
     Arc,
     Boundary,
+    FiniteStringBeliefPlan,
     NgramMessagePlan,
     RationalRelation,
     RelationTopology,
@@ -29,17 +31,22 @@ from quivers.core.relations import (
 
 _WORDS = tuple(product(range(2), repeat=2))
 _TAPE = StringSet(alphabet=FinSet(name="Letter", cardinality=2))
-_NAMES = "x", "y"
-_LIMITS = dict(max_states=2048, max_work=32_768)
+_NAMES: tuple[str, ...] = ("x", "y")
+_MAX_STATES = 2048
+_MAX_WORK = 32_768
 
 
 @dataclass(frozen=True)
 class _Messages:
     probabilities: torch.Tensor
-    marginal_states: int
-    site_states: int | None
-    features: int | None
     status: str
+    marginal_size: tuple[int, int]
+    site_size: tuple[int, int] | None = None
+    features: int | None = None
+    sweeps: int | None = None
+    fit_attempts: int | None = None
+    moment_evaluations: int | None = None
+    beam_reduction_cells: int | None = None
 
 
 def _table(scores: torch.Tensor) -> RationalRelation:
@@ -80,14 +87,22 @@ def _base() -> RationalRelation:
     )
 
 
+def _size(relations: tuple[RationalRelation, ...]) -> tuple[int, int]:
+    return (
+        sum(relation.topology.n_states for relation in relations),
+        sum(len(relation.topology.arcs) for relation in relations),
+    )
+
+
 def _exact(graph: StringFactorGraph) -> _Messages:
-    queries = tuple(graph.tree_marginal(name, **_LIMITS) for name in _NAMES)
+    queries = tuple(
+        graph.tree_marginal(name, max_states=_MAX_STATES, max_work=_MAX_WORK)
+        for name in _NAMES
+    )
     values = torch.stack(
         tuple(torch.stack(tuple(q.log_prob(w).exp() for w in _WORDS)) for q in queries)
     )
-    return _Messages(
-        values, sum(q.relation.topology.n_states for q in queries), None, None, "exact"
-    )
+    return _Messages(values, "exact", _size(tuple(q.relation for q in queries)))
 
 
 def _projected(
@@ -101,7 +116,8 @@ def _projected(
         penalty=penalty,
         max_sweeps=12,
         projection_tolerance=1e-8,
-        **_LIMITS,
+        max_states=_MAX_STATES,
+        max_work=_MAX_WORK,
     )
     values = torch.stack(
         tuple(
@@ -109,57 +125,83 @@ def _projected(
             for name in _NAMES
         )
     )
-    site_states = sum(
-        NgramMessagePlan(bases[s.variable], s.features, **_LIMITS).n_states
-        for s in result.sites
+    sites = tuple(
+        NgramMessagePlan(
+            bases[site.variable],
+            site.features,
+            max_states=_MAX_STATES,
+            max_work=_MAX_WORK,
+        ).bind(site.coefficients)
+        for site in result.sites
     )
+    # Every accepted sweep visited each factor occurrence by tape.
+    # The final pass can stop early on a failed fit.
+    attempts_per_sweep = sum(len(factor.variables) for factor in graph._factors)
     return _Messages(
         values,
-        sum(belief.relation.topology.n_states for belief in result.marginals.values()),
-        site_states,
-        sum(len(s.features) for s in result.sites),
         result.status,
+        _size(tuple(belief.relation for belief in result.marginals.values())),
+        site_size=_size(sites),
+        features=sum(len(site.features) for site in result.sites),
+        sweeps=result.sweeps,
+        fit_attempts=attempts_per_sweep * result.sweeps + len(result.updates),
+        moment_evaluations=result.moment_evaluations,
     )
 
 
-def _beam(
-    scores: tuple[torch.Tensor, torch.Tensor, torch.Tensor], width: int
-) -> _Messages:
-    def prune(row: torch.Tensor) -> torch.Tensor:
-        selected = torch.argsort(row, descending=True, stable=True)[:width]
-        return row.new_full(row.shape, -torch.inf).scatter(0, selected, row[selected])
-
-    def prefix_states(row: torch.Tensor) -> int:
-        support = (_WORDS[i] for i in torch.where(row.isfinite())[0].tolist())
-        return len(
-            {word[:length] for word in support for length in range(len(word) + 1)}
-        )
-
-    pair, left, right = scores
-    incoming_left = prune(left)
-    incoming_right = prune(right)
-    outgoing_left = prune(torch.logsumexp(pair + incoming_right[None, :], dim=1))
-    outgoing_right = prune(torch.logsumexp(pair + incoming_left[:, None], dim=0))
-    beliefs = torch.stack(
-        (incoming_left + outgoing_left, incoming_right + outgoing_right)
+def _beam(graph: StringFactorGraph, width: int) -> _Messages:
+    supports = dict.fromkeys(_NAMES, _WORDS)
+    entry_counts = tuple(
+        prod(len(supports[name]) for name in factor.variables)
+        for factor in graph._factors
     )
-    return _Messages(
-        beliefs.softmax(1),
-        sum(map(prefix_states, beliefs)),
-        sum(
-            map(
-                prefix_states,
-                (incoming_left, incoming_right, outgoing_left, outgoing_right),
+    plan = FiniteStringBeliefPlan(
+        graph,
+        supports,
+        max_entries=sum(entry_counts),
+        max_states=_MAX_STATES,
+        max_work=_MAX_WORK,
+    )
+    result = plan.run_pruned(beam=width, max_sweeps=12)
+    if result.log_marginals is None:
+        raise ValueError("benchmark beam has no normalized beliefs")
+
+    def support_size(rows: tuple[torch.Tensor, ...]) -> tuple[int, int]:
+        roots = tuple(
+            len(
+                {
+                    _WORDS[index][:length]
+                    for index in torch.where(row.isfinite())[0].tolist()
+                    for length in range(len(_WORDS[index]) + 1)
+                }
             )
-        ),
-        None,
-        "truncated",
+            for row in rows
+        )
+        return sum(roots), sum(max(0, states - 1) for states in roots)
+
+    beliefs = tuple(result.log_marginals[name] for name in _NAMES)
+    messages = tuple(row for group in result.log_messages for row in group)
+    # A successful proposal pass visits each outgoing axis. Charge the
+    # input table extent to every such computation, including unary axes.
+    cells_per_pass = sum(
+        len(factor.variables) * entries
+        for factor, entries in zip(graph._factors, entry_counts, strict=True)
+    )
+    status = f"{result.status} (truncated)" if result.truncated else result.status
+    return _Messages(
+        torch.stack(tuple(row.exp() for row in beliefs)),
+        status,
+        support_size(beliefs),
+        site_size=support_size(messages),
+        sweeps=result.sweeps,
+        beam_reduction_cells=(result.sweeps + 1) * cells_per_pass,
     )
 
 
 def _measure(
     run: Callable[[], _Messages], repeats: int
 ) -> tuple[_Messages, float, float]:
+    result = run()
     samples = []
     for _ in range(repeats):
         start = perf_counter()
@@ -174,14 +216,7 @@ def _measure(
     return result, 1000 * median(samples), peak / 1024
 
 
-def main() -> None:
-    """Report finite-domain accuracy, representation size, and measured costs."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repeats", type=int, default=3)
-    args = parser.parse_args()
-    if args.repeats < 1:
-        parser.error("--repeats must be positive")
-    torch.set_num_threads(1)
+def _fixture() -> tuple[StringFactorGraph, dict[str, RationalRelation], torch.Tensor]:
     pair = torch.tensor(
         [
             [1.6, 0.0, 0.4, 0.2],
@@ -209,26 +244,62 @@ def main() -> None:
         .softmax(0)
         .reshape(pair.shape)
     )
-    oracle = torch.stack((joint.sum(1), joint.sum(0)))
-    torch.testing.assert_close(_exact(graph).probabilities, oracle)
-    print(
-        "Method | Status | Mean TV error | Site features | Site states | Marginal states | Median ms | Peak Python KiB"
+    return graph, bases, torch.stack((joint.sum(1), joint.sum(0)))
+
+
+def main() -> None:
+    """Report finite-domain accuracy, representation size, and measured costs."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repeats", type=int, default=3)
+    args = parser.parse_args()
+    if args.repeats < 1:
+        parser.error("--repeats must be positive")
+    torch.set_num_threads(1)
+    graph, bases, oracle = _fixture()
+    torch.testing.assert_close(_exact(graph).probabilities, oracle, rtol=0, atol=1e-14)
+    torch.testing.assert_close(
+        _beam(graph, len(_WORDS)).probabilities, oracle, rtol=0, atol=1e-14
     )
-    print("--- | --- | --- | --- | --- | --- | --- | ---")
-
-    def report(name: str, run: Callable[[], _Messages]) -> None:
-        result, milliseconds, peak = _measure(run, args.repeats)
-        error = (result.probabilities - oracle).abs().sum(dim=1).mean().item() / 2
-        features = result.features if result.features is not None else "—"
-        states = result.site_states if result.site_states is not None else "—"
-        print(
-            f"{name} | {result.status} | {error:.6f} | {features} | {states} | {result.marginal_states} | {milliseconds:.1f} | {peak:.1f}"
+    methods = [
+        ("Exact sparse tree", lambda: _exact(graph)),
+        ("Production beam 3", lambda: _beam(graph, 3)),
+    ]
+    methods.extend(
+        (
+            f"Regular EP ({penalty:g})",
+            lambda penalty=penalty: _projected(graph, bases, penalty),
         )
+        for penalty in (0.0, 0.025, 0.1, 0.3, 1.0)
+    )
+    results = [(name, *_measure(run, args.repeats)) for name, run in methods]
 
-    report("Exact sparse tree", lambda: _exact(graph))
-    report("Beam 3", lambda: _beam((pair, left, right), 3))
-    for penalty in (0.0, 0.025, 0.1, 0.3, 1.0):
-        report(f"Regular EP ({penalty:g})", lambda: _projected(graph, bases, penalty))
+    def cell(value: object) -> str:
+        return "—" if value is None else str(value)
+
+    def size_cell(value: tuple[int, int] | None) -> str:
+        return "—" if value is None else f"{value[0]}/{value[1]}"
+
+    print(
+        "Method | Status | Mean TV error | Site features | Site states/arcs | Marginal states/arcs"
+    )
+    print("--- | --- | --- | --- | --- | ---")
+    for name, result, _, _ in results:
+        error = (result.probabilities - oracle).abs().sum(dim=1).mean().item() / 2
+        print(
+            f"{name} | {result.status} | {error:.6f} | {cell(result.features)} | "
+            f"{size_cell(result.site_size)} | {size_cell(result.marginal_size)}"
+        )
+    print()
+    print(
+        "Method | Sweeps | Site fits | Moment evaluations | Beam input cells | Median ms | Peak Python KiB"
+    )
+    print("--- | --- | --- | --- | --- | --- | ---")
+    for name, result, milliseconds, peak in results:
+        print(
+            f"{name} | {cell(result.sweeps)} | {cell(result.fit_attempts)} | "
+            f"{cell(result.moment_evaluations)} | {cell(result.beam_reduction_cells)} | "
+            f"{milliseconds:.1f} | {peak:.1f}"
+        )
 
 
 if __name__ == "__main__":

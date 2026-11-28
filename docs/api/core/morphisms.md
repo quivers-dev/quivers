@@ -905,31 +905,69 @@ this synchronous schedule.
 
 #### Two-variable comparison
 
-The benchmark gives each variable all four two-symbol words. One binary
-factor links them and each variable has a unary factor. Exact sparse tree
-marginals agree with enumeration over the 16 assignments. The beam keeps
-three words at each directed message and approximates the intermediate sum
-using the retained incoming support. The n-gram vocabulary includes both
-unigrams and all four bigrams.
+All methods use the same graph with one binary factor, two unary
+factors, and the same four two-symbol words on each variable.
+An independent dense sum over the 16 assignments supplies the exact
+marginals. The exact sparse tree and full-width production beam agree
+with these marginals. The width-three row runs
+`FiniteStringBeliefPlan.run_pruned` on the same graph, including its
+final proposal pass. Regular EP uses both unigrams and all four
+bigrams as candidate features.
 
-| Method | Status | Mean TV error | Site features | Site states | Marginal states | Median ms | Peak Python KiB |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Exact sparse tree | exact | 0.000000 | — | — | 452 | 10.1 | 229.3 |
-| Beam 3 | truncated | 0.399886 | — | 24 | 8 | 0.1 | 2.6 |
-| Regular EP (0) | converged | 0.000000 | 24 | 28 | 14 | 895.6 | 197.1 |
-| Regular EP (0.025) | converged | 0.048646 | 12 | 24 | 14 | 3185.6 | 205.1 |
-| Regular EP (0.1) | converged | 0.112319 | 7 | 19 | 13 | 114.5 | 196.0 |
-| Regular EP (0.3) | converged | 0.153415 | 0 | 12 | 6 | 38.1 | 175.0 |
-| Regular EP (1) | converged | 0.153415 | 0 | 12 | 6 | 33.5 | 174.6 |
+| Method | Status | Mean TV error | Site features | Site states/arcs | Marginal states/arcs |
+| --- | --- | --- | --- | --- | --- |
+| Exact sparse tree | exact | 0.000000 | — | — | 452/480 |
+| Production beam 3 | converged (truncated) | 0.399886 | — | 24/20 | 8/6 |
+| Regular EP (0) | converged | 0.000000 | 24 | 28/24 | 14/12 |
+| Regular EP (0.025) | converged | 0.048646 | 12 | 24/22 | 14/12 |
+| Regular EP (0.1) | converged | 0.112319 | 7 | 19/20 | 13/12 |
+| Regular EP (0.3) | converged | 0.153415 | 0 | 12/16 | 6/8 |
+| Regular EP (1) | converged | 0.153415 | 0 | 12/16 | 6/8 |
 
-The site and marginal counts sum states across the returned representations.
-Regular site counts use the automaton compiled on each site's active features.
-Beam counts use tries of the surviving word prefixes. Times are medians of
-five runs on one arm64 CPU thread with PyTorch 2.15. Peak memory counts Python
-allocations traced during a separate run. To reproduce the comparisons, run
-`python tools/benchmark_string_messages.py --repeats 5` from the checkout.
-The penalty reduced site and marginal sizes in this graph. The smaller first
-penalty increased optimization time as compared with the unpenalized fit.
+The representation counts sum states and arcs across the individual
+sites or queried marginals. For regular sites the benchmark compiles
+the automaton induced by the fitted active features. The beam counts
+derive from the tries of the surviving word prefixes. The production
+beam holds dense vectors over the declared finite axes.
+
+Let $A$ count the factor-argument sites, $S$ count accepted sweeps, and
+$L$ count fits recorded on the final pass. Each accepted sweep visits
+all $A$ sites, and the solver evaluates another pass at the returned
+state. Thus it attempts $AS+L$ local fits, including any failing fit
+on a final partial pass. A moment evaluation is one evaluation of
+the sparse normalizer and feature counts. The solver counts both
+target and base calls and the calls made by rejected optimizer
+trials. The benchmark test observes the actual site and moment
+invocations and detects a false reported sweep.
+
+On this graph a complete beam pass has four proposals and charges
+$2\cdot16+4+4=40$ factor-table cells across the outgoing axes. The
+three executed passes include the final check. These counts
+describe the input cells for the proposal reductions. Beam sorting,
+cavity normalization, and table construction have separate costs.
+A test derives the expected width-three support from the sums over
+retained incoming candidates and detects a wider beam substituted for it.
+
+| Method | Sweeps | Site fits | Moment evaluations | Beam input cells | Median ms | Peak Python KiB |
+| --- | --- | --- | --- | --- | --- | --- |
+| Exact sparse tree | — | — | — | — | 9.0 | 229.0 |
+| Production beam 3 | 2 | — | — | 120 | 4.4 | 30.5 |
+| Regular EP (0) | 4 | 20 | 1709 | — | 630.2 | 194.7 |
+| Regular EP (0.025) | 9 | 40 | 4139 | — | 2171.0 | 203.7 |
+| Regular EP (0.1) | 2 | 12 | 141 | — | 93.3 | 196.1 |
+| Regular EP (0.3) | 1 | 8 | 16 | — | 25.0 | 175.2 |
+| Regular EP (1) | 1 | 8 | 16 | — | 23.9 | 175.1 |
+
+Run `python tools/benchmark_string_messages.py --repeats 5` from the
+checkout. Times are medians of five calls after one warmup per row,
+on macOS 15.7.4 arm64 with one CPU thread and PyTorch 2.15.0. Calls
+include solver preparation, marginal scoring, and representation
+counts. Every invocation starts from the same initial sites. The
+memory column measures peak allocations traced by Python's
+`tracemalloc` during a separate call. It describes Python allocations
+and omits native tensor and allocator storage. The smallest positive
+penalty halved the retained feature count in this graph and increased
+moment evaluations from 1,709 to 4,139.
 
 ### Posteriors on closed productive components
 
