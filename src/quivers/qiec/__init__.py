@@ -128,6 +128,13 @@ from quivers.qiec.discharge import (
     discharge_computation,
     discharge_module,
 )
+from quivers.qiec.differentiation import (
+    ExactJvp,
+    JvpBoundaryError,
+    JvpLimit,
+    JvpUnsupported,
+    exact_jvp,
+)
 from quivers.qiec.distributions import (
     DistributionBackend,
     HostLaw,
@@ -648,6 +655,7 @@ __all__ = [
     "Evaluator",
     "EvidenceValue",
     "ExecutionDiagnostic",
+    "ExactJvp",
     "ExecutionFailure",
     "ExecutionResult",
     "ExecutionTraceEvent",
@@ -696,6 +704,9 @@ __all__ = [
     "IndexVariable",
     "InvalidHandlerError",
     "JsonValue",
+    "JvpBoundaryError",
+    "JvpLimit",
+    "JvpUnsupported",
     "KernelError",
     "KernelMatrix",
     "CholeskyFactor",
@@ -914,6 +925,7 @@ __all__ = [
     "entry_point",
     "entry_points",
     "enumerate_handler",
+    "exact_jvp",
     "family",
     "foreign_handler_configuration",
     "from_data",

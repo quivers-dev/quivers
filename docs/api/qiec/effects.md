@@ -26,6 +26,55 @@ address, with their own shot paths. If an outer handler captures the
 return, its operation-clause address includes the captured activation
 alongside any captured local instance addresses.
 
+## Exact scalar derivatives
+
+`exact_jvp` runs a checked scalar computation and returns its value and
+Jacobian-vector product as rational numbers. It follows the reference
+machine through authored clauses, parameter updates, resumptions, and
+recursive calls. Its arithmetic includes division by nonzero values and
+powers with fixed integral exponents.
+
+Every comparison reached by the run must either have unequal operands
+or be independent of the input. This gives a neighborhood where the
+same branch is taken. At an input-dependent equality, the checker raises
+`JvpBoundaryError`, even when the supplied tangent is zero. Unsupported
+primitives, undefined arithmetic, and exhausted limits raise errors.
+
+The handler below doubles the value supplied to its continuation, which
+then squares it. The resulting function is $f(x)=4x^2$. At $x=3$, a
+direction of $1/2$ gives $Df(3)[1/2]=12$.
+
+```python
+from fractions import Fraction
+
+from quivers.dsl import Compiler, parse
+from quivers.qiec import exact_jvp
+
+source = """
+effect Staging
+    shift : Real -> Real
+
+instance stage : Staging
+
+handler double for Staging : Real -> Real [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    shift(v : Real) resumes 1 =>
+        resume(2.0 * v)
+
+define squared(x : Real) : Real !{} =
+    handle stage with double in
+        let y <- perform stage.shift(x)
+        return y * y
+"""
+module = Compiler(parse(source), module_name="exact-jvp-example").qiec_module
+assert module is not None
+result = exact_jvp(module, "squared", (3,), (Fraction(1, 2),))
+assert (result.value, result.tangent) == (36, 12)
+```
+
+::: quivers.qiec.differentiation
+
 ::: quivers.qiec.effects
 
 ## Finite laws
