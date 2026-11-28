@@ -225,6 +225,29 @@ weight source once across the numerator and denominator within a call.
 A cyclic factor graph is refused by the tree schedule. Cycles within a
 single relation use the ordinary productive closure checks.
 
+
+## Certified finite string MAP
+
+A `FiniteStringScore` lists the feasible tuples of words for a factor and
+assigns each tuple a rational additive score. `dual_string_map` uses the
+same typed variables and observations as a string factor graph. Bindings
+are full words in the declared finite supports.
+
+Each variable occurrence gets a word-indexed potential. The potentials
+sum to zero across occurrences for each variable and word. Thus they
+cancel on a consistent assignment, and the sum of the adjusted local
+maxima is an upper bound for the original objective. Agreement on full
+words attains this bound. The certificate gives each local maximizer,
+its adjusted score, and the potentials needed to check the claim.
+When the iteration limit is reached before agreement, the result gives
+the best bound and any feasible score encountered. An empty local
+support certifies infeasibility.
+
+A sweep scans the explicitly supplied local supports. Centering the
+update takes one pass over variable occurrences and uses rational
+arithmetic. The costs of exact rational operations depend on the bit
+length of the adjusted scores and potentials.
+
 ::: quivers.core.relations
     options:
       members:
@@ -242,16 +265,20 @@ single relation use the ordinary productive closure checks.
         - ConditionalStringQuery
         - QueryWork
         - FiniteRelationRestriction
+        - FiniteStringScore
         - ProductiveEpsilonCycleError
         - RelationLimitError
         - RelationPath
         - StringFactor
         - StringFactorGraph
+        - StringMapCertificate
+        - StringMapResult
         - StringVariable
         - TreeStringMarginal
         - closure
         - concatenate
         - condition
+        - dual_string_map
         - intersect
         - invert
         - join

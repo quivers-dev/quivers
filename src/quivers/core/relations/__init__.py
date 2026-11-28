@@ -45,6 +45,7 @@ __all__ = [
     "ConditionalStringQuery",
     "FixedStringQuery",
     "FiniteRelationRestriction",
+    "FiniteStringScore",
     "Label",
     "ProductiveEpsilonCycleError",
     "QueryWork",
@@ -54,12 +55,15 @@ __all__ = [
     "RelationTopology",
     "StringFactor",
     "StringFactorGraph",
+    "StringMapCertificate",
+    "StringMapResult",
     "StringVariable",
     "TreeStringMarginal",
     "Words",
     "closure",
     "concatenate",
     "condition",
+    "dual_string_map",
     "intersect",
     "invert",
     "join",
@@ -576,3 +580,9 @@ from quivers.core.relations.graph import (  # noqa: E402
     TreeStringMarginal,
 )
 from quivers.core.relations.conditional import ConditionalStringQuery  # noqa: E402
+from quivers.core.relations.dual import (  # noqa: E402
+    FiniteStringScore,
+    StringMapCertificate,
+    StringMapResult,
+    dual_string_map,
+)
