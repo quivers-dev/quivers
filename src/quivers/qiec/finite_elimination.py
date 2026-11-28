@@ -17,6 +17,7 @@ from quivers.qiec.laws import (
     FiniteLawLimit,
     FiniteLawUnsupported,
     FiniteValue,
+    _Shape,
     _check_reachable,
     _observed,
     _shape,
@@ -100,6 +101,44 @@ class FiniteAlgebraProof:
 
 
 @dataclass(frozen=True, slots=True)
+class FiniteBaseChange:
+    """A named QIEC map from the input algebra to another finite algebra.
+
+    Parameters
+    ----------
+    target : FiniteAlgebra
+        The algebra in which to contract the mapped factors.
+    mapping : ComputationId
+        A closed unary computation from the source to the target carrier.
+    """
+
+    target: FiniteAlgebra
+    mapping: ComputationId
+
+
+@dataclass(frozen=True, slots=True)
+class FiniteBaseChangeProof:
+    """Evidence that a checked map preserves both operations and units.
+
+    Parameters
+    ----------
+    source : FiniteAlgebraProof
+        The input algebra and its binding to the checked module.
+    target : FiniteAlgebraProof
+        The algebra used for elimination in that same module.
+    mapping : ComputationId
+        The checked nominal unary computation in the module.
+    checks : int
+        The combined number of table entries and equality checks.
+    """
+
+    source: FiniteAlgebraProof
+    target: FiniteAlgebraProof
+    mapping: ComputationId
+    checks: int
+
+
+@dataclass(frozen=True, slots=True)
 class FiniteFactor:
     """A finite table in its written axis order.
 
@@ -152,12 +191,15 @@ class FiniteEliminationResult:
     largest : int
         The largest number of assignments in an input, intermediate bag or factor,
         or output.
+    base_change : FiniteBaseChangeProof or None
+        The proved map when the input was contracted in a different algebra.
     """
 
     factor: FiniteFactor
     proof: FiniteAlgebraProof
     steps: tuple[FiniteEliminationStep, ...]
     largest: int
+    base_change: FiniteBaseChangeProof | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,17 +446,7 @@ def _tables(
             FiniteLawLimit
                 If the operator does not finish within the fuel bound.
             """
-            try:
-                answer = run_named(
-                    module, name, (left, right), fuel=fuel, record_trace=False
-                )
-            except ExecutionFailure as error:
-                if error.diagnostic.code == "qiec-run-fuel":
-                    raise FiniteLawLimit(
-                        f"fuel exhausted for {name!r} at {(left, right)!r}"
-                    ) from error
-                raise
-            return indices[_observed(shape, host_value(answer.value))]
+            return indices[_evaluate_finite(module, name, (left, right), shape, fuel)]
 
         return tuple(tuple(at(left, right) for right in values) for left in values)
 
@@ -437,6 +469,146 @@ def _tables(
         algebra, carrier, fingerprint, count, checks, noncommutative
     )
     return _Tables(proof, values, zero, one, additions, multiplications)
+
+
+def _evaluate_finite(
+    module: QiecModule,
+    name: str,
+    arguments: tuple[FiniteValue, ...],
+    shape: _Shape,
+    fuel: int,
+) -> FiniteValue:
+    """Call one checked finite operation and check its exact result carrier.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked operator module.
+    name : str
+        Name of the computation to evaluate.
+    arguments : tuple[FiniteValue, ...]
+        The exact arguments in source order.
+    shape : _Shape
+        The shape of the expected finite result.
+    fuel : int
+        Step limit for this call.
+
+    Returns
+    -------
+    FiniteValue
+        The checked host representation of the result.
+
+    Raises
+    ------
+    FiniteLawLimit
+        If the computation exhausts its fuel.
+    """
+    try:
+        answer = run_named(module, name, arguments, fuel=fuel, record_trace=False)
+    except ExecutionFailure as error:
+        if error.diagnostic.code == "qiec-run-fuel":
+            raise FiniteLawLimit(
+                f"fuel exhausted for {name!r} at {arguments!r}"
+            ) from error
+        raise
+    return _observed(shape, host_value(answer.value))
+
+
+def _prove_base_change(
+    module: QiecModule,
+    source: _Tables,
+    target: _Tables,
+    mapping_id: ComputationId,
+    fuel: int,
+) -> tuple[int, ...]:
+    """Read a checked map and prove both binary laws and both identities.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked module supplying all three sets of operations.
+    source, target : _Tables
+        The already proved input and output algebras.
+    mapping_id : ComputationId
+        The nominal unary computation to check.
+    fuel : int
+        The step limit for evaluating a map entry.
+
+    Returns
+    -------
+    tuple[int, ...]
+        Target indices in the source carrier's order.
+
+    Raises
+    ------
+    FiniteLawUnsupported
+        If the mapping does not have a supported signature or body.
+    FiniteAlgebraLawError
+        If a homomorphism law fails, with its exact values.
+    """
+    mapping = next(
+        (item for item in module.computations if item.id == mapping_id), None
+    )
+    if (
+        mapping is None
+        or mapping.type.effects != EMPTY_ROW
+        or mapping.type.result != target.proof.carrier
+        or tuple(parameter.type for parameter in mapping.parameters)
+        != (source.proof.carrier,)
+    ):
+        raise FiniteLawUnsupported("finite base change needs a closed unary mapping")
+    _check_reachable(module, mapping, mapping)
+    shape = _shape(target.proof.carrier)
+    indices = {value: position for position, value in enumerate(target.values)}
+    image = tuple(
+        indices[_evaluate_finite(module, mapping.name, (value,), shape, fuel)]
+        for value in source.values
+    )
+
+    def require(
+        law: str, arguments: tuple[FiniteValue, ...], left: int, right: int
+    ) -> None:
+        """Compare the target values of a base-change equation.
+
+        Parameters
+        ----------
+        law : str
+            The identity that is being checked.
+        arguments : tuple[FiniteValue, ...]
+            Its source-carrier arguments, in written order.
+        left, right : int
+            The target indices of its two sides.
+
+        Raises
+        ------
+        FiniteAlgebraLawError
+            If the two target values differ.
+        """
+        if left != right:
+            raise FiniteAlgebraLawError(
+                law,
+                FiniteLawCounterexample(
+                    arguments, target.values[left], target.values[right]
+                ),
+            )
+
+    require("base change preserves zero", (), image[source.zero], target.zero)
+    require("base change preserves one", (), image[source.one], target.one)
+    for i, j in product(range(len(source.values)), repeat=2):
+        arguments = source.values[i], source.values[j]
+        require(
+            "base change preserves addition",
+            arguments,
+            image[source.add[i][j]],
+            target.add[image[i]][image[j]],
+        )
+        require(
+            "base change preserves multiplication",
+            arguments,
+            image[source.multiply[i][j]],
+            target.multiply[image[i]][image[j]],
+        )
+    return image
 
 
 def check_finite_algebra(
@@ -658,6 +830,7 @@ def eliminate_finite(
     output: tuple[str, ...],
     extents: Mapping[str, int],
     *,
+    base_change: FiniteBaseChange | None = None,
     max_checks: int = 65_536,
     max_cells: int = 65_536,
     fuel: int = 65_536,
@@ -669,6 +842,11 @@ def eliminate_finite(
     from the first to the last participating factor, preserving their order
     and including any factors in between. With commutativity, a step may
     select a smaller bucket. Empty sums yield the checked zero.
+
+    If a map preserves both binary operations and both units, mapping
+    every input factor before elimination has the same result as mapping
+    the contracted value. The target's proved multiplication determines
+    the target plan's order.
 
     Parameters
     ----------
@@ -682,8 +860,10 @@ def eliminate_finite(
         The retained axes in output order. An empty tuple returns a scalar.
     extents : Mapping[str, int]
         Exactly one nonnegative cardinality for each input axis.
+    base_change : FiniteBaseChange or None
+        An optional named homomorphism to a different finite answer algebra.
     max_checks : int
-        Maximum operator entries and comparisons in the full law proof.
+        Maximum operator entries and comparisons in all required law proofs.
     max_cells : int
         Maximum cardinality of an input, intermediate bag or factor, or output.
     fuel : int
@@ -731,8 +911,27 @@ def eliminate_finite(
             f"finite table needs {initial} cells, exceeding {max_cells}"
         )
 
-    tables = _tables(module, algebra, max_checks, fuel)
-    shape = _shape(tables.proof.carrier)
+    source = _tables(module, algebra, max_checks, fuel)
+    tables = source
+    image = tuple(range(len(source.values)))
+    proof = None
+    if base_change is not None:
+        count = len(source.values)
+        mapping_checks = count + 2 * count**2 + 2
+        remaining = max_checks - source.proof.checks - mapping_checks
+        if remaining < 1:
+            raise FiniteLawLimit(
+                f"finite base-change proof exceeds {max_checks} checks"
+            )
+        tables = _tables(module, base_change.target, remaining, fuel)
+        image = _prove_base_change(module, source, tables, base_change.mapping, fuel)
+        proof = FiniteBaseChangeProof(
+            source.proof,
+            tables.proof,
+            base_change.mapping,
+            source.proof.checks + tables.proof.checks + mapping_checks,
+        )
+    shape = _shape(source.proof.carrier)
     steps = _elimination_steps(
         scopes, output, axes, extents, tables.proof.noncommutative is None
     )
@@ -750,7 +949,7 @@ def eliminate_finite(
     )
     if largest > max_cells:
         raise FiniteLawLimit(f"finite bag needs {largest} cells, exceeding {max_cells}")
-    indices = {value: position for position, value in enumerate(tables.values)}
+    indices = {value: index for value, index in zip(source.values, image, strict=True)}
     active = [
         _IndexedFactor(
             factor.axes,
@@ -765,13 +964,15 @@ def eliminate_finite(
         _replace_factors(active, step.positions, value)
     result = _contract(tables, tuple(active), output, (), extents)
     factor = FiniteFactor(output, tuple(tables.values[index] for index in result.cells))
-    return FiniteEliminationResult(factor, tables.proof, steps, largest)
+    return FiniteEliminationResult(factor, tables.proof, steps, largest, proof)
 
 
 __all__ = [
     "FiniteAlgebra",
     "FiniteAlgebraLawError",
     "FiniteAlgebraProof",
+    "FiniteBaseChange",
+    "FiniteBaseChangeProof",
     "FiniteEliminationResult",
     "FiniteEliminationStep",
     "FiniteFactor",

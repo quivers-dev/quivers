@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 
 from quivers.dsl import Compiler, parse
-from quivers.qiec import QiecModule, dumps, loads
+from quivers.qiec import FiniteBaseChange, QiecModule, dumps, loads
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -393,3 +393,140 @@ def test_factors_and_identities_are_type_checked_without_coercing_booleans(boole
         check_finite_algebra(module, wrong)
     assert exc.value.counterexample.arguments == (False,)
     assert exc.value.counterexample.left is True
+
+
+_BASE_CHANGE_SOURCE = (
+    _BIT_OPERATIONS
+    + """
+define pair_add(a : Bool * Bool, b : Bool * Bool) : Bool * Bool !{} =
+    let first <- any_bit(a[0], b[0])
+    let second <- any_bit(a[1], b[1])
+    return (first, second)
+
+define pair_multiply(a : Bool * Bool, b : Bool * Bool) : Bool * Bool !{} =
+    let first <- all_bits(a[0], b[0])
+    let second <- all_bits(a[1], b[1])
+    return (first, second)
+
+define first(a : Bool * Bool) : Bool !{} =
+    return a[0]
+
+define either(a : Bool * Bool) : Bool !{} =
+    let result <- any_bit(a[0], a[1])
+    return result
+
+define both(a : Bool * Bool) : Bool !{} =
+    let result <- all_bits(a[0], a[1])
+    return result
+
+define always(a : Bool * Bool) : Bool !{} =
+    return true
+
+define never(a : Bool * Bool) : Bool !{} =
+    return false
+"""
+)
+
+
+@pytest.fixture(scope="module")
+def base_change():
+    module = _compiled(_BASE_CHANGE_SOURCE, "finite-base-change")
+    source = _algebra(
+        module,
+        (False, False),
+        (True, True),
+        addition="pair_add",
+        multiplication="pair_multiply",
+    )
+    target = _algebra(
+        module, False, True, addition="any_bit", multiplication="all_bits"
+    )
+    return module, source, target, {item.name: item.id for item in module.computations}
+
+
+def test_proved_base_change_commutes_with_dense_finite_contraction(base_change):
+    module, source, target, ids = base_change
+    wire = loads(dumps(module))
+    assert isinstance(wire, QiecModule)
+    factors = (
+        FiniteFactor(
+            ("z", "x"), ((True, False), (False, True), (True, True), (False, False))
+        ),
+        FiniteFactor(
+            ("x", "y"), ((True, False), (False, False), (False, True), (True, True))
+        ),
+        FiniteFactor(("y",), ((False, True), (True, False))),
+    )
+    output, extents = ("z",), {"x": 2, "y": 2, "z": 2}
+    base = FiniteBaseChange(target, ids["first"])
+    changed = eliminate_finite(
+        wire, source, factors, output, extents, base_change=base, max_checks=442
+    )
+    original = eliminate_finite(wire, source, factors, output, extents)
+    direct = _dense(
+        factors,
+        output,
+        extents,
+        _union,
+        lambda a, b: tuple(x and y for x, y in zip(a, b, strict=True)),
+        (False, False),
+        (True, True),
+    )
+    assert original.factor.cells == direct == ((False, True), (False, False))
+    assert changed.factor == FiniteFactor(output, tuple(pair[0] for pair in direct))
+    proof = changed.base_change
+    assert proof is not None
+    assert (proof.source, proof.target, proof.mapping, proof.checks) == (
+        original.proof,
+        changed.proof,
+        ids["first"],
+        442,
+    )
+    with pytest.raises(FiniteLawLimit, match="needs 60 checks, exceeding 59"):
+        eliminate_finite(
+            wire, source, factors, output, extents, base_change=base, max_checks=441
+        )
+    result = eliminate_finite(
+        wire,
+        source,
+        (FiniteFactor(("empty",), ()),),
+        (),
+        {"empty": 0},
+        base_change=base,
+    )
+    assert result.factor == FiniteFactor((), (False,))
+    with pytest.raises(FiniteLawUnsupported, match="closed unary mapping"):
+        eliminate_finite(
+            wire,
+            source,
+            factors,
+            output,
+            extents,
+            base_change=FiniteBaseChange(target, ids["any_bit"]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mapping", "law"),
+    (
+        ("either", "multiplication"),
+        ("both", "addition"),
+        ("always", "zero"),
+        ("never", "one"),
+    ),
+)
+def test_base_change_refuses_each_independent_law_defect(base_change, mapping, law):
+    module, source, target, ids = base_change
+    factors = (FiniteFactor(("x",), ((True, False), (False, True))),)
+    with pytest.raises(FiniteAlgebraLawError, match=f"preserves {law}") as exc:
+        eliminate_finite(
+            module,
+            source,
+            factors,
+            (),
+            {"x": 2},
+            base_change=FiniteBaseChange(target, ids[mapping]),
+        )
+    witness = exc.value.counterexample
+    assert witness.left is not witness.right
+    assert len(witness.arguments) == (2 if law in {"addition", "multiplication"} else 0)

@@ -855,6 +855,27 @@ assert answer.factor.cells == (False, True)
 assert answer.steps[0].positions == (0, 2)
 ```
 
+### Change of base
+
+`FiniteBaseChange` names a closed QIEC map from the input carrier to a
+second finite algebra. The checker evaluates the map once per input
+carrier value. It checks preservation of zero and one and preservation
+of the sum and product on every ordered pair. A failed equation reports
+the source arguments and both target values.
+
+Let $h$ be the checked map. Repeated use of the binary product equation
+gives $h(\prod_i w_i)=\prod_i h(w_i)$ in the written order. Repeated use
+of the sum equation then moves $h$ through the finite sum over
+assignments. Preservation of the units covers empty products and sums.
+Thus the elimination planner can map each factor table first and use
+the target's product laws when it chooses a contraction order.
+
+For input and target carriers of sizes $n$ and $m$, the map adds $n$
+checked calls and $2n^2+2$ comparisons to the two algebra proofs. The
+proof budget counts all three. Mapping factor cells uses a lookup per
+cell in the checked table. The existing bound on factor, bag, and output
+cardinalities applies to the target contraction.
+
 ::: quivers.qiec.finite_elimination
 
 ## Finite Bernoulli estimators
