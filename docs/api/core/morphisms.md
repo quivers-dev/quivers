@@ -136,6 +136,20 @@ occurrences. Each output arc copies the labels on the retained tapes.
 through the same epsilon-filtered product. Each pair of accepting paths with
 the same word contributes exactly once to this product.
 
+`union` adds relations with identical tape types by taking the disjoint
+union of their topologies. `concatenate` uses a connecting state, so
+each accepting path contains one path from each operand. Its two
+connecting arcs carry the original boundary weights. It adds all ways
+to split a tuple of words into such a pair.
+
+`closure` uses a new initial and final state to mark the end of each
+repetition. Every visit to this state after leaving it ends one
+accepting path of the operand. The empty path contributes one. If the
+operand accepts the empty word tuple, a query may have to sum
+infinitely many paths. The local star checks decide whether the sum
+can be used. Construction of these three topologies uses linear space
+in the original records and introduces one arc per connecting boundary.
+
 ::: quivers.core.relations
     options:
       members:
@@ -153,8 +167,11 @@ the same word contributes exactly once to this product.
         - FiniteRelationRestriction
         - ProductiveEpsilonCycleError
         - RelationLimitError
+        - closure
+        - concatenate
         - condition
         - intersect
         - invert
         - project
         - trim
+        - union

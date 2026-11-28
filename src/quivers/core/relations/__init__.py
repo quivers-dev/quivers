@@ -45,11 +45,14 @@ __all__ = [
     "RelationLimitError",
     "RelationTopology",
     "Words",
+    "closure",
+    "concatenate",
     "condition",
     "intersect",
     "invert",
     "project",
     "trim",
+    "union",
 ]
 
 
@@ -402,6 +405,7 @@ from quivers.core.relations.calculus import (  # noqa: E402
     ComposedRelation,
     ComposedStringQuery,
 )
+from quivers.core.relations.expressions import closure, concatenate, union  # noqa: E402
 from quivers.core.relations.transforms import (  # noqa: E402
     condition,
     intersect,

@@ -119,6 +119,16 @@ class _CompositionPlan:
         )
 
 
+def _read_weight_pair(
+    left: RationalRelation, right: RationalRelation
+) -> tuple[torch.Tensor, torch.Tensor]:
+    values = left._weights()
+    if left.module() is right.module():
+        right._check_weights(values)
+        return values, values
+    return values, right._weights()
+
+
 def _pair_weights(
     left: torch.Tensor,
     right: torch.Tensor,
@@ -389,11 +399,7 @@ class ComposedRelation(Morphism):
         return self._module
 
     def _operand_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
-        left_weights = self._left._weights()
-        if self._left.module() is self._right.module():
-            self._right._check_weights(left_weights)
-            return left_weights, left_weights
-        return left_weights, self._right._weights()
+        return _read_weight_pair(self._left, self._right)
 
     def materialize(self, *, max_states: int, max_work: int) -> RationalRelation:
         """Build a reusable sparse product topology for composition or projection.
