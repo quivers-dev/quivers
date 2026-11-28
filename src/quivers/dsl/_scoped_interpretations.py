@@ -134,9 +134,8 @@ def declare_scoped_types(elaborator: _Elaborator) -> dict[str, ScopedSource]:
 def _scoped_effect_row(
     elaborator: _Elaborator,
     declaration: surface.QiecInterpretationDecl,
-    source: ScopedSource,
 ) -> EffectRow:
-    """Resolve an explicit closed source row to its lexical effect instances."""
+    """Resolve the closed lexical row shared by the source judgments."""
     effect_options = [
         option for option in declaration.options if option.key == "effects"
     ]
@@ -171,12 +170,6 @@ def _scoped_effect_row(
                 code="qiec-interpretation",
             )
         entries[item.value] = instance.entry
-    if entries and len(source.syntax.proofs) != 1:
-        elaborator._fail(
-            option,
-            "an authored scoped effect row requires a single object sort",
-            code="qiec-interpretation",
-        )
     return EffectRow(entries=tuple(entries.values()))
 
 
@@ -187,7 +180,7 @@ def lower_scoped_interpretation(
 ) -> tuple[NamedComputation, ...]:
     """Make ordinary named computations at the declared carrier and row."""
     syntax = source.syntax
-    row = _scoped_effect_row(elaborator, declaration, source)
+    row = _scoped_effect_row(elaborator, declaration)
     semantic = elaborator._lower_type(declaration.carrier, ())
     carriers = {family: semantic for family in syntax.proofs}
     plan = scoped_proof_fold(

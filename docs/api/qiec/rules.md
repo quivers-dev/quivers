@@ -183,6 +183,13 @@ operation uses its supplied arguments finitely and terminates apart from these c
 The adapter checks scope and effect types. Ordered and left-scoped presentations,
 term-dependent judgments, and preservation of proof equations require a separate contract.
 
+An authored scoped interpretation can supply one closed lexical row using
+`effects=[instance, ...]` for a signature with several object sorts.
+Each judgment's generated fold must have exactly that residual row.
+Eager premises and scoped applications invoke the fold of the premise's
+nominal judgment. Two names for instances of one interface remain
+distinct in those folds and in the schema's effect requirements.
+
 A `ModelSchema` exposes the selected program’s checked
 [`ScopedInterpretationBinding`][quivers.qiec.ScopedInterpretationBinding] records through
 `scoped_interpretations`. Reachability follows ordinary calls and calls made in installed

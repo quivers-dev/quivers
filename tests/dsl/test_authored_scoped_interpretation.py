@@ -275,28 +275,6 @@ def test_scoped_row_distinguishes_instances_of_one_interface() -> None:
         loads(source)
 
 
-def test_nonempty_authored_row_requires_one_object_sort() -> None:
-    source = """\
-instance score : Score
-signature Mixed
-    sorts
-        First : object
-        Second : object
-    constructors
-        FirstLeaf : -> First
-        SecondLeaf : -> Second
-interpret both [structure=cartesian, effects=[score]] : Mixed -> Real
-    rule FirstLeaf = value
-    rule SecondLeaf = value
-define value[G : Type]() : Real !{} =
-    return 0.0
-"""
-    with pytest.raises(
-        QiecDiagnosticError, match="effect row requires a single object sort"
-    ):
-        loads(source)
-
-
 _SCHEMA_SOURCE = (
     _SCORE_SOURCE
     + """
