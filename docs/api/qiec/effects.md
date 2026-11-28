@@ -215,11 +215,14 @@ order. Recursive calls reuse the same companion definitions, so the size
 of the rewritten module does not depend on how many calls a run takes.
 Only the original installation applies the handler's return action.
 
-The original and specialized computations produce the same values under
-the checked contracts. The specialization removes the corresponding
-handler and request diagnostic events, and its runtime may use a different
-number of steps. Unsupported control and an exceeded construction limit
-raise separate errors.
+Module-level discharge uses the specialization when it reaches a
+recursive handled call within this fragment. The original and specialized
+computations produce the same values under the checked contracts, and
+surviving effects in the caller keep their addresses. The specialization
+removes the handled requests and can take a different number of runtime
+steps. A target still needs support for the resulting products and
+recursive calls. A direct call to the specialization reports unsupported
+control or an exceeded construction limit.
 
 ```python
 from quivers.dsl import Compiler, parse

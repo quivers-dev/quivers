@@ -5,12 +5,15 @@ import pytest
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     REAL,
+    SCORE_ADD,
     AttachmentId,
     AttachmentRef,
     Bind,
     Call,
+    DischargeObstacle,
     ExecutionFailure,
     Handle,
+    HandlerReturnAddress,
     LetBinding,
     LetValue,
     If,
@@ -21,8 +24,12 @@ from quivers.qiec import (
     StateSpecializationUnsupported,
     QiecModule,
     Return,
+    RuntimeConfiguration,
+    RuntimeSelection,
     Var,
+    WithTraceAddresses,
     called_computations,
+    discharge_computation,
     discharge_module,
     dumps,
     loads,
@@ -30,6 +37,11 @@ from quivers.qiec import (
     specialize_recursive_state,
     validate_module,
 )
+from quivers.qiec.terms import _RETURN_ADDRESS
+from quivers.transpile._pipeline import parser_registry
+from quivers.transpile.ir import IRProgram
+from quivers.transpile.qiec_ir import capabilities_for_target, project_for_target
+from quivers.transpile.renderers import PyroRenderer
 
 _SOURCE = """
 effect Counter
@@ -39,6 +51,7 @@ effect Counter
 
 instance counter : Counter
 instance other : Counter
+instance score : Score
 
 define mark_inspect(left : Real, right : Real) : Real !{} =
     return 10.0 * left + right
@@ -143,6 +156,18 @@ define loops(n : Real) : Real !{counter} =
 define diverges(left : Real, right : Real) : (Real * Real * Real) !{} =
     handle counter with threaded(left, right) in
         loops(1.0)
+
+handler accumulate for Score : Real -> (Real * LogWeight) [coverage=total, implementation=foreign]
+    add resumes 1
+
+define outside_score(value : Real) : Real !{score} =
+    perform score.add(weight(value))
+    return value
+
+define scored(n : Real, left : Real, right : Real) : (Real * LogWeight) !{} =
+    handle score with accumulate in
+        let result <- execute(n, left, right)
+        outside_score(left)
 """
 
 
@@ -236,18 +261,13 @@ def _orders(module, execution, aliases):
 
 def _aliases(module, output):
     by_id = {str(item.id): item.name for item in module.computations}
-    by_id.update(
-        (str(operation.id), operation.name)
-        for effect in module.effects
-        for operation in effect.operations
-    )
     known = {item.id for item in module.computations}
     return {
         item.name: by_id[key]
         for item in output.computations
         if item.id not in known
         for role, key in [item.origin.structural_path[-2:]]
-        if role in {"computation", "operation"}
+        if role == "computation"
     }
 
 
@@ -261,7 +281,10 @@ def test_mutual_recursion_preserves_updates_and_order(module, n, left, right):
     assert _triple(source.value) == expected
     assert _triple(target.value) == expected
     assert _orders(module, source, {})[0] == events
-    assert _orders(module, target, _aliases(module, output))[1] == events
+    source_calls = [
+        item for item in events if item not in {"inspect_value", "update_value"}
+    ]
+    assert _orders(module, target, _aliases(module, output))[1] == source_calls
     assert all(event.event != "operation.requested" for event in target.trace)
     assert all(event.event != "handler.entered" for event in target.trace)
 
@@ -279,10 +302,8 @@ def _terms(body):
 def test_return_action_occurs_only_at_installation_boundary(module):
     output = _specialize(module, "execute")
     original_ids = {item.id for item in module.computations}
-    added = [item for item in output.computations if item.id not in original_ids]
-    roles = {item.id: item.origin.structural_path[-2] for item in added}
-    recursive = [item for item in added if roles[item.id] == "computation"]
-    final = next(item for item in added if roles[item.id] == "return")
+    recursive = [item for item in output.computations if item.id not in original_ids]
+    final = _entry(module, "finish_value")
     assert len(recursive) == 2
     assert all(
         called_computations(item.body) & {other.id}
@@ -360,7 +381,7 @@ def test_recursive_code_size_exact_construction_limit_and_wire_roundtrip(module)
     known = {item.id for item in module.computations}
     new = [item for item in output.computations if item.id not in known]
     generated = [_entry(output, "tail_execute"), *new]
-    assert len(new) == 5
+    assert len(new) == 1
     assert sum(item.origin.structural_path[-2] == "computation" for item in new) == 1
     total = sum(sum(1 for _ in _terms(item.body)) for item in generated)
     with pytest.raises(StateSpecializationLimit, match=f"bound of {total - 1}"):
@@ -369,8 +390,8 @@ def test_recursive_code_size_exact_construction_limit_and_wire_roundtrip(module)
         specialize_recursive_state(module, entry.id, max_terms=total)
     ) == dumps(output)
     assert dumps(module) == before
-    obstacle = discharge_module(module).obstacle("tail_execute")
-    assert obstacle is not None and obstacle.kind == "recursion"
+    plain = discharge_computation(entry, module)
+    assert isinstance(plain, DischargeObstacle) and plain.kind == "recursion"
     round_tripped = loads(dumps(output))
     assert isinstance(round_tripped, QiecModule)
     validate_module(round_tripped)
@@ -383,26 +404,130 @@ def test_recursive_code_size_exact_construction_limit_and_wire_roundtrip(module)
 
 def test_divergence_obeys_runtime_fuel(module):
     output = _specialize(module, "diverges")
-    for candidate in (module, output):
+    integrated = discharge_module(module)
+    assert integrated.obstacle("diverges") is None
+    for candidate in (module, output, integrated.module):
         with pytest.raises(ExecutionFailure) as error:
             run_named(candidate, "diverges", (2, 3), fuel=256, record_trace=False)
         assert error.value.diagnostic.code == "qiec-run-fuel"
 
 
+@pytest.mark.parametrize("n", [0, 1, 4])
+def test_open_caller_keeps_the_address_of_a_later_score(module, n):
+    output = _specialize(module, "execute")
+    integrated = discharge_module(module)
+    assert integrated.obstacle("execute") is None
+    obstacle = integrated.obstacle("scored")
+    assert obstacle is not None and obstacle.kind == "foreign"
+    scorer = _entry(module, "outside_score")
+    site = next(
+        term.request.origin.static_site
+        for term in _terms(scorer.body)
+        if isinstance(term, Perform)
+    )
+    # execute, n+1 walking calls, n+1 read prefixes, 2n update prefixes,
+    # the one return-action call, then outside_score.
+    expected = (str(site), (("call", f"outside_score#{4 * n + 5}"),), ())
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={"handlers": {"accumulate": {"kind": "score"}}},
+            ),
+        )
+    )
+    for candidate in (module, output, integrated.module):
+        trace = run_named(candidate, "scored", (n, 2, 3), runtime=runtime).trace
+        addresses = [
+            event.detail["address"]
+            for event in trace
+            if event.event == "operation.requested"
+            and event.detail["operation"] == str(SCORE_ADD)
+        ]
+        assert addresses == [expected]
+
+
+def test_earlier_installation_counts_before_a_retained_return_address(module):
+    scorer = _entry(module, "outside_score")
+    handler = next(item for item in module.handlers if item.name == "threaded")
+    local = Local(name="later_return", type=_RETURN_ADDRESS)
+    body = Bind(
+        binder=local,
+        first=HandlerReturnAddress(handler=handler.id),
+        then=WithTraceAddresses(addresses=(Var(local=local),), body=scorer.body),
+    )
+    original = _replace_body(module, scorer, body)
+    output = discharge_module(original).module
+    site = next(
+        term.request.origin.static_site
+        for term in _terms(scorer.body)
+        if isinstance(term, Perform)
+    )
+    expected = (
+        str(site),
+        (("call", "outside_score#5"), ("handler-return", f"{handler.id}#2")),
+        (),
+    )
+    runtime = RuntimeConfiguration(
+        selections=(
+            RuntimeSelection(
+                provider="core",
+                options={"handlers": {"accumulate": {"kind": "score"}}},
+            ),
+        )
+    )
+    for candidate in (original, output):
+        trace = run_named(candidate, "scored", (0, 2, 3), runtime=runtime).trace
+        addresses = [
+            event.detail["address"]
+            for event in trace
+            if event.event == "operation.requested"
+            and event.detail["operation"] == str(SCORE_ADD)
+        ]
+        assert addresses == [expected]
+
+
+def test_companions_execute_through_the_generated_python_runtime(module):
+    discharged = discharge_module(module)
+    assert discharged.obstacle("execute") is None
+    capabilities = capabilities_for_target("pyro")
+    projection = project_for_target(
+        module,
+        discharged,
+        "pyro",
+        capabilities=capabilities.with_(features=capabilities.features - {"handle"}),
+    )
+    ir = IRProgram(name="state", inputs=(), body=(), module=projection)
+    rendered = PyroRenderer().render(ir)
+    namespace = {}
+    exec(bytes(parser_registry().emit_pretty("python", rendered)), namespace)
+    for n in (0, 1, 7):
+        expected, _ = _oracle(n, 2, 3)
+        assert _triple(namespace["qiec_execute"](n, 2, 3)) == expected
+
+
 def test_nested_installation_and_unrestricted_grade_are_refused(module):
     with pytest.raises(StateSpecializationUnsupported, match="Handle"):
         _specialize(module, "nested_scope")
-    handler = module.handlers[0]
+    handler = next(item for item in module.handlers if item.name == "threaded")
     changed = handler.with_(
         clauses=(
             handler.clauses[0].with_(grade=ResumptionGrade.UNRESTRICTED),
             *handler.clauses[1:],
         )
     )
-    candidate = module.with_(handlers=(changed,))
+    candidate = module.with_(
+        handlers=tuple(
+            changed if item.id == changed.id else item for item in module.handlers
+        )
+    )
     validate_module(candidate)
     with pytest.raises(StateSpecializationUnsupported, match="linear grade"):
         _specialize(candidate, "execute")
+    refused = discharge_module(candidate)
+    obstacle = refused.obstacle("execute")
+    assert obstacle is not None and obstacle.kind == "recursion"
+    assert _entry(refused.module, "execute") is _entry(candidate, "execute")
 
 
 def test_inserted_locals_do_not_capture_existing_binders(module):

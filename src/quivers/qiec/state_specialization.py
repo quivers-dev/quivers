@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from typing import cast
 
+from quivers.qiec._models import QiecModel
 from quivers.qiec.effects import (
     EMPTY_ROW,
     ComputationType,
@@ -15,12 +17,19 @@ from quivers.qiec.effects import (
 )
 from quivers.qiec.handler_carriers import _branches, _CarrierAnalysis, _handler_obstacle
 from quivers.qiec.identifiers import ComputationId, OperationId, SourceOrigin
-from quivers.qiec.module import QiecModule, NamedComputation, _children, validate_module
+from quivers.qiec.module import (
+    NamedComputation,
+    QiecModule,
+    _children,
+    _return_observes_address,
+    validate_module,
+)
 from quivers.qiec.terms import (
     Bind,
     Call,
     Computation,
     Handle,
+    HandlerReturnAddress,
     If,
     Local,
     Perform,
@@ -30,6 +39,7 @@ from quivers.qiec.terms import (
     TupleValue,
     Value,
     Var,
+    _RETURN_ADDRESS,
 )
 from quivers.qiec.types import TypeExpr, product_type
 
@@ -82,6 +92,62 @@ class _LocalNames:
             name = f"__state_{self.ordinal}"
             if name not in self.occupied:
                 return Local(name=name, type=type_)
+
+
+def _relocate(node: object, names: _LocalNames, renamed: dict[str, str]) -> object:
+    """Rename locally bound values in code transplanted from a closed clause.
+
+    Parameters
+    ----------
+    node : object
+        The code or parameter record being copied.
+    names : _LocalNames
+        Fresh names disjoint from the destination's existing bindings.
+    renamed : dict[str, str]
+        The shared correspondence between old and new lexical names.
+
+    Returns
+    -------
+    object
+        The input with its local names replaced.
+    """
+    if isinstance(node, Local):
+        name = renamed.get(node.name)
+        if name is None:
+            name = names.fresh(node.type).name
+            renamed[node.name] = name
+        return node.with_(name=name)
+    if isinstance(node, tuple):
+        items = tuple(_relocate(item, names, renamed) for item in node)
+        return node if all(a is b for a, b in zip(node, items, strict=True)) else items
+    if isinstance(node, QiecModel):
+        changes: dict[str, object] = {}
+        for field in type(node).__field_specs__:
+            current = getattr(node, field)
+            moved = _relocate(current, names, renamed)
+            if moved is not current:
+                changes[field] = moved
+        return node.with_(**changes) if changes else node
+    return node
+
+
+@dataclass(frozen=True, slots=True)
+class _Transition:
+    """The checked source of one state transition.
+
+    Parameters
+    ----------
+    parameters : tuple[Local, ...]
+        Request binders followed by the old state binders, in order.
+    body : Computation
+        The operation clause with one tail resumption on each path.
+    result : TypeExpr
+        The product of its reply and new state.
+    """
+
+    parameters: tuple[Local, ...]
+    body: Computation
+    result: TypeExpr
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,7 +267,7 @@ class _Specialization:
         self.computations = self.ordinary.computations
         self.names = {item.name for item in module.computations}
         self.identities = set(self.computations)
-        self.operations: dict[OperationId, _Companion] = {}
+        self.operations: dict[OperationId, _Transition] = {}
         self.companions: dict[ComputationId, _Companion] = {}
         self.pending: deque[NamedComputation] = deque()
         self.generated: list[NamedComputation] = []
@@ -418,17 +484,70 @@ class _Specialization:
                 raise StateSpecializationUnsupported(
                     f"operation {operation.name!r} needs a tail resumption on every path"
                 )
-            companion = self.allocate(
-                "operation", operation.id, self.pair(operation.result_type)
+            self.operations[operation.id] = _Transition(
+                (*clause.parameters, *self.handler.parameters),
+                clause.body,
+                self.pair(operation.result_type),
             )
-            self.operations[operation.id] = companion
-            self.generated.append(
-                companion.declaration(
-                    (*clause.parameters, *self.handler.parameters),
-                    self.transition(clause.body, companion.result),
-                    self.origin("operation", str(operation.id)),
-                )
-            )
+
+    def bind_arguments(
+        self,
+        parameters: tuple[Local, ...],
+        arguments: tuple[Value, ...],
+        body: Computation,
+    ) -> Computation:
+        """Evaluate all arguments once in order, then execute the body.
+
+        Parameters
+        ----------
+        parameters : tuple[Local, ...]
+            Fresh binders already used to name the body's arguments.
+        arguments : tuple[Value, ...]
+            The caller's value expressions.
+        body : Computation
+            The computation in scope of every parameter.
+
+        Returns
+        -------
+        Computation
+            Strict argument bindings enclosing the body.
+        """
+        self.spend(2 * len(parameters))
+        for parameter, argument in reversed(
+            tuple(zip(parameters, arguments, strict=True))
+        ):
+            body = Bind(binder=parameter, first=Return(value=argument), then=body)
+        return body
+
+    def inline(
+        self,
+        body: Computation,
+        parameters: tuple[Local, ...],
+        arguments: tuple[Value, ...],
+        names: _LocalNames,
+    ) -> Computation:
+        """Move a closed clause into scope without allocating a runtime call.
+
+        Parameters
+        ----------
+        body : Computation
+            Code whose free locals are among its parameters.
+        parameters : tuple[Local, ...]
+            The source lexical binders for inputs and handler state.
+        arguments : tuple[Value, ...]
+            The actual arguments in source evaluation order.
+        names : _LocalNames
+            The destination's fresh-name supply.
+
+        Returns
+        -------
+        Computation
+            Code with local names transported to the destination scope.
+        """
+        renamed: dict[str, str] = {}
+        binders = cast(tuple[Local, ...], _relocate(parameters, names, renamed))
+        copied = cast(Computation, _relocate(body, names, renamed))
+        return self.bind_arguments(binders, arguments, copied)
 
     def thread(
         self,
@@ -495,9 +614,12 @@ class _Specialization:
                 raise StateSpecializationUnsupported(
                     "a request reaches a different instance or requires static specialization"
                 )
-            self.spend(1)
-            return self.operations[request.operation].call(
-                (*request.arguments, *state), request.origin.origin
+            clause = self.operations[request.operation]
+            return self.inline(
+                self.transition(clause.body, clause.result),
+                clause.parameters,
+                (*request.arguments, *state),
+                names,
             )
         if isinstance(term, Call):
             return self.thread_call(term, state, names)
@@ -581,28 +703,29 @@ class _Specialization:
             result,
             names,
         )
-        self.spend(2 + 2 * len(parameters))
+        self.spend(1)
         pair = names.fresh(self.pair(result))
         value, state = self.split(pair, result)
         final = self.handler.return_clause
         if final is None:
+            self.spend(1)
             finish: Computation = Return(value=value)
         else:
-            companion = self.allocate("return", self.owner.id, self.handler.output_type)
-            self.generated.append(
-                companion.declaration(
-                    (final.binder, *self.handler.parameters),
-                    self.pure(final.body),
-                    self.origin("return", str(self.owner.id)),
-                )
+            finish = self.inline(
+                self.pure(final.body),
+                (final.binder, *self.handler.parameters),
+                (value, *state),
+                names,
             )
-            finish = companion.call((value, *state), self.origin("call", "return"))
         root = Bind(binder=pair, first=root, then=finish)
-        for parameter, initial in reversed(
-            tuple(zip(parameters, self.installation.arguments, strict=True))
-        ):
-            root = Bind(binder=parameter, first=Return(value=initial), then=root)
-        return root
+        if _return_observes_address(self.handler):
+            self.spend(2)
+            root = Bind(
+                binder=names.fresh(_RETURN_ADDRESS),
+                first=HandlerReturnAddress(handler=self.handler.id),
+                then=root,
+            )
+        return self.bind_arguments(parameters, self.installation.arguments, root)
 
     def build(self) -> QiecModule:
         """Finish each reachable recursive companion once and recheck the result.
@@ -650,9 +773,10 @@ def specialize_recursive_state(
     followed by one tail resumption, with no introduced effects. Reached
     stateful recursive calls use pure companions that return their result
     and updated state. The selected boundary alone applies the authored
-    return action. Evaluation of the original and transformed computation
-    agrees on returned values under the checked contracts. Handler and
-    request diagnostic events and evaluator fuel counts can differ.
+    return action. Inlining the pure clauses preserves the number and order
+    of calls that allocate runtime addresses. Evaluation agrees on returned
+    values under the checked contracts. Handler and request diagnostic
+    events and evaluator fuel counts can differ.
 
     Parameters
     ----------

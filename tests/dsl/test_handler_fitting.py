@@ -672,6 +672,13 @@ define called(a : Real, b : Real) : Real !{} =
     ),
     "a handled request in a recursive call": (
         """
+handler post_reader for Read : Real -> Real with (r : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    ask resumes 1 =>
+        let answer <- resume(r)
+        return answer + r
+
 define loop(n : Int, x : Real) : Real !{rd} =
     if n <= 0 then
         return x
@@ -680,12 +687,12 @@ define loop(n : Int, x : Real) : Real !{rd} =
         loop(n - 1, x + r)
 
 define called(a : Real, b : Real) : Real !{} =
-    handle rd with reader(a) in
+    handle rd with post_reader(a) in
         let x <- loop(3, b)
         return x
 """,
         "calls `called`, which reaches a recursive call of `loop` that requests "
-        "from the handler `reader`",
+        "from the handler `post_reader`",
     ),
 }
 

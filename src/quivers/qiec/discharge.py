@@ -61,6 +61,10 @@ from quivers.qiec.identifiers import (
     _clause_address,
 )
 from quivers.qiec.module import NamedComputation, QiecModule, _return_observes_address
+from quivers.qiec.state_specialization import (
+    StateSpecializationUnsupported,
+    specialize_recursive_state,
+)
 from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_telescope,
@@ -2826,6 +2830,10 @@ def _discharged(
 def discharge_module(module: QiecModule) -> DischargedModule:
     """Discharge the handlers of every computation of a module.
 
+    The ordinary reduction runs first. A recursive handled call may
+    require a separate pure companion graph, which is added only when
+    the closed linear state specialization succeeds.
+
     Parameters
     ----------
     module : QiecModule
@@ -2839,14 +2847,34 @@ def discharge_module(module: QiecModule) -> DischargedModule:
         obstacle per computation left as it is.
     """
     computations: list[NamedComputation] = []
+    companions: list[NamedComputation] = []
     obstacles: list[DischargeObstacle] = []
     tables = _Tables(module)
-    for computation in module.computations:
+    source = module
+    for index, computation in enumerate(module.computations):
         if not installs_handler(computation):
             computations.append(computation)
             continue
         result = _discharged(computation, tables)
         if isinstance(result, DischargeObstacle):
+            if result.kind == "recursion":
+                try:
+                    specialized = specialize_recursive_state(
+                        source, computation.id, max_terms=DISCHARGE_STATEMENTS
+                    )
+                except StateSpecializationUnsupported:
+                    pass
+                else:
+                    companions.extend(
+                        specialized.computations[len(source.computations) :]
+                    )
+                    computations.append(specialized.computations[index])
+                    # Later installations reserve names against these companions,
+                    # while checking their reachability against the source.
+                    source = module.with_(
+                        computations=(*module.computations, *companions)
+                    )
+                    continue
             obstacles.append(result)
             computations.append(computation)
         else:
@@ -2856,7 +2884,7 @@ def discharge_module(module: QiecModule) -> DischargedModule:
     ):
         return DischargedModule(module=module, obstacles=tuple(obstacles))
     return DischargedModule(
-        module=module.with_(computations=tuple(computations)),
+        module=module.with_(computations=(*computations, *companions)),
         obstacles=tuple(obstacles),
     )
 
