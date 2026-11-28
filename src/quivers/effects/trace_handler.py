@@ -23,6 +23,7 @@ from quivers.effects.sites import TorchSampleable
 from quivers.effects.trace_types import SampleSite, Trace
 from quivers.effects.units import SiteUnits
 from quivers.qiec.distributions import RuntimeDistribution
+from quivers.qiec.structured_sampleables import FiniteSampleable
 from quivers.qiec.builtins import (
     COMPUTE_APPLY,
     RANDOM,
@@ -321,28 +322,42 @@ class TraceHandler(EffectHandler):
         -------
         SampleSite
             The site, named by its label.
+
+        Raises
+        ------
+        ValueError
+            If a structured site is traced across several independent runs.
         """
         label, drawn_from = event.arguments
         assert isinstance(label, str)
         value = event.result
-        assert isinstance(value, torch.Tensor)
-        carries_run_axis = run.site_carries_run_axis(label)
-        if isinstance(drawn_from, RuntimeDistribution):
-            # A machine run draws one run's value, which has no run axis.
-            # A site not drawn over a plate leads with the run axis in a
-            # trace, as a compiled program's does.
-            morphism = site_morphism(drawn_from)
-            sampleable = TorchSampleable(
-                morphism=morphism,
-                input=torch.zeros(0, dtype=drawn_from.numbers.real_dtype),
-            )
-            if not isinstance(morphism, PlateDraw):
-                value = value.unsqueeze(0)
-                carries_run_axis = True
-        else:
+        if isinstance(drawn_from, FiniteSampleable):
+            if run.runs != 1:
+                raise ValueError(
+                    f"structured trace site {label!r} requires one independent run"
+                )
             sampleable = drawn_from
-        assert isinstance(sampleable, TorchSampleable)
-        assert isinstance(value, torch.Tensor)
+            declared = None
+            carries_run_axis = False
+        else:
+            assert isinstance(value, torch.Tensor)
+            carries_run_axis = run.site_carries_run_axis(label)
+            if isinstance(drawn_from, RuntimeDistribution):
+                # A machine run draws one run's value, which has no run axis.
+                # A site not drawn over a plate leads with the run axis in
+                # a trace, as a compiled program's does.
+                morphism = site_morphism(drawn_from)
+                sampleable = TorchSampleable(
+                    morphism=morphism,
+                    input=torch.zeros(0, dtype=drawn_from.numbers.real_dtype),
+                )
+                if not isinstance(morphism, PlateDraw):
+                    value = value.unsqueeze(0)
+                    carries_run_axis = True
+            else:
+                assert isinstance(drawn_from, TorchSampleable)
+                sampleable = drawn_from
+            declared = sampleable.declared
         contributions = [
             item for item in run.contributions if item.key == event.address
         ]
@@ -352,14 +367,17 @@ class TraceHandler(EffectHandler):
             log_prob = contributions[0].weight
             for item in contributions[1:]:
                 log_prob = log_prob + item.weight
+        elif isinstance(sampleable, FiniteSampleable):
+            log_prob = sampleable.numbers.zero()
         else:
+            assert isinstance(value, torch.Tensor)
             log_prob = torch.zeros(
                 value.shape[:1] if value.dim() > 0 else (1,), device=value.device
             )
         self._run_axes[label] = carries_run_axis
         return SampleSite(
             name=label,
-            morphism=sampleable.declared,
+            morphism=declared,
             value=value,
             log_prob=log_prob,
             is_observed=observed,

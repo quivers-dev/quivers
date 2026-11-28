@@ -105,6 +105,7 @@ from quivers.qiec.substitution import (
     substitute_row,
     substitute_type,
 )
+from quivers.qiec.structured_sampleables import FiniteSampleable
 from quivers.qiec.types import IndexTerm, StaticArgument, TypeExpr
 
 RUN = "__checked_run"
@@ -555,12 +556,12 @@ class CheckedProgram(MonadicProgram):
     def _split(
         self,
         x_row: torch.Tensor,
-        given: Mapping[str, torch.Tensor],
+        given: Mapping[str, object],
         numbers: NumberDomain,
         *,
         row: int,
         runs: int,
-    ) -> tuple[dict[str, object], dict[str, torch.Tensor]]:
+    ) -> tuple[dict[str, object], dict[str, object]]:
         """One run's data and its given sites.
 
         A datum is given once per run when it leads with the run axis and
@@ -572,7 +573,7 @@ class CheckedProgram(MonadicProgram):
         ----------
         x_row : torch.Tensor
             The run's input.
-        given : Mapping[str, torch.Tensor]
+        given : Mapping[str, object]
             The data by parameter name and the values of sites, by label
             or by ``"<label>@<n>"``.
         numbers : NumberDomain
@@ -584,7 +585,7 @@ class CheckedProgram(MonadicProgram):
 
         Returns
         -------
-        tuple[dict[str, object], dict[str, torch.Tensor]]
+        tuple[dict[str, object], dict[str, object]]
             The entry's arguments by parameter name, and the values of the
             given sites as the call gives them, an observation with a law
             among them; which entry of a site's value is the run's is read
@@ -607,7 +608,7 @@ class CheckedProgram(MonadicProgram):
                 numbers,
             )
         types = {parameter.name: parameter.type for parameter in self._entry.parameters}
-        sites: dict[str, torch.Tensor] = {}
+        sites: dict[str, object] = {}
         observations = set(self._laws.observations)
         for name, value in given.items():
             if name in observations:
@@ -904,7 +905,7 @@ class CheckedProgram(MonadicProgram):
     def _run(
         self,
         x_row: torch.Tensor,
-        given: Mapping[str, torch.Tensor],
+        given: Mapping[str, object],
         *,
         row: int,
         runs: int,
@@ -916,7 +917,7 @@ class CheckedProgram(MonadicProgram):
         ----------
         x_row : torch.Tensor
             The run's input.
-        given : Mapping[str, torch.Tensor]
+        given : Mapping[str, object]
             The data and the values of the given sites.
         row : int
             The run.
@@ -999,7 +1000,7 @@ class CheckedProgram(MonadicProgram):
     def _calls(
         self,
         x: torch.Tensor,
-        given: Mapping[str, torch.Tensor],
+        given: Mapping[str, object],
         *,
         joint: bool,
         apart: str | None,
@@ -1019,7 +1020,7 @@ class CheckedProgram(MonadicProgram):
         ----------
         x : torch.Tensor
             The input, one row per run.
-        given : Mapping[str, torch.Tensor]
+        given : Mapping[str, object]
             The data and the values of the given sites.
         joint : bool
             Whether to score the given values rather than run forward.
@@ -1039,6 +1040,12 @@ class CheckedProgram(MonadicProgram):
         """
         runs = int(x.shape[0]) if x.dim() >= 1 else 1
         rows = x if x.dim() >= 1 else x.reshape(1)
+        if (
+            apart is None
+            and runs > 1
+            and any(isinstance(value, FiniteSampleable) for value in given.values())
+        ):
+            apart = "a finite structured draw requires one machine pass per run"
         obstacle = apart if runs > 1 else None
         if apart is None and runs > 1:
             mapped = {
@@ -1145,7 +1152,7 @@ class CheckedProgram(MonadicProgram):
         self,
         x: torch.Tensor,
         sample_shape: torch.Size = torch.Size(),
-        observations: Mapping[str, torch.Tensor] | None = None,
+        observations: Mapping[str, object] | None = None,
     ) -> torch.Tensor:
         """Run the program forward under the handler stack.
 
@@ -1156,7 +1163,7 @@ class CheckedProgram(MonadicProgram):
         sample_shape : torch.Size
             Additional leading sample dimensions; each element is one
             independent call.
-        observations : Mapping[str, torch.Tensor] or None
+        observations : Mapping[str, object] or None
             The program's data by parameter name, and the values of the
             sites the runs are given, by label or ``"<label>@<n>"``; a
             value leading with the run axis is one per run. Every other
@@ -1221,7 +1228,7 @@ class CheckedProgram(MonadicProgram):
         )
 
     def log_joint(
-        self, x: torch.Tensor, intermediates: Mapping[str, torch.Tensor]
+        self, x: torch.Tensor, intermediates: Mapping[str, object]
     ) -> torch.Tensor:
         """The joint log density at given values for every site.
 
@@ -1229,7 +1236,7 @@ class CheckedProgram(MonadicProgram):
         ----------
         x : torch.Tensor
             Program input. Shape ``(batch, ...)``: one run per row.
-        intermediates : Mapping[str, torch.Tensor]
+        intermediates : Mapping[str, object]
             The program's data by parameter name and a value for every
             site the runs reach, by label, or by ``"<label>@<n>"`` for a
             site a run reaches more than once.

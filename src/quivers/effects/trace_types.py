@@ -15,6 +15,7 @@ from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, Valu
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.effects.sites import TorchSampleable
 from quivers.effects.units import SiteUnits
+from quivers.qiec.structured_sampleables import FiniteSampleable
 
 type SiteAddress = tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
 """The kernel's dynamic address of one occurrence of a site."""
@@ -23,8 +24,8 @@ type SiteAddress = tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]
 class SampleSite(ValueModel):
     """Record of a single site in a program trace.
 
-    Tensor and morphism fields retain their runtime identity. Field
-    updates use ``with_`` and preserve their autograd connections.
+    Values and morphisms retain their runtime identity. Field updates
+    use ``with_`` and preserve their autograd connections.
 
     Parameters
     ----------
@@ -32,8 +33,9 @@ class SampleSite(ValueModel):
         Variable name bound at this site.
     morphism : ContinuousMorphism or None
         The distribution morphism (``None`` for let bindings and scores).
-    value : torch.Tensor
-        The sampled, observed, or computed value.
+    value
+        The sampled, observed, or computed tensor. A site drawn from a
+        finite structured law keeps its one typed point as a value.
     log_prob : torch.Tensor
         The density the site contributed to the run's score, after every
         score transformer on the stack. Zero for let bindings and for
@@ -43,10 +45,10 @@ class SampleSite(ValueModel):
     is_deterministic : bool
         Whether this is a let binding, a score step, or an intervened
         site.
-    sampleable : TorchSampleable or None
-        The sampleable the site's request carried, with the morphism and
-        the input it was conditioned on; ``None`` for let bindings and
-        scores.
+    sampleable : TorchSampleable or FiniteSampleable or None
+        The sampleable the site's request carried. A tensor law records
+        its morphism and input. A structured law records its typed
+        support. Let bindings and scores have no sampleable.
     address : SiteAddress or None
         The kernel's dynamic address of the site's request, which is one
         identity for the run's trace and for every handler that answered
@@ -62,11 +64,11 @@ class SampleSite(ValueModel):
     morphism: ContinuousMorphism | None = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    value: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    value: object = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     log_prob: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     is_observed: bool = False
     is_deterministic: bool = False
-    sampleable: TorchSampleable | None = dx.field(
+    sampleable: TorchSampleable | FiniteSampleable | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     address: SiteAddress | None = dx.field(
@@ -92,14 +94,23 @@ class SampleSite(ValueModel):
             self.morphism, ContinuousMorphism
         ):
             raise TypeError("site morphism must be ContinuousMorphism or None")
-        if not isinstance(self.value, torch.Tensor) or not isinstance(
-            self.log_prob, torch.Tensor
-        ):
-            raise TypeError("site value and log_prob must be torch.Tensor")
-        if self.sampleable is not None and not isinstance(
-            self.sampleable, TorchSampleable
-        ):
-            raise TypeError("site sampleable must be TorchSampleable or None")
+        if isinstance(self.sampleable, FiniteSampleable):
+            if self.morphism is not None:
+                raise TypeError("a structured trace site carries no tensor morphism")
+            self.sampleable._key(self.value)
+            if not isinstance(self.log_prob, torch.Tensor):
+                raise TypeError(
+                    "a structured trace site's log_prob must be torch.Tensor"
+                )
+        else:
+            if not isinstance(self.value, torch.Tensor) or not isinstance(
+                self.log_prob, torch.Tensor
+            ):
+                raise TypeError("site value and log_prob must be torch.Tensor")
+            if self.sampleable is not None and not isinstance(
+                self.sampleable, TorchSampleable
+            ):
+                raise TypeError("site sampleable must be a typed sampleable or None")
         if self.address is not None:
             if not isinstance(self.address, tuple) or len(self.address) != 3:
                 raise TypeError("site address must contain a site, frames, and path")
@@ -122,6 +133,17 @@ class SampleSite(ValueModel):
             isinstance(name, str) for name in self.metadata
         ):
             raise TypeError("site metadata must be a dictionary with string keys")
+
+    @property
+    def is_structured(self) -> bool:
+        """Whether the site's value is a single point of a structured law.
+
+        Returns
+        -------
+        bool
+            True when the sampleable is a finite typed law.
+        """
+        return isinstance(self.sampleable, FiniteSampleable)
 
 
 class Trace(ValueModel):
