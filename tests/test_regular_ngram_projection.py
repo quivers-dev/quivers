@@ -155,3 +155,37 @@ def test_unpenalized_fit_recovers_representable_tilt_and_scale():
         fitted + fit.log_site_scale, raw_target, rtol=1e-5, atol=1e-5
     )
     assert fit.regularization.item() == 0
+
+
+def test_representable_four_word_tilt_meets_a_tight_iteration_budget():
+    base, weights = _language()
+    unit = RationalRelation(
+        replace(base.topology, final=(Boundary(2, 2),)), weights, algebra=LOG_PROB
+    )
+    words = tuple(product(range(2), repeat=2))
+    topology = RelationTopology(
+        (_TAPE,),
+        0,
+        6,
+        tuple(
+            arc
+            for state, word in enumerate(words, 1)
+            for arc in (Arc(0, state, word[:1], 0), Arc(state, 5, word[1:], state))
+        ),
+        (Boundary(0, 0),),
+        (Boundary(5, 0),),
+        ("unit", "aa", "ab", "ba", "bb"),
+    )
+    scores = weights.new_tensor([0.0, 0.8, -0.2, 0.4, -0.5])
+    likelihood = RationalRelation(topology, scores, algebra=LOG_PROB)
+    fit = penalized_regular_ngram_projection(
+        unit,
+        likelihood,
+        _FEATURES,
+        penalty=0.0,
+        tolerance=1e-8,
+        **(_POLICY | dict(max_iterations=256)),
+    )
+    assert fit.status == "converged"
+    actual = torch.stack([fit.message.weight((word,)) for word in words]).softmax(0)
+    torch.testing.assert_close(actual, scores[1:].softmax(0), atol=3e-8, rtol=3e-8)
