@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Computed deduction rule weights.** A checked rule can name a pure `LogWeight` computation over its matched fields. Native lexical search and chart execution use the grounded weight with live derivatives.
 - **Checked cyclic posterior path draws.** Native Random uses certified suffix closure with a per-draw arc ceiling and full posterior scores for returned original traces.
 - **Proved objective gap targets for joint alignment MAP.** Exact feasible and dual scores can establish a serialized absolute or relative tolerance. Gap-based stops retain a status distinct from agreement certification.
 - **Checked packed contextual edit likelihoods.** Typed native scores reuse one packed alignment plan with the caller's original live contextual network.
