@@ -27,3 +27,62 @@ return, its operation-clause address includes the captured activation
 alongside any captured local instance addresses.
 
 ::: quivers.qiec.effects
+
+## Finite laws
+
+The finite law checker compares two named QIEC computations with the same
+positional input types and result type. It runs both sides for every assignment
+of Booleans, unit values, and their finite products. Each side has an empty
+residual effect row, and reachable handler clauses use the same exact finite
+fragment.
+
+`finite_continuation_type` gives a total continuation one result cell for every
+tuple of arguments. Include handler state among those arguments when the
+continuation can observe it. Both sides receive the same table. For a continuation
+from a pair of Booleans to a Boolean, the four cells are indexed by
+`(false, false)`, `(false, true)`, `(true, false)`, and `(true, true)`, in that
+order.
+
+The checker returns the first counterexample with its full assignment and both
+results. A positive decision follows only after every assignment completes.
+An unsupported term or an exhausted limit raises an error.
+
+::: quivers.qiec.laws
+
+## Polynomial laws
+
+The polynomial checker compares scalar real computations after discharging
+their authored handlers. It interprets the admitted arithmetic over rational
+coefficients. A real literal contributes the exact rational value it represents,
+and a quotient of two constants can supply an exact coefficient such as
+`1.0 / 3.0`.
+
+The checker supports addition, subtraction, multiplication, division by a
+closed nonzero constant, and nonnegative integral constant powers. It checks
+divisors in the source before using the discharged result, including divisors
+in bindings whose results are unused. A runtime branch condition leaves the
+polynomial fragment.
+
+Each normal form lists monomial exponents in parameter order and their
+coefficients. Equal forms certify equality on the scalar polynomial domain.
+When the forms differ, the checker gives integer arguments and the two exact
+rational results.
+
+::: quivers.qiec.polynomial_laws
+
+## Rational laws
+
+The rational checker runs the original, checked computation with exact
+symbolic scalar arithmetic. A divisor contributes a nonzero condition
+whenever it is evaluated, including in an unused binding. Both sides of an
+equation must have the same nonzero domain polynomial after multiplying
+their distinct monic guards. When the checker cannot establish this domain
+agreement, it reports an unsupported law.
+
+On a shared domain the checker compares exact numerators over a common
+denominator. If they differ, it returns integer arguments where both
+computations are defined and gives their exact rational values. The
+checker supports authored handlers whose branch choices can be resolved
+during the symbolic run, including branches selected by resumed Booleans.
+
+::: quivers.qiec.rational_laws

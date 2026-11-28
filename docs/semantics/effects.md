@@ -364,3 +364,20 @@ resumes $m$ times, and a conditional whose branches differ in $k$ values is stat
 clause resumes at most once, and the branches of each conditional return to one context and differ in one
 value, it is linear in the number of requests and the sizes of their clauses. A computation that passes 2048 statements, or 65536 steps of the rules, is left
 as it is.
+
+### 8.3 Checking handler equations
+
+An equation relates checked computations with the same input and result types. For the finite
+fragment, inputs range over Unit, Bool and their finite products. A continuation with argument
+carrier $X$ and result carrier $Y$ ranges over all $|Y|^{|X|}$ total tables. The checker compares
+both results on every assignment before deciding equality. It returns a concrete assignment
+when the results differ. Reaching a work or execution limit leaves the equation undecided.
+
+For supported scalar polynomial computations the checker compares exact rational coefficients.
+It checks definedness in the original source before normalizing a discharged computation, since
+discharge can erase a pure value whose evaluation was partial. For partial rational computations
+the checker also records all evaluated denominator guards. Equal normalized guard products
+certify the same domain. On that domain, the checker compares the polynomial obtained by
+cross-multiplying the two rational expressions and can exhibit a distinguishing assignment
+away from the guard zeros. The checker reports when it cannot establish that the domains agree.
+[Effects API](../api/qiec/effects.md)
