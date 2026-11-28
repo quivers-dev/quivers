@@ -57,6 +57,8 @@ __all__ = [
     "RelationPath",
     "RelationTopology",
     "StringBeliefResult",
+    "StringEPResult",
+    "StringSiteProjection",
     "StringFactor",
     "StringFactorGraph",
     "StringMapCertificate",
@@ -594,4 +596,6 @@ from quivers.core.relations.projection import NgramFamily, NgramProjection  # no
 from quivers.core.relations.beliefs import (  # noqa: E402
     FiniteStringBeliefPlan,
     StringBeliefResult,
+    StringEPResult,
+    StringSiteProjection,
 )

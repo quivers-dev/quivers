@@ -14,6 +14,11 @@ import torch
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.relations import FixedStringQuery, RationalRelation, _weight_snapshot
 from quivers.core.relations.graph import StringFactorGraph
+from quivers.core.relations.projection import (
+    NgramFamily,
+    NgramProjection,
+    _validate_projection_settings,
+)
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
 
 type _Word = tuple[int, ...]
@@ -30,6 +35,29 @@ class StringBeliefResult:
     sweeps: int
     message_residual: float
     log_messages: _Messages
+
+
+@dataclass(frozen=True, slots=True)
+class StringSiteProjection:
+    """The tilted normalization and fit for one factor-to-variable site."""
+
+    factor: int
+    variable: str
+    log_tilt_mass: torch.Tensor
+    fit: NgramProjection | None
+    diagnostic: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StringEPResult:
+    """Finite string beliefs and separate outer and local diagnostics."""
+
+    log_marginals: Mapping[str, torch.Tensor]
+    status: Literal["converged", "limit", "projection_failed"]
+    sweeps: int
+    message_residual: float | None
+    log_messages: _Messages
+    site_projections: tuple[StringSiteProjection, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +120,21 @@ def _outgoing(
         outgoing.append(LOG_PROB.join(scores, dim=axes) if axes else scores)
         suffix = suffix + broadcasts[axis]
     return tuple(reversed(outgoing))
+
+
+def _validate_sweeps(max_sweeps: int, tolerance: float | None, damping: float) -> None:
+    if type(max_sweeps) is not int or max_sweeps < 0:
+        raise ValueError("max_sweeps must be a nonnegative integer")
+    if not ((tolerance is None or 0 <= tolerance < float("inf")) and 0 <= damping < 1):
+        raise ValueError("invalid string message tolerance or damping")
+
+
+def _message_residual(old: _Messages, new: _Messages) -> float:
+    return max(
+        0.5 * (message.exp() - proposed.exp()).abs().sum().item()
+        for old_factor, new_factor in zip(old, new, strict=True)
+        for message, proposed in zip(old_factor, new_factor, strict=True)
+    )
 
 
 class FiniteStringBeliefPlan:
@@ -198,23 +241,7 @@ class FiniteStringBeliefPlan:
                 suffix = suffix + messages[f][axis]
         return beliefs, cavities
 
-    def run(
-        self, *, max_sweeps: int, tolerance: float | None = 1e-9, damping: float = 0.0
-    ) -> StringBeliefResult:
-        """Run synchronous log-space messages on the declared model.
-
-        Damping mixes probabilities and lies in [0, 1). Convergence
-        means the maximum undamped message total variation is within
-        tolerance. The final residual is measured on the returned
-        messages. A tolerance of None executes exactly the supplied
-        number of sweeps. Autograd follows the executed schedule.
-        """
-        if type(max_sweeps) is not int or max_sweeps < 0:
-            raise ValueError("max_sweeps must be a nonnegative integer")
-        if not (
-            (tolerance is None or 0 <= tolerance < float("inf")) and 0 <= damping < 1
-        ):
-            raise ValueError("invalid string message tolerance or damping")
+    def _start(self) -> tuple[tuple[torch.Tensor, ...], _Messages]:
         with _weight_snapshot():
             tables = tuple(factor.log_values() for factor in self._tables)
         like = tables[0]
@@ -228,6 +255,22 @@ class FiniteStringBeliefPlan:
             tuple(like.new_full((size,), -log(size)) for size in factor.shape)
             for factor in self._tables
         )
+        return tables, messages
+
+    def run(
+        self, *, max_sweeps: int, tolerance: float | None = 1e-9, damping: float = 0.0
+    ) -> StringBeliefResult:
+        """Run synchronous log-space messages on the declared model.
+
+        Damping mixes probabilities and lies in [0, 1). Convergence
+        means the maximum undamped message total variation is within
+        tolerance. The final residual is measured on the returned
+        messages. A tolerance of None executes exactly the supplied
+        number of sweeps. Autograd follows the executed schedule.
+        """
+        _validate_sweeps(max_sweeps, tolerance, damping)
+        tables, messages = self._start()
+        like = tables[0]
         sweeps = 0
         while True:
             beliefs, cavities = self._variables(messages, like)
@@ -242,11 +285,7 @@ class FiniteStringBeliefPlan:
                 )
                 for f, table in enumerate(tables)
             )
-            residual = max(
-                0.5 * (old.exp() - new.exp()).abs().sum().item()
-                for old_factor, new_factor in zip(messages, proposed, strict=True)
-                for old, new in zip(old_factor, new_factor, strict=True)
-            )
+            residual = _message_residual(messages, proposed)
             converged = tolerance is not None and residual <= tolerance
             if converged or sweeps == max_sweeps:
                 return StringBeliefResult(
@@ -271,5 +310,111 @@ class FiniteStringBeliefPlan:
                 messages = proposed
             sweeps += 1
 
+    def expectation_propagation(
+        self,
+        *,
+        order: int,
+        max_sweeps: int,
+        tolerance: float | None = 1e-9,
+        damping: float = 0.0,
+        projection_tolerance: float = 1e-9,
+        projection_max_iterations: int = 64,
+        projection_max_backtracks: int = 16,
+    ) -> StringEPResult:
+        """Run fixed n-gram inclusive-KL updates over the declared support.
 
-__all__ = ["FiniteStringBeliefPlan", "StringBeliefResult"]
+        A site's projected marginal is divided by its normalized cavity
+        and re-expressed as a normalized message. Damping interpolates
+        log weights and preserves the family. The outer residual
+        measures the undamped message update at the returned state.
+        A failed local projection returns the preceding accepted state
+        and the separate site diagnostic.
+        """
+        _validate_sweeps(max_sweeps, tolerance, damping)
+        _validate_projection_settings(
+            projection_tolerance, projection_max_iterations, projection_max_backtracks
+        )
+        tables, messages = self._start()
+        like = tables[0]
+        if like.dtype != torch.float64:
+            raise TypeError("projected string messages require float64 factor weights")
+        families = {
+            name: NgramFamily(words, order) for name, words in self._supports.items()
+        }
+        sweeps = 0
+        while True:
+            beliefs, cavities = self._variables(messages, like)
+            records: list[StringSiteProjection] = []
+            proposed: list[tuple[torch.Tensor, ...]] = []
+            for f, (table, factor) in enumerate(zip(tables, self._tables, strict=True)):
+                local = tuple(cavities[f, axis] for axis in range(table.ndim))
+                next_messages: list[torch.Tensor] = []
+                for name, incoming, outgoing in zip(
+                    factor.variables, local, _outgoing(table, local), strict=True
+                ):
+                    tilted = incoming + outgoing
+                    log_mass = LOG_PROB.join(tilted, dim=0)
+                    fit = None
+                    if bool(
+                        torch.isfinite(log_mass) & ((tilted - log_mass).exp() > 0).all()
+                    ):
+                        fit = families[name].project(
+                            tilted,
+                            base_log_weights=incoming,
+                            tolerance=projection_tolerance,
+                            max_iterations=projection_max_iterations,
+                            max_backtracks=projection_max_backtracks,
+                        )
+                    if fit is None or fit.status != "converged":
+                        problem = (
+                            "tilted weights must be positive on the full support"
+                            if fit is None
+                            else f"local projection {fit.status}"
+                        )
+                        records.append(
+                            StringSiteProjection(f, name, log_mass, fit, problem)
+                        )
+                        return StringEPResult(
+                            MappingProxyType(beliefs),
+                            "projection_failed",
+                            sweeps,
+                            None,
+                            messages,
+                            tuple(records),
+                        )
+                    records.append(StringSiteProjection(f, name, log_mass, fit))
+                    next_messages.append(_normalized(fit.log_probabilities - incoming))
+                proposed.append(tuple(next_messages))
+
+            candidates = tuple(proposed)
+            residual = _message_residual(messages, candidates)
+            converged = tolerance is not None and residual <= tolerance
+            if converged or sweeps == max_sweeps:
+                return StringEPResult(
+                    MappingProxyType(beliefs),
+                    "converged" if converged else "limit",
+                    sweeps,
+                    residual,
+                    messages,
+                    tuple(records),
+                )
+            messages = (
+                tuple(
+                    tuple(
+                        _normalized(damping * old + (1 - damping) * new)
+                        for old, new in zip(old_factor, new_factor, strict=True)
+                    )
+                    for old_factor, new_factor in zip(messages, candidates, strict=True)
+                )
+                if damping
+                else candidates
+            )
+            sweeps += 1
+
+
+__all__ = [
+    "FiniteStringBeliefPlan",
+    "StringBeliefResult",
+    "StringEPResult",
+    "StringSiteProjection",
+]

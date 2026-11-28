@@ -32,6 +32,17 @@ def _affine_basis(rows: tuple[tuple[int, ...], ...]) -> tuple[int, ...]:
     return tuple(retained)
 
 
+def _validate_projection_settings(
+    tolerance: float, max_iterations: int, max_backtracks: int
+) -> None:
+    if type(max_iterations) is not int or max_iterations < 0:
+        raise ValueError("max_iterations must be a nonnegative integer")
+    if type(max_backtracks) is not int or max_backtracks < 0:
+        raise ValueError("max_backtracks must be a nonnegative integer")
+    if not 0 < tolerance < float("inf"):
+        raise ValueError("tolerance must be positive and finite")
+
+
 @dataclass(frozen=True, slots=True)
 class NgramProjection:
     """An inclusive KL projection and its local optimizer diagnostics."""
@@ -105,12 +116,7 @@ class NgramFamily:
         tolerance is an infinity-norm bound on the feature residual.
         Autograd differentiates the accepted sequence of operations.
         """
-        if type(max_iterations) is not int or max_iterations < 0:
-            raise ValueError("max_iterations must be a nonnegative integer")
-        if type(max_backtracks) is not int or max_backtracks < 0:
-            raise ValueError("max_backtracks must be a nonnegative integer")
-        if not 0 < tolerance < float("inf"):
-            raise ValueError("tolerance must be positive and finite")
+        _validate_projection_settings(tolerance, max_iterations, max_backtracks)
         tilted = tilted_log_weights
         base = (
             torch.zeros_like(tilted) if base_log_weights is None else base_log_weights
