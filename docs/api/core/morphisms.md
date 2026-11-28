@@ -528,9 +528,16 @@ $\log Z_\theta-\log Z_0-\theta^\mathsf{T}\mu$. The projection
 adds the sum of Euclidean norms of the coefficient groups for
 each feature prefix, scaled by the specified penalty. It obtains
 both sets of expected counts by differentiating sparse path sums.
-If the base's longest word has length $L$ and there are $d$
-features, the covariance operator is bounded by $d L^2$. This
-gives a fixed step for the descendant-first group proximal update.
+If the base's longest word has length $L$, a feature for a gram $g$
+counts at most $r_g=\max(0,L-|g|+1)$ occurrences. Its variance is at
+most $r_g^2/4$. The Hessian of $\log Z_\theta$ is the feature covariance,
+so its operator norm is at most the trace bound
+$B=\sum_g r_g^2/4$. The optimizer tries a larger proximal step up to
+one and checks the quadratic upper bound on the smooth objective.
+Halving stops by the globally valid step $1/\max(1,B)$. Thus the
+backtracking work per accepted update is logarithmic in the bound,
+and an accepted step gives descent in exact arithmetic. The
+implementation checks trial steps in float64 with a rounding allowance.
 
 The projection reports the proximal gradient residual separately
 from its iteration status. The fitted message compiles only
@@ -569,27 +576,31 @@ an approximate inference run over a fixed weight snapshot.
 
 #### Two-variable comparison
 
-The test graph has one binary factor, two unary factors, and two
-one-symbol words per variable. Exact tree messages agree with
-enumeration. The width-one beam retains the first word under the
-tied reference scores and solves the explicitly restricted graph.
+The benchmark gives each variable all four two-symbol words. One binary
+factor links them and each variable has a unary factor. Exact sparse tree
+marginals agree with enumeration over the 16 assignments. The beam keeps
+three words at each directed message and approximates the intermediate sum
+using the retained incoming support. The n-gram vocabulary includes both
+unigrams and all four bigrams.
 
-| Method | Mean marginal TV error | Active site features | Marginal states | Time (ms) | Allocated tensor elements |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Exact tree messages | 0 | — | 20 | 2.10 | 1,892 |
-| Regular EP, no penalty | < 0.000001 | 8 | 6 | 284.82 | 197,586 |
-| Regular EP, penalty 0.025 | 0.042678 | 8 | 6 | 720.77 | 492,088 |
-| Regular EP, penalty 0.075 | 0.121875 | 0 | 4 | 16.64 | 10,564 |
-| Regular EP, penalty 3 | 0.121875 | 0 | 4 | 16.39 | 10,564 |
-| Width-one reference beam | 0.378125 | — | — | 0.77 | 345 |
+| Method | Status | Mean TV error | Site features | Site states | Marginal states | Median ms | Peak Python KiB |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Exact sparse tree | exact | 0.000000 | — | — | 452 | 10.1 | 229.3 |
+| Beam 3 | truncated | 0.399886 | — | 24 | 8 | 0.1 | 2.6 |
+| Regular EP (0) | converged | 0.000000 | 24 | 28 | 14 | 895.6 | 197.1 |
+| Regular EP (0.025) | converged | 0.048646 | 12 | 24 | 14 | 3185.6 | 205.1 |
+| Regular EP (0.1) | converged | 0.112319 | 7 | 19 | 13 | 114.5 | 196.0 |
+| Regular EP (0.3) | converged | 0.153415 | 0 | 12 | 6 | 38.1 | 175.0 |
+| Regular EP (1) | converged | 0.153415 | 0 | 12 | 6 | 33.5 | 174.6 |
 
-Timings are the medians of three warmed runs on one arm64 CPU thread
-with PyTorch 2.15. They include construction, inference, and
-reading both marginals. The allocation column counts elements in
-fresh tensors throughout a run. The largest individual allocations
-were 14, 17, 17, 15, 15, and 5 elements, respectively. The penalty
-can reduce the returned message size while increasing the work
-needed to fit it.
+The site and marginal counts sum states across the returned representations.
+Regular site counts use the automaton compiled on each site's active features.
+Beam counts use tries of the surviving word prefixes. Times are medians of
+five runs on one arm64 CPU thread with PyTorch 2.15. Peak memory counts Python
+allocations traced during a separate run. To reproduce the comparisons, run
+`python tools/benchmark_string_messages.py --repeats 5` from the checkout.
+The penalty reduced site and marginal sizes in this graph. The smaller first
+penalty increased optimization time as compared with the unpenalized fit.
 
 ### Posteriors on closed productive components
 

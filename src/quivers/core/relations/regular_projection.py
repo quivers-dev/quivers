@@ -220,15 +220,13 @@ def penalized_regular_ngram_projection(
     tilt_mass, target = evaluate_tilt(coefficients)
     base_mass, fitted = evaluate_base(coefficients)
     normalizer = base_mass
-    # Every count is bounded by the maximum accepted length. Hence
-    # covariance in any direction is bounded by |features| * length**2.
-    radius = max(1, len(features) * length**2)
-    step = 1 / radius
-    if (
-        step == 0
-        or not step * penalty < float("inf")
-        or (penalty and step * penalty == 0)
-    ):
+    # The variance of each count is at most one quarter of its
+    # squared range. Their sum bounds the covariance operator norm.
+    range_squares = sum(max(0, length - len(gram) + 1) ** 2 for gram in features)
+    guaranteed_step = 4 / max(4, range_squares)
+    step = 1.0
+    roundoff = 8 * torch.finfo(anchor.dtype).eps
+    if guaranteed_step == 0 or (penalty and guaranteed_step * penalty == 0):
         raise OverflowError(
             "regular n-gram projection step exceeds the evaluation precision"
         )
@@ -240,22 +238,51 @@ def penalized_regular_ngram_projection(
     iteration = 0
     residual = float("inf")
     for iteration in range(max_iterations + 1):
+        accepted = None
         gradient = fitted - target
-        candidate = coefficients - step * gradient
-        if penalty:
-            candidate = _prefix_prox(candidate, groups, step * penalty)
-        mapping = (coefficients - candidate) / step
-        residual = mapping.abs().max().item() if mapping.numel() else 0.0
-        if not residual < float("inf"):
-            status = "stalled"
+        while True:
+            candidate = coefficients - step * gradient
+            if penalty:
+                candidate = _prefix_prox(candidate, groups, step * penalty)
+            displacement = candidate - coefficients
+            residual = (
+                displacement.abs().max().item() / step if displacement.numel() else 0.0
+            )
+            if not residual < float("inf"):
+                status = "stalled"
+                break
+            if residual <= tolerance:
+                status = "converged"
+                break
+            if iteration == max_iterations:
+                break
+
+            proposed_normalizer, proposed_moments = evaluate_base(candidate)
+            linear = fitted @ displacement
+            quadratic = displacement.square().sum() / (2 * step)
+            gain = proposed_normalizer - normalizer
+            slack = (
+                roundoff
+                * torch.stack(
+                    (
+                        normalizer.abs(),
+                        proposed_normalizer.abs(),
+                        linear.abs(),
+                        quadratic,
+                    )
+                ).max()
+            )
+            upper = linear + quadratic + slack
+            if step == guaranteed_step or (
+                torch.isfinite(gain) & torch.isfinite(upper) & (gain <= upper)
+            ):
+                accepted = candidate, proposed_normalizer, proposed_moments
+                break
+            step = max(guaranteed_step, step / 2)
+        if accepted is None:
             break
-        if residual <= tolerance:
-            status = "converged"
-            break
-        if iteration == max_iterations:
-            break
-        coefficients = candidate
-        normalizer, fitted = evaluate_base(coefficients)
+        coefficients, normalizer, fitted = accepted
+        step = min(1.0, 2 * step)
 
     norms = sum(
         (
