@@ -146,6 +146,9 @@ from quivers.qiec.relation_path_law import (
     FixedCyclicRelationPathSampleRequest,
     FixedRelationPathSampleRequest,
 )
+from quivers.qiec.relation_log_path_certificate import (
+    FixedLogProbPathCertificateRequest,
+)
 from quivers.qiec.relation_path_certificate import FixedMarkovPathCertificateRequest
 from quivers.qiec.relation_path_rank import FixedRelationPathRankRequest
 from quivers.qiec.relation_ranked import FixedRankedOTRelationRequest
@@ -419,6 +422,7 @@ _NODE_CLASSES = (
     FixedRelationCostRequest,
     FixedRelationMarginalMapRequest,
     FixedRelationPathSampleRequest,
+    FixedLogProbPathCertificateRequest,
     FixedMarkovPathCertificateRequest,
     FixedRelationPathRankRequest,
     FixedCyclicRelationPathSampleRequest,

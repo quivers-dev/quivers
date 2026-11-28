@@ -29,7 +29,11 @@ import torch
 
 from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import RationalRelation
-from quivers.core.relations.accuracy import RelationAccuracyError, _RationalBudget
+from quivers.core.relations.accuracy import (
+    RelationAccuracyError,
+    _RationalBudget,
+    _UnsupportedAccuracyPrecision,
+)
 from quivers.core.relations.queries import (
     RelationLimitError,
     _ActiveObservation,
@@ -244,6 +248,42 @@ def certify_logprob_path_weight(
     RelationAccuracyError
         The packed value's error could not be certified at this tolerance.
     """
+    return _logprob_accuracy_plan(
+        relation,
+        words,
+        absolute_log_tolerance=absolute_log_tolerance,
+        max_states=max_states,
+        max_work=max_work,
+        decimal_precision=decimal_precision,
+        max_decimal_exponent=max_decimal_exponent,
+        max_decimal_work=max_decimal_work,
+        max_exact_bits=max_exact_bits,
+        max_exact_work=max_exact_work,
+    )()
+
+
+def _validate_decimal_settings(precision: int, max_exponent: int) -> None:
+    if type(precision) is not int or not 1 <= precision <= MAX_PREC:
+        raise ValueError("decimal_precision is outside the Decimal context range")
+    if type(max_exponent) is not int or not 1 <= max_exponent <= min(
+        MAX_EMAX, -MIN_EMIN
+    ):
+        raise ValueError("max_decimal_exponent is outside the Decimal context range")
+
+
+def _logprob_accuracy_plan(
+    relation: RationalRelation,
+    words: Words,
+    *,
+    absolute_log_tolerance: Fraction | int,
+    max_states: int,
+    max_work: int,
+    decimal_precision: int,
+    max_decimal_exponent: int,
+    max_decimal_work: int,
+    max_exact_bits: int,
+    max_exact_work: int,
+) -> Callable[[], LogPathWeightCertificate]:
     if relation.algebra is not LOG_PROB:
         raise TypeError("directed path accuracy requires LogProb weights")
     if (
@@ -260,14 +300,7 @@ def certify_logprob_path_weight(
     ):
         if type(limit) is not int or limit < 0:
             raise ValueError(f"{name} must be a nonnegative integer")
-    if type(decimal_precision) is not int or not 1 <= decimal_precision <= MAX_PREC:
-        raise ValueError("decimal_precision is outside the Decimal context range")
-    if type(max_decimal_exponent) is not int or not 1 <= max_decimal_exponent <= min(
-        MAX_EMAX, -MIN_EMIN
-    ):
-        raise ValueError("max_decimal_exponent is outside the Decimal context range")
-    budget = _RationalBudget(max_exact_bits, max_exact_work)
-    tolerance = budget.value(absolute_log_tolerance)
+    _validate_decimal_settings(decimal_precision, max_decimal_exponent)
     topology = relation.topology
     topology._validate_words(words)
     plan = _compile_paths(
@@ -279,42 +312,50 @@ def certify_logprob_path_weight(
     )
     graph = plan.observation
     assert graph is not None
-    weights = relation._weights().clone()
-    relation._check_weights(weights)
-    if weights.dtype != torch.float64:
-        raise TypeError("directed LogProb path accuracy requires float64 weights")
-    decimal = _DirectedDecimal(
-        decimal_precision, max_decimal_exponent, max_decimal_work
-    )
-    low, high = _mass_bounds(graph, weights.detach().tolist(), decimal)
-    score = plan.packed.evaluate(weights, LOG_PROB)
-    observed = score.item()
-    if high.is_zero() and low.is_zero():
-        if observed != -float("inf"):
+
+    def certify() -> LogPathWeightCertificate:
+        budget = _RationalBudget(max_exact_bits, max_exact_work)
+        tolerance = budget.value(absolute_log_tolerance)
+        weights = relation._weights().clone()
+        relation._check_weights(weights)
+        if weights.dtype != torch.float64:
+            raise _UnsupportedAccuracyPrecision(
+                "directed LogProb path accuracy requires float64 weights"
+            )
+        decimal = _DirectedDecimal(
+            decimal_precision, max_decimal_exponent, max_decimal_work
+        )
+        low, high = _mass_bounds(graph, weights.detach().tolist(), decimal)
+        score = plan.packed.evaluate(weights, LOG_PROB)
+        observed = score.item()
+        if high.is_zero() and low.is_zero():
+            if observed != -float("inf"):
+                raise RelationAccuracyError(
+                    "packed LogProb score disagrees with exact zero mass"
+                )
+            return LogPathWeightCertificate(
+                score, None, None, Fraction(0), decimal.work, budget.work, budget.bits
+            )
+        if low.is_zero() or not isfinite(observed):
             raise RelationAccuracyError(
-                "packed LogProb score disagrees with exact zero mass"
+                "LogProb path certificate needs a positive mass bound and finite score"
+            )
+        lower = _rational(decimal.ln(low, lower=True), budget)
+        upper = _rational(decimal.ln(high, lower=False), budget)
+        estimate = budget.value(observed)
+        error = budget.maximum(
+            abs(budget.add(estimate, lower, subtract=True)),
+            abs(budget.add(estimate, upper, subtract=True)),
+        )
+        if budget.less(tolerance, error):
+            raise RelationAccuracyError(
+                "could not establish the requested absolute log path error"
             )
         return LogPathWeightCertificate(
-            score, None, None, Fraction(0), decimal.work, budget.work, budget.bits
+            score, lower, upper, error, decimal.work, budget.work, budget.bits
         )
-    if low.is_zero() or not isfinite(observed):
-        raise RelationAccuracyError(
-            "LogProb path certificate needs a positive mass bound and finite score"
-        )
-    lower = _rational(decimal.ln(low, lower=True), budget)
-    upper = _rational(decimal.ln(high, lower=False), budget)
-    estimate = budget.value(observed)
-    error = budget.maximum(
-        abs(budget.add(estimate, lower, subtract=True)),
-        abs(budget.add(estimate, upper, subtract=True)),
-    )
-    if budget.less(tolerance, error):
-        raise RelationAccuracyError(
-            "could not establish the requested absolute log path error"
-        )
-    return LogPathWeightCertificate(
-        score, lower, upper, error, decimal.work, budget.work, budget.bits
-    )
+
+    return certify
 
 
 __all__ = ["LogPathWeightCertificate", "certify_logprob_path_weight"]

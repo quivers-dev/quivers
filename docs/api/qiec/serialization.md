@@ -284,6 +284,45 @@ that missing capability.
 
 ::: quivers.qiec.relation_path_certificate.FixedMarkovPathCertificateRuntimeProvider
 
+## Checked acyclic LogProb path certificates
+
+`FixedLogProbPathCertificateRequest` adds an exact rational absolute
+tolerance in log units to an acyclic LogProb pair-weight request. The
+foreign handler identity binds the exact nominal relation and its
+original parameter owners, the observed words in tape order, and the
+canonical tolerance. The declared execution limits can vary while
+checking the same objective. A closure limit is outside this request's
+domain.
+
+The native Compute returns status, diagnostic, score availability, a
+detached `LogWeight`, three exact witness rows in `Tensor[String]([3, 2])`,
+endpoint availability, and three counters in `Tensor[Int]([3])`. The
+witness rows give the lower and upper log endpoints and the absolute
+log error bound. Each row encodes the signed numerator and positive
+denominator as hexadecimal strings. A verified zero mass has score
+`−∞`, absent endpoints, and error `(0x0, 0x1)`.
+
+The counters record Decimal calls and binary64 conversions, exact
+rational operations, and the maximum charged integer bit bound. A
+resource limit, productive epsilon cycle, unsupported precision, or
+failure to prove the requested accuracy yields its own unavailable
+status. An unavailable report has false availability flags, empty
+witness rows, and zero placeholders.
+
+The provider reuses the compiled topology and evaluates the score and
+witness from a single current binary64 weight vector. The certificate
+covers that vector and the reported value. Gradient assurance is outside
+the contract. [The core arithmetic and limits](../core/morphisms.md#certifying-numerical-accuracy-of-acyclic-logprob-path-weights)
+
+Use the ordinary checked foreign `Compute[Unit, A]` declaration and
+bind its request-specific handler to
+`FixedLogProbPathCertificateRuntimeProvider` at execution. A target that
+lacks the native handler reports the missing capability.
+
+::: quivers.qiec.relation_log_path_certificate.FixedLogProbPathCertificateRequest
+
+::: quivers.qiec.relation_log_path_certificate.FixedLogProbPathCertificateRuntimeProvider
+
 ## Typed sparse path posteriors
 
 A `FixedRelationPathSampleRequest` binds a fixed word tuple and a
