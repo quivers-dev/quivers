@@ -98,8 +98,8 @@ class RationalRelation(Morphism):
     such step advances a position in a finite observation. A reachable
     all-epsilon cycle with an accepting continuation requires a star
     calculation. Supplying `max_closure_size` to `query` admits productive
-    self-loops in singleton components under an established semiring
-    star. The plan depends on topology and records zero-weight
+    cyclic components under an established semiring star. The plan
+    depends on topology and records zero-weight
     occurrences. Each evaluation checks the current weight vector and
     the numerical domain of every closure it uses.
     """
@@ -174,7 +174,7 @@ class RationalRelation(Morphism):
             Limit on candidate arc examinations, including rejected matches.
         max_closure_size : int or None
             Maximum order of each local star matrix, including auxiliary
-            vertices for parallel self-loops. None requires an acyclic
+            vertices for parallel arcs. None requires an acyclic
             productive graph.
 
         Returns
@@ -187,8 +187,7 @@ class RationalRelation(Morphism):
         RelationLimitError
             If a construction limit is reached before the query is ready.
         ProductiveEpsilonCycleError
-            If the productive graph has a cycle outside this plan's
-            supported singleton components.
+            If the productive graph has a cycle and closure was not requested.
         """
         return FixedStringQuery(
             self,
