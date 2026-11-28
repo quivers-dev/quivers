@@ -283,6 +283,7 @@ from quivers.qiec.scoped_elaboration import (
     elaborate_static_scope,
 )
 from quivers.qiec.scoped_catch import elaborate_static_catch
+from quivers.qiec.forward_diff import ForwardDiffInstance, elaborate_forward_diff
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1293,6 +1294,8 @@ __all__ += [
     "ScopedOperation",
     "elaborate_static_scope",
     "elaborate_static_catch",
+    "ForwardDiffInstance",
+    "elaborate_forward_diff",
 ]
 __all__ += [
     "FiniteAlgebra",

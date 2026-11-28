@@ -740,6 +740,68 @@ assert run_named(closed, "protected", (4.0,)).value == 14.0
 
 ::: quivers.qiec.scoped_catch
 
+## Nominal forward differentiation
+
+`elaborate_forward_diff` fills the total linear handler signatures
+for named forward differentiation instances in one closed Real entry.
+Each instance declares its own number type, with two fields for its
+coefficient type. The checked source uses named operations to seed
+numbers, add or multiply them, and stop. The elaborated module
+contains ordinary authored QIEC handlers with coefficient arithmetic
+specialized to Real operations.
+
+`stop_primal` and `stop_tangent` project into the coefficient type
+of the selected instance. For an inner scope this is the enclosing
+instance's number type, so the projection retains the outer
+perturbation. Each stop is recorded at its original request address.
+The source check seals the carrier in the selected entry and
+requires each named handler installation to occur once. This fragment
+accepts up to two simultaneously active instances and sixteen source
+binds and handler installations. Larger inputs raise
+`qiec-forward-limit` before target rendering.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import ForwardDiffInstance, elaborate_forward_diff, run_named
+
+source = """
+family Number : Type
+    constructor Jet : Real * Real -> Number
+
+effect Diff
+    seed : Real * Real -> Number
+    add : Number * Number -> Number
+    mul : Number * Number -> Number
+    stop_primal : Number -> Real
+    stop_tangent : Number -> Real
+
+instance d : Diff
+
+handler forward for Diff : Real -> Real [coverage=total, forwards=none, implementation=foreign]
+    seed resumes 1
+    add resumes 1
+    mul resumes 1
+    stop_primal resumes 1
+    stop_tangent resumes 1
+
+define squared(x : Real, direction : Real) : Real !{} =
+    handle d with forward in
+        let seeded <- perform d.seed(x, direction)
+        let product <- perform d.mul(seeded, seeded)
+        perform d.stop_tangent(product)
+"""
+module = Compiler(parse(source), module_name="forward-square").qiec_module
+assert module is not None
+instance, = module.instances
+handler, = module.handlers
+constructor, = module.constructors
+scope = ForwardDiffInstance(instance.entry.instance, handler.id, constructor.id)
+lowered = elaborate_forward_diff(module, (scope,))
+assert run_named(lowered, "squared", (3.0, 5.0)).value == 30.0
+```
+
+::: quivers.qiec.forward_diff
+
 ## Finite elimination
 
 `eliminate_finite` contracts explicit finite tables. Each factor gives its
