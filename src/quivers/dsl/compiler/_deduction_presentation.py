@@ -40,6 +40,9 @@ import didactic.api as dx
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
+    LetExprCall,
+    LetExprNode,
+    LetExprVar,
     LexiconCategoryFixed,
     ObjectEffectApply,
     OptionName,
@@ -212,6 +215,8 @@ class DeductionPresentation(QiecModel):
         Whether span items carry a logical form slot.
     atoms : frozenset of str
         The declared atoms; every other identifier is a variable.
+    lexical_arities : Mapping of str to int
+        The checked arities supplied by closed lexical forms.
     """
 
     presentation: RulePresentation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -220,6 +225,9 @@ class DeductionPresentation(QiecModel):
     slots: PositionSlots = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     uses_forms: bool
     atoms: frozenset[str] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    lexical_arities: Mapping[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     @property
     def families(self) -> Mapping[FamilyId, JudgmentDecl]:
@@ -328,6 +336,7 @@ class _Reader:
         self.slots = position_slots(decl)
         self.forms: dict[str, TermForm] = {}
         self.term_arities: dict[str, int] = {}
+        self.lexical_arities: dict[str, int] = {}
         self.families: dict[str, list[bool]] = {}
         self.uses_forms = bool(decl.binders) or any(
             isinstance(pattern, ObjectEffectApply)
@@ -380,6 +389,42 @@ class _Reader:
         if known != form:
             self.fail(f"{head!r} is written both as {known.kind} and {form.kind}", node)
 
+    def _arity(
+        self, symbol: str, arity: int, node: SequentRule | DeductionDecl
+    ) -> None:
+        """Register the exact rank of one actually used term constructor."""
+        known = self.term_arities.setdefault(symbol, arity)
+        if known != arity:
+            self.fail(
+                f"term constructor {symbol!r} has conflicting arities {known} and {arity}",
+                node,
+            )
+
+    def lexical_form(self, form: LetExprNode | None) -> None:
+        """Include the constructor ranks of one entirely closed lexical form."""
+        if not self.uses_forms or form is None:
+            return
+        ranks: list[tuple[str, int]] = []
+        pending = [form]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, LetExprVar) and node.name in self.atoms:
+                ranks.append((node.name, 0))
+            elif isinstance(node, LetExprCall) and node.func not in self.decl.binders:
+                ranks.append((node.func, len(node.args)))
+                pending.extend(reversed(node.args))
+            else:
+                # Explicit binders and integer fields use their existing value
+                # representation. They do not inhabit the homogeneous Term sort.
+                return
+        for symbol, arity in ranks:
+            self._arity(symbol, arity, self.decl)
+            self.lexical_arities[symbol] = arity
+            self.forms.setdefault(
+                symbol,
+                TermForm(kind="application" if arity else "atom", text=symbol),
+            )
+
     def term(
         self,
         expr: ObjectExpr,
@@ -426,7 +471,7 @@ class _Reader:
                 return _Read(kind="numeral", name=expr.name, position=True)
             kind: FormKind = "numeral" if expr.name.isdigit() else "atom"
             self.form(expr.name, TermForm(kind=kind, text=expr.name), node)
-            self.term_arities[expr.name] = 0
+            self._arity(expr.name, 0, node)
             return _Read(kind="constant", name=expr.name)
         symbol = pattern_symbol(expr)
         if symbol is None:
@@ -438,7 +483,7 @@ class _Reader:
         assert symbol is not None
         self.form(symbol, _form_of(expr), node)
         arguments = self.arguments(symbol, expr, variables, node)
-        self.term_arities[symbol] = len(arguments)
+        self._arity(symbol, len(arguments), node)
         return _Read(kind="application", name=symbol, arguments=arguments)
 
     def arguments(
@@ -510,7 +555,7 @@ class _Reader:
             if expr.name.isdigit():
                 self.families.setdefault(TERM_ITEM, [False])
                 self.form(expr.name, TermForm(kind="numeral", text=expr.name), node)
-                self.term_arities[expr.name] = 0
+                self._arity(expr.name, 0, node)
                 return BARE, (_Read(kind="numeral", name=expr.name, position=True),)
         symbol = expr.name if isinstance(expr, TypeName) else pattern_symbol(expr)
         if symbol is not None and not any(self.slots.get(symbol, [])):
@@ -841,9 +886,11 @@ def deduction_presentation(
     for entry in decl.lexicon:
         if isinstance(entry.category, LexiconCategoryFixed):
             reader.term(entry.category.category, False, {}, decl)
+        reader.lexical_form(entry.lf)
     if decl.lexicon_from_file is not None:
-        for _word, category, _form in load_lexicon_tsv(decl.lexicon_from_file, decl):
+        for _word, category, form in load_lexicon_tsv(decl.lexicon_from_file, decl):
             reader.term(category, False, {}, decl)
+            reader.lexical_form(form)
     for atom in decl.atoms:
         reader.forms.setdefault(atom, TermForm(kind="atom", text=atom))
         reader.term_arities.setdefault(atom, 0)
@@ -1042,6 +1089,7 @@ def deduction_presentation(
         slots=reader.slots,
         uses_forms=reader.uses_forms,
         atoms=reader.atoms,
+        lexical_arities=reader.lexical_arities,
     )
 
     return (

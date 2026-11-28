@@ -2559,6 +2559,9 @@ class _DeductionElaboration:
             application, an atom, a bound variable, or an integer.
         """
         counter = [0]
+        presented = system.presentation_cell[0]
+        assert presented is not None
+        lexical_arities = presented.lexical_arities
 
         def visit(node: LetExprNode, scope: dict[str, int]) -> Pattern:
             """Convert one subterm.
@@ -2616,7 +2619,15 @@ class _DeductionElaboration:
                     )
                 else:
                     args = tuple(visit(item, scope) for item in node.args)
-                self._note_symbol(system, node.func, len(args))
+                arity = lexical_arities.get(node.func, len(args))
+                if len(args) != arity:
+                    self._fail(
+                        declaration,
+                        f"term constructor {node.func!r} has conflicting "
+                        f"arities {arity} and {len(args)}",
+                        code="qiec-program",
+                    )
+                self._note_symbol(system, node.func, arity)
                 return _App(symbol=node.func, args=args)
             self._fail(
                 declaration,

@@ -568,11 +568,11 @@ telescope in order, with each position variable at `Int` and each term
 variable at `D__Item`. It can use exhaustive `case` on those terms and their
 matched children, alongside the scalar operations. The deduction's own
 constructor declarations determine the type and field order. A guard still
-has no static parameters, named calls, or effects. A packed lexical query
-uses the closed constructor vocabulary of the rule presentation, so an
-applied symbol in a lexical form must have its arity established in the
-rule patterns. The grounded route reconstructs each matched term once
-per argument occurrence, checking its constructors in field order.
+has no static parameters, named calls, or effects. Rule patterns and
+closed lexical forms share one constructor vocabulary, with one arity
+for each symbol. A constructor can occur only in the lexicon. The
+grounded route reconstructs each matched term once per argument
+occurrence, checking its constructors in field order.
 
 Checked scalar `parse`, `run_deduction`, and lexical item outcome queries
 use the same checked guard body. The indexed query calls the guard once per
