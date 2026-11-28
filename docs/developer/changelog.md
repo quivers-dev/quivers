@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Checked target stage reports.** Named computations and probabilistic programs report their actual selected target stages and named refusals. Native derivative checks and checked rules retain their evidence scope.
 - **Checked signed-delay tape equality.** QVR can author unary and cascade recipes that enforce equal words on two nominally identical tapes with live original weights and explicit construction limits.
 - **Checked deterministic sparse path ranking.** A native fixed-word query returns complete best or k-best original traces with exact tie order, live selected scores, and an explicit result capacity.
 - **Checked source factors for finite elimination.** Contract bounded tables of named QIEC computations after checking nominal axis types and refusing draws even under a closed handler. Report source evaluation and contraction work separately.
@@ -98,6 +99,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Scalar parsing of computed tokens.** Ordinary QVR deduction can consume checked rank-one string tensors within lexical scopes, with live grammar weights.
 - **Finite n-gram EP near convergence.** Newton backtracking compares the centered objective change, preserving improvements smaller than one ulp of the absolute objective.
 - Checked handler addresses preserve unrestricted shot numbers through discharge and distinguish linear clause activations along distinct non-tail call paths. The discharger retains reference execution when it cannot preserve those addresses.
 - **Checked handler trace scopes.** Discharge preserves call, local instance, and return activations and the order of shot paths in the supported fragment. Raw dynamic keys can change where earlier executions merged activations.
