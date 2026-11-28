@@ -44,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Checked outcome queries can group goal weights by a deterministic QVR computation that returns a discrete scalar or a closed constructor value.
 - Checked QIEC deduction outcomes accept ordered ground span rules, including empty spans, when an acyclic category rank certifies every potentially equal-width dependency.
 - QVR authors can declare ground deduction rules with no premises and literal span endpoints. Checked weighted outcome queries can use these rules for empty spans and literal anchors.
+- **Checked handler equations.** QIEC can check finite continuation tables and exact scalar polynomial or partial rational identities. Failed checks can report a concrete counterexample or distinguishing coefficient.
 
 ### Fixed
 

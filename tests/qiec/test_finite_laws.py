@@ -7,6 +7,7 @@ from itertools import product
 import pytest
 
 from quivers.dsl import Compiler, parse
+from quivers.qiec.discharge import discharge_module
 from quivers.qiec.laws import (
     FiniteLawCounterexample,
     FiniteLawLimit,
@@ -78,6 +79,14 @@ define residual_read() : Bool !{cell} =
     let value <- perform cell.read()
     return value
 
+define traced_read(initial : Bool) : (Bool * Bool) !{} =
+    with instance local : BoolCell in
+        handle cell with state(initial) in
+            residual_read()
+
+define explicit_read(initial : Bool) : (Bool * Bool) !{} =
+    return (initial, initial)
+
 define computed_real() : Bool !{} =
     if 0.1 + 0.2 < 0.3 then
         return true
@@ -96,6 +105,15 @@ define same_cell(answers : (Bool * Bool)) : Bool !{} =
 define one_cell(answers : (Bool * Bool)) : Bool !{} =
     return answers[0]
 """
+
+
+def test_discharged_trace_addresses_do_not_change_a_finite_law(
+    module: QiecModule,
+) -> None:
+    rewritten = discharge_module(module).module
+    for owner in (module, rewritten):
+        decision = check_finite_law(owner, "traced_read", "explicit_read")
+        assert decision.counterexample is None
 
 
 def _equations(model: str, initial: str) -> str:

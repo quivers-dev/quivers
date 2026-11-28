@@ -21,11 +21,14 @@ from quivers.qiec.module import NamedComputation, QiecModule, _children, validat
 from quivers.qiec.terms import (
     Bind,
     Call,
+    CallAddress,
     Case,
     Computation,
     ConditionalValue,
     Handle,
+    HandlerReturnAddress,
     If,
+    InstanceAddress,
     LetValue,
     LiteralValue,
     Local,
@@ -33,6 +36,7 @@ from quivers.qiec.terms import (
     Return,
     Value,
     Var,
+    WithTraceAddresses,
 )
 from quivers.qiec.types import BOOL, REAL, UNIT
 
@@ -489,6 +493,12 @@ class _Normalizer(_PolynomialRing):
                 )
                 if term.return_clause is not None:
                     pending.append(term.return_clause.body)
+            elif isinstance(term, Bind) and isinstance(
+                term.first, CallAddress | InstanceAddress | HandlerReturnAddress
+            ):
+                pending.append(term.then)
+            elif isinstance(term, WithTraceAddresses):
+                pending.append(term.body)
             else:
                 self.check_source_term(term)
                 pending.extend(_children(term))
@@ -675,9 +685,16 @@ class _Normalizer(_PolynomialRing):
         while True:
             self.spend()
             if isinstance(term, Bind):
+                if isinstance(
+                    term.first, CallAddress | InstanceAddress | HandlerReturnAddress
+                ):
+                    term = term.then
+                    continue
                 result = self.body(term.first, scope, active)
                 scope = {**scope, term.binder: result}
                 term = term.then
+            elif isinstance(term, WithTraceAddresses):
+                term = term.body
             elif isinstance(term, If):
                 term = term.then if _condition(term.condition) else term.otherwise
             elif isinstance(term, Return):
