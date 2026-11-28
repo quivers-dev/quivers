@@ -608,6 +608,33 @@ symbols in the alphabet does not determine either cost. The ordinary
 fixed-string evaluator reads the original weights when it scores
 the resulting path.
 
+### Static deterministic minimization
+
+`minimize_static_acceptor` snapshots a one-tape Markov acceptor, removes
+zero-weight arcs and marks, and trims states outside its positive
+support. The remaining graph must be acyclic. Each state must have at
+most one outgoing arc per symbol, with all arcs consuming one symbol.
+
+For a state $q$, let $R_q$ be its weighted suffix series and $g_q$ the
+rational greatest common divisor of its nonzero coefficients. Outgoing
+labels have disjoint suffix supports. Thus $g_q$ is the gcd of the final
+weight and the products $w(q,a,t)g_t$ over outgoing arcs. A pass from the
+leaves computes $g_q$ and hashes a signature containing the final weight
+divided by $g_q$, the scaled outgoing weights, and the successor classes.
+Equality of signatures is equivalent to equality of $R_q/g_q$ by induction
+on the maximum suffix length. Multiplying the original initial weight
+by $g_q$ preserves the weighted language. Any epsilon-free deterministic
+acceptor with one initial state must distinguish positive prefixes whose
+residual series are not proportional, so this construction uses the
+minimum number of states.
+
+The pass performs one rational gcd per retained arc and sorts each
+state's outgoing labels. Its work also includes validating the source
+weight slots and the input topology. Rational arithmetic costs depend
+on coefficient bit lengths. Coefficients in the result must be exactly
+representable in the input floating-point dtype. Trainable weights
+are refused because changing them can change the equivalence classes.
+
 ::: quivers.core.relations
     options:
       members:
@@ -668,6 +695,7 @@ the resulting path.
         - invert
         - join
         - penalized_regular_ngram_projection
+        - minimize_static_acceptor
         - project
         - regular_string_ep
         - trim

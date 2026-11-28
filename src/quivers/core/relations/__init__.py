@@ -98,6 +98,7 @@ __all__ = [
     "invert",
     "join",
     "penalized_regular_ngram_projection",
+    "minimize_static_acceptor",
     "project",
     "regular_string_ep",
     "trim",
@@ -695,3 +696,4 @@ from quivers.core.relations.regular_ep import (  # noqa: E402
 )
 from quivers.core.relations.equality import auto_intersect  # noqa: E402
 from quivers.core.relations.backoff import FailureArc, backoff_query  # noqa: E402
+from quivers.core.relations.minimization import minimize_static_acceptor  # noqa: E402
