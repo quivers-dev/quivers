@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import Literal
 
 from quivers.core.relations.alignment_dual import (
     StringAlignment,
@@ -205,6 +206,7 @@ def paired_dual_alignment_map(
     step_size: Fraction | int = Fraction(1),
     absolute_gap: Fraction | int | None = None,
     relative_gap: Fraction | int | None = None,
+    step_schedule: Literal["harmonic", "constant"] = "harmonic",
 ) -> PairedAlignmentMapResult:
     """Run exact local alignment MAP with a declared singleton/pair partition.
 
@@ -226,9 +228,11 @@ def paired_dual_alignment_map(
     max_states, max_work : int
         Local state and per-pass arc limits for each decode and verification.
     step_size : Fraction or int
-        Positive multiplier step divided by the current iteration.
+        Positive scale for the multiplier step.
     absolute_gap, relative_gap : Fraction or int or None
         Optional exact objective gap targets with the ordinary solver's meaning.
+    step_schedule : Literal["harmonic", "constant"]
+        The same centered update schedules as the ordinary solver.
 
     Returns
     -------
@@ -262,6 +266,7 @@ def paired_dual_alignment_map(
         step_size,
         absolute_gap,
         relative_gap,
+        step_schedule,
     )
     decoders, scopes, observations = _alignment_inputs(graph)
     grouped = []

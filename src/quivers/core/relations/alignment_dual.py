@@ -572,6 +572,7 @@ class _AlignmentSettings:
     step_size: Fraction | int
     absolute_gap: Fraction | int | None
     relative_gap: Fraction | int | None
+    step_schedule: Literal["harmonic", "constant"]
 
     def __post_init__(self) -> None:
         if any(
@@ -585,6 +586,8 @@ class _AlignmentSettings:
             raise ValueError("max_features must be a nonnegative integer")
         if type(self.step_size) not in (Fraction, int) or self.step_size <= 0:
             raise ValueError("step_size must be a positive rational")
+        if self.step_schedule not in ("harmonic", "constant"):
+            raise ValueError("alignment MAP step schedule must be harmonic or constant")
         for name, target in (
             ("absolute_gap", self.absolute_gap),
             ("relative_gap", self.relative_gap),
@@ -639,6 +642,7 @@ def dual_alignment_map(
     step_size: Fraction | int = Fraction(1),
     absolute_gap: Fraction | int | None = None,
     relative_gap: Fraction | int | None = None,
+    step_schedule: Literal["harmonic", "constant"] = "harmonic",
 ) -> StringAlignmentMapResult:
     """Maximize joint string and local alignment scores by dual decomposition.
 
@@ -670,7 +674,7 @@ def dual_alignment_map(
         individual verification scan. Each independently verified local
         witness has two scans and an additional original trace check.
     step_size : Fraction or int
-        Positive multiplier step. The step is divided by the iteration.
+        Positive scale for the multiplier step.
     absolute_gap : Fraction or int or None
         A nonnegative target for dual upper bound minus feasible score.
     relative_gap : Fraction or int or None
@@ -678,6 +682,9 @@ def dual_alignment_map(
         of the unknown optimum. A finite bound is unavailable when the
         feasible score is negative and the upper bound is nonnegative.
         If both targets are supplied, both must be established.
+    step_schedule : Literal["harmonic", "constant"]
+        Divide the step scale by the current iteration, or use it directly.
+        Both schedules preserve the zero sum of each feature's multipliers.
 
     Returns
     -------
@@ -706,6 +713,7 @@ def dual_alignment_map(
         step_size,
         absolute_gap,
         relative_gap,
+        step_schedule,
     )
     decoders, scopes, observations = _alignment_inputs(graph)
     run = _DualAlignmentRun(decoders, scopes, max_states, max_work)
@@ -799,7 +807,9 @@ def _run_alignment_map(
             break
         if iteration == settings.max_iterations:
             break
-        step = Fraction(settings.step_size) / iteration
+        step = Fraction(settings.step_size)
+        if settings.step_schedule == "harmonic":
+            step /= iteration
         for name, local in copies.items():
             selected = tuple(word for word, _ in local)
             if len(set(selected)) == 1:

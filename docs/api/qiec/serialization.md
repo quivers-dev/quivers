@@ -583,6 +583,14 @@ scan. Each independently verified local witness requires two scans
 of the same candidate arc set, at most twice `max_work`, and a separate
 check of its original trace. The result reports these counts separately.
 
+The default `step_ratio=(p, q)` uses a harmonic step of $p/(qt)$ at
+iteration $t$. An explicit `step_ratio=("constant", p, q)` uses $p/q$
+at each update. For each feature, every copy subtracts its count from
+the mean count and multiplies by the same rational step. The increments
+sum to zero, so both schedules preserve the dual bound. The independent
+certificate verifies the local optima and the complete-word agreement
+under the actual final multipliers.
+
 `JointAlignmentMapGapConfig` pairs the ordinary solver settings with
 one or both rational gap targets. The executor checks them against the
 feasible score and dual bound computed from the original live model.

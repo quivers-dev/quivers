@@ -72,8 +72,10 @@ class JointAlignmentMapConfig(QiecModel):
         Transition examinations allowed per exact factor decode or
         individual verification scan. The independent final check
         has two such scans and a separate original trace check.
-    step_ratio : tuple of int
-        Positive numerator and denominator of the rational multiplier step.
+    step_ratio : tuple
+        A numerator and denominator gives the harmonic step scale. Prefix
+        the ratio with `"constant"` to apply the same positive step each
+        iteration.
     """
 
     max_iterations: int
@@ -81,7 +83,7 @@ class JointAlignmentMapConfig(QiecModel):
     max_features: int
     max_states: int
     max_work: int
-    step_ratio: tuple[int, int] = dx.field(
+    step_ratio: tuple[int, int] | tuple[Literal["constant"], int, int] = dx.field(
         default=(1, 1), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -98,9 +100,23 @@ class JointAlignmentMapConfig(QiecModel):
             raise ValueError("MAP requires positive iteration and n-gram order bounds")
         if self.max_features < 0:
             raise ValueError("MAP requires a nonnegative feature bound")
-        if any(value <= 0 for value in self.step_ratio):
+        _, numerator, denominator = self._step_spec()
+        if numerator <= 0 or denominator <= 0:
             raise ValueError("MAP requires a positive step numerator and denominator")
         _validate_limits(self.max_states, self.max_work)
+
+    def _step_spec(self) -> tuple[Literal["harmonic", "constant"], int, int]:
+        """Read the schedule tag and exact rational scale.
+
+        Returns
+        -------
+        tuple
+            The schedule, numerator and denominator in that order.
+        """
+        ratio = self.step_ratio
+        if len(ratio) == 3:
+            return ratio
+        return "harmonic", *ratio
 
     @property
     def objective(self) -> Literal["joint_alignment_map"]:
@@ -138,6 +154,7 @@ class JointAlignmentMapConfig(QiecModel):
         StringAlignmentMapResult
             The feasible assignment, bound, and certificate when available.
         """
+        schedule, numerator, denominator = self._step_spec()
         return dual_alignment_map(
             model.bind(parameters, max_states=self.max_states, max_work=self.max_work),
             max_iterations=self.max_iterations,
@@ -145,7 +162,8 @@ class JointAlignmentMapConfig(QiecModel):
             max_features=self.max_features,
             max_states=self.max_states,
             max_work=self.max_work,
-            step_size=Fraction(*self.step_ratio),
+            step_size=Fraction(numerator, denominator),
+            step_schedule=schedule,
             absolute_gap=absolute_gap,
             relative_gap=relative_gap,
         )
@@ -333,6 +351,7 @@ class JointAlignmentMapDecomposition(QiecModel):
         if isinstance(solver, JointAlignmentMapGapConfig):
             absolute, relative = solver._targets()
             solver = solver.solver
+        schedule, numerator, denominator = solver._step_spec()
         return paired_dual_alignment_map(
             model.bind(
                 parameters, max_states=solver.max_states, max_work=solver.max_work
@@ -345,7 +364,8 @@ class JointAlignmentMapDecomposition(QiecModel):
             max_features=solver.max_features,
             max_states=solver.max_states,
             max_work=solver.max_work,
-            step_size=Fraction(*solver.step_ratio),
+            step_size=Fraction(numerator, denominator),
+            step_schedule=schedule,
             absolute_gap=absolute,
             relative_gap=relative,
         )

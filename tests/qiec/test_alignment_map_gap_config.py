@@ -12,6 +12,8 @@ import torch
 from quivers.core.relations import dual_alignment_map
 from quivers.core.relations.alignment_dual import _DualAlignmentRun
 from quivers.qiec import (
+    JointAlignmentMapConfig,
+    JointAlignmentMapDecomposition,
     JointAlignmentMapGapConfig,
     SerializationError,
     StringFactorGraphSpec,
@@ -65,6 +67,36 @@ def _independent_bounds(left, right):
         if a is not None and b is not None
     ]
     return max(complete, default=None), max(separated, default=None)
+
+
+def test_constant_step_can_certify_where_harmonic_step_reaches_its_limit():
+    left, right = (0, -0.875), (-2, 0)
+    model, parameters = _fixture(left, right)
+    maximum, _ = _independent_bounds(left, right)
+    harmonic = _map_config().with_(
+        max_iterations=3, max_ngram_order=1, max_features=1, step_ratio=(1, 1)
+    )
+    constant = harmonic.with_(step_ratio=("constant", 1, 1))
+    wire = dumps(constant)
+    assert isinstance(restored := loads(wire), JointAlignmentMapConfig)
+    assert dumps(restored) == wire
+
+    slow = harmonic.solve(model, parameters)
+    assert slow.status == "limit" and slow.certificate is None
+    assert slow.score <= maximum <= slow.upper_bound
+
+    fast = restored.solve(model, parameters)
+    assert fast.iterations == 3 and fast.status == "optimal"
+    assert fast.assignment == (("x", (1,)),) and fast.certificate is not None
+    assert fast.score == fast.upper_bound == maximum == Fraction(-7, 8)
+    paired = JointAlignmentMapDecomposition(
+        solver=restored, groups=((0,), (1,)), max_group_states=10, max_group_work=20
+    )
+    paired_wire = dumps(paired)
+    assert isinstance(paired := loads(paired_wire), JointAlignmentMapDecomposition)
+    assert paired.solve(model, parameters).search == fast
+    with pytest.raises(dx.ValidationError):
+        harmonic.with_(step_ratio=("unknown", 1, 1))
 
 
 @pytest.mark.parametrize(
