@@ -43,6 +43,7 @@ from quivers.continuous.morphisms import (
 from quivers.core.algebras import CompositionRule
 from quivers.core.morphisms import Morphism, ObservedMorphism
 from quivers.dsl._deduction_outcomes import NATIVE_DEDUCTION_CALLS
+from quivers.dsl.program_elaboration import _bound_names
 
 from quivers.continuous.inline import (
     UnsizedParameterError,
@@ -725,20 +726,44 @@ def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
     Returns
     -------
     bool
-        ``True`` for a named computation or a typed deduction query.
+        ``True`` for a named computation, typed deduction query, or scalar
+        parse of a previously computed token binding.
     """
-    for step in steps:
-        if isinstance(step, CallStep):
-            return True
-        if (
-            isinstance(step, LetStep)
-            and isinstance(step.value, LetExprCall)
-            and step.value.func in NATIVE_DEDUCTION_CALLS
-        ):
-            return True
-        if isinstance(step, MarginalizeStep) and _calls_a_computation(step.scope):
-            return True
-    return False
+    local: set[str] = set()
+
+    def visit(body: tuple[ProgramStep, ...], latent: str | None = None) -> bool:
+        """Track lexical names without copying the enclosing scope."""
+        introduced: set[str] = set()
+        if latent is not None and latent not in local:
+            introduced.add(latent)
+            local.add(latent)
+        try:
+            for step in body:
+                if isinstance(step, CallStep):
+                    return True
+                if isinstance(step, LetStep) and isinstance(step.value, LetExprCall):
+                    value = step.value
+                    if value.func in NATIVE_DEDUCTION_CALLS:
+                        return True
+                    if (
+                        value.func == "parse"
+                        and len(value.args) >= 2
+                        and isinstance(tokens := value.args[1], LetExprVar)
+                        and tokens.name in local
+                    ):
+                        return True
+                if isinstance(step, MarginalizeStep):
+                    if visit(step.scope, step.var):
+                        return True
+                else:
+                    names = _bound_names(step) - local
+                    local.update(names)
+                    introduced.update(names)
+            return False
+        finally:
+            local.difference_update(introduced)
+
+    return visit(steps)
 
 
 def _scanned_step_programs(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:

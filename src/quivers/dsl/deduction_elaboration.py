@@ -96,6 +96,7 @@ from quivers.dsl.ast_nodes import (
     LexiconCategoryFixed,
     LexiconCategoryRestricted,
     LexiconCategoryWildcard,
+    MarginalizeStep,
     ObjectDecl,
     ObjectEffectApply,
     ObjectExpr,
@@ -1284,13 +1285,18 @@ def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
     -------
     frozenset[str]
         The name of every deduction some program's
-        ``let x = parse(D, input, ..., ("A", p), ...)`` names.
+        ``let x = parse(D, input, ..., ("A", p), ...)`` names, including
+        bindings inside marginalization scopes.
     """
     names: set[str] = set()
     for statement in statements:
         if not isinstance(statement, ProgramDecl):
             continue
-        for step in statement.draws:
+        pending = list(statement.draws)
+        while pending:
+            step = pending.pop()
+            if isinstance(step, MarginalizeStep):
+                pending.extend(step.scope)
             value = getattr(step, "value", None)
             if (
                 isinstance(value, LetExprCall)

@@ -4575,7 +4575,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """Call a deduction's entry on a sentence or a corpus the program takes.
 
         A named sentence can be supplied as program data, with its length
-        an open extent. An outcome query can also take a checked local
+        an open extent. A sentence query can also take a checked local
         token tensor and instantiate its extent from that local's type.
         With a plate, scalar ``parse`` reads data as a corpus whose
         sentences share one extent, and multiplies their inside weights.
@@ -4606,8 +4606,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         ------
         QiecDiagnosticError
             If the deduction takes its axioms rather than a sentence, a
-            scalar parse names a local, a local outcome input is not a
-            rank-one string tensor with a checked extent, the plate lacks
+            local sentence is not a rank-one string tensor with a
+            checked extent, a corpus names a local, the plate lacks
             a static extent, or the production bindings do not fit the
             deduction (see `_production_table`).
         """
@@ -4631,13 +4631,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         tokens = scope.lookup(source)
-        if tokens is not None and not (
-            parse.observes_rows or parse.linear_goal is not None
-        ):
+        if tokens is not None and parse.plate is not None:
             self._fail(
                 node,
-                f"parse reads {source!r}, which a step binds; the sentence a "
-                "deduction parses is a program input",
+                f"parse with a plate needs an external corpus, but {source!r} "
+                "is already bound",
                 code="qiec-program",
             )
         suffix = "run"
@@ -4724,13 +4722,19 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         else:
             layout = tensor_shape(tokens.type)
             if layout is None or layout[0] != STRING or len(layout[1]) != 1:
+                label, code = (
+                    ("deduction linear goal", LINEAR_CODE)
+                    if parse.linear_goal is not None
+                    else ("deduction outcome", OUTCOME_CODE)
+                    if parse.observes_rows
+                    else ("deduction", "qiec-program")
+                )
                 self._fail(
                     node,
-                    f"deduction {'linear goal' if parse.linear_goal is not None else 'outcome'} "
-                    f"input {source!r} must be a rank-one "
+                    f"{label} input {source!r} must be a rank-one "
                     "Tensor[String] with a checked extent "
                     f"(found {render_static(tokens.type)})",
-                    code=LINEAR_CODE if parse.linear_goal is not None else OUTCOME_CODE,
+                    code=code,
                 )
             (extent,) = layout[1]
         return Call(

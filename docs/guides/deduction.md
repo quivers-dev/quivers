@@ -403,6 +403,8 @@ goal in the declared semiring, the number that
 [`goal_weight`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView.goal_weight)
 reads from the chart for the whole sentence. A program writes
 `let chart = parse(D, sentence)` and scores `chart.goal_weight()`.
+The single-sentence form also accepts a program-local rank-one
+`Tensor[String]`. A parse with a plate reads its corpus from program data.
 [`run_deduction`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.run_deduction)
 runs a deduction alone on the reference machine, and
 [`deduction_item`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.deduction_item)
