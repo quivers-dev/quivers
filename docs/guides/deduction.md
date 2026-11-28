@@ -763,8 +763,8 @@ are both disabled, the runtime skips constructing the event and counting
 the forest records for it.
 
 A successful `parse_outcomes` or `parse_normalized_outcomes` query with
-an unguarded deduction and the `"item"` key also emits
-`deduction.outcomes.plan`. Decode the `plan` field with
+an unguarded deduction and the `"item"`, `"category"`, or `"form"` key
+also emits `deduction.outcomes.plan`. Decode the `plan` field with
 `quivers.qiec.loads(event.detail["plan"])` to read its `PlanRecord`. The
 record identifies the checked presentation, the log weight algebra, the
 acyclic schedule, the selected rule joins, and the assumptions and cost
@@ -777,14 +777,16 @@ The query still builds a temporary packed forest, and the returned
 weights can keep an autograd tape over finite log weights at fixed
 support. The reverse bound includes dense adjoints for indexed reads
 from the weight tensor. The ordinary `deduction.outcomes` event continues
-to report its measured construction counters. A normalized plan wraps
-the item weights in `NormalizedWeightRows` and requires division. The
+to report its measured construction counters. For a category or form,
+`ProjectedWeightRows` identifies the actual judgment, field position,
+and declared index binder. The fold groups all full-span items that
+share that field's value. A normalized plan wraps the selected weight
+observable in `NormalizedWeightRows` and requires division. The
 runtime checks that the common log normalizer is finite, which gives
 positive total mass, before emitting the plan. Computing and differentiating that normalizer
 scales linearly in the number of positive rows. When a custom key
 consumes raw item rows, its grouping is a separate operation. Guarded
-folds and built-in category and form projections emit their ordinary
-event.
+folds emit their ordinary event.
 
 #### Ground rules and empty spans
 

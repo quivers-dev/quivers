@@ -21,6 +21,7 @@ from quivers.qiec.contracts import (
     NormalizedWeightRows,
     Numerics,
     Phase,
+    ProjectedWeightRows,
     QuerySpec,
     Rational,
     Target,
@@ -28,7 +29,7 @@ from quivers.qiec.contracts import (
     Weight,
     WeightedProofRows,
 )
-from quivers.qiec.kinds import NAT
+from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.rules import RulePresentation
 from quivers.qiec.types import BOOL, INT, REAL, STRING, IndexLiteral, TypeApplication
 from quivers.stochastic.planning import Alternative, PlanRecord
@@ -137,6 +138,44 @@ _WORK = ComplexityClaim(
 )
 
 
+def _row_reduction_complexity(
+    work: ComplexityClaim,
+    quantity: str,
+    count: ComplexityParameter,
+    condition: str,
+) -> ComplexityClaim:
+    """Extend the running and storage costs by a linear row reduction.
+
+    Parameters
+    ----------
+    work
+        The cost bounds before the reduction.
+    quantity
+        The quantity the complete stage computes.
+    count
+        The operation's row count parameter.
+    condition
+        The reason the added work and saved values are linear in that count.
+
+    Returns
+    -------
+    ComplexityClaim
+        The same construction bounds and the extended execution, reverse,
+        and refit bounds.
+    """
+    return work.with_(
+        query=quantity,
+        parameters=(*work.parameters, count),
+        bounds=tuple(
+            bound
+            if bound.phase == Phase.CONSTRUCTION
+            else bound.with_(expression=f"{bound.expression} + {count.name}")
+            for bound in work.bounds
+        ),
+        conditions=(*work.conditions, condition),
+    )
+
+
 def normalized_row_complexity(work: ComplexityClaim, quantity: str) -> ComplexityClaim:
     """Add one finite log normalizer, its broadcast subtraction, and their reverse.
 
@@ -153,38 +192,29 @@ def normalized_row_complexity(work: ComplexityClaim, quantity: str) -> Complexit
         The same construction bound, with one linear pass in the positive
         row count added to work and live storage for the other phases.
     """
-    return work.with_(
-        query=quantity,
-        parameters=(
-            *work.parameters,
-            ComplexityParameter(
-                name="H", meaning="positive rows sharing one log normalizer"
-            ),
+    return _row_reduction_complexity(
+        work,
+        quantity,
+        ComplexityParameter(
+            name="H", meaning="positive rows sharing one log normalizer"
         ),
-        bounds=tuple(
-            bound
-            if bound.phase == Phase.CONSTRUCTION
-            else bound.with_(expression=f"{bound.expression} + H")
-            for bound in work.bounds
-        ),
-        conditions=(
-            *work.conditions,
-            "stacking, summing, checking, subtracting and differentiating the common "
-            "log normalizer each visit at most H positive rows",
-        ),
+        "stacking, summing, checking, subtracting and differentiating the common "
+        "log normalizer each visit at most H positive rows",
     )
 
 
-def lexical_item_plan_trace(
+def lexical_outcome_plan_trace(
     descriptor: DeductionOutcomes,
     definition: HandlerDef,
     operation: OperationId,
     tokens: int,
     terms: int,
     weights: torch.Tensor,
+    selector: str,
+    projection: int | None,
     normalized: bool,
 ) -> dict[str, object]:
-    """Describe the checked item operation that just returned its outcome rows.
+    """Describe the checked lexical operation that just returned its outcome rows.
 
     Parameters
     ----------
@@ -196,6 +226,9 @@ def lexical_item_plan_trace(
         The actual sentence and lexical payload extents.
     weights
         The actual unbatched log-weight input.
+    selector, projection
+        The requested built-in key and the actual judgment index used for
+        it. None denotes the entire item.
     normalized
         Whether the returned positive rows share a finite log normalizer.
 
@@ -211,12 +244,38 @@ def lexical_item_plan_trace(
     assert isinstance(presentation, RulePresentation)
     numerics = NumberDomain.of(weights)
     retention = NoRetention()
-    source = Weight()
-    quantity = (
-        "normalized log mass per positive full-span item"
-        if normalized
-        else "raw log mass per positive full-span item"
+    source: Weight | ProjectedWeightRows = Weight()
+    work = _WORK
+    item = "full-span item"
+    key_assumption = (
+        "full item identity is the key; distinct lexical occurrence weights sum"
     )
+    if projection is not None:
+        (judgment,) = presentation.judgments
+        field = judgment.indices[projection]
+        assert isinstance(field, IndexBinder)
+        source = ProjectedWeightRows(
+            judgment=judgment.id,
+            position=projection,
+            field=field,
+        )
+        item = f"{selector} of a full-span item"
+        key_assumption = (
+            "one checked judgment index determines the key; every full-span "
+            "item contributes its own proof weight to the sum for that key"
+        )
+        work = _row_reduction_complexity(
+            work,
+            f"raw log mass per positive {item}",
+            ComplexityParameter(
+                name="G",
+                meaning="full-span item weights before grouping by the checked index",
+            ),
+            "G counts grouping inputs even when several items have the same projected key; "
+            "stacking, reducing, storing and differentiating their weights use O(G) work and space",
+        )
+    mass = "normalized" if normalized else "raw"
+    quantity = f"{mass} log mass per positive {item}"
     record = PlanRecord(
         query=QuerySpec(
             presentation=presentation.id,
@@ -240,7 +299,7 @@ def lexical_item_plan_trace(
         algorithm=OUTCOME_ALGORITHM,
         assumptions=(
             "finite contiguous span presentation with acyclic equal-width dependencies",
-            "full item identity is the key; distinct lexical occurrence weights sum",
+            key_assumption,
             "the declared span range check applies to each finite log weight; "
             "negative infinity denotes structural zero",
             "the result holds typed rows only; occurrence edges and ordered premise "
@@ -250,7 +309,7 @@ def lexical_item_plan_trace(
             *((NORMALIZATION_ASSUMPTION,) if normalized else ()),
         ),
         structure=presentation.analysis,
-        complexity=normalized_row_complexity(_WORK, quantity) if normalized else _WORK,
+        complexity=normalized_row_complexity(work, quantity) if normalized else work,
         alternatives=(
             Alternative(
                 algorithm="proof enumeration",
@@ -271,7 +330,7 @@ def lexical_item_plan_trace(
         "operation": str(operation),
         "presentation": str(presentation.id),
         "output_type": dumps(definition.output_type),
-        "selector": "item",
+        "selector": selector,
         "normalized": normalized,
         **({"positive_total_mass": True} if normalized else {}),
         "sentence_length": tokens,

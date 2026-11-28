@@ -61,6 +61,7 @@ from quivers.core.laws import (
 )
 from quivers.qiec._models import QiecModel
 from quivers.qiec.identifiers import ComputationId, FamilyId, SiteId, StableId
+from quivers.qiec.kinds import IndexBinder
 from quivers.qiec.types import TypeExpr
 
 
@@ -2257,6 +2258,39 @@ class Outcome(_Observable):
     tag: Literal["outcome"] = "outcome"
 
 
+class ProjectedWeightRows(_Observable):
+    """The weights of items grouped by exact equality at one judgment index.
+
+    Parameters
+    ----------
+    judgment
+        The checked family of the items whose weights are grouped.
+    position
+        The zero-based position in that judgment's ordered index telescope.
+    field
+        The binder and sort declared at that position.
+    tag
+        Always `"projected-weight-rows"`.
+    """
+
+    judgment: FamilyId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    position: int
+    field: IndexBinder = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["projected-weight-rows"] = "projected-weight-rows"
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Check that the projection position is nonnegative.
+
+        Raises
+        ------
+        ValueError
+            If the position is negative.
+        """
+        if self.position < 0:
+            raise ValueError("a judgment projection position must be nonnegative")
+
+
 class NormalizedWeightRows(_Observable):
     """A finite collection of weight rows divided by their common total.
 
@@ -2266,12 +2300,14 @@ class NormalizedWeightRows(_Observable):
     Parameters
     ----------
     source
-        The unnormalized item weights or weighted outcome pushforward.
+        The unnormalized item weights or their checked pushforward.
     tag
         Always `"normalized-weight-rows"`.
     """
 
-    source: Weight | Outcome = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    source: Weight | Outcome | ProjectedWeightRows = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["normalized-weight-rows"] = "normalized-weight-rows"
 
     def requirements(self, algebra: ClaimSubject) -> tuple[Requirement, ...]:
@@ -2606,6 +2642,7 @@ type Observable = (
     | Best
     | KBest
     | Outcome
+    | ProjectedWeightRows
     | NormalizedWeightRows
     | WeightedProofRows
     | Statistic
@@ -4749,6 +4786,7 @@ __all__ = [
     "PresentationId",
     "Probabilistic",
     "ProvedOptimal",
+    "ProjectedWeightRows",
     "QuerySpec",
     "Rational",
     "Recursion",

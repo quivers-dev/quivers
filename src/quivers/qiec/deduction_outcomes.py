@@ -15,7 +15,7 @@ from quivers.qiec._lexical_outcome_plan import (
     OUTCOME_ALGORITHM,
     PROOF_ALGORITHM,
     proof_rows_plan_trace,
-    lexical_item_plan_trace,
+    lexical_outcome_plan_trace,
 )
 from quivers.qiec._typed_key_outcome_plan import GROUPING_ALGORITHM, key_plan_trace
 from quivers.qiec.canonical import sampleable_type, tensor_type
@@ -616,7 +616,7 @@ def _chart_outcomes(
     normalize: bool,
     *,
     context: ClauseContext,
-) -> dict[Ground, torch.Tensor]:
+) -> tuple[dict[Ground, torch.Tensor], int | None]:
     """Push full-span goal weights forward to the selected structural keys.
 
     Parameters
@@ -638,8 +638,9 @@ def _chart_outcomes(
 
     Returns
     -------
-    dict of Ground to torch.Tensor
-        The log mass of each positive-mass key, with gradients.
+    tuple of dict and int or None
+        The live log mass of every positive key and the judgment index
+        used to form it. None means the key is the whole item.
 
     Raises
     ------
@@ -653,6 +654,7 @@ def _chart_outcomes(
     (span,) = presentation.judgments
     if key not in DEDUCTION_OUTCOME_KEYS or (key == "form" and len(span.indices) != 4):
         raise InvalidHandlerError(f"unavailable deduction outcome key {key!r}")
+    projection = None if key == "item" else 2 if key == "category" else 3
     forest, inputs, goals = _lexical_forest(semantics, tokens, terms, weights)
     values = forest_folds(
         forest,
@@ -665,8 +667,8 @@ def _chart_outcomes(
     for goal, weight in values.items():
         outcome = (
             (semantics.span, *goal.arguments)
-            if key == "item"
-            else goal.arguments[2 if key == "category" else 3]
+            if projection is None
+            else goal.arguments[projection]
         )
         grouped.setdefault(outcome, []).append(weight)
     rows = _outcome_masses(grouped, normalize)
@@ -674,7 +676,7 @@ def _chart_outcomes(
         "deduction.outcomes",
         lambda: _outcome_trace(forest, key, normalize, len(goals), len(rows)),
     )
-    return rows
+    return rows, projection
 
 
 def _outcome_trace(
@@ -1185,7 +1187,7 @@ def deduction_outcomes_handler(
         ):
             raise InvalidHandlerError("malformed deduction outcome query")
         normalized = decide(normalize, "outcome normalization")
-        rows = _chart_outcomes(
+        rows, projection = _chart_outcomes(
             semantics,
             tokens,
             terms,
@@ -1207,16 +1209,18 @@ def deduction_outcomes_handler(
         )
         presentation = semantics.presentation
         assert isinstance(presentation, RulePresentation)
-        if key == "item" and not presentation.conditions:
+        if not presentation.conditions:
             context.emit_trace(
                 "deduction.outcomes.plan",
-                lambda: lexical_item_plan_trace(
+                lambda: lexical_outcome_plan_trace(
                     semantics,
                     definition,
                     operation,
                     len(tokens),
                     len(terms),
                     weights,
+                    key,
+                    projection,
                     normalized,
                 ),
             )
