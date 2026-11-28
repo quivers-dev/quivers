@@ -11,7 +11,7 @@ from typing import Literal
 from quivers._values import HeldValue
 from quivers.qiec._random_site_graph import (
     _Address,
-    _check_random_graph,
+    _check_first_order_graph,
     _random_computation,
 )
 from quivers.qiec.builtins import RANDOM, RANDOM_SAMPLE
@@ -664,7 +664,7 @@ def plan_bernoulli_gradient(
                 f"unsupported Bernoulli estimator {policy.estimator!r}"
             )
         methods[policy.site] = policy.estimator
-    _check_random_graph(module, owner, "Bernoulli", _check_request)
+    _check_first_order_graph(module, owner, "Bernoulli", _check_request)
     environment = {
         parameter: _dual(_fraction(value), _fraction(tangent), True)
         for parameter, value, tangent in zip(

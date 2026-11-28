@@ -10,7 +10,7 @@ from math import prod
 from quivers._values import HeldValue
 from quivers.qiec._random_site_graph import (
     _Address,
-    _check_random_graph,
+    _check_first_order_graph,
     _random_computation,
 )
 from quivers.qiec.builtins import RANDOM, RANDOM_SAMPLE
@@ -750,7 +750,7 @@ def plan_normal_pathwise(
         raise JvpUnsupported(
             "Normal pathwise estimation needs an explicit reparam policy"
         )
-    _check_random_graph(module, owner, "Normal pathwise", _check_request)
+    _check_first_order_graph(module, owner, "Normal pathwise", _check_request)
     ring = _PolynomialRing(min(max_sites, max_work, fuel), max_work)
     evaluator = _NormalEvaluator(module, fuel, ring, methods)
     environment = {

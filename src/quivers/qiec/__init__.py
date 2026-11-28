@@ -189,6 +189,11 @@ from quivers.qiec.effect_laws import (
     check_scalar_effect_law,
 )
 from quivers.qiec.finite_metropolis import finite_metropolis_jvp
+from quivers.qiec.finite_selection import (
+    FiniteSelectionDecision,
+    FiniteSelectionResult,
+    finite_selection_jvp,
+)
 from quivers.qiec.handler_interchange import (
     FiniteHandlerInterchange,
     check_finite_handler_interchange,
@@ -1183,6 +1188,9 @@ __all__ += [
     "EffectLawEvidence",
     "FiniteHandlerInterchange",
     "finite_metropolis_jvp",
+    "FiniteSelectionDecision",
+    "FiniteSelectionResult",
+    "finite_selection_jvp",
     "check_finite_handler_interchange",
     "EffectLawObligation",
     "FiniteEffectLawDecision",

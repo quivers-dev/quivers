@@ -9,7 +9,7 @@ from fractions import Fraction
 from quivers._values import HeldValue
 from quivers.qiec._random_site_graph import (
     _Address,
-    _check_random_graph,
+    _check_first_order_graph,
     _random_computation,
 )
 from quivers.qiec.bernoulli_estimators import (
@@ -405,7 +405,7 @@ def plan_mixed_site_gradient(
             normal.add(site)
         else:
             raise JvpUnsupported(f"unsupported mixed site estimator {method!r}")
-    _check_random_graph(module, owner, "mixed site", _check_request)
+    _check_first_order_graph(module, owner, "mixed site", _check_request)
     point = tuple(
         (parameter, _fraction(value), _fraction(tangent))
         for parameter, value, tangent in zip(

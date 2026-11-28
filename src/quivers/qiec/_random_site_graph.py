@@ -62,22 +62,22 @@ def _random_computation(
     return registry, owner
 
 
-def _check_random_graph(
+def _check_first_order_graph(
     module: QiecModule,
     owner: NamedComputation,
     fragment: str,
     check_request: Callable[[EffectRequest, EffectInstanceId], None],
 ) -> None:
-    """Check every statically reachable term in a Random entry.
+    """Check the reachable graph of a first-order single-instance entry.
 
     Parameters
     ----------
     module : QiecModule
         The validated module providing the actual calls.
     owner : NamedComputation
-        The selected first-order scalar source over a single Random row.
+        The selected first-order scalar source with a single nominal effect.
     fragment : str
-        The estimator fragment used in refusal diagnostics.
+        The fragment named in refusal diagnostics.
     check_request : Callable
         The fragment's check of an operation on the chosen nominal instance.
 
@@ -110,7 +110,7 @@ def _check_random_graph(
                     for parameter in target.parameters
                 )
             ):
-                raise JvpUnsupported(f"site estimation cannot enter call `{term.name}`")
+                raise JvpUnsupported(f"{fragment} cannot enter call `{term.name}`")
             if target.id not in seen:
                 seen.add(target.id)
                 pending.append(target.body)

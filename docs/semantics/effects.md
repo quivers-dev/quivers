@@ -513,3 +513,28 @@ Metropolis entry propagates the supplied initial law through
 the requested number of transitions and differentiates each matrix
 update. Its stopping count specifies the derivative being computed.
 [Resampling](../api/qiec/effects.md#finite-multinomial-resampling) and [finite-step Metropolis derivatives](../api/qiec/effects.md#finite-step-metropolis-derivatives)
+
+### 8.7 Finite selection
+
+Consider an exact scalar entry that only writes loss and requests
+binary decisions. A leaf supplies its return and the sum of its loss
+writes. At a choice, the false and true subtrees supply their selected
+losses after any later choices. Adding the loss before the choice to
+both alternatives preserves their order. Thus backward induction on
+the finite tree implements the loss continuation at every choice and
+selects one return and one writer trace. For finitely many strict
+comparisons between locally continuous alternatives, the selected
+path is constant in a neighborhood of the input. Its return and loss
+derivatives then follow from the chain rule. At ties the optional
+false-first convention specifies a path tangent. [Choice continuations](https://doi.org/10.1145/3729321) and [finite continuation selection](../api/qiec/effects.md#finite-continuation-selection).
+
+For $L$ complete alternatives, the explored tree has $2L-1$ replay
+starts. With at most $F$ source steps per replay and maximum choice
+depth $D$, execution after source validation takes $O(L(F+D))$ work
+in the bounded rational arithmetic model. Its replay tables store
+$O(LD)$ choice-prefix entries measured in Boolean coordinates, and a
+single evaluator has at most $O(F)$ live frames and addressed requests.
+The size of a rational coefficient affects arithmetic cost. Exact
+forward differentiation keeps one tangent per scalar and uses the same
+replay schedule. The path cap refuses before adding an alternative
+that exceeds it.

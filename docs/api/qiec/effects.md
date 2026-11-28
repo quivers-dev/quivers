@@ -1293,6 +1293,58 @@ assert audit.signed_bias == Fraction(-1, 2)
 
 ::: quivers.qiec.finite_clipping
 
+## Finite continuation selection
+
+`finite_selection_jvp` binds two operations on an authored entry's
+nominal effect instance. A choice request takes a Boolean direction.
+True maximizes the continuation loss and false minimizes it. A writer
+request adds an exact real loss independently of the returned value.
+When a continuation contains a later choice, the interpreter applies
+that choice before exposing the candidate loss to the earlier request.
+This is the bounded Boolean, whole-entry case of choice continuations.
+[Plotkin and Xie (2025, §§2.3 and 4.3)](https://doi.org/10.1145/3729321)
+
+Each explored path uses its own writer. The result records the selected
+return, the selected loss, and the original request addresses for the
+decisions that selected the path. Strictly ordered losses give an exact
+tangent where the source's other comparisons are also stable. The
+default refuses ties. Setting `choose_first_at_ties=True` gives the
+false alternative at a tie and reports the tangent of the chosen path.
+
+<!-- python: run -->
+```python
+from quivers.dsl import loads
+from quivers.qiec import finite_selection_jvp
+
+module = loads("""
+effect Selection
+    choose : Bool -> Bool
+    loss : Real -> Unit
+
+instance selection : Selection
+
+define tradeoff(x : Real) : Real !{selection} =
+    let take_first <- perform selection.choose(false)
+    if take_first then
+        let recorded <- perform selection.loss(x * x)
+        return 3.0 * x
+    else
+        let recorded <- perform selection.loss(5.0 * x)
+        return 7.0 * x
+""").qiec
+assert module is not None
+operations = {operation.name: operation.id for operation in module.effects[0].operations}
+result = finite_selection_jvp(
+    module, module.computations[0].id, (2,), (1,),
+    choose=operations["choose"], loss=operations["loss"],
+)
+assert (result.value.value, result.value.tangent) == (6, 3)
+assert (result.loss.value, result.loss.tangent) == (4, 4)
+assert result.decisions[0].losses == (10, 4)
+```
+
+::: quivers.qiec.finite_selection
+
 ## Polynomial laws
 
 The polynomial checker compares scalar real computations after discharging
