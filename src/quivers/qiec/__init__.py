@@ -85,6 +85,10 @@ from quivers.qiec.canonical import (
     tensor_shape,
     tensor_type,
 )
+from quivers.qiec.checkpointing import (
+    ExactCheckpointedGradient,
+    exact_checkpointed_gradient,
+)
 from quivers.qiec.checking import (
     CheckContext,
     ComputationSignature,
@@ -667,6 +671,7 @@ __all__ = [
     "Evaluator",
     "EvidenceValue",
     "ExecutionDiagnostic",
+    "ExactCheckpointedGradient",
     "ExactGradient",
     "ExactImplicitGradient",
     "ExactJvp",
@@ -941,6 +946,7 @@ __all__ = [
     "entry_point",
     "entry_points",
     "enumerate_handler",
+    "exact_checkpointed_gradient",
     "exact_gradient",
     "exact_implicit_gradient",
     "exact_jvp",

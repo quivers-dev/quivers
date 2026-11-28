@@ -124,6 +124,37 @@ assert result.semantics.kind == "implicit"
 
 ::: quivers.qiec.differentiation
 
+### Checkpointed scalar iterations
+
+`exact_checkpointed_gradient` differentiates a finite sequence of
+deterministic scalar transitions. Each transition reads the current
+state and the same parameters. Replay recovers a segment's midpoint
+state, reverses the later segment, and uses the saved initial state to
+reverse the earlier segment.
+
+For $n$ transitions, bisection saves at most $1+\lceil\log_2 n\rceil$
+states when $n>0$. It builds and uses one local reverse graph at a time.
+Each transition is reversed once and replayed at most once per level.
+The result counts both kinds of evaluations and the peak number of saved
+states. The reported derivative is for the specified finite iteration.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import exact_checkpointed_gradient
+
+source = """
+define advance(state : Real, rate : Real, offset : Real) : Real !{} =
+    return state * rate + offset
+"""
+module = Compiler(parse(source), module_name="scalar-checkpoint-example").qiec_module
+assert module is not None
+result = exact_checkpointed_gradient(module, "advance", 3, (1, 2), 8)
+assert (result.value, result.gradient) == (19, (1, 80, 8))
+assert (result.replay_steps, result.reverse_steps, result.peak_saved_states) == (12, 8, 4)
+```
+
+::: quivers.qiec.checkpointing
+
 ::: quivers.qiec.effects
 
 ## Finite laws

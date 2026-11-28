@@ -600,6 +600,41 @@ class _ReverseEvaluator(_ScalarDerivativeEvaluator):
         self.parents.append(())
         return _ReverseNumber(value, index)
 
+    def run(
+        self,
+        declaration: NamedComputation,
+        registry: KernelRegistry,
+        arguments: tuple[int | Fraction, ...],
+        *,
+        record: bool,
+    ) -> _ReverseNumber:
+        """Evaluate a validated scalar with or without its reverse graph.
+
+        Parameters
+        ----------
+        declaration : NamedComputation
+            The checked scalar computation.
+        registry : KernelRegistry
+            Its validated module registry.
+        arguments : tuple[int or Fraction, ...]
+            The complete argument vector in parameter order.
+        record : bool
+            Whether to create a reverse graph during this run.
+
+        Returns
+        -------
+        _ReverseNumber
+            The exact scalar value and its graph node when recorded.
+        """
+        embed = self.input if record else self._constant
+        environment = {
+            parameter: embed(_fraction(value))
+            for parameter, value in zip(declaration.parameters, arguments, strict=True)
+        }
+        result = _run_derivative(self, declaration, registry, environment)
+        assert isinstance(result, _ReverseNumber)
+        return result
+
     def _local(
         self, name: str, operands: tuple[_ReverseNumber, ...], position: int | None
     ) -> _Dual:
@@ -758,12 +793,7 @@ def exact_gradient(
     if len(arguments) != len(parameters):
         raise ValueError("arguments must match the computation's arity")
     evaluator = _ReverseEvaluator(module, fuel)
-    environment = {
-        parameter: evaluator.input(_fraction(value))
-        for parameter, value in zip(parameters, arguments, strict=True)
-    }
-    result = _run_derivative(evaluator, declaration, registry, environment)
-    assert isinstance(result, _ReverseNumber)
+    result = evaluator.run(declaration, registry, arguments, record=True)
     return ExactGradient(result.value, evaluator.gradient(result, len(parameters)))
 
 
