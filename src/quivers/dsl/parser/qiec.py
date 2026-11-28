@@ -74,6 +74,7 @@ from quivers.dsl.ast_nodes.qiec import (
 )
 from quivers.dsl.parser._helpers import _field_text, _required_field
 from quivers.dsl.parser.expressions import _walk_let_arith
+from quivers.dsl.parser.options import _walk_option_block
 from quivers.dsl.parser._registry import ParseError, _Tree
 
 
@@ -190,11 +191,13 @@ def _walk_qiec_statement(t: _Tree, vid: str):
                     col=clause_col,
                 )
             )
+        options = t.field(vid, "options")
         return QiecInterpretationDecl(
             name=_field_text(t, vid, "name"),
             deduction=_field_text(t, vid, "deduction"),
             carrier=_walk_type(t, _required_field(t, vid, "carrier")),
             clauses=tuple(clauses),
+            options=_walk_option_block(t, options) if options else (),
             docs=docs,
             line=line,
             col=col,

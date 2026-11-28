@@ -3836,6 +3836,16 @@
             "named": true
           }
         ]
+      },
+      "options": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "option_block",
+            "named": true
+          }
+        ]
       }
     }
   },

@@ -1025,7 +1025,7 @@ def _emit_statement(stmt: Statement, indent: int) -> str:
         return _emit_qiec_handler_decl(stmt, indent)
     if isinstance(stmt, QiecInterpretationDecl):
         lines = _doc_lines(stmt.docs, indent)
-        head = f"interpret {stmt.name} : {stmt.deduction} -> {_emit_qiec_type(stmt.carrier)}"
+        head = f"interpret {stmt.name}{_emit_options(stmt.options)} : {stmt.deduction} -> {_emit_qiec_type(stmt.carrier)}"
         lines.append(f"{_pad(indent)}{head}")
         lines.extend(
             f"{_pad(indent + 1)}{clause.constructor_kind} {clause.constructor} = {clause.operation}"
