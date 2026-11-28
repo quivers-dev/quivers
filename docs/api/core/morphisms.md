@@ -681,12 +681,20 @@ If the base's longest word has length $L$, a feature for a gram $g$
 counts at most $r_g=\max(0,L-|g|+1)$ occurrences. Its variance is at
 most $r_g^2/4$. The Hessian of $\log Z_\theta$ is the feature covariance,
 so its operator norm is at most the trace bound
-$B=\sum_g r_g^2/4$. The optimizer tries a larger proximal step up to
-one and checks the quadratic upper bound on the smooth objective.
-Halving stops by the globally valid step $1/\max(1,B)$. Thus the
-backtracking work per accepted update is logarithmic in the bound,
-and an accepted step gives descent in exact arithmetic. The
-implementation checks trial steps in float64 with a rounding allowance.
+$B=\sum_g r_g^2/4$. The fixed-Lipschitz optimizer uses a step at most
+$1/\max(1,B)$, rounded downward in float64 if needed. It evaluates the
+target and base moments once each, then makes one moment evaluation per
+accepted step. Adaptive backtracking tries a step up to one and checks the
+quadratic upper bound on the smooth objective with a float64 rounding
+allowance. Halving ends at the globally valid step. The number of trials
+per accepted update grows at most logarithmically with $\max(1,B)$.
+Both policies report actual moment evaluations, including rejected
+trials. They reuse the same sparse moment plan across proposals.
+On a uniform base over the empty word and an eight-symbol repetition,
+with tilted mass ratio $7:1$ in favor of the repetition, both policies
+choose the first coefficient step $3/16$. Adaptive backtracking takes
+seven moment evaluations including four rejected trials. The fixed
+policy takes three.
 
 The projection reports the proximal gradient residual separately
 from its iteration status. The fitted message compiles only
@@ -722,6 +730,14 @@ local optimizer and an exhausted outer sweep retain the last
 accepted messages with distinct statuses. Relation construction
 or closure limits raise their usual errors. The result describes
 an approximate inference run over a fixed weight snapshot.
+
+Unit sites initialize with zero coefficients and log scales. A supplied
+initializer may instead give finite coefficients and a finite log scale
+for every site in factor, tape, and feature order. This sets the initial
+iterate and carries no convergence claim. The solver still measures the
+undamped defect at the last accepted iterate, including at a zero sweep
+budget. Total moment evaluations include every attempted local fit of
+this synchronous schedule.
 
 #### Two-variable comparison
 

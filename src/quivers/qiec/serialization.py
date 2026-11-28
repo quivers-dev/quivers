@@ -159,6 +159,7 @@ from quivers.qiec.string_solvers import (
     JointAlignmentMapGapConfig,
     PrunedStringBPConfig,
     RegularStringEPConfig,
+    RegularStringEPPolicy,
 )
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
 from quivers.qiec._closed_interpretation_binding import ClosedInterpretationBinding
@@ -419,6 +420,7 @@ _NODE_CLASSES = (
     PrunedStringGraphRequest,
     PrunedStringBPConfig,
     RegularStringEPConfig,
+    RegularStringEPPolicy,
     TreeStringGraphRequest,
     RegularStringEPRequest,
     # source identity and kinds

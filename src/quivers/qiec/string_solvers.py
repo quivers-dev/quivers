@@ -25,6 +25,15 @@ from quivers.core.relations.alignment_groups import _validate_groups
 from quivers.core.relations.beliefs import _validate_pruned_settings, _validate_sweeps
 from quivers.core.relations.projection import _validate_projection_settings
 from quivers.core.relations.queries import _validate_limits
+from quivers.core.relations.regular_ep import (
+    _InitialSites,
+    _validate_initial_scope,
+    _validate_initial_values,
+)
+from quivers.core.relations.regular_projection import (
+    _ProjectionOptimizer,
+    _validate_regular_optimizer,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.relations import RationalRelationSpec, RelationWeightBindings
@@ -37,6 +46,7 @@ __all__ = [
     "JointAlignmentMapGapConfig",
     "PrunedStringBPConfig",
     "RegularStringEPConfig",
+    "RegularStringEPPolicy",
 ]
 
 
@@ -448,6 +458,9 @@ class RegularStringEPConfig(QiecModel):
         self,
         model: StringFactorGraphSpec,
         parameters: RelationWeightBindings,
+        *,
+        projection_optimizer: _ProjectionOptimizer = "backtracking",
+        initial_sites: _InitialSites | None = None,
     ) -> RegularStringEPResult:
         """Run projected sum-product on a bound graph and its reference languages.
 
@@ -457,19 +470,45 @@ class RegularStringEPConfig(QiecModel):
             The checked string factors, variables, and observations.
         parameters : RelationWeightBindings
             The original scalar tensors used by the graph and its references.
+        projection_optimizer : {"backtracking", "fixed_lipschitz"}
+            The local proximal optimizer's step policy.
+        initial_sites : tuple or None
+            Finite site guesses in exact factor, tape and feature order.
+            None initializes unit sites.
 
         Returns
         -------
         RegularStringEPResult
             The approximate marginals, site scales, and convergence diagnostics.
+
+        Raises
+        ------
+        ValueError
+            The optimizer or initial site records do not match the checked run.
         """
+        _validate_regular_optimizer(projection_optimizer)
+        _validate_initial_values(initial_sites)
+        features = dict(self.features)
+        if initial_sites is not None:
+            alphabets = {
+                name: (alphabet, size) for name, alphabet, size, _ in model.variables
+            }
+            if alphabets.keys() != features.keys() or any(
+                spec.tapes != (alphabets[name],) for name, spec in self.bases
+            ):
+                raise ValueError(
+                    "regular EP initial sites require matching nominal tapes"
+                )
+            _validate_initial_scope(
+                tuple(scope for _, scope in model.factors), features, initial_sites
+            )
         graph = model.bind(
             parameters, max_states=self.max_states, max_work=self.max_work
         )
         return regular_string_ep(
             graph,
             {name: spec.bind(parameters) for name, spec in self.bases},
-            dict(self.features),
+            features,
             penalty=self.penalty,
             max_sweeps=self.max_sweeps,
             max_states=self.max_states,
@@ -479,6 +518,89 @@ class RegularStringEPConfig(QiecModel):
             damping=self.damping,
             projection_tolerance=self.projection_tolerance,
             projection_max_iterations=self.projection_max_iterations,
+            projection_optimizer=projection_optimizer,
+            initial_sites=initial_sites,
+        )
+
+
+class RegularStringEPPolicy(QiecModel):
+    """Select regular EP's optimizer, initializer, and supported guarantees.
+
+    Parameters
+    ----------
+    config : RegularStringEPConfig
+        The reference languages, candidate features, penalty, and schedule.
+    projection_optimizer : {"backtracking", "fixed_lipschitz"}
+        The majorizing proximal step policy for every tilted fit.
+    initial_sites : tuple or None
+        Initial factor occurrence, variable, ordered feature tuple,
+        finite float coefficient tuple, and finite float log scale for
+        each site in graph order. None initializes unit sites.
+    gradient_policy : {"detached"}
+        The schedule and its limit have no derivative through the fitted
+        result. Finite unrolled and converged derivative requests refuse.
+    error_guarantee : {"none"}
+        Local residuals carry no certified global posterior error bound.
+        A request for one refuses.
+    """
+
+    config: RegularStringEPConfig = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    projection_optimizer: _ProjectionOptimizer = "backtracking"
+    initial_sites: _InitialSites | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    gradient_policy: Literal["detached", "finite_unrolled", "converged"] = "detached"
+    error_guarantee: Literal["none", "certified_global"] = "none"
+
+    @dx.model_validator()
+    def _validate_policy(self) -> None:
+        """Check the initializer and the solver's supported policies.
+
+        Raises
+        ------
+        ValueError
+            If a declared policy or initializer is unsupported.
+        """
+        if self.gradient_policy != "detached":
+            raise ValueError("regular EP only supports the detached gradient policy")
+        if self.error_guarantee != "none":
+            raise ValueError("regular EP does not certify a global posterior error")
+        _validate_regular_optimizer(self.projection_optimizer)
+        _validate_initial_values(self.initial_sites)
+
+    @property
+    def objective(self) -> Literal["regular_string_ep"]:
+        """Identify the projected sum-product objective selected by this policy.
+
+        Returns
+        -------
+        Literal["regular_string_ep"]
+            Regular string EP using inclusive-KL local projection.
+        """
+        return self.config.objective
+
+    def infer(
+        self, model: StringFactorGraphSpec, parameters: RelationWeightBindings
+    ) -> RegularStringEPResult:
+        """Run the checked graph with the declared EP execution policy.
+
+        Parameters
+        ----------
+        model : StringFactorGraphSpec
+            The checked string graph with its nominal scopes and observations.
+        parameters : RelationWeightBindings
+            Live original weight owners used in this invocation.
+
+        Returns
+        -------
+        RegularStringEPResult
+            Approximate beliefs, convergence diagnostics, and measured work.
+        """
+        return self.config.infer(
+            model,
+            parameters,
+            projection_optimizer=self.projection_optimizer,
+            initial_sites=self.initial_sites,
         )
 
 

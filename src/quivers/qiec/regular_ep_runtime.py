@@ -20,7 +20,7 @@ from quivers.qiec.module import QiecModule
 from quivers.qiec.relation_runtime import _fixed_compute_definition
 from quivers.qiec.relations import RelationWeightBindings
 from quivers.qiec.string_graphs import StringFactorGraphSpec
-from quivers.qiec.string_solvers import RegularStringEPConfig
+from quivers.qiec.string_solvers import RegularStringEPConfig, RegularStringEPPolicy
 from quivers.qiec.types import (
     BOOL,
     INT,
@@ -148,15 +148,33 @@ class RegularStringEPRuntimeProvider:
     parameters : RelationWeightBindings
         The original live weight owners. Each execution snapshots their
         current values. The fitted report has no derivative through EP.
+    policy : RegularStringEPPolicy or None
+        Optional optimizer and initialization policy wrapping the exact
+        request configuration. None uses the ordinary unit initialization
+        and adaptive backtracking.
+
+    Raises
+    ------
+    ValueError
+        If the supplied policy wraps a different solver configuration.
     """
 
     name = "regular-string-ep"
 
     def __init__(
-        self, request: RegularStringEPRequest, parameters: RelationWeightBindings
+        self,
+        request: RegularStringEPRequest,
+        parameters: RelationWeightBindings,
+        *,
+        policy: RegularStringEPPolicy | None = None,
     ) -> None:
+        if policy is not None and policy.config != request.config:
+            raise ValueError("regular EP policy must wrap the exact request config")
         self._request = request
         self._parameters = parameters
+        self._solver = request.config if policy is None else policy
+        self._handler_name = request.handler_name
+        self._result_type = request.result_type
 
     def _evaluate(self, argument: object, _context: ClauseContext) -> _Report:
         """Return the measured status and any fitted word probabilities.
@@ -184,7 +202,7 @@ class RegularStringEPRuntimeProvider:
             raise TypeError("a regular EP report takes a unit argument")
         request = self._request
         try:
-            result = request.config.infer(request.graph, self._parameters)
+            result = self._solver.infer(request.graph, self._parameters)
             belief = result.marginals[request.variable]
             with torch.no_grad():
                 scores = torch.stack(
@@ -238,11 +256,10 @@ class RegularStringEPRuntimeProvider:
         TypeError
             If the named handler does not have the checked Compute type.
         """
-        request = self._request
         definition = _fixed_compute_definition(
-            module, request.handler_name, request.result_type
+            module, self._handler_name, self._result_type
         )
-        validator = self.validator_for(request.result_type)
+        validator = self.validator_for(self._result_type)
         assert validator is not None
         runtime = compute_handler(
             self._evaluate,
@@ -266,7 +283,7 @@ class RegularStringEPRuntimeProvider:
         RuntimeValidator or None
             The canonical product validator for this report.
         """
-        if type_ != self._request.result_type:
+        if type_ != self._result_type:
             return None
         return CoreRuntimeProvider().validator_for(type_)
 

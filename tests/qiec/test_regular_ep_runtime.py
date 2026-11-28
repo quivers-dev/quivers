@@ -1,5 +1,6 @@
 """An authored regular string EP query runs through the ordinary QIEC provider."""
 
+from hashlib import sha256
 from math import log
 
 import didactic.api as dx
@@ -12,9 +13,11 @@ from quivers.qiec import (
     ParameterId,
     QiecModule,
     RegularStringEPConfig,
+    RegularStringEPPolicy,
     RegularStringEPRequest,
     RegularStringEPRuntimeProvider,
     RuntimeConfiguration,
+    StringFactorGraphSpec,
     discharge_module,
     dumps,
     loads,
@@ -206,6 +209,106 @@ def test_invalid_weights_are_not_reported_as_zero_normalizers():
         owner.fill_(torch.inf)
     with pytest.raises(ExecutionFailure, match="carrier"):
         _run(module, RegularStringEPRuntimeProvider(request, parameters))
+
+
+def test_portable_policy_keeps_old_bytes_and_initializes_native_ep_from_warm_sites():
+    _, module, request, parameters, owner = _fixture()
+    assert sha256(dumps(request).encode()).hexdigest() == (
+        "a4953d7519d41ddf15bd64027e1c39ac25c23a3963a9545372e00dbbc80c4812"
+    )
+    assert sha256(dumps(request.config).encode()).hexdigest() == (
+        "433b83e73f43aadc2a4ccec7baac37eb83d290191f4bc72d8547275600173164"
+    )
+    limited = request.with_(config=request.config.with_(max_sweeps=0, tolerance=None))
+    policy = RegularStringEPPolicy(
+        config=limited.config,
+        projection_optimizer="fixed_lipschitz",
+        initial_sites=((0, "word", ((0,), (1,)), (log(4), 0.0), 7.0),),
+    )
+    wire = dumps(policy)
+    actual = loads(wire)
+    assert isinstance(actual, RegularStringEPPolicy) and dumps(actual) == wire
+    assert actual.objective == "regular_string_ep"
+    assert actual.gradient_policy == "detached" and actual.error_guarantee == "none"
+    result = actual.infer(request.graph, parameters)
+    assert result.status == "limit" and result.sweeps == 0
+    assert result.sites[0].log_scale.item() == 7.0
+    assert result.sites[0].features == ((0,),)
+    assert result.updates[0].fit.optimizer == "fixed_lipschitz"
+    assert result.moment_evaluations == 2 + result.updates[0].fit.iterations
+    assert not result.marginals["word"].log_prob((0,)).requires_grad
+
+    limited = loads(dumps(limited))
+    assert isinstance(limited, RegularStringEPRequest)
+    provider = RegularStringEPRuntimeProvider(limited, parameters, policy=actual)
+    report = _run(module, provider).value
+    assert report[0] == "limit" and report[2].item() == 0 and report[5].item()
+    assert report[6].exp().tolist() == pytest.approx([0.2, 0.0, 0.8])
+    with pytest.raises(ValueError, match="exact request config"):
+        RegularStringEPRuntimeProvider(request, parameters, policy=actual)
+
+    repeated = policy.with_(config=request.config)
+    result = repeated.infer(request.graph, parameters)
+    assert result.status == "converged" and result.sweeps == 1
+    assert result.moment_evaluations > result.updates[0].fit.moment_evaluations
+    assert result.marginals["word"].log_prob((0,)).exp().item() == pytest.approx(0.75)
+    assert owner.requires_grad and owner.grad is None
+
+
+def test_regular_ep_policy_refuses_unsupported_guarantees_and_bad_initials(monkeypatch):
+    compiler, _, request, parameters, _ = _fixture()
+    site = (0, "word", ((0,), (1,)), (0.0, 0.0), 0.0)
+    policy = RegularStringEPPolicy(config=request.config, initial_sites=(site,))
+    for gradient in ("finite_unrolled", "converged"):
+        with pytest.raises(dx.ValidationError, match="detached gradient policy"):
+            policy.with_(gradient_policy=gradient)
+    with pytest.raises(dx.ValidationError, match="global posterior error"):
+        policy.with_(error_guarantee="certified_global")
+    for bad in (
+        (*site[:3], (0.0, float("inf")), 0.0),
+        (*site[:3], (False, 0.0), 0.0),
+        (*site[:3], (0.0, 0.0), float("nan")),
+    ):
+        with pytest.raises(dx.ValidationError, match="finite floats"):
+            policy.with_(initial_sites=(bad,))
+
+    def unexpected_bind(*_args, **_kwargs):
+        raise AssertionError("invalid initial sites must refuse before graph binding")
+
+    monkeypatch.setattr(StringFactorGraphSpec, "bind", unexpected_bind)
+    wrong = policy.with_(
+        config=policy.config.with_(bases=(("word", compiler.relation_specs["wrong"]),))
+    )
+    with pytest.raises(ValueError, match="matching nominal tapes"):
+        wrong.infer(request.graph, parameters)
+    with pytest.raises(ValueError, match="match graph and feature order"):
+        policy.with_(initial_sites=((0, "word", ((1,), (0,)), (0.0, 0.0), 0.0),)).infer(
+            request.graph, parameters
+        )
+    duplicate = request.graph.with_(
+        factors=(*request.graph.factors, *request.graph.factors)
+    )
+    with pytest.raises(ValueError, match="match graph and feature order"):
+        policy.with_(initial_sites=((1, *site[1:]), site)).infer(duplicate, parameters)
+
+
+def test_regular_ep_provider_caches_static_identity_only(monkeypatch):
+    _, module, request, parameters, owner = _fixture()
+    provider = RegularStringEPRuntimeProvider(request, parameters)
+
+    def unexpected_lookup(_request):
+        raise AssertionError("the attached provider must reuse its immutable identity")
+
+    for attribute in ("handler_name", "result_type"):
+        monkeypatch.setattr(
+            RegularStringEPRequest, attribute, property(unexpected_lookup)
+        )
+    for weight, expected in ((log(3), 0.75), (log(0.25), 0.2)):
+        with torch.no_grad():
+            owner.fill_(weight)
+        run = _run(module, provider)
+        assert run.value[0] == "converged"
+        assert run.value[6][-1].exp().item() == pytest.approx(expected)
 
 
 def test_regular_belief_refuses_same_shape_substitution_and_reports_foreign_target_boundary():

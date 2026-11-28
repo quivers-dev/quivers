@@ -432,6 +432,7 @@ from quivers.qiec.string_solvers import (
     JointAlignmentMapGapConfig,
     PrunedStringBPConfig,
     RegularStringEPConfig,
+    RegularStringEPPolicy,
 )
 from quivers.qiec.string_graph_runtime import (
     TreeStringGraphRuntimeProvider,
@@ -782,6 +783,7 @@ __all__ = [
     "PrunedStringGraphRuntimeProvider",
     "pruned_string_graph_handler",
     "RegularStringEPConfig",
+    "RegularStringEPPolicy",
     "RegularStringEPRequest",
     "RegularStringEPRuntimeProvider",
     "TreeStringGraphRequest",

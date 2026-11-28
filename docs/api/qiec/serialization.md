@@ -553,6 +553,16 @@ support. The result distinguishes local projection failure from an outer
 sweep limit. Relation resource failures are reported by the underlying
 operation. Message stabilization alone does not certify exact marginals.
 
+`RegularStringEPPolicy` wraps the existing configuration with a choice
+of fixed-Lipschitz or adaptive-backtracking steps and optional finite
+initial sites. Each site identifies its factor occurrence, variable, and
+ordered candidate features. A different nominal tape or reordered site
+refuses before building the graph. The default initializes unit sites.
+The detached gradient policy refuses requests for finite-unrolled and
+converged-solution derivatives. A request for a certified global
+posterior error also refuses. The existing config and request retain
+their wire bytes.
+
 Both solvers bind the original weight identities at invocation. The wire
 records carry neither a previous fitted belief nor an optimum certificate.
 
@@ -571,6 +581,8 @@ returned approximate result.
 
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
 
+::: quivers.qiec.string_solvers.RegularStringEPPolicy
+
 ::: quivers.qiec.string_solvers.PrunedStringBPConfig
 
 ## Checked regular belief queries
@@ -579,6 +591,9 @@ returned approximate result.
 in a checked graph. The graph, nominal reference tapes, candidate n-grams,
 variable, and word order determine the foreign handler name. The same
 declaration can run with different schedules, penalties, and resource limits.
+An optional `RegularStringEPPolicy` must wrap the request's exact
+configuration. The provider derives the immutable handler name and report
+type once at construction, then binds live weights on each invocation.
 
 The result carries the solver status and diagnostic, accepted sweeps, a
 Boolean and a value for the measured residual, a Boolean and an ordered
