@@ -6,18 +6,17 @@ from collections.abc import Mapping
 
 import didactic.api as dx
 
-from quivers.dsl._relation_specs import _alphabet
+from quivers.dsl._relation_specs import AuthoredRelationSpec, _alphabet
 from quivers.dsl.ast_nodes import Module, QiecStringGraphDecl
 from quivers.dsl.ast_nodes.declarations import ObjectDecl
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
-from quivers.qiec.relation_composition import ComposedRelationSpec
 from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.string_graphs import StringFactorGraphSpec
 
 
 def authored_string_graph_specs(
     syntax: Module,
-    relations: Mapping[str, RationalRelationSpec | ComposedRelationSpec],
+    relations: Mapping[str, AuthoredRelationSpec],
     file_path: str,
 ) -> dict[str, StringFactorGraphSpec]:
     """Build checked graph specifications in source declaration order."""

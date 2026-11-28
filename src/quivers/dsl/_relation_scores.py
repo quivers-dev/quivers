@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from quivers.core.algebras import LOG_PROB
-from quivers.dsl._relation_specs import authored_relation_specs
+from quivers.dsl._relation_specs import AuthoredRelationSpec, authored_relation_specs
 from quivers.dsl._string_graph_specs import authored_string_graph_specs
 from quivers.dsl.ast_nodes import (
     QiecHandlerDecl,
@@ -36,7 +36,10 @@ from quivers.qiec.string_graph_runtime import (
     _tree_string_graph_handler,
 )
 from quivers.qiec.relation_composition import ComposedRelationSpec
-from quivers.qiec.relations import RationalRelationSpec
+from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
+    UnaryRelationTransformSpec,
+)
 from quivers.qiec.terms import Handle, LiteralValue, Local, Perform
 from quivers.qiec.types import REAL, UNIT, TypeExpr
 
@@ -56,9 +59,9 @@ class _RelationScore:
 def _score_specification(
     elaborator: _Elaborator,
     declaration: QiecRelationScoreDecl,
-    specs: dict[str, RationalRelationSpec | ComposedRelationSpec],
+    specs: dict[str, AuthoredRelationSpec],
     result: TypeExpr,
-) -> RationalRelationSpec | ComposedRelationSpec | None:
+) -> AuthoredRelationSpec | None:
     operation = declaration.operation
     if operation in ("path_entropy", "expected_path_cost") and result != REAL:
         elaborator._fail(
@@ -75,14 +78,26 @@ def _score_specification(
             f"unknown authored relation {declaration.relation!r}",
             code="qiec-relation-score",
         )
-    if isinstance(relation, ComposedRelationSpec):
+    if isinstance(
+        relation,
+        ComposedRelationSpec | UnaryRelationTransformSpec | BinaryRelationTransformSpec,
+    ):
         if operation != "pair_weight":
+            kind = (
+                "compositions"
+                if isinstance(relation, ComposedRelationSpec)
+                else "transformations"
+            )
             elaborator._fail(
                 declaration,
-                "authored compositions currently support pair_weight scores",
+                f"authored {kind} currently support pair_weight scores",
                 code="qiec-relation-score",
             )
-        algebra = relation.left.algebra
+        algebra = (
+            relation.source.algebra
+            if isinstance(relation, UnaryRelationTransformSpec)
+            else relation.left.algebra
+        )
     else:
         algebra = relation.algebra
         if operation == "conditional_log_prob" and not 0 < relation.input_tapes < len(

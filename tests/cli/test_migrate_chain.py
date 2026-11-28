@@ -100,6 +100,14 @@ def test_relation_score_keywords_are_contextual_for_old_source() -> None:
     assert compose_migration("v0.64.2", "HEAD")(source) == source
 
 
+def test_authored_transform_keywords_are_contextual_for_old_source() -> None:
+    source = (
+        b"object invert, trim, closure, project, condition : FinSet 2\n"
+        b"object union, concatenate, intersect, join, keep_shared : FinSet 2\n"
+    )
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_authored_graph_keywords_are_contextual_for_old_source() -> None:
     source = b"object string_graph, variable, observed, graph : FinSet 2\n"
     assert compose_migration("v0.64.2", "HEAD")(source) == source

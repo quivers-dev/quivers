@@ -36,8 +36,11 @@
   "category"
   "ccg"
   "change_base"
+  "closure"
   "compose"
   "composition"
+  "concatenate"
+  "condition"
   "conditional_log_prob"
   "construct"
   "constructor"
@@ -80,8 +83,12 @@
   "input"
   "instance"
   "interpret"
+  "intersect"
   "introduces"
+  "invert"
   "iterations"
+  "join"
+  "keep_shared"
   "labels"
   "lacks"
   "lambek"
@@ -112,6 +119,7 @@
   "perform"
   "primitive"
   "program"
+  "project"
   "readout"
   "recurrent"
   "recursive"
@@ -139,8 +147,10 @@
   "trace"
   "tree_log_prob"
   "tree_partition"
+  "trim"
   "true"
   "unary"
+  "union"
   "unknown"
   "update"
   "var_init"
@@ -457,6 +467,15 @@
 (relation_compose_decl name: (identifier) @type)
 (relation_compose_decl left: (identifier) @type)
 (relation_compose_decl right: (identifier) @type)
+(relation_transform_decl "relation" @keyword)
+(relation_transform_decl name: (identifier) @type)
+(relation_unary_operation) @keyword
+(relation_binary_operation) @keyword
+(relation_unary_recipe source: (identifier) @type)
+(relation_projection_recipe "project" @keyword source: (identifier) @type)
+(relation_conditioning_recipe "condition" @keyword source: (identifier) @type)
+(relation_binary_recipe source: (identifier) @type other: (identifier) @type)
+(relation_join_recipe ["join" "keep_shared"] @keyword source: (identifier) @type other: (identifier) @type)
 (relation_algebra) @type.builtin
 (relation_tape_direction) @keyword
 (relation_tape_decl alphabet: (identifier) @type)

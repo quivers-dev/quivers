@@ -364,3 +364,46 @@ query variable, an optional separately scored word, and sparse work
 limits. An authored score fixes the named graph's variables,
 observations, factor order, and relation topology. The runtime binds concrete parameter values
 and verifies the forest precondition before running the tree query.
+
+## Authored sparse relation transformations
+
+A named transformation keeps the original typed relation
+specifications and parameter identities. This example projects the
+input tape and fixes the input word in a separate relation.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+relation visible_inputs = project(channel, (0))
+relation fixed_input = condition(channel, 0, (1))
+relation_score visible : Real [operation=pair_weight, relation=visible_inputs]
+relation_score fixed : Real [operation=pair_weight, relation=fixed_input]
+
+relation channel [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(1, 0), weight=replace]
+    arc 0 -> 1 [labels=(1, 1), weight=keep]
+    final 1 [weight=one]
+```
+
+Tape positions are zero-based. `project(source, (0, 2))` retains
+the named tapes in increasing order. `condition(source, 0, ())`
+fixes the empty word on tape zero. Other unary forms are
+`invert(source)`, `trim(source)`, and `closure(source)`. The binary
+forms `union(left, right)`, `concatenate(left, right)`, and
+`intersect(left, right)` use their typed operand orders.
+`join(left, right, 1, 0, keep_shared=true)` synchronizes those
+two tape positions and retains their word once. Omitting
+`keep_shared` sums over the synchronized word.
+
+Operands refer to primitive declarations in the module, which can
+appear after the transformation. The compiler exposes the recipes in
+`Compiler.transformed_relation_specs`. A
+`FixedTransformedRelationRequest` supplies the observed result words
+and work limits. A checked `pair_weight` score binds the exact recipe
+to its reference-machine attachment. Productive cycles require the
+declared closure capability. Native code targets identify the
+foreign handler that supplies the sparse score.

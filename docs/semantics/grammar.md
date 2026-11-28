@@ -808,6 +808,14 @@ operand order specifies the tape to synchronize. The two shared tape
 types and the scalar algebras must agree. The composed relation
 exposes a `pair_weight` score.
 
+The right-hand side of an authored relation can also name a sparse
+transformation. Inversion, trimming, and closure take one primitive
+operand. Projection takes its increasing tuple of retained tape
+positions and conditioning takes one tape position and a fixed word.
+Union, concatenation, and weighted intersection take two operands.
+A join also specifies the two shared tape positions and can retain
+the shared tape with `keep_shared=true`.
+
 A `string_graph` declares nominal variables and ordered occurrences
 of authored sparse factors. A variable can supply a fixed word,
 including the empty word. Each factor names its relation and lists

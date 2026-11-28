@@ -28,6 +28,9 @@
       "include": "#keyword-relation-declaration"
     },
     {
+      "include": "#keyword-relation-transform"
+    },
+    {
       "include": "#keyword-declaration"
     },
     {
@@ -129,6 +132,20 @@
       "match": "^\\s*(relation)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\[\\s*algebra)",
       "captures": {
         "1": {
+          "name": "keyword.declaration.qvr"
+        }
+      }
+    },
+    "keyword-relation-transform": {
+      "match": "^\\s*(relation)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(invert|trim|closure|project|condition|union|concatenate|intersect|join)(?=\\s*\\()",
+      "captures": {
+        "1": {
+          "name": "keyword.declaration.qvr"
+        },
+        "2": {
+          "name": "entity.name.type.qvr"
+        },
+        "3": {
           "name": "keyword.declaration.qvr"
         }
       }

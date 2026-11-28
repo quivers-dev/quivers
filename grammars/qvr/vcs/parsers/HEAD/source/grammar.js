@@ -105,6 +105,7 @@ module.exports = grammar({
       $.interpretation_decl,
       $.relation_decl,
       $.relation_compose_decl,
+      $.relation_transform_decl,
       $.relation_score_decl,
       $.string_graph_decl,
       $.string_graph_score_decl,
@@ -418,6 +419,52 @@ module.exports = grammar({
       '=', 'compose', '(', field('left', $.identifier),
       ',', field('right', $.identifier), ')',
       $._newline,
+    ),
+
+    relation_transform_decl: $ => seq(
+      optional(field('docs', $.doc_comment_group)),
+      'relation', field('name', $.identifier), '=',
+      field('recipe', choice(
+        $.relation_unary_recipe,
+        $.relation_projection_recipe,
+        $.relation_conditioning_recipe,
+        $.relation_binary_recipe,
+        $.relation_join_recipe,
+      )),
+      $._newline,
+    ),
+
+    relation_unary_recipe: $ => seq(
+      field('operation', $.relation_unary_operation),
+      '(', field('source', $.identifier), ')',
+    ),
+
+    relation_unary_operation: _ => choice('invert', 'trim', 'closure'),
+
+    relation_projection_recipe: $ => seq(
+      'project', '(', field('source', $.identifier), ',',
+      parenthesizedList($, field('positions', $.integer)), ')',
+    ),
+
+    relation_conditioning_recipe: $ => seq(
+      'condition', '(', field('source', $.identifier), ',',
+      field('positions', $.integer), ',',
+      field('word', $.relation_conditioning_word), ')',
+    ),
+
+    relation_conditioning_word: $ => parenthesizedList($, field('symbols', $.integer)),
+
+    relation_binary_recipe: $ => seq(
+      field('operation', $.relation_binary_operation),
+      '(', field('source', $.identifier), ',', field('other', $.identifier), ')',
+    ),
+
+    relation_binary_operation: _ => choice('union', 'concatenate', 'intersect'),
+
+    relation_join_recipe: $ => seq(
+      'join', '(', field('source', $.identifier), ',', field('other', $.identifier), ',',
+      field('positions', $.integer), ',', field('positions', $.integer),
+      optional(seq(',', 'keep_shared', '=', field('keep_shared', $.let_bool))), ')',
     ),
 
     relation_algebra: _ => choice('markov', 'logprob'),

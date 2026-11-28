@@ -20,6 +20,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecRelationDecl,
     QiecRelationMark,
     QiecRelationTape,
+    QiecRelationTransformDecl,
     QiecRelationScoreDecl,
     QiecStringGraphDecl,
     QiecStringGraphFactor,
@@ -92,6 +93,7 @@ _QIEC_STATEMENT_KINDS = frozenset(
         "interpretation_decl",
         "relation_decl",
         "relation_compose_decl",
+        "relation_transform_decl",
         "relation_score_decl",
         "string_graph_decl",
         "string_graph_score_decl",
@@ -213,6 +215,46 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             name=_field_text(t, vid, "name"),
             left=_field_text(t, vid, "left"),
             right=_field_text(t, vid, "right"),
+            docs=docs,
+            line=line,
+            col=col,
+        )
+    if kind == "relation_transform_decl":
+        recipe = _required_field(t, vid, "recipe")
+        name = {
+            "relation_projection_recipe": "project",
+            "relation_conditioning_recipe": "condition",
+            "relation_join_recipe": "join",
+        }.get(t.kind(recipe))
+        operation = _field_text(t, recipe, "operation") if name is None else name
+        word = t.field(recipe, "word")
+        other = t.field(recipe, "other")
+        keep = t.field(recipe, "keep_shared")
+        return QiecRelationTransformDecl(
+            name=_field_text(t, vid, "name"),
+            operation=cast(
+                Literal[
+                    "invert",
+                    "trim",
+                    "closure",
+                    "project",
+                    "condition",
+                    "union",
+                    "concatenate",
+                    "intersect",
+                    "join",
+                ],
+                operation,
+            ),
+            source=_field_text(t, recipe, "source"),
+            other=None if other is None else t.text(other),
+            positions=tuple(
+                int(t.text(item)) for item in t.fields(recipe, "positions")
+            ),
+            word=None
+            if word is None
+            else tuple(int(t.text(item)) for item in t.fields(word, "symbols")),
+            keep_shared=keep is not None and t.text(keep) == "true",
             docs=docs,
             line=line,
             col=col,

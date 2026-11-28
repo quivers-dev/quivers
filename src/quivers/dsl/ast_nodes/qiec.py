@@ -1366,6 +1366,54 @@ class QiecRelationComposeDecl(Statement):
     kind: Literal["relation_compose_decl"] = "relation_compose_decl"
 
 
+class QiecRelationTransformDecl(Statement):
+    """An authored unary or binary sparse relation transformation.
+
+    Parameters
+    ----------
+    name
+        The resulting relation's name.
+    operation
+        The sparse transformation applied to the source operands.
+    source, other
+        Named primitive operands in operation order.
+    positions
+        Original tape positions for a projection, condition, or join.
+    word
+        The fixed word of a conditioning operation, including empty.
+    keep_shared
+        Whether a join retains the synchronized tape.
+    docs
+        The attached source documentation comments.
+    line, col
+        The source position.
+    kind
+        The declaration discriminator.
+    """
+
+    name: str
+    operation: Literal[
+        "invert",
+        "trim",
+        "closure",
+        "project",
+        "condition",
+        "union",
+        "concatenate",
+        "intersect",
+        "join",
+    ]
+    source: str
+    other: str | None = None
+    positions: tuple[int, ...] = ()
+    word: tuple[int, ...] | None = None
+    keep_shared: bool = False
+    docs: tuple[str, ...] = ()
+    line: int = 0
+    col: int = 0
+    kind: Literal["relation_transform_decl"] = "relation_transform_decl"
+
+
 class QiecRelationScoreDecl(Statement):
     """A named score whose fixed relation request is supplied at runtime.
 
@@ -1523,6 +1571,7 @@ __all__ = [
     "QiecRelationDecl",
     "QiecRelationMark",
     "QiecRelationTape",
+    "QiecRelationTransformDecl",
     "QiecRelationScoreDecl",
     "QiecStringGraphDecl",
     "QiecStringGraphFactor",

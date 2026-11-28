@@ -2,18 +2,40 @@
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 import didactic.api as dx
 
 from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.objects import FinSet, StringSet
 from quivers.core.relations import Arc, Boundary, RelationTopology
-from quivers.dsl.ast_nodes import Module, QiecRelationComposeDecl, QiecRelationDecl
+from quivers.dsl.ast_nodes import (
+    Module,
+    QiecRelationComposeDecl,
+    QiecRelationDecl,
+    QiecRelationTransformDecl,
+)
 from quivers.dsl.ast_nodes.declarations import ObjectDecl, TypeFromExpr
 from quivers.dsl.ast_nodes.objects import DiscreteConstructor, TypeName
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.relation_composition import ComposedRelationSpec
+from quivers.qiec.relation_transforms import (
+    BinaryRelationTransformSpec,
+    UnaryRelationTransformSpec,
+)
 from quivers.qiec.relations import RationalRelationSpec
+
+
+type AuthoredRelationSpec = (
+    RationalRelationSpec
+    | ComposedRelationSpec
+    | UnaryRelationTransformSpec
+    | BinaryRelationTransformSpec
+)
+type _Declaration = (
+    QiecRelationDecl | QiecRelationComposeDecl | QiecRelationTransformDecl
+)
 
 
 def _alphabet(name: str, objects: dict[str, ObjectDecl]) -> FinSet:
@@ -88,10 +110,40 @@ def _specification(
     return RationalRelationSpec.of(topology, algebra, identities)
 
 
+def _transform_spec(
+    declaration: QiecRelationTransformDecl,
+    source: RationalRelationSpec,
+    other: RationalRelationSpec | None,
+) -> UnaryRelationTransformSpec | BinaryRelationTransformSpec:
+    if other is None:
+        return UnaryRelationTransformSpec(
+            source=source,
+            operation=cast(
+                Literal["project", "condition", "invert", "trim", "closure"],
+                declaration.operation,
+            ),
+            positions=declaration.positions,
+            word=declaration.word,
+        )
+    return BinaryRelationTransformSpec(
+        left=source,
+        right=other,
+        operation=cast(
+            Literal["union", "concatenate", "intersect", "join"], declaration.operation
+        ),
+        shared_tapes=(
+            cast(tuple[int, int], declaration.positions)
+            if declaration.operation == "join"
+            else None
+        ),
+        keep_shared=declaration.keep_shared,
+    )
+
+
 def authored_relation_specs(
     syntax: Module, module_name: str, file_path: str
-) -> dict[str, RationalRelationSpec | ComposedRelationSpec]:
-    """Build checked primitive and binary relation specifications from source."""
+) -> dict[str, AuthoredRelationSpec]:
+    """Build checked primitive and derived relation specifications from source."""
     objects = {
         name: statement
         for statement in syntax.statements
@@ -99,9 +151,7 @@ def authored_relation_specs(
         for name in statement.names
     }
 
-    def diagnostic(
-        declaration: QiecRelationDecl | QiecRelationComposeDecl, message: str
-    ) -> QiecDiagnosticError:
+    def diagnostic(declaration: _Declaration, message: str) -> QiecDiagnosticError:
         return QiecDiagnosticError(
             message,
             code="qiec-relation-declaration",
@@ -110,10 +160,13 @@ def authored_relation_specs(
             column=declaration.col,
         )
 
-    declarations: dict[str, QiecRelationDecl | QiecRelationComposeDecl] = {}
+    declarations: dict[str, _Declaration] = {}
     primitive: dict[str, RationalRelationSpec] = {}
     for declaration in syntax.statements:
-        if isinstance(declaration, QiecRelationDecl | QiecRelationComposeDecl):
+        if isinstance(
+            declaration,
+            QiecRelationDecl | QiecRelationComposeDecl | QiecRelationTransformDecl,
+        ):
             if declaration.name in declarations:
                 raise diagnostic(
                     declaration, f"duplicate authored relation {declaration.name!r}"
@@ -127,23 +180,36 @@ def authored_relation_specs(
             except (TypeError, ValueError, dx.ValidationError) as error:
                 raise diagnostic(declaration, str(error)) from error
 
-    result: dict[str, RationalRelationSpec | ComposedRelationSpec] = {}
+    result: dict[str, AuthoredRelationSpec] = {}
     for name, declaration in declarations.items():
         if isinstance(declaration, QiecRelationDecl):
             result[name] = primitive[name]
             continue
-        for operand in (declaration.left, declaration.right):
+        names: tuple[str, str | None]
+        if isinstance(declaration, QiecRelationComposeDecl):
+            names = (declaration.left, declaration.right)
+            purpose = "composition"
+        else:
+            names = (declaration.source, declaration.other)
+            purpose = "transformation"
+        for operand in names:
+            if operand is None:
+                continue
             if operand not in declarations:
                 raise diagnostic(declaration, f"unknown authored relation {operand!r}")
             if operand not in primitive:
                 raise diagnostic(
                     declaration,
-                    f"composition requires primitive relation operands, got {operand!r}",
+                    f"{purpose} requires primitive relation operands, got {operand!r}",
                 )
+        source = primitive[names[0]]
+        other = None if names[1] is None else primitive[names[1]]
         try:
-            result[name] = ComposedRelationSpec(
-                left=primitive[declaration.left], right=primitive[declaration.right]
-            )
+            if isinstance(declaration, QiecRelationComposeDecl):
+                assert other is not None
+                result[name] = ComposedRelationSpec(left=source, right=other)
+            else:
+                result[name] = _transform_spec(declaration, source, other)
         except (TypeError, ValueError, dx.ValidationError) as error:
             raise diagnostic(declaration, str(error)) from error
     return result
