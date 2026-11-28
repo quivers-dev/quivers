@@ -120,6 +120,11 @@ from quivers.qiec.declarations import (
     FamilyDecl,
     FieldDef,
 )
+from quivers.qiec.derivative_rules import (
+    RationalDerivativeComponent,
+    RationalDerivativeDecision,
+    check_rational_derivative_rule,
+)
 from quivers.qiec.discharge import (
     DISCHARGE_STATEMENTS,
     DISCHARGE_STEPS,
@@ -1071,5 +1076,10 @@ __all__ += [
     "RationalLawLimit",
     "RationalLawUnsupported",
     "check_rational_law",
+]
+__all__ += [
+    "RationalDerivativeComponent",
+    "RationalDerivativeDecision",
+    "check_rational_derivative_rule",
 ]
 __all__ += rules.__all__

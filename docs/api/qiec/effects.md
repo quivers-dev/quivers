@@ -158,3 +158,49 @@ checker supports authored handlers whose branch choices can be resolved
 during the symbolic run, including branches selected by resumed Booleans.
 
 ::: quivers.qiec.rational_laws
+
+## Rational derivative rules
+
+An authored scalar derivative rule is a checked computation. A forward
+rule takes the primal arguments followed by their tangents. Each reverse
+component takes the primal arguments and one output cotangent. Reverse
+components follow the order of the primal parameters.
+
+The checker differentiates the primal's symbolic rational form, then
+compares each supplied rule with the resulting derivative action for all
+seeds. This establishes linearity in the seeds and, when both rules are
+supplied, transposition. A false identity has an exact separating input.
+
+Every evaluated divisor also supplies a nonzero guard. The checker must
+establish that all candidate rules are defined everywhere the primal is
+defined, including at zero seeds. A rule may divide by the square of a
+divisor already checked by the primal. When the checker cannot establish
+domain coverage, it raises `RationalLawUnsupported`.
+
+```python
+from quivers.dsl import Compiler, parse
+from quivers.qiec import check_rational_derivative_rule
+
+source = """
+define ratio(x : Real, y : Real) : Real !{} =
+    return x / y
+
+define push(x : Real, y : Real, dx : Real, dy : Real) : Real !{} =
+    return (dx * y - x * dy) / (y * y)
+
+define pull_x(x : Real, y : Real, seed : Real) : Real !{} =
+    return seed / y
+
+define pull_y(x : Real, y : Real, seed : Real) : Real !{} =
+    return (0.0 - seed * x) / (y * y)
+"""
+module = Compiler(parse(source), module_name="checked-ratio-rule").qiec_module
+assert module is not None
+decision = check_rational_derivative_rule(
+    module, "ratio", jvp="push", vjp=("pull_x", "pull_y")
+)
+assert decision.certified
+assert decision.domain_polynomial == (((0, 1), 1),)
+```
+
+::: quivers.qiec.derivative_rules
