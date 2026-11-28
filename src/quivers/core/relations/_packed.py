@@ -41,11 +41,11 @@ class _Incoming:
 
 
 def _pack_incoming(rows: list[list[int]], n_values: int) -> _Incoming:
-    # Each row has at least one summand. Padding to the next power of two
-    # puts fewer than twice the actual number of summands into the buckets.
+    # Padding nonempty rows to powers of two uses fewer than twice
+    # their summands. An empty acceptance group uses one zero.
     by_width: dict[int, list[tuple[int, list[int]]]] = {}
     for state, row in enumerate(rows):
-        width = 1 << (len(row) - 1).bit_length()
+        width = 1 << (max(1, len(row)) - 1).bit_length()
         by_width.setdefault(width, []).append((state, row))
     indices: list[int] = []
     buckets: list[tuple[int, int]] = []
@@ -83,9 +83,21 @@ class _PackedPaths:
     layers: tuple[_PathLayer, ...]
     slots: tuple[int, ...]
 
-    def evaluate(self, weights: torch.Tensor, algebra: Semiring) -> torch.Tensor:
+    def evaluate(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        *,
+        visits: list[torch.Tensor] | None = None,
+        final_groups: _Incoming | None = None,
+    ) -> torch.Tensor:
         if not self.layers:
-            return algebra.join(weights[:0], dim=0)
+            empty = weights[:0]
+            return (
+                algebra.join(empty, dim=0)
+                if final_groups is None
+                else final_groups.join(empty, algebra)
+            )
         slots = _take(weights, self.slots)
         chunks = slots.split(tuple(sum(layer.weight_sizes) for layer in self.layers))
         pending: list[list[torch.Tensor]] = [[] for _ in self.layers]
@@ -96,6 +108,8 @@ class _PackedPaths:
                 incoming.append(chunk[:n_initial])
             values = incoming[0] if len(incoming) == 1 else torch.cat(incoming)
             prefixes = layer.incoming.join(values, algebra)
+            if visits is not None:
+                visits.append(prefixes)
             incoming.clear()
             if n_arcs:
                 arc_weights = (
@@ -120,7 +134,10 @@ class _PackedPaths:
                 accepted.append(
                     algebra.tensor_op(_take(prefixes, layer.final_sources), final)
                 )
-        return algebra.join(torch.cat(accepted), dim=0)
+        totals = torch.cat(accepted) if accepted else weights[:0]
+        if final_groups is not None:
+            return final_groups.join(totals, algebra)
+        return algebra.join(totals, dim=0)
 
 
 def _pack_paths(
@@ -128,6 +145,9 @@ def _pack_paths(
     arcs: list[tuple[tuple[int, int], ...]],
     initial: tuple[tuple[int, int], ...],
     final: list[tuple[int, int]],
+    *,
+    visit_order: list[int] | None = None,
+    accept_order: list[int] | None = None,
 ) -> _PackedPaths:
     level_of = dict.fromkeys(order, 0)
     levels: list[list[int]] = []
@@ -138,6 +158,8 @@ def _pack_paths(
         levels[level].append(state)
         for target, _ in arcs[state]:
             level_of[target] = max(level_of[target], level + 1)
+    if visit_order is not None:
+        visit_order.extend(state for level in levels for state in level)
 
     # Row indices address the concatenation of the arc chunks from earlier
     # levels, in source-level order, followed by this level's initial marks.
@@ -157,6 +179,8 @@ def _pack_paths(
                 start.append(initial_slots[state])
             if state in final_slots:
                 finish.append((local_id, final_slots[state]))
+                if accept_order is not None:
+                    accept_order.append(state)
             for target, slot in arcs[state]:
                 destination = level_of[target]
                 rows[target].append(incoming_sizes[destination])

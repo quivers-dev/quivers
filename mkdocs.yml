@@ -297,7 +297,9 @@ nav:
     - Schema-Bundled Chart Parser: examples/schema-chart-parser.md
     - A Noisy Deletion Channel: examples/noisy-deletion-channel.md
     - Name Phylogeny: examples/name-phylogeny.md
+    - A Contextual Edit Channel: examples/contextual-edit-channel.md
     - Term Autoencoder: examples/term-autoencoder.md
+    - Latent Morphs and Phonology: examples/latent-morph-phonology.md
   - API:
     - Overview: api/index.md
     - Core:

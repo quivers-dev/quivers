@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from functools import cached_property
 from itertools import product
@@ -13,6 +16,12 @@ from torch import nn
 from quivers.core.algebras import REAL, Semiring
 from quivers.core.morphisms import FiniteMorphism, Morphism
 from quivers.core.objects import FreeMonoid, ProductSet, SetObject, Unit
+from quivers.core.relations.paths import (
+    ArcCounts,
+    PathStatistics,
+    RelationPath,
+    _PathWalks,
+)
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
     QueryWork,
@@ -34,28 +43,93 @@ from quivers.core.relations.topology import (
 __all__ = [
     "EPSILON",
     "Arc",
+    "ArcCounts",
     "Boundary",
     "ComposedRelation",
     "ComposedStringQuery",
+    "ConditionalStringQuery",
+    "ContextualEditChannel",
+    "ContextualEditPlan",
     "FixedStringQuery",
+    "FailureArc",
     "FiniteRelationRestriction",
+    "FiniteStringBeliefPlan",
+    "FiniteStringScore",
     "Label",
+    "MarginalOutputChoice",
+    "NgramFamily",
+    "NgramMessagePlan",
+    "NgramProjection",
+    "PenalizedNgramProjection",
+    "PathStatistics",
     "ProductiveEpsilonCycleError",
     "QueryWork",
     "RationalRelation",
+    "RegularNgramProjection",
+    "RegularStringBelief",
+    "RegularStringEPResult",
+    "RegularStringSite",
+    "RegularStringSiteUpdate",
     "RelationLimitError",
+    "RelationPath",
     "RelationTopology",
+    "StringAlignment",
+    "StringAlignmentCertificate",
+    "StringAlignmentMapResult",
+    "StringBeliefResult",
+    "StringEPResult",
+    "StringSiteProjection",
+    "StringFactor",
+    "StringFactorGraph",
+    "StringMapCertificate",
+    "StringMapResult",
+    "StringVariable",
+    "TreeStringMarginal",
     "Words",
+    "auto_intersect",
+    "backoff_query",
+    "best_marginal_output",
     "closure",
+    "compile_ranked_ot",
     "concatenate",
     "condition",
+    "dual_alignment_map",
+    "dual_string_map",
     "intersect",
     "invert",
     "join",
+    "penalized_regular_ngram_projection",
+    "minimize_static_acceptor",
     "project",
+    "regular_string_ep",
+    "ranked_output_candidates",
     "trim",
     "union",
 ]
+
+
+_weight_cache: ContextVar[dict[int, torch.Tensor] | None] = ContextVar(
+    "_weight_cache", default=None
+)
+
+
+@contextmanager
+def _weight_snapshot() -> Iterator[None]:
+    token = _weight_cache.set({})
+    try:
+        yield
+    finally:
+        _weight_cache.reset(token)
+
+
+def _read_weight_source(source: nn.Module) -> torch.Tensor:
+    snapshot = _weight_cache.get()
+    if snapshot is None:
+        return source()
+    key = id(source)
+    if key not in snapshot:
+        snapshot[key] = source()
+    return snapshot[key]
 
 
 def _tape_object(tapes: tuple[SetObject, ...]) -> SetObject:
@@ -159,7 +233,7 @@ class RationalRelation(Morphism):
         self.algebra.validate(weights)
 
     def _weights(self) -> torch.Tensor:
-        values = self._weight_source()
+        values = _read_weight_source(self._weight_source)
         self._check_weights(values)
         return values
 
@@ -221,6 +295,23 @@ class RationalRelation(Morphism):
             The scalar in the relation's algebra.
         """
         return self.query(words).weight()
+
+    def conditional(
+        self,
+        input_words: Words,
+        *,
+        max_states: int,
+        max_work: int,
+        max_closure_size: int | None = None,
+    ) -> ConditionalStringQuery:
+        """Compile a conditional over outputs for the fixed input words."""
+        return ConditionalStringQuery(
+            self,
+            input_words,
+            max_states=max_states,
+            max_work=max_work,
+            max_closure_size=max_closure_size,
+        )
 
     def total_weight(
         self,
@@ -329,21 +420,121 @@ class FixedStringQuery:
             max_closure_size=max_closure_size,
         )
         self._relation = relation
+        self._words = tuple(tuple(word) for word in words)
+        self._max_states = max_states
+        self._max_work = max_work
+        self._max_closure_size = max_closure_size
+
+    @cached_property
+    def _walks(self) -> _PathWalks:
+        return _PathWalks(
+            self._relation.topology,
+            self._words,
+            self._max_states,
+            self._max_work,
+            self._max_closure_size,
+        )
 
     @property
     def work(self) -> QueryWork:
         """Work of compiling this query."""
         return self._plan.work
 
-    def weight(self) -> torch.Tensor:
+    def weight(self, *, recompute_backward: bool = False) -> torch.Tensor:
         """Evaluate the plan with the current weights.
 
         A cyclic plan requires floating-point weights and an algebra that
         establishes the semiring laws and the least-solution law of its
         star. Closure can raise `DivergentClosureError` or
         `UndecidedClosureError` for the current weights.
+
+        With `recompute_backward`, autograd retains the path-plan inputs
+        and recomputes required intermediate values during backward.
+        The weight source runs once, outside the checkpoint.
         """
-        return self._plan.evaluate(self._relation._weights(), self._relation.algebra)
+        weights = self._relation._weights()
+        algebra = self._relation.algebra
+        if recompute_backward and torch.is_grad_enabled() and weights.requires_grad:
+            from torch.utils.checkpoint import checkpoint
+
+            return checkpoint(
+                self._plan.evaluate, weights, algebra, use_reentrant=False
+            )
+        return self._plan.evaluate(weights, algebra)
+
+    def best_path(self) -> RelationPath | None:
+        """Return the highest-weight positive path, if the query has one.
+
+        The productive graph must be acyclic, and weights must belong
+        to Markov or LogProb. The result identifies a single path.
+        """
+        paths = self.k_best_paths(1)
+        return paths[0] if paths else None
+
+    def k_best_paths(self, k: int) -> tuple[RelationPath, ...]:
+        """Return up to `k` positive paths in decreasing weight order.
+
+        Ties follow a deterministic order determined by the topology.
+        Ranking compares the exact rational values of the stored binary
+        weights. Each arc supplies a ranked stream of suffixes,
+        and merging computes only the heads needed for the result.
+        Zero-weight paths are omitted.
+        """
+        if type(k) is not int or k < 0:
+            raise ValueError("k must be a nonnegative integer")
+        return self._walks.k_best(k, self._relation._weights(), self._relation.algebra)
+
+    def sample_path(
+        self, *, generator: torch.Generator | None = None, max_steps: int | None = None
+    ) -> RelationPath:
+        """Draw a path conditional on the observed words.
+
+        Sampling uses float64 log-space suffix weights and a CPU
+        generator. The observed Markov or LogProb mass must be
+        positive and finite. A cyclic plan requires a supported
+        closure and an explicit max_steps. An attempted traversal
+        beyond that arc limit raises a resource error.
+        The sampled path retains its original arc occurrences.
+        """
+        return self._walks.sample(
+            self._relation._weights(), self._relation.algebra, generator, max_steps
+        )
+
+    def expected_arc_counts(self) -> ArcCounts:
+        """Return differentiable conditional expected arc traversal counts.
+
+        Two packed passes sum the prefixes and suffixes at each
+        configuration. Occurrences of an original arc at different
+        configurations are added after normalizing. The productive
+        graph can use an explicitly permitted, finite closure. The
+        Markov or LogProb normalizer must be positive and finite.
+        """
+        return self._walks.counts(self._relation._weights(), self._relation.algebra)
+
+    def path_statistics(
+        self,
+        *,
+        initial_costs: torch.Tensor | None = None,
+        arc_costs: torch.Tensor | None = None,
+        final_costs: torch.Tensor | None = None,
+    ) -> PathStatistics:
+        """Return path entropy and the expectation of optional additive costs.
+
+        The observed Markov or LogProb mass must be positive and
+        finite. Its normalization is evaluated in log space, with
+        explicit closure support for a cyclic observation. Costs have one row
+        per original mark or arc, in topology order. Boundary and
+        arc costs can be combined when their trailing shapes agree.
+        Derivatives on the current positive support flow through
+        the weights and costs. Probability-zero choices are masked.
+        """
+        return self._walks.statistics(
+            self._relation._weights(),
+            self._relation.algebra,
+            initial_costs,
+            arc_costs,
+            final_costs,
+        )
 
 
 class FiniteRelationRestriction(FiniteMorphism):
@@ -450,4 +641,65 @@ from quivers.core.relations.transforms import (  # noqa: E402
     invert,
     project,
     trim,
+)
+from quivers.core.relations.graph import (  # noqa: E402
+    StringFactor,
+    StringFactorGraph,
+    StringVariable,
+    TreeStringMarginal,
+)
+from quivers.core.relations.conditional import ConditionalStringQuery  # noqa: E402
+from quivers.core.relations.dual import (  # noqa: E402
+    FiniteStringScore,
+    StringMapCertificate,
+    StringMapResult,
+    dual_string_map,
+)
+from quivers.core.relations.projection import (  # noqa: E402
+    NgramFamily,
+    NgramProjection,
+    PenalizedNgramProjection,
+)
+from quivers.core.relations.beliefs import (  # noqa: E402
+    FiniteStringBeliefPlan,
+    StringBeliefResult,
+    StringEPResult,
+    StringSiteProjection,
+)
+from quivers.core.relations.contextual_edit import (  # noqa: E402
+    ContextualEditChannel,
+    ContextualEditPlan,
+)
+
+from quivers.core.relations.alignment_dual import (  # noqa: E402
+    StringAlignment,
+    StringAlignmentCertificate,
+    StringAlignmentMapResult,
+    dual_alignment_map,
+)
+
+from quivers.core.relations.marginal_map import (  # noqa: E402
+    MarginalOutputChoice,
+    best_marginal_output,
+)
+from quivers.core.relations.ngram_message import NgramMessagePlan  # noqa: E402
+
+from quivers.core.relations.regular_projection import (  # noqa: E402
+    RegularNgramProjection,
+    penalized_regular_ngram_projection,
+)
+
+from quivers.core.relations.regular_ep import (  # noqa: E402
+    RegularStringBelief,
+    RegularStringEPResult,
+    RegularStringSite,
+    RegularStringSiteUpdate,
+    regular_string_ep,
+)
+from quivers.core.relations.equality import auto_intersect  # noqa: E402
+from quivers.core.relations.backoff import FailureArc, backoff_query  # noqa: E402
+from quivers.core.relations.minimization import minimize_static_acceptor  # noqa: E402
+from quivers.core.relations.ranked import (  # noqa: E402
+    compile_ranked_ot,
+    ranked_output_candidates,
 )

@@ -9,6 +9,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - **Exact finite log expectations.** A single checked Random handler can sum scalar log scores across several dependent or structured finite draws with live gradients.
+- **Cyclic fixed-word path posteriors.** Certified component closure supplies arc counts, entropy, additive risks, and bounded draws from a finite path distribution while preserving original occurrences.
+- **Expectation propagation with regular string messages.** A typed graph uses sparse cavity joins and compact fitted n-gram sites over declared regular supports. Local projection, outer convergence, and relation limits have separate diagnostics.
+- **Sparse penalized n-gram projection.** Forward-KL projection on finite regular support estimates moments through path sums. The structured penalty selects features, and the fitted message compiles only the active ones.
+- **Compact regular n-gram messages.** Deterministic suffix states reweight a sparse language by live n-gram coefficients, retaining epsilon alignments, original weight owners, and ordinary closure checks.
+- **Alignment-marginal output ranking.** Compare the exact sum of all alignments for each declared candidate output in acyclic Markov observations, with a differentiable log score for the selected pair.
+- **Adaptive joint string alignment MAP.** Exact sparse local decoders use bounded n-gram multipliers to coordinate acyclic LogProb factors. Agreement on full words can certify the joint alignment optimum.
+- **Compiled capped ranked constraints.** Finite caps make it possible to compile one transducer for every input word. A sparse competitor tracker filters the original paths, retaining ties, parameters, and epsilon alignments.
+- **Sparse path entropy and additive risk.** Acyclic fixed-word observations expose log normalization, conditional path entropy, and expected costs on original arcs and boundary marks through packed inside–outside passes.
+- **Batched contextual edit channels.** A trainable whole-input scorer supplies local edit probabilities before the packed executor sums compatible alignments. The insertion bound defines a proper conditional distribution, with explicit budgets for action cells and observation graphs.
+- **Fixed-input ranked string constraints.** An exact lexicographic filter retains every derivation with the minimum violation vector, including ties and zero-violation cycles, with the original numerical weights.
+- **Exact static weighted acceptor minimization.** Proportional suffix series share one state in epsilon-free deterministic Markov acceptors with acyclic positive support. The quotient preserves each accepted weight exactly when its coefficients fit the input dtype.
 - **Sparse relations over strings.** `StringSet` describes an unbounded tape and `RationalRelation` sums the weights of accepting walks for fixed words using a sparse index. Arc occurrences can share weight slots, and reused queries read the live weights on every evaluation. An explicit size-checked restriction provides a `FiniteMorphism` for callers that need a tensor.
 - **Serializable sparse relation specifications.** `RationalRelationSpec` stores ordered tapes, arcs, boundary marks, and stable weight identities in the QIEC codec. Runtime binding resolves those identities to the original tensors, preserving shared parameters and derivatives.
 - **Fixed-word composition of sparse relations.** `ComposedRelation` matches two bivariate relations on their shared tape. Its epsilon filter counts each compatible pair of paths once, and reusable queries score the live operand weights with explicit construction limits.
@@ -17,6 +28,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Regular operations on sparse relations.** Weighted union, concatenation, and Kleene closure preserve path multiplicities and original weight sources. Queries use the same bounded closure checks when repetition gives a productive cycle.
 - **Single-tape joins and total mass.** Weighted relations can synchronize one typed tape and retain or sum over its word. A total-weight query sums all accepting walks with the existing closure diagnostics.
 - **Runnable sparse noisy-channel example.** A geometric source and a deletion channel share a parameter and infer an unbounded source length using the sparse relation calculus.
+- **Path inference for fixed strings.** Acyclic Markov and LogProb queries provide exact path ranking, conditional path sampling, and differentiable sparse expected arc counts with the original occurrence identities.
+- **Exact inference on forests of string factors.** Typed variables, observations, and sparse relation joins yield exact unary tree marginals, partition weights, and normalized word probabilities. Repeated uses of a weight source share its values within each evaluation.
+- **Globally normalized sparse string conditionals.** Fixed input tapes define a conditional over every output word tuple. The numerator and the closure-checked normalizer share one live weight evaluation.
+- **Certified finite string MAP.** Dual decomposition over explicitly listed string supports maintains exact rational bounds and certifies optimality when the adjusted factor maximizers agree on full words.
+- **Fixed n-gram projection.** A finite declared n-gram family matches tilted moments by inclusive-KL projection. It reports residuals, local solver status, and differentiable fitted log probabilities.
+- **Loopy belief propagation on finite string supports.** Explicitly listed support words define differentiable synchronous factor messages with optional damping, fixed-point residuals, and visible limits.
+- **Fixed-family expectation propagation for finite string graphs.** The finite message plan uses n-gram tilted projections, cavity division, family-preserving damping, and separate diagnostics for site fits and outer sweeps.
+- **Tree-group penalized n-gram projection.** Finite EP can penalize prefix groups with an exact ordered proximal map and report composite optimality separately from moment matching and outer convergence.
+- **Certified tape equality.** Auto-intersection keeps paths that realize the same word on two tapes when each productive cycle has zero net delay. It preserves path multiplicities and live weights under explicit construction limits.
+- **Sparse fixed-word backoff.** Deterministic acceptors follow weighted failure links on structural absence of a symbol while preserving explicit zero transitions and original weight sources.
 - **Bounded closure of productive cycles.** A fixed-word `RationalRelation` query can use the algebra's star for strongly connected cyclic components. The plan preserves parallel occurrences and live gradients and reports the order of each local closure matrix.
 - Checked lexical deductions can return weighted forms, categories, or full goal items. QVR programs can normalize reading weights and use them in a response likelihood, with gradients reaching lexical and supported production weights. Token tensors computed in QVR can feed the same query.
 - Checked outcome queries can group goal weights by a deterministic QVR computation that returns a discrete scalar or a closed constructor value.
@@ -31,6 +52,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **Ranked path decoding.** Lazy merging of exact suffix scores avoids multiplying each retained suffix by every incoming arc.
+- Fixed-word path sums can recompute path intermediates during backward. The weight source is evaluated once.
 - Fixed-word path sums evaluate arcs in batches by topological level. Incoming terms use linear space even when states have very different numbers of incoming arcs.
 
 ## [0.70.0] - 2026-11-27
