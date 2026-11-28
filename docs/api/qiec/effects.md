@@ -1884,7 +1884,7 @@ both branches call the same sampler under the same checked address, the
 branches can use different probabilities and return different values.
 Any change to the ordered address sequence, including an extra draw or
 a different call activation, prevents a fixed-shape batch. This check
-uses scalar replay. Tensor replay below still requires literal branches.
+uses scalar replay. The tensor planner below admits a narrower case shape.
 
 The joint history law is the product of the row laws at the supplied
 shared values. Each observed address contains the axis label, row
@@ -1938,18 +1938,34 @@ assert replay.linearization.jvp((1,), ((0, 0), (0, 0))) == (0, 4)
 
 ### Tensor replay and sampling
 
-`BernoulliTensorAxis` runs a narrower fragment through one QIEC evaluator
-pass using Torch tensors. Shared inputs stay scalar until an operation
+`BernoulliTensorAxis` runs the literal-branch fragment through one QIEC
+evaluator pass using Torch tensors. Shared inputs stay scalar until an operation
 needs the row axis. Each Bernoulli request produces a separate choice and
 log probability for each row, even when every row has the same
 probability. The tensor pass retains the original request address and adds
-the row ordinal on each tape. The output reports source passes and steps.
+the row ordinal on each tape. The output reports passes, aggregate source
+steps, and lane steps, which weight each pass by its active row count.
 
 The active source uses addition, subtraction, multiplication, negation,
-and conversion of a Boolean to a Real. Branches must have literal Boolean
-conditions. The evaluator runs only the selected arm, so an unselected
-division by zero has no effect. The tensor pass checks that every reached
-probability is strictly between zero and one in the run's floating dtype.
+and conversion of a Boolean to a Real. The evaluator runs only the selected
+arm and checks that every reached probability is strictly between zero and
+one in the run's floating dtype.
+
+The tensor planner also accepts a closed two-constructor case when a pure
+initial call chooses its constructor with a single strict comparison of a Real
+input to a literal. Each arm must call the same direct Bernoulli helper once.
+Its complete source draw address must agree across reached arms. Replay runs
+each nonempty group of rows that shares a constructor and a replayed bit. For
+sampling, up to two additional passes collect the active probabilities at the
+common address before drawing one vector in original row order. Replay needs
+at most four passes and sampling needs at most six, regardless of row count.
+Fuel bounds their combined source steps. Only selected rows reach partial
+operations such as division. Crossing the selector threshold changes the
+branch being differentiated, and the axis refuses equality at the threshold.
+The native Bernoulli law scores probabilities directly, including values
+closer to zero or one than machine epsilon. The case planner checks that the
+reciprocal of the scored mass fits in the working dtype. Replay checks the
+recorded outcome. Sampling checks both possible masses before drawing.
 
 `replay` accepts the same addressed tapes as the exact scalar plan when
 the source satisfies both fragments. The output has one value per row
@@ -1989,6 +2005,51 @@ def fixed(s):
 values, tangents = torch.func.jvp(fixed, (shared,), (torch.ones_like(shared),))
 torch.testing.assert_close(values, sample.values)
 assert tangents.tolist() == [float(tape.choices[0][1]) for tape in sample.tapes]
+```
+
+<!-- python: run -->
+```python
+import torch
+from quivers.dsl import Compiler, parse
+from quivers.qiec import BernoulliTensorAxis
+
+source = """
+instance random : Random
+
+family Route : Type
+    constructor Upper : Real -> Route
+    constructor Lower : Real -> Route
+
+define route(x : Real) : Route !{} =
+    if x > 0.0 then
+        return construct Upper(x) as Route
+    else
+        return construct Lower(x) as Route
+
+define toss(p : Real) : Bool !{random} =
+    perform random.sample[Bool](site("toss"), Bernoulli(p))
+
+define unit(x : Real, p : Real, q : Real) : Real !{random} =
+    let selected <- route(x)
+    case selected motive => Real
+        Upper(offset) =>
+            let bit <- toss(p)
+            return offset + real(bit)
+        Lower(offset) =>
+            let bit <- toss(q)
+            return offset + 2.0 * real(bit)
+"""
+module = Compiler(parse(source), module_name="tensor-case").qiec_module
+entry = next(item for item in module.computations if item.name == "unit")
+axis = BernoulliTensorAxis(module, entry.id, "Items", shared_arity=0)
+rows = torch.tensor([[0.5, 0.25, 0.75], [-0.5, 0.25, 0.75]], dtype=torch.float64)
+shared = rows.new_empty((0,))
+sample = axis.sample(shared, rows, generator=torch.Generator().manual_seed(7))
+bits = rows.new_tensor([int(tape.choices[0][1]) for tape in sample.tapes])
+torch.testing.assert_close(sample.values, rows[:, 0] + bits * rows.new_tensor([1.0, 2.0]))
+assert [tape.choices[0][0][1] for tape in sample.tapes] == [(('call', 'toss#2'),)] * 2
+assert sample.source_passes == 4
+assert axis.replay(shared, rows, sample.tapes).source_passes == 2
 ```
 
 ::: quivers.qiec.bernoulli_tensor_axis

@@ -15,11 +15,15 @@ from quivers.continuous.tensor_backend import TensorBackend
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     RANDOM_SAMPLE,
+    BernoulliRowReplay,
     BernoulliTensorAxis,
     Bind,
     Case,
+    EvaluationError,
     JvpBoundaryError,
+    JvpLimit,
     JvpUnsupported,
+    NumberDomain,
     Perform,
     SiteEstimator,
     plan_bernoulli_batch,
@@ -262,8 +266,6 @@ def test_scalar_enumeration_and_fixed_batch_joint_jvp_vjp():
     )
     assert reverse_rows.shape == batch.shape
     assert reverse_rows.expected.values == batch.expected.values[::-1]
-    with pytest.raises(JvpUnsupported, match="WithTraceAddresses"):
-        BernoulliTensorAxis(discharged, owner, "Items", 0)
     with pytest.raises(JvpBoundaryError, match="input-dependent equality boundary"):
         plan_bernoulli_gradient(
             discharged, owner, (0, *_POINTS[0][1:]), (1, 0, 0), policies
@@ -345,10 +347,7 @@ def test_disjoint_arms_are_scalar_but_refuse_a_fixed_batch():
         plan_bernoulli_batch(discharged, owner, "Items", (), _POINTS, policies)
 
 
-@pytest.mark.parametrize(
-    "mutation", ("shift_address", "duplicate_draw", "select_wrong_case")
-)
-def test_reached_source_mutations_separate_addresses_and_measure(mutation):
+def _mutated_source(mutation):
     source = _SOURCE
     if mutation == "shift_address":
         source = source.replace(
@@ -369,6 +368,14 @@ def test_reached_source_mutations_separate_addresses_and_measure(mutation):
         )
     else:
         source = source.replace("return construct Right(s)", "return construct Left(s)")
+    return source
+
+
+@pytest.mark.parametrize(
+    "mutation", ("shift_address", "duplicate_draw", "select_wrong_case")
+)
+def test_reached_source_mutations_separate_addresses_and_measure(mutation):
+    source = _mutated_source(mutation)
     _, raw, discharged, owner = _compile(source)
     policies = _source_policies(raw, False)
     right = _POINTS[1]
@@ -421,3 +428,246 @@ def test_public_cli_replays_selected_constructor_site(tmp_path, capsys):
     args.site = ("right=true", "left=false")
     assert run_cli(args) == 1
     assert "left" in capsys.readouterr().out
+
+
+def _tensor_case(source=_SOURCE, *, shared_arity=0):
+    _, raw, module, identity = _compile(source)
+    site = _source_policies(raw, False)[0].site
+    address = (str(site), (("call", "choose#2"), ("call", "sample_once#3")), ())
+    return BernoulliTensorAxis(module, identity, "Items", shared_arity), address
+
+
+def _tapes_at(address, bits):
+    return tuple(
+        BernoulliRowReplay("Items", row, ((address, bit),))
+        for row, bit in enumerate(bits)
+    )
+
+
+def _tensor(value):
+    return torch.tensor(value, dtype=torch.float64)
+
+
+@pytest.mark.parametrize("nrows", (4, 16, 64, 256))
+def test_physical_cohorts_match_independent_joint_and_derivatives(nrows):
+    axis, address = _tensor_case()
+    points = _POINTS * (nrows // 2)
+    rows = _tensor(points)
+    shared = _tensor([])
+    bits = (False, True, True, False) * (nrows // 4)
+    tapes = _tapes_at(address, bits)
+    atoms = [_oracle(point, bit) for point, bit in zip(points, bits, strict=True)]
+    actual = axis.replay(shared, rows, tapes)
+    assert actual.tapes == tapes
+    assert [tape.addresses for tape in tapes] == [
+        (("Items", row, address),) for row in range(nrows)
+    ]
+    assert (actual.source_passes, actual.source_steps, actual.lane_steps) == (
+        4,
+        100,
+        25 * nrows,
+    )
+    torch.testing.assert_close(actual.values, _tensor([atom[1] for atom in atoms]))
+    scores = _tensor([atom[0] for atom in atoms]).log()
+    torch.testing.assert_close(actual.log_scores[:, 0], scores)
+    torch.testing.assert_close(actual.log_scores.sum().exp(), scores.exp().prod())
+
+    def replay(inputs):
+        result = axis.replay(shared, inputs, tapes)
+        return result.values, result.log_scores[:, 0]
+
+    seeds = torch.arange(1, nrows * 3 + 1, dtype=torch.float64).reshape(nrows, 3) / 8
+    value_partial = _tensor([atom[2] for atom in atoms])
+    score_partial = _tensor([atom[3] for atom in atoms])
+    _, (values, log_scores) = torch.func.jvp(replay, (rows,), (seeds,))
+    torch.testing.assert_close(values, (seeds * value_partial).sum(1))
+    torch.testing.assert_close(log_scores, (seeds * score_partial).sum(1))
+    _, backward = torch.func.vjp(replay, rows)
+    (row_adjoint,) = backward((seeds[:, 0], seeds[:, 2]))
+    torch.testing.assert_close(
+        row_adjoint, seeds[:, :1] * value_partial + seeds[:, 2:] * score_partial
+    )
+    with pytest.raises(ValueError, match="axis and address order"):
+        axis.replay(shared, rows, tapes[::-1])
+
+
+def test_physical_cohort_sampling_draws_once_in_original_row_order(monkeypatch):
+    axis, address = _tensor_case()
+    points = tuple(
+        (s, Fraction(i + 1, 35), Fraction(31 - i, 35))
+        for i, (s, _, _) in enumerate(_POINTS * 16)
+    )
+    rows = _tensor(points)
+    expected_probs = _tensor([_oracle(point, True)[0] for point in points])
+    bernoulli = torch.bernoulli
+    draws = []
+
+    def record(probs, *, generator):
+        draws.append(probs.detach().clone())
+        return bernoulli(probs, generator=generator)
+
+    monkeypatch.setattr(torch, "bernoulli", record)
+    seed = 53
+    result = axis.sample(
+        _tensor([]), rows, generator=torch.Generator().manual_seed(seed)
+    )
+    assert len(draws) == 1
+    torch.testing.assert_close(draws[0], expected_probs)
+    bits = tuple(
+        bernoulli(expected_probs, generator=torch.Generator().manual_seed(seed))
+        .bool()
+        .tolist()
+    )
+    assert result.tapes == _tapes_at(address, bits)
+    assert result.source_passes == 6
+    assert result.source_steps == 138
+    assert result.lane_steps == 44 * len(points)
+    replay = axis.replay(_tensor([]), rows, result.tapes)
+    torch.testing.assert_close(result.values, replay.values)
+    torch.testing.assert_close(result.log_scores, replay.log_scores)
+
+
+def test_physical_cohort_skips_partial_arms_and_empty_subsets():
+    source = _SOURCE.replace("return offset + q + 2.0", "return offset + q + 2.0 / q")
+    axis, address = _tensor_case(source)
+    points = tuple((s, p, 0) for s, p, _ in _POINTS)
+    rows = _tensor(points)
+    selected = axis.replay(_tensor([]), rows, _tapes_at(address, (True, False)))
+    torch.testing.assert_close(selected.values, _tensor([1.75, -0.5]))
+    assert selected.source_passes == 2
+    with pytest.raises(EvaluationError, match="div_real divides by zero"):
+        axis.replay(_tensor([]), rows, _tapes_at(address, (True, True)))
+
+    for row, bit in ((0, True), (1, False)):
+        local = rows[row].expand(16, 3)
+        only = axis.replay(_tensor([]), local, _tapes_at(address, (bit,) * 16))
+        assert only.source_passes == 1
+        assert only.lane_steps == 16 * only.source_steps
+    with pytest.raises(ValueError, match="source arity"):
+        axis.replay(_tensor([]), rows[:0], ())
+    with pytest.raises(JvpBoundaryError, match="selector.*equality boundary"):
+        axis.replay(
+            _tensor([]), _tensor([(0, 0.25, 0.75)]), _tapes_at(address, (False,))
+        )
+
+
+def test_physical_cohorts_keep_shared_differentiation_and_total_fuel():
+    source = _SOURCE.replace(
+        "define selected(s : Real, p : Real, q : Real)",
+        "define selected(p : Real, s : Real, q : Real)",
+    ).replace("selected(s, p, q)", "selected(p, s, q)")
+    _, raw, module, identity = _compile(source)
+    axis, address = _tensor_case(source, shared_arity=1)
+    shared = _tensor([0.25])
+    rows = _tensor([(s, q) for s, _, q in _POINTS])
+    tapes = _tapes_at(address, (True, False))
+
+    def values_and_scores(s, x):
+        result = axis.replay(s, x, tapes)
+        return result.values, result.log_scores[:, 0]
+
+    _, transpose = torch.func.vjp(values_and_scores, shared, rows)
+    adjoint, local = transpose((_tensor([3, 4]), _tensor([2, 5])))
+    torch.testing.assert_close(adjoint, _tensor([3 + 2 * Fraction(4, 3)]))
+    torch.testing.assert_close(local, _tensor([[3, 0], [4, 4 - 5 * Fraction(4, 3)]]))
+    actual = axis.replay(shared, rows, tapes)
+    assert actual.source_passes == 2
+    assert actual.lane_steps == actual.source_steps
+    for count in (actual.source_steps - 1, actual.source_steps):
+        limited = BernoulliTensorAxis(module, identity, "Items", 1, fuel=count)
+        if count < actual.source_steps:
+            with pytest.raises(JvpLimit):
+                limited.replay(shared, rows, tapes)
+        else:
+            assert limited.replay(shared, rows, tapes).source_steps == count
+
+
+def test_physical_cohorts_check_full_source_address_before_sampling():
+    axis, address = _tensor_case(_mutated_source("shift_address"))
+    rows = _tensor(_POINTS)
+    shared = _tensor([])
+    with pytest.raises(ValueError, match="original request order"):
+        axis.replay(shared, rows, _tapes_at(address, (True, False)))
+    generator = torch.Generator().manual_seed(17)
+    initial = generator.get_state()
+    with pytest.raises(JvpUnsupported, match="one common original draw address"):
+        axis.sample(shared, rows, generator=generator)
+    assert torch.equal(initial, generator.get_state())
+
+    for source in (_DISJOINT, _mutated_source("duplicate_draw")):
+        _, _, module, identity = _compile(source)
+        with pytest.raises(JvpUnsupported, match="WithTraceAddresses"):
+            BernoulliTensorAxis(module, identity, "Items", 0)
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.float64))
+def test_physical_cohort_uses_the_native_probability_score_across_logit_clamps(dtype):
+    source = _SOURCE.replace("resume(0.25 + 0.5 * v)", "resume(v)")
+    axis, address = _tensor_case(source)
+    _, raw, _, _ = _compile(source)
+    epsilon = torch.finfo(dtype).eps
+    probabilities = (
+        2 * epsilon,
+        epsilon,
+        epsilon / 256,
+        1 - 2 * epsilon,
+        1 - epsilon,
+        1 - epsilon / 2,
+    )
+    rows = torch.tensor(
+        [[0.5, p, 0.75] for p in probabilities], dtype=dtype
+    ).requires_grad_()
+    bits = tuple(p < 0.5 for p in probabilities)
+    mass = tuple(
+        p if bit else 1 - p for p, bit in zip(probabilities, bits, strict=True)
+    )
+    slope = tuple((1 if bit else -1) / m for bit, m in zip(bits, mass, strict=True))
+    result = axis.replay(rows.new_empty(0), rows, _tapes_at(address, bits))
+    torch.testing.assert_close(
+        result.log_scores[:, 0], rows.new_tensor([log(m) for m in mass])
+    )
+    (gradient,) = torch.autograd.grad(result.log_scores.sum(), rows)
+    torch.testing.assert_close(gradient, rows.new_tensor([[0, g, 0] for g in slope]))
+
+    for position, bit in enumerate(bits):
+        point = rows[position].detach().requires_grad_()
+        run = sample_program(
+            raw,
+            "picked",
+            data=dict(zip(("s", "p", "q"), point, strict=True)),
+            sites={"shared": bit},
+            distributions=TensorBackend(),
+            numbers=NumberDomain.of(point),
+        )
+        (native_gradient,) = torch.autograd.grad(run.log_joint, point)
+        torch.testing.assert_close(run.log_joint, result.log_scores[position, 0])
+        torch.testing.assert_close(native_gradient, gradient[position])
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.float64))
+def test_physical_cohort_refuses_unrepresentable_reached_score_slopes(dtype):
+    axis, address = _tensor_case(_SOURCE.replace("resume(0.25 + 0.5 * v)", "resume(v)"))
+    subnormal = torch.nextafter(
+        torch.tensor(0.0, dtype=dtype), torch.tensor(1.0, dtype=dtype)
+    )
+    assert subnormal > 0 and torch.isfinite(subnormal.log())
+    assert not torch.isfinite(subnormal.reciprocal())
+    rows = torch.tensor(
+        [[0.5, subnormal.item(), 0.75], [-0.5, subnormal.item(), 0.75]], dtype=dtype
+    )
+    shared = rows.new_empty(0)
+    with pytest.raises(
+        JvpUnsupported, match="score derivative.*outside working precision"
+    ):
+        axis.replay(shared, rows, _tapes_at(address, (True, False)))
+    observed = axis.replay(shared, rows, _tapes_at(address, (False, False)))
+    torch.testing.assert_close(observed.log_scores, rows.new_tensor([[0], [log(0.25)]]))
+    generator = torch.Generator().manual_seed(17)
+    initial = generator.get_state()
+    with pytest.raises(
+        JvpUnsupported, match="score derivative.*outside working precision"
+    ):
+        axis.sample(shared, rows, generator=generator)
+    assert torch.equal(initial, generator.get_state())
+    inactive = axis.sample(shared, rows[1:], generator=generator)
+    assert inactive.source_passes == 2
