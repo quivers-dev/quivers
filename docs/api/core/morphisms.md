@@ -287,8 +287,59 @@ When the reachable graph, star order, closure cells, or exact arithmetic
 exceeds a limit, the call raises the corresponding resource error.
 Unsupported algebra or precision, divergence, an unverified contraction,
 and an interval that misses the requested tolerance have distinct
-diagnostics. LogProb requires a separate directed transcendental
-enclosure before this value guarantee can apply to log weights.
+diagnostics. The acyclic LogProb guarantee uses directed
+transcendental enclosures.
+
+### Certifying numerical accuracy of acyclic LogProb path weights
+
+`certify_logprob_path_weight` checks an absolute tolerance in log units
+for a fixed-word observation whose productive graph is acyclic. The
+ordinary packed score and the verifier read the same evaluated binary64
+slot snapshot. The returned tensor keeps its ordinary derivative, and
+the certificate concerns its value.
+
+The verifier converts each used binary64 log weight to Decimal exactly.
+It treats negative infinity as exact zero mass and a zero log weight as
+exact unit mass. For each other weight, it encloses the exponential by
+the two neighbors of the correctly rounded nearest-even result.
+[Python's Decimal operations](https://docs.python.org/3.14/library/decimal.html#decimal.Decimal.exp)
+
+Let $B_q$ be the final weight at configuration $q$. In reverse
+topological order the verifier bounds $S_q=B_q+\sum_{e:q\to r}w_e S_r$.
+All weights and suffix masses are nonnegative, so each lower-bound
+operation may use the lower endpoints of its operands and round down.
+The upper-bound operations use upper endpoints and round up. Each
+sparse update uses a directed fused multiply-add with one final rounding.
+Summing over the initial marks in the same way encloses the exact
+mass $Z$. [General Decimal Arithmetic Specification](https://speleotrove.com/decimal/daops.html)
+
+Monotonicity of the logarithm and the neighboring decimals around its
+nearest-even result give rational bounds $L\leq\log Z\leq U$ when
+the mass interval is positive. The verifier tests the larger distance
+from the packed score to $L$ and $U$ in exact rational arithmetic. Both
+mass endpoints equal to zero and a packed score of negative infinity
+give a verified zero mass. Its log endpoints are absent and its error
+is zero by convention.
+
+The declared adjusted exponent limit $E$ is symmetric. Each exponentiated
+input must satisfy $|\ell|\leq 2E$, which keeps its exact mass in range
+because $e^2<10$. Later arithmetic, including the two logarithms and their
+needed neighbors, must also stay in normal Decimal range. A path with
+a finite log weight of $-1000$ can pass these checks even though its mass
+would underflow in binary64. Exponent exhaustion and subnormal or
+unavailable endpoints yield resource refusals. A productive epsilon
+cycle is outside the certified domain. An unsupported dtype, a nonfinite
+packed score on positive support, and an interval too wide for the
+requested tolerance have distinct diagnostics.
+
+The verifier uses $O(V+E_a+W)$ graph work for $V$ active configurations,
+$E_a$ arc occurrences, and $W$ weight slots. The Decimal work budget
+counts at most four operations per exponentiated slot, two per used arc
+or initial mark, and four for the terminal logarithm bounds. This
+counts calls to the arithmetic library. Decimal precision and exponent
+range bound the stored operand sizes. The verifier checks the integer
+bit bound before converting a Decimal endpoint to a rational and
+charges the exact operations in the final error test separately.
 
 ## Exact string factor trees
 
@@ -1094,6 +1145,7 @@ choices held fixed.
         - NgramProjection
         - PathStatistics
         - PathWeightCertificate
+        - LogPathWeightCertificate
         - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
         - PrunedStringBeliefResult
@@ -1121,6 +1173,7 @@ choices held fixed.
         - backoff_total_weight
         - best_marginal_output
         - certify_markov_path_weight
+        - certify_logprob_path_weight
         - closure
         - compile_ranked_ot
         - concatenate
