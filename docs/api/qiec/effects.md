@@ -1018,6 +1018,74 @@ assert plan.sample(seed=12).estimate.value == Fraction(3, 2)
 
 ::: quivers.qiec.finite_importance
 
+## Finite observation and intervention
+
+`compare_bernoulli_do_and_condition` compares the effect of observing
+one addressed Boolean draw and fixing that draw to the same value.
+Both queries use a checked finite source model in which each draw
+is a separate probabilistic mechanism. The treatment and response
+addresses must occur on every complete history. The source returns
+a positive observation factor on each history.
+
+Conditioning on the treatment retains its probability in the source
+weights. The intervention replaces that kernel by a point mass at the
+chosen value. The returned interventional weights omit the original
+probability of the treated draw and its derivative. The other kernels
+use their source probabilities at each history. Both queries include
+the source's observation factor and normalize with their own evidence.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import (
+    AddressedBernoulliEvent,
+    Bind,
+    Perform,
+    SiteEstimator,
+    compare_bernoulli_do_and_condition,
+)
+
+source = """
+instance random : Random
+
+define propensity(c : Bool, p : Real) : Real !{} =
+    if c then
+        return 0.75
+    else
+        return p
+
+define model(p : Real) : Real !{random} =
+    let c <- perform random.sample[Bool](site("confounder"), Bernoulli(0.5))
+    let q <- propensity(c, p)
+    let t <- perform random.sample[Bool](site("treatment"), Bernoulli(q))
+    return 1.0
+"""
+module = Compiler(parse(source), module_name="finite-intervention").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "model")
+policies = []
+term = entry.body
+while isinstance(term, Bind):
+    if isinstance(term.first, Perform):
+        site = term.first.request.origin.static_site
+        policies.append(SiteEstimator(site=site, estimator="enumerate"))
+    term = term.then
+confounder, treatment = policies
+comparison = compare_bernoulli_do_and_condition(
+    module, entry.id, (Fraction(1, 4),), (1,), tuple(policies),
+    treatment=AddressedBernoulliEvent((str(treatment.site), (), ()), True),
+    outcome=AddressedBernoulliEvent((str(confounder.site), (), ()), True),
+)
+assert (comparison.conditioned.value, comparison.conditioned.tangent) == (
+    Fraction(3, 4), Fraction(-3, 4),
+)
+assert (comparison.intervened.value, comparison.intervened.tangent) == (
+    Fraction(1, 2), 0,
+)
+```
+
+::: quivers.qiec.finite_intervention
+
 ## Finite-step Metropolis derivatives
 
 `finite_metropolis_jvp` takes an initial law, positive target weights,
