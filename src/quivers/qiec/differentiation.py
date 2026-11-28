@@ -73,8 +73,30 @@ class ExactJvp:
 
 
 @dataclass(frozen=True, slots=True)
+class ExactMixedDerivative:
+    """A scalar and its derivatives along two independent input directions.
+
+    Parameters
+    ----------
+    value : Fraction
+        The result at the supplied point.
+    first : Fraction
+        The derivative along the first direction.
+    second : Fraction
+        The derivative along the second direction.
+    mixed : Fraction
+        The Hessian evaluated on the two directions.
+    """
+
+    value: Fraction
+    first: Fraction
+    second: Fraction
+    mixed: Fraction
+
+
+@dataclass(frozen=True, slots=True)
 class _Dual:
-    """An immutable primal and tangent in the rational arithmetic fragment.
+    """Coefficients of a scalar in two square-zero perturbation variables.
 
     Parameters
     ----------
@@ -85,15 +107,28 @@ class _Dual:
     dependent : bool
         Whether the expression depends syntactically on any input. A
         zero tangent in one direction does not establish independence.
+    second_tangent : Fraction
+        Its derivative along the second perturbation.
+    mixed : Fraction
+        The coefficient of the product of the two perturbations.
     """
 
     value: Fraction
     tangent: Fraction
     dependent: bool
+    second_tangent: Fraction
+    mixed: Fraction
 
 
-def _dual(value: Fraction, tangent: Fraction, dependent: bool) -> _Dual:
-    """Construct a dual number under the coefficient bound.
+def _dual(
+    value: Fraction,
+    tangent: Fraction,
+    dependent: bool,
+    *,
+    second_tangent: Fraction = Fraction(),
+    mixed: Fraction = Fraction(),
+) -> _Dual:
+    """Construct a scalar in the perturbation algebra under the coefficient bound.
 
     Parameters
     ----------
@@ -103,28 +138,28 @@ def _dual(value: Fraction, tangent: Fraction, dependent: bool) -> _Dual:
         The directional derivative.
     dependent : bool
         Whether either operand can depend on the inputs.
+    second_tangent : Fraction
+        The derivative along the second perturbation.
+    mixed : Fraction
+        The coefficient of the product of both perturbations.
 
     Returns
     -------
     _Dual
-        The exact immutable pair and its dependence flag.
+        The exact immutable coefficients and their dependence flag.
 
     Raises
     ------
     JvpLimit
-        If the primal or tangent exceeds the coefficient limit.
+        If any coefficient exceeds the size limit.
     """
-    if (
-        max(
-            value.numerator.bit_length(),
-            value.denominator.bit_length(),
-            tangent.numerator.bit_length(),
-            tangent.denominator.bit_length(),
-        )
+    if any(
+        max(coefficient.numerator.bit_length(), coefficient.denominator.bit_length())
         > _MAX_COEFFICIENT_BITS
+        for coefficient in (value, tangent, second_tangent, mixed)
     ):
         raise JvpLimit("exact JVP coefficient limit exceeded")
-    return _Dual(value, tangent, dependent)
+    return _Dual(value, tangent, dependent, second_tangent, mixed)
 
 
 class _ForwardEvaluator(Evaluator):
@@ -229,7 +264,13 @@ class _ForwardEvaluator(Evaluator):
         first = arguments[0]
         assert isinstance(first, _Dual)
         if name == "neg_real":
-            return _dual(-first.value, -first.tangent, first.dependent)
+            return _dual(
+                -first.value,
+                -first.tangent,
+                first.dependent,
+                second_tangent=-first.second_tangent,
+                mixed=-first.mixed,
+            )
         _, second = arguments
         assert isinstance(second, _Dual)
         dependent = first.dependent or second.dependent
@@ -241,17 +282,31 @@ class _ForwardEvaluator(Evaluator):
             return self.numbers.number("truth", compare(first.value, second.value))
         if name == "add_real":
             return _dual(
-                first.value + second.value, first.tangent + second.tangent, dependent
+                first.value + second.value,
+                first.tangent + second.tangent,
+                dependent,
+                second_tangent=first.second_tangent + second.second_tangent,
+                mixed=first.mixed + second.mixed,
             )
         if name == "sub_real":
             return _dual(
-                first.value - second.value, first.tangent - second.tangent, dependent
+                first.value - second.value,
+                first.tangent - second.tangent,
+                dependent,
+                second_tangent=first.second_tangent - second.second_tangent,
+                mixed=first.mixed - second.mixed,
             )
         if name == "mul_real":
             return _dual(
                 first.value * second.value,
                 first.tangent * second.value + first.value * second.tangent,
                 dependent,
+                second_tangent=first.second_tangent * second.value
+                + first.value * second.second_tangent,
+                mixed=first.mixed * second.value
+                + first.tangent * second.second_tangent
+                + first.second_tangent * second.tangent
+                + first.value * second.mixed,
             )
         if name == "div_real":
             if not second.value:
@@ -259,10 +314,22 @@ class _ForwardEvaluator(Evaluator):
                     "division by zero is outside the derivative domain"
                 )
             quotient = first.value / second.value
+            tangent = (first.tangent - quotient * second.tangent) / second.value
+            other = (
+                first.second_tangent - quotient * second.second_tangent
+            ) / second.value
             return _dual(
                 quotient,
-                (first.tangent - quotient * second.tangent) / second.value,
+                tangent,
                 dependent,
+                second_tangent=other,
+                mixed=(
+                    first.mixed
+                    - quotient * second.mixed
+                    - tangent * second.second_tangent
+                    - other * second.tangent
+                )
+                / second.value,
             )
         return self.power(first, second)
 
@@ -280,7 +347,7 @@ class _ForwardEvaluator(Evaluator):
         Returns
         -------
         _Dual
-            The primal and tangent.
+        The primal and derivative coefficients.
 
         Raises
         ------
@@ -298,10 +365,16 @@ class _ForwardEvaluator(Evaluator):
             raise JvpUnsupported("a negative power of zero has no derivative")
         if not power:
             return _dual(Fraction(1), Fraction(), False)
+        if power == 1:
+            return base
+        slope = power * base.value ** (power - 1)
+        curvature = power * (power - 1) * base.value ** (power - 2)
         return _dual(
             base.value**power,
-            power * base.value ** (power - 1) * base.tangent,
+            slope * base.tangent,
             base.dependent,
+            second_tangent=slope * base.second_tangent,
+            mixed=slope * base.mixed + curvature * base.tangent * base.second_tangent,
         )
 
 
@@ -373,6 +446,103 @@ def exact_jvp(
     ValueError
         If the supplied arguments, direction, or limit is malformed.
     """
+    result = _evaluate_dual(module, computation, arguments, direction, None, fuel)
+    return ExactJvp(result.value, result.tangent)
+
+
+def exact_mixed_derivative(
+    module: QiecModule,
+    computation: str,
+    arguments: tuple[int | Fraction, ...],
+    first: tuple[int | Fraction, ...],
+    second: tuple[int | Fraction, ...],
+    *,
+    fuel: int = 65_536,
+) -> ExactMixedDerivative:
+    """Evaluate a scalar's first derivatives and mixed second derivative.
+
+    The first and second input directions seed separate perturbation
+    variables. Each variable squares to zero and their product gives
+    the mixed derivative. The run requires the same regularity and
+    exact arithmetic as :func:`exact_jvp`.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked QIEC module.
+    computation : str
+        A named, closed scalar real computation.
+    arguments : tuple[int or Fraction, ...]
+        The point where both derivatives are evaluated.
+    first : tuple[int or Fraction, ...]
+        The first input direction.
+    second : tuple[int or Fraction, ...]
+        The second input direction.
+    fuel : int
+        The maximum number of reference machine steps.
+
+    Returns
+    -------
+    ExactMixedDerivative
+        The scalar value, both first directional derivatives, and the
+        Hessian's bilinear action on the given directions.
+
+    Raises
+    ------
+    JvpUnsupported
+        If the checked computation or a reached operation has no rule.
+    JvpBoundaryError
+        If an input-dependent comparison is at equality.
+    JvpLimit
+        If the evaluation exhausts a bound.
+    ValueError
+        If a point, direction, or limit is malformed.
+    """
+    result = _evaluate_dual(module, computation, arguments, first, second, fuel)
+    return ExactMixedDerivative(
+        result.value, result.tangent, result.second_tangent, result.mixed
+    )
+
+
+def _evaluate_dual(
+    module: QiecModule,
+    computation: str,
+    arguments: tuple[int | Fraction, ...],
+    direction: tuple[int | Fraction, ...],
+    second_direction: tuple[int | Fraction, ...] | None,
+    fuel: int,
+) -> _Dual:
+    """Run the checked computation with seeded perturbation coefficients.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module declaring the computation.
+    computation : str
+        The computation's name.
+    arguments : tuple[int or Fraction, ...]
+        The primal values of its parameters.
+    direction : tuple[int or Fraction, ...]
+        The first perturbation coefficients.
+    second_direction : tuple[int or Fraction, ...] or None
+        The second coefficients, or no second seed for a JVP.
+    fuel : int
+        The maximum reference step count.
+
+    Returns
+    -------
+    _Dual
+        The scalar coefficients computed by the reference machine.
+
+    Raises
+    ------
+    JvpUnsupported
+        If the computation or a reached operation has no rule.
+    JvpLimit
+        If the evaluation exhausts a bound.
+    ValueError
+        If an input or limit is malformed.
+    """
     if type(fuel) is not int or fuel < 1:
         raise ValueError("fuel must be a positive integer")
     registry = validate_module(module)
@@ -391,14 +561,17 @@ def exact_jvp(
         or any(parameter.type != REAL for parameter in parameters)
     ):
         raise JvpUnsupported("an exact JVP needs a closed scalar real computation")
-    if len(arguments) != len(parameters) or len(direction) != len(parameters):
+    second = (0,) * len(parameters) if second_direction is None else second_direction
+    if any(len(vector) != len(parameters) for vector in (arguments, direction, second)):
         raise ValueError(
             "arguments and direction must each match the computation's arity"
         )
     environment = {
-        parameter: _dual(_fraction(value), _fraction(tangent), True)
-        for parameter, value, tangent in zip(
-            parameters, arguments, direction, strict=True
+        parameter: _dual(
+            _fraction(value), _fraction(tangent), True, second_tangent=_fraction(other)
+        )
+        for parameter, value, tangent, other in zip(
+            parameters, arguments, direction, second, strict=True
         )
     }
     evaluator = _ForwardEvaluator(module=module, fuel=fuel)
@@ -411,7 +584,15 @@ def exact_jvp(
     except EvaluationError as error:
         raise JvpUnsupported(str(error)) from error
     assert isinstance(result, _Dual)
-    return ExactJvp(result.value, result.tangent)
+    return result
 
 
-__all__ = ["ExactJvp", "JvpBoundaryError", "JvpLimit", "JvpUnsupported", "exact_jvp"]
+__all__ = [
+    "ExactJvp",
+    "ExactMixedDerivative",
+    "JvpBoundaryError",
+    "JvpLimit",
+    "JvpUnsupported",
+    "exact_jvp",
+    "exact_mixed_derivative",
+]

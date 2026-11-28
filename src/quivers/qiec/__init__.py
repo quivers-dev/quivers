@@ -130,10 +130,12 @@ from quivers.qiec.discharge import (
 )
 from quivers.qiec.differentiation import (
     ExactJvp,
+    ExactMixedDerivative,
     JvpBoundaryError,
     JvpLimit,
     JvpUnsupported,
     exact_jvp,
+    exact_mixed_derivative,
 )
 from quivers.qiec.distributions import (
     DistributionBackend,
@@ -656,6 +658,7 @@ __all__ = [
     "EvidenceValue",
     "ExecutionDiagnostic",
     "ExactJvp",
+    "ExactMixedDerivative",
     "ExecutionFailure",
     "ExecutionResult",
     "ExecutionTraceEvent",
@@ -926,6 +929,7 @@ __all__ = [
     "entry_points",
     "enumerate_handler",
     "exact_jvp",
+    "exact_mixed_derivative",
     "family",
     "foreign_handler_configuration",
     "from_data",

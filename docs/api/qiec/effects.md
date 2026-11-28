@@ -73,6 +73,17 @@ result = exact_jvp(module, "squared", (3,), (Fraction(1, 2),))
 assert (result.value, result.tangent) == (36, 12)
 ```
 
+`exact_mixed_derivative` seeds two perturbations independently. Their
+product gives the mixed directional derivative. For the same $f$,
+$D^2 f(3)[1/2,2]=8$.
+
+```python
+from quivers.qiec import exact_mixed_derivative
+
+result = exact_mixed_derivative(module, "squared", (3,), (Fraction(1, 2),), (2,))
+assert (result.value, result.first, result.second, result.mixed) == (36, 12, 48, 8)
+```
+
 ::: quivers.qiec.differentiation
 
 ::: quivers.qiec.effects

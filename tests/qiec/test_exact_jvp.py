@@ -9,11 +9,13 @@ import torch
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     ExactJvp,
+    ExactMixedDerivative,
     JvpBoundaryError,
     JvpLimit,
     JvpUnsupported,
     discharge_module,
     exact_jvp,
+    exact_mixed_derivative,
     run_named,
 )
 from quivers.qiec.module import QiecModule
@@ -111,6 +113,12 @@ define fixed_branch(x : Real) : Real !{} =
 define variable_exponent(a : Real, b : Real) : Real !{} =
     return pow(a, b)
 
+define linear_power(x : Real) : Real !{} =
+    return pow(x, 1.0)
+
+define unit_power(x : Real) : Real !{} =
+    return pow(x, 0.0)
+
 define unsupported(x : Real) : Real !{} =
     return exp(x)
 
@@ -143,6 +151,35 @@ def _fixed_polynomial_derivative(
         )
 
     return (at(-2) - 8 * at(-1) + 8 * at(1) - at(2)) / (12 * step)
+
+
+def _fixed_polynomial_mixed_derivative(
+    function: Callable[..., Fraction],
+    point: tuple[Fraction, ...],
+    first: tuple[Fraction, ...],
+    second: tuple[Fraction, ...],
+) -> Fraction:
+    """Use the tensor product of two exact fourth-degree stencils."""
+    step = Fraction(1, 64)
+    stencil = ((-2, 1), (-1, -8), (1, 8), (2, -1))
+    return (
+        sum(
+            (
+                a
+                * b
+                * function(
+                    *(
+                        x + step * (i * v + j * w)
+                        for x, v, w in zip(point, first, second, strict=True)
+                    )
+                )
+                for i, a in stencil
+                for j, b in stencil
+            ),
+            Fraction(),
+        )
+        / (12 * step) ** 2
+    )
 
 
 @pytest.mark.parametrize(
@@ -282,3 +319,115 @@ def test_no_derivative_is_silently_invented(
 def test_fuel_exhaustion_cannot_report_a_derivative(module: QiecModule) -> None:
     with pytest.raises(JvpLimit, match="steps"):
         exact_jvp(module, "forever", (1,), (1,), fuel=10)
+
+
+@pytest.mark.parametrize(
+    ("name", "point", "first", "second", "formula"),
+    (
+        (
+            "combined",
+            (Fraction(3, 2), Fraction(0)),
+            (Fraction(1), Fraction(0)),
+            (Fraction(0), Fraction(1)),
+            lambda x, p: (2 * p - 1) * x**3 + x**2,
+        ),
+        (
+            "threaded",
+            (Fraction(3, 2), Fraction(2, 3)),
+            (Fraction(1, 3), Fraction(1, 5)),
+            (Fraction(-2, 5), Fraction(7, 6)),
+            lambda x, s: x * s * ((x + s) ** 2 + 1),
+        ),
+        (
+            "recurse",
+            (Fraction(5, 2),),
+            (Fraction(3, 4),),
+            (Fraction(-2, 3),),
+            lambda x: x * (x - 1) * (x - 2) ** 2,
+        ),
+    ),
+)
+def test_mixed_derivative_agrees_with_two_independent_exact_stencils(
+    module: QiecModule,
+    name: str,
+    point: tuple[Fraction, ...],
+    first: tuple[Fraction, ...],
+    second: tuple[Fraction, ...],
+    formula: Callable[..., Fraction],
+) -> None:
+    expected = ExactMixedDerivative(
+        formula(*point),
+        _fixed_polynomial_derivative(formula, point, first),
+        _fixed_polynomial_derivative(formula, point, second),
+        _fixed_polynomial_mixed_derivative(formula, point, first, second),
+    )
+    assert exact_mixed_derivative(module, name, point, first, second) == expected
+    assert exact_mixed_derivative(
+        module, name, point, second, first
+    ) == ExactMixedDerivative(
+        expected.value, expected.second, expected.first, expected.mixed
+    )
+
+
+def test_mixed_quotient_and_integer_powers(module: QiecModule) -> None:
+    a, b = point = (Fraction(3, 2), Fraction(2, 3))
+    first, second = (Fraction(1, 2), Fraction(-2, 5)), (Fraction(3, 7), Fraction(2, 3))
+    x, y = first
+    u, v = second
+    mixed = 6 * x * u / a**4 - (x * v + y * u) / b**2 + 2 * a * y * v / b**3
+    result = exact_mixed_derivative(module, "quotient", point, first, second)
+    assert result.mixed == mixed
+    assert result.first == exact_jvp(module, "quotient", point, first).tangent
+    assert result.second == exact_jvp(module, "quotient", point, second).tangent
+
+
+def test_zero_at_a_constant_or_linear_power_is_on_the_mixed_domain(
+    module: QiecModule,
+) -> None:
+    assert exact_mixed_derivative(module, "unit_power", (0,), (2,), (3,)) == (
+        ExactMixedDerivative(Fraction(1), Fraction(), Fraction(), Fraction())
+    )
+    assert exact_mixed_derivative(module, "linear_power", (0,), (2,), (3,)) == (
+        ExactMixedDerivative(Fraction(), Fraction(2), Fraction(3), Fraction())
+    )
+    squared = exact_mixed_derivative(module, "stopped", (0,), (2,), (3,))
+    assert squared == ExactMixedDerivative(
+        Fraction(), Fraction(), Fraction(), Fraction(12)
+    )
+
+
+def test_discharge_agrees_with_autograd_on_the_mixed_derivative(
+    module: QiecModule,
+) -> None:
+    point = (Fraction(3, 2), Fraction(2, 3))
+    first, second = (Fraction(2, 5), Fraction(-3, 7)), (Fraction(2, 3), Fraction(1, 2))
+    exact = exact_mixed_derivative(module, "combined", point, first, second)
+    discharged = discharge_module(module)
+    assert discharged.obstacle("combined") is None
+    assert (
+        exact_mixed_derivative(discharged.module, "combined", point, first, second)
+        == exact
+    )
+    inputs = tuple(
+        torch.tensor(float(value), dtype=torch.float64, requires_grad=True)
+        for value in point
+    )
+    runtime = run_named(discharged.module, "combined", inputs, record_trace=False).value
+    assert isinstance(runtime, torch.Tensor)
+    gradient = torch.autograd.grad(runtime, inputs, create_graph=True)
+    direction = sum(
+        (tangent * float(seed) for tangent, seed in zip(gradient, first, strict=True)),
+        torch.zeros((), dtype=torch.float64),
+    )
+    hvp = torch.autograd.grad(direction, inputs)
+    mixed = sum(
+        float(value) * float(seed) for value, seed in zip(hvp, second, strict=True)
+    )
+    assert mixed == pytest.approx(float(exact.mixed), rel=1e-13)
+
+
+def test_mixed_derivative_inherits_the_regular_point_requirement(
+    module: QiecModule,
+) -> None:
+    with pytest.raises(JvpBoundaryError, match="input-dependent equality boundary"):
+        exact_mixed_derivative(module, "affined", (0,), (0,), (0,))
