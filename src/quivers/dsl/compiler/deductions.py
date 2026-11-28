@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Hashable
-from typing import TYPE_CHECKING, Never
+from typing import Never, cast
 
 import didactic.api as dx
 import torch
@@ -105,9 +105,6 @@ from quivers.dsl.compiler._deduction_presentation import (
     deduction_guard_names,
     deduction_presentation,
 )
-
-if TYPE_CHECKING:
-    from quivers.dsl.compiler.core import Compiler
 
 
 # Category-side pattern carried by a lexicon entry: either a
@@ -704,7 +701,7 @@ class _DeductionsMixin:
         """Provided by `_StructuralMixin`."""
         raise NotImplementedError
 
-    def _compile_deduction(self: Compiler, decl: DeductionDecl) -> None:
+    def _compile_deduction(self, decl: DeductionDecl) -> None:
         """Compile a ``deduction { … }`` block into an agenda-engine
         `DeductionSystem` and register it under ``decl.name``.
 
@@ -800,7 +797,7 @@ class _DeductionsMixin:
         # a logical form slot when any rule or the ``binders`` block
         # uses one.
         guard_names = deduction_guard_names(decl)
-        module = self.qiec_module if guard_names else None
+        module = cast(_ProgramsMixin, self).qiec_module if guard_names else None
         guards = (
             {
                 item.name: item
