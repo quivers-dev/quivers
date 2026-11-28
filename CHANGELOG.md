@@ -53,6 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Globally normalized sparse string conditionals.** Fixed input tapes define a conditional over every output word tuple. The numerator and the closure-checked normalizer share one live weight evaluation.
 - **Certified finite string MAP.** Dual decomposition over explicitly listed string supports maintains exact rational bounds and certifies optimality when the adjusted factor maximizers agree on full words.
 - **Fixed n-gram projection.** A finite declared n-gram family matches tilted moments by inclusive-KL projection. It reports residuals, local solver status, and differentiable fitted log probabilities.
+- **Portable pruned string inference settings.** QIEC serializes finite candidate supports, beam width, and resource limits separately from the graph. Runtime evaluation supplies the measured diagnostics.
 - **Beam-pruned finite string beliefs.** Typed sum-product messages use a declared support limit, preserve raw and omitted masses, and report support conflicts separately from convergence.
 - **Loopy belief propagation on finite string supports.** Explicitly listed support words define differentiable synchronous factor messages with optional damping, fixed-point residuals, and visible limits.
 - **Fixed-family expectation propagation for finite string graphs.** The finite message plan uses n-gram tilted projections, cavity division, family-preserving damping, and separate diagnostics for site fits and outer sweeps.

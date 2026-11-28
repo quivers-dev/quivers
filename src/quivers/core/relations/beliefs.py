@@ -162,6 +162,16 @@ def _validate_sweeps(max_sweeps: int, tolerance: float | None, damping: float) -
         raise ValueError("invalid string message tolerance or damping")
 
 
+def _validate_pruned_settings(
+    beam: int, max_sweeps: int, tolerance: float | None, damping: float
+) -> None:
+    _validate_sweeps(max_sweeps, tolerance, damping)
+    if max_sweeps == 0:
+        raise ValueError("pruned string beliefs require at least one sweep")
+    if type(beam) is not int or beam < 1:
+        raise ValueError("the string belief beam must be a positive integer")
+
+
 def _message_residual(old: _Messages, new: _Messages) -> float:
     return max(
         0.5 * (message.exp() - proposed.exp()).abs().sum().item()
@@ -384,11 +394,7 @@ class FiniteStringBeliefPlan:
         variable or factor message. At least one sweep updates the
         uniform start before returning a converged or limited result.
         """
-        _validate_sweeps(max_sweeps, tolerance, damping)
-        if max_sweeps == 0:
-            raise ValueError("pruned string beliefs require at least one sweep")
-        if type(beam) is not int or beam < 1:
-            raise ValueError("the string belief beam must be a positive integer")
+        _validate_pruned_settings(beam, max_sweeps, tolerance, damping)
         tables, messages = self._start()
         like = tables[0]
         sweeps = 0

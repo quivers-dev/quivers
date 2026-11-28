@@ -1,4 +1,4 @@
-"""Checked records for two distinct string factor graph objectives."""
+"""Checked records for distinct string factor graph objectives."""
 
 from __future__ import annotations
 
@@ -12,12 +12,14 @@ import torch
 from quivers._values import OPAQUE_BY_VALUE
 from quivers.core.algebras import LOG_PROB
 from quivers.core.relations import (
+    FiniteStringBeliefPlan,
+    PrunedStringBeliefResult,
     RegularStringEPResult,
     StringAlignmentMapResult,
     dual_alignment_map,
     regular_string_ep,
 )
-from quivers.core.relations.beliefs import _validate_sweeps
+from quivers.core.relations.beliefs import _validate_pruned_settings, _validate_sweeps
 from quivers.core.relations.projection import _validate_projection_settings
 from quivers.core.relations.queries import _validate_limits
 from quivers.qiec._models import QiecModel
@@ -26,7 +28,7 @@ from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.string_graphs import StringFactorGraphSpec
 
 
-__all__ = ["JointAlignmentMapConfig", "RegularStringEPConfig"]
+__all__ = ["JointAlignmentMapConfig", "PrunedStringBPConfig", "RegularStringEPConfig"]
 
 
 class JointAlignmentMapConfig(QiecModel):
@@ -256,4 +258,136 @@ class RegularStringEPConfig(QiecModel):
             damping=self.damping,
             projection_tolerance=self.projection_tolerance,
             projection_max_iterations=self.projection_max_iterations,
+        )
+
+
+class PrunedStringBPConfig(QiecModel):
+    """Configure a beam-pruned schedule on declared finite string supports.
+
+    Supports describe the finite candidate pool and are kept separate
+    from the typed graph. The configuration contains only inputs and
+    limits. A run derives the convergence status and raw, retained and
+    omitted message masses from the current specified graph and weights.
+
+    Parameters
+    ----------
+    supports : tuple
+        Variable names and their candidate words in result order.
+    beam : int
+        Positive limit on the number of retained words per message.
+    max_sweeps : int
+        Positive number of permitted synchronous updates.
+    max_entries : int
+        Maximum total entries in the bound finite factor tables.
+    max_states : int
+        Cumulative observed configuration budget when building the tables.
+    max_work : int
+        Cumulative arc examination budget when building the tables.
+    max_closure_size : int or None
+        Optional size bound for productive cyclic closure components.
+    tolerance : float or None
+        Threshold for undamped pruned residual, or None for fixed sweeps.
+    damping : float
+        Old-message mixing fraction after restriction to the new support.
+    """
+
+    supports: tuple[tuple[str, tuple[tuple[int, ...], ...]], ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    beam: int
+    max_sweeps: int
+    max_entries: int
+    max_states: int
+    max_work: int
+    max_closure_size: int | None = None
+    tolerance: float | None = 1e-9
+    damping: float = 0.0
+
+    @dx.model_validator()
+    def _validate_settings(self) -> None:
+        """Check declared finite words and the beam and construction limits.
+
+        Raises
+        ------
+        ValueError
+            The supports, sweep parameters, or resource limits are invalid.
+        """
+        _validate_pruned_settings(
+            self.beam, self.max_sweeps, self.tolerance, self.damping
+        )
+        _validate_limits(self.max_states, self.max_work, self.max_closure_size)
+        if type(self.max_entries) is not int or self.max_entries < 0:
+            raise ValueError("max_entries must be a nonnegative integer")
+        names: set[str] = set()
+        if not isinstance(self.supports, tuple) or not self.supports:
+            raise ValueError("pruned string BP requires declared finite supports")
+        for row in self.supports:
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise ValueError(
+                    "finite supports require ordered name and word records"
+                )
+            name, words = row
+            if not isinstance(name, str) or not name or name in names:
+                raise ValueError(
+                    "finite supports require distinct nonempty variable names"
+                )
+            names.add(name)
+            if (
+                not isinstance(words, tuple)
+                or not words
+                or any(
+                    not isinstance(word, tuple)
+                    or any(type(symbol) is not int or symbol < 0 for symbol in word)
+                    for word in words
+                )
+            ):
+                raise ValueError(
+                    "each finite support requires words of nonnegative integers"
+                )
+            if len(words) != len(set(words)):
+                raise ValueError("each finite support requires distinct declared words")
+
+    @property
+    def objective(self) -> Literal["pruned_string_bp"]:
+        """Identify beam-pruned finite sum-product inference.
+
+        Returns
+        -------
+        Literal["pruned_string_bp"]
+            The declared approximate schedule.
+        """
+        return "pruned_string_bp"
+
+    def infer(
+        self,
+        model: StringFactorGraphSpec,
+        parameters: Mapping[ParameterId, torch.Tensor],
+    ) -> PrunedStringBeliefResult:
+        """Bind the checked graph and evaluate the declared beam schedule.
+
+        Parameters
+        ----------
+        model : StringFactorGraphSpec
+            The original typed graph, variable identities, and observations.
+        parameters : Mapping of ParameterId to torch.Tensor
+            The live original weight owners.
+
+        Returns
+        -------
+        PrunedStringBeliefResult
+            Derived approximate beliefs and measured diagnostics.
+        """
+        plan = FiniteStringBeliefPlan(
+            model.bind(parameters),
+            dict(self.supports),
+            max_entries=self.max_entries,
+            max_states=self.max_states,
+            max_work=self.max_work,
+            max_closure_size=self.max_closure_size,
+        )
+        return plan.run_pruned(
+            beam=self.beam,
+            max_sweeps=self.max_sweeps,
+            tolerance=self.tolerance,
+            damping=self.damping,
         )
