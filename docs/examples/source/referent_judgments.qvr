@@ -1,0 +1,58 @@
+object Question : FinSet 1
+object JudgedProbability : Real 1
+
+effect Choice
+    select_reading : Unit -> Bool
+
+effect Referent
+    read : Unit -> Bool
+    write : Bool -> Unit
+
+instance lexical : Choice
+instance pronoun : Choice
+instance referent : Referent
+
+handler weighted for Choice : Real -> Real with (probability : Real) [coverage=total, forwards=none, implementation=authored]
+    return answer =>
+        return answer
+    select_reading resumes omega =>
+        let first <- resume(true)
+        let second <- resume(false)
+        return probability * first + (1.0 - probability) * second
+
+handler thread for Referent : Real -> Real with (current : Bool) [coverage=total, forwards=none, implementation=authored]
+    return answer =>
+        return answer
+    read resumes 1 =>
+        resume(current)
+    write(value : Bool) resumes 1 =>
+        resume() with (value)
+
+define sentence() : Real !{lexical, pronoun, referent} =
+    let chosen <- perform lexical.select_reading()
+    perform referent.write(chosen)
+    let use_stored <- perform pronoun.select_reading()
+    let stored <- perform referent.read()
+    if stored then
+        if use_stored then
+            return 0.9
+        else
+            return 0.2
+    else
+        if use_stored then
+            return 0.6
+        else
+            return 0.3
+
+define truth_probability(lexical_logit : Real, pronoun_logit : Real) : Real !{} =
+    handle lexical with weighted(sigmoid(lexical_logit)) in
+        handle pronoun with weighted(sigmoid(pronoun_logit)) in
+            handle referent with thread(false) in
+                sentence()
+
+program judgment(lexical_logit : Real, pronoun_logit : Real) : Question -> JudgedProbability
+    let probability <- truth_probability(lexical_logit, pronoun_logit)
+    observe truth <- Bernoulli(probs=probability)
+    return probability
+
+export judgment
