@@ -28,16 +28,23 @@ def python_runtime_source(path: Path) -> bytes:
         If a runtime's shared-fragment marker is incomplete or repeated.
     """
     source = path.read_text()
-    for target in ("pyro", "pymc", "numpyro", "edward2"):
-        start = f"# qvr-shared-probability:{target}:start"
-        end = f"# qvr-shared-probability:{target}:end"
+    fragments = {
+        f"qvr-shared-probability:{target}": path.parent
+        / f"runtime_probability_{target}.py"
+        for target in ("pyro", "pymc", "numpyro", "edward2")
+    }
+    fragments["qvr-shared-torch:bernoulli"] = (
+        Path(__file__).resolve().parent.parent / "continuous" / "_bernoulli_score.py"
+    )
+    for marker, fragment in fragments.items():
+        start = f"# {marker}:start"
+        end = f"# {marker}:end"
         if start not in source and end not in source:
             continue
         if source.count(start) != 1 or source.count(end) != 1:
             raise ValueError(f"invalid probability fragment markers in {path.name}")
         prefix, rest = source.split(start)
         _, suffix = rest.split(end)
-        fragment = path.parent / f"runtime_probability_{target}.py"
         source = prefix + fragment.read_text() + suffix
     return source.encode()
 

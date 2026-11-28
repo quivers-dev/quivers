@@ -49,6 +49,7 @@ DYNAMIC_TARGET_LANGUAGES: dict[str, str] = {
 #: there are the families themselves.
 _HELPER_ROOTS: dict[str, dict[str, tuple[str, ...]]] = {
     "pyro": {
+        "Bernoulli": ("Bernoulli", "_qvr_bernoulli_log_score"),
         "TruncatedNormal": ("TruncatedNormal",),
         "LogitNormal": ("LogitNormal",),
         "HalfStudentT": ("HalfStudentT",),

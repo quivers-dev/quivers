@@ -51,6 +51,7 @@ from quivers.transpile.renderers._python_helpers import (
     with_statement,
 )
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
+from quivers.transpile.family_spelling import helper_roots
 from quivers.dsl.ast_nodes.let_expressions import (
     LetExprBinOp,
     LetExprCall,
@@ -1941,6 +1942,7 @@ def _ir_helper_classes_used(body: tuple[IRNode, ...]) -> set[str]:
     used: set[str] = {"_qvr_" + name for name in probability}
     for node in body:
         if isinstance(node, (IRSample, IRObserve)):
+            used.update(helper_roots(_TARGET, frozenset((node.family,))))
             meta = FAMILY_META.get(node.family)
             if meta is not None:
                 target = meta.target_names.get(_TARGET)
