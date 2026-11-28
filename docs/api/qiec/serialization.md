@@ -29,11 +29,14 @@ Tensor values and runtime providers belong to the binding.
 ## Fixed-word relation requests
 
 A `FixedRelationRequest` pairs a sparse relation specification with
-observed words in tape order, one of two scoring operations, and
+observed words in tape order, a scoring operation, and
 explicit query limits. `pair_weight` returns the scalar weight of
 all accepting paths at those words. `conditional_log_prob` uses the
 declared input-tape split and returns the log probability of the
 output under the closure-checked conditional normalizer.
+`path_entropy` returns the conditional entropy of the accepting
+paths in nats as a `Real`, under the same finite closure contract.
+Existing pair and conditional requests keep the same wire fields.
 
 A `FixedRelationRuntimeProvider` checks the declared foreign
 `Compute[Unit, A]` handler before attaching to a reference-machine
@@ -47,7 +50,16 @@ The Stan, BUGS, and JAGS projections report the checked foreign
 handler as an obstacle. Hosted targets that preserve the handler
 declaration require an implementation in the target runtime.
 
+A `FixedRelationCostRequest` uses a separate wire record for an
+expected additive cost. Each supplied cost vector follows the original
+occurrence order of the corresponding boundary table or arc list.
+An omitted group contributes zero. The provider returns a signed
+`Real` and preserves derivatives to the original relation weights.
+Costs are fixed data in the serialized request.
+
 ::: quivers.qiec.relations.FixedRelationRequest
+
+::: quivers.qiec.relations.FixedRelationCostRequest
 
 ::: quivers.qiec.relation_runtime.FixedRelationRuntimeProvider
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from functools import partial
 
 import torch
 
-from quivers.core.algebras import LOG_PROB, MARKOV
+from quivers.core.algebras import LOG_PROB, MARKOV, REAL as REAL_ALGEBRA
+from quivers.core.relations import FixedStringQuery
 from quivers.qiec.builtins import COMPUTE, COMPUTE_APPLY, compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.effects import EMPTY_ROW, ResumptionGrade
@@ -15,7 +17,7 @@ from quivers.qiec.execution import CoreRuntimeProvider, RuntimeValidator
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import QiecModule
-from quivers.qiec.relations import FixedRelationRequest
+from quivers.qiec.relations import FixedRelationCostRequest, FixedRelationRequest
 from quivers.qiec.types import UNIT, TypeExpr
 
 
@@ -58,6 +60,37 @@ def _relation_score_handler_name(name: str) -> str:
     return f"{_RELATION_SCORE_HANDLER_PREFIX}{name}"
 
 
+def _expected_path_cost(
+    query: FixedStringQuery,
+    initial_costs: torch.Tensor | None,
+    arc_costs: torch.Tensor | None,
+    final_costs: torch.Tensor | None,
+) -> torch.Tensor:
+    """Evaluate the checked scalar expectation for the bound path costs.
+
+    Parameters
+    ----------
+    query : FixedStringQuery
+        The live fixed-word posterior query.
+    initial_costs : torch.Tensor or None
+        Costs on initial occurrences.
+    arc_costs : torch.Tensor or None
+        Costs on arc occurrences.
+    final_costs : torch.Tensor or None
+        Costs on final occurrences.
+
+    Returns
+    -------
+    torch.Tensor
+        The differentiable signed expected cost.
+    """
+    value = query.path_statistics(
+        initial_costs=initial_costs, arc_costs=arc_costs, final_costs=final_costs
+    ).expected_cost
+    assert value is not None
+    return value
+
+
 class FixedRelationRuntimeProvider:
     """Bind one declared foreign Compute handler to a sparse request.
 
@@ -67,7 +100,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest
+    request : FixedRelationRequest or FixedRelationCostRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The live scalar tensors supplying the request's weight identities.
@@ -79,7 +112,7 @@ class FixedRelationRuntimeProvider:
 
     def __init__(
         self,
-        request: FixedRelationRequest,
+        request: FixedRelationRequest | FixedRelationCostRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
         handler_name: str,
@@ -96,8 +129,23 @@ class FixedRelationRuntimeProvider:
             max_closure_size=request.max_closure_size,
         )
         self._score: Callable[[], torch.Tensor]
-        if request.operation == "pair_weight":
+        if isinstance(request, FixedRelationCostRequest):
+            query = relation.query(request.words, **limits)
+            anchor = relation._weights()
+            initial, arcs, final = (
+                None if group is None else anchor.new_tensor(group)
+                for group in (
+                    request.initial_costs,
+                    request.arc_costs,
+                    request.final_costs,
+                )
+            )
+            self._score = partial(_expected_path_cost, query, initial, arcs, final)
+        elif request.operation == "pair_weight":
             self._score = relation.query(request.words, **limits).weight
+        elif request.operation == "path_entropy":
+            query = relation.query(request.words, **limits)
+            self._score = lambda: query.path_statistics().entropy
         else:
             split = relation.topology.input_tapes
             conditional = relation.conditional(
@@ -112,7 +160,7 @@ class FixedRelationRuntimeProvider:
     def for_score(
         cls,
         name: str,
-        request: FixedRelationRequest,
+        request: FixedRelationRequest | FixedRelationCostRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
     ) -> FixedRelationRuntimeProvider:
         """Bind a fixed request to a source-declared relation score.
@@ -165,7 +213,12 @@ class FixedRelationRuntimeProvider:
         if argument is not None:
             raise TypeError("a fixed relation request takes a unit argument")
         score = self._score()
-        result_algebra = LOG_PROB if self._result_type == LOG_WEIGHT else MARKOV
+        if self._result_type == LOG_WEIGHT:
+            result_algebra = LOG_PROB
+        elif self._operation == "pair_weight":
+            result_algebra = MARKOV
+        else:
+            result_algebra = REAL_ALGEBRA
         if (
             score.shape != ()
             or not score.is_floating_point()

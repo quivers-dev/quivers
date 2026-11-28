@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import cached_property
+from math import isfinite
 from typing import Literal, cast
 
 import didactic.api as dx
@@ -308,15 +309,18 @@ class FixedRelationRequest(QiecModel):
 
     The words are in tape order. For `conditional_log_prob`, the
     topology's input split separates conditioning words from scored
-    words. The wire contains only the request and stable relation
-    specification. The provider binds its live scalar parameters.
+    words. The `path_entropy` operation returns the conditional
+    entropy of the accepting paths in nats. The wire contains the
+    request and stable relation specification. The provider binds
+    its live scalar parameters.
 
     Parameters
     ----------
     relation : RationalRelationSpec
         The typed sparse topology and original weight identities.
     operation : str
-        The fixed-pair weight or conditional log-probability objective.
+        The fixed-pair weight, conditional log probability, or path
+        entropy objective.
     words : Words
         One observed word per tape, in the topology's order.
     max_states : int
@@ -329,7 +333,7 @@ class FixedRelationRequest(QiecModel):
     """
 
     relation: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    operation: Literal["pair_weight", "conditional_log_prob"]
+    operation: Literal["pair_weight", "conditional_log_prob", "path_entropy"]
     words: Words = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     max_states: int
     max_work: int
@@ -345,11 +349,14 @@ class FixedRelationRequest(QiecModel):
             An observation or resource limit is invalid, the algebra is
             unsupported, or a conditional request lacks input or output tapes.
         """
-        _validate_limits(self.max_states, self.max_work, self.max_closure_size)
+        _validate_fixed_observation(
+            self.relation,
+            self.words,
+            self.max_states,
+            self.max_work,
+            self.max_closure_size,
+        )
         topology = self.relation.topology
-        topology._validate_words(self.words)
-        if self.relation.algebra not in (MARKOV.subject, LOG_PROB.subject):
-            raise ValueError("fixed relation requests require Markov or LogProb")
         if self.operation == "conditional_log_prob" and not (
             0 < topology.input_tapes < len(topology.tapes)
         ):
@@ -364,9 +371,11 @@ class FixedRelationRequest(QiecModel):
         Returns
         -------
         TypeExpr
-            `LogWeight` for a conditional or log-domain score, or `Real`
-            for a Markov pair score.
+            `LogWeight` for a conditional or log-domain pair score,
+            or `Real` for entropy and Markov pair scores.
         """
+        if self.operation == "path_entropy":
+            return REAL
         if (
             self.operation == "conditional_log_prob"
             or self.relation.algebra == LOG_PROB.subject
@@ -375,4 +384,134 @@ class FixedRelationRequest(QiecModel):
         return REAL
 
 
-__all__ = ["FixedRelationRequest", "RationalRelationSpec"]
+class FixedRelationCostRequest(QiecModel):
+    """A fixed-word expectation of a signed additive path cost.
+
+    Costs follow the order of original arc and boundary occurrences.
+    Omitted groups contribute zero. The scalar Real result is the
+    expectation under the normalized distribution of accepting paths.
+    Weight parameters are bound live. The cost literals are fixed
+    data in the wire record.
+
+    Parameters
+    ----------
+    relation : RationalRelationSpec
+        The typed topology and original scalar weight identities.
+    words : Words
+        One fixed word per tape, in topology order.
+    max_states : int
+        The fixed-word state budget.
+    max_work : int
+        The fixed-word arc examination budget.
+    max_closure_size : int or None
+        The largest permitted productive closure component.
+    initial_costs : tuple of float or None
+        One signed real cost per original initial mark, if supplied.
+    arc_costs : tuple of float or None
+        One signed real cost per original arc, if supplied.
+    final_costs : tuple of float or None
+        One signed real cost per original final mark, if supplied.
+    """
+
+    relation: RationalRelationSpec = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    words: Words = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    max_states: int
+    max_work: int
+    max_closure_size: int | None = None
+    initial_costs: tuple[float, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    arc_costs: tuple[float, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    final_costs: tuple[float, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    @dx.model_validator()
+    def _validate_cost(self) -> None:
+        """Check the finite signed costs against original occurrence counts.
+
+        Raises
+        ------
+        ValueError
+            If the observation is invalid, every cost group is absent,
+            or a supplied group has invalid size or a nonfinite entry.
+        """
+        _validate_fixed_observation(
+            self.relation,
+            self.words,
+            self.max_states,
+            self.max_work,
+            self.max_closure_size,
+        )
+        topology = self.relation.topology
+        costs = self.initial_costs, self.arc_costs, self.final_costs
+        if all(group is None for group in costs):
+            raise ValueError("expected path cost requires at least one cost group")
+        counts = len(topology.initial), len(topology.arcs), len(topology.final)
+        for group, count in zip(costs, counts, strict=True):
+            if group is not None and (
+                len(group) != count or any(not isfinite(value) for value in group)
+            ):
+                raise ValueError(
+                    "path costs require one finite value per original occurrence"
+                )
+
+    @property
+    def operation(self) -> Literal["expected_path_cost"]:
+        """Name the checked signed scalar objective.
+
+        Returns
+        -------
+        str
+            The expected additive path cost objective.
+        """
+        return "expected_path_cost"
+
+    @property
+    def result_type(self) -> TypeExpr:
+        """Name the checked scalar result carrier.
+
+        Returns
+        -------
+        TypeExpr
+            Real, since additive costs may have either sign.
+        """
+        return REAL
+
+
+def _validate_fixed_observation(
+    relation: RationalRelationSpec,
+    words: Words,
+    max_states: int,
+    max_work: int,
+    max_closure_size: int | None,
+) -> None:
+    """Check the shared observation and resource contract.
+
+    Parameters
+    ----------
+    relation : RationalRelationSpec
+        The validated sparse relation specification.
+    words : Words
+        The fixed observed words.
+    max_states : int
+        The state-exploration budget.
+    max_work : int
+        The arc-examination budget.
+    max_closure_size : int or None
+        The productive closure limit.
+
+    Raises
+    ------
+    ValueError
+        If a word or limit is invalid, or the algebra is unsupported.
+    """
+    _validate_limits(max_states, max_work, max_closure_size)
+    relation.topology._validate_words(words)
+    if relation.algebra not in (MARKOV.subject, LOG_PROB.subject):
+        raise ValueError("fixed relation requests require Markov or LogProb")
+
+
+__all__ = ["FixedRelationCostRequest", "FixedRelationRequest", "RationalRelationSpec"]
