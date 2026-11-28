@@ -11,7 +11,7 @@ from quivers.core.algebras import LOG_PROB, MARKOV
 from quivers.core.objects import StringSet
 from quivers.core.relations import RationalRelation, _weight_snapshot
 from quivers.core.relations.joins import join
-from quivers.core.relations.paths import _require_normalizer
+from quivers.core.relations.paths import _conditional_log_ratio, _require_normalizer
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
 from quivers.core.relations.topology import Arc, Boundary, RelationTopology
 from quivers.core.relations.transforms import project
@@ -189,16 +189,10 @@ class TreeStringMarginal:
         algebra = self.relation.algebra
         with _weight_snapshot():
             masses = [query.weight() for query in self._normalizers]
-            for mass in masses:
+            for mass in masses[1:]:
                 _require_normalizer(mass, algebra)
             score = plan.weight()
-        if not algebra.contains(score).item():
-            raise OverflowError("string marginal is outside the evaluation precision")
-        if algebra is LOG_PROB:
-            return score - masses[0]
-        positive = score > 0
-        safe_score = torch.where(positive, score, torch.ones_like(score))
-        return torch.where(positive, safe_score.log() - masses[0].log(), -torch.inf)
+        return _conditional_log_ratio(score, masses[0], algebra)
 
 
 type _Vertex = str | int

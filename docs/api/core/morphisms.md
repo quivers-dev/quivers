@@ -149,6 +149,13 @@ so this is the sum over the weighted relation's entire support. If
 erasing the labels exposes a productive cycle, the caller supplies a
 closure limit and the algebra checks convergence in its domain.
 
+`RationalRelation.conditional` fixes all input tapes and compiles a
+normalizer over every output word tuple. `ConditionalStringQuery.log_prob`
+compares the score of a supplied output to that normalizer. The
+denominator includes every alignment and output permitted by the
+relation. A productive insertion cycle uses the usual closure check
+and size bound. Each call uses the same live weights in both sums.
+
 `union` adds relations with identical tape types by taking the disjoint
 union of their topologies. `concatenate` uses a connecting state, so
 each accepting path contains one path from each operand. Its two
@@ -232,6 +239,7 @@ single relation use the ordinary productive closure checks.
         - FixedStringQuery
         - ComposedRelation
         - ComposedStringQuery
+        - ConditionalStringQuery
         - QueryWork
         - FiniteRelationRestriction
         - ProductiveEpsilonCycleError

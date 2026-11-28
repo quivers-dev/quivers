@@ -42,6 +42,7 @@ __all__ = [
     "Boundary",
     "ComposedRelation",
     "ComposedStringQuery",
+    "ConditionalStringQuery",
     "FixedStringQuery",
     "FiniteRelationRestriction",
     "Label",
@@ -255,6 +256,23 @@ class RationalRelation(Morphism):
             The scalar in the relation's algebra.
         """
         return self.query(words).weight()
+
+    def conditional(
+        self,
+        input_words: Words,
+        *,
+        max_states: int,
+        max_work: int,
+        max_closure_size: int | None = None,
+    ) -> ConditionalStringQuery:
+        """Compile a conditional over outputs for the fixed input words."""
+        return ConditionalStringQuery(
+            self,
+            input_words,
+            max_states=max_states,
+            max_work=max_work,
+            max_closure_size=max_closure_size,
+        )
 
     def total_weight(
         self,
@@ -557,3 +575,4 @@ from quivers.core.relations.graph import (  # noqa: E402
     StringVariable,
     TreeStringMarginal,
 )
+from quivers.core.relations.conditional import ConditionalStringQuery  # noqa: E402
