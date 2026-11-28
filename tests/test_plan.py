@@ -8,7 +8,8 @@ from itertools import product
 import pytest
 import torch
 
-from quivers.core.algebras import LOG_PROB, REAL, RealAlgebra
+from quivers.core.algebras import LOG_PROB, REAL, FreeSemimodule, RealAlgebra
+from quivers.core.carriers import ExpectationSemiring
 from quivers.qiec.contracts import (
     InterpretationId,
     QuerySpec,
@@ -271,6 +272,85 @@ def test_family_elimination_avoids_the_cubic_star() -> None:
     assert join.iterated <= 4 * size
     assert result.report().scalar_sums + result.report().scalar_products <= 4 * size
     assert chart_result.work.instances >= size**3
+
+
+@pytest.mark.parametrize("executor", ["auto", "eliminate"])
+def test_packed_expectations_and_gradients_across_refits(executor) -> None:
+    """The score-weighted feature sum is the gradient of the partition."""
+    slots = tuple(
+        AxiomSlot(
+            id=ConstructorId.derive("expectation-refits", family),
+            name=family,
+            telescope=(IndexBinder(name="x", sort=NAT),),
+            judgment=bodies.judgment(family, "x"),
+        )
+        for family in ("u", "w")
+    )
+    presentation = bodies.PRESENTATION.with_(rules=(bodies.SEPARATE,), axioms=slots)
+    occurrences = tuple(
+        AxiomOccurrence(
+            slot=slot.id,
+            occurrence=OccurrenceId.derive("expectation-refits", slot.name, str(index)),
+            binding=(("x", index),),
+        )
+        for slot in slots
+        for index in range(2)
+    )
+    goal = Item(family=bodies.FORMS["total"].id)
+    algebra = ExpectationSemiring(FreeSemimodule(REAL, 2))
+    engine = plan(
+        graphs.query().with_(presentation=presentation.id),
+        presentation,
+        algebra,
+        Acyclic(),
+        graphs.contract(),
+        NoRetention(),
+        executor=executor,
+    )
+    features = LIKE.new_tensor([[0.0, 1.0], [3.0, 0.0], [1.0, -1.0], [2.0, 3.0]])
+    # The four ordered pairs are the complete set of proofs. Their
+    # feature vectors are written independently from the rule evaluator.
+    proof_features = LIKE.new_tensor([[1.0, 0.0], [2.0, 4.0], [4.0, -1.0], [5.0, 3.0]])
+    previous = None
+    for coefficients in (
+        LIKE.new_tensor([[0.1, 0.15], [-0.04, 0.2]]),
+        LIKE.new_tensor([[-0.05, -0.17], [0.26, -0.1]]),
+        LIKE.new_empty((0, 2)),
+    ):
+        coefficients.requires_grad_()
+        masses = (coefficients @ features.T).exp()
+        packed = algebra.pack(masses, masses.unsqueeze(-1) * features)
+        inputs = {
+            occurrence.occurrence: packed[:, index]
+            for index, occurrence in enumerate(occurrences)
+        }
+        evaluation = engine.run(occurrences, inputs, like=LIKE)
+        partition, statistic = algebra.parts(evaluation.value(goal))
+        proof_masses = (coefficients @ proof_features.T).exp()
+        expected_partition = proof_masses.sum(dim=-1)
+        expected_statistic = proof_masses @ proof_features
+        torch.testing.assert_close(partition, expected_partition)
+        torch.testing.assert_close(statistic, expected_statistic)
+        (direct_gradient,) = torch.autograd.grad(
+            partition.sum(), coefficients, retain_graph=True
+        )
+        torch.testing.assert_close(direct_gradient, expected_statistic)
+        (statistic_gradient,) = torch.autograd.grad(
+            statistic.square().sum(), coefficients
+        )
+        (oracle_gradient,) = torch.autograd.grad(
+            expected_statistic.square().sum(), coefficients
+        )
+        torch.testing.assert_close(statistic_gradient, oracle_gradient)
+        if previous is not None and coefficients.numel():
+            assert not torch.equal(previous, partition)
+        previous = partition.detach()
+
+    empty_relation = engine.run(occurrences[:2], {}, like=LIKE)
+    with pytest.raises(KeyError):
+        empty_relation.value(goal)
+    zero = algebra.join(LIKE.new_empty((0, 2, 3)), 0)
+    torch.testing.assert_close(zero, LIKE.new_zeros((2, 3)))
 
 
 def test_family_elimination_refuses_unsupported_contracts() -> None:
