@@ -318,6 +318,10 @@ The compiler charges signed-cycle relaxations and residual product arc
 visits to `max_work`, after the linear structural trim. Productive paths
 with opposite-sign cycles fail the applicability check. The budget
 applies to the exact transformation and carries no approximation claim.
+In ordinary QVR, write `relation synced = auto_intersect(original, 0, 1)`.
+An authored `relation_score` can use that recipe directly or use a
+cascade that projects away the synchronized tapes. The score owner
+includes the authored tape positions and operand identity.
 
 A `BinaryRelationTransformSpec` keeps both original operands in order.
 Union adds their weights. Concatenation sums over the possible splits

@@ -428,6 +428,7 @@ module.exports = grammar({
         $.relation_unary_recipe,
         $.relation_projection_recipe,
         $.relation_conditioning_recipe,
+        $.relation_auto_intersection_recipe,
         $.relation_binary_recipe,
         $.relation_join_recipe,
       )),
@@ -453,6 +454,11 @@ module.exports = grammar({
     ),
 
     relation_conditioning_word: $ => parenthesizedList($, field('symbols', $.integer)),
+
+    relation_auto_intersection_recipe: $ => seq(
+      'auto_intersect', '(', field('source', $.identifier), ',',
+      field('positions', $.integer), ',', field('positions', $.integer), ')',
+    ),
 
     relation_binary_recipe: $ => seq(
       field('operation', $.relation_binary_operation),

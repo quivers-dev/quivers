@@ -137,7 +137,7 @@
       }
     },
     "keyword-relation-transform": {
-      "match": "^\\s*(relation)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(invert|trim|closure|project|condition|union|concatenate|intersect|join)(?=\\s*\\()",
+      "match": "^\\s*(relation)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(invert|trim|closure|project|condition|auto_intersect|union|concatenate|intersect|join)(?=\\s*\\()",
       "captures": {
         "1": {
           "name": "keyword.declaration.qvr"
