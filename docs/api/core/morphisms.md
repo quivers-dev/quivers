@@ -248,6 +248,32 @@ update takes one pass over variable occurrences and uses rational
 arithmetic. The costs of exact rational operations depend on the bit
 length of the adjusted scores and potentials.
 
+
+## Fixed n-gram projection
+
+An `NgramFamily` defines log-linear distributions over a finite support
+supplied by the caller. It counts contiguous n-grams up to the given
+order. Exact elimination on integer feature differences retains an
+affine basis that represents the same distributions. The base measure
+may be set to the cavity weight of a local EP update.
+
+`NgramFamily.project` minimizes inclusive KL from the supplied tilted
+distribution to this family. Its convex objective is the log
+normalizer minus the dot product of the coefficients with the tilted
+feature means. The gradient is the difference in feature means and
+the Hessian is their covariance under the fitted distribution. Both
+input measures require finite log weights throughout the declared
+support. This ensures that the projected moments lie in the relative
+interior of the family's moment set.
+
+The result reports the fitted probabilities, coefficients, divergence,
+moment residual, and solver status. The tolerance bounds the
+infinity norm of the feature residual at convergence. It does not
+bound a graph posterior error. For a support of size $m$ and basis
+of size $r$, each Newton direction takes $O(mr^2+r^3)$ arithmetic
+work. Each line-search trial takes $O(mr)$. Gradients follow the
+accepted sequence of operations.
+
 ::: quivers.core.relations
     options:
       members:
@@ -266,6 +292,8 @@ length of the adjusted scores and potentials.
         - QueryWork
         - FiniteRelationRestriction
         - FiniteStringScore
+        - NgramFamily
+        - NgramProjection
         - ProductiveEpsilonCycleError
         - RelationLimitError
         - RelationPath
