@@ -247,9 +247,12 @@ class StringAlignmentMapResult:
     bound is the smallest adjusted score sum observed so far. Feature
     sets apply to the named variables. Local work includes both
     adjusted maximization and exact primal feasibility checks.
+    Reaching a requested objective gap has status `gap` when the
+    local paths have not agreed. Only `optimal` carries the agreement
+    certificate.
     """
 
-    status: Literal["optimal", "infeasible", "limit"]
+    status: Literal["optimal", "infeasible", "gap", "limit"]
     iterations: int
     assignment: _Assignment | None
     score: Fraction | None
@@ -258,6 +261,29 @@ class StringAlignmentMapResult:
     max_local_states: int
     local_arc_examinations: int
     certificate: StringAlignmentCertificate | None = None
+    gap_target_met: bool = False
+
+    @property
+    def absolute_gap(self) -> Fraction | None:
+        """The exact upper bound on the feasible score's suboptimality."""
+        if self.score is None or self.upper_bound is None:
+            return None
+        return self.upper_bound - self.score
+
+    @property
+    def relative_gap(self) -> Fraction | None:
+        """The relative suboptimality bound when the objective scale permits it."""
+        if self.score is None or self.upper_bound is None:
+            return None
+        return _relative_gap(self.score, self.upper_bound)
+
+
+def _relative_gap(lower: Fraction, upper: Fraction) -> Fraction | None:
+    if lower == upper:
+        return Fraction(0)
+    if lower < 0 <= upper:
+        return None
+    return (upper - lower) / abs(upper)
 
 
 def _grams(word: _Word, size: int) -> Counter[_Ngram]:
@@ -330,6 +356,8 @@ def dual_alignment_map(
     max_states: int,
     max_work: int,
     step_size: Fraction | int = Fraction(1),
+    absolute_gap: Fraction | int | None = None,
+    relative_gap: Fraction | int | None = None,
 ) -> StringAlignmentMapResult:
     """Maximize joint string and local alignment scores by dual decomposition.
 
@@ -360,13 +388,21 @@ def dual_alignment_map(
         Maximum examined candidate transitions per local decoding.
     step_size : Fraction or int
         Positive multiplier step. The step is divided by the iteration.
+    absolute_gap : Fraction or int or None
+        A nonnegative target for dual upper bound minus feasible score.
+    relative_gap : Fraction or int or None
+        A nonnegative target for suboptimality divided by the magnitude
+        of the unknown optimum. A finite bound is unavailable when the
+        feasible score is negative and the upper bound is nonnegative.
+        If both targets are supplied, both must be established.
 
     Returns
     -------
     StringAlignmentMapResult
         The best feasible assignment found, exact upper bound, and an
         optimum certificate only if all incident copies agree on their
-        full words. Budget-limited runs can remain uncertified.
+        full words. A proved gap target permits early stopping without
+        that certificate. Budget-limited runs can remain uncertified.
 
     Raises
     ------
@@ -387,6 +423,12 @@ def dual_alignment_map(
         raise ValueError("max_features must be a nonnegative integer")
     if type(step_size) not in (Fraction, int) or step_size <= 0:
         raise ValueError("step_size must be a positive rational")
+    for name, target in (
+        ("absolute_gap", absolute_gap),
+        ("relative_gap", relative_gap),
+    ):
+        if target is not None and (type(target) not in (Fraction, int) or target < 0):
+            raise ValueError(f"{name} must be a nonnegative rational or None")
     if max_states is None or max_work is None:
         raise ValueError("string alignment MAP requires explicit state and work limits")
     _validate_limits(max_states, max_work)
@@ -412,7 +454,9 @@ def dual_alignment_map(
     primal = None
     assignment = None
     certificate = None
-    status: Literal["optimal", "infeasible", "limit"] = "limit"
+    status: Literal["optimal", "infeasible", "gap", "limit"] = "limit"
+    gap_target_met = False
+    gap_requested = absolute_gap is not None or relative_gap is not None
     iteration = 0
     for iteration in range(1, max_iterations + 1):
         paths = run.decode(observations, multipliers)
@@ -437,6 +481,21 @@ def dual_alignment_map(
             if primal is None or primal < score:
                 assignment = tuple(proposed.items())
                 primal = score
+        if primal is not None:
+            if primal > upper:
+                raise ArithmeticError(
+                    "feasible alignment score exceeds the dual upper bound"
+                )
+            if gap_requested:
+                relative_bound = (
+                    None if relative_gap is None else _relative_gap(primal, upper)
+                )
+                gap_target_met = (
+                    absolute_gap is None or upper - primal <= absolute_gap
+                ) and (
+                    relative_gap is None
+                    or (relative_bound is not None and relative_bound <= relative_gap)
+                )
         if agreement:
             if primal != bound:
                 raise ArithmeticError(
@@ -449,6 +508,9 @@ def dual_alignment_map(
             )
             certificate = StringAlignmentCertificate(paths, frozen)
             status = "optimal"
+            break
+        if gap_target_met:
+            status = "gap"
             break
         if iteration == max_iterations:
             break
@@ -480,6 +542,7 @@ def dual_alignment_map(
         run.max_local_states,
         run.work,
         certificate,
+        gap_target_met,
     )
 
 

@@ -28,7 +28,12 @@ from quivers.qiec.relations import RationalRelationSpec
 from quivers.qiec.string_graphs import StringFactorGraphSpec
 
 
-__all__ = ["JointAlignmentMapConfig", "PrunedStringBPConfig", "RegularStringEPConfig"]
+__all__ = [
+    "JointAlignmentMapConfig",
+    "JointAlignmentMapGapConfig",
+    "PrunedStringBPConfig",
+    "RegularStringEPConfig",
+]
 
 
 class JointAlignmentMapConfig(QiecModel):
@@ -96,6 +101,9 @@ class JointAlignmentMapConfig(QiecModel):
         self,
         model: StringFactorGraphSpec,
         parameters: Mapping[ParameterId, torch.Tensor],
+        *,
+        absolute_gap: Fraction | int | None = None,
+        relative_gap: Fraction | int | None = None,
     ) -> StringAlignmentMapResult:
         """Run exact local decoding on a bound graph and return its search result.
 
@@ -105,6 +113,9 @@ class JointAlignmentMapConfig(QiecModel):
             The checked string factors, variables, and observations.
         parameters : Mapping of ParameterId to torch.Tensor
             The original scalar tensors used by the model.
+        absolute_gap, relative_gap : Fraction or int or None
+            Optional exact objective gap targets. Serialize these using
+            `JointAlignmentMapGapConfig` when they form part of the policy.
 
         Returns
         -------
@@ -119,6 +130,107 @@ class JointAlignmentMapConfig(QiecModel):
             max_states=self.max_states,
             max_work=self.max_work,
             step_size=Fraction(*self.step_ratio),
+            absolute_gap=absolute_gap,
+            relative_gap=relative_gap,
+        )
+
+
+class JointAlignmentMapGapConfig(QiecModel):
+    """Configure proved objective-gap stopping for exact local alignment MAP.
+
+    The plain MAP configuration retains its original encoding. This
+    record adds one or both exact tolerances alongside it. Reaching
+    the requested bounds can end a disagreeing run without producing
+    an agreement certificate.
+
+    Parameters
+    ----------
+    solver : JointAlignmentMapConfig
+        The exact local decoder, feature schedule and resource settings.
+    absolute_gap_ratio : tuple of int or None
+        Nonnegative numerator and positive denominator for absolute
+        suboptimality. `None` specifies no absolute constraint.
+    relative_gap_ratio : tuple of int or None
+        Nonnegative ratio for suboptimality relative to the optimal
+        objective's magnitude. `None` specifies no relative constraint.
+    """
+
+    solver: JointAlignmentMapConfig = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    absolute_gap_ratio: tuple[int, int] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    relative_gap_ratio: tuple[int, int] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    @dx.model_validator()
+    def _validate_targets(self) -> None:
+        """Check each exact tolerance and require at least one target.
+
+        Raises
+        ------
+        ValueError
+            No target was supplied, or a target is not a nonnegative
+            rational represented with a positive denominator.
+        """
+        if self.absolute_gap_ratio is None and self.relative_gap_ratio is None:
+            raise ValueError("alignment MAP gap settings require at least one target")
+        for ratio in (self.absolute_gap_ratio, self.relative_gap_ratio):
+            if ratio is not None:
+                numerator, denominator = ratio
+                if (
+                    type(numerator) is not int
+                    or type(denominator) is not int
+                    or numerator < 0
+                    or denominator <= 0
+                ):
+                    raise ValueError(
+                        "MAP objective gap targets must be nonnegative rational ratios"
+                    )
+
+    @property
+    def objective(self) -> Literal["joint_alignment_map"]:
+        """Identify the unchanged objective of the exact local solver.
+
+        Returns
+        -------
+        Literal["joint_alignment_map"]
+            Joint maximization over words and local paths.
+        """
+        return self.solver.objective
+
+    def solve(
+        self,
+        model: StringFactorGraphSpec,
+        parameters: Mapping[ParameterId, torch.Tensor],
+    ) -> StringAlignmentMapResult:
+        """Run alignment MAP until agreement, the proved target, or a limit.
+
+        Parameters
+        ----------
+        model : StringFactorGraphSpec
+            The checked graph, separate from the solver configuration.
+        parameters : Mapping of ParameterId to torch.Tensor
+            Original scalar parameters used by the graph's factors.
+
+        Returns
+        -------
+        StringAlignmentMapResult
+            The feasible assignment and upper bound, whether the gap
+            target was established, and any agreement certificate.
+        """
+        absolute = (
+            None
+            if self.absolute_gap_ratio is None
+            else Fraction(*self.absolute_gap_ratio)
+        )
+        relative = (
+            None
+            if self.relative_gap_ratio is None
+            else Fraction(*self.relative_gap_ratio)
+        )
+        return self.solver.solve(
+            model, parameters, absolute_gap=absolute, relative_gap=relative
         )
 
 

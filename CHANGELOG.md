@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Proved objective gap targets for joint alignment MAP.** Exact feasible and dual scores can establish a serialized absolute or relative tolerance. Gap-based stops retain a status distinct from agreement certification.
 - **Checked packed contextual edit likelihoods.** Typed native scores reuse one packed alignment plan with the caller's original live contextual network.
 - **Checked capped ranked relation scores.** Serialized requests compile finite capped profiles for a typed transducer and sum live weights over the winning original paths at an observed pair.
 - **Checked compact backoff relations.** Serialized fixed-word requests keep ordinary transition priority, original scalar weight identities, and a bounded sparse plan. A named QVR computation can call the checked native provider.

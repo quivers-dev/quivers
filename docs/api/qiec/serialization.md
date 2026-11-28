@@ -489,6 +489,15 @@ bound without a certificate. General joint string MAP can be undecidable
 for cyclic multi-tape factors, as the reduction from Post's correspondence
 problem shows. See §2.5 of [Peng, Cotterell, and Eisner (2015)](https://aclanthology.org/D15-1108/).
 
+`JointAlignmentMapGapConfig` pairs the ordinary solver settings with
+one or both rational gap targets. The executor checks them against the
+feasible score and dual bound computed from the original live model.
+An unsupported relative guarantee or a missing feasible assignment
+cannot satisfy the target. A `gap` stop reports that the objective
+bound was established. The `optimal` status and agreement certificate
+retain their stricter condition. The original settings record keeps
+its wire representation.
+
 A `RegularStringEPConfig` uses the same factor declaration for approximate
 sum-product. Its settings record finite regular reference languages,
 ordered candidate n-grams, penalty, synchronous scheduling limits, and
@@ -509,6 +518,8 @@ message masses from the live weights. These observations belong to the
 returned approximate result.
 
 ::: quivers.qiec.string_solvers.JointAlignmentMapConfig
+
+::: quivers.qiec.string_solvers.JointAlignmentMapGapConfig
 
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
 

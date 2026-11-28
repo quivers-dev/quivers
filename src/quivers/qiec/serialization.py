@@ -150,6 +150,7 @@ from quivers.qiec.relations import (
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
 from quivers.qiec.string_solvers import (
     JointAlignmentMapConfig,
+    JointAlignmentMapGapConfig,
     PrunedStringBPConfig,
     RegularStringEPConfig,
 )
@@ -400,6 +401,7 @@ _NODE_CLASSES = (
     RationalRelationSpec,
     StringFactorGraphSpec,
     JointAlignmentMapConfig,
+    JointAlignmentMapGapConfig,
     PrunedStringGraphRequest,
     PrunedStringBPConfig,
     RegularStringEPConfig,

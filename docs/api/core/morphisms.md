@@ -559,6 +559,24 @@ multipliers. It can return an uncertified feasible assignment and an
 upper bound at the iteration limit. Feature-count agreement alone
 does not establish a certificate.
 
+The solver may also stop at a requested absolute or relative objective
+gap. With an exact feasible score $L$ and dual upper bound $U$, the
+unknown optimum $z$ satisfies $L\leq z\leq U$. Thus $U-L$ bounds the
+absolute suboptimality of the returned assignment. For $z>0$, the
+relative error is $1-L/z$. For $z<0$, it is $L/z-1$. On a positive
+interval with $L\geq0$, or a strictly negative interval, the relevant
+function increases with $z$. The maximum relative error is thus
+$(U-L)/|U|$. If $L<0\leq U$, these bounds alone give no finite relative
+guarantee. When $L=U$, the relative gap is defined to be zero, including
+at the exact zero optimum.
+
+Supply `absolute_gap` or `relative_gap` as a nonnegative exact rational.
+All supplied targets must be established. An early stop based only on
+these bounds has status `gap`, with `gap_target_met=True`. The separate
+status `optimal` and its agreement certificate require exact local
+alignment agreement. When there is no feasible result, neither gap can
+be established.
+
 The returned score and certificate concern the evaluated parameter
 snapshot. Local paths are discrete decisions. The solver reports
 the peak number of reached local configurations and total local

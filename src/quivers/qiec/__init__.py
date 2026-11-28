@@ -423,6 +423,7 @@ from quivers.qiec.relations import (
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
 from quivers.qiec.string_solvers import (
     JointAlignmentMapConfig,
+    JointAlignmentMapGapConfig,
     PrunedStringBPConfig,
     RegularStringEPConfig,
 )
@@ -764,6 +765,7 @@ __all__ = [
     "RationalRelationSpec",
     "StringFactorGraphSpec",
     "JointAlignmentMapConfig",
+    "JointAlignmentMapGapConfig",
     "PrunedStringBPConfig",
     "PrunedStringGraphRequest",
     "PrunedStringGraphRuntimeProvider",
