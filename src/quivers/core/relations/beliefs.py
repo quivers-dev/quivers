@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
-from math import log, log1p, prod
+from math import isfinite, log, log1p, prod
 from types import MappingProxyType
 from typing import Literal
 
@@ -20,6 +20,7 @@ from quivers.core.relations.projection import (
     PenalizedNgramProjection,
     _validate_projection_settings,
 )
+from quivers.core.relations.messages import StringCandidateMessage, _restrict_candidates
 from quivers.core.relations.queries import RelationLimitError, _validate_limits
 
 type _Word = tuple[int, ...]
@@ -36,6 +37,28 @@ class StringBeliefResult:
     sweeps: int
     message_residual: float
     log_messages: _Messages
+
+
+@dataclass(frozen=True, slots=True)
+class PrunedStringBeliefResult:
+    """Approximate finite beliefs and diagnostics from a beam-limited schedule.
+
+    The log messages use the plan's declared candidate axes. A pruned
+    coordinate has log weight negative infinity. The proposal records
+    use factor and tape order and report raw masses before restriction
+    and renormalization. If an attempted support has no normalized
+    beliefs, the result records its messages and the support failure.
+    """
+
+    log_marginals: Mapping[str, torch.Tensor] | None
+    status: Literal["converged", "limit", "empty_support"]
+    sweeps: int
+    message_residual: float | None
+    log_messages: _Messages
+    proposals: tuple[tuple[StringCandidateMessage, ...], ...]
+    truncated: bool
+    diagnostic: str | None = None
+    exact: Literal[False] = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,9 +116,18 @@ class _FactorTable:
         return table
 
 
+class _EmptyStringSupport(ValueError):
+    pass
+
+
 def _normalized(log_weights: torch.Tensor) -> torch.Tensor:
     normalizer = LOG_PROB.join(log_weights, dim=0)
-    if not torch.isfinite(normalizer).item():
+    value = normalizer.item()
+    if value == -torch.inf:
+        raise _EmptyStringSupport(
+            "a string belief message has no positive finite normalizer"
+        )
+    if not isfinite(value):
         raise ValueError("a string belief message has no positive finite normalizer")
     return log_weights - normalizer
 
@@ -135,6 +167,21 @@ def _message_residual(old: _Messages, new: _Messages) -> float:
         0.5 * (message.exp() - proposed.exp()).abs().sum().item()
         for old_factor, new_factor in zip(old, new, strict=True)
         for message, proposed in zip(old_factor, new_factor, strict=True)
+    )
+
+
+def _damp_on_support(
+    old: torch.Tensor, proposal: torch.Tensor, damping: float
+) -> torch.Tensor:
+    if not damping:
+        return proposal
+    previous = old.masked_fill(~torch.isfinite(proposal), -torch.inf)
+    mass = LOG_PROB.join(previous, dim=0)
+    if not bool(torch.isfinite(mass)):
+        return proposal
+    return LOG_PROB.join(
+        torch.stack((previous - mass + log(damping), proposal + log1p(-damping))),
+        dim=0,
     )
 
 
@@ -190,6 +237,9 @@ class FiniteStringBeliefPlan:
                 words = (variable.observed,)
             actual[name] = words
         self._supports = MappingProxyType(actual)
+        self._tapes = {
+            name: variable.tape for name, variable in graph._variables.items()
+        }
         shapes = tuple(
             tuple(len(actual[name]) for name in factor.variables)
             for factor in graph._factors
@@ -310,6 +360,118 @@ class FiniteStringBeliefPlan:
             else:
                 messages = proposed
             sweeps += 1
+
+    def run_pruned(
+        self,
+        *,
+        beam: int,
+        max_sweeps: int,
+        tolerance: float | None = 1e-9,
+        damping: float = 0.0,
+    ) -> PrunedStringBeliefResult:
+        """Run bounded top-weight messages on the declared finite supports.
+
+        Each raw proposal uses the normalized variable cavities. Its
+        full and omitted log masses use this same gauge and are measured
+        before normalization after pruning. Ties in the beam are resolved
+        lexicographically by word. Damping projects the previous message
+        onto the new proposal's positive support and normalizes it before
+        mixing. With disjoint support, only the new proposal contributes.
+
+        The residual measures total variation from the undamped pruned
+        proposal. Convergence concerns these approximate messages.
+        Support failure may occur when hard pruning leaves no consistent
+        variable or factor message. At least one sweep updates the
+        uniform start before returning a converged or limited result.
+        """
+        _validate_sweeps(max_sweeps, tolerance, damping)
+        if max_sweeps == 0:
+            raise ValueError("pruned string beliefs require at least one sweep")
+        if type(beam) is not int or beam < 1:
+            raise ValueError("the string belief beam must be a positive integer")
+        tables, messages = self._start()
+        like = tables[0]
+        sweeps = 0
+        truncated = False
+        records: tuple[tuple[StringCandidateMessage, ...], ...] = ()
+        while True:
+            try:
+                beliefs, cavities = self._variables(messages, like)
+                proposals, current = self._pruned_proposals(tables, cavities, beam)
+            except _EmptyStringSupport as error:
+                return PrunedStringBeliefResult(
+                    None,
+                    "empty_support",
+                    sweeps,
+                    None,
+                    messages,
+                    records,
+                    truncated,
+                    diagnostic=str(error),
+                )
+            records = current
+            truncated = truncated or any(
+                record.status == "truncated" for group in records for record in group
+            )
+            residual = _message_residual(messages, proposals)
+            converged = tolerance is not None and residual <= tolerance
+            if sweeps and (converged or sweeps == max_sweeps):
+                return PrunedStringBeliefResult(
+                    MappingProxyType(beliefs),
+                    "converged" if converged else "limit",
+                    sweeps,
+                    residual,
+                    messages,
+                    records,
+                    truncated,
+                )
+            messages = tuple(
+                tuple(
+                    _damp_on_support(old, new, damping)
+                    for old, new in zip(old_group, new_group, strict=True)
+                )
+                for old_group, new_group in zip(messages, proposals, strict=True)
+            )
+            sweeps += 1
+
+    def _pruned_proposals(
+        self,
+        tables: tuple[torch.Tensor, ...],
+        cavities: dict[_Occurrence, torch.Tensor],
+        beam: int,
+    ) -> tuple[_Messages, tuple[tuple[StringCandidateMessage, ...], ...]]:
+        proposals = []
+        records = []
+        for factor_id, (values, factor) in enumerate(
+            zip(tables, self._tables, strict=True)
+        ):
+            incoming = tuple(cavities[factor_id, axis] for axis in range(values.ndim))
+            projected = []
+            local = []
+            for name, raw in zip(
+                factor.variables, _outgoing(values, incoming), strict=True
+            ):
+                if bool(torch.isneginf(raw).all()):
+                    raise _EmptyStringSupport(
+                        f"factor {factor_id} has no positive proposal for {name!r}"
+                    )
+                selected, record = _restrict_candidates(
+                    self._tapes[name],
+                    self._supports[name],
+                    raw,
+                    raw.new_full((), -torch.inf),
+                    beam,
+                )
+                rows = torch.tensor(selected, dtype=torch.long, device=raw.device)
+                projected.append(
+                    raw.new_full(raw.shape, -torch.inf).index_copy(
+                        0, rows, record.normalized_log_weights()
+                    )
+                )
+                local.append(record)
+            proposals.append(tuple(projected))
+            records.append(tuple(local))
+        return tuple(proposals), tuple(records)
 
     def expectation_propagation(
         self,
@@ -432,6 +594,7 @@ class FiniteStringBeliefPlan:
 __all__ = [
     "FiniteStringBeliefPlan",
     "StringBeliefResult",
+    "PrunedStringBeliefResult",
     "StringEPResult",
     "StringSiteProjection",
 ]

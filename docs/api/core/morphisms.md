@@ -767,6 +767,37 @@ exponential. State and work limits give explicit failure when
 exploration exceeds the supplied budgets. The caps define the
 model, and the limits bound construction.
 
+## Beam-pruned finite string beliefs
+
+`FiniteStringBeliefPlan.run_pruned` applies synchronous sum-product
+over the declared typed candidate supports. It ranks each proposed
+factor-to-variable message by raw marginal weight, breaks ties by
+lexicographic word order, and normalizes the retained positive
+weights. The full and omitted masses use the same gauge, with
+incoming variable cavities normalized before the factor sum. These
+masses refer to the declared finite candidates.
+
+Damping first restricts the old message to the positive support of
+the new pruned proposal. When the old message has positive retained
+mass, the update mixes the two normalized vectors on this support.
+When their positive supports are disjoint, the update uses the new
+proposal. Every transmitted message after the first sweep thus has
+at most the requested positive support size.
+
+The reported total-variation residual compares the current messages
+with the undamped pruned proposal. `converged` describes this
+approximate update. The result also records positive omitted mass
+across completed proposal evaluations and per-message masses for
+the latest complete proposal. A hard support conflict reports
+`empty_support` with no normalized beliefs. Plan construction still
+reports resource exhaustion through the configured state, work, and
+factor-entry limits.
+
+The declared factor tables are built within those limits. The beam
+caps positive message support and leaves the factor-table allocation
+bound in place. Derivatives follow the executed updates with beam
+choices held fixed.
+
 ::: quivers.core.relations
     options:
       members:
@@ -801,6 +832,7 @@ model, and the limits bound construction.
         - PathStatistics
         - PenalizedNgramProjection
         - ProductiveEpsilonCycleError
+        - PrunedStringBeliefResult
         - RelationLimitError
         - RelationPath
         - StringAlignment
