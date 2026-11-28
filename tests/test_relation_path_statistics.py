@@ -159,7 +159,7 @@ def test_repeated_original_arc_counts_once_at_each_observed_offset():
     torch.testing.assert_close(stats.expected_cost, weights.new_tensor([6, 9]))
 
 
-def test_productive_epsilon_cycle_has_no_acyclic_statistics_contract():
+def test_productive_epsilon_cycle_requires_closure_permission():
     topology = RelationTopology(
         (_INPUT,),
         0,
@@ -171,7 +171,8 @@ def test_productive_epsilon_cycle_has_no_acyclic_statistics_contract():
     )
     weights = torch.tensor([0.5, 1.0], dtype=torch.float64)
     source = RationalRelation(topology, weights, algebra=MARKOV)
+    with pytest.raises(ProductiveEpsilonCycleError, match="requires closure"):
+        source.query(((),))
     query = source.query(((),), max_closure_size=1)
     assert query.weight().item() == 2.0
-    with pytest.raises(ProductiveEpsilonCycleError, match="acyclic productive"):
-        query.path_statistics()
+    assert query.path_statistics().entropy.item() == pytest.approx(2 * log(2))

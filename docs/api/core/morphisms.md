@@ -187,14 +187,15 @@ To sample from these paths, `sample_path` chooses an initial state by its weight
 suffix mass, then chooses an arc or a stop with probability proportional to
 the weight of an accepting continuation, evaluated in float64 log space. The
 observations enter through the query, and a positive normalizer is required.
-Each sampled walk terminates.
+In an acyclic observation every path has finitely many steps.
 
 For expected counts, `expected_arc_counts` uses one packed pass in each
 direction and gathers the corresponding prefix and suffix at every active arc
 occurrence. An occurrence contributes its prefix times its arc weight times
 its suffix, divided by the normalizer. Summing these contributions gives the
-expected number of traversals of each original arc. This takes linear
-arithmetic work and storage in the active graph, in addition to the source
+expected number of traversals of each original arc. In acyclic graphs
+this takes linear arithmetic work and storage in the active graph, in
+addition to the source
 weight evaluation and construction of the graph. Queries reuse the graph
 structure across evaluations.
 For a differentiable weight, `weight(recompute_backward=True)` lets PyTorch
@@ -367,8 +368,8 @@ can use the whole input as context for each edit.
 
 ### Path entropy and additive risk
 
-`FixedStringQuery.path_statistics` uses two packed log-space passes
-on an acyclic productive observation graph. Let $\alpha(q)$ and
+`FixedStringQuery.path_statistics` uses packed prefix and suffix
+passes on the productive observation graph. Let $\alpha(q)$ and
 $\beta(q)$ be its prefix and suffix log masses and $Z$ its total
 mass. The posterior log mass for a traversal of arc $q \to t$ is
 $\alpha(q) + \log w(q,t) + \beta(t) - \log Z$. Its conditional
@@ -547,6 +548,29 @@ fresh tensors throughout a run. The largest individual allocations
 were 14, 17, 17, 15, 15, and 5 elements, respectively. The penalty
 can reduce the returned message size while increasing the work
 needed to fit it.
+
+### Posteriors on closed productive components
+
+For an explicitly permitted finite star, the prefix weight at a
+state is the weight of every walk ending there, including walks
+inside its component. Within a cyclic component the chart reads the
+prefix at the component exit introduced for that state. The suffix
+chart reverses the arcs and exchanges boundary roles, using the
+same component closure. This gives the prefix and suffix factors
+needed for expected traversal counts and path entropy. A primitive
+arc's traversal can recur along one path, and each occurrence enters
+its expected count.
+
+Sampling first selects an initial mark in proportion to its weight
+times its suffix mass. At each state it chooses a stop or primitive
+arc in proportion to the stop weight or the arc weight times the
+successor suffix mass. In exact arithmetic the suffix ratios
+telescope to the normalized weight of each complete path. Their
+weights sum to one under the finite closure contract, giving
+almost-sure termination. Runtime sampling uses float64 and a
+cyclic query requires an arc-step budget. A draw beyond that budget
+raises a resource error. The reported path weight uses the
+original algebra and must fit its input precision.
 
 ::: quivers.core.relations
     options:

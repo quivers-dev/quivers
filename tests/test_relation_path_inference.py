@@ -227,11 +227,11 @@ def test_productive_cycles_and_weight_domains_refuse_path_operations():
         epsilon_cycle, torch.tensor([0.5, 1.0]), algebra=MARKOV
     ).query(((),), max_closure_size=1)
     assert query.weight().item() == 2
-    for operation in (query.best_path, query.expected_arc_counts, query.sample_path):
-        with pytest.raises(
-            ProductiveEpsilonCycleError, match="acyclic productive graph"
-        ):
-            operation()
+    with pytest.raises(ProductiveEpsilonCycleError, match="acyclic productive graph"):
+        query.best_path()
+    with pytest.raises(ProductiveEpsilonCycleError, match="explicit max_steps"):
+        query.sample_path()
+    assert query.expected_arc_counts().counts.tolist() == pytest.approx([1.0])
 
     weights = torch.ones(1)
     empty_topology = RelationTopology(

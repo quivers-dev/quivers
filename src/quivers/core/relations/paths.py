@@ -1,4 +1,4 @@
-"""Decoding, sampling and inside–outside counts for acyclic observations."""
+"""Decoding, sampling, and inside–outside statistics for string paths."""
 
 from __future__ import annotations
 
@@ -18,11 +18,14 @@ from quivers.core.algebras import (
     MarkovAlgebra,
     Semiring,
 )
-from quivers.core.relations._packed import _PackedPaths, _pack_paths, _take
+from quivers.core.relations._packed import _take
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
+    RelationLimitError,
+    _PathPlan,
     _observe,
     _productive_graph,
+    _trim_paths,
 )
 from quivers.core.relations.topology import RelationTopology, Words
 
@@ -120,26 +123,46 @@ class _PathEvents:
 
 @dataclass(frozen=True, slots=True)
 class _Chart:
-    packed: _PackedPaths
+    plan: _PathPlan
     positions: dict[int, int]
+    visit_count: int
 
     @classmethod
     def build(
         cls,
-        order: list[int],
-        arcs: list[tuple[tuple[int, int], ...]],
-        initial: tuple[tuple[int, int], ...],
+        arcs: list[list[tuple[int, int]]],
+        initial: list[tuple[int, int]],
         final: list[tuple[int, int]],
+        max_closure_size: int | None,
+        weight_slots: int,
     ) -> _Chart:
         states: list[int] = []
-        packed = _pack_paths(order, arcs, initial, final, visit_order=states)
-        return cls(packed, {state: position for position, state in enumerate(states)})
+        exits: dict[int, int] = {}
+        plan = _trim_paths(
+            arcs,
+            initial,
+            final,
+            0,
+            max_closure_size=max_closure_size,
+            weight_slots=weight_slots,
+            visit_order=states,
+            closed_exits=exits,
+        )
+        # Within a closed component, the exit prefix includes every
+        # possible internal segment from an entry to that original state.
+        visits = {state: position for position, state in enumerate(states)}
+        positions = {
+            state: visits[exits.get(state, state)]
+            for state in states
+            if state < len(arcs)
+        }
+        return cls(plan, positions, len(states))
 
     def evaluate(
         self, weights: torch.Tensor, algebra: Semiring
     ) -> tuple[torch.Tensor, torch.Tensor]:
         visits: list[torch.Tensor] = []
-        total = self.packed.evaluate(weights, algebra, visits=visits)
+        total = self.plan.evaluate(weights, algebra, visits=visits)
         return total, torch.cat(visits) if visits else weights[:0]
 
 
@@ -191,13 +214,14 @@ def _conditional_log_ratio(
     return torch.where(positive, safe_score.log() - mass.log(), -torch.inf)
 
 
-class _AcyclicWalks:
+class _PathWalks:
     def __init__(
         self,
         topology: RelationTopology,
         words: Words,
         max_states: int | None,
         max_work: int | None,
+        max_closure_size: int | None,
     ) -> None:
         observation = _observe(
             topology, words, max_states=max_states, max_work=max_work, arc_ids=True
@@ -205,13 +229,11 @@ class _AcyclicWalks:
         graph = _productive_graph(
             observation.arcs, observation.initial, observation.final
         )
-        if len(graph.order) != len(graph.states):
-            raise ProductiveEpsilonCycleError(
-                "path decoding, sampling and counts require an acyclic productive graph"
-            )
+        self._cyclic = len(graph.order) != len(graph.states)
+        self._max_closure_size = max_closure_size
         self._topology = topology
         self._original = tuple(state for state, _ in observation.states)
-        self._order = graph.order
+        self._order = sorted(graph.states) if self._cyclic else graph.order
         self._arcs = graph.arcs
         self._initial = graph.initial
         self._final = dict(observation.final)
@@ -219,12 +241,16 @@ class _AcyclicWalks:
     @cached_property
     def _forward(self) -> _Chart:
         arcs = [
-            tuple(
-                (target, self._topology.arcs[arc_id].weight) for target, arc_id in row
-            )
+            [(target, self._topology.arcs[arc_id].weight) for target, arc_id in row]
             for row in self._arcs
         ]
-        return _Chart.build(self._order, arcs, self._initial, list(self._final.items()))
+        return _Chart.build(
+            arcs,
+            list(self._initial),
+            list(self._final.items()),
+            self._max_closure_size,
+            len(self._topology.weight_names),
+        )
 
     @cached_property
     def _backward(self) -> _Chart:
@@ -233,10 +259,11 @@ class _AcyclicWalks:
             for target, arc_id in self._arcs[source]:
                 reverse[target].append((source, self._topology.arcs[arc_id].weight))
         return _Chart.build(
-            self._order[::-1],
-            list(map(tuple, reverse)),
-            tuple(self._final.items()),
+            reverse,
+            list(self._final.items()),
             list(self._initial),
+            self._max_closure_size,
+            len(self._topology.weight_names),
         )
 
     @cached_property
@@ -324,6 +351,10 @@ class _AcyclicWalks:
     def k_best(
         self, k: int, weights: torch.Tensor, algebra: Semiring
     ) -> tuple[RelationPath, ...]:
+        if self._cyclic:
+            raise ProductiveEpsilonCycleError(
+                "path ranking requires an acyclic productive graph"
+            )
         algebra = _probability_algebra(weights, algebra)
         if k == 0:
             return ()
@@ -367,8 +398,15 @@ class _AcyclicWalks:
         weights: torch.Tensor,
         algebra: Semiring,
         generator: torch.Generator | None,
+        max_steps: int | None,
     ) -> RelationPath:
         algebra = _probability_algebra(weights, algebra)
+        if max_steps is not None and (type(max_steps) is not int or max_steps < 0):
+            raise ValueError("max_steps must be a nonnegative integer")
+        if self._cyclic and max_steps is None:
+            raise ProductiveEpsilonCycleError(
+                "cyclic path sampling requires explicit max_steps"
+            )
         if generator is not None and generator.device.type != "cpu":
             raise ValueError("path sampling requires a CPU generator")
         log_weights = self._log_weights(weights, algebra)
@@ -405,12 +443,15 @@ class _AcyclicWalks:
                 return self._path(
                     start, initial_slot, tuple(arcs), state, weights, algebra
                 )
+            if max_steps is not None and len(arcs) == max_steps:
+                raise RelationLimitError("sampled path exceeds max_steps")
             state, arc_id = edges[choice]
             arcs.append(arc_id)
 
     @cached_property
     def _events(self) -> _PathEvents:
-        positions = len(self._order)
+        prefix_count = self._forward.visit_count
+        suffix_count = self._backward.visit_count
         prefix = self._forward.positions
         suffix = self._backward.positions
         initial_ids = {
@@ -423,7 +464,7 @@ class _AcyclicWalks:
         events: list[tuple[int, int, int, int]] = []
         for state, slot in self._initial:
             original_starts.append(initial_ids[self._original[state]])
-            events.append((positions, suffix[state], positions + 1, slot))
+            events.append((prefix_count, suffix[state], suffix_count + 1, slot))
         for state in self._order:
             for target, arc_id in self._arcs[state]:
                 original_arcs.append(arc_id)
@@ -438,7 +479,7 @@ class _AcyclicWalks:
         for state in self._order:
             if (slot := self._final.get(state)) is not None:
                 original_stops.append(final_ids[self._original[state]])
-                events.append((prefix[state], positions, suffix[state], slot))
+                events.append((prefix[state], suffix_count, suffix[state], slot))
         prefixes, suffixes, denominators, slots = map(tuple, zip(*events, strict=True))
         return _PathEvents(
             (tuple(original_starts), tuple(original_arcs), tuple(original_stops)),

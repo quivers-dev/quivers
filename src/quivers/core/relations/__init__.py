@@ -20,7 +20,7 @@ from quivers.core.relations.paths import (
     ArcCounts,
     PathStatistics,
     RelationPath,
-    _AcyclicWalks,
+    _PathWalks,
 )
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
@@ -417,11 +417,16 @@ class FixedStringQuery:
         self._words = tuple(tuple(word) for word in words)
         self._max_states = max_states
         self._max_work = max_work
+        self._max_closure_size = max_closure_size
 
     @cached_property
-    def _walks(self) -> _AcyclicWalks:
-        return _AcyclicWalks(
-            self._relation.topology, self._words, self._max_states, self._max_work
+    def _walks(self) -> _PathWalks:
+        return _PathWalks(
+            self._relation.topology,
+            self._words,
+            self._max_states,
+            self._max_work,
+            self._max_closure_size,
         )
 
     @property
@@ -473,16 +478,20 @@ class FixedStringQuery:
             raise ValueError("k must be a nonnegative integer")
         return self._walks.k_best(k, self._relation._weights(), self._relation.algebra)
 
-    def sample_path(self, *, generator: torch.Generator | None = None) -> RelationPath:
+    def sample_path(
+        self, *, generator: torch.Generator | None = None, max_steps: int | None = None
+    ) -> RelationPath:
         """Draw a path conditional on the observed words.
 
         Sampling uses float64 log-space suffix weights and a CPU
-        generator. The productive graph must be acyclic, and Markov or
-        LogProb weights must give a positive finite normalizer in log
-        space. The sampled path retains its original arc occurrences.
+        generator. The observed Markov or LogProb mass must be
+        positive and finite. A cyclic plan requires a supported
+        closure and an explicit max_steps. An attempted traversal
+        beyond that arc limit raises a resource error.
+        The sampled path retains its original arc occurrences.
         """
         return self._walks.sample(
-            self._relation._weights(), self._relation.algebra, generator
+            self._relation._weights(), self._relation.algebra, generator, max_steps
         )
 
     def expected_arc_counts(self) -> ArcCounts:
@@ -491,8 +500,8 @@ class FixedStringQuery:
         Two packed passes sum the prefixes and suffixes at each
         configuration. Occurrences of an original arc at different
         configurations are added after normalizing. The productive
-        graph must be acyclic, and the Markov or LogProb normalizer
-        must be positive and finite in its representation.
+        graph can use an explicitly permitted, finite closure. The
+        Markov or LogProb normalizer must be positive and finite.
         """
         return self._walks.counts(self._relation._weights(), self._relation.algebra)
 
@@ -505,8 +514,9 @@ class FixedStringQuery:
     ) -> PathStatistics:
         """Return path entropy and the expectation of optional additive costs.
 
-        The productive graph must be acyclic with a positive finite
-        log normalizer under Markov or LogProb. Costs have one row
+        The observed Markov or LogProb mass must be positive and
+        finite. Its normalization is evaluated in log space, with
+        explicit closure support for a cyclic observation. Costs have one row
         per original mark or arc, in topology order. Boundary and
         arc costs can be combined when their trailing shapes agree.
         Derivatives on the current positive support flow through
