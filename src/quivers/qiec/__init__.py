@@ -389,6 +389,7 @@ from quivers.qiec.relation_path_law import (
     RelationPathLaw,
 )
 from quivers.qiec.relations import (
+    FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
     FixedRelationRequest,
     RationalRelationSpec,
@@ -703,6 +704,7 @@ __all__ = [
     "ROW",
     "ComposedRelationSpec",
     "FixedComposedRelationRequest",
+    "FixedRelationArcCountsRequest",
     "FixedRelationCostRequest",
     "FixedRelationMarginalMapRequest",
     "FixedRelationPathSampleRequest",
