@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Signed-delay tape equality.** A wider bounded-delay certificate permits productive cycles of a common sign along each accepting path, with exact refusals for mixed cyclic drift and unchanged original path weights.
 - **Cyclic fixed-word path posteriors.** Certified component closure supplies arc counts, entropy, additive risks, and bounded draws from a finite path distribution while preserving original occurrences.
 - **Expectation propagation with regular string messages.** A typed graph uses sparse cavity joins and compact fitted n-gram sites over declared regular supports. Local projection, outer convergence, and relation limits have separate diagnostics.
 - **Sparse penalized n-gram projection.** Forward-KL projection on finite regular support estimates moments through path sums. The structured penalty selects features, and the fitted message compiles only the active ones.
